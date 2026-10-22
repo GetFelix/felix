@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792657700729,
+  "lastUpdate": 1792680254627,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -40986,6 +40986,72 @@ window.BENCHMARK_DATA = {
             "range": "536.42",
             "unit": "us",
             "extra": "trials: 5\nmedian: 333.00\nmean: 651.20\nstdev: 536.42\ncv: 82.37%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "56843fec7bf6abfe1ed130391299ae298a3b3b9b",
+          "message": "build(deps): bump the cargo-minor-and-patch group with 6 updates (#1400)\n\nBumps the cargo-minor-and-patch group with 6 updates:\n\n| Package | From | To |\n| --- | --- | --- |\n| [serde_json](https://github.com/serde-rs/json) | `1.0.151` | `1.0.154` |\n| [opentelemetry](https://github.com/open-telemetry/opentelemetry-rust) | `0.33.0` | `0.33.1` |\n| [opentelemetry-otlp](https://github.com/open-telemetry/opentelemetry-rust) | `0.33.0` | `0.33.1` |\n| [opentelemetry_sdk](https://github.com/open-telemetry/opentelemetry-rust) | `0.33.0` | `0.33.1` |\n| [tokio-util](https://github.com/tokio-rs/tokio) | `0.7.19` | `0.7.20` |\n| [zstd](https://github.com/gyscos/zstd-rs) | `0.14.0` | `0.14.2` |\n\n\nUpdates `serde_json` from 1.0.151 to 1.0.154\n- [Release notes](https://github.com/serde-rs/json/releases)\n- [Commits](https://github.com/serde-rs/json/compare/v1.0.151...v1.0.154)\n\nUpdates `opentelemetry` from 0.33.0 to 0.33.1\n- [Release notes](https://github.com/open-telemetry/opentelemetry-rust/releases)\n- [Changelog](https://github.com/open-telemetry/opentelemetry-rust/blob/main/docs/release_0.32.md)\n- [Commits](https://github.com/open-telemetry/opentelemetry-rust/compare/opentelemetry-0.33.0...opentelemetry-0.33.1)\n\nUpdates `opentelemetry-otlp` from 0.33.0 to 0.33.1\n- [Release notes](https://github.com/open-telemetry/opentelemetry-rust/releases)\n- [Changelog](https://github.com/open-telemetry/opentelemetry-rust/blob/main/docs/release_0.32.md)\n- [Commits](https://github.com/open-telemetry/opentelemetry-rust/compare/opentelemetry-otlp-0.33.0...opentelemetry-otlp-0.33.1)\n\nUpdates `opentelemetry_sdk` from 0.33.0 to 0.33.1\n- [Release notes](https://github.com/open-telemetry/opentelemetry-rust/releases)\n- [Changelog](https://github.com/open-telemetry/opentelemetry-rust/blob/main/docs/release_0.32.md)\n- [Commits](https://github.com/open-telemetry/opentelemetry-rust/compare/opentelemetry_sdk-0.33.0...opentelemetry_sdk-0.33.1)\n\nUpdates `tokio-util` from 0.7.19 to 0.7.20\n- [Release notes](https://github.com/tokio-rs/tokio/releases)\n- [Commits](https://github.com/tokio-rs/tokio/compare/tokio-util-0.7.19...tokio-util-0.7.20)\n\nUpdates `zstd` from 0.14.0 to 0.14.2\n- [Release notes](https://github.com/gyscos/zstd-rs/releases)\n- [Commits](https://github.com/gyscos/zstd-rs/compare/v0.14.0...v0.14.2)\n\n---\nupdated-dependencies:\n- dependency-name: serde_json\n  dependency-version: 1.0.154\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: cargo-minor-and-patch\n- dependency-name: opentelemetry\n  dependency-version: 0.33.1\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: cargo-minor-and-patch\n- dependency-name: opentelemetry-otlp\n  dependency-version: 0.33.1\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: cargo-minor-and-patch\n- dependency-name: opentelemetry_sdk\n  dependency-version: 0.33.1\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: cargo-minor-and-patch\n- dependency-name: tokio-util\n  dependency-version: 0.7.20\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: cargo-minor-and-patch\n- dependency-name: zstd\n  dependency-version: 0.14.2\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: cargo-minor-and-patch\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-10-22T07:37:26-07:00",
+          "tree_id": "3d9423dc13d0912e618e4148b60bcfd09433c23b",
+          "url": "https://github.com/GetFelix/felix/commit/56843fec7bf6abfe1ed130391299ae298a3b3b9b"
+        },
+        "date": 1792680248889,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 153,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 153.00\nmean: 153.40\nstdev: 0.89\ncv: 0.58%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 223,
+            "range": "65.75",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 223.00\nmean: 251.40\nstdev: 65.75\ncv: 26.15%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 309,
+            "range": "133.41",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 309.00\nmean: 376.80\nstdev: 133.41\ncv: 35.41%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 202,
+            "range": "10.63",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 202.00\nmean: 207.00\nstdev: 10.63\ncv: 5.14%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 395,
+            "range": "212.97",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 395.00\nmean: 493.20\nstdev: 212.97\ncv: 43.18%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 592,
+            "range": "896.29",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 592.00\nmean: 985.40\nstdev: 896.29\ncv: 90.96%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
