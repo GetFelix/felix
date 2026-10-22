@@ -658,10 +658,16 @@ impl DepthGauge {
             return;
         }
         let _write = self.write.lock();
-        let depth = depth();
-        if depth_gauge_due(self.reported.load(Ordering::Acquire), depth) {
-            set(depth);
+        // `reported` is stored before the set, so a change that lands during
+        // it is compared with the depth being set and takes the lock if due.
+        // The loop covers one that compared with the old value and left.
+        loop {
+            let depth = depth();
+            if !depth_gauge_due(self.reported.load(Ordering::Acquire), depth) {
+                break;
+            }
             self.reported.store(depth, Ordering::Release);
+            set(depth);
         }
     }
 }

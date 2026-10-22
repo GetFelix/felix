@@ -8,7 +8,7 @@ use metrics::{
     Counter, CounterFn, Gauge, Histogram, Key, KeyName, Metadata, Recorder, SharedString, Unit,
     with_local_recorder,
 };
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::sync::oneshot;
 
 use super::*;
@@ -801,4 +801,37 @@ fn depth_gauge_ends_at_zero_after_concurrent_traffic() {
     assert_eq!(depth.load(Ordering::Relaxed), 0);
     let last = last.load(Ordering::Relaxed);
     assert!(last == 0 || last == usize::MAX, "gauge left at {last}");
+}
+
+#[test]
+fn depth_gauge_settles_zero_when_the_queue_empties_during_a_set() {
+    let gauge = DepthGauge::new();
+    let depth = AtomicUsize::new(DEPTH_STEP);
+    let last = AtomicUsize::new(usize::MAX);
+    std::thread::scope(|scope| {
+        let first = AtomicBool::new(true);
+        gauge.report(
+            || depth.load(Ordering::Relaxed),
+            |d| {
+                last.store(d, Ordering::Relaxed);
+                if first.swap(false, Ordering::Relaxed) {
+                    // The queue empties while this set is in flight; give the
+                    // popper time to take its unlocked look.
+                    scope.spawn(|| {
+                        depth.store(0, Ordering::Relaxed);
+                        gauge.report(
+                            || depth.load(Ordering::Relaxed),
+                            |d| last.store(d, Ordering::Relaxed),
+                        );
+                    });
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            },
+        );
+    });
+    assert_eq!(
+        last.load(Ordering::Relaxed),
+        0,
+        "empty queue must read zero"
+    );
 }
