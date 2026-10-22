@@ -455,6 +455,179 @@ async fn a_slot_skips_a_waiter_whose_tenant_is_at_its_share() {
     assert!(!left.is_finished());
 }
 
+fn tagged_job(tenant: &str, tag: u8) -> PublishJob {
+    let mut job = named_job(tenant);
+    job.payloads = vec![Bytes::from(vec![tag])];
+    job
+}
+
+/// A batch taken off a busy lane frees several slots at once: each goes to
+/// a waiter, and each admitted job gets an idle executor.
+#[tokio::test]
+async fn a_batch_taken_from_a_lane_admits_waiters_and_wakes_executors() {
+    let scheduler = Arc::new(PublishScheduler::new(1, 4, 4));
+    let partition = Arc::clone(&scheduler.partitions()[0]);
+    let executors: Vec<_> = (0..5)
+        .map(|_| {
+            let partition = Arc::clone(&partition);
+            tokio::spawn(async move { partition.next().await })
+        })
+        .collect();
+    settle().await;
+    let send = |tag: u8| {
+        let scheduler = Arc::clone(&scheduler);
+        async move {
+            let sent = scheduler
+                .submit("f", tagged_job("f", tag), std::future::ready(()))
+                .await;
+            assert!(sent.is_ok());
+        }
+    };
+    for tag in 0..4 {
+        send(tag).await;
+    }
+    // One executor takes the lane's first job and holds the lane; the rest
+    // find nothing runnable and sleep.
+    settle().await;
+    let (done, idle): (Vec<_>, Vec<_>) = executors.into_iter().partition(|e| e.is_finished());
+    assert_eq!(done.len(), 1);
+    let (_, guard) = done
+        .into_iter()
+        .next()
+        .unwrap()
+        .await
+        .unwrap()
+        .expect("a job");
+
+    send(4).await;
+    let waiters: Vec<_> = (0..3)
+        .map(|n| parked_submitter(&scheduler, &format!("w{n}")))
+        .collect();
+    settle().await;
+    assert_eq!(admit_wakes(&scheduler), 0, "the queue was full");
+    assert!(waiters.iter().all(|(h, _)| !h.is_finished()));
+
+    // Three jobs leave the lane at once: three slots, three waiters.
+    let taken = guard.take_more(3, |_, _| true);
+    assert_eq!(taken.len(), 3);
+    settle().await;
+    assert_eq!(admit_wakes(&scheduler), 3);
+    assert_eq!(
+        idle.iter().filter(|e| e.is_finished()).count(),
+        3,
+        "every admitted job should reach an idle executor"
+    );
+}
+
+/// A parked job is queued before a newer submit on the same lane.
+#[tokio::test]
+async fn a_parked_job_keeps_its_lane_order_against_a_newer_submit() {
+    let scheduler = Arc::new(PublishScheduler::new(1, 4, 2));
+    let ready = || std::future::ready(());
+    for (tenant, tag) in [("a", 0), ("a", 1), ("b", 9), ("b", 9)] {
+        let sent = scheduler
+            .submit(tenant, tagged_job(tenant, tag), ready())
+            .await;
+        assert!(sent.is_ok());
+    }
+    let submit = |tag: u8| {
+        let scheduler = Arc::clone(&scheduler);
+        tokio::spawn(async move {
+            scheduler
+                .submit("a", tagged_job("a", tag), std::future::pending())
+                .await
+        })
+    };
+    let first = submit(2);
+    settle().await;
+    // Free a slot from b. Tenant a is still at its share, so this one has
+    // room in the queue but may not use it, and must wait behind `first`.
+    let partition = &scheduler.partitions()[0];
+    let mut seen = Vec::new();
+    loop {
+        let job = partition.try_take().expect("queued");
+        let b = tenant_of(&job) == "b";
+        seen.push(job);
+        if b {
+            break;
+        }
+    }
+    let second = submit(3);
+    settle().await;
+    while let Some(job) = partition.try_take() {
+        seen.push(job);
+        settle().await;
+    }
+    assert!(first.is_finished() && second.is_finished());
+    let tags: Vec<u8> = seen
+        .iter()
+        .filter(|job| tenant_of(job) == "a")
+        .map(|job| job.payloads[0][0])
+        .collect();
+    assert_eq!(tags, vec![0, 1, 2, 3]);
+}
+
+/// A submitter dropped after its slot was handed over, before it ran again:
+/// the job stays queued and the next waiter still gets in.
+#[tokio::test]
+async fn a_submitter_dropped_after_admission_leaves_its_job_and_frees_the_next() {
+    let (scheduler, tx, mut rx) = test_channel(1);
+    tx.try_send(named_job("filler")).expect("room");
+    let (first, _) = parked_submitter(&scheduler, "w0");
+    let (second, _) = parked_submitter(&scheduler, "w1");
+    settle().await;
+
+    rx.try_recv().expect("the filler");
+    // No yield in between: w0 has its slot but has not run.
+    first.abort();
+    settle().await;
+    assert_eq!(tenant_of(&rx.try_recv().expect("w0's job")), "w0");
+    settle().await;
+    assert!(second.is_finished(), "the next waiter was stranded");
+    assert_eq!(tenant_of(&rx.try_recv().expect("w1's job")), "w1");
+    assert!(rx.try_recv().is_err());
+}
+
+/// Admitting one tenant does not walk another tenant's parked jobs.
+#[tokio::test]
+async fn a_refused_tenants_parked_jobs_are_not_scanned() {
+    const PARKED: usize = 200;
+    let scheduler = Arc::new(PublishScheduler::new(1, 4, 2));
+    let ready = || std::future::ready(());
+    for tenant in ["a", "a", "b", "b"] {
+        assert!(
+            scheduler
+                .submit(tenant, named_job(tenant), ready())
+                .await
+                .is_ok()
+        );
+    }
+    let mut a_waiters = Vec::new();
+    for _ in 0..PARKED {
+        a_waiters.push(parked_submitter(&scheduler, "a"));
+    }
+    settle().await;
+    let (b_waiter, _) = parked_submitter(&scheduler, "b");
+    settle().await;
+
+    let partition = &scheduler.partitions()[0];
+    let scanned_before = partition.state.lock().scanned;
+    // Pop until a b job leaves; a's waiters are refused each time a b job does.
+    loop {
+        let job = partition.try_take().expect("queued");
+        if tenant_of(&job) == "b" {
+            break;
+        }
+    }
+    settle().await;
+    let scanned = partition.state.lock().scanned - scanned_before;
+    assert!(b_waiter.is_finished());
+    assert!(
+        scanned < 10,
+        "admitting looked at {scanned} tenants or jobs"
+    );
+}
+
 /// Many submitters and a slow drain: every job gets through, none is lost
 /// to a wake-up that went to the wrong place.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

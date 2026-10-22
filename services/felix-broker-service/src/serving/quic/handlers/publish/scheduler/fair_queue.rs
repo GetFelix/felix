@@ -60,6 +60,11 @@ impl<K: Clone + Eq + Hash, T> FairQueue<K, T> {
         self.queued == 0
     }
 
+    /// Whether `tenant` may queue one more job right now.
+    pub(crate) fn admits_tenant(&self, tenant: &str) -> bool {
+        self.admits(self.tenants.get(tenant).map_or(0, |tenant| tenant.queued))
+    }
+
     pub(crate) fn is_full(&self) -> bool {
         self.queued >= self.capacity
     }

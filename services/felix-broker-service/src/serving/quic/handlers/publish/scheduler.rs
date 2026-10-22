@@ -27,8 +27,8 @@
 
 mod fair_queue;
 
-use std::collections::BTreeMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::Future;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -106,13 +106,19 @@ impl PublishScheduler {
         if futures::FutureExt::now_or_never(&mut give_up).is_some() {
             return Err(Rejected::Full(Box::new(job)));
         }
-        let (id, admitted) = match partition.park(tenant, lane, job, cost) {
+        let (id, tenant, admitted) = match partition.park(tenant, lane, job, cost) {
             Park::Done(done) => return done,
-            Park::Waiting(id, admitted) => (id, admitted),
+            Park::Waiting(id, tenant, admitted) => (id, tenant, admitted),
         };
-        // Dropping the future unparks the job; a job already admitted is
-        // simply queued, as if the push had landed just before the drop.
-        let mut parked = Unparker { partition, id };
+        // Dropping the future unparks the job. If a slot was already handed
+        // to it, the job stays queued and runs with no caller waiting: the
+        // client gets no ack and may retry, the same at-least-once window as
+        // a connection that drops right after its publish was enqueued.
+        let mut parked = Unparker {
+            partition,
+            id,
+            tenant,
+        };
         tokio::select! {
             biased;
             admitted = admitted => {
@@ -120,7 +126,7 @@ impl PublishScheduler {
                 // A dropped sender means the queue closed under the waiter.
                 admitted.map_err(|_| Rejected::Closed)
             }
-            _ = &mut give_up => match partition.unpark(id) {
+            _ = &mut give_up => match partition.unpark(id, &parked.tenant) {
                 Some(job) => {
                     parked.id = NOT_PARKED;
                     Err(Rejected::Full(Box::new(job)))
@@ -195,14 +201,20 @@ pub(crate) struct Partition {
 /// job is either queued or parked, never both and never neither.
 struct State {
     queue: FairQueue<LaneKey, PublishJob>,
-    /// Parked jobs by arrival number, oldest first.
-    waiters: BTreeMap<u64, Waiter>,
+    /// Parked jobs per tenant, by arrival number. Tenant names are shared
+    /// with `heads`, so parking allocates only for a tenant's first waiter.
+    waiters: HashMap<Arc<str>, BTreeMap<u64, Waiter>>,
+    /// Each waiting tenant's oldest parked job, oldest first: the order
+    /// freed slots are offered in.
+    heads: BTreeSet<(u64, Arc<str>)>,
     next_id: u64,
+    /// Tenants looked at while admitting, for tests.
+    #[cfg(test)]
+    scanned: usize,
 }
 
 /// A job that found the queue full and waits for a slot.
 struct Waiter {
-    tenant: String,
     lane: LaneKey,
     cost: usize,
     job: PublishJob,
@@ -211,7 +223,7 @@ struct Waiter {
 
 enum Park {
     Done(Result<(), Rejected>),
-    Waiting(u64, oneshot::Receiver<()>),
+    Waiting(u64, Arc<str>, oneshot::Receiver<()>),
 }
 
 /// Stands for a parked job while its submitter waits; removes it if the
@@ -219,6 +231,7 @@ enum Park {
 struct Unparker<'a> {
     partition: &'a Partition,
     id: u64,
+    tenant: Arc<str>,
 }
 
 const NOT_PARKED: u64 = u64::MAX;
@@ -226,7 +239,7 @@ const NOT_PARKED: u64 = u64::MAX;
 impl Drop for Unparker<'_> {
     fn drop(&mut self) {
         if self.id != NOT_PARKED {
-            self.partition.unpark(self.id);
+            self.partition.unpark(self.id, &self.tenant);
         }
     }
 }
@@ -236,8 +249,11 @@ impl Partition {
         Self {
             state: Mutex::new(State {
                 queue: FairQueue::new(capacity, share, QUANTUM_BYTES),
-                waiters: BTreeMap::new(),
+                waiters: HashMap::new(),
+                heads: BTreeSet::new(),
                 next_id: 0,
+                #[cfg(test)]
+                scanned: 0,
             }),
             work: Notify::new(),
             closed: AtomicBool::new(false),
@@ -310,30 +326,41 @@ impl Partition {
         let id = state.next_id;
         state.next_id += 1;
         let (admitted, wake) = oneshot::channel();
-        state.waiters.insert(
+        let state = &mut *state;
+        let name = match state.waiters.get_key_value(tenant) {
+            Some((name, _)) => Arc::clone(name),
+            None => Arc::from(tenant),
+        };
+        let parked = state.waiters.entry(Arc::clone(&name)).or_default();
+        if parked.is_empty() {
+            state.heads.insert((id, Arc::clone(&name)));
+        }
+        parked.insert(
             id,
             Waiter {
-                tenant: tenant.to_owned(),
                 lane,
                 cost,
                 job,
                 admitted,
             },
         );
-        Park::Waiting(id, wake)
+        Park::Waiting(id, name, wake)
     }
 
     /// Take a parked job back. `None` when it was admitted, or the queue
     /// closed, first.
-    fn unpark(&self, id: u64) -> Option<PublishJob> {
-        self.state.lock().waiters.remove(&id).map(|w| w.job)
+    fn unpark(&self, id: u64, tenant: &Arc<str>) -> Option<PublishJob> {
+        self.state.lock().take_waiter(id, tenant).map(|w| w.job)
     }
 
-    /// Bookkeeping for `jobs` newly queued: depth gauge and an executor.
+    /// Bookkeeping for `jobs` newly queued: depth gauge and an executor for
+    /// each, since a single `notify_one` would leave the rest asleep.
     fn queued(&self, jobs: usize) {
         let global = GLOBAL_INGRESS_DEPTH.fetch_add(jobs, Ordering::Relaxed) + jobs;
         t_gauge!("felix_broker_ingress_queue_depth").set(global as f64);
-        self.work.notify_one();
+        for _ in 0..jobs {
+            self.work.notify_one();
+        }
     }
 
     /// `jobs` left the queue: hand each freed slot to the oldest parked job
@@ -346,7 +373,7 @@ impl Partition {
             .unwrap_or(0)
             .saturating_sub(jobs);
         t_gauge!("felix_broker_ingress_queue_depth").set(global as f64);
-        if state.waiters.is_empty() {
+        if state.heads.is_empty() {
             return;
         }
         let admitted = state.admit_waiters();
@@ -379,6 +406,7 @@ impl Partition {
         let parked = {
             let mut state = self.state.lock();
             self.closed.store(true, Ordering::Release);
+            state.heads.clear();
             std::mem::take(&mut state.waiters)
         };
         // Dropping each sender tells its submitter the queue is closed.
@@ -399,34 +427,61 @@ impl Partition {
 }
 
 impl State {
-    /// Queue parked jobs, oldest first, while there is room. A tenant refused
-    /// once is skipped for the rest of the pass, since its answer cannot
-    /// change until something else leaves. Returns the submitters to wake.
+    /// Remove one parked job, keeping `heads` and the per-tenant map in step.
+    fn take_waiter(&mut self, id: u64, tenant: &Arc<str>) -> Option<Waiter> {
+        let parked = self.waiters.get_mut(tenant)?;
+        let was_head = parked.keys().next() == Some(&id);
+        let waiter = parked.remove(&id)?;
+        if was_head {
+            self.heads.remove(&(id, Arc::clone(tenant)));
+            match parked.keys().next() {
+                Some(&next) => {
+                    self.heads.insert((next, Arc::clone(tenant)));
+                }
+                None => {
+                    self.waiters.remove(tenant);
+                }
+            }
+        }
+        Some(waiter)
+    }
+
+    /// Queue parked jobs while there is room, the tenant with the oldest
+    /// waiter first. A tenant the fair queue refuses is skipped by name for
+    /// the rest of the pass without looking at its jobs, since its answer
+    /// cannot change until something else leaves. Returns the submitters to
+    /// wake.
     fn admit_waiters(&mut self) -> Vec<oneshot::Sender<()>> {
         let mut woken = Vec::new();
-        let mut refused: Vec<String> = Vec::new();
-        let mut from = 0;
+        let mut refused: Vec<Arc<str>> = Vec::new();
         while !self.queue.is_full() {
-            let Some(id) = self
-                .waiters
-                .range(from..)
-                .find(|(_, w)| !refused.contains(&w.tenant))
-                .map(|(id, _)| *id)
+            let Some((id, tenant)) = self
+                .heads
+                .iter()
+                .find(|(_, tenant)| !refused.iter().any(|r| Arc::ptr_eq(r, tenant)))
+                .cloned()
             else {
                 break;
             };
-            from = id + 1;
-            let waiter = self.waiters.remove(&id).expect("found above");
-            match self
-                .queue
-                .push(&waiter.tenant, waiter.lane, waiter.job, waiter.cost)
+            #[cfg(test)]
             {
-                Ok(()) => woken.push(waiter.admitted),
-                Err(job) => {
-                    refused.push(waiter.tenant.clone());
-                    self.waiters.insert(id, Waiter { job, ..waiter });
-                }
+                self.scanned += refused.len() + 1;
             }
+            if !self.queue.admits_tenant(&tenant) {
+                refused.push(tenant);
+                continue;
+            }
+            let waiter = self
+                .take_waiter(id, &tenant)
+                .expect("heads name parked jobs");
+            if self
+                .queue
+                .push(&tenant, waiter.lane, waiter.job, waiter.cost)
+                .is_err()
+            {
+                unreachable!("admits_tenant said there was room");
+            }
+            woken.push(waiter.admitted);
         }
         woken
     }
