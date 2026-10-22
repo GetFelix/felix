@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792680259052,
+  "lastUpdate": 1792680660334,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -32344,6 +32344,58 @@ window.BENCHMARK_DATA = {
             "range": "6232.97",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 810359.17\nmean: 810105.43\nstdev: 6232.97\ncv: 0.77%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "45c1f098a304415a4f10e6d395f099ab6a53e2e5",
+          "message": "build(deps): bump otel/opentelemetry-collector-contrib (#1405)\n\nBumps the base-images group in /docker with 1 update: otel/opentelemetry-collector-contrib.\n\n\nUpdates `otel/opentelemetry-collector-contrib` from 0.162.0 to 0.163.1\n\n---\nupdated-dependencies:\n- dependency-name: otel/opentelemetry-collector-contrib\n  dependency-version: 0.163.1\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: base-images\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-10-22T07:44:05-07:00",
+          "tree_id": "6b97db14e55300a1715e0be67f39a1d4dd90ec77",
+          "url": "https://github.com/GetFelix/felix/commit/45c1f098a304415a4f10e6d395f099ab6a53e2e5"
+        },
+        "date": 1792680659487,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 354185.55,
+            "range": "7530.57",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 354185.55\nmean: 352568.14\nstdev: 7530.57\ncv: 2.14%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 354185.55,
+            "range": "7530.57",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 354185.55\nmean: 352568.14\nstdev: 7530.57\ncv: 2.14%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82813.74,
+            "range": "3051.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82813.74\nmean: 81724.14\nstdev: 3051.59\ncv: 3.73%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 828137.44,
+            "range": "30515.92",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 828137.44\nmean: 817241.38\nstdev: 30515.92\ncv: 3.73%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
