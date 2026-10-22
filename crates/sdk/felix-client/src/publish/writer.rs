@@ -152,7 +152,7 @@ pub(crate) async fn run_publisher_writer_with_limit(
 }
 
 pub(crate) async fn run_publisher_writer_counted(
-    send: EgressStream,
+    mut send: EgressStream,
     recv: RecvStream,
     mut rx: mpsc::Receiver<PublishRequest>,
     _chunk_bytes: usize,
@@ -668,7 +668,7 @@ pub(crate) async fn run_publisher_writer_counted(
     let (mut recv, _) = idle_recv.expect("recv half is idle");
     // Graceful shutdown: close our send side, then drain the peer's side to
     // EOF — the same close protocol `finish_publisher_stream` implements.
-    let finish_result = send.finish().await;
+    let finish_result = send.finish();
     let result = {
         let drain_result = async {
             let mut buf = [0u8; 8192];
