@@ -126,7 +126,7 @@ event_batch_max_bytes: 1048576
 event_batch_max_delay_us: 2000
 fanout_batch_size: 256
 pub_workers_per_conn: 8
-pub_queue_depth: 256
+pub_queue_depth: 2048
 pub_inflight_bytes: 268435456
 pub_ingress_wait: true
 subscriber_queue_capacity: 4096

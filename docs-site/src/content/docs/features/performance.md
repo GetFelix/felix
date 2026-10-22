@@ -199,7 +199,7 @@ ack_on_commit: false
 # Deep queues, lossless end-to-end backpressure (paces the publisher to the
 # pipeline's sustainable rate instead of shedding), thread-per-core stream
 # ownership for multi-stream workloads
-pub_queue_depth: 256
+pub_queue_depth: 2048
 pub_inflight_bytes: 268435456          # 256 MiB
 pub_ingress_wait: true
 subscriber_queue_capacity: 4096

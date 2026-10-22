@@ -402,7 +402,7 @@ share first. When there is no room for a tenant:
 pub_workers_per_conn: 4
 
 # Increase buffer (trades latency for burst tolerance)
-pub_queue_depth: 256
+pub_queue_depth: 2048
 
 # Faster timeout for fail-fast behavior
 publish_queue_wait_timeout_ms: 1000
