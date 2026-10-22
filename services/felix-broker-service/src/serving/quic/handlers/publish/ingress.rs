@@ -139,10 +139,6 @@ pub(crate) async fn enqueue_publish(
                     unreachable!("waiting policies handled above")
                 }
             };
-            let Ok(identity_permit) = publish_ctx.identity.admission.try_acquire(job_bytes) else {
-                t_counter!("felix_broker_ingress_conn_bytes_full_total").increment(1);
-                return refused("publish ingress per-connection byte budget exhausted");
-            };
             let Ok(conn_permit) = publish_ctx.conn_admission.try_acquire(job_bytes) else {
                 t_counter!("felix_broker_ingress_conn_bytes_full_total").increment(1);
                 return refused(
@@ -154,10 +150,8 @@ pub(crate) async fn enqueue_publish(
                 return refused("publish ingress byte budget exhausted");
             };
             AdmissionPermit {
-                _identity: identity_permit,
                 _conn: conn_permit,
                 _global: permit,
-                _share: Arc::clone(&publish_ctx.identity),
             }
         }
     };
@@ -288,14 +282,11 @@ async fn acquire_permits(
     publish_ctx: &PublishContext,
     bytes: usize,
 ) -> Result<AdmissionPermit, tokio::sync::AcquireError> {
-    let identity = publish_ctx.identity.admission.acquire(bytes).await?;
     let conn = publish_ctx.conn_admission.acquire(bytes).await?;
     let global = publish_ctx.admission.acquire(bytes).await?;
     Ok(AdmissionPermit {
-        _identity: identity,
         _conn: conn,
         _global: global,
-        _share: Arc::clone(&publish_ctx.identity),
     })
 }
 
