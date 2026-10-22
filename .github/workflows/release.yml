@@ -90,7 +90,7 @@ jobs:
           ref: ${{ env.SOURCE_REF }}
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: "1.97.1"
 
@@ -208,7 +208,7 @@ jobs:
           persist-credentials: false
           ref: ${{ env.SOURCE_REF }}
 
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: "1.97.1"
           targets: ${{ matrix.target }}
@@ -621,7 +621,7 @@ jobs:
           ref: ${{ env.SOURCE_REF }}
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: "1.97.1"
 
@@ -801,7 +801,7 @@ jobs:
           ref: ${{ env.SOURCE_REF }}
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: "1.97.1"
 
@@ -878,7 +878,7 @@ jobs:
       # on *stable*, and then rust-toolchain.toml switches cargo to 1.97.1,
       # which does not have it -- invisible on four legs whose target is the
       # runner's own, and fatal on the one that cross-compiles.
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: "1.97.1"
           targets: ${{ matrix.target }}
@@ -1198,7 +1198,7 @@ jobs:
           ref: ${{ env.SOURCE_REF }}
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: "1.97.1"
 
