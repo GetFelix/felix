@@ -191,11 +191,62 @@ async fn a_batched_group_keeps_lane_order_and_a_lone_job_wakes_at_once() {
     }
 }
 
+/// A job pushed while an executor spins is taken by it with no wake-up.
+#[tokio::test]
+async fn a_job_pushed_during_the_spin_runs_without_a_wake() {
+    let scheduler = PublishScheduler::with_spin(1, 100, 100, 5_000_000);
+    let partition = Arc::clone(&scheduler.partitions()[0]);
+    let executor = park(&partition, 1).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while partition.spinning.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the executor spins");
+    push(&scheduler, lane_job(0, 3));
+    let (job, _guard) = tokio::time::timeout(Duration::from_secs(5), executor)
+        .await
+        .expect("the spinner took the job")
+        .expect("joined")
+        .expect("a job");
+    assert_eq!(seq_of(&job), 3);
+    assert_eq!(wakes(&partition), 0);
+}
+
+/// An executor whose spin ran out parks, and is woken as usual.
+#[tokio::test]
+async fn an_executor_that_stopped_spinning_is_woken_by_a_push() {
+    let scheduler = PublishScheduler::with_spin(1, 100, 100, 200);
+    let partition = Arc::clone(&scheduler.partitions()[0]);
+    let executor = park(&partition, 1).await;
+    while partition.spinning.load(Ordering::SeqCst) != 0 {
+        tokio::task::yield_now().await;
+    }
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    push(&scheduler, lane_job(0, 4));
+    let (job, _guard) = tokio::time::timeout(Duration::from_secs(5), executor)
+        .await
+        .expect("woken")
+        .expect("joined")
+        .expect("a job");
+    assert_eq!(seq_of(&job), 4);
+}
+
 /// A push that lands after an executor found the queue empty but before it
 /// parks must wake it. This is the interleaving the idle count exists for.
 #[tokio::test]
 async fn a_push_between_the_empty_look_and_parking_is_not_lost() {
-    let scheduler = PublishScheduler::new(1, 100, 100);
+    push_between_look_and_parking(0).await;
+}
+
+#[tokio::test]
+async fn a_push_between_the_empty_look_and_spinning_is_not_lost() {
+    push_between_look_and_parking(2_000).await;
+}
+
+async fn push_between_look_and_parking(spin_us: u64) {
+    let scheduler = PublishScheduler::with_spin(1, 100, 100, spin_us);
     let partition = Arc::clone(&scheduler.partitions()[0]);
     let looked = Arc::new(Notify::new());
     let resume = Arc::new(Notify::new());
@@ -217,7 +268,16 @@ async fn a_push_between_the_empty_look_and_parking_is_not_lost() {
 /// A complete that lands in the same window must wake it too.
 #[tokio::test]
 async fn a_complete_between_the_empty_look_and_parking_is_not_lost() {
-    let scheduler = PublishScheduler::new(1, 100, 100);
+    complete_between_look_and_parking(0).await;
+}
+
+#[tokio::test]
+async fn a_complete_between_the_empty_look_and_spinning_is_not_lost() {
+    complete_between_look_and_parking(2_000).await;
+}
+
+async fn complete_between_look_and_parking(spin_us: u64) {
+    let scheduler = PublishScheduler::with_spin(1, 100, 100, spin_us);
     let partition = Arc::clone(&scheduler.partitions()[0]);
     push(&scheduler, lane_job(0, 0));
     push(&scheduler, lane_job(0, 1));

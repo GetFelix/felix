@@ -29,6 +29,7 @@ use std::future::Future;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use parking_lot::Mutex;
@@ -61,10 +62,37 @@ pub(crate) struct PublishScheduler {
 impl PublishScheduler {
     /// A scheduler with `partitions` queues. `capacity` and `share` are per
     /// partition: see [`FairQueue::new`].
+    ///
+    /// Executors spin for `FELIX_INGRESS_SPIN_US` microseconds (default 0, off)
+    /// before they park; see [`Self::with_spin`].
     pub(crate) fn new(partitions: usize, capacity: usize, share: usize) -> Self {
+        let spin = std::env::var("FELIX_INGRESS_SPIN_US")
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .unwrap_or(0);
+        Self::with_spin(partitions, capacity, share, spin)
+    }
+
+    /// [`Self::new`] with an explicit spin: how many microseconds an executor
+    /// that finds the queue empty keeps watching for work before it parks.
+    /// Zero parks at once. Spinning saves the wake-up a push would otherwise
+    /// pay, at the price of an executor burning CPU for the window each time
+    /// it goes idle.
+    pub(crate) fn with_spin(
+        partitions: usize,
+        capacity: usize,
+        share: usize,
+        spin_us: u64,
+    ) -> Self {
         Self {
             partitions: (0..partitions.max(1))
-                .map(|_| Arc::new(Partition::new(capacity, share)))
+                .map(|_| {
+                    Arc::new(Partition::new(
+                        capacity,
+                        share,
+                        Duration::from_micros(spin_us),
+                    ))
+                })
                 .collect(),
         }
     }
@@ -165,6 +193,14 @@ pub(crate) struct Partition {
     /// the queue again when their job ends. A push or `complete` only wakes
     /// one when this is above zero.
     idle: AtomicUsize,
+    /// How long an executor with nothing to do watches before parking.
+    spin: Duration,
+    /// Idle executors currently spinning. They find work without a wake-up,
+    /// so a push does not pay for one unless some idle executor is parked.
+    spinning: AtomicUsize,
+    /// Set when a lane became ready, cleared by a look that finds nothing.
+    /// Lets a spinner skip the queue lock until there may be something.
+    ready_hint: AtomicBool,
     /// `notify_one` calls made, for tests.
     #[cfg(test)]
     wakes: AtomicUsize,
@@ -181,8 +217,11 @@ pub(crate) struct Partition {
 }
 
 impl Partition {
-    fn new(capacity: usize, share: usize) -> Self {
+    fn new(capacity: usize, share: usize, spin: Duration) -> Self {
         Self {
+            spin,
+            spinning: AtomicUsize::new(0),
+            ready_hint: AtomicBool::new(false),
             queue: Mutex::new(FairQueue::new(capacity, share, QUANTUM_BYTES)),
             work: Notify::new(),
             idle: AtomicUsize::new(0),
@@ -206,6 +245,7 @@ impl Partition {
         // that reads zero therefore has no executor that could miss the job:
         // each one is running and checks the queue when it finishes.
         let _idle = Counted::new(&self.idle);
+        let mut spun = false;
         loop {
             let work = self.work.notified();
             tokio::pin!(work);
@@ -221,6 +261,7 @@ impl Partition {
                     };
                     return Some((job, guard));
                 }
+                self.ready_hint.store(false, Ordering::Release);
                 // Jobs behind a busy lane still count, so this waits for them.
                 if self.closed.load(Ordering::Acquire) && queue.is_empty() {
                     return None;
@@ -228,7 +269,38 @@ impl Partition {
             }
             #[cfg(test)]
             self.pause_after_look().await;
+            // Watch for a while before parking. The look after the spin is
+            // what keeps this safe: a push that skipped its wake because we
+            // were spinning happened before we stopped counting as spinning,
+            // so that look sees it.
+            if !spun && !self.spin.is_zero() {
+                spun = true;
+                self.spin_for_work().await;
+                continue;
+            }
+            spun = false;
             work.await;
+        }
+    }
+
+    /// Wait, counted as spinning, until work may have arrived, the queue
+    /// closes, or the spin window ends.
+    async fn spin_for_work(&self) {
+        let _spinning = Counted::new(&self.spinning);
+        let deadline = Instant::now() + self.spin;
+        loop {
+            for _ in 0..64 {
+                if self.ready_hint.load(Ordering::Acquire) || self.closed.load(Ordering::Acquire) {
+                    return;
+                }
+                std::hint::spin_loop();
+            }
+            if Instant::now() >= deadline {
+                return;
+            }
+            // Lets other tasks on this thread, such as the producers of a
+            // core shard, run.
+            tokio::task::yield_now().await;
         }
     }
 
@@ -258,8 +330,11 @@ impl Partition {
             .map_err(|job| Rejected::Full(Box::new(job)))?;
         GLOBAL_INGRESS_DEPTH.fetch_add(1, Ordering::Relaxed);
         report_ingress_depth();
-        if ready && !defer_wake(self) {
-            self.wake_one();
+        if ready {
+            self.ready_hint.store(true, Ordering::Release);
+            if !defer_wake(self) {
+                self.wake_one();
+            }
         }
         Ok(())
     }
@@ -281,13 +356,18 @@ impl Partition {
         if self.closed.load(Ordering::Acquire) {
             self.work.notify_waiters();
         } else if ready {
+            self.ready_hint.store(true, Ordering::Release);
             self.wake_one();
         }
     }
 
     /// Wake an executor for a lane that just became ready, if any is waiting.
     fn wake_one(&self) {
-        if self.idle.load(Ordering::SeqCst) > 0 {
+        // Spinners are idle too but need no wake-up; they look again when
+        // they stop. Read in this order, a spinner that stopped since is seen
+        // as idle and not spinning, and is woken.
+        let spinning = self.spinning.load(Ordering::SeqCst);
+        if self.idle.load(Ordering::SeqCst) > spinning {
             #[cfg(test)]
             self.wakes.fetch_add(1, Ordering::Relaxed);
             self.work.notify_one();

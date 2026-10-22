@@ -1290,6 +1290,18 @@ export FELIX_BROKER_PUBLISH_WINDOW="256"
 export FELIX_PUB_INGRESS_WAIT="1"
 ```
 
+### `FELIX_INGRESS_SPIN_US`
+
+**Description**: How long, in microseconds, a publish executor that finds the ingress queue empty keeps watching it before it parks. A job queued during that window is taken without waking anyone, which removes the cross-thread wake-up a publish otherwise pays when load is thin and spread over many shards. The cost is CPU: every executor burns a core for up to this long each time it goes idle, so a broker with little traffic and a large value spends cores doing nothing. `0` parks at once. Read once at startup.
+
+**Type**: Non-negative integer (microseconds)
+
+**Default**: `0` (off)
+
+```bash
+export FELIX_INGRESS_SPIN_US="50"
+```
+
 ### `FELIX_CORE_SHARDS`
 
 **Description**: Number of core-pinned shard executors owning stream work (thread-per-core, shared-nothing). Each stream is owned by one shard: its publish worker and its subscriptions' lane feeders run on that shard's dedicated single-threaded runtime, pinned to a CPU core on Linux. Benefits scale with stream count. Single-stream workloads serialize on one shard by design.
