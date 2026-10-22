@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792709812037,
+  "lastUpdate": 1792710671711,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -41382,6 +41382,72 @@ window.BENCHMARK_DATA = {
             "range": "680.43",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1048.00\nmean: 1259.80\nstdev: 680.43\ncv: 54.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "88a9168148f6fab3245712ea8dee3dc110c9f778",
+          "message": "perf(azure): fast profiles with call graphs for the final campaign (#1420)\n\n* perf(azure): fast profiles with call graphs for the final campaign\n\nperf record at 99 Hz with frame-pointer call graphs and no build-id pass;\nperf report and perf script run with --no-inline, which was resolving inline\nframes for over 20 minutes on a broker capture. Both are bounded by timeout.\n\n* perf(azure): final campaign driver\n\ncampaign-final.sh starts and repairs a session, gates the pinned build\nagainst preview.9, then runs the matrix, latency, NATS pairings and sweeps\nwith progress lines, resume and a dry run that estimates runtime and cost.\n\n* perf(azure): durability profile and shipped-defaults stage in the final campaign\n\nSet ACK_ON_COMMIT and PUB_INGRESS_WAIT explicitly on every main cell, add a\ndefaults-* stage with them at product defaults, and record per cell what the\nbroker ran with plus the ingress shed count.\n\n* perf(azure): fix campaign driver launch blockers\n\nParse cell numbers from summarize.py --kv instead of the console line, measure\nshed as sent minus accepted bytes (the release broker has no telemetry\nfeature), mark NATS blocks done only when every cell is, count restarts in the\nestimate and refuse an over-budget plan, and verify deallocation.",
+          "timestamp": "2026-10-22T23:06:55Z",
+          "tree_id": "f2cdf11d993121c11ed50d64e5272863e171572e",
+          "url": "https://github.com/GetFelix/felix/commit/88a9168148f6fab3245712ea8dee3dc110c9f778"
+        },
+        "date": 1792710667342,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 172,
+            "range": "1.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 172.00\nmean: 171.20\nstdev: 1.10\ncv: 0.64%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 226,
+            "range": "3.03",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 226.00\nmean: 225.80\nstdev: 3.03\ncv: 1.34%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 276,
+            "range": "25.17",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 276.00\nmean: 285.80\nstdev: 25.17\ncv: 8.81%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 210,
+            "range": "4.21",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 210.00\nmean: 210.80\nstdev: 4.21\ncv: 2.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 425,
+            "range": "88.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 425.00\nmean: 463.60\nstdev: 88.64\ncv: 19.12%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 662,
+            "range": "571.18",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 662.00\nmean: 894.00\nstdev: 571.18\ncv: 63.89%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
