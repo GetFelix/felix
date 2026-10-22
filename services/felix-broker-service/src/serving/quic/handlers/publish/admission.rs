@@ -26,8 +26,9 @@ pub(crate) struct AdmissionPermit {
 ///
 /// `pub_queue_depth` alone caps how many *jobs* can be queued, but a job's payload can be as
 /// large as `max_frame_bytes`; a handful of large batches can still blow past the intended
-/// ingress memory budget even with a modest queue depth (default 1024 per executor). This mirrors the client's publish-side
-/// `PublishAdmission` (see `felix-client`), applying the same in-flight-byte budget on ingest.
+/// ingress memory budget even with a modest queue depth (default 1024 per executor). This
+/// mirrors the client's publish-side `PublishAdmission` (see `felix-client`), applying the same
+/// in-flight-byte budget on ingest.
 ///
 /// The permit is attached to the `PublishJob` and released only once the job has actually been
 /// claimed (or dropped before ever being enqueued), not merely once it is hand

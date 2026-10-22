@@ -528,10 +528,13 @@ pub_conn_pool: 2
 event_conn_pool: 4
 cache_conn_pool: 4
 event_batch_max_events: 32
-pub_queue_depth: 32
+pub_queue_depth: 256
 subscriber_queue_capacity: 64
 subscriber_writer_lanes: 2
 ```
+
+The publish queue should cover the publishes in flight from your publishers, so
+it grows with the number of pipelining connections.
 
 **Expected resources**: 2 CPU cores, 2-4 GB RAM
 
@@ -542,7 +545,7 @@ pub_conn_pool: 4
 event_conn_pool: 8
 cache_conn_pool: 8
 event_batch_max_events: 64
-pub_queue_depth: 64
+pub_queue_depth: 1024
 subscriber_queue_capacity: 512
 subscriber_writer_lanes: 4
 ```
@@ -556,7 +559,7 @@ pub_conn_pool: 8
 event_conn_pool: 16
 cache_conn_pool: 16
 event_batch_max_events: 128
-pub_queue_depth: 256
+pub_queue_depth: 4096
 pub_inflight_bytes: 268435456
 subscriber_queue_capacity: 4096
 subscriber_writer_lanes: 8

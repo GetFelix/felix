@@ -381,7 +381,7 @@ sequenceDiagram
 Publishers write to a bounded queue with configurable depth:
 
 ```yaml
-pub_queue_depth: 1024  # Queue slots guaranteed per tenant
+pub_queue_depth: 1024                # Queue slots guaranteed per tenant
 publish_queue_wait_timeout_ms: 2000  # How long a commit-acked publish waits for room
 ```
 

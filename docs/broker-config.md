@@ -195,8 +195,7 @@ flush, a forward to another broker, a quorum -- do not hold an executor, so one
 slow shard or peer holds up only its own lane.
 
 The queue holds `pub_queue_depth × pub_workers_per_conn` jobs (1024 × 4 = 4096 by
-default) and is shared
-fairly between tenants by deficit round robin. Every tenant is guaranteed
+default) and is shared fairly between tenants by deficit round robin. Every tenant is guaranteed
 `pub_queue_depth` slots; past that it may borrow idle room but never the last
 `pub_queue_depth` slots. An acked publish that finds no room is answered
 `overloaded` with `detail.reason = "publish_queue_full"` (retryable, nothing
