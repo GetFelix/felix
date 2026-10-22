@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792709814891,
+  "lastUpdate": 1792710674945,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -32604,6 +32604,58 @@ window.BENCHMARK_DATA = {
             "range": "6835.90",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 845286.50\nmean: 843638.90\nstdev: 6835.90\ncv: 0.81%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "88a9168148f6fab3245712ea8dee3dc110c9f778",
+          "message": "perf(azure): fast profiles with call graphs for the final campaign (#1420)\n\n* perf(azure): fast profiles with call graphs for the final campaign\n\nperf record at 99 Hz with frame-pointer call graphs and no build-id pass;\nperf report and perf script run with --no-inline, which was resolving inline\nframes for over 20 minutes on a broker capture. Both are bounded by timeout.\n\n* perf(azure): final campaign driver\n\ncampaign-final.sh starts and repairs a session, gates the pinned build\nagainst preview.9, then runs the matrix, latency, NATS pairings and sweeps\nwith progress lines, resume and a dry run that estimates runtime and cost.\n\n* perf(azure): durability profile and shipped-defaults stage in the final campaign\n\nSet ACK_ON_COMMIT and PUB_INGRESS_WAIT explicitly on every main cell, add a\ndefaults-* stage with them at product defaults, and record per cell what the\nbroker ran with plus the ingress shed count.\n\n* perf(azure): fix campaign driver launch blockers\n\nParse cell numbers from summarize.py --kv instead of the console line, measure\nshed as sent minus accepted bytes (the release broker has no telemetry\nfeature), mark NATS blocks done only when every cell is, count restarts in the\nestimate and refuse an over-budget plan, and verify deallocation.",
+          "timestamp": "2026-10-22T23:06:55Z",
+          "tree_id": "f2cdf11d993121c11ed50d64e5272863e171572e",
+          "url": "https://github.com/GetFelix/felix/commit/88a9168148f6fab3245712ea8dee3dc110c9f778"
+        },
+        "date": 1792710674413,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 348605.35,
+            "range": "5816.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 348605.35\nmean: 349528.19\nstdev: 5816.38\ncv: 1.66%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 348605.35,
+            "range": "5816.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 348605.35\nmean: 349528.19\nstdev: 5816.38\ncv: 1.66%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81822.54,
+            "range": "886.83",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81822.54\nmean: 82141.66\nstdev: 886.83\ncv: 1.08%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 818225.43,
+            "range": "8868.32",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 818225.43\nmean: 821416.61\nstdev: 8868.32\ncv: 1.08%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
