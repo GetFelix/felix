@@ -288,7 +288,7 @@ Broker-side tuning for publish pipeline:
 ```yaml
 # Broker config.yml
 pub_workers_per_conn: 4        # Workers per connection
-pub_queue_depth: 1024          # Publish queue bound
+pub_queue_depth: 512           # Publish queue bound
 publish_queue_wait_timeout_ms: 2000  # Queue full timeout
 ```
 

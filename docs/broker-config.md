@@ -47,7 +47,7 @@ event_batch_max_bytes: 65536
 event_batch_max_delay_us: 250
 fanout_batch_size: 64
 pub_workers_per_conn: 4
-pub_queue_depth: 1024
+pub_queue_depth: 512
 pub_inflight_bytes: 67108864
 pub_conn_inflight_bytes: 16777216
 pub_conn_total_inflight_bytes: 67108864
@@ -194,7 +194,7 @@ publish shards do nothing but contend. Waits outside the broker -- a device
 flush, a forward to another broker, a quorum -- do not hold an executor, so one
 slow shard or peer holds up only its own lane.
 
-The queue holds `pub_queue_depth × pub_workers_per_conn` jobs (1024 × 4 = 4096 by
+The queue holds `pub_queue_depth × pub_workers_per_conn` jobs (512 × 4 = 2048 by
 default) and is shared fairly between tenants by deficit round robin. Every tenant is guaranteed
 `pub_queue_depth` slots; past that it may borrow idle room but never the last
 `pub_queue_depth` slots. An acked publish that finds no room is answered

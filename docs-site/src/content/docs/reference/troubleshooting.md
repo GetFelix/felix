@@ -189,7 +189,7 @@ publish queue full; retry in 10 ms
 The error is `overloaded` with `detail.reason = "publish_queue_full"`. Nothing
 was queued, so it is safe to retry. `felix_tenant_publish_queue_full_total`
 shows which tenants are being refused. Raise `FELIX_BROKER_PUB_QUEUE_DEPTH`
-(default `1024`) or `FELIX_PUBLISH_QUEUE_WAIT_MS` (default `2000`), or add
+(default `512`) or `FELIX_PUBLISH_QUEUE_WAIT_MS` (default `2000`), or add
 brokers.
 
 ### High latency
@@ -215,7 +215,7 @@ Flow-control windows times connections bound in-flight data. To use less:
 export FELIX_CACHE_CONN_RECV_WINDOW="134217728"        # 128 MiB
 export FELIX_CACHE_STREAM_RECV_WINDOW="33554432"       # 32 MiB
 export FELIX_EVENT_CONN_RECV_WINDOW="134217728"
-export FELIX_BROKER_PUB_QUEUE_DEPTH="256"              # default 1024
+export FELIX_BROKER_PUB_QUEUE_DEPTH="256"              # default 512
 export FELIX_SUBSCRIBER_QUEUE_CAPACITY="128"           # default 512
 export FELIX_BROKER_PUBLISH_INFLIGHT_BYTES="33554432"  # default 64 MiB
 ```

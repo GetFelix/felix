@@ -245,7 +245,7 @@ The publish pipeline is optimized for both latency and throughput:
 
 ```yaml
 pub_workers_per_conn: 4      # Publish executors (per core shard when core_shards > 0)
-pub_queue_depth: 1024        # Queue slots guaranteed per tenant (queue holds this x executors)
+pub_queue_depth: 512         # Queue slots guaranteed per tenant (queue holds this x executors)
 pub_inflight_bytes: 67108864  # Bounded queue size (bytes, independent budget)
 ```
 

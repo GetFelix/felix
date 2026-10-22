@@ -760,13 +760,13 @@ async fn fill_until_refused(config: &BrokerConfig) -> (usize, String) {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn the_default_queue_holds_4096_jobs() {
+async fn the_default_queue_holds_2048_jobs() {
     let config = BrokerConfig::default();
-    assert_eq!(config.pub_queue_depth, 1024);
+    assert_eq!(config.pub_queue_depth, 512);
     assert_eq!(config.pub_workers_per_conn, 4);
     let (queued, refused) = fill_until_refused(&config).await;
-    // A lone tenant is kept off the last `pub_queue_depth` slots of the 4096.
-    assert_eq!(queued, 4096 - 1024);
+    // A lone tenant is kept off the last `pub_queue_depth` slots of the 2048.
+    assert_eq!(queued, 2048 - 512);
     assert!(refused.contains("queue full"), "refused by: {refused}");
 }
 
