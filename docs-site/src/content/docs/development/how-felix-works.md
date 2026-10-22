@@ -564,6 +564,12 @@ side. Tenants take turns for executors by deficit round robin, weighted by
 bytes, and each tenant is guaranteed `pub_queue_depth` queue slots, so one
 tenant flooding the broker is refused while others still get in.
 
+An idle executor is woken only when a lane becomes ready, never for a job
+joining a lane that is already ready or running. A connection reads whatever
+frames are already buffered before it waits for more, and the jobs from one
+such pass wake at most one executor per queue, when the pass ends. Each job
+is still queued, admitted and refused one by one, in arrival order.
+
 An executor holds a lane only for the ordered step (claiming offsets, an
 in-memory append). Flushes, forwards to other brokers and quorum waits run on
 tasks of their own, so a slow disk, peer or replica set holds up only its own

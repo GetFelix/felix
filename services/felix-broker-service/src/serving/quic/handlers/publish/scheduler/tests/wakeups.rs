@@ -97,6 +97,100 @@ async fn a_busy_lane_is_woken_for_when_it_completes_not_when_pushed() {
     drop(executor);
 }
 
+/// One poll that queues a job on each of many lanes, across partitions, wakes
+/// one executor per partition, and every job still runs.
+#[tokio::test]
+async fn a_read_pass_wakes_one_executor_per_partition() {
+    const PARTITIONS: usize = 3;
+    const LANES: usize = 12;
+    let scheduler = Arc::new(PublishScheduler::new(PARTITIONS, 100, 100));
+    let mut executors = Vec::new();
+    for partition in scheduler.partitions() {
+        executors.push(park(partition, 1).await);
+    }
+    let queue = Arc::clone(&scheduler);
+    batched(async move {
+        for lane in 0..LANES {
+            push(&queue, lane_job(lane, 0));
+        }
+    })
+    .await;
+    let total: usize = scheduler.partitions().iter().map(|p| wakes(p)).sum();
+    assert!(
+        total <= PARTITIONS,
+        "{total} wakes for {LANES} jobs in {PARTITIONS} partitions"
+    );
+    assert!(total >= 1);
+    // Each woken executor finds its partition's work by looping on the queue.
+    for executor in executors {
+        let (_job, _guard) = tokio::time::timeout(Duration::from_secs(5), executor)
+            .await
+            .expect("woken")
+            .expect("joined")
+            .expect("a job");
+    }
+}
+
+/// The same pushes without batching wake an executor each.
+#[tokio::test]
+async fn without_batching_each_ready_lane_wakes_an_executor() {
+    let scheduler = PublishScheduler::new(1, 100, 100);
+    let partition = Arc::clone(&scheduler.partitions()[0]);
+    let _executors = [park(&partition, 1).await, park(&partition, 2).await];
+    for lane in 0..2 {
+        push(&scheduler, lane_job(lane, 0));
+    }
+    assert_eq!(wakes(&partition), 2);
+}
+
+/// A task that blocks after queueing a job still gets that job's executor
+/// woken: the wake is held to the end of the poll, not past it.
+#[tokio::test]
+async fn a_blocked_task_does_not_hold_back_the_jobs_it_queued() {
+    let scheduler = Arc::new(PublishScheduler::new(1, 100, 100));
+    let partition = Arc::clone(&scheduler.partitions()[0]);
+    let executor = park(&partition, 1).await;
+    let queue = Arc::clone(&scheduler);
+    let blocked = tokio::spawn(batched(async move {
+        push(&queue, lane_job(0, 1));
+        // Stands in for a job waiting on a byte budget or a full queue.
+        std::future::pending::<()>().await;
+    }));
+    let (job, _guard) = tokio::time::timeout(Duration::from_secs(5), executor)
+        .await
+        .expect("woken before the task blocked")
+        .expect("joined")
+        .expect("a job");
+    assert_eq!(seq_of(&job), 1);
+    blocked.abort();
+}
+
+/// Jobs queued in one poll keep their order on a lane, and a lone job is
+/// woken for as soon as its poll ends.
+#[tokio::test]
+async fn a_batched_group_keeps_lane_order_and_a_lone_job_wakes_at_once() {
+    let scheduler = Arc::new(PublishScheduler::new(1, 100, 100));
+    let partition = Arc::clone(&scheduler.partitions()[0]);
+    let executor = park(&partition, 1).await;
+    let queue = Arc::clone(&scheduler);
+    batched(async move { push(&queue, lane_job(0, 0)) }).await;
+    assert_eq!(wakes(&partition), 1);
+    let (first, guard) = executor.await.expect("joined").expect("a job");
+    assert_eq!(seq_of(&first), 0);
+    let queue = Arc::clone(&scheduler);
+    batched(async move {
+        for seq in 1..5 {
+            push(&queue, lane_job(0, seq));
+        }
+    })
+    .await;
+    drop(guard);
+    for seq in 1..5 {
+        let (job, _guard) = partition.next().await.expect("a job");
+        assert_eq!(seq_of(&job), seq);
+    }
+}
+
 /// A push that lands after an executor found the queue empty but before it
 /// parks must wake it. This is the interleaving the idle count exists for.
 #[tokio::test]

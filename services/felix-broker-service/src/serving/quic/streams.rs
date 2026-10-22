@@ -32,7 +32,8 @@ use crate::config::BrokerConfig;
 use crate::serving::auth::BrokerAuth;
 use crate::serving::quic::client_error::ErrorCodeSupport;
 use crate::serving::quic::handlers::publish::{
-    AckOrder, AckTimeoutState, CommitAcks, Outgoing, PublishContext, reset_local_depth_only,
+    AckOrder, AckTimeoutState, CommitAcks, Outgoing, PublishContext, batched,
+    reset_local_depth_only,
 };
 use crate::serving::quic::telemetry::t_counter;
 #[cfg(feature = "telemetry")]
@@ -131,7 +132,7 @@ pub(crate) async fn handle_stream(
 
     // Ok(true) = graceful EOF; Ok(false) = protocol violation or
     // handler-initiated close; Err = fatal decode/protocol error.
-    let result = run_control_loop(
+    let result = batched(run_control_loop(
         &mut recv,
         Arc::clone(&broker),
         connection.clone(),
@@ -151,7 +152,7 @@ pub(crate) async fn handle_stream(
         &mut frame_scratch,
         error_codes,
         ack_order,
-    )
+    ))
     .await;
 
     let graceful_close = matches!(result, Ok(true));
@@ -220,7 +221,7 @@ pub(crate) async fn handle_uni_stream(
 ) -> Result<()> {
     let mut frame_scratch = FrameScratch::new();
 
-    run_uni_loop(
+    batched(run_uni_loop(
         &mut recv,
         broker,
         UniLoopArgs {
@@ -232,7 +233,7 @@ pub(crate) async fn handle_uni_stream(
             peer_certs,
         },
         &mut frame_scratch,
-    )
+    ))
     .await
 }
 

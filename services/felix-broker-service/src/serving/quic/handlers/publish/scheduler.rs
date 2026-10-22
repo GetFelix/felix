@@ -23,6 +23,7 @@
 
 mod fair_queue;
 
+use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::future::Future;
 use std::hash::{Hash, Hasher};
@@ -241,7 +242,7 @@ impl Partition {
     }
 
     fn try_push(
-        &self,
+        self: &Arc<Self>,
         tenant: &str,
         lane: LaneKey,
         job: PublishJob,
@@ -257,7 +258,7 @@ impl Partition {
             .map_err(|job| Rejected::Full(Box::new(job)))?;
         GLOBAL_INGRESS_DEPTH.fetch_add(1, Ordering::Relaxed);
         report_ingress_depth();
-        if ready {
+        if ready && !defer_wake(self) {
             self.wake_one();
         }
         Ok(())
@@ -390,6 +391,78 @@ impl LaneKey {
             Self::Local(id) | Self::Remote(id) => (id % partitions.max(1) as u64) as usize,
         }
     }
+}
+
+thread_local! {
+    /// Partitions that got a lane ready during the current [`batched`] poll,
+    /// whose wake-up waits for the end of that poll.
+    static DEFERRED: RefCell<Option<Vec<Arc<Partition>>>> = const { RefCell::new(None) };
+}
+
+/// Hold `partition`'s wake-up until the running [`batched`] poll ends.
+/// `false` when no poll is batching, and the caller wakes now.
+fn defer_wake(partition: &Arc<Partition>) -> bool {
+    DEFERRED.with(|deferred| match deferred.borrow_mut().as_mut() {
+        Some(partitions) => {
+            if !partitions.iter().any(|held| Arc::ptr_eq(held, partition)) {
+                partitions.push(Arc::clone(partition));
+            }
+            true
+        }
+        None => false,
+    })
+}
+
+/// Ends a batching poll: wakes one executor for each partition that got a
+/// lane ready during it. A guard, so a panicking poll still wakes them.
+struct Batch {
+    outer: bool,
+}
+
+impl Batch {
+    fn begin() -> Self {
+        let outer = DEFERRED.with(|deferred| {
+            let mut deferred = deferred.borrow_mut();
+            let outer = deferred.is_none();
+            if outer {
+                *deferred = Some(Vec::new());
+            }
+            outer
+        });
+        Self { outer }
+    }
+}
+
+impl Drop for Batch {
+    fn drop(&mut self) {
+        if self.outer {
+            let held = DEFERRED.with(|deferred| deferred.borrow_mut().take());
+            for partition in held.into_iter().flatten() {
+                partition.wake_one();
+            }
+        }
+    }
+}
+
+/// Run `task`, a connection's read loop, so that the publishes it queues in
+/// one poll wake at most one executor per partition, at the end of that poll.
+///
+/// A read pass that finds several frames already buffered queues all their
+/// jobs before the task next suspends, and an executor woken for the first
+/// would only have run it while the rest were still being queued. Each job is
+/// still queued, admitted and refused exactly as before, in order; only the
+/// wake-up is held back. The poll's end is the latest it can be held: a task
+/// that blocks anywhere, on a byte budget, a full queue, its ack window or
+/// the next read, returns from its poll first, so work it queued is never
+/// left waiting on a wake-up its own blocking would have to produce. A lone
+/// frame wakes its executor when its poll ends, as soon as it was queued.
+pub(crate) async fn batched<F: Future>(task: F) -> F::Output {
+    let mut task = std::pin::pin!(task);
+    std::future::poll_fn(|cx| {
+        let _batch = Batch::begin();
+        task.as_mut().poll(cx)
+    })
+    .await
 }
 
 /// Counts an executor as idle for as long as it is held.
