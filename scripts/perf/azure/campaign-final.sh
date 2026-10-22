@@ -70,14 +70,21 @@ RUNOUT="${logs_dir}/final-campaign.out"   # full harness output
 LOCK="${logs_dir}/final-campaign.pid"
 
 dry=0
+FORCE="${FORCE:-0}"
 TRIM_ARG=""
 for a in "$@"; do
   case "${a}" in
     --dry-run) dry=1 ;;
+    --force) FORCE=1 ;;
     --trim=*) TRIM_ARG="${a#--trim=}" ;;
-    *) echo "usage: $0 [--dry-run] [--trim=0..7]" >&2; exit 2 ;;
+    *) echo "usage: $0 [--dry-run] [--force] [--trim=0..11]" >&2; exit 2 ;;
   esac
 done
+
+# A sleeping laptop stops the run; re-exec under caffeinate on macOS.
+if [ "${dry}" = 0 ] && [ -z "${CAMP_CAFFEINATED:-}" ] && command -v caffeinate >/dev/null 2>&1; then
+  CAMP_CAFFEINATED=1 exec caffeinate -dimsu "$0" "$@"
+fi
 
 : "${SESSION:=<session>}"
 : "${BUILD_SHA:=<BUILD_SHA>}"
@@ -110,6 +117,9 @@ done
 : "${MIN_LAT_X10:=40}"
 : "${SETUP_MIN:=90}"     # start, repair, preflight, and builds that are missing
 : "${NATS_INSTALL_MIN:=25}"
+: "${RESTART_X10:=20}"      # a broker restart for a ref or env change (stop, activate, start, ready, settle)
+: "${LGSWAP_X10:=10}"       # swapping the old/new loadgen on the generators
+: "${GATE_RETRY_ALLOW:=2}"  # gate cells allowed one rerun
 : "${MAX_HOURS:=18}"
 : "${TRIM_FORCE:=}"
 : "${PRICE_PER_HOUR:=1.55}"
@@ -157,11 +167,15 @@ GATE_SHAPES=("mem 256 1 ack spread" "mem 256 64 ack spread" "mem 256 1 ack plain
              "mem 4096 64 ff spread" "dur 4096 64 ack spread")
 
 TRIM=0
+OVER=0
 trim_has() { [ "${TRIM}" -ge "$1" ]; }
 
+AB_PAIRS_FULL="${AB_PAIRS}"
 build_plan() {
   local t m p b f k s pr n w order arm fl benv fs st
   PSTEP=(); PSPEC=()
+  AB_PAIRS="${AB_PAIRS_FULL}"
+  trim_has 9 && AB_PAIRS="$(printf '%s' "${AB_PAIRS_FULL}" | sed 's/per-b64//; s/  */ /g; s/^ //; s/ $//')"
   # s0: BUILD_SHA broker vs preview.9 broker, same client; arms alternate by shape and trial.
   for t in $(seq 1 "${GATE_TRIALS}"); do
     for s in "${GATE_SHAPES[@]}"; do
@@ -188,6 +202,7 @@ build_plan() {
   for t in $(seq 1 2); do
     ing "defaults-dur-p4096-b64-ack-t${t}" df "${BUILD_SHA}" "${DEFAULTS_B}" "" new dur 4096 64 "${INFLIGHT}" spread
     ing "defaults-dur-p256-b1-ack-t${t}" df "${BUILD_SHA}" "${DEFAULTS_B}" "" new dur 256 1 "${INFLIGHT}" spread
+    trim_has 10 && [ "${t}" -gt 1 ] && continue   # the two throughput cells above keep both trials
     add "defaults-lat-dur-p256-t${t}" df lat "${BUILD_SHA}" "${DEFAULTS_B}" "" new perf-durable 256 1 ff none 1 0
     ing "defaults-mem-p4096-b64-ff-t${t}" df "${BUILD_SHA}" "${DEFAULTS_B}" "" new mem 4096 64 ff spread
   done
@@ -211,6 +226,7 @@ build_plan() {
   for t in $(seq 1 "${CURVE_TRIALS}"); do
     for m in mem dur; do for p in 256 4096; do for f in 1 4 16; do
       trim_has 5 && [ "${f}" = 4 ] && continue
+      trim_has 11 && [ "${p}" = 256 ] && [ "${t}" -gt 1 ] && continue
       ing "lc-${m}-p${p}-f${f}-t${t}" lat "${BUILD_SHA}" "${BASE_B}" "" new "${m}" "${p}" 1 "${f}" spread
     done; done; done
   done
@@ -224,6 +240,7 @@ build_plan() {
     for m in mem dur; do for p in 256 4096 65536; do for b in 1 64; do for f in ff "${INFLIGHT}"; do
       trim_has 1 && [ "${p}" = 65536 ] && [ "${b}" = 1 ] && continue
       is_headline "${m}" "${p}" "${b}" "$(flname "${f}")" spread && continue
+      trim_has 8 && [ "${p}" = 65536 ] && [ "${t}" -gt 1 ] && continue
       ing "m-$(shape_label "${m}" "${p}" "${b}" "${f}" spread)-t${t}" m2 "${BUILD_SHA}" "${BASE_B}" "" new "${m}" "${p}" "${b}" "${f}" spread
     done; done; done; done
     for b in 1 64; do
@@ -301,28 +318,47 @@ spec_x10() {
   elif [ "${kind}" = lat ]; then echo "${MIN_LAT_X10}"
   else echo "${MIN_ING_X10}"; fi
 }
-compute_rem() {   # REM[i] = pending tenths of minutes of entries i..end
-  local i acc=0
+compute_rem() {   # COST[i] = tenths of minutes for entry i; REM[i] = pending tenths of entries i..end
+  local i acc=0 c name kind ref benv lg stream key prevkey="" prevlg=""
   M=${#PSPEC[@]}
-  REM=()
+  REM=(); COST=()
+  for ((i = 0; i < M; i++)); do
+    c="$(spec_x10 "${PSPEC[i]}")"
+    IFS='|' read -r name _ kind ref benv _ lg stream _ <<<"${PSPEC[i]}"
+    if [ "${kind}" = block ]; then
+      prevkey=""   # a block leaves NATS on the broker; the next Felix cell restarts it
+    else
+      key="${ref}|${benv}"
+      if [ "${c}" -gt 0 ]; then
+        # A durable cell restarts the broker for its wipe anyway (inside the base estimate).
+        [ "${stream}" != perf-durable ] && [ "${key}" != "${prevkey}" ] && c=$((c + RESTART_X10))
+        [ "${lg}" != "${prevlg}" ] && [ -n "${prevlg}" ] && c=$((c + LGSWAP_X10))
+      fi
+      prevkey="${key}"; prevlg="${lg}"
+    fi
+    COST[i]="${c}"
+  done
   for ((i = M; i >= 0; i--)); do
-    [ "${i}" -lt "${M}" ] && acc=$((acc + $(spec_x10 "${PSPEC[i]}")))
+    [ "${i}" -lt "${M}" ] && acc=$((acc + COST[i]))
     REM[i]=${acc}
   done
 }
 hours_of() { awk -v x="$1" 'BEGIN { printf "%.1f", x / 600 }'; }
-total_x10() { echo $(( REM[0] + SETUP_MIN * 10 )); }
+# Setup, gate reruns and the token refreshes (one per 6 h) on top of the cells.
+total_x10() { echo $(( REM[0] + SETUP_MIN * 10 + GATE_RETRY_ALLOW * MIN_ING_X10 + 50 )); }
 
 # Pick the lowest trim level whose full plan fits MAX_HOURS.
 choose_trim() {
   local saved="${OUT}/final/trim" lvl
   if [ -n "${TRIM_ARG:-${TRIM_FORCE}}" ]; then TRIM="${TRIM_ARG:-${TRIM_FORCE}}"; build_plan; compute_rem; return; fi
   if [ -s "${saved}" ] && [ "${dry}" = 0 ]; then TRIM="$(cat "${saved}")"; build_plan; compute_rem; return; fi
-  for lvl in 0 1 2 3 4 5 6 7; do
+  for lvl in 0 1 2 3 4 5 6 7 8 9 10 11; do
     TRIM="${lvl}"; build_plan
     IGNORE_DONE=1 compute_rem
     [ "$(total_x10)" -le $((MAX_HOURS * 600)) ] && break
   done
+  OVER=0
+  [ "$(total_x10)" -le $((MAX_HOURS * 600)) ] || OVER=1
   [ "${dry}" = 0 ] && { mkdir -p "${OUT}/final"; echo "${TRIM}" > "${saved}"; }
   IGNORE_DONE=0 compute_rem
 }
@@ -335,12 +371,30 @@ trim_text() {
     4) echo "64 KiB b1 cells, plain-key b64, listeners 1 and 8, window 64 MiB" ;;
     5) echo "64 KiB b1 cells, plain-key b64, listeners 1 and 8, window 64 MiB, latency curve at 4 in flight" ;;
     6) echo "64 KiB b1 cells, plain-key b64, listeners 1 and 8, window 64 MiB, latency curve at 4 in flight, second trial of the sweeps" ;;
+    8) echo "$(trim_text 7), second trial of the 64 KiB cells" ;;
+    11) echo "$(trim_text 10), second trial of the 256 B latency-curve cells" ;;
+    10) echo "$(trim_text 9), second trial of the defaults latency and overload cells" ;;
+    9) echo "$(trim_text 8), NATS pairing per-b64 (periodic fsync)" ;;
     7) echo "64 KiB b1 cells, plain-key b64, listeners 1 and 8, window 64 MiB, latency curve at 4 in flight, second trial of the sweeps, third one-in-flight latency trial" ;;
   esac
 }
 
+# kv_nums: summarize.py --kv on stdin -> "append ingress drops cores", empty without a steady window.
+kv_nums() {
+  awk -F= '{ v[$1] = $2 } END { if (v["ss_append_mb_s"] != "") printf "%.1f %.1f %.0f %.2f\n", v["ss_append_mb_s"], v["ss_ingress_mb_s"], v["ss_drops_s"], v["ss_cores"] }'
+}
+self_test() {
+  local got
+  got="$(printf 'ss_append_mb_s=12.34\nss_ingress_mb_s=99.96\nss_drops_s=3.2\nss_cores=7.5\n' | kv_nums)"
+  [ "${got}" = "12.3 100.0 3 7.50" ] || { echo "!! self-test: kv_nums gave '${got}'" >&2; return 1; }
+  [ -z "$(printf '' | kv_nums)" ] || { echo "!! self-test: kv_nums on empty input" >&2; return 1; }
+  grep -q -- '"--kv"' "${here}/summarize.py" || { echo "!! self-test: summarize.py has no --kv" >&2; return 1; }
+  echo "self-test: kv parsing ok"
+}
+
 # ----------------------------------------------------------------- dry run
 if [ "${dry}" = 1 ]; then
+  self_test || exit 4
   choose_trim
   echo "session ${SESSION}  results ${OUT}"
   echo "BUILD_SHA ${BUILD_SHA}"
@@ -358,7 +412,7 @@ if [ "${dry}" = 1 ]; then
       printf '[%3d/%d] %-44s %-4s block: %s cells, est %s min%s\n' "$((i + 1))" "${M}" "${name}" "${step}" "$(block_cells "${name}")" "$(( $(block_total_x10 "${name}") / 10 ))" "${st}"
       continue
     fi
-    printf '[%3d/%d] %-44s %-4s %-6s %s lg=%s %-12s p=%-5s b=%-2s %-4s keys=%-5s est=%sm%s\n' "$((i + 1))" "${M}" "${name}" "${step}" "${kind}" "${ref:0:8}" "${lg}" "${stream}" "${p}" "${b}" "${f}" "${sh}" "$(awk -v x="$(spec_x10 "${PSPEC[i]}")" 'BEGIN { printf "%.1f", x / 10 }')" "${st}"
+    printf '[%3d/%d] %-44s %-4s %-6s %s lg=%s %-12s p=%-5s b=%-2s %-4s keys=%-5s est=%sm%s\n' "$((i + 1))" "${M}" "${name}" "${step}" "${kind}" "${ref:0:8}" "${lg}" "${stream}" "${p}" "${b}" "${f}" "${sh}" "$(awk -v x="${COST[i]}" 'BEGIN { printf "%.1f", x / 10 }')" "${st}"
   done
   echo
   echo "NATS block detail (run by nats/*.sh, resumable):"
@@ -371,7 +425,7 @@ if [ "${dry}" = 1 ]; then
     n=0; x=0
     for ((i = 0; i < M; i++)); do
       [ "${PSTEP[i]}" = "${s}" ] || continue
-      n=$((n + 1)); x=$((x + $(spec_x10 "${PSPEC[i]}")))
+      n=$((n + 1)); x=$((x + COST[i]))
     done
     [ "${n}" = 0 ] || printf 'step %-4s %3d plan lines  ~%s h\n' "${s}" "${n}" "$(hours_of "${x}")"
   done
@@ -381,7 +435,9 @@ if [ "${dry}" = 1 ]; then
     if [ "${kind}" = block ]; then cells=$((cells + $(block_cells "${name}"))); else cells=$((cells + 1)); fi
   done
   tot="$(total_x10)"
-  printf 'setup %d min (start, repair, preflight, missing builds)\n' "${SETUP_MIN}"
+  printf 'setup %d min (start, repair, preflight, missing builds); %d gate reruns and token refreshes %d min; restarts for ref/env changes %d min each, loadgen swaps %d min\n' \
+    "${SETUP_MIN}" "${GATE_RETRY_ALLOW}" "$(( (GATE_RETRY_ALLOW * MIN_ING_X10 + 50) / 10 ))" "$((RESTART_X10 / 10))" "$((LGSWAP_X10 / 10))"
+  [ "${OVER}" = 1 ] && echo "!! WARNING: even the deepest trim exceeds ${MAX_HOURS} h; a live run refuses without --force"
   printf 'cells %d (%d plan lines), total about %s h, estimated cost $%s at $%s/h (budget %s h)\n' "${cells}" "${M}" "$(hours_of "${tot}")" \
     "$(awk -v x="${tot}" -v p="${PRICE_PER_HOUR}" 'BEGIN { printf "%.0f", x / 600 * p }')" "${PRICE_PER_HOUR}" "${MAX_HOURS}"
   exit 0
@@ -397,12 +453,16 @@ echo $$ > "${LOCK}"
 VMS_STARTED=0
 dealloc() {
   [ "${VMS_STARTED}" = 1 ] && [ "${NO_DEALLOC:-0}" != 1 ] || return 0
-  # shellcheck disable=SC2046
-  if az vm deallocate --ids $(az vm list -g "${GROUP}" --query '[].id' -o tsv) -o none; then
-    plog "${GROUP} deallocated"
-  else
-    plog "FAIL deallocate: ${GROUP} may still be running"
-  fi
+  local try left
+  for try in 1 2 3; do
+    # shellcheck disable=SC2046
+    az vm deallocate --ids $(az vm list -g "${GROUP}" --query '[].id' -o tsv) -o none
+    left="$(az vm list -g "${GROUP}" -d --query "[?powerState!='VM deallocated'].name" -o tsv 2>/dev/null)"
+    if [ -z "${left}" ]; then plog "${GROUP} deallocated (verified)"; return 0; fi
+    plog "WARN deallocate attempt ${try}: still running: $(echo "${left}" | tr '\n' ' ')"
+    sleep $((try * 30))
+  done
+  plog "FAIL deallocate: ${GROUP} STILL RUNNING ($(echo "${left}" | tr '\n' ' ')); stop it by hand"
 }
 on_exit() { dealloc; rm -f "${LOCK}"; }
 trap on_exit EXIT
@@ -429,6 +489,10 @@ BROKER_VM="$(broker_vm 0)"
 read -r -a GENS <<<"${LOADGENS}"
 
 choose_trim
+if [ "${OVER}" = 1 ] && [ "${FORCE}" != 1 ]; then
+  echo "!! the deepest trim still exceeds ${MAX_HOURS} h ($(hours_of "$(total_x10)") h); refusing without --force" >&2
+  plog "FAIL plan exceeds ${MAX_HOURS} h ($(hours_of "$(total_x10)") h); not started"; rm -f "${LOCK}"; exit 3
+fi
 plog "[0/${M}]  START final campaign on ${BUILD_SHA:0:8} vs ${P9_SHA:0:8} (${SESSION}), trim ${TRIM} ($(trim_text "${TRIM}"))  ETA $(eta "$(total_x10)")"
 
 # ------------------------------------------------------------------- setup
@@ -534,6 +598,7 @@ collect_facts() {
     echo "driver CLIENT_B=${CLIENT_B}"
     echo "CELL_SECS=${CELL_SECS} PER=${PER} NGEN=${NGEN} KEYS=${KEYS} INFLIGHT=${INFLIGHT}"
     echo "lib.sh base_overrides:"; base_overrides | sed 's/^/  /'
+    echo "broker build features: none (release.yml and docker/broker.Dockerfile build without --features, so the telemetry feature and felix_broker_ingress_* metrics are absent; shed is measured as loadgen sent minus broker accepted bytes)"
     echo "Exact conditions (main campaign, every Felix cell), against the product default:"
     echo "  FELIX_ACK_ON_COMMIT=1          default off  (DIFFERS)"
     echo "  FELIX_PUB_INGRESS_WAIT=1       default off  (DIFFERS)"
@@ -589,25 +654,49 @@ def f(rs):
 print("ack p50/p99/p999 us %s" % f(a) + (", delivery %s" % f(d) if d else ""))'
 }
 # cell_nums <dir>: append ingress drops cores
-cell_nums() {
-  python3 -I "${here}/summarize.py" --cell "$1" 2>/dev/null \
-    | sed -n 's/^steady append \([0-9.]*\) MB\/s, ingress \([0-9.]*\) MB\/s, drops \([0-9.]*\)\/s, cores \([0-9.]*\) .*/\1 \2 \3 \4/p'
-}
+cell_nums() { python3 -I "${here}/summarize.py" --kv "$1" 2>/dev/null | kv_nums; }
 # ack_proof <dir>: what the broker process ran with and what the commit path did during the cell.
 # FELIX_ACK_ON_COMMIT comes from /proc/<pid>/environ at the cell's start; syncs is the delta of
 # felix_storage_sync_total, so a durable cell with acks after commit shows flushes. It cannot show
 # that a given ack waited; the defaults-* cells' ack latency is the contrast.
+# shed_line <dir>: what the loadgen sent against what the broker took in. The release broker has
+# no telemetry feature, so felix_broker_ingress_dropped_total does not exist; shed is
+# sent - accepted, from the loadgen's published records x payload against the broker's
+# felix_publish_bytes_total delta over the cell. Approximate (framing may count), so read a ratio
+# near 100% as "nothing shed". The telemetry counter is added when the broker exports it.
+shed_line() {
+  local dir="$1" b a pb pa sent out
+  b="${dir}/${BROKER_VM}.before.txt"; a="${dir}/${BROKER_VM}.after.txt"
+  pb="$(sed -n 's/^m\.publish_bytes=//p' "${b}" 2>/dev/null | tail -1)"; pa="$(sed -n 's/^m\.publish_bytes=//p' "${a}" 2>/dev/null | tail -1)"
+  sent="$(grep -h '^LOADGEN_JSON' "${dir}"/*.run.txt 2>/dev/null | python3 -I -c '
+import json, sys
+t = 0
+for l in sys.stdin:
+    try:
+        j = json.loads(l.split(" ", 1)[1])
+    except Exception:
+        continue
+    t += int(j.get("published", 0)) * int(j.get("payload_bytes", 0))
+print(t)')"
+  if [ -n "${pb}" ] && [ -n "${pa}" ] && [ -n "${sent}" ] && [ "${sent}" -gt 0 ]; then
+    out="$(awk -v s="${sent}" -v a="$((pa - pb))" 'BEGIN { printf "sent_MB=%.0f accepted_MB=%.0f shed=%.1f%%", s / 1e6, a / 1e6, (s - a) / s * 100 }')"
+  else
+    out="shed=n/a"
+  fi
+  local d; d="$(sed -n 's/^m\.ingress_dropped=//p' "${a}" 2>/dev/null | tail -1)"
+  [ -n "${d}" ] && [ "${d}" != "n/a" ] && out="${out} ingress_dropped_metric=${d}"
+  echo "${out}"
+}
 ack_proof() {
-  local dir="$1" b a env wait uring sb sa db da
+  local dir="$1" b a env wait uring sb sa
   b="${dir}/${BROKER_VM}.before.txt"; a="${dir}/${BROKER_VM}.after.txt"
   env="$(sed -n 's/^env\.FELIX_ACK_ON_COMMIT=//p' "${b}" 2>/dev/null | tail -1)"
   wait="$(sed -n 's/^env\.FELIX_PUB_INGRESS_WAIT=//p' "${b}" 2>/dev/null | tail -1)"
   uring="$(sed -n 's/^env\.FELIX_STORAGE_IO_URING=//p' "${b}" 2>/dev/null | tail -1)"
   sb="$(sed -n 's/^m\.sync_total=//p' "${b}" 2>/dev/null | tail -1)"; sa="$(sed -n 's/^m\.sync_total=//p' "${a}" 2>/dev/null | tail -1)"
-  db="$(sed -n 's/^m\.ingress_dropped=//p' "${b}" 2>/dev/null | tail -1)"; da="$(sed -n 's/^m\.ingress_dropped=//p' "${a}" 2>/dev/null | tail -1)"
   local line="ack_on_commit=${env:-unset} ingress_wait=${wait:-unset} io_uring=${uring:-unset}"
   [ -n "${sb}" ] && [ -n "${sa}" ] && line="${line} syncs=$((sa - sb))"
-  if [ -n "${db}" ] && [ -n "${da}" ]; then line="${line} ingress_shed=$((da - db)) (~$(( (da - db) / CELL_SECS ))/s)"; else line="${line} ingress_shed=n/a"; fi
+  line="${line} $(shed_line "${dir}")"
   echo "${line}" > "${dir}/ack-proof.txt"
   echo "${line}"
 }
@@ -684,14 +773,14 @@ gate_check() {
     done
     line="$(python3 -I -c '
 import sys, statistics as st
-lab, new, old, pct = sys.argv[1], [float(x) for x in sys.argv[2].split(",") if x], [float(x) for x in sys.argv[3].split(",") if x], float(sys.argv[4])
-if not new or not old:
+lab, new, old, pct, need = sys.argv[1], [float(x) for x in sys.argv[2].split(",") if x], [float(x) for x in sys.argv[3].split(",") if x], float(sys.argv[4]), int(sys.argv[5])
+if len(new) < need or len(old) < need:
     print("%s INCOMPLETE (new %d, p9 %d trials)" % (lab, len(new), len(old)))
     sys.exit(2)
 n, o = st.median(new), st.median(old)
 d = (n / o - 1) * 100 if o else 0.0
-print("%s: new %.1f p9 %.1f MB/s, %+.1f%%%s" % (lab, n, o, d, "  SLOWER" if d < -pct else ""))
-sys.exit(1 if d < -pct else 0)' "${lbl}" "${nv}" "${ov}" "${GATE_PCT}")"
+print("%s: new %.1f p9 %.1f MB/s, %+.1f%% (new %s, p9 %s)%s" % (lab, n, o, d, "/".join("%.1f" % x for x in new), "/".join("%.1f" % x for x in old), "  SLOWER" if d < -pct else ""))
+sys.exit(1 if d < -pct else 0)' "${lbl}" "${nv}" "${ov}" "${GATE_PCT}" "${GATE_TRIALS}")"
     case $? in 0) ;; 2) incomplete=1 ;; *) bad=1 ;; esac
     plog "  gate ${line}"
   done
@@ -710,7 +799,7 @@ ensure_nats() {
   for vm in "${GENS[@]}"; do
     agent_on "${vm}" "test -x /usr/local/bin/nats && test -s /etc/nats/tls/ca.pem" >/dev/null 2>&1 || need=1
   done
-  agent_on "${GENS[0]}" "test -x /usr/local/bin/nats-latency" >/dev/null 2>&1 || needlat=1
+  agent_on "${GENS[0]}" "test -x /usr/local/bin/nats-latency && grep -q ${BUILD_SHA} /etc/nats/latency.ref" >/dev/null 2>&1 || needlat=1
   if [ "${need}" = 1 ]; then
     plog "NATS not fully installed; nats/install.sh"
     SESSION="${SESSION}" "${here}/nats/install.sh" || return 1
@@ -750,41 +839,66 @@ watch_cells() {   # watch_cells <block> <rem-after-tenths>: log cells a block fi
   done
 }
 
-run_block() {   # run_block <name> <rem-after-tenths>
-  local name="$1" wpid="" rc=0 bs
-  case "${name}" in nats-install) ;; *) watch_cells "${name}" "$2" & wpid=$! ;; esac
-  case "${name}" in
-    nats-install) ensure_nats || rc=1 ;;
-    nats-tune)
-      ensure_nats || rc=1
-      if [ "${rc}" = 0 ]; then
-        STREAM_TUNE="${STREAM_TUNE}" "${here}/nats/stream-tune.sh" || rc=1
-        bs="$(best_streams)"
-        if [ -n "${bs}" ]; then echo "${bs}" > "${OUT}/final/ab-streams"; plog "NATS stream tune: best ${bs} streams"
-        else plog "WARN NATS stream tune gave no usable cell; interleave keeps ${KEYS} streams"; fi
-      fi ;;
+# block_expected <block>: the cell names a block must finish.
+block_expected() {
+  local t pr p m st S
+  case "$1" in
+    nats-tune) for st in ${STREAM_TUNE}; do for m in default memory; do echo "nats-stream-tune-${m}-p256-f64-w16-c16-s${st}-t1"; done; done ;;
     nats-ab)
-      ensure_nats || rc=1
-      if [ "${rc}" = 0 ]; then
-        bs="$(cat "${OUT}/final/ab-streams" 2>/dev/null)"
-        AB_STREAMS="${bs:-${KEYS}}" AB_PAIRS="${AB_PAIRS}" AB_PAYLOADS="${AB_PAYLOADS}" AB_TRIALS="${AB_TRIALS}" AB_KEYS="${KEYS}" \
-          FELIX_BEST_REF="${BUILD_SHA}" FELIX_BEST_ENV="${BASE_B}" FELIX_BEST_CLIENT_ENV="FELIX_MTU_UPPER_BOUND=3872" \
-          "${here}/nats/interleave.sh" || rc=1
-      fi ;;
+      S="$(cat "${OUT}/final/ab-streams" 2>/dev/null)"; S="${S:-${KEYS}}"
+      for t in $(seq 1 "${AB_TRIALS}"); do for pr in ${AB_PAIRS}; do for p in ${AB_PAYLOADS}; do
+        echo "ab-felix-${pr}-p${p}-k${KEYS}-t${t}"; echo "ab-nats-${pr}-p${p}-s${S}-t${t}"
+      done; done; done ;;
     nats-lat)
-      ensure_nats || rc=1
-      if [ "${rc}" = 0 ]; then
-        STEPS="cells" TRIALS="${NATS_LAT_TRIALS}" LAT_PAIRS="${LAT_PAIRS}" LAT_PAYLOADS="${LAT_PAYLOADS}" \
-          FELIX_LAT_REF="${BUILD_SHA}" FELIX_LAT_ENV="FELIX_QUIC_LISTENERS=4 ${DUR_PROFILE}" \
-          FELIX_LAT_CLIENT_ENV="FELIX_MTU_UPPER_BOUND=3872" \
-          "${here}/nats/nats-latency.sh" || rc=1
-      fi ;;
+      for t in $(seq 1 "${NATS_LAT_TRIALS}"); do for pr in ${LAT_PAIRS}; do for p in ${LAT_PAYLOADS}; do
+        [ "${pr}" = core ] || echo "felix-lat-${pr}-p${p}-t${t}"
+        echo "nats-lat-${pr}-p${p}-t${t}"
+      done; done; done ;;
   esac
+}
+block_missing() { local n; for n in $(block_expected "$1"); do [ -e "${OUT}/cells/${n}/done" ] || echo "${n}"; done; }
+
+block_exec() {   # one pass of a block's script; the scripts resume from done markers
+  local bs
+  case "$1" in
+    nats-install) ensure_nats || return 1 ;;
+    nats-tune)
+      ensure_nats || return 1
+      STREAM_TUNE="${STREAM_TUNE}" "${here}/nats/stream-tune.sh" || true
+      bs="$(best_streams)"
+      if [ -n "${bs}" ]; then echo "${bs}" > "${OUT}/final/ab-streams"; plog "NATS stream tune: best ${bs} streams"
+      else plog "WARN NATS stream tune gave no usable cell; interleave keeps ${KEYS} streams"; fi ;;
+    nats-ab)
+      ensure_nats || return 1
+      bs="$(cat "${OUT}/final/ab-streams" 2>/dev/null)"
+      AB_STREAMS="${bs:-${KEYS}}" AB_PAIRS="${AB_PAIRS}" AB_PAYLOADS="${AB_PAYLOADS}" AB_TRIALS="${AB_TRIALS}" AB_KEYS="${KEYS}" \
+        FELIX_BEST_REF="${BUILD_SHA}" FELIX_BEST_ENV="${BASE_B}" FELIX_BEST_CLIENT_ENV="FELIX_MTU_UPPER_BOUND=3872" \
+        "${here}/nats/interleave.sh" || true ;;
+    nats-lat)
+      ensure_nats || return 1
+      STEPS="cells" TRIALS="${NATS_LAT_TRIALS}" LAT_PAIRS="${LAT_PAIRS}" LAT_PAYLOADS="${LAT_PAYLOADS}" \
+        FELIX_LAT_REF="${BUILD_SHA}" FELIX_LAT_ENV="FELIX_QUIC_LISTENERS=4 ${DUR_PROFILE}" \
+        FELIX_LAT_CLIENT_ENV="FELIX_MTU_UPPER_BOUND=3872" \
+        "${here}/nats/nats-latency.sh" || true ;;
+  esac
+}
+
+run_block() {   # run_block <name> <rem-after-tenths>; done only when every expected cell is done
+  local name="$1" wpid="" rc=0 miss pass
+  case "${name}" in nats-install) ;; *) watch_cells "${name}" "$2" & wpid=$! ;; esac
+  for pass in 1 2; do
+    block_exec "${name}" || { rc=1; break; }
+    miss="$(block_missing "${name}")"
+    [ -z "${miss}" ] && break
+    plog "WARN ${name} pass ${pass}: missing $(echo "${miss}" | wc -l | tr -d ' ') cells: $(echo "${miss}" | tr '\n' ' ')"
+  done
   [ -z "${wpid}" ] || { kill "${wpid}" 2>/dev/null; wait "${wpid}" 2>/dev/null; }
   # Sub-scripts leave NATS up and Felix off; the next Felix cell starts from scratch.
   CURRENT_REF=""; CURRENT_OVERRIDES=""; NATS_ACTIVE=1
-  [ "${rc}" = 0 ] && touch "${OUT}/final/${name}.done"
-  return "${rc}"
+  miss="$(block_missing "${name}")"
+  if [ "${rc}" = 0 ] && [ -z "${miss}" ]; then touch "${OUT}/final/${name}.done"; return 0; fi
+  plog "FAIL ${name}: not done${miss:+; missing $(echo "${miss}" | tr '\n' ' ')}"
+  return 1
 }
 
 # ----------------------------------------------------------------- the run

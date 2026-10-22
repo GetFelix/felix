@@ -483,6 +483,13 @@ def spread(vals):
 
 
 def main():
+    if len(sys.argv) > 2 and sys.argv[1] == "--kv":
+        # Machine-readable steady-state numbers for the drivers; empty when there is no window.
+        r = cell_row(Path(sys.argv[2]))
+        if r and not r["legacy"] and r["ss_append_mb_s"] is not None:
+            for k in ("ss_append_mb_s", "ss_ingress_mb_s", "ss_drops_s", "ss_cores"):
+                print(f"{k}={r[k] if r[k] is not None else ''}")
+        return
     if len(sys.argv) > 2 and sys.argv[1] == "--cell":
         line = cell_console_line(Path(sys.argv[2]))
         if line:
