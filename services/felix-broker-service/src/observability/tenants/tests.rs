@@ -47,6 +47,53 @@ fn publishes_and_deliveries_are_counted_by_tenant() {
     assert_eq!(recorder.get(THROTTLED_TOTAL, "acme"), 1);
 }
 
+#[test]
+fn cached_publish_counters_count_like_uncached_ones() {
+    let recorder = Counting::default();
+    with_local_recorder(&recorder, || {
+        let cache = PublishedCache::default();
+        cache.record("cache-a", 3, 300);
+        // These two use the handle resolved by the first.
+        cache.record("cache-a", 1, 50);
+        cache.record("cache-a", 2, 7);
+        // Another tenant is cached beside it, and neither is resolved again.
+        cache.record("cache-b", 5, 9);
+        cache.record("cache-a", 1, 1);
+        cache.record("cache-b", 1, 1);
+        assert_eq!(cache.tenants.read().len(), 2);
+        // Past the limit tenants still count, uncached.
+        for n in 0..CACHED_TENANTS + 2 {
+            cache.record(&format!("many-{n}"), 1, 1);
+        }
+        assert_eq!(cache.tenants.read().len(), CACHED_TENANTS);
+        cache.record("many-9", 1, 1);
+    });
+    assert_eq!(recorder.get(PUBLISHED_MESSAGES_TOTAL, "many-9"), 2);
+    assert_eq!(recorder.get(PUBLISHED_MESSAGES_TOTAL, "cache-a"), 7);
+    assert_eq!(recorder.get(PUBLISHED_BYTES_TOTAL, "cache-a"), 358);
+    assert_eq!(recorder.get(PUBLISHED_MESSAGES_TOTAL, "cache-b"), 6);
+    assert_eq!(recorder.get(PUBLISHED_BYTES_TOTAL, "cache-b"), 10);
+}
+
+#[test]
+fn overflow_tenants_are_counted_on_every_publish_and_not_cached() {
+    let recorder = Counting::default();
+    let labels = TenantLabels::default();
+    with_local_recorder(&recorder, || {
+        let cache = PublishedCache::default();
+        cache.record_with(&labels, 1, "kept", 1, 10);
+        for _ in 0..3 {
+            cache.record_with(&labels, 1, "spill", 2, 20);
+        }
+        assert_eq!(cache.tenants.read().len(), 1, "overflow is not cached");
+    });
+    assert_eq!(recorder.get(PUBLISHED_MESSAGES_TOTAL, "kept"), 1);
+    assert_eq!(recorder.get(PUBLISHED_MESSAGES_TOTAL, OVERFLOW_LABEL), 6);
+    assert_eq!(recorder.get(PUBLISHED_BYTES_TOTAL, OVERFLOW_LABEL), 60);
+    // One count per recording, as before caching.
+    assert_eq!(recorder.get(OVERFLOW_TOTAL, ""), 3);
+}
+
 /// Sums counters by name and `tenant` label.
 #[derive(Default)]
 struct Counting {

@@ -59,6 +59,89 @@ pub(crate) fn record_published(tenant: &str, messages: u64, bytes: u64) {
     metrics::counter!(PUBLISHED_BYTES_TOTAL, "tenant" => label).increment(bytes);
 }
 
+/// Publish counters for one tenant, resolved once so the per-publish path is
+/// two atomic adds instead of two registry lookups.
+///
+/// A resolved handle stays valid only because labelled series are never
+/// removed and the exporter sets no `idle_timeout`; if either changes, cached
+/// handles must be re-resolved.
+#[derive(Clone)]
+pub(crate) struct TenantPublished {
+    messages: Counter,
+    bytes: Counter,
+    /// Resolved to the overflow label, which counts every recording in
+    /// `felix_tenant_metrics_overflow_total`. Such a handle is not reused.
+    overflow: bool,
+}
+
+impl TenantPublished {
+    fn resolve(labels: &TenantLabels, max: usize, tenant: &str) -> Self {
+        let label = labels.label(tenant, max);
+        let overflow = &*label == OVERFLOW_LABEL;
+        Self {
+            messages: metrics::counter!(PUBLISHED_MESSAGES_TOTAL, "tenant" => label.clone()),
+            bytes: metrics::counter!(PUBLISHED_BYTES_TOTAL, "tenant" => label),
+            overflow,
+        }
+    }
+
+    pub(crate) fn record(&self, messages: u64, bytes: u64) {
+        self.messages.increment(messages);
+        self.bytes.increment(bytes);
+    }
+}
+
+/// Most tenants whose counters one identity keeps; more are looked up each time.
+const CACHED_TENANTS: usize = 8;
+
+/// The publish counters of the tenants an identity publishes as. An identity
+/// is nearly always one tenant, so reads take a shared lock and scan a few
+/// entries; the write lock is taken once per tenant.
+#[derive(Default)]
+pub(crate) struct PublishedCache {
+    tenants: RwLock<Vec<(Arc<str>, TenantPublished)>>,
+}
+
+impl PublishedCache {
+    /// Count a publish `tenant` made.
+    pub(crate) fn record(&self, tenant: &str, messages: u64, bytes: u64) {
+        self.record_with(
+            labels(),
+            MAX_TENANTS.load(Ordering::Relaxed),
+            tenant,
+            messages,
+            bytes,
+        );
+    }
+
+    fn record_with(
+        &self,
+        labels: &TenantLabels,
+        max: usize,
+        tenant: &str,
+        messages: u64,
+        bytes: u64,
+    ) {
+        if let Some((_, counters)) = self
+            .tenants
+            .read()
+            .iter()
+            .find(|(cached, _)| &**cached == tenant)
+        {
+            counters.record(messages, bytes);
+            return;
+        }
+        let counters = TenantPublished::resolve(labels, max, tenant);
+        counters.record(messages, bytes);
+        if !counters.overflow {
+            let mut tenants = self.tenants.write();
+            if tenants.len() < CACHED_TENANTS && !tenants.iter().any(|(t, _)| &**t == tenant) {
+                tenants.push((Arc::from(tenant), counters));
+            }
+        }
+    }
+}
+
 /// Count a publish held back by `tenant`'s quota.
 pub(crate) fn record_throttled(tenant: &str, action: &'static str) {
     let label = labels().label(tenant, MAX_TENANTS.load(Ordering::Relaxed));

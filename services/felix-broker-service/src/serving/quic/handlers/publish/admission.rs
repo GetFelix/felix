@@ -9,6 +9,8 @@ use parking_lot::Mutex;
 
 use tokio::sync::Semaphore;
 
+use crate::observability::tenants::PublishedCache;
+
 /// The byte-budget permits a job holds while queued/processing: its identity's share, the
 /// connection's ceiling, and the shared process-wide budget. All are released together when
 /// the job finishes (or is dropped before ever being enqueued).
@@ -93,6 +95,7 @@ impl ConnLimits {
             max_subscriptions: self.identity_max_subscriptions,
             admission: PublishAdmission::new(self.identity_inflight_bytes),
             conn: Some((Arc::clone(self), key.clone())),
+            published: PublishedCache::default(),
         });
         identities.insert(key, Arc::downgrade(&share));
         share
@@ -135,6 +138,8 @@ pub(crate) struct IdentityLimits {
     /// The connection this is a share of, and the key it is filed under.
     /// `None` for a standalone share (tests, templates).
     conn: Option<(Arc<ConnLimits>, IdentityKey)>,
+    /// Resolved publish counters for the tenant this identity publishes as.
+    pub(crate) published: PublishedCache,
 }
 
 impl IdentityLimits {
@@ -146,6 +151,7 @@ impl IdentityLimits {
             max_subscriptions: usize::MAX,
             admission: PublishAdmission::new(u32::MAX as usize),
             conn: None,
+            published: PublishedCache::default(),
         })
     }
 
