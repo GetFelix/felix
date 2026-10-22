@@ -184,7 +184,8 @@ impl Broker {
         // stream, only a publisher the log stores.
         let publisher = match handle.state.durable {
             Some(_) => publisher.filter(|_| self.records_publishers()),
-            None => publisher,
+            // diagnostic branch for #1406: in-memory streams skip the publisher clone.
+            None => None,
         };
         let sample = t_should_sample();
         let mut claimed = ClaimedPublish {

@@ -6,8 +6,8 @@
 //! together is what makes depth accounting leak-free across receiver drops and
 //! cancelled `recv` calls.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use bytes::Bytes;
@@ -47,6 +47,7 @@ impl DeliveryEnvelope {
                 timestamp_micros,
                 enqueued_at: Instant::now(),
                 encoded: Default::default(),
+                encoded_more: OnceLock::new(),
             }),
         }
     }
@@ -160,7 +161,14 @@ impl DeliveryEnvelope {
             (Some(_), _) => 2,
         } + if publisher.is_some() { 3 } else { 0 }
             + if timestamp.is_some() { 6 } else { 0 };
-        let mut cached = batch.encoded[slot].lock();
+        // The three base shapes are inline; the publisher and time variants
+        // are allocated only when a subscriber asks for one.
+        let cell = if slot < 3 {
+            &batch.encoded[slot]
+        } else {
+            &batch.encoded_more.get_or_init(Default::default)[slot - 3]
+        };
+        let mut cached = cell.lock();
         if let Some(frame) = cached.as_ref() {
             return Ok(frame.clone());
         }
@@ -228,7 +236,8 @@ struct DeliveryBatch {
     /// because a stream can have subscribers of every kind and each must get
     /// the frame it agreed to; at most twelve encodings per batch however
     /// many subscribers there are, and only the shapes someone asked for.
-    encoded: [Mutex<Option<Bytes>>; 12],
+    encoded: [Mutex<Option<Bytes>>; 3],
+    encoded_more: OnceLock<Box<[Mutex<Option<Bytes>>; 9]>>,
 }
 
 #[derive(Debug)]
