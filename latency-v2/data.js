@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792680656421,
+  "lastUpdate": 1792697266731,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -41118,6 +41118,72 @@ window.BENCHMARK_DATA = {
             "range": "28.02",
             "unit": "us",
             "extra": "trials: 5\nmedian: 607.00\nmean: 613.60\nstdev: 28.02\ncv: 4.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "63c964c885590b97e859efb04fa5b05c61518d4e",
+          "message": "perf(broker): admit one waiting publisher per freed ingress slot, not all of them (#1406) (#1414)\n\n* perf(broker): admit one waiting publisher per freed ingress slot, not all of them (#1406)\n\nA pop called Notify::notify_waiters on the partition, waking every\nsubmitter blocked on a full queue so each could re-lock the queue and\nrace for one slot. With pub_ingress_wait on and thousands of publishes in\nflight against a 256-job queue, nearly every pop paid that.\n\nBlocked jobs now park in the partition, under the same lock as the\nqueue. A pop hands each freed slot to the oldest parked job whose tenant\nthe fair queue admits, and wakes only that submitter. A cancelled\nsubmitter removes its own entry; close still wakes everyone.\n\n* perf(broker): per-tenant waiter queues for ingress admission, wake an executor per admitted job (#1406)\n\nParked publishers are kept per tenant with the tenant name shared, and\ntenants with waiters are ordered by their oldest job. A tenant the fair\nqueue refuses is skipped by name instead of by walking its jobs, and\nparking no longer allocates a name per job. Admitting N jobs from one\npop now notifies N executors instead of one.\n\n* Spec-Unaffected note for the ingress scheduler change (#1406)\n\nSpec-Unaffected: docs/formal/FelixShard.tla models the lease, generation fence and quorum mark a write is checked against (IngressRouter::dispatch_write) and says nothing about the publish scheduler queue; the change only decides which waiting submitter a freed queue slot admits and wakes, after the fence check and before the append, and never changes whether a write is fenced, ordered within a lane, or acknowledged.",
+          "timestamp": "2026-10-22T19:24:23Z",
+          "tree_id": "c3e010fa3916f00ba17f420c112bacb95384e388",
+          "url": "https://github.com/GetFelix/felix/commit/63c964c885590b97e859efb04fa5b05c61518d4e"
+        },
+        "date": 1792697262810,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 75,
+            "range": "1.87",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 75.00\nmean: 75.00\nstdev: 1.87\ncv: 2.49%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 99,
+            "range": "10.26",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 99.00\nmean: 105.60\nstdev: 10.26\ncv: 9.72%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 143,
+            "range": "314.62",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 143.00\nmean: 351.80\nstdev: 314.62\ncv: 89.43%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 91,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 91.00\nmean: 91.40\nstdev: 0.55\ncv: 0.60%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 223,
+            "range": "12.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 223.00\nmean: 224.40\nstdev: 12.10\ncv: 5.39%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 356,
+            "range": "439.99",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 356.00\nmean: 530.80\nstdev: 439.99\ncv: 82.89%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
