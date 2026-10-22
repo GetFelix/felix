@@ -167,6 +167,10 @@ pub(crate) struct Partition {
     /// `notify_one` calls made, for tests.
     #[cfg(test)]
     wakes: AtomicUsize,
+    /// Test hook: an executor that has just found the queue empty tells the
+    /// first, then waits for the second before it parks.
+    #[cfg(test)]
+    look_hook: Mutex<Option<(Arc<Notify>, Arc<Notify>)>>,
     /// Wakes submitters waiting for room.
     space: Notify,
     /// Submitters waiting on `space`, so a pop only pays for a wake-up when
@@ -183,6 +187,8 @@ impl Partition {
             idle: AtomicUsize::new(0),
             #[cfg(test)]
             wakes: AtomicUsize::new(0),
+            #[cfg(test)]
+            look_hook: Mutex::new(None),
             space: Notify::new(),
             waiting: AtomicUsize::new(0),
             closed: AtomicBool::new(false),
@@ -219,7 +225,18 @@ impl Partition {
                     return None;
                 }
             }
+            #[cfg(test)]
+            self.pause_after_look().await;
             work.await;
+        }
+    }
+
+    #[cfg(test)]
+    async fn pause_after_look(&self) {
+        let hook = self.look_hook.lock().take();
+        if let Some((looked, resume)) = hook {
+            looked.notify_one();
+            resume.notified().await;
         }
     }
 
@@ -238,7 +255,8 @@ impl Partition {
             .lock()
             .push(tenant, lane, job, cost)
             .map_err(|job| Rejected::Full(Box::new(job)))?;
-        report_depth(GLOBAL_INGRESS_DEPTH.fetch_add(1, Ordering::Relaxed) + 1);
+        GLOBAL_INGRESS_DEPTH.fetch_add(1, Ordering::Relaxed);
+        report_ingress_depth();
         if ready {
             self.wake_one();
         }
@@ -246,13 +264,10 @@ impl Partition {
     }
 
     fn popped(&self, jobs: usize) {
-        let global = GLOBAL_INGRESS_DEPTH
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |depth| {
-                Some(depth.saturating_sub(jobs))
-            })
-            .unwrap_or(0)
-            .saturating_sub(jobs);
-        report_depth(global);
+        let _ = GLOBAL_INGRESS_DEPTH.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |depth| {
+            Some(depth.saturating_sub(jobs))
+        });
+        report_ingress_depth();
         if self.waiting.load(Ordering::SeqCst) > 0 {
             self.space.notify_waiters();
         }
@@ -393,17 +408,47 @@ impl Drop for Counted<'_> {
     }
 }
 
-/// Publish the queue depth gauge when it has moved a long way, or emptied.
+fn report_ingress_depth() {
+    GLOBAL_INGRESS_GAUGE.report(
+        || GLOBAL_INGRESS_DEPTH.load(Ordering::Relaxed),
+        |depth| t_gauge!("felix_broker_ingress_queue_depth").set(depth as f64),
+    );
+}
+
+static GLOBAL_INGRESS_GAUGE: DepthGauge = DepthGauge::new();
+
+/// The queue depth gauge, set when the depth has moved a long way or emptied.
 ///
 /// Setting it on every push and pop costs a registry lookup per job, which
-/// shows up when jobs are small. The gauge reads within `DEPTH_STEP` of the
-/// true depth and is exact whenever the queue is empty.
-fn report_depth(depth: usize) {
-    static REPORTED: AtomicUsize = AtomicUsize::new(0);
-    let last = REPORTED.load(Ordering::Relaxed);
-    if depth_gauge_due(last, depth) {
-        REPORTED.store(depth, Ordering::Relaxed);
-        t_gauge!("felix_broker_ingress_queue_depth").set(depth as f64);
+/// shows up when jobs are small. Between sets it can be off by up to
+/// `DEPTH_STEP`. Writers serialize on a lock, taken only when a set is due,
+/// and re-read the depth inside it: the last writer to run therefore leaves
+/// the gauge at a depth it saw after every earlier change, and a queue that
+/// has emptied reads zero once its last push or pop returns.
+struct DepthGauge {
+    reported: AtomicUsize,
+    write: Mutex<()>,
+}
+
+impl DepthGauge {
+    const fn new() -> Self {
+        Self {
+            reported: AtomicUsize::new(0),
+            write: Mutex::new(()),
+        }
+    }
+
+    /// Call after every change to the depth.
+    fn report(&self, depth: impl Fn() -> usize, set: impl Fn(usize)) {
+        if !depth_gauge_due(self.reported.load(Ordering::Acquire), depth()) {
+            return;
+        }
+        let _write = self.write.lock();
+        let depth = depth();
+        if depth_gauge_due(self.reported.load(Ordering::Acquire), depth) {
+            set(depth);
+            self.reported.store(depth, Ordering::Release);
+        }
     }
 }
 

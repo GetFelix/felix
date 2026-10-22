@@ -61,6 +61,10 @@ pub(crate) fn record_published(tenant: &str, messages: u64, bytes: u64) {
 
 /// Publish counters for one tenant, resolved once so the per-publish path is
 /// two atomic adds instead of two registry lookups.
+///
+/// A resolved handle stays valid only because labelled series are never
+/// removed and the exporter sets no `idle_timeout`; if either changes, cached
+/// handles must be re-resolved.
 #[derive(Clone)]
 pub(crate) struct TenantPublished {
     messages: Counter,
@@ -87,19 +91,25 @@ impl TenantPublished {
     }
 }
 
-/// The publish counters of the tenant an identity last published as. An
-/// identity is nearly always one tenant, so a single slot serves every
-/// publish after the first.
+/// Most tenants whose counters one identity keeps; more are looked up each time.
+const CACHED_TENANTS: usize = 8;
+
+/// The publish counters of the tenants an identity publishes as. An identity
+/// is nearly always one tenant, so reads take a shared lock and scan a few
+/// entries; the write lock is taken once per tenant.
 #[derive(Default)]
 pub(crate) struct PublishedCache {
-    slot: RwLock<Option<(Arc<str>, TenantPublished)>>,
+    tenants: RwLock<Vec<(Arc<str>, TenantPublished)>>,
 }
 
 impl PublishedCache {
     /// Count a publish `tenant` made.
     pub(crate) fn record(&self, tenant: &str, messages: u64, bytes: u64) {
-        if let Some((cached, counters)) = &*self.slot.read()
-            && &**cached == tenant
+        if let Some((_, counters)) = self
+            .tenants
+            .read()
+            .iter()
+            .find(|(cached, _)| &**cached == tenant)
         {
             counters.record(messages, bytes);
             return;
@@ -107,7 +117,10 @@ impl PublishedCache {
         let counters = TenantPublished::for_tenant(tenant);
         counters.record(messages, bytes);
         if !counters.overflow {
-            *self.slot.write() = Some((Arc::from(tenant), counters));
+            let mut tenants = self.tenants.write();
+            if tenants.len() < CACHED_TENANTS && !tenants.iter().any(|(t, _)| &**t == tenant) {
+                tenants.push((Arc::from(tenant), counters));
+            }
         }
     }
 }

@@ -56,14 +56,23 @@ fn cached_publish_counters_count_like_uncached_ones() {
         // These two use the handle resolved by the first.
         cache.record("cache-a", 1, 50);
         cache.record("cache-a", 2, 7);
-        // A different tenant replaces the slot and counts under its own label.
+        // Another tenant is cached beside it, and neither is resolved again.
         cache.record("cache-b", 5, 9);
         cache.record("cache-a", 1, 1);
+        cache.record("cache-b", 1, 1);
+        assert_eq!(cache.tenants.read().len(), 2);
+        // Past the limit tenants still count, uncached.
+        for n in 0..CACHED_TENANTS + 2 {
+            cache.record(&format!("many-{n}"), 1, 1);
+        }
+        assert_eq!(cache.tenants.read().len(), CACHED_TENANTS);
+        cache.record("many-9", 1, 1);
     });
+    assert_eq!(recorder.get(PUBLISHED_MESSAGES_TOTAL, "many-9"), 2);
     assert_eq!(recorder.get(PUBLISHED_MESSAGES_TOTAL, "cache-a"), 7);
     assert_eq!(recorder.get(PUBLISHED_BYTES_TOTAL, "cache-a"), 358);
-    assert_eq!(recorder.get(PUBLISHED_MESSAGES_TOTAL, "cache-b"), 5);
-    assert_eq!(recorder.get(PUBLISHED_BYTES_TOTAL, "cache-b"), 9);
+    assert_eq!(recorder.get(PUBLISHED_MESSAGES_TOTAL, "cache-b"), 6);
+    assert_eq!(recorder.get(PUBLISHED_BYTES_TOTAL, "cache-b"), 10);
 }
 
 /// Sums counters by name and `tenant` label.

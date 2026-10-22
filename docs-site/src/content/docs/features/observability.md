@@ -56,7 +56,7 @@ exhaustive.
 felix_publish_requests_total                # by result; a batch is one request
 felix_publish_bytes_total                   # payload bytes of ok/accepted requests
 felix_publish_latency_ms                    # histogram (telemetry)
-felix_broker_ingress_queue_depth            # publish jobs waiting; within 16 of the true depth, exact at zero (telemetry)
+felix_broker_ingress_queue_depth            # publish jobs waiting; refreshed when the depth moves by 16 or more and when it empties (telemetry)
 felix_broker_ingress_dropped_total          # fire-and-forget publishes dropped: connection byte budget full (telemetry)
 felix_broker_ingress_rejected_total         # (telemetry)
 felix_broker_acked_publishes_dropped_total  # by reason: acked on enqueue, then not written

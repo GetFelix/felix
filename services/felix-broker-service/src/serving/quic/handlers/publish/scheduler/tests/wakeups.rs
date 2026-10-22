@@ -97,6 +97,54 @@ async fn a_busy_lane_is_woken_for_when_it_completes_not_when_pushed() {
     drop(executor);
 }
 
+/// A push that lands after an executor found the queue empty but before it
+/// parks must wake it. This is the interleaving the idle count exists for.
+#[tokio::test]
+async fn a_push_between_the_empty_look_and_parking_is_not_lost() {
+    let scheduler = PublishScheduler::new(1, 100, 100);
+    let partition = Arc::clone(&scheduler.partitions()[0]);
+    let looked = Arc::new(Notify::new());
+    let resume = Arc::new(Notify::new());
+    *partition.look_hook.lock() = Some((Arc::clone(&looked), Arc::clone(&resume)));
+
+    let waiting = Arc::clone(&partition);
+    let executor = tokio::spawn(async move { waiting.next().await.map(|(job, _)| seq_of(&job)) });
+    looked.notified().await;
+    push(&scheduler, lane_job(0, 7));
+    resume.notify_one();
+
+    let ran = tokio::time::timeout(Duration::from_secs(5), executor)
+        .await
+        .expect("the executor was woken for the job pushed before it parked")
+        .expect("joined");
+    assert_eq!(ran, Some(7));
+}
+
+/// A complete that lands in the same window must wake it too.
+#[tokio::test]
+async fn a_complete_between_the_empty_look_and_parking_is_not_lost() {
+    let scheduler = PublishScheduler::new(1, 100, 100);
+    let partition = Arc::clone(&scheduler.partitions()[0]);
+    push(&scheduler, lane_job(0, 0));
+    push(&scheduler, lane_job(0, 1));
+    let (_, guard) = partition.next().await.expect("first job");
+
+    let looked = Arc::new(Notify::new());
+    let resume = Arc::new(Notify::new());
+    *partition.look_hook.lock() = Some((Arc::clone(&looked), Arc::clone(&resume)));
+    let waiting = Arc::clone(&partition);
+    let executor = tokio::spawn(async move { waiting.next().await.map(|(job, _)| seq_of(&job)) });
+    looked.notified().await;
+    drop(guard);
+    resume.notify_one();
+
+    let ran = tokio::time::timeout(Duration::from_secs(5), executor)
+        .await
+        .expect("the executor was woken for the lane that became ready")
+        .expect("joined");
+    assert_eq!(ran, Some(1));
+}
+
 /// Producers and executors race with executors parking between jobs, which
 /// is where a skipped wake-up would strand a job. Every job must run, each
 /// lane one at a time and in the order its producer sent.
@@ -202,4 +250,42 @@ fn the_depth_gauge_is_set_on_big_moves_and_on_empty() {
     );
     assert!(depth_gauge_due(40, 0));
     assert!(!depth_gauge_due(0, 0));
+}
+
+/// Many threads move a depth up and down and report it; once they stop, the
+/// gauge must read zero, whatever order the sets landed in.
+#[test]
+fn the_depth_gauge_reads_zero_once_the_queue_empties() {
+    let gauge = Arc::new(DepthGauge::new());
+    let depth = Arc::new(AtomicUsize::new(0));
+    let shown = Arc::new(AtomicUsize::new(usize::MAX));
+    let handles: Vec<_> = (0..8)
+        .map(|_| {
+            let (gauge, depth, shown) =
+                (Arc::clone(&gauge), Arc::clone(&depth), Arc::clone(&shown));
+            std::thread::spawn(move || {
+                let report = || {
+                    gauge.report(
+                        || depth.load(Ordering::Relaxed),
+                        |value| shown.store(value, Ordering::Relaxed),
+                    )
+                };
+                for _ in 0..5_000 {
+                    for _ in 0..8 {
+                        depth.fetch_add(5, Ordering::Relaxed);
+                        report();
+                    }
+                    for _ in 0..8 {
+                        depth.fetch_sub(5, Ordering::Relaxed);
+                        report();
+                    }
+                }
+            })
+        })
+        .collect();
+    for handle in handles {
+        handle.join().expect("thread");
+    }
+    assert_eq!(depth.load(Ordering::Relaxed), 0);
+    assert_eq!(shown.load(Ordering::Relaxed), 0);
 }
