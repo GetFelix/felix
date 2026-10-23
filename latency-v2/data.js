@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792765551103,
+  "lastUpdate": 1792766591101,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -42372,6 +42372,72 @@ window.BENCHMARK_DATA = {
             "range": "44.92",
             "unit": "us",
             "extra": "trials: 5\nmedian: 385.00\nmean: 398.60\nstdev: 44.92\ncv: 11.27%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ea1509fc13ecfe211f8706c9b9ec97172deca050",
+          "message": "perf(broker): park a publish waiting for queue room off the read loop (#1416) (#1443)\n\n* perf(broker): park a publish waiting for queue room off the read loop (#1416)\n\nA Wait or Backpressure publish that found the publish queue full awaited\nroom inside the control loop, so the stream stopped reading and every\npublish behind it waited too, even to shards whose queues had room.\n\nThe job is now parked in the scheduler at once, which fixes its place in\nthe per-tenant FIFO line, and the wait runs in a task the control stream\nowns. The stream goes on reading. Up to 1024 publishes may be parked per\nstream; past that, or with the byte budget spent, the loop waits inline\nand QUIC stream flow control holds the client back. A parked acked publish\narms its commit ack once admitted and is answered publish_queue_full if\nits wait runs out. A clean stream end drains the parked waits first.\n\nSpec-Unaffected: parking happens after the fence entry and admission, the\njob keeps its fence guard while it waits as it did inline, and the lane\norder and claim path are unchanged.\n\n* fix(broker): count a parked publish accepted only once it is admitted (#1416)\n\nAn unacked publish that parked was counted accepted by the handler and\nthen error if its wait was given up. It is now counted by the parked wait\nwhen the job is admitted, so the accepted counters stay exact.\n\nAdds tests for the accepted count, send order of same-key publishes\nthrough parking, cancellation releasing the byte budget, a clean stream\nend still answering its parked publish, and a closing queue answering it.\n\nSpec-Unaffected: metrics and tests only; the parking, fence and lane\norder are unchanged.",
+          "timestamp": "2026-10-23T07:39:12-07:00",
+          "tree_id": "ceb61f8d983da6cfe396390d16cf20e4290549ab",
+          "url": "https://github.com/GetFelix/felix/commit/ea1509fc13ecfe211f8706c9b9ec97172deca050"
+        },
+        "date": 1792766585990,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 108,
+            "range": "1.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 108.00\nmean: 108.00\nstdev: 1.00\ncv: 0.93%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 143,
+            "range": "2.88",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 143.00\nmean: 143.60\nstdev: 2.88\ncv: 2.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 201,
+            "range": "224.61",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 201.00\nmean: 303.80\nstdev: 224.61\ncv: 73.93%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 141,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 141.00\nmean: 141.60\nstdev: 0.89\ncv: 0.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 282,
+            "range": "8.23",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 282.00\nmean: 284.80\nstdev: 8.23\ncv: 2.89%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1087,
+            "range": "442.20",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1087.00\nmean: 867.40\nstdev: 442.20\ncv: 50.98%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
