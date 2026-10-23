@@ -241,10 +241,15 @@ build_plan() {
     trim_has 7 && [ "${t}" -gt 1 ] && continue
     add "rf3-qcache-c${c}-t${t}" cache cache perf-quorum 256 1 0 "${BASE_B}" "${c}"
   done; done
-  # lf: after the one-way finalize.
-  add "finalize-lease-free" lf fin - - - - "${BASE_B}" -
+  # lf: after the one-way finalize. A new cluster finalizes every feature
+  # itself (#1457), so the matrix above already ran lease-free; SKIP_LF=1 drops
+  # the repeat.
+  local lf_trials="${LF_TRIALS}"
+  [ "${SKIP_LF:-0}" = 1 ] && lf_trials=0
+  [ "${lf_trials}" = 0 ] || add "finalize-lease-free" lf fin - - - - "${BASE_B}" -
   pre=rf3-lf
-  for t in $(seq 1 "${LF_TRIALS}"); do
+  # Guarded: BSD seq counts down, so `seq 1 0` prints 1 and 0.
+  [ "${lf_trials}" -gt 0 ] && for t in $(seq 1 "${lf_trials}"); do
     trim_has 2 && [ "${t}" -gt 1 ] && continue
     order="mem dur"; [ $((t % 2)) = 0 ] && order="dur mem"
     for tr in "256 1" "4096 64"; do
@@ -970,8 +975,10 @@ warn_forwarded() {
 }
 
 headline() {
-  local dir="$1" a i d c base
+  local dir="$1" a i d c base copies="3 copies"
   base="$(basename "${dir}")"
+  # An in-memory stream is ephemeral and not replicated: one copy, on the leader.
+  case "${base}" in *-mem-*) copies="1 copy, in memory" ;; esac
   case "${base}" in
     *-fail-*) cat "${dir}/failover.txt" 2>/dev/null | tr '\n' ' '; return ;;
     *qcache*) echo "$(cachenums "${dir}"); $(balance "${dir}")"; return ;;
@@ -979,7 +986,7 @@ headline() {
   esac
   read -r a i d c <<<"$(cell_nums "${dir}")"
   if [ -z "${a}" ]; then echo "no steady window; $(ackpcts "${dir}")"; return; fi
-  echo "append ${a} MB/s (cluster, 3 copies), ingress ${i} MB/s, drops ${d}/s, cores ${c}; $(ackpcts "${dir}"); $(fwd_line "${dir}"); $(balance "${dir}")"
+  echo "append ${a} MB/s (cluster, ${copies}), ingress ${i} MB/s, drops ${d}/s, cores ${c}; $(ackpcts "${dir}"); $(fwd_line "${dir}"); $(balance "${dir}")"
 }
 
 # ------------------------------------------------------------ the cells
