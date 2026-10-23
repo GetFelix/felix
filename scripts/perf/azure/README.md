@@ -247,6 +247,86 @@ cell and `felix_broker_ingress_dropped_total` (the shed count, which needs a
 telemetry build); the full environment is in the cell's `before.txt` and the
 system facts are in `final/config.txt` and `system/*.facts.txt`.
 
+### RF=3 campaign
+
+`campaign-rf3.sh` is the cluster counterpart of `campaign-final.sh`: same
+structure (preflight, facts, resumable cells, a progress log in
+`sessions/logs/rf3-campaign.log`, dry run with cost, deallocate with retry and
+verify on every exit), against three brokers with replication factor 3.
+
+```bash
+SESSION=v060-c4 BUILD_SHA=<40-char main sha> ./campaign-rf3.sh --print-provision   # the session.sh command
+SESSION=v060-c4 BUILD_SHA=<sha> ./campaign-rf3.sh --dry-run                        # cells, hours, cost
+SESSION=v060-c4 BUILD_SHA=<sha> nohup ./campaign-rf3.sh &                          # re-run to resume
+```
+
+**Exact conditions.** Session `v060-c4` in `centralus`, tier `t2`: three
+`Standard_L4as_v4` brokers (4 vCPU, 32 GiB, two local NVMe disks in RAID0) in
+zones 1, 2 and 3; four `Standard_D4as_v5` generators and a `Standard_D2as_v5`
+control plane in zone 1. Every member runs one build, `BUILD_SHA`: `BROKER_REFS`
+builds it on generator 0 and installs it on the brokers and the control plane,
+`LOADGEN_REF` builds the instrument from it on every generator, and the
+preflight refuses to start unless each member reports it. MTU is 3900 on every
+VM, with a don't-fragment ping at 3872 bytes from each generator to each broker
+and between the brokers. Unattended upgrades are masked. Streams have 12 shards
+(a multiple of three, so each broker leads four) and RF=3, created by
+`seed-remote.sh`; the driver recreates a durable stream before each durable cell
+and waits for `GET /v1/placement/replication` to show no under-replicated shard
+and an even leader spread before any cell measures (#1155).
+
+Broker settings on every cell: `FELIX_ACK_ON_COMMIT=1`,
+`FELIX_PUB_INGRESS_WAIT=1`, `FELIX_DURABLE_FSYNC_MODE=on_commit`,
+`FELIX_QUIC_LISTENERS=2` (what an unset value derives on 4 cores), and from
+`lib.sh` `FELIX_STORAGE_IO_URING=1`, `FELIX_IO_RUNTIME_THREADS=0`, 24 MiB UDP
+buffers and `FELIX_MTU_UPPER_BOUND=3872`. Since #1422 durable streams ack after
+commit by default, so `ACK_ON_COMMIT` only changes what in-memory streams do;
+`INGRESS_WAIT`, `IO_URING` and `on_commit` differ from the product defaults.
+Clients set the UDP buffers and the MTU bound. Node tokens refresh through
+`FELIX_NODE_REFRESH_TOKEN_FILE`, and the client token is renewed every six hours.
+
+**Disk gate.** Each broker runs the harness's `seq256k-j1` fio job (256 KiB
+sequential writes, an fdatasync after each) before the first cell. It must reach
+525 MB/s, 70% of the 750 MBps Microsoft publishes for the L4as_v4 temp disks
+("Temp Disk Sequential Write Throughput", Lasv4 series page). A broker below it
+stops the campaign. Earlier sessions found hosts at 18-36% of spec, so this is
+not a formality.
+
+**Cells** (2 trials each, A/B pairs interleaved): the Quorum matrix on the
+durable and in-memory replicated streams at 256 B and 4 KiB, batch 1 and 64,
+acked with 64 in flight, keys spread over every shard (`m`); one-in-flight Quorum
+ack and delivery latency, at the product's delivery batching and with it off
+(`lat`, `latp`); owner-direct publish against publish through one entry broker
+(`fwd`); Quorum cache put and get at 1, 8 and 32 workers (`cache`); the headline
+cells again after finalizing `generation_start`, `majority_ack` and
+`lease_free_reads`, named `rf3-lf-*` (`lf`, skipped with a log line if the build
+lists fewer than the three features); and a failover cell (`fail`). Every cell
+records per-broker process cores, append rate and forwarded share in
+`balance.txt` and on its progress line.
+
+**Failover cell.** Acked 4 KiB batch-64 durable load on a fresh `perf-failover`
+stream from three generators for 150 s, a subscriber on the fourth. Forty
+seconds after publishing starts, `kill -9` of broker 1 (with its systemd restart
+disabled), restarted 45 s later. `failover.txt` reports the baseline append rate,
+the seconds below 10% of it, the seconds to regain 50% after the kill and 90%
+after the restart, the dip, and the acked-record check: every acked record must
+have reached the live subscriber with no offset gap. The instrument cannot read a
+stream back from the start, so this check misses a lost record that no
+subscriber would have seen; an unusual result is worth a manual read. Rates are
+cluster append bytes, which are three copies of the payload; with one broker down
+about 67% of baseline is the best possible.
+
+**What the instrument cannot do.** `felix-loadgen ingest` dials brokers
+round-robin with a plain client, so about two thirds of its publishes enter a
+non-leader and are forwarded; there is no leader-direct ingest. The forwarding
+cost is therefore measured on single publishes (`fwd`: cluster client to the
+owner against `--via-entry`), and ingest cells report the forwarded share.
+
+**Cost.** The dry run prices the plan with Azure retail list prices for
+`centralus` (L4as_v4 $0.388/h, D4as_v5 $0.194/h, D2as_v5 $0.0972/h, about $2.04/h
+for the session); `PRICE_BROKER`, `PRICE_GEN` and `PRICE_CP` override them (at
+$0.33, $0.172 and $0.086 the session is $1.76/h). The plan is trimmed to fit
+`MAX_HOURS` (8) and the dry run names what it dropped.
+
 ### What is committed, and what is not
 
 `sessions/<name>-results/` and `sessions/*-findings.md` **are tracked**. They
