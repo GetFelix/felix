@@ -296,7 +296,7 @@ is expected near 600-700 MB/s and a degraded one under 300. A broker below the g
 stops the campaign. The measured values are in `system/*.fio.txt`.
 
 **Cells** (2 trials each, A/B pairs interleaved): the Quorum matrix, owner-direct
-(`--cluster`: the cluster client publishes straight to each shard's leader, at any batch size), on the
+(`--cluster`: the cluster client publishes straight to each shard's leader, at any batch size); ingest lines also show `acks_with_offset`/`acks_without_offset`, the loadgen's proxy for forwarded sends, on the
 durable and in-memory replicated streams at 256 B and 4 KiB, batch 1 and 64,
 acked with 64 in flight, keys spread over every shard (`m`); one-in-flight Quorum
 ack and delivery latency, at the product's delivery batching and with it off
@@ -310,23 +310,25 @@ records per-broker process cores, append rate and forwarded share in
 `balance.txt` and on its progress line.
 
 **Failover cell.** Acked 4 KiB batch-64 durable load on a fresh `perf-failover`
-stream from three generators for 150 s, a subscriber on the fourth. Forty
-seconds after publishing starts, `kill -9` of broker 1 (with its systemd restart
-disabled), restarted 45 s later. `failover.txt` reports the baseline append rate,
-the seconds below 10% of it, the seconds to regain 50% after the kill and 90%
-after the restart, the dip, and the acked-record check: every acked record must
-have reached the live subscriber with no offset gap. The instrument cannot read a
-stream back from the start, so this check misses a lost record that no
-subscriber would have seen; an unusual result is worth a manual read. Rates are
-cluster append bytes, which are three copies of the payload; with one broker down
-about 67% of baseline is the best possible.
+stream from all four generators (`--cluster`, which reconnects on broker loss) for
+150 s. Forty seconds after publishing starts, `kill -9` of broker 1 (with its systemd
+restart disabled), restarted 45 s later. `failover.txt` reports the baseline append
+rate, the seconds below 10% of it, the seconds to regain 50% after the kill and 90%
+after the restart, the dip, and the loss check. Rates are cluster append bytes, which
+are three copies of the payload; with one broker down about 67% of baseline is the
+best possible.
 
-**Failover loss check.** Per shard, the acked count from the generators must be at
-most the delivered count at the subscriber, with no offset gap and no shard loss.
-No acked records, no per-shard counts on either side, or a subscriber that ended
-early gives `INCOMPLETE`, never a clean result. Duplicates after a reconnect can
-hide a loss inside one shard, so a clean result still deserves a read of
-`failover.txt` and the loadgen's `reconnects` and `failed_sends`.
+**Failover loss check.** The brokers' own record, not a subscriber's. Before the cell
+and again after recovery the driver runs `felixctl inspect shard perf-failover --json`
+from generator 0 (built from the loadgen checkout; the brokers export their generated
+certificates with `FELIX_TLS_CERT_EXPORT` and the admin token supplies
+`node.view:cluster:*`) and reads each leader's commit mark. For every shard the log
+must have grown by at least the generators' `per_shard_acked`. Anything missing (no
+acked records, no per-shard counts, an unreachable leader, a commit mark that does not
+settle at the tail) gives `INCOMPLETE`, never a clean result. The check assumes one log
+offset per record. A retried batch that was appended twice can mask a loss in the same
+shard, so read `failover.txt` with the loadgen's `reconnects` and `failed_sends`. The
+loadgen JSON field names are mapped in one block at the top of the script.
 
 **Cost.** The dry run prices the plan with Azure retail list prices for
 `centralus` (L4as_v4 $0.388/h, D4as_v5 $0.194/h, D2as_v5 $0.0972/h, about $2.04/h

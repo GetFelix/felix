@@ -82,14 +82,17 @@ fi
 : "${LOCATION:=centralus}"
 # The loadgen may come from a newer branch than the brokers (owner-direct ingest,
 # reconnect on broker loss); brokers and control plane stay on BUILD_SHA.
-: "${LOADGEN_SHA:=${BUILD_SHA}}"
-# JSON field names the loadgen reports, in one place. TODO: match the loadgen PR for
-# owner-direct ingest and reconnect once it exists; each entry lists the names tried,
-# first match wins. The loss check says INCOMPLETE when a mapping finds nothing.
-export MAP_ACKED_SHARD="acked_per_shard acked_by_shard per_shard_acked"        # ingest: per-shard acked records
-export MAP_DELIVERED_SHARD="received_per_shard received_by_shard delivered_per_shard per_shard_received"   # subscribe: per-shard delivered
+# TODO: move to the merged main SHA once #1424 lands.
+: "${LOADGEN_SHA:=affbb83bd7c3a0477ea459896a7f8ef19ab2ba75}"   # feat/cluster-client-batch head (#1424)
+# JSON field names the loadgen reports (#1424), in one place; each entry lists the
+# names tried, first match wins. A mapping that finds nothing makes the loss check
+# INCOMPLETE. There is no delivered side: what the brokers appended comes from
+# felixctl inspect shard (inspect_tails).
+export MAP_ACKED_SHARD="per_shard_acked"      # ingest: acked records per shard
 export MAP_RECONNECTS="reconnects"
 export MAP_FAILED_SENDS="failed_sends"
+export MAP_ACKS_WITH_OFFSET="acks_with_offset"         # with the two below: a proxy for forwarded sends
+export MAP_ACKS_WITHOUT_OFFSET="acks_without_offset"
 
 : "${SHARDS:=12}"            # a multiple of 3, so leaders spread evenly over three brokers
 : "${PER:=16}"               # publishers per generator
@@ -146,7 +149,9 @@ export MAP_FAILED_SENDS="failed_sends"
 NBROKERS=3
 
 DUR_PROFILE="FELIX_ACK_ON_COMMIT=1 FELIX_PUB_INGRESS_WAIT=1"
-BASE_B="FELIX_QUIC_LISTENERS=2 FELIX_DURABLE_FSYNC_MODE=on_commit ${DUR_PROFILE}"
+# The generated certificate is exported so felixctl can verify the brokers (inspect).
+CERT_FILE=/etc/felix/broker-cert.pem
+BASE_B="FELIX_QUIC_LISTENERS=2 FELIX_DURABLE_FSYNC_MODE=on_commit ${DUR_PROFILE} FELIX_TLS_CERT_EXPORT=${CERT_FILE}"
 LATP_B="FELIX_EVENT_BATCH_MAX_DELAY_US=0 FELIX_EVENT_BATCH_MAX_EVENTS=1"
 CLIENT_B="FELIX_UDP_RECV_BUFFER=25165824 FELIX_UDP_SEND_BUFFER=25165824 FELIX_MTU_UPPER_BOUND=3872"
 OUT="${OUT:-${here}/sessions/${SESSION}-rf3-results}"
@@ -798,6 +803,25 @@ balance() {
   echo "${out}" | awk '{ for (i = 1; i <= NF; i++) { split($i, x, ","); split(x[1], y, "="); v = y[2]; if (v ~ /^[0-9.]+$/) { n++; if (n == 1 || v < lo) lo = v; if (n == 1 || v > hi) hi = v } } if (n > 1 && lo > 0) printf "cpu spread %.2fx (", hi / lo; else printf "cpu spread n/a ("; print $0 ")" }'
 }
 
+# offset_proxy <dir>: acks with and without a log offset, summed over generators; the
+# loadgen's proxy for forwarded sends.
+offset_proxy() {
+  grep -h '^LOADGEN_JSON' "$1"/*.run.txt 2>/dev/null | python3 -I -c '
+import json, os, sys
+w = os.environ["MAP_ACKS_WITH_OFFSET"].split(); o = os.environ["MAP_ACKS_WITHOUT_OFFSET"].split()
+a = b = 0; seen = False
+for l in sys.stdin:
+    try:
+        j = json.loads(l.split(" ", 1)[1])
+    except Exception:
+        continue
+    for k in w:
+        if k in j: a += int(j[k] or 0); seen = True; break
+    for k in o:
+        if k in j: b += int(j[k] or 0); seen = True; break
+print("acks with/without offset %d/%d" % (a, b) if seen else "acks with/without offset n/a")'
+}
+
 headline() {
   local dir="$1" a i d c base
   base="$(basename "${dir}")"
@@ -808,7 +832,7 @@ headline() {
   esac
   read -r a i d c <<<"$(cell_nums "${dir}")"
   if [ -z "${a}" ]; then echo "no steady window; $(ackpcts "${dir}")"; return; fi
-  echo "append ${a} MB/s (cluster, 3 copies), ingress ${i} MB/s, drops ${d}/s, cores ${c}; $(ackpcts "${dir}"); $(balance "${dir}")"
+  echo "append ${a} MB/s (cluster, 3 copies), ingress ${i} MB/s, drops ${d}/s, cores ${c}; $(ackpcts "${dir}"); $(offset_proxy "${dir}"); $(balance "${dir}")"
 }
 
 # ------------------------------------------------------------ the cells
@@ -950,9 +974,9 @@ PY
 
 read -r -d '' LOSS_PY <<'PY' || true
 import glob, json, os, sys
-cdir = sys.argv[1]
+cdir, before_f, after_f = sys.argv[1], sys.argv[2], sys.argv[3]
 ACK_KEYS = os.environ["MAP_ACKED_SHARD"].split()
-DELIVERED_KEYS = os.environ["MAP_DELIVERED_SHARD"].split()
+REC, FAILED = os.environ["MAP_RECONNECTS"].split(), os.environ["MAP_FAILED_SENDS"].split()
 def first_int(j, names):
     for n in names:
         if n in j:
@@ -966,11 +990,20 @@ def shardmap(j, names):
         if isinstance(v, list):
             return {str(i): int(x) for i, x in enumerate(v)}
     return None
-acked = 0
+def inspected(path):
+    out = {}
+    try:
+        for l in open(path, errors="replace"):
+            if l.startswith("insp."):
+                k, v = l.strip().split("=", 1)
+                c = v.split("/")[0]
+                out[k[5:]] = int(c) if c.isdigit() else None
+    except OSError:
+        pass
+    return out
+acked, gens = 0, 0
 ack_shard, have_ack_shard = {}, True
 extra = {"reconnects": 0, "failed_sends": 0, "cut_off_records": 0, "publish_retries": 0}
-REC, FAILED = os.environ["MAP_RECONNECTS"].split(), os.environ["MAP_FAILED_SENDS"].split()
-gens = 0
 for p in glob.glob(cdir + "/*.run.txt"):
     for l in open(p, errors="replace"):
         if l.startswith("LOADGEN_JSON "):
@@ -992,13 +1025,7 @@ for p in glob.glob(cdir + "/*.run.txt"):
             else:
                 for k, x in m.items():
                     ack_shard[k] = ack_shard.get(k, 0) + x
-sub = None
-for l in open(cdir + "/subscriber.txt", errors="replace") if glob.glob(cdir + "/subscriber.txt") else []:
-    if l.startswith("LOADGEN_JSON "):
-        try:
-            sub = json.loads(l.split(" ", 1)[1])
-        except Exception:
-            pass
+before, after = inspected(before_f), inspected(after_f)
 print("generators_reporting=%d acked_records=%d %s" % (gens, acked, " ".join("%s=%d" % kv for kv in sorted(extra.items()))))
 why = []
 if gens == 0:
@@ -1006,45 +1033,120 @@ if gens == 0:
 if acked <= 0:
     why.append("acked_records is %d" % acked)
 if not have_ack_shard or not ack_shard:
-    why.append("generators report no per-shard acked counts (loadgen too old?)")
-if sub is None:
-    why.append("no subscriber result")
-else:
-    dl = shardmap(sub, DELIVERED_KEYS)
-    if dl is None:
-        why.append("subscriber reports no per-shard delivered counts")
-    if sub.get("ended_early"):
-        why.append("subscriber ended early")
-    print("subscriber_received=%s gaps=%s shard_losses=%s" % (sub.get("received"), sub.get("gaps"), sub.get("shard_losses")))
+    why.append("generators report no per-shard acked counts")
+if not before or any(v is None for v in before.values()):
+    why.append("no complete inspect snapshot before the cell")
+if not after or any(v is None for v in after.values()):
+    why.append("no complete inspect snapshot after recovery")
+if sum(ack_shard.values()) != acked and have_ack_shard and ack_shard:
+    why.append("per-shard acked sums to %d, not %d" % (sum(ack_shard.values()), acked))
 if why:
     print("acked_record_loss=INCOMPLETE (%s); not a clean result" % "; ".join(why))
 else:
-    short = {k: (x, dl.get(k, 0)) for k, x in ack_shard.items() if dl.get(k, 0) < x}
-    if short or int(sub.get("gaps", 0)) or int(sub.get("shard_losses", 0)):
-        print("acked_record_loss=SUSPECTED: shards delivered<acked %s, gaps %s, shard losses %s" % (short, sub.get("gaps"), sub.get("shard_losses")))
+    short, total = {}, 0
+    for k, x in ack_shard.items():
+        grew = after.get(k, 0) - before.get(k, 0)
+        total += grew
+        if grew < x:
+            short[k] = "acked %d, log grew %d" % (x, grew)
+    print("appended_records_during_cell=%d (log commit marks after minus before, all shards)" % total)
+    if short:
+        print("acked_record_loss=SUSPECTED: %s" % short)
     else:
-        print("acked_record_loss=0 (delivered >= acked on all %d shards, no offset gap, %d acked)" % (len(ack_shard), acked))
+        print("acked_record_loss=0 (on all %d shards the log grew by at least the acked count; %d acked)" % (len(ack_shard), acked))
 PY
 
-# run_failover <name> <benv>: acked durable load on perf-failover from three
-# generators, a subscriber on the fourth, kill -9 of broker FAIL_VICTIM at
-# start_at + FAIL_KILL_AFTER, restart FAIL_DOWN_SECS later.
+read -r -d '' INSPECT_PY <<'PY' || true
+import json, sys
+seen = {}
+for l in sys.stdin:
+    l = l.strip()
+    if not l.startswith("{"):
+        continue
+    try:
+        r = json.loads(l)
+    except Exception:
+        continue
+    ld = r.get("leader") or {}
+    seen[r.get("shard")] = (ld.get("committed"), ld.get("tail"), ld.get("node_id", "none"))
+n = int(sys.argv[1])
+for s in range(n):
+    c, t, node = seen.get(s, (None, None, "none"))
+    print("insp.%d=%s/%s/%s" % (s, "x" if c is None else c, "x" if t is None else t, node))
+PY
+
+# build_felixctl: felixctl from the loadgen checkout on generator 0 (the release layout
+# does not ship it), when it is missing or from another commit.
+ensure_felixctl() {
+  agent_on "${GENS[0]}" "grep -q ${LOADGEN_SHA} /etc/felix/felixctl.ref 2>/dev/null && test -x /usr/local/bin/felixctl && echo have" 2>/dev/null | grep -q '^have' && return 0
+  plog "building felixctl at ${LOADGEN_SHA:0:8} on ${GENS[0]}"
+  run_on_str "${GENS[0]}" "set -e
+H=/home/felix; D=\$H/felix
+as_felix() { sudo -u felix env HOME=\$H PATH=\$H/.cargo/bin:/usr/bin:/bin \"\$@\"; }
+as_felix git -C \$D fetch -q --depth 1 origin ${LOADGEN_SHA}
+as_felix git -C \$D checkout -q --detach FETCH_HEAD
+cd \$D && as_felix env CARGO_TARGET_DIR=\$H/target \$H/.cargo/bin/cargo build --release --locked -q -p felixctl
+install -m 0755 \$H/target/release/felixctl /usr/local/bin/felixctl
+echo ${LOADGEN_SHA} > /etc/felix/felixctl.ref
+echo __RUNOK__" > "${OUT}/rf3/felixctl-build.txt" 2>&1 || { plog "WARN felixctl build failed (see ${OUT}/rf3/felixctl-build.txt); the failover loss check will be INCOMPLETE"; return 1; }
+}
+
+# inspect_tails <outfile>: every shard of perf-failover as the leaders report it,
+# "insp.<shard>=<commit mark>/<tail>/<leader>", x for a missing value. The brokers'
+# generated certificates change at every start, so the trust bundle is rebuilt first.
+# Needs node.view:cluster:*, which the admin token has. Retries until every shard shows
+# a commit mark equal to its tail (the load has stopped), up to 8 times.
+inspect_tails() {
+  local out="$1" vm b64 all="" n try bundle=/home/felix/felix-session/brokers-ca.pem res
+  : > "${out}"
+  for vm in "${BROKER_VMS[@]}"; do
+    b64="$(run_on_str "${vm}" "printf '__CA_BEGIN__%s__CA_END__\n' \"\$(base64 -w0 < ${CERT_FILE})\"
+echo __RUNOK__" 2>/dev/null | extract_between CA)"
+    [ -n "${b64}" ] || { echo "no certificate from ${vm}" >> "${out}"; return 1; }
+    all="${all}${b64}
+"
+  done
+  for try in 1 2 3 4 5 6 7 8; do
+    res="$(cp_remote "rm -f ${bundle}
+for b in $(printf '%s ' ${all}); do printf '%s' \"\$b\" | base64 -d >> ${bundle}; done
+export FELIX_BROKERS='${BROKER_ADDRS}' FELIX_AUTH_TENANT=perf FELIX_NAMESPACE=default FELIX_AUTH_TOKEN_FILE=/home/felix/felix-session/admin.token FELIX_CA_FILE=${bundle} FELIX_SERVER_NAME=localhost
+cat > /tmp/insp.py <<'PYEOF'
+${INSPECT_PY}
+PYEOF
+felixctl inspect shard perf-failover --json 2>/tmp/insp.err | python3 /tmp/insp.py ${SHARDS} | sed 's/^/__R__/'
+tail -2 /tmp/insp.err
+echo __RUNOK__" 2>&1)"
+    printf '%s\n' "${res}" | sed -n 's/^.*__R__\(insp\..*\)$/\1/p' > "${out}"
+    n="$(grep -c '=[0-9][0-9]*/[0-9]*/' "${out}")"
+    if [ "${n}" = "${SHARDS}" ] && ! awk -F'[=/]' '$2 != $3 { bad = 1 } END { exit bad }' "${out}" 2>/dev/null; then return 0; fi
+    [ "${try}" = 1 ] && printf '%s\n' "${res}" | grep -E '^(Error|error|felixctl|!!)' | head -3 >> "${out}.err"
+    sleep 10
+  done
+  [ "${n}" = "${SHARDS}" ]
+}
+
+# run_failover <name> <benv>: acked durable load on perf-failover from every
+# generator, kill -9 of broker FAIL_VICTIM at start_at + FAIL_KILL_AFTER, restart
+# FAIL_DOWN_SECS later. The loss check compares each shard's acked count against how far
+# the shard's log grew, read from the leaders by felixctl inspect before the cell and
+# after recovery.
 run_failover() {
-  local name="$1" benv="$2" dir sa kt vm sub cpid kpid spid k0 r0 victim secs dropin lgenv kv
+  local name="$1" benv="$2" dir sa kt cpid kpid k0 r0 victim secs dropin
   dir="${OUT}/cells/${name}"
   victim="${BROKER_VMS[${FAIL_VICTIM}]}"
-  sub="${GENS[$((NGEN - 1))]}"
   dropin=/etc/systemd/system/felix-broker.service.d/norestart.conf
   # shellcheck disable=SC2086
   stage "${BUILD_SHA}" ${benv}
   prep_cell perf-failover 1 || { echo "!! ${name}: prep failed" >&2; return 1; }
+  ensure_felixctl >/dev/null 2>&1
+  inspect_tails "${OUT}/rf3/${name}.inspect-before.txt" || plog "WARN ${name}: no complete inspect snapshot before the cell"
   rm -rf "${dir}"
   # CELL_SECS is read when ingest_flags runs, so it is set before the flags are built.
   (
     CELL_SECS="${FAIL_SECS}"
     # shellcheck disable=SC2207 # ingest_flags prints words
     ffl=($(SHARDS="${SHARDS}" PAYLOAD=4096 BATCH=64 IN_FLIGHT="${INFLIGHT}" ingest_flags perf-failover "${KEYS}" "${PER}") --cluster)
-    cell "${name}" $((NGEN - 1)) "${ffl[@]}"
+    cell "${name}" "${NGEN}" "${ffl[@]}"
   ) &
   cpid=$!
   sa=""
@@ -1054,15 +1156,6 @@ run_failover() {
     sleep 2
   done
   if [ -z "${sa}" ]; then kill "${cpid}" 2>/dev/null; wait "${cpid}" 2>/dev/null; plog "FAIL ${name}: the cell never got a start time"; return 1; fi
-  lgenv=""; for kv in ${CLIENT_B}; do lgenv="${lgenv}export ${kv}
-"; done
-  # The subscriber starts with the publishers and outlasts them by 25 s. It counts
-  # deliveries and offset gaps; it is the loss check's other side.
-  ( run_on_str "${sub}" "set -eu
-${lgenv}ulimit -n 1048576 || true
-felix-loadgen --brokers '${BROKER_ADDRS}' --tenant perf --token-file '${TOKEN_FILE}' --environment 'azure-${SESSION}-${name}-sub' --scenario subscribe --stream perf-failover --fanout 1 --concurrency 1 --duration-secs $((FAIL_SECS + 25)) --start-at ${sa} 2>/dev/null | grep '^LOADGEN_JSON' | tail -1
-echo __RUNOK__" > "${dir}/subscriber.txt" 2>&1 ) &
-  spid=$!
   kt=$(( sa + FAIL_KILL_AFTER ))
   ( run_on_str "${victim}" "set -u
 mkdir -p /etc/systemd/system/felix-broker.service.d
@@ -1079,20 +1172,22 @@ echo restart_t=\$(date +%s.%N)
 systemctl start felix-broker
 echo __RUNOK__" > "${dir}/kill.txt" 2>&1 ) &
   kpid=$!
-  wait "${cpid}"; wait "${spid}"; wait "${kpid}"
+  wait "${cpid}"; wait "${kpid}"
   # Whatever happened, the victim must restart on its own again.
   run_on_str "${victim}" "rm -f ${dropin}; systemctl daemon-reload; systemctl reset-failed felix-broker 2>/dev/null || true; systemctl start felix-broker; echo __RUNOK__" >/dev/null 2>&1
   k0="$(sed -n 's/^kill_t=//p' "${dir}/kill.txt" | tail -1)"; r0="$(sed -n 's/^restart_t=//p' "${dir}/kill.txt" | tail -1)"
   secs=$SECONDS
   if ensure_ready; then
-    echo "copies_caught_up_secs_after_restart_call=$(( SECONDS - secs )) (waited from the end of the cell)" > "${dir}/catchup.txt"
+    echo "copies_caught_up_secs_after_the_cell=$(( SECONDS - secs ))" > "${dir}/catchup.txt"
   else
     echo "copies_caught_up=NO within ${REPL_WAIT_SECS} s" > "${dir}/catchup.txt"
   fi
+  inspect_tails "${OUT}/rf3/${name}.inspect-after.txt" || plog "WARN ${name}: no complete inspect snapshot after recovery"
+  cp "${OUT}/rf3/${name}.inspect-before.txt" "${OUT}/rf3/${name}.inspect-after.txt" "${dir}/" 2>/dev/null
   {
     echo "victim=${victim} kill_t=${k0:-none} restart_t=${r0:-none} planned_kill_t=${kt}"
     if [ -n "${k0}" ] && [ -n "${r0}" ]; then python3 -I -c "${FAIL_PY}" "${dir}" "${k0}" "${r0}"; else echo "no kill timestamps (see kill.txt)"; fi
-    python3 -I -c "${LOSS_PY}" "${dir}"
+    python3 -I -c "${LOSS_PY}" "${dir}" "${dir}/${name}.inspect-before.txt" "${dir}/${name}.inspect-after.txt"
     cat "${dir}/catchup.txt"
   } > "${dir}/failover.txt" 2>&1
   # A cell is done when the instrument finished; the loss line decides what it means.
