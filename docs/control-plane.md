@@ -211,6 +211,25 @@ explicit operator step rather than automatic once every broker reports the
 feature: an automatic switch would make the last broker's upgrade the point
 of no return, and a rollback after it would fail.
 
+**A new cluster starts with incarnations.** A cluster that never ran an older
+release has nothing to roll back to, so `stream_incarnations` and
+`cache_incarnations` are finalized at its first broker registration
+(`cluster::fleet::NEW_CLUSTER`). The registration handler checks that the
+cluster is new: no stream or cache was ever created (the change feeds and
+snapshots are empty) and every node record is at node incarnation 0, which a
+broker leaves when it registers again, as every broker of an upgraded cluster
+does. It then finalizes each feature through the same store call as
+`POST /v1/fleet/features/{feature}/finalize`, so the same checks hold: every
+serving broker reported it, a Raft member below the level it needs refuses
+it, and a broker without it is refused from then on. A refusal leaves the
+feature to the operator. The registration answers with the enabled set after
+the finalize, so the broker uses it from its first stream
+(`a_new_cluster_finalizes_incarnations_at_its_first_registration`,
+`a_store_with_streams_is_not_finalized_on_registration`,
+`a_store_whose_brokers_registered_before_is_not_finalized`). A cluster that
+creates streams before any broker registers is not new by then, and is
+finalized by the operator as an upgraded one is.
+
 **Atomicity.** Registration is the only way a node starts serving, so a
 finalize only has to be serialized with registrations. The memory store holds
 its node lock across the check and the write, Postgres takes the same

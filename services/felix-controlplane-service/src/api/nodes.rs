@@ -104,6 +104,8 @@ pub(crate) async fn register_node(
         })?;
     // A new broker is somewhere to put held-back shards and missing copies.
     state.placement_wakes.request_pass();
+    let fleet_features =
+        crate::cluster::fleet::finalize_new_cluster(state.store.as_ref(), fleet_features).await;
 
     Ok(Json(NodeRegistrationResponse {
         node,

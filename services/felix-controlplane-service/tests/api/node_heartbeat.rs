@@ -553,3 +553,170 @@ async fn a_malformed_storage_id_is_a_bad_request() {
         None
     );
 }
+
+const NEW_CLUSTER: [&str; 2] = ["cache_incarnations", "stream_incarnations"];
+
+fn orders() -> felix_controlplane_service::model::Stream {
+    use felix_controlplane_service::model::{
+        ConsistencyLevel, DeliveryGuarantee, RetentionPolicy, Stream, StreamKind,
+    };
+    Stream {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "orders".to_string(),
+        kind: StreamKind::Stream,
+        shards: 1,
+        replication_factor: 1,
+        retention: RetentionPolicy {
+            max_age_seconds: None,
+            max_size_bytes: None,
+        },
+        consistency: ConsistencyLevel::Leader,
+        delivery: DeliveryGuarantee::AtMostOnce,
+        durable: true,
+        region: None,
+        routing: Default::default(),
+        incarnation: 0,
+    }
+}
+
+async fn scope(store: &InMemoryStore) {
+    use felix_controlplane_service::model::{Namespace, Tenant};
+    store
+        .create_tenant(Tenant {
+            tenant_id: "t1".to_string(),
+            display_name: "T1".to_string(),
+        })
+        .await
+        .expect("tenant");
+    store
+        .create_namespace(Namespace {
+            tenant_id: "t1".to_string(),
+            namespace: "ns".to_string(),
+            display_name: "NS".to_string(),
+        })
+        .await
+        .expect("namespace");
+}
+
+/// Registers `id` reporting what a current broker reports, and answers with
+/// the enabled set the registration returned.
+async fn register_current(
+    app: &axum::routing::RouterIntoService<Body, ()>,
+    token: &str,
+    id: &str,
+    port: u16,
+) -> serde_json::Value {
+    let features: Vec<&str> = felix_common::fleet::IMPLEMENTED
+        .iter()
+        .map(|feature| feature.name())
+        .collect();
+    let response = app
+        .clone()
+        .oneshot(authed(
+            token,
+            "POST",
+            "/v1/nodes",
+            serde_json::json!({
+                "node_id": id,
+                "advertise_addr": format!("10.0.0.4:{port}"),
+                "region": "local",
+                "features": features,
+            }),
+        ))
+        .await
+        .expect("request");
+    assert_eq!(response.status(), StatusCode::OK);
+    read_json(response).await["fleet_features"].clone()
+}
+
+/// **A new cluster starts with incarnations.** Its first broker's
+/// registration finalizes both, and answers with them, so a stream deleted
+/// and created again gets a new incarnation, and directories of its own.
+#[tokio::test]
+async fn a_new_cluster_finalizes_incarnations_at_its_first_registration() {
+    let store = store();
+    let token = fleet_token(&store).await;
+    let app = app_with(Arc::clone(&store)).await;
+
+    let enabled = register_current(&app, &token, "broker-a", 7001).await;
+    assert_eq!(enabled, serde_json::json!(NEW_CLUSTER));
+    let enabled = store.enabled_fleet_features().await.expect("enabled");
+    assert!(NEW_CLUSTER.iter().all(|feature| enabled.contains(*feature)));
+
+    scope(&store).await;
+    let first = store.create_stream(orders()).await.expect("create");
+    assert_ne!(first.incarnation, 0);
+    store
+        .delete_stream(&felix_controlplane_service::model::StreamKey {
+            tenant_id: "t1".to_string(),
+            namespace: "ns".to_string(),
+            stream: "orders".to_string(),
+        })
+        .await
+        .expect("delete");
+    let again = store.create_stream(orders()).await.expect("create again");
+    assert!(
+        again.incarnation > first.incarnation,
+        "{} after {}",
+        again.incarnation,
+        first.incarnation
+    );
+}
+
+/// A broker that predates incarnations registering first keeps them off,
+/// and a later current broker does not turn them on over it.
+#[tokio::test]
+async fn a_new_cluster_with_an_older_broker_stays_unfinalized() {
+    let store = store();
+    let token = fleet_token(&store).await;
+    let app = app_with(Arc::clone(&store)).await;
+    let response = app
+        .clone()
+        .oneshot(authed(
+            &token,
+            "POST",
+            "/v1/nodes",
+            serde_json::json!({
+                "node_id": "broker-old",
+                "advertise_addr": "10.0.0.4:7000",
+                "region": "local",
+            }),
+        ))
+        .await
+        .expect("request");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let enabled = register_current(&app, &token, "broker-a", 7001).await;
+    assert_eq!(enabled, serde_json::json!([]));
+}
+
+/// **A cluster with streams is not new.** Upgraded from a release before
+/// incarnations, it keeps finalizing to the operator.
+#[tokio::test]
+async fn a_store_with_streams_is_not_finalized_on_registration() {
+    let store = store();
+    let token = fleet_token(&store).await;
+    scope(&store).await;
+    store.create_stream(orders()).await.expect("create");
+    let app = app_with(Arc::clone(&store)).await;
+
+    let enabled = register_current(&app, &token, "broker-a", 7001).await;
+    assert_eq!(enabled, serde_json::json!([]));
+}
+
+/// Nor is one whose brokers registered before: an upgrade restarts them, and
+/// each takes the next node incarnation.
+#[tokio::test]
+async fn a_store_whose_brokers_registered_before_is_not_finalized() {
+    let store = store();
+    let token = fleet_token(&store).await;
+    store
+        .register_node(node("broker-a"))
+        .await
+        .expect("old run");
+    let app = app_with(Arc::clone(&store)).await;
+
+    let enabled = register_current(&app, &token, "broker-a", 7000).await;
+    assert_eq!(enabled, serde_json::json!([]));
+}

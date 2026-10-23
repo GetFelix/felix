@@ -377,6 +377,10 @@ fences caches.
 
 #### `stream_incarnations`
 
+This applies to a cluster upgraded from an older release. A new cluster
+finalizes `stream_incarnations` and `cache_incarnations` itself, at its first
+broker registration, because it has no older build to roll back to.
+
 Once finalized, every stream the control plane creates gets an incarnation,
 higher for every creation of its name, and brokers keep each incarnation's
 logs, group positions and dead letters in directories of their own. A stream
