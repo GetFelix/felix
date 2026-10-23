@@ -569,6 +569,51 @@ async fn an_incarnated_stream_waits_for_every_member() {
     );
 }
 
+/// A new cluster finalizes nothing by itself while a member runs an older
+/// release, even one at every feature's own level: the follower features are
+/// safe only once every control-plane member is upgraded. Once the member
+/// reports this build's level, the next registration finalizes them.
+#[tokio::test]
+async fn a_new_cluster_waits_for_every_member_to_finalize() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let level = crate::store::raft::command::METADATA_VERSION - 1;
+    let (store, version) = store_with_member_at(dir.path(), level).await;
+    let all: Vec<&str> = felix_common::fleet::IMPLEMENTED
+        .iter()
+        .map(|feature| feature.name())
+        .collect();
+    let (_, enabled) = store
+        .register_node_in_fleet(crate::store::contract::nodes::with_features(
+            crate::store::contract::nodes::node("broker-a", 7401),
+            &all,
+        ))
+        .await
+        .expect("register");
+    let enabled = crate::cluster::fleet::finalize_new_cluster(store.as_ref(), enabled).await;
+    assert!(enabled.is_empty(), "{enabled:?}");
+
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let enabled = loop {
+        let enabled =
+            crate::cluster::fleet::finalize_new_cluster(store.as_ref(), Default::default()).await;
+        if !enabled.is_empty() {
+            break enabled;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "nothing finalized after every member reported the level"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    for feature in crate::cluster::fleet::NEW_CLUSTER {
+        assert!(enabled.contains(feature.name()), "{feature}: {enabled:?}");
+    }
+}
+
 /// A member before level 18 records no deleted names and creates a deleted
 /// name again, so while one is in the group every member does; once every
 /// member has the level, a deleted name is refused until the finalize (#1447).

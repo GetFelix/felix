@@ -16,7 +16,8 @@
 //! it is being enabled.
 //!
 //! A feature brokers use only alongside others is finalized after them
-//! ([`check_prerequisites`]).
+//! ([`check_prerequisites`]). A new cluster finalizes [`NEW_CLUSTER`] itself
+//! ([`finalize_new_cluster`]).
 use std::collections::BTreeSet;
 
 use crate::model::Node;
@@ -143,11 +144,23 @@ pub(crate) fn check_prerequisites(
     )))
 }
 
-/// The features a cluster created on this release starts with. Each keeps a
-/// recreated stream or cache apart from the deleted one, which only works if
-/// the name never had a stream without an incarnation, and nothing older can
-/// be rolled back to on a cluster that never ran it.
-pub(crate) const NEW_CLUSTER: [felix_common::fleet::FleetFeature; 2] = [
+/// The features a cluster created on this release starts with. A finalize
+/// is one-way so that an upgraded fleet can still roll back before it, and a
+/// cluster that never ran an older build has nothing to roll back to. Each
+/// comes after the features it needs ([`felix_common::fleet::prerequisites`]).
+///
+/// Every implemented feature but `publisher_principal`, which stays the
+/// operator's: it grows every record by its publisher's id and keeps
+/// principal ids in the log, an opt-in a lone broker also leaves off unless
+/// `FELIX_RECORD_PUBLISHERS` asks for it.
+pub(crate) const NEW_CLUSTER: [felix_common::fleet::FleetFeature; 9] = [
+    felix_common::fleet::GENERATION_START,
+    felix_common::fleet::MAJORITY_ACK,
+    felix_common::fleet::LEASE_FREE_READS,
+    felix_common::fleet::FENCED_CACHES,
+    felix_common::fleet::JUMP_HASH_ROUTING,
+    felix_common::fleet::ATOMIC_COMMIT,
+    felix_common::fleet::GROUP_CURSOR_DEPENDENCIES,
     felix_common::fleet::STREAM_INCARNATIONS,
     felix_common::fleet::CACHE_INCARNATIONS,
 ];
@@ -174,10 +187,12 @@ pub(crate) async fn is_new_cluster(
         && store.cache_snapshot().await?.items.is_empty())
 }
 
-/// Finalize [`NEW_CLUSTER`] on a new cluster, through the same store call as
-/// an operator's finalize, so the same checks hold: every serving broker
-/// reported the feature, under the lock registrations take, and a broker
-/// without it is refused from then on. Answers with the enabled set after.
+/// Finalize [`NEW_CLUSTER`] on a new cluster, in order, through the same
+/// store call as an operator's finalize, so the same checks hold: every
+/// serving broker reported the feature, under the lock registrations take, a
+/// Raft member below the level it needs refuses it, and a broker without it
+/// is refused from then on. A feature whose prerequisites did not finalize is
+/// skipped. Answers with the enabled set after.
 ///
 /// Called after each registration while a feature is off. Once anything
 /// makes the cluster not new, finalizing is the operator's again.
@@ -189,6 +204,12 @@ pub(crate) async fn finalize_new_cluster(
         .iter()
         .all(|feature| enabled.contains(feature.name()))
     {
+        return enabled;
+    }
+    // `majority_ack` and the features after it are safe only once every
+    // control-plane member is upgraded (docs/control-plane.md), so a group
+    // part-way through an upgrade is left to the operator.
+    if !store.every_member_current().await {
         return enabled;
     }
     match is_new_cluster(store).await {

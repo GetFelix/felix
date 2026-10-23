@@ -150,6 +150,20 @@ refused at registration with 409 naming the feature, and exits, rather than
 being let in to switch the fleet's routing back. That holds for a broker that
 was down during the finalize too.
 
+**A new cluster starts with them finalized.** A cluster that never ran an
+older release has nothing to roll back to, so its first broker registration
+finalizes every feature its brokers report, in order, except
+`publisher_principal`, which stays an opt-in because it grows every record by
+its publisher's id. The control plane treats a cluster as new when no stream
+or cache was ever created and no broker has registered twice, and, under the
+Raft backend, only once every member runs this release. It finalizes
+through the same checks as the command below, so a feature some broker does
+not report stays off, along with the features that need it. Start every
+broker with the same `FELIX_QUORUM_READS` and `FELIX_INTERNAL_FENCE`: a broker
+that lacks a feature the first one finalized is refused. Everything below
+applies to a cluster upgraded from an older release, and to
+`publisher_principal`.
+
 #### Runbook: rolling out a fleet feature
 
 1. **Roll every broker** to the new build, one at a time as in
@@ -377,10 +391,6 @@ fences caches.
 
 #### `stream_incarnations`
 
-This applies to a cluster upgraded from an older release. A new cluster
-finalizes `stream_incarnations` and `cache_incarnations` itself, at its first
-broker registration, because it has no older build to roll back to.
-
 Once finalized, every stream the control plane creates gets an incarnation,
 higher for every creation of its name, and brokers keep each incarnation's
 logs, group positions and dead letters in directories of their own. A stream
@@ -392,8 +402,7 @@ Before the finalize a deleted stream's data stays on the brokers, and the
 control plane refuses with 409 to create a stream under a name deleted since
 this release, naming the finalize to run first. A stream created again under
 an older deleted name still reopens the old data. That data goes once the name
-is deleted again after the finalize. A new cluster finalizes this feature and
-`cache_incarnations` at its first broker registration.
+is deleted again after the finalize.
 
 - **Upgrade every control-plane instance first.** Under the Raft backend the
   finalize is refused with 409 until every member is at metadata version 10,
