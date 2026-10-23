@@ -702,7 +702,9 @@ echo __RUNOK__" 2>/dev/null | extract_between BAL)"
 # placement_pause / placement_resume: stop or allow placement's own moves.
 # An operator move starts under a pause but does not progress until resumed; a
 # failed leader is still replaced under one.
-PLACEMENT_PAUSED=0
+# Start as paused: an earlier run may have exited with placement still paused,
+# and the first prep then resumes it.
+PLACEMENT_PAUSED=1
 placement_pause() {
   cp_remote 'curl -fsS -X POST -H "Authorization: Bearer $t" "$u/v1/placement/pause" >/dev/null && echo __RUNOK__' >/dev/null 2>&1 \
     && PLACEMENT_PAUSED=1 || plog "WARN could not pause placement; leaders may move during the cell"
