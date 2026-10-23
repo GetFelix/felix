@@ -83,7 +83,7 @@ fi
 # The loadgen may come from a newer branch than the brokers (owner-direct ingest,
 # reconnect on broker loss); brokers and control plane stay on BUILD_SHA.
 # TODO: move to the merged main SHA once #1424 lands.
-: "${LOADGEN_SHA:=affbb83bd7c3a0477ea459896a7f8ef19ab2ba75}"   # feat/cluster-client-batch head (#1424)
+: "${LOADGEN_SHA:=d70cdad74f02dd46cf7b8b3bc7532d620a315faf}"   # feat/cluster-client-batch head (#1424)
 # JSON field names the loadgen reports (#1424), in one place; each entry lists the
 # names tried, first match wins. A mapping that finds nothing makes the loss check
 # INCOMPLETE. There is no delivered side: what the brokers appended comes from
@@ -91,8 +91,8 @@ fi
 export MAP_ACKED_SHARD="per_shard_acked"      # ingest: acked records per shard
 export MAP_RECONNECTS="reconnects"
 export MAP_FAILED_SENDS="failed_sends"
-export MAP_ACKS_WITH_OFFSET="acks_with_offset"         # with the two below: a proxy for forwarded sends
-export MAP_ACKS_WITHOUT_OFFSET="acks_without_offset"
+export MAP_ACKED_SENDS="acked_sends"            # exact forwarding, from felix_client::publishes_forwarded()
+export MAP_FORWARDED_SENDS="forwarded_sends"    # null for fire-and-forget
 
 : "${SHARDS:=12}"            # a multiple of 3, so leaders spread evenly over three brokers
 : "${PER:=16}"               # publishers per generator
@@ -803,23 +803,40 @@ balance() {
   echo "${out}" | awk '{ for (i = 1; i <= NF; i++) { split($i, x, ","); split(x[1], y, "="); v = y[2]; if (v ~ /^[0-9.]+$/) { n++; if (n == 1 || v < lo) lo = v; if (n == 1 || v > hi) hi = v } } if (n > 1 && lo > 0) printf "cpu spread %.2fx (", hi / lo; else printf "cpu spread n/a ("; print $0 ")" }'
 }
 
-# offset_proxy <dir>: acks with and without a log offset, summed over generators; the
-# loadgen's proxy for forwarded sends.
-offset_proxy() {
-  grep -h '^LOADGEN_JSON' "$1"/*.run.txt 2>/dev/null | python3 -I -c '
+# fwd_line <dir>: how much of the cell's traffic was forwarded. Acked cells: the
+# loadgen's exact forwarded_sends over acked_sends. Always: the brokers'
+# felix_broker_forwards_total delta summed over the three. The loadgen share (percent)
+# goes to forwarded_share.txt for the WARN check.
+fwd_line() {
+  local dir="$1" vm bf=0 share
+  for vm in "${BROKER_VMS[@]}"; do
+    bf=$(( bf + $(snapval "${dir}/${vm}.after.txt" m.forwards_total) - $(snapval "${dir}/${vm}.before.txt" m.forwards_total) ))
+  done
+  share="$(grep -h '^LOADGEN_JSON' "${dir}"/*.run.txt 2>/dev/null | python3 -I -c '
 import json, os, sys
-w = os.environ["MAP_ACKS_WITH_OFFSET"].split(); o = os.environ["MAP_ACKS_WITHOUT_OFFSET"].split()
-a = b = 0; seen = False
+A = os.environ["MAP_ACKED_SENDS"].split(); F = os.environ["MAP_FORWARDED_SENDS"].split()
+a = f = 0; seen = False
 for l in sys.stdin:
     try:
         j = json.loads(l.split(" ", 1)[1])
     except Exception:
         continue
-    for k in w:
-        if k in j: a += int(j[k] or 0); seen = True; break
-    for k in o:
-        if k in j: b += int(j[k] or 0); seen = True; break
-print("acks with/without offset %d/%d" % (a, b) if seen else "acks with/without offset n/a")'
+    x = next((j[k] for k in A if j.get(k) is not None), None)
+    y = next((j[k] for k in F if j.get(k) is not None), None)
+    if x is not None and y is not None:
+        a += int(x); f += int(y); seen = True
+print("%.2f" % (100.0 * f / a) if seen and a else "")')"
+  echo "${share}" > "${dir}/forwarded_share.txt"
+  [ -n "${share}" ] && share="${share}% of acked sends" || share="n/a (fire-and-forget)"
+  echo "forwarded ${share}, brokers' forwards_total delta ${bf}"
+}
+# warn_forwarded <name> <dir>: an owner-direct cell should forward almost nothing.
+warn_forwarded() {
+  local share
+  case "$1" in *fwdq*) return 0 ;; esac
+  share="$(cat "$2/forwarded_share.txt" 2>/dev/null)"
+  [ -n "${share}" ] && awk -v s="${share}" 'BEGIN { exit !(s > 5) }' && plog "WARN $1: forwarded_share ${share}% on an owner-direct cell"
+  return 0
 }
 
 headline() {
@@ -832,7 +849,7 @@ headline() {
   esac
   read -r a i d c <<<"$(cell_nums "${dir}")"
   if [ -z "${a}" ]; then echo "no steady window; $(ackpcts "${dir}")"; return; fi
-  echo "append ${a} MB/s (cluster, 3 copies), ingress ${i} MB/s, drops ${d}/s, cores ${c}; $(ackpcts "${dir}"); $(offset_proxy "${dir}"); $(balance "${dir}")"
+  echo "append ${a} MB/s (cluster, 3 copies), ingress ${i} MB/s, drops ${d}/s, cores ${c}; $(ackpcts "${dir}"); $(fwd_line "${dir}"); $(balance "${dir}")"
 }
 
 # ------------------------------------------------------------ the cells
@@ -1230,6 +1247,7 @@ for ((i = 0; i < M; i++)); do
   if is_done "${name}"; then
     consec=0
     plog "[$((i + 1))/${M}]  ${name}  $(headline "${OUT}/cells/${name}")  ETA $(eta "${REM[i + 1]}")"
+    [ "${kind}" = ingest ] && warn_forwarded "${name}" "${OUT}/cells/${name}"
     mark_logged "${name}"
   else
     consec=$((consec + 1)); failed="${failed} ${name}"

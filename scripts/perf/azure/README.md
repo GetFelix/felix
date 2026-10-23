@@ -296,7 +296,7 @@ is expected near 600-700 MB/s and a degraded one under 300. A broker below the g
 stops the campaign. The measured values are in `system/*.fio.txt`.
 
 **Cells** (2 trials each, A/B pairs interleaved): the Quorum matrix, owner-direct
-(`--cluster`: the cluster client publishes straight to each shard's leader, at any batch size); ingest lines also show `acks_with_offset`/`acks_without_offset`, the loadgen's proxy for forwarded sends, on the
+(`--cluster`: the cluster client publishes straight to each shard's leader, at any batch size); ingest lines also show the loadgen's exact `forwarded_sends` share of `acked_sends` and the brokers' `felix_broker_forwards_total` delta (the measure for fire-and-forget); an owner-direct cell above 5% forwarded logs a WARN, on the
 durable and in-memory replicated streams at 256 B and 4 KiB, batch 1 and 64,
 acked with 64 in flight, keys spread over every shard (`m`); one-in-flight Quorum
 ack and delivery latency, at the product's delivery batching and with it off
