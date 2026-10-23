@@ -392,7 +392,7 @@ with its row.
 | Durable, atomic 64 | Batch of 64 records, fsynced before the ack. | File stream, `sync: always`, atomic batch publish of 64. | NATS's atomic batch is all-or-nothing. <!-- TODO(verify): state whether a Felix batch is all-or-nothing on failure, with the code reference. --> |
 | Periodic fsync, 64 per request | Durable stream with `periodic` fsync. The ack comes before the fsync. | File stream with the default sync. The ack comes before the fsync. | Both can lose the last interval's writes on a power loss. The intervals differ. <!-- TODO(verify): Felix periodic interval and JetStream's default sync_interval, with sources. --> |
 | In memory | In-memory stream, acked. | Memory-storage stream, acked. | Neither touches disk. Both keep the records and can replay them. |
-| Fire and forget | Unacked publish into an in-memory stream. Every record is appended and can be replayed by offset. | Core NATS publish to a subject. The server routes the message and stores nothing. | **Not the same work.** NATS forwards and forgets. Felix appends to a log. Use this pair to compare fire-and-forget rate, not storage. |
+| Fire and forget | Unacked publish into an ephemeral stream: at-most-once, no disk and no log. Records pass through a bounded in-memory ring on their way to subscribers. | Core NATS publish to a subject. The server routes the message and keeps nothing. | The closest pair in the set. Both are at-most-once with nothing on disk. Felix still routes each record to its shard and holds it in the ring; core NATS forwards it and forgets it. <!-- TODO(verify): what the ring holds and for how long (a late subscriber's catch-up?), with a code reference. --> |
 
 Two differences apply to every pair:
 
