@@ -622,9 +622,9 @@ ensure_ready() {
 # seed-remote.sh creates them. Recreating frees the disk and re-places the leaders.
 reset_streams() {
   local s list="$*" body
-  # Read the body first: bash 3.2 expands variables in a quoted heredoc
-  # nested in $() inside a double-quoted string.
-  body="$(cat <<'BODY'
+  # Not $(cat <<'BODY'): bash 3.2 mis-parses a quoted heredoc inside $() and
+  # expands the remote script's variables here.
+  IFS= read -r -d '' body <<'BODY' || true
 for s in $STREAMS; do
   case "$s" in *durable*|perf-failover) d=true ;; *) d=false ;; esac
   curl -s -X DELETE -H "Authorization: Bearer $t" "$u/v1/tenants/perf/namespaces/default/streams/$s" >/dev/null 2>&1 || true
@@ -635,7 +635,6 @@ for s in $STREAMS; do
   case "$code" in 2*) echo "created.$s=$code" ;; *) echo "!! create $s -> $code"; cat /tmp/reset.resp; exit 1 ;; esac
 done
 BODY
-)"
   cp_remote "STREAMS='${list}'; SHARDS=${SHARDS}; RF=3
 ${body}
 echo __RUNOK__" > "${OUT}/system/reset-streams.txt" 2>&1 || { plog "WARN stream recreate failed: $(tail -3 "${OUT}/system/reset-streams.txt" | tr '\n' ' ')"; return 1; }
