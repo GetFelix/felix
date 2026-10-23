@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792711596410,
+  "lastUpdate": 1792715061989,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -32708,6 +32708,58 @@ window.BENCHMARK_DATA = {
             "range": "4178.62",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 808368.42\nmean: 808993.87\nstdev: 4178.62\ncv: 0.52%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "77b6772141af79b1c84b34a3a0eed9cb7052c8fa",
+          "message": "feat(broker): durable streams ack after commit by default (#1421) (#1422)\n\n* feat(broker): durable streams ack after commit by default (#1421)\n\nA durable stream's acknowledged publish is answered after it commits unless\nFELIX_ACK_ON_COMMIT is set to a false value. In-memory streams still answer\non enqueue. FELIX_ACK_ON_COMMIT=1 makes every stream wait.\n\nSpec-Unaffected: the shard model already contains both the ack-on-enqueue path (Admit/Claim with a queued write) and the ack-after-commit path; this changes which one a default broker takes, not either path or any lease, quorum, report, promotion or handoff step.\n\n* fix(broker): refuse a publish with no ack room before queueing it; strict ack env parsing (#1421)\n\nReserve the commit-ack waiter before the enqueue so exhaustion refuses with a\nretryable overloaded and nothing queued. FELIX_ACK_ON_COMMIT accepts on/off,\ntrims and ignores case; an unrecognised value keeps the default with a warning.\nConformance gains a check on the shipped default. Sample configs that silently\nopted out are corrected and stale ack comments updated.\n\nSpec-Unaffected: only the rejection point of a publish with no room for its answer moves, from after the enqueue to before it; no lease, quorum, report, promotion or handoff step changes.",
+          "timestamp": "2026-10-23T00:20:00Z",
+          "tree_id": "dbbf9d6a82d01f9b54f3cde31cbcb0c99ff14a32",
+          "url": "https://github.com/GetFelix/felix/commit/77b6772141af79b1c84b34a3a0eed9cb7052c8fa"
+        },
+        "date": 1792715061341,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 340176.52,
+            "range": "9955.29",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 340176.52\nmean: 339826.98\nstdev: 9955.29\ncv: 2.93%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 340176.52,
+            "range": "9955.29",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 340176.52\nmean: 339826.98\nstdev: 9955.29\ncv: 2.93%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82537.21,
+            "range": "491.57",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82537.21\nmean: 82558.60\nstdev: 491.57\ncv: 0.60%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 825372.06,
+            "range": "4915.65",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 825372.06\nmean: 825586.03\nstdev: 4915.65\ncv: 0.60%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
