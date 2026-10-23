@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792788461110,
+  "lastUpdate": 1792798314644,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -42966,6 +42966,72 @@ window.BENCHMARK_DATA = {
             "range": "2414.59",
             "unit": "us",
             "extra": "trials: 5\nmedian: 379.00\nmean: 1493.40\nstdev: 2414.59\ncv: 161.68%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3c855a75076efd03aaeb0d8afa3d5793fd97105b",
+          "message": "feat(controlplane): a new cluster finalizes every fleet feature it can (#1457)\n\n* feat(controlplane): a new cluster finalizes every fleet feature it can\n\nA new cluster finalized only the incarnations, so a fresh RF=3 cluster\nacknowledged Quorum writes on the control plane's replica report until an\noperator finalized majority_ack. Its first broker registration now finalizes\nevery feature its brokers report, prerequisites first, through the operator's\nchecks, except publisher_principal, which stays an opt-in. Under Raft nothing\nis finalized until every member reports this build's metadata level.\n\nSpec-Unaffected: the only change under felix-common/src/fleet is a module doc line; no broker or replication behaviour changes, only when the control plane finalizes.\n\n* fix(controlplane): retry a new cluster's held finalize in the background\n\nA finalize held back because a control-plane member had not reported this\nbuild's level was never tried again: the next registration bumps a node\nincarnation, the cluster no longer reads as new, and it stays unfinalized.\nThe instance that took the registration now retries in the background until\nnothing that passes holds it, without asking again whether the cluster is\nnew. A refused broker started with FELIX_INTERNAL_FENCE=false is told to\nunset it, as one reading by lease already is.\n\nSpec-Unaffected: control-plane finalize timing and a refusal message only; no broker, replication or placement behaviour changes.\n\n* fix(controlplane): bound a new cluster's finalize retry and stop it on shutdown\n\nThe retry gives up ten minutes after the first held attempt, with a warning\nnaming the manual finalize, and ends when the API shuts down.\n\nSpec-Unaffected: control-plane finalize timing only.",
+          "timestamp": "2026-10-23T16:27:23-07:00",
+          "tree_id": "86e68e1fe2428a64b1e7199ad56864a056f0054e",
+          "url": "https://github.com/GetFelix/felix/commit/3c855a75076efd03aaeb0d8afa3d5793fd97105b"
+        },
+        "date": 1792798309573,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 184,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 184.00\nmean: 184.40\nstdev: 1.14\ncv: 0.62%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 247,
+            "range": "1.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 247.00\nmean: 246.80\nstdev: 1.92\ncv: 0.78%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 305,
+            "range": "16.82",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 305.00\nmean: 307.40\nstdev: 16.82\ncv: 5.47%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 222,
+            "range": "9.42",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 222.00\nmean: 226.20\nstdev: 9.42\ncv: 4.16%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 462,
+            "range": "153.37",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 462.00\nmean: 526.60\nstdev: 153.37\ncv: 29.12%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1560,
+            "range": "812.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1560.00\nmean: 1432.00\nstdev: 812.00\ncv: 56.70%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
