@@ -87,7 +87,7 @@ pub(crate) async fn list_caches(
         (status = 201, description = "Cache created", body = Cache),
         (status = 200, description = "Cache already exists with this configuration; nothing changed", body = Cache),
         (status = 404, description = "Tenant or namespace not found", body = crate::api::types::ErrorResponse),
-        (status = 409, description = "Cache already exists with a different configuration", body = crate::api::types::ErrorResponse),
+        (status = 409, description = "Cache already exists with a different configuration, or a cache of this name was deleted before the fleet finalized `cache_incarnations`", body = crate::api::types::ErrorResponse),
         (status = 503, description = "`busy`: on Postgres, other writes to the same feed held it for more than 5 s and nothing was written, so retry. `unavailable`: on Raft, no quorum committed the write in time, and it may still land, so do not blindly retry", body = crate::api::types::ErrorResponse)
     )
 )]
@@ -103,6 +103,9 @@ pub(crate) async fn create_cache(
     let cache = cache_to_create(&state, tenant_id, namespace, body).await?;
     match state.store.create_cache(cache.clone()).await {
         Ok(created) => Ok((StatusCode::CREATED, Json(created))),
+        Err(ref err) if let Some(refusal) = crate::store::reused_name_refusal(err) => {
+            Err(api_conflict("conflict", refusal))
+        }
         Err(StoreError::Conflict(_)) => match state.store.get_cache(&cache_key(&cache)).await {
             Ok(existing) if same_cache(&existing, &cache) => Ok((StatusCode::OK, Json(existing))),
             Ok(_) | Err(StoreError::NotFound(_)) => Err(api_conflict(

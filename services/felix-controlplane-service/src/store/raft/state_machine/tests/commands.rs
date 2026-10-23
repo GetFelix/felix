@@ -49,6 +49,7 @@ async fn a_stale_conditional_assignment_write_is_answered_not_applied() {
             namespace: namespace("t1", "ns"),
         },
         MetaCommand::CreateStream {
+            names: false,
             stream: stream("t1", "ns", "orders"),
             incarnations: false,
         },
@@ -284,6 +285,7 @@ async fn a_field_this_build_does_not_know_is_refused_not_dropped() {
 
     let mut envelope: serde_json::Value =
         serde_json::from_slice(&encode_command(&MetaCommand::CreateStream {
+            names: false,
             stream: stream("t1", "ns", "orders"),
             incarnations: false,
         }))
@@ -324,10 +326,12 @@ async fn machine_with_reported_shards() -> MetadataStateMachine {
             namespace: namespace("t1", "ns"),
         },
         MetaCommand::CreateStream {
+            names: false,
             stream: stream("t1", "ns", "orders"),
             incarnations: false,
         },
         MetaCommand::CreateCache {
+            names: false,
             cache: cache("t1", "ns", "orders"),
             incarnations: false,
         },
@@ -390,12 +394,14 @@ async fn a_delete_takes_shard_state_only_when_its_entry_says_so() {
     let deletes = |take: bool| {
         [
             vec![MetaCommand::DeleteTenant {
+                names: false,
                 unassign: false,
                 tenant_id: "t1".to_string(),
                 take_shards: take,
                 incarnations: false,
             }],
             vec![MetaCommand::DeleteNamespace {
+                names: false,
                 unassign: false,
                 key: ns_key(),
                 take_shards: take,
@@ -403,6 +409,7 @@ async fn a_delete_takes_shard_state_only_when_its_entry_says_so() {
             }],
             vec![
                 MetaCommand::DeleteStream {
+                    names: false,
                     unassign: false,
                     key: StreamKey {
                         tenant_id: "t1".to_string(),
@@ -413,6 +420,7 @@ async fn a_delete_takes_shard_state_only_when_its_entry_says_so() {
                     incarnations: false,
                 },
                 MetaCommand::DeleteCache {
+                    names: false,
                     unassign: false,
                     key: crate::model::CacheKey {
                         tenant_id: "t1".to_string(),
@@ -452,6 +460,7 @@ async fn an_unknown_flag_on_a_delete_is_refused() {
     let before = crate::raft::AppStateMachine::snapshot(&machine).await;
     let mut envelope: serde_json::Value =
         serde_json::from_slice(&encode_command(&MetaCommand::DeleteTenant {
+            names: false,
             unassign: false,
             tenant_id: "t1".to_string(),
             take_shards: false,

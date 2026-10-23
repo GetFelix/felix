@@ -660,6 +660,7 @@ async fn a_restore_resumes_after_a_control_plane_restart() {
         })
         .await
         .expect("drop the three-shard stream");
+    store.forget_deleted_names().await;
     store
         .create_stream(replicated_stream("orders", 1, 3))
         .await
@@ -738,6 +739,7 @@ async fn a_shard_placed_with_its_leader_alone_is_topped_up_once_brokers_join() {
         })
         .await
         .expect("drop the three-shard stream");
+    store.forget_deleted_names().await;
     store
         .create_stream(replicated_stream("orders", 1, 3))
         .await

@@ -54,6 +54,17 @@ pub(super) async fn create_resources(
         }
     }
 
+    {
+        // Every name before anything goes in, so a refusal leaves nothing.
+        let nodes = store.nodes.read().await;
+        for stream in &streams {
+            super::streams::refuse_reused_name(store, &nodes, &stream_key(stream), decide).await?;
+        }
+        for cache in &caches {
+            super::caches::refuse_reused_name(store, &nodes, &cache_key(cache), decide).await?;
+        }
+    }
+
     let mut stored = Vec::with_capacity(streams.len());
     let mut stored_caches = Vec::with_capacity(caches.len());
     if !streams.is_empty() {

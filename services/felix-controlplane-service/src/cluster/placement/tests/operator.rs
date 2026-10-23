@@ -579,6 +579,7 @@ async fn a_cancel_decided_before_a_cut_over_is_not_written_after_it() {
         })
         .await
         .expect("drop the three-shard stream");
+    store.forget_deleted_names().await;
     store
         .create_stream(stream("orders", 1))
         .await
@@ -691,6 +692,7 @@ async fn quorum_shard() -> (crate::store::memory::InMemoryStore, ShardAssignment
         })
         .await
         .expect("drop the three-shard stream");
+    store.forget_deleted_names().await;
     store
         .create_stream(Stream {
             consistency: ConsistencyLevel::Quorum,

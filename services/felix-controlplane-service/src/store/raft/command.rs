@@ -56,7 +56,7 @@ pub const COMMAND_VERSION: u16 = 1;
 /// it the next level and raises this, so nothing proposes it until every
 /// member runs that release. New fields get their level in `fields.txt`.
 /// Never lower it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 17;
+pub const METADATA_VERSION: u16 = 18;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -80,6 +80,10 @@ pub enum MetaCommand {
         /// (`store::memory::ShardCleanup::Unassign`).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         unassign: bool,
+        /// Level 18: record the deleted names, and refuse to create one
+        /// again before the finalize (`store::memory::Decide::Named`).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        names: bool,
     },
     CreateNamespace {
         namespace: Namespace,
@@ -96,6 +100,10 @@ pub enum MetaCommand {
         /// (`store::memory::ShardCleanup::Unassign`).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         unassign: bool,
+        /// Level 18: record the deleted names, and refuse to create one
+        /// again before the finalize (`store::memory::Decide::Named`).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        names: bool,
     },
     CreateStream {
         stream: Stream,
@@ -103,6 +111,10 @@ pub enum MetaCommand {
         /// decided from this entry's own fields (`store::memory::Decide`).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         incarnations: bool,
+        /// Level 18: record the deleted names, and refuse to create one
+        /// again before the finalize (`store::memory::Decide::Named`).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        names: bool,
     },
     PatchStream {
         key: StreamKey,
@@ -122,12 +134,20 @@ pub enum MetaCommand {
         /// (`store::memory::ShardCleanup::Unassign`).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         unassign: bool,
+        /// Level 18: record the deleted names, and refuse to create one
+        /// again before the finalize (`store::memory::Decide::Named`).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        names: bool,
     },
     CreateCache {
         cache: Cache,
         /// As for [`MetaCommand::CreateStream`].
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         incarnations: bool,
+        /// Level 18: record the deleted names, and refuse to create one
+        /// again before the finalize (`store::memory::Decide::Named`).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        names: bool,
     },
     PatchCache {
         key: CacheKey,
@@ -145,6 +165,10 @@ pub enum MetaCommand {
         /// (`store::memory::ShardCleanup::Unassign`).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         unassign: bool,
+        /// Level 18: record the deleted names, and refuse to create one
+        /// again before the finalize (`store::memory::Decide::Named`).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        names: bool,
     },
     /// Registers without fleet features: the entry predates them, and an
     /// older member applies it that way, so this build does too.
@@ -387,6 +411,10 @@ pub enum MetaCommand {
         /// As for [`MetaCommand::CreateStream`].
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         incarnations: bool,
+        /// Level 18: record the deleted names, and refuse to create one
+        /// again before the finalize (`store::memory::Decide::Named`).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        names: bool,
     },
     /// Revoke principals' broker tokens issued at or before `revoked_at`,
     /// which the proposer decided. Level 7.

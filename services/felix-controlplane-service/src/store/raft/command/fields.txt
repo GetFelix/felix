@@ -86,6 +86,7 @@
 0 create_cache.cache.shards
 0 create_cache.cache.tenant_id
 14 create_cache.incarnations
+18 create_cache.names
 0 create_namespace
 0 create_namespace.namespace
 0 create_namespace.namespace.display_name
@@ -102,6 +103,7 @@
 5 create_resources.caches[].shards
 5 create_resources.caches[].tenant_id
 14 create_resources.incarnations
+18 create_resources.names
 5 create_resources.streams
 5 create_resources.streams[].consistency
 5 create_resources.streams[].delivery
@@ -120,6 +122,7 @@
 5 create_resources.streams[].tenant_id
 0 create_stream
 14 create_stream.incarnations
+18 create_stream.names
 0 create_stream.stream
 0 create_stream.stream.consistency
 0 create_stream.stream.delivery
@@ -146,6 +149,7 @@
 0 delete_cache.key.cache
 0 delete_cache.key.namespace
 0 delete_cache.key.tenant_id
+18 delete_cache.names
 10 delete_cache.take_reports
 17 delete_cache.unassign
 0 delete_idp_issuer
@@ -156,6 +160,7 @@
 0 delete_namespace.key
 0 delete_namespace.key.namespace
 0 delete_namespace.key.tenant_id
+18 delete_namespace.names
 10 delete_namespace.take_shards
 17 delete_namespace.unassign
 0 delete_node
@@ -173,10 +178,12 @@
 0 delete_stream.key.namespace
 0 delete_stream.key.stream
 0 delete_stream.key.tenant_id
+18 delete_stream.names
 10 delete_stream.take_reports
 17 delete_stream.unassign
 0 delete_tenant
 14 delete_tenant.incarnations
+18 delete_tenant.names
 10 delete_tenant.take_shards
 0 delete_tenant.tenant_id
 17 delete_tenant.unassign
@@ -238,6 +245,14 @@
 0 import_state.state.caches[][].replication_factor
 0 import_state.state.caches[][].shards
 0 import_state.state.caches[][].tenant_id
+18 import_state.state.deleted_cache_names
+18 import_state.state.deleted_cache_names[].cache
+18 import_state.state.deleted_cache_names[].namespace
+18 import_state.state.deleted_cache_names[].tenant_id
+18 import_state.state.deleted_stream_names
+18 import_state.state.deleted_stream_names[].namespace
+18 import_state.state.deleted_stream_names[].stream
+18 import_state.state.deleted_stream_names[].tenant_id
 2 import_state.state.fleet_enabled
 0 import_state.state.idp_issuers
 0 import_state.state.idp_issuers[][][].audiences
@@ -798,6 +813,14 @@
 0 snapshot.state.caches[][].replication_factor
 0 snapshot.state.caches[][].shards
 0 snapshot.state.caches[][].tenant_id
+18 snapshot.state.deleted_cache_names
+18 snapshot.state.deleted_cache_names[].cache
+18 snapshot.state.deleted_cache_names[].namespace
+18 snapshot.state.deleted_cache_names[].tenant_id
+18 snapshot.state.deleted_stream_names
+18 snapshot.state.deleted_stream_names[].namespace
+18 snapshot.state.deleted_stream_names[].stream
+18 snapshot.state.deleted_stream_names[].tenant_id
 2 snapshot.state.fleet_enabled
 0 snapshot.state.idp_issuers
 0 snapshot.state.idp_issuers[][][].audiences

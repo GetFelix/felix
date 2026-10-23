@@ -21,7 +21,9 @@ pub(crate) async fn run_incarnation_contract(store: Arc<dyn ControlPlaneStore>) 
     super::shards::seed(store.as_ref()).await;
     let s = store.as_ref();
     before_the_finalize_a_stream_is_at_0_and_its_delete_names_nothing(s).await;
+    before_the_finalize_a_deleted_name_is_not_created_again(s).await;
     finalize(s).await;
+    after_the_finalize_a_deleted_name_is_created_again(s).await;
     a_create_proposing_nothing_still_gets_an_incarnation(s).await;
     a_names_incarnations_only_increase(s).await;
     a_batch_create_answers_the_incarnation_it_stored(s).await;
@@ -317,4 +319,74 @@ fn stream(namespace: &str, name: &str, proposed: u64) -> Stream {
         routing: Default::default(),
         incarnation: proposed,
     }
+}
+
+/// Before the finalize a name deleted once is not created again, alone, in a
+/// batch, or after a cascade took it: at incarnation 0 the new stream would
+/// open the deleted one's logs on every broker (#1447).
+async fn before_the_finalize_a_deleted_name_is_not_created_again(store: &dyn ControlPlaneStore) {
+    let refused = |result: &Result<Stream, crate::store::StoreError>| {
+        matches!(
+            result,
+            Err(crate::store::StoreError::Conflict(message))
+                if message.contains("was deleted on this cluster")
+                    && message.contains("finalize stream_incarnations")
+        )
+    };
+    let again = store.create_stream(stream(NAMESPACE, "early", 0)).await;
+    assert!(refused(&again), "{again:?}");
+    let batch = store
+        .create_resources(vec![stream(NAMESPACE, "early", 0)], Vec::new())
+        .await
+        .map(|(mut streams, _)| streams.remove(0));
+    assert!(refused(&batch), "{batch:?}");
+    assert!(
+        store
+            .deleted_stream_names()
+            .await
+            .expect("names")
+            .contains(&key(NAMESPACE, "early"))
+    );
+
+    const CASCADED: &str = "cascaded";
+    let namespace = Namespace {
+        tenant_id: TENANT.to_string(),
+        namespace: CASCADED.to_string(),
+        display_name: "Cascaded".to_string(),
+    };
+    store
+        .create_namespace(namespace.clone())
+        .await
+        .expect("namespace");
+    store
+        .create_stream(stream(CASCADED, "inside", 0))
+        .await
+        .expect("create");
+    store
+        .delete_namespace(&NamespaceKey {
+            tenant_id: TENANT.to_string(),
+            namespace: CASCADED.to_string(),
+        })
+        .await
+        .expect("delete namespace");
+    store
+        .create_namespace(namespace)
+        .await
+        .expect("namespace again");
+    let again = store.create_stream(stream(CASCADED, "inside", 0)).await;
+    assert!(refused(&again), "{again:?}");
+}
+
+/// Once finalized, the deleted name is created again, at an incarnation of
+/// its own, so it opens directories of its own.
+async fn after_the_finalize_a_deleted_name_is_created_again(store: &dyn ControlPlaneStore) {
+    let again = store
+        .create_stream(stream(NAMESPACE, "early", 0))
+        .await
+        .expect("create again");
+    assert_ne!(again.incarnation, 0);
+    store
+        .delete_stream(&key(NAMESPACE, "early"))
+        .await
+        .expect("clean up");
 }

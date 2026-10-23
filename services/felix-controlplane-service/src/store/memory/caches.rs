@@ -58,6 +58,7 @@ pub(super) async fn create_cache(
     // Held until the cache is in, so a finalize cannot land between the read
     // and the write: nothing is created at 0 after it.
     let nodes = store.nodes.read().await;
+    refuse_reused_name(store, &nodes, &key, decide).await?;
     let mut cache = cache;
     cache.incarnation = incarnation_for(store, &nodes, &key, cache.incarnation, decide).await;
     caches.insert(key.clone(), cache.clone());
@@ -197,7 +198,7 @@ pub(super) async fn incarnation_for(
 ) -> u64 {
     if decide == Decide::Legacy
         || !incarnations_finalized(nodes)
-        || (decide == Decide::Entry && proposed == 0)
+        || (matches!(decide, Decide::Entry | Decide::Named) && proposed == 0)
     {
         return 0;
     }
@@ -217,6 +218,9 @@ pub(super) async fn record_tombstone(
     incarnation: u64,
     decide: Decide,
 ) -> Option<u64> {
+    if decide.guards_names() {
+        store.deleted_cache_names.write().await.insert(key.clone());
+    }
     if decide == Decide::Legacy || !incarnations_finalized(nodes) {
         return None;
     }
@@ -224,4 +228,40 @@ pub(super) async fn record_tombstone(
     let through = tombstones.entry(key.clone()).or_default();
     *through = (*through).max(incarnation);
     Some(*through)
+}
+
+/// [`super::streams::refuse_reused_name`] for caches and
+/// `cache_incarnations`.
+pub(super) async fn refuse_reused_name(
+    store: &InMemoryStore,
+    nodes: &super::NodeState,
+    key: &CacheKey,
+    decide: Decide,
+) -> StoreResult<()> {
+    if decide.guards_names()
+        && !incarnations_finalized(nodes)
+        && store.deleted_cache_names.read().await.contains(key)
+    {
+        return Err(crate::store::reused_name(
+            "cache",
+            &key.cache,
+            felix_common::fleet::CACHE_INCARNATIONS,
+        ));
+    }
+    Ok(())
+}
+
+/// Every deleted cache name, ordered.
+pub(super) async fn deleted_cache_names(store: &InMemoryStore) -> Vec<CacheKey> {
+    let mut names: Vec<CacheKey> = store
+        .deleted_cache_names
+        .read()
+        .await
+        .iter()
+        .cloned()
+        .collect();
+    names.sort_by(|a, b| {
+        (&a.tenant_id, &a.namespace, &a.cache).cmp(&(&b.tenant_id, &b.namespace, &b.cache))
+    });
+    names
 }

@@ -288,6 +288,8 @@ fn log<T>(item: T) -> ExportedLog<T> {
 
 fn exported() -> ExportedState {
     ExportedState {
+        deleted_stream_names: vec![stream_key()],
+        deleted_cache_names: vec![cache_key()],
         v: 1,
         tenants: vec![(s("t"), tenant())],
         namespaces: vec![(namespace_key(), namespace())],
@@ -382,6 +384,7 @@ fn commands() -> Vec<MetaCommand> {
     vec![
         MetaCommand::CreateTenant { tenant: tenant() },
         MetaCommand::DeleteTenant {
+            names: true,
             unassign: true,
             tenant_id: s("t"),
             take_shards: true,
@@ -391,12 +394,14 @@ fn commands() -> Vec<MetaCommand> {
             namespace: namespace(),
         },
         MetaCommand::DeleteNamespace {
+            names: true,
             unassign: true,
             key: namespace_key(),
             take_shards: true,
             incarnations: true,
         },
         MetaCommand::CreateStream {
+            names: true,
             stream: stream(),
             incarnations: true,
         },
@@ -405,12 +410,14 @@ fn commands() -> Vec<MetaCommand> {
             patch: stream_patch(),
         },
         MetaCommand::DeleteStream {
+            names: true,
             unassign: true,
             key: stream_key(),
             take_reports: true,
             incarnations: true,
         },
         MetaCommand::CreateCache {
+            names: true,
             cache: cache(),
             incarnations: true,
         },
@@ -421,6 +428,7 @@ fn commands() -> Vec<MetaCommand> {
             },
         },
         MetaCommand::DeleteCache {
+            names: true,
             unassign: true,
             key: cache_key(),
             take_reports: true,
@@ -565,6 +573,7 @@ fn commands() -> Vec<MetaCommand> {
         MetaCommand::RegisterNodeInFleet { node: node() },
         MetaCommand::FinalizeFleetFeature { feature: s("f") },
         MetaCommand::CreateResources {
+            names: true,
             streams: vec![stream()],
             caches: vec![cache()],
             incarnations: true,
@@ -776,6 +785,7 @@ fn a_command_at_its_defaults_needs_only_its_variant() {
     plain.incarnation = 0;
     assert_eq!(
         MetaCommand::CreateStream {
+            names: false,
             stream: plain,
             incarnations: false
         }
@@ -784,6 +794,7 @@ fn a_command_at_its_defaults_needs_only_its_variant() {
     );
     assert_eq!(
         MetaCommand::CreateStream {
+            names: false,
             stream: stream(),
             incarnations: false
         }

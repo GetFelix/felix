@@ -190,11 +190,12 @@ impl MetadataStateMachine {
                 take_shards,
                 incarnations,
                 unassign,
+                names,
             } => store
                 .apply_delete_tenant(
                     &tenant_id,
                     cleanup(take_shards, unassign),
-                    decide(incarnations),
+                    decide(incarnations, names),
                 )
                 .await
                 .map(|()| MetaResponse::Unit)
@@ -209,16 +210,22 @@ impl MetadataStateMachine {
                 take_shards,
                 incarnations,
                 unassign,
+                names,
             } => store
-                .apply_delete_namespace(&key, cleanup(take_shards, unassign), decide(incarnations))
+                .apply_delete_namespace(
+                    &key,
+                    cleanup(take_shards, unassign),
+                    decide(incarnations, names),
+                )
                 .await
                 .map(|()| MetaResponse::Unit)
                 .map_err(Into::into),
             MetaCommand::CreateStream {
                 stream,
                 incarnations,
+                names,
             } => store
-                .apply_create_stream(stream, decide(incarnations))
+                .apply_create_stream(stream, decide(incarnations, names))
                 .await
                 .map(|stream| MetaResponse::Stream { stream })
                 .map_err(Into::into),
@@ -232,16 +239,22 @@ impl MetadataStateMachine {
                 take_reports,
                 incarnations,
                 unassign,
+                names,
             } => store
-                .apply_delete_stream(&key, cleanup(take_reports, unassign), decide(incarnations))
+                .apply_delete_stream(
+                    &key,
+                    cleanup(take_reports, unassign),
+                    decide(incarnations, names),
+                )
                 .await
                 .map(|()| MetaResponse::Unit)
                 .map_err(Into::into),
             MetaCommand::CreateCache {
                 cache,
                 incarnations,
+                names,
             } => store
-                .apply_create_cache(cache, decide(incarnations))
+                .apply_create_cache(cache, decide(incarnations, names))
                 .await
                 .map(|cache| MetaResponse::Cache { cache })
                 .map_err(Into::into),
@@ -255,8 +268,13 @@ impl MetadataStateMachine {
                 take_reports,
                 incarnations,
                 unassign,
+                names,
             } => store
-                .apply_delete_cache(&key, cleanup(take_reports, unassign), decide(incarnations))
+                .apply_delete_cache(
+                    &key,
+                    cleanup(take_reports, unassign),
+                    decide(incarnations, names),
+                )
                 .await
                 .map(|()| MetaResponse::Unit)
                 .map_err(Into::into),
@@ -280,8 +298,9 @@ impl MetadataStateMachine {
                 streams,
                 caches,
                 incarnations,
+                names,
             } => store
-                .apply_create_resources(streams, caches, decide(incarnations))
+                .apply_create_resources(streams, caches, decide(incarnations, names))
                 .await
                 .map(|(streams, caches)| {
                     if caches.iter().any(|cache| cache.incarnation != 0) {
@@ -725,13 +744,13 @@ fn assignment_written(written: AssignmentWrite) -> MetaResponse {
     }
 }
 
-/// What an entry's `incarnations` flag means: decided from the entry, or as
-/// a member before level 14 decides.
-fn decide(incarnations: bool) -> Decide {
-    if incarnations {
-        Decide::Entry
-    } else {
-        Decide::Legacy
+/// What an entry's `incarnations` and `names` flags mean: decided from the
+/// entry, or as a member before level 14 (or 18) decides.
+fn decide(incarnations: bool, names: bool) -> Decide {
+    match (incarnations, names) {
+        (_, true) => Decide::Named,
+        (true, false) => Decide::Entry,
+        (false, false) => Decide::Legacy,
     }
 }
 

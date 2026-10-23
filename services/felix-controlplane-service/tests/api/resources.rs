@@ -473,3 +473,41 @@ async fn a_cache_answers_its_incarnation_and_its_delete_is_tombstoned() {
         ])
     );
 }
+
+/// Before the fleet finalized `stream_incarnations`, a stream name deleted
+/// once is refused with 409, saying how to reuse it (#1447).
+#[tokio::test]
+async fn a_deleted_stream_name_is_refused_before_the_finalize() {
+    let h = harness().await;
+    let streams = "/v1/tenants/t1/namespaces/payments/streams";
+    let (status, _) = send(
+        &h,
+        json_request_as("POST", streams, &admin(&h), stream_body("chat")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let deleted = h
+        .app
+        .clone()
+        .oneshot(crate::common::request_as(
+            "DELETE",
+            &format!("{streams}/chat"),
+            &admin(&h),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+
+    let (status, body) = send(
+        &h,
+        json_request_as("POST", streams, &admin(&h), stream_body("chat")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let message = body.to_string();
+    assert!(
+        message.contains("was deleted on this cluster")
+            && message.contains("/v1/fleet/features/stream_incarnations/finalize"),
+        "{message}"
+    );
+}

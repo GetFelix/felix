@@ -216,7 +216,9 @@ async fn reset_db(url: &str, schema: &str) -> Result<(), sqlx::Error> {
          {schema_ident}.stream_changes, {schema_ident}.cache_changes, {schema_ident}.streams, \
          {schema_ident}.caches, {schema_ident}.namespaces, {schema_ident}.idp_issuers, \
          {schema_ident}.rbac_policies, {schema_ident}.rbac_groupings, \
-         {schema_ident}.tenant_signing_keys, {schema_ident}.tenants RESTART IDENTITY CASCADE",
+         {schema_ident}.tenant_signing_keys, {schema_ident}.tenants, \
+         {schema_ident}.deleted_stream_names, {schema_ident}.deleted_cache_names \
+         RESTART IDENTITY CASCADE",
     );
     // Same generated-schema identifier as `ensure_schema`; it cannot be bound as a parameter.
     sqlx::query(AssertSqlSafe(truncate)).execute(&pool).await?;

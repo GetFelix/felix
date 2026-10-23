@@ -481,6 +481,13 @@ starts empty. It is left out when 0, which is every stream created before the
 finalize, and a request cannot set it. Shard assignments carry the
 `incarnation` of the stream they were written for.
 
+Before that finalize, creating a stream under a name that was deleted on the
+cluster is refused with `409`, alone or in a batch, because without an
+incarnation the new stream would reopen the deleted one's data on the
+brokers. The message names the finalize to run first
+(`POST /v1/fleet/features/stream_incarnations/finalize`). Caches work the
+same way with `cache_incarnations`.
+
 After the finalize, deleting a stream (directly or through its namespace or
 tenant) records a tombstone for its name: every incarnation up to the one it
 holds is deleted. Tombstones are kept for good. `GET /v1/streams/snapshot`

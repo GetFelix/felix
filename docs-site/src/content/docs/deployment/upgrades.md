@@ -384,11 +384,12 @@ deleted and created again under the same name then starts empty on every
 broker, including one that was down for the delete: the control plane keeps a
 tombstone per deleted name and serves it in the catalog snapshot.
 
-Before the finalize nothing changes: a deleted stream's data stays on the
-brokers, and a stream created again under the name reopens it, as before. Its
-shards restart at the generations the old one used, where a new, empty log
-would be judged by what the brokers kept for the old one. That data goes once
-the name is deleted again after the finalize.
+Before the finalize a deleted stream's data stays on the brokers, and the
+control plane refuses with 409 to create a stream under a name deleted since
+this release, naming the finalize to run first. A stream created again under
+an older deleted name still reopens the old data. That data goes once the name
+is deleted again after the finalize. A new cluster finalizes this feature and
+`cache_incarnations` at its first broker registration.
 
 - **Upgrade every control-plane instance first.** Under the Raft backend the
   finalize is refused with 409 until every member is at metadata version 10,

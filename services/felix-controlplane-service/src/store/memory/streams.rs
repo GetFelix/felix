@@ -58,6 +58,7 @@ pub(super) async fn create_stream(
     // Held until the stream is in, so a finalize cannot land between the
     // read and the write: nothing is created at 0 after it.
     let nodes = store.nodes.read().await;
+    refuse_reused_name(store, &nodes, &key, decide).await?;
     let mut stream = stream;
     stream.incarnation = incarnation_for(store, &nodes, &key, stream.incarnation, decide).await;
     streams.insert(key.clone(), stream.clone());
@@ -235,6 +236,9 @@ pub(super) async fn record_tombstone(
     incarnation: u64,
     decide: Decide,
 ) -> Option<u64> {
+    if decide.guards_names() {
+        store.deleted_stream_names.write().await.insert(key.clone());
+    }
     // An older entry tombstones only an incarnated stream, which a member
     // before incarnations never holds.
     if !incarnations_finalized(nodes) || (decide == Decide::Legacy && incarnation == 0) {
@@ -244,4 +248,43 @@ pub(super) async fn record_tombstone(
     let through = tombstones.entry(key.clone()).or_default();
     *through = (*through).max(incarnation);
     Some(*through)
+}
+
+/// Refuse to create `key` again before the fleet finalized
+/// `stream_incarnations` if a stream of that name was deleted. Without an
+/// incarnation the new stream would open the deleted one's logs on every
+/// broker, each holding what it had of them, and replicas could diverge
+/// (#1447).
+pub(super) async fn refuse_reused_name(
+    store: &InMemoryStore,
+    nodes: &super::NodeState,
+    key: &StreamKey,
+    decide: Decide,
+) -> StoreResult<()> {
+    if decide.guards_names()
+        && !incarnations_finalized(nodes)
+        && store.deleted_stream_names.read().await.contains(key)
+    {
+        return Err(crate::store::reused_name(
+            "stream",
+            &key.stream,
+            felix_common::fleet::STREAM_INCARNATIONS,
+        ));
+    }
+    Ok(())
+}
+
+/// Every deleted stream name, ordered.
+pub(super) async fn deleted_stream_names(store: &InMemoryStore) -> Vec<StreamKey> {
+    let mut names: Vec<StreamKey> = store
+        .deleted_stream_names
+        .read()
+        .await
+        .iter()
+        .cloned()
+        .collect();
+    names.sort_by(|a, b| {
+        (&a.tenant_id, &a.namespace, &a.stream).cmp(&(&b.tenant_id, &b.namespace, &b.stream))
+    });
+    names
 }
