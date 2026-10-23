@@ -1065,6 +1065,16 @@ which delays the give-up but never hastens it. The shard keeps its move's
 start time, so it waits behind other shards for its next move, and
 `felix_shard_moves_timed_out_total` counts it.
 
+Each give-up costs the shard its writes for the whole timeout and drops the
+destination's copy, so the next move of that shard waits: the fence timeout
+after one give-up, twice that after two in a row, and so on up to an hour.
+The count starts again once the shard has another leader. A draining leader
+whose shards cannot drain would otherwise fence and give up every few
+minutes; with the wait it does so ever more rarely. `admin plan` shows a move
+held by the wait and when it ends, and from the second give-up in a row
+the control plane logs a warning naming the shard and its leader. The
+count is kept by the instance running placement, like the fence clock.
+
 Between the fence and the new owner opening, nobody serves the shard. A
 publish, cache write or counter add that arrives then is held by the broker
 it reached and forwarded once its routes show the new owner, so the client

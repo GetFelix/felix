@@ -35,6 +35,11 @@ pub const DEFAULT_MOVE_TIMEOUT_MILLIS: u64 = 30 * 60 * 1_000;
 /// its shard takes no writes until something ends the fence.
 pub const DEFAULT_FENCE_TIMEOUT_MILLIS: u64 = 2 * 60 * 1_000;
 
+/// The longest a shard waits to start a move after moves given up at the
+/// fence. Each give-up costs the shard its writes for the fence timeout, so
+/// the wait doubles from the timeout up to this.
+pub(super) const MAX_FENCE_BACKOFF_MILLIS: u64 = 60 * 60 * 1_000;
+
 /// How long a follower's broker may be gone before placement copies the
 /// shard somewhere else: longer than a broker restart takes, so a rolling
 /// restart does not copy every shard once per broker.
@@ -240,6 +245,26 @@ impl Moves {
             (Some(timeout), Some(fenced), Some(now)) => now.saturating_sub(fenced) > timeout,
             _ => false,
         }
+    }
+
+    /// When `key` may next start a move, if its last moves were given up at
+    /// the fence: the fence timeout after the first, doubling with each one
+    /// after, up to [`MAX_FENCE_BACKOFF_MILLIS`].
+    pub(super) fn backing_off(&self, caught_up: &dyn CaughtUp, key: &ShardKey) -> Option<Blocked> {
+        let (given_up, at) = caught_up.fence_give_ups(key)?;
+        let now = caught_up.as_of_millis()?;
+        let base = self
+            .policy
+            .fence_timeout_millis
+            .unwrap_or(DEFAULT_FENCE_TIMEOUT_MILLIS);
+        let wait = base
+            .saturating_mul(1u64 << given_up.saturating_sub(1).min(20))
+            .min(MAX_FENCE_BACKOFF_MILLIS);
+        let until = at.saturating_add(wait);
+        (now < until).then_some(Blocked::BackingOff {
+            given_up,
+            until_millis: until,
+        })
     }
 
     /// Whether a restore's copy into `joining` has gone the stall window
@@ -551,6 +576,11 @@ pub(super) fn move_step<'a>(
 
     match wanted {
         Some(destination) => {
+            // A move given up at the fence cost the shard its writes for the
+            // fence timeout; the same move again soon would likely do the same.
+            if let Some(blocked) = moves.backing_off(caught_up, key) {
+                return Decision::Waiting(blocked);
+            }
             if let Err(blocked) = moves.begin(leader, destination) {
                 return Decision::Waiting(blocked);
             }
@@ -1156,6 +1186,10 @@ impl CaughtUp for AtGeneration<'_> {
 
     fn fenced_at_millis(&self, key: &ShardKey, generation: u64) -> Option<u64> {
         self.inner.fenced_at_millis(key, generation)
+    }
+
+    fn fence_give_ups(&self, key: &ShardKey) -> Option<(u32, u64)> {
+        self.inner.fence_give_ups(key)
     }
 
     // Not held to the generation: a copy that halted under the previous one

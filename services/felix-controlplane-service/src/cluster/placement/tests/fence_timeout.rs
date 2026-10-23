@@ -200,3 +200,119 @@ async fn a_watched_fence_is_given_up_through_the_store() {
     assert_eq!(after.successor, None);
     assert!(after.generation > fenced.generation);
 }
+
+/// Reports as of `NOW`, every copy level, with `give_ups` moves of the shard
+/// given up at the fence, the last at `at`.
+struct GivenUp {
+    give_ups: Option<(u32, u64)>,
+}
+
+impl CaughtUp for GivenUp {
+    fn is_caught_up(&self, _key: &ShardKey, _node_id: &str) -> bool {
+        true
+    }
+
+    fn reported_generation(&self, _key: &ShardKey) -> Option<u64> {
+        Some(3)
+    }
+
+    fn as_of_millis(&self) -> Option<u64> {
+        Some(NOW)
+    }
+
+    fn fence_give_ups(&self, _key: &ShardKey) -> Option<(u32, u64)> {
+        self.give_ups
+    }
+}
+
+/// A shard on a draining broker that wants to move off it.
+fn draining_decision(give_ups: Option<(u32, u64)>) -> Decision {
+    let streams = [replicated_stream("orders", 1, 3)];
+    let mut nodes = live(&["broker-a", "broker-b", "broker-c"]);
+    nodes[0].status.lifecycle = NodeLifecycle::Draining;
+    plan_with(
+        &streams,
+        &[],
+        &nodes,
+        &[assigned("orders", "broker-a", &["broker-b", "broker-c"])],
+        &GivenUp { give_ups },
+        MovePolicy::default(),
+    )
+    .shards
+    .remove(0)
+    .decision
+}
+
+/// After moves given up at the fence, the next waits the fence timeout,
+/// doubling with each give-up, up to an hour. A drain is held to it too, or a
+/// leader that cannot drain cycles through fence after fence.
+#[test]
+fn moves_given_up_at_the_fence_back_off() {
+    let t = DEFAULT_FENCE_TIMEOUT_MILLIS;
+    let starts = |give_ups| matches!(draining_decision(give_ups), Decision::Move(..));
+    assert!(starts(None));
+    for (count, waited, waits) in [
+        (1, t - 1, true),
+        (1, t, false),
+        (2, 2 * t - 1, true),
+        (2, 2 * t, false),
+        (3, 4 * t - 1, true),
+        (3, 4 * t, false),
+        (10, 60 * MINUTE - 1, true),
+        (10, 60 * MINUTE, false),
+    ] {
+        let decision = draining_decision(Some((count, NOW - waited)));
+        if waits {
+            assert_eq!(
+                decision,
+                Decision::Waiting(Blocked::BackingOff {
+                    given_up: count,
+                    until_millis: NOW - waited + (t << (count - 1)).min(60 * MINUTE),
+                }),
+                "{count} give-ups, {waited} ms ago",
+            );
+        } else {
+            assert!(
+                starts(Some((count, NOW - waited))),
+                "{count}, {waited}: {decision:?}"
+            );
+        }
+    }
+}
+
+/// Give-ups are counted per shard in a row, and forgotten once the shard has
+/// another leader, which a cut-over gives it.
+#[test]
+fn give_ups_count_in_a_row_and_reset_on_a_new_leader() {
+    use super::super::progress::CopyProgress;
+    let given_up = || {
+        let mut back = fenced_move();
+        back.state = ShardState::Assigning;
+        back.successor = None;
+        Plan {
+            shards: vec![ShardPlan {
+                key: back.key.clone(),
+                decision: Decision::Move(
+                    MoveStep::FenceTimedOut {
+                        successor: Some("broker-b".to_string()),
+                    },
+                    back,
+                ),
+            }],
+            ..Plan::default()
+        }
+    };
+    let mut progress = CopyProgress::default();
+    let led_by_a = [assigned("orders", "broker-a", &["broker-b", "broker-c"])];
+    progress.note_give_ups(&given_up(), Some(NOW));
+    progress.note_give_ups(&given_up(), Some(NOW + MINUTE));
+    let key = led_by_a[0].key.clone();
+    assert_eq!(
+        progress.give_ups(&led_by_a).get(&key),
+        Some(&(2, NOW + MINUTE))
+    );
+
+    let led_by_b = [assigned("orders", "broker-b", &["broker-a", "broker-c"])];
+    assert_eq!(progress.give_ups(&led_by_b).get(&key), None);
+    assert_eq!(progress.give_ups(&led_by_a).get(&key), None, "forgotten");
+}

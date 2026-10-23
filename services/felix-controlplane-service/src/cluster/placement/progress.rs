@@ -22,6 +22,17 @@ pub(super) struct CopyProgress {
     /// the fence. The store keeps no fence time, and the move's start time
     /// counts the copy before it.
     fences: HashMap<(ShardKey, u64), u64>,
+    /// Moves given up at the fence in a row, by shard: the leader they left
+    /// in place, how many, and when the last was. Forgotten once the shard
+    /// has another leader, which a cut-over gives it.
+    give_ups: HashMap<ShardKey, GiveUps>,
+}
+
+#[derive(Debug, Clone)]
+struct GiveUps {
+    leader: String,
+    count: u32,
+    at_millis: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -114,6 +125,57 @@ impl CopyProgress {
             })
             .collect();
         self.fences.clone()
+    }
+
+    /// Count the moves `plan` gives up at the fence, as of `now`. Counted
+    /// from the plan rather than the write: one that loses its write to
+    /// another instance waits all the same, which only delays a move.
+    pub(super) fn note_give_ups(&mut self, plan: &super::Plan, now: Option<u64>) {
+        let Some(now) = now else {
+            return;
+        };
+        for (key, step, assignment) in plan.moves() {
+            if let super::MoveStep::FenceTimedOut { .. } = step {
+                let entry = self.give_ups.entry(key.clone()).or_insert(GiveUps {
+                    leader: assignment.leader.clone(),
+                    count: 0,
+                    at_millis: now,
+                });
+                entry.count = entry.count.saturating_add(1);
+                entry.at_millis = now;
+                entry.leader = assignment.leader.clone();
+                // A draining leader keeps its shard on the move path, so a
+                // drain that cannot finish repeats this until someone looks.
+                if entry.count > 1 {
+                    tracing::warn!(
+                        kind = %key.kind,
+                        name = %key.stream,
+                        shard = key.shard,
+                        leader = %entry.leader,
+                        given_up = entry.count,
+                        "this shard's moves keep failing at the fence; each retry waits longer",
+                    );
+                }
+            }
+        }
+    }
+
+    /// The give-ups still standing against `existing`: a shard led by
+    /// someone else since, or gone, starts afresh.
+    pub(super) fn give_ups(
+        &mut self,
+        existing: &[ShardAssignment],
+    ) -> HashMap<ShardKey, (u32, u64)> {
+        let leaders: HashMap<&ShardKey, &str> = existing
+            .iter()
+            .map(|assignment| (&assignment.key, assignment.leader.as_str()))
+            .collect();
+        self.give_ups
+            .retain(|key, given| leaders.get(key) == Some(&given.leader.as_str()));
+        self.give_ups
+            .iter()
+            .map(|(key, given)| (key.clone(), (given.count, given.at_millis)))
+            .collect()
     }
 }
 

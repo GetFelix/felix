@@ -131,6 +131,8 @@ pub struct ReplicaPositions {
     /// When this instance first saw each shard fenced, by generation; see
     /// `progress`.
     fenced: HashMap<(ShardKey, u64), u64>,
+    /// Moves given up at the fence in a row, by shard, and when the last was.
+    give_ups: HashMap<ShardKey, (u32, u64)>,
     /// Each node as a report is judged against: its registered storage
     /// identity, and whether a leader that is down stopped reporting.
     nodes: HashMap<String, NodeView>,
@@ -173,6 +175,7 @@ impl ReplicaPositions {
             followers_decide: false,
             progressed: HashMap::new(),
             fenced: HashMap::new(),
+            give_ups: HashMap::new(),
             nodes: HashMap::new(),
             assignments: HashMap::new(),
         }
@@ -252,6 +255,11 @@ impl ReplicaPositions {
     /// Note when this instance first saw each shard fenced.
     pub(super) fn set_fences(&mut self, fenced: HashMap<(ShardKey, u64), u64>) {
         self.fenced = fenced;
+    }
+
+    /// Note the moves given up at the fence, by shard.
+    pub(super) fn set_give_ups(&mut self, give_ups: HashMap<ShardKey, (u32, u64)>) {
+        self.give_ups = give_ups;
     }
 
     /// Read every report the store holds, as of the store's clock.
@@ -530,6 +538,10 @@ impl CaughtUp for ReplicaPositions {
 
     fn halted(&self, key: &ShardKey, node_id: &str) -> Option<&HaltedCopy> {
         self.believed(key)?.halted.get(node_id)
+    }
+
+    fn fence_give_ups(&self, key: &ShardKey) -> Option<(u32, u64)> {
+        self.give_ups.get(key).copied()
     }
 
     fn fenced_at_millis(&self, key: &ShardKey, generation: u64) -> Option<u64> {

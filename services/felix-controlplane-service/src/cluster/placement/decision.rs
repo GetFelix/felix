@@ -126,6 +126,10 @@ pub enum Blocked {
     DestinationHalted { node: String, reason: String },
     /// A move is wanted, and placement is paused.
     Paused,
+    /// A move is wanted, and this shard's last `given_up` moves in a row
+    /// were given up at the fence: the next starts at `until_millis`, on the
+    /// store's clock.
+    BackingOff { given_up: u32, until_millis: u64 },
 }
 
 impl std::fmt::Display for Blocked {
@@ -146,6 +150,14 @@ impl std::fmt::Display for Blocked {
                 "no live node can take this shard: the copy on {node} is halted ({reason})"
             ),
             Self::Paused => write!(f, "placement is paused"),
+            Self::BackingOff {
+                given_up,
+                until_millis,
+            } => write!(
+                f,
+                "the last {given_up} moves of this shard were given up at the fence; \
+                 the next starts at {until_millis}"
+            ),
         }
     }
 }

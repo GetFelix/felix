@@ -283,7 +283,10 @@ pub(super) async fn plan_pass(
     read.positions.set_progress(progressed);
     let fenced = progress.observe_fences(&read.existing, &read.positions);
     read.positions.set_fences(fenced);
+    read.positions
+        .set_give_ups(progress.give_ups(&read.existing));
     let plan = read.plan(policy);
+    progress.note_give_ups(&plan, read.positions.as_of_millis());
     let existing = read.existing;
     let positions = read.positions;
     let read = existing
