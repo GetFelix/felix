@@ -375,16 +375,9 @@ impl ClusterClient {
     /// Reconnects take turns, so they do not build several replacements for
     /// one failure, but the dial happens outside the client lock: publishes
     /// keep reading it, and fail on the dead client, rather than queueing
-    /// behind the dial. The whole attempt is bounded by three times
-    /// `connect_timeout`.
+    /// behind the dial. Every address is tried, each bounded by
+    /// `connect_timeout`, so the walk is bounded by their count.
     pub(crate) async fn reconnect(&self, failed: &Arc<Client>) -> Result<()> {
-        let budget = self.nodes.connect_timeout() * 3;
-        tokio::time::timeout(budget, self.reconnect_within(failed))
-            .await
-            .map_err(|_| anyhow::anyhow!("reconnect timed out after {budget:?}"))?
-    }
-
-    async fn reconnect_within(&self, failed: &Arc<Client>) -> Result<()> {
         let _turn = self.reconnecting.lock().await;
         if !Arc::ptr_eq(&*self.client.read().await, failed) {
             return Ok(());

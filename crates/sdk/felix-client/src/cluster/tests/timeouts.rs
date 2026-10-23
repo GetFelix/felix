@@ -162,3 +162,50 @@ async fn reading_the_client_does_not_wait_for_a_reconnect_dial() -> Result<()> {
     reconnecting.await??;
     Ok(())
 }
+
+/// **A reconnect tries every address**, however many dead ones come first.
+#[tokio::test]
+async fn reconnect_reaches_a_live_broker_behind_dead_addresses() -> Result<()> {
+    let (server_config, cert) = build_server_config()?;
+    let live = StubBroker::start_with(server_config, ok)?;
+    let dead: Vec<std::net::UdpSocket> = (0..3)
+        .map(|_| std::net::UdpSocket::bind("127.0.0.1:0"))
+        .collect::<std::io::Result<_>>()?;
+    let mut seeds: Vec<std::net::SocketAddr> =
+        dead.iter().map(|s| s.local_addr().unwrap()).collect();
+    seeds.push(live.addr);
+    let mut config = default_config(cert)?;
+    config.connect_timeout = Duration::from_millis(300);
+    let cluster = ClusterClient::connect_with_policy(&seeds, "localhost", config, policy()).await?;
+    let failed = cluster.client().await;
+    assert_eq!(failed.dialled(), live.addr);
+
+    // The live broker is tried last, after the three dead ones time out.
+    tokio::time::timeout(TEST_LIMIT, cluster.reconnect(&failed))
+        .await
+        .expect("reconnect hung")?;
+    assert_eq!(cluster.client().await.dialled(), live.addr);
+    assert!(!Arc::ptr_eq(&failed, &cluster.client().await));
+    Ok(())
+}
+
+/// **`bounded`, which guards the topology, shard-count and subscribe
+/// exchanges, fails a step the broker never answers.**
+#[tokio::test]
+async fn bounded_fails_a_step_that_never_finishes() -> Result<()> {
+    let (server_config, cert) = build_server_config()?;
+    let broker = StubBroker::start_with(server_config, ok)?;
+    let mut config = default_config(cert)?;
+    config.connect_timeout = Duration::from_millis(200);
+    let client = crate::client::Client::connect(broker.addr, "localhost", config).await?;
+
+    let stalled = tokio::time::timeout(
+        TEST_LIMIT,
+        client.bounded("read the answer", std::future::pending::<Result<()>>()),
+    )
+    .await
+    .expect("bounded hung");
+    let err = stalled.expect_err("must time out");
+    assert!(format!("{err:#}").contains("timed out after"), "{err:#}");
+    Ok(())
+}

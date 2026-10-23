@@ -299,7 +299,7 @@ impl Client {
             server_features,
             server_features_hi,
             &cache_request_counter,
-            runtime_config.max_frame_bytes,
+            runtime_config,
         );
 
         // Several streams per cache connection: a new connection per cache op
@@ -489,8 +489,9 @@ pub(super) fn stream_widths(
     server_features: u32,
     server_features_hi: u32,
     requests: &Arc<AtomicU64>,
-    max_frame_bytes: usize,
+    runtime_config: ClientRuntimeConfig,
 ) -> Arc<StreamWidths> {
+    let max_frame_bytes = runtime_config.max_frame_bytes;
     let (recheck_credentials, recheck_requests) = (Arc::clone(credentials), Arc::clone(requests));
     let node = Arc::clone(event_node);
     let credentials = Arc::clone(credentials);
@@ -512,7 +513,7 @@ pub(super) fn stream_widths(
                 &node,
                 &credentials,
                 request_id,
-                max_frame_bytes,
+                runtime_config,
                 &tenant_id,
                 &namespace,
                 &stream,

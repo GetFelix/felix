@@ -7,6 +7,7 @@ use bytes::BytesMut;
 use felix_wire::Message;
 
 use super::Client;
+use crate::config::ClientRuntimeConfig;
 use crate::connection::{Credentials, NodeConnections, OpenedStream};
 use crate::frame_io::{read_message_with_limit, write_message};
 
@@ -157,7 +158,7 @@ impl Client {
             &self.event_node,
             &self.credentials,
             request_id,
-            self.runtime_config.max_frame_bytes,
+            self.runtime_config,
             tenant_id,
             namespace,
             stream,
@@ -327,13 +328,13 @@ pub(super) async fn ask_stream_routing(
     event_node: &NodeConnections,
     credentials: &Credentials,
     request_id: u64,
-    max_frame_bytes: usize,
+    runtime_config: ClientRuntimeConfig,
     tenant_id: &str,
     namespace: &str,
     stream: &str,
 ) -> Result<(u32, felix_wire::routing::ShardRouting)> {
     let mut opened = tokio::time::timeout(
-        crate::config::DEFAULT_CONNECT_TIMEOUT,
+        runtime_config.connect_timeout,
         event_node.open_as(credentials),
     )
     .await
@@ -341,7 +342,7 @@ pub(super) async fn ask_stream_routing(
     let answer = ask_stream_routing_on(
         &mut opened,
         request_id,
-        max_frame_bytes,
+        runtime_config,
         tenant_id,
         namespace,
         stream,
@@ -356,11 +357,12 @@ pub(super) async fn ask_stream_routing(
 pub(super) async fn ask_stream_routing_on(
     opened: &mut OpenedStream,
     request_id: u64,
-    max_frame_bytes: usize,
+    runtime_config: ClientRuntimeConfig,
     tenant_id: &str,
     namespace: &str,
     stream: &str,
 ) -> Result<(u32, felix_wire::routing::ShardRouting)> {
+    let max_frame_bytes = runtime_config.max_frame_bytes;
     write_message(
         &mut opened.send,
         Message::StreamShards {
@@ -374,7 +376,7 @@ pub(super) async fn ask_stream_routing_on(
     .context("send stream shards request")?;
     let mut scratch = BytesMut::with_capacity(4 * 1024);
     let answer = tokio::time::timeout(
-        crate::config::DEFAULT_CONNECT_TIMEOUT,
+        runtime_config.connect_timeout,
         read_message_with_limit(&mut opened.recv, &mut scratch, max_frame_bytes),
     )
     .await
