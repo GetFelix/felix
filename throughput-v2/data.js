@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792785647793,
+  "lastUpdate": 1792788017791,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -33748,6 +33748,58 @@ window.BENCHMARK_DATA = {
             "range": "5954.15",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1254938.02\nmean: 1253122.62\nstdev: 5954.15\ncv: 0.48%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "829c25cdcbf1ce56621f02b6e472bfb12d1ca517",
+          "message": "perf(azure): finalize incarnations at RF=3 setup (#1452)\n\nEach durable cell deletes and recreates its stream, and since #1447 reusing a\ndeleted name needs stream and cache incarnations. A new cluster finalizes them\nitself; this covers one seeded before its brokers registered.",
+          "timestamp": "2026-10-23T20:35:45Z",
+          "tree_id": "ce3e9a44b3dca77a0a280dc9eed83634dfc866bd",
+          "url": "https://github.com/GetFelix/felix/commit/829c25cdcbf1ce56621f02b6e472bfb12d1ca517"
+        },
+        "date": 1792788017240,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 347428.91,
+            "range": "12777.08",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 347428.91\nmean: 344217.32\nstdev: 12777.08\ncv: 3.71%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 347428.91,
+            "range": "12777.08",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 347428.91\nmean: 344217.32\nstdev: 12777.08\ncv: 3.71%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81659.59,
+            "range": "567.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81659.59\nmean: 81628.92\nstdev: 567.31\ncv: 0.69%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 816595.94,
+            "range": "5673.11",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 816595.94\nmean: 816289.18\nstdev: 5673.11\ncv: 0.69%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
