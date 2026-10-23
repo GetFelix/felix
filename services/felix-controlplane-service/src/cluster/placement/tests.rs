@@ -4,6 +4,7 @@ mod abandon;
 mod caches;
 mod departed;
 mod failover;
+mod fence_timeout;
 mod halted;
 mod lease;
 mod moves;

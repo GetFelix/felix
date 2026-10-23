@@ -34,6 +34,7 @@ pub(super) struct ControlPlaneConfigOverride {
     max_shard_moves_per_node: Option<usize>,
     shard_move_fence_max_lag_records: Option<u64>,
     shard_move_timeout_ms: Option<u64>,
+    shard_fence_timeout_ms: Option<u64>,
     shard_restore_after_ms: Option<u64>,
     shard_restore_stall_ms: Option<u64>,
     shutdown_drain_timeout_ms: Option<u64>,
@@ -128,6 +129,9 @@ impl ControlPlaneConfig {
         }
         if let Some(value) = override_cfg.shard_move_timeout_ms {
             config.shard_moves.timeout_millis = (value > 0).then_some(value);
+        }
+        if let Some(value) = override_cfg.shard_fence_timeout_ms {
+            config.shard_moves.fence_timeout_millis = (value > 0).then_some(value);
         }
         if let Some(value) = override_cfg.shard_restore_after_ms {
             config.shard_moves.restore_after_millis = (value > 0).then_some(value);

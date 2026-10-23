@@ -74,6 +74,10 @@ pub enum MoveStep {
     /// serves again, at a new generation. `successor` is the destination
     /// dropped, if the move still had one.
     Retake { successor: Option<String> },
+    /// The leader stayed fenced past `MovePolicy::fence_timeout_millis`
+    /// without reporting drained: it serves again at a new generation, as for
+    /// `Retake`, and `successor` is dropped.
+    FenceTimedOut { successor: Option<String> },
     /// An operator gave up the log of a shard whose only copies are out of
     /// reach: `to` leads it afresh, and whatever `from` held is lost.
     Discard { from: String, to: String },
@@ -94,6 +98,7 @@ impl MoveStep {
             Self::Seat { .. } => "seat",
             Self::Cancel { .. } => "cancel",
             Self::Retake { .. } => "retake",
+            Self::FenceTimedOut { .. } => "fence_timed_out",
             Self::Discard { .. } => "discard",
         }
     }

@@ -123,6 +123,13 @@ pub trait CaughtUp {
     /// whatever generation it was reported at. A node that has just been
     /// dropped from the set for a halt is still listed; see
     /// [`ReplicaReport::carry_halts`](crate::model::ReplicaReport::carry_halts).
+    /// When this instance first saw `key` fenced at `generation`, on the
+    /// reports' clock. `None` when it has not watched it, and then no fenced
+    /// move is given up.
+    fn fenced_at_millis(&self, _key: &ShardKey, _generation: u64) -> Option<u64> {
+        None
+    }
+
     fn halted(&self, _key: &ShardKey, _node_id: &str) -> Option<&HaltedCopy> {
         None
     }

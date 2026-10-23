@@ -29,6 +29,12 @@ pub const DEFAULT_FENCE_MAX_LAG_RECORDS: u64 = 1_000;
 /// gives its slot back the same hour.
 pub const DEFAULT_MOVE_TIMEOUT_MILLIS: u64 = 30 * 60 * 1_000;
 
+/// How long a fenced leader may go without reporting drained before the move
+/// is given up and the leader serves again. Draining takes milliseconds once
+/// the destination is level; a leader still fenced after this is stuck, and
+/// its shard takes no writes until something ends the fence.
+pub const DEFAULT_FENCE_TIMEOUT_MILLIS: u64 = 2 * 60 * 1_000;
+
 /// How long a follower's broker may be gone before placement copies the
 /// shard somewhere else: longer than a broker restart takes, so a rolling
 /// restart does not copy every shard once per broker.
@@ -63,6 +69,10 @@ pub struct MovePolicy {
     /// How long a move may copy before the fence, or a replacement before it
     /// has caught up, before it is abandoned. `None` never gives up.
     pub timeout_millis: Option<u64>,
+    /// How long a fenced leader may go without reporting drained, as this
+    /// instance has watched it, before the move is given up and the leader
+    /// takes the shard back at a new generation. `None` waits forever.
+    pub fence_timeout_millis: Option<u64>,
     /// How long a follower's broker must have been down or gone, or its copy
     /// reported halted, before placement replaces the copy it held, restoring
     /// the replication factor.
@@ -96,6 +106,7 @@ impl Default for MovePolicy {
             max_per_node: None,
             fence_max_lag_records: DEFAULT_FENCE_MAX_LAG_RECORDS,
             timeout_millis: Some(DEFAULT_MOVE_TIMEOUT_MILLIS),
+            fence_timeout_millis: Some(DEFAULT_FENCE_TIMEOUT_MILLIS),
             restore_after_millis: Some(DEFAULT_RESTORE_AFTER_MILLIS),
             restore_stall_millis: Some(DEFAULT_RESTORE_STALL_MILLIS),
             settle_millis: Some(DEFAULT_PLACEMENT_SETTLE_MILLIS),
@@ -213,6 +224,24 @@ impl Moves {
         }
     }
 
+    /// Whether `key` has stayed fenced at `generation` past the fence
+    /// timeout, as this instance watched it.
+    pub(super) fn fence_timed_out(
+        &self,
+        caught_up: &dyn CaughtUp,
+        key: &ShardKey,
+        generation: u64,
+    ) -> bool {
+        match (
+            self.policy.fence_timeout_millis,
+            caught_up.fenced_at_millis(key, generation),
+            caught_up.as_of_millis(),
+        ) {
+            (Some(timeout), Some(fenced), Some(now)) => now.saturating_sub(fenced) > timeout,
+            _ => false,
+        }
+    }
+
     /// Whether a restore's copy into `joining` has gone the stall window
     /// without its position moving, as this instance watched it.
     pub(super) fn stalled(&self, caught_up: &dyn CaughtUp, key: &ShardKey, joining: &str) -> bool {
@@ -276,9 +305,10 @@ pub(super) fn move_step<'a>(
     let is_halted = |node: &str| caught_up.halted(key, node).is_some();
 
     if existing.state == ShardState::Draining {
-        // No timeout from here. The leader has stopped serving, and going
-        // back is a new generation and every client following the shard
-        // twice; going on waits for at most the lag bound's worth of copy.
+        // The move timeout stops here. The leader has stopped serving, and
+        // going back is a new generation and every client following the
+        // shard twice; going on waits for at most the lag bound's worth of
+        // copy. Only a leader that never says drained is given the shard back.
         if !caught_up.is_drained(key, existing.generation) {
             // The fence may land while the destination is still copying, and
             // the leader will not report drained until it is level. One that
@@ -302,6 +332,18 @@ pub(super) fn move_step<'a>(
                         fence_storage_ids: Default::default(),
                         ..existing.clone()
                     },
+                );
+            }
+            // Nobody else has led since the fence, so the leader still holds
+            // every write it accepted: the same step as an operator's cancel,
+            // and conditional on this generation, so a cut-over planned from
+            // a drained report and this cannot both land.
+            if moves.fence_timed_out(caught_up, key, existing.generation) {
+                return Decision::Move(
+                    MoveStep::FenceTimedOut {
+                        successor: existing.successor.clone(),
+                    },
+                    retake(existing, replication_factor),
                 );
             }
             return Decision::Waiting(Blocked::LeaderStopping);
@@ -610,6 +652,26 @@ pub(super) fn start(
         },
         assignment,
     )
+}
+
+/// A fenced move given up: the leader that stopped serves again at a new
+/// generation, and the destination is dropped unless the shard had it anyway.
+/// The start stays, as for [`undo_staged`].
+pub(super) fn retake(existing: &ShardAssignment, replication_factor: u32) -> ShardAssignment {
+    let replicas = match existing.successor.as_deref() {
+        Some(successor) => undo_staged(existing, successor, replication_factor).replicas,
+        None => existing.replicas.clone(),
+    };
+    ShardAssignment {
+        replicas,
+        generation: 0,
+        state: ShardState::Assigning,
+        successor: None,
+        joining: None,
+        move_reason: None,
+        fence_storage_ids: Default::default(),
+        ..existing.clone()
+    }
 }
 
 /// A staged move without its destination: the copy is dropped unless the
@@ -1090,6 +1152,10 @@ impl CaughtUp for AtGeneration<'_> {
 
     fn progressed_at_millis(&self, key: &ShardKey, node_id: &str) -> Option<u64> {
         self.inner.progressed_at_millis(key, node_id)
+    }
+
+    fn fenced_at_millis(&self, key: &ShardKey, generation: u64) -> Option<u64> {
+        self.inner.fenced_at_millis(key, generation)
     }
 
     // Not held to the generation: a copy that halted under the previous one

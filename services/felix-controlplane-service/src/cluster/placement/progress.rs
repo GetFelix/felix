@@ -11,13 +11,17 @@
 use std::collections::HashMap;
 
 use super::CaughtUp;
-use crate::model::{MoveReason, ShardAssignment, ShardKey};
+use crate::model::{MoveReason, ShardAssignment, ShardKey, ShardState};
 
 /// Restores in flight, by shard, new copy and generation: the copy's last
 /// reported position, and when this instance saw it change.
 #[derive(Debug, Default)]
 pub(super) struct CopyProgress {
     seen: HashMap<(ShardKey, String, u64), Seen>,
+    /// Fenced shards, by shard and generation: when this instance first saw
+    /// the fence. The store keeps no fence time, and the move's start time
+    /// counts the copy before it.
+    fences: HashMap<(ShardKey, u64), u64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -85,6 +89,31 @@ impl CopyProgress {
             .iter()
             .map(|((key, joining, _), seen)| ((key.clone(), joining.clone()), seen.at_millis))
             .collect()
+    }
+}
+
+impl CopyProgress {
+    /// Note every fenced shard in `existing`, and answer when this instance
+    /// first saw each fenced at its generation. Fences no longer in
+    /// `existing` are forgotten.
+    pub(super) fn observe_fences(
+        &mut self,
+        existing: &[ShardAssignment],
+        caught_up: &dyn CaughtUp,
+    ) -> HashMap<(ShardKey, u64), u64> {
+        let Some(now) = caught_up.as_of_millis() else {
+            return HashMap::new();
+        };
+        self.fences = existing
+            .iter()
+            .filter(|assignment| assignment.state == ShardState::Draining)
+            .map(|assignment| {
+                let id = (assignment.key.clone(), assignment.generation);
+                let since = self.fences.get(&id).copied().unwrap_or(now);
+                (id, since)
+            })
+            .collect();
+        self.fences.clone()
     }
 }
 

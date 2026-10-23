@@ -281,6 +281,8 @@ pub(super) async fn plan_pass(
     let (fence, mut read) = read;
     let progressed = progress.observe(&read.existing, &read.positions);
     read.positions.set_progress(progressed);
+    let fenced = progress.observe_fences(&read.existing, &read.positions);
+    read.positions.set_fences(fenced);
     let plan = read.plan(policy);
     let existing = read.existing;
     let positions = read.positions;
@@ -403,6 +405,17 @@ pub(super) async fn apply_pass(
                         shard = key.shard,
                         destination = %successor,
                         "a shard move ran past its timeout and was abandoned",
+                    );
+                }
+                if let super::MoveStep::FenceTimedOut { successor } = step {
+                    metrics::counter!(SHARD_MOVES_TIMED_OUT_TOTAL).increment(1);
+                    tracing::warn!(
+                        kind = %key.kind,
+                        name = %key.stream,
+                        shard = key.shard,
+                        destination = ?successor,
+                        leader = %written.leader,
+                        "a fenced leader never reported drained; it serves the shard again",
                     );
                 }
                 if let super::MoveStep::Stalled { successor } = step {
