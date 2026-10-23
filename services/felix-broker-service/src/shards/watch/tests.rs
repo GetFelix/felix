@@ -126,6 +126,59 @@ fn a_newer_incarnation_wins_at_a_lower_generation() {
     assert!(owned.apply(&key(0), Some(at("broker-b", 3, 9))));
 }
 
+/// A stream deleted and created again without incarnations (#1435). The
+/// delete sends no change per shard, so the moved shard's assignment at
+/// generation 2 is still held when the new stream's first one arrives at
+/// generation 0. It must replace it: otherwise this broker keeps leading, and
+/// replicating, a shard of a stream that is gone.
+#[test]
+fn a_recreated_streams_first_assignment_replaces_a_moved_shard() {
+    let change = |seq: u64, op: &str, leader: &str, generation: u64| {
+        serde_json::json!({
+            "seq": seq,
+            "op": op,
+            "key": { "tenant_id": "t1", "namespace": "ns", "stream": "orders", "shard": 0 },
+            "assignment": {
+                "tenant_id": "t1", "namespace": "ns", "stream": "orders", "shard": 0,
+                "leader": leader, "replicas": [], "generation": generation, "state": "active",
+            },
+        })
+    };
+    let page = |items: Vec<serde_json::Value>| -> ChangesResponse {
+        serde_json::from_value(serde_json::json!({ "items": items, "next_seq": 0 }))
+            .expect("changes page")
+    };
+    let mut owned = ShardOwnership::default();
+    owned.apply_changes(
+        &page(vec![
+            change(1, "assigned", "broker-c", 0),
+            change(2, "updated", "broker-a", 2),
+        ])
+        .items,
+    );
+    assert_eq!(owned.get(&key(0)).expect("present").leader, "broker-a");
+
+    assert!(owned.apply_changes(&page(vec![change(3, "assigned", "broker-c", 0)]).items));
+    let held = owned.get(&key(0)).expect("present");
+    assert_eq!((held.leader.as_str(), held.generation), ("broker-c", 0));
+    assert_eq!(owned.renewals().get(&key(0)), Some(&1));
+
+    // An update below what is held is still stale.
+    assert!(!owned.apply_changes(&page(vec![change(4, "updated", "broker-a", 0)]).items));
+    assert_eq!(owned.get(&key(0)).expect("present").leader, "broker-c");
+}
+
+/// A snapshot at a lower generation of the same incarnation may come from a
+/// restored or lagging control plane, not a recreate. Counting it as a renewal
+/// would reopen the shard here at a generation a newer leader wrote past.
+#[test]
+fn a_lower_generation_snapshot_is_not_a_renewal() {
+    let mut owned = ShardOwnership::default();
+    owned.apply(&key(0), Some(assignment(0, "broker-b", 2)));
+    owned.reset(vec![assignment(0, "broker-a", 1)]);
+    assert!(owned.renewals().get(&key(0)).is_none());
+}
+
 #[test]
 fn an_unassignment_removes_the_shard() {
     let mut owned = ShardOwnership::default();

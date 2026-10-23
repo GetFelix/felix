@@ -521,11 +521,20 @@ impl ReplicaReport {
 /// one timeline every generation the shard had under an earlier incarnation
 /// came from an earlier change, so it is below this. A restore rewinds the
 /// seq, so brokers also key what they keep per shard (quorum marks, follower
-/// positions) by incarnation, and a delete takes the shard's reports. One
-/// from before incarnations starts at 0, as every member of a Raft group that
-/// may hold one does.
-pub(crate) fn first_generation(incarnation: u64, change_seq: u64) -> u64 {
-    if incarnation == 0 { 0 } else { change_seq }
+/// positions) by incarnation, and a delete takes the shard's reports.
+///
+/// A stream without an incarnation keeps its logs on the brokers through a
+/// delete, so one created again under the name continues them, and a
+/// generation starting over at 0 would be below what they already accepted
+/// (#1435). It takes the seq too when `from_seq`, which a Raft entry sets
+/// only from metadata level 17; an older entry starts it at 0, as every
+/// member of a Raft group that may hold one does.
+pub(crate) fn first_generation(incarnation: u64, change_seq: u64, from_seq: bool) -> u64 {
+    if incarnation == 0 && !from_seq {
+        0
+    } else {
+        change_seq
+    }
 }
 
 #[cfg(test)]

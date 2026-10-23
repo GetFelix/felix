@@ -96,6 +96,9 @@ pub struct LocalShard {
     pub incarnation: u64,
     /// The assignment that opened it names followers.
     pub replicated: bool,
+    /// The watch's renewal count for the shard when it was opened; see
+    /// [`crate::shards::watch::ShardOwnership::renewals`].
+    pub renewal: u64,
 }
 
 /// What recording a successful open did.
@@ -292,6 +295,33 @@ impl ShardLifecycle {
     /// generation return [`Action::None`], so a duplicate delivery or a replayed
     /// snapshot costs nothing.
     pub fn observe(&mut self, key: &ShardKey, assignment: Option<&ShardAssignment>) -> Action {
+        self.observe_renewed(key, assignment, 0)
+    }
+
+    /// [`Self::observe`] for a shard the watch has renewed `renewal` times.
+    /// A renewal it has not opened for yet is a new shard, whatever its
+    /// generation, like a newer incarnation.
+    pub(crate) fn observe_renewed(
+        &mut self,
+        key: &ShardKey,
+        assignment: Option<&ShardAssignment>,
+        renewal: u64,
+    ) -> Action {
+        let action = self.decide(key, assignment, renewal);
+        if matches!(action, Action::Open { .. })
+            && let Some(shard) = self.shards.get_mut(key)
+        {
+            shard.renewal = renewal;
+        }
+        action
+    }
+
+    fn decide(
+        &mut self,
+        key: &ShardKey,
+        assignment: Option<&ShardAssignment>,
+        renewal: u64,
+    ) -> Action {
         let ours = assignment.is_some_and(|a| a.leader == self.node_id);
         let generation = assignment.map_or(0, |a| a.generation);
         let incarnation = assignment.map_or(0, |a| a.incarnation);
@@ -337,7 +367,7 @@ impl ShardLifecycle {
                     mm::record_stale_event();
                     return Action::None;
                 }
-                if incarnation > existing.incarnation {
+                if incarnation > existing.incarnation || renewal > existing.renewal {
                     return self.begin_open_renewed(
                         key,
                         generation,
@@ -719,10 +749,10 @@ impl ShardLifecycle {
         }
         self.fence.record_phase(key, phase, generation);
         let previous = self.shards.get(key).map(|shard| shard.phase);
-        let (incarnation, replicated) = self
-            .shards
-            .get(key)
-            .map_or((0, false), |shard| (shard.incarnation, shard.replicated));
+        let (incarnation, replicated, renewal) =
+            self.shards.get(key).map_or((0, false, 0), |shard| {
+                (shard.incarnation, shard.replicated, shard.renewal)
+            });
         self.shards.insert(
             key.clone(),
             LocalShard {
@@ -731,6 +761,7 @@ impl ShardLifecycle {
                 draining,
                 incarnation,
                 replicated,
+                renewal,
             },
         );
         if previous != Some(phase) {
@@ -2058,6 +2089,17 @@ pub async fn reconcile(
     store: &dyn ShardStore,
     assignments: &HashMap<ShardKey, ShardAssignment>,
 ) {
+    reconcile_renewed(lifecycle, store, assignments, &HashMap::new()).await;
+}
+
+/// [`reconcile`], with the watch's renewal count for each shard; see
+/// [`crate::shards::watch::ShardOwnership::renewals`].
+pub(crate) async fn reconcile_renewed(
+    lifecycle: &tokio::sync::Mutex<ShardLifecycle>,
+    store: &dyn ShardStore,
+    assignments: &HashMap<ShardKey, ShardAssignment>,
+    renewals: &HashMap<ShardKey, u64>,
+) {
     let ready = |key: &ShardKey| {
         let incarnation = assignments
             .get(key)
@@ -2068,7 +2110,8 @@ pub async fn reconcile(
     {
         let mut owned = lifecycle.lock().await;
         for (key, assignment) in assignments {
-            actions.push(owned.observe(key, Some(assignment)));
+            let renewal = renewals.get(key).copied().unwrap_or(0);
+            actions.push(owned.observe_renewed(key, Some(assignment), renewal));
         }
         for key in owned.missing_from(assignments.keys()) {
             actions.push(owned.observe(&key, None));

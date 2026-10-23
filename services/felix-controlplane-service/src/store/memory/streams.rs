@@ -133,7 +133,7 @@ pub(super) async fn delete_stream(
             &key.tenant_id,
             &key.namespace,
             &key.stream,
-            cleanup == ShardCleanup::Full,
+            cleanup,
         )
         .await;
     store

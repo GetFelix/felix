@@ -189,6 +189,7 @@ async fn a_restored_machine_can_fail_over_on_the_leaders_reports() {
             node: node("broker-1", 7_001),
         },
         MetaCommand::PutShardAssignmentIf {
+            seq_generation: false,
             assignment: assignment.clone(),
             expected_generation: None,
         },
@@ -332,6 +333,7 @@ async fn a_level_10_field_raises_the_mark_and_survives_a_snapshot() {
 
     // `acme` has no namespaces; the entry's field is what counts.
     let flagged = MetaCommand::DeleteTenant {
+        unassign: false,
         tenant_id: "missing".to_string(),
         take_shards: true,
         incarnations: false,
@@ -448,6 +450,7 @@ async fn storage_identities_apply_identically() {
         },
         MetaCommand::RegisterNodeInFleet { node: registered },
         MetaCommand::PutShardAssignmentIf {
+            seq_generation: false,
             assignment: shard_assignment("t-a", "ns-1", "orders", "broker-0"),
             expected_generation: None,
         },
@@ -553,6 +556,7 @@ async fn cache_entries_from_level_13_store_what_level_13_stores() {
             incarnations: false,
         },
         MetaCommand::DeleteCache {
+            unassign: false,
             key: key("ns", "single"),
             take_reports: true,
             incarnations: false,
@@ -562,6 +566,7 @@ async fn cache_entries_from_level_13_store_what_level_13_stores() {
             incarnations: false,
         },
         MetaCommand::DeleteNamespace {
+            unassign: false,
             key: NamespaceKey {
                 tenant_id: "acme".to_string(),
                 namespace: "doomed".to_string(),
@@ -630,6 +635,7 @@ async fn cache_entries_from_level_13_store_what_level_13_stores() {
         "{created:?}"
     );
     apply(MetaCommand::DeleteCache {
+        unassign: false,
         key: key("ns", "single"),
         take_reports: true,
         incarnations: true,
@@ -753,6 +759,7 @@ async fn stream_entries_from_a_level_8_proposer_store_what_level_8_stores() {
             incarnations: false,
         },
         MetaCommand::DeleteStream {
+            unassign: false,
             key: key("ns", "single"),
             take_reports: false,
             incarnations: false,
@@ -762,6 +769,7 @@ async fn stream_entries_from_a_level_8_proposer_store_what_level_8_stores() {
             incarnations: false,
         },
         MetaCommand::DeleteNamespace {
+            unassign: false,
             key: NamespaceKey {
                 tenant_id: "acme".to_string(),
                 namespace: "doomed".to_string(),

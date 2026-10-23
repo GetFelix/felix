@@ -279,6 +279,24 @@ pub(super) async fn patch_stream(
 
 pub(super) async fn delete_stream(store: &PostgresStore, key: &StreamKey) -> StoreResult<()> {
     let (_gates, mut tx) = begin_feed_write(store, &[CatalogFeed::Streams]).await?;
+    let locked: Option<i32> = sqlx::query_scalar(
+        r#"SELECT 1 FROM streams WHERE tenant_id = $1 AND namespace = $2 AND stream = $3 FOR UPDATE"#,
+    )
+    .bind(&key.tenant_id)
+    .bind(&key.namespace)
+    .bind(&key.stream)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if locked.is_some() {
+        super::shards::unassign_shards_of(
+            &mut tx,
+            crate::model::ShardKind::Stream,
+            &key.tenant_id,
+            &key.namespace,
+            &key.stream,
+        )
+        .await?;
+    }
     let removed = sqlx::query_as::<_, DbStream>(
         r#"DELETE FROM streams WHERE tenant_id = $1 AND namespace = $2 AND stream = $3
                RETURNING tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing, incarnation"#,

@@ -606,6 +606,28 @@ mod driver {
         assert!(!own.may_serve(&key(0)));
     }
 
+    /// A stream deleted and created again without incarnations, with this
+    /// broker leading the new shard too (#1435). Its first generation is below
+    /// the one this broker served the deleted stream's shard at, and the
+    /// watch's renewal is what says it is new rather than late.
+    #[tokio::test]
+    async fn a_renewed_shard_reopens_at_a_lower_generation() {
+        let own = Mutex::new(lifecycle());
+        let store = RecordingStore::default();
+        let none = HashMap::new();
+        reconcile_renewed(&own, &store, &assignments(&[(0, "broker-a", 2)]), &none).await;
+
+        let renewed = HashMap::from([(key(0), 1)]);
+        let recreated = assignments(&[(0, "broker-a", 0)]);
+        reconcile_renewed(&own, &store, &recreated, &renewed).await;
+        assert_eq!(store.opened.lock().expect("lock").len(), 2);
+        assert_eq!(own.lock().await.servable().get(&key(0)), Some(&0));
+
+        // Opened once for the renewal, not on every pass.
+        reconcile_renewed(&own, &store, &recreated, &renewed).await;
+        assert_eq!(store.opened.lock().expect("lock").len(), 2);
+    }
+
     #[tokio::test]
     async fn losing_a_shard_to_another_broker_releases_it() {
         let own = Mutex::new(lifecycle());

@@ -143,6 +143,7 @@ pub(crate) async fn run_shard_contract(store: Arc<dyn ControlPlaneStore>) {
     a_cache_shard_is_bounded_by_the_cache_not_the_stream(store).await;
     an_unknown_cache_is_rejected(store).await;
     deleting_a_stream_or_cache_takes_its_shard_assignments_with_it(store).await;
+    a_recreated_stream_is_announced_and_starts_past_the_deleted_one(store).await;
     a_cascading_delete_takes_shard_assignments_and_reports(store).await;
     replica_reports::a_replica_report_is_kept_and_read_back(store).await;
     replica_reports::a_report_from_a_superseded_leader_is_dropped(store).await;
@@ -395,10 +396,9 @@ pub(crate) async fn run_node_delete_race_contract(store: Arc<dyn ControlPlaneSto
 async fn concurrent_conditional_writes_have_one_winner(store: Arc<dyn ControlPlaneStore>) {
     const WRITERS: u64 = 8;
 
-    for expected in [None, Some(0)] {
-        if expected.is_none() {
-            clear(store.as_ref()).await;
-        }
+    clear(store.as_ref()).await;
+    let mut expected = None;
+    for _ in 0..2 {
         let fence = token(store.as_ref()).await;
         let writers: Vec<_> = (0..WRITERS)
             .map(|i| {
@@ -424,6 +424,7 @@ async fn concurrent_conditional_writes_have_one_winner(store: Arc<dyn ControlPla
             written[0],
             "the winner's write is what is stored",
         );
+        expected = Some(written[0].generation);
     }
 }
 
@@ -435,10 +436,11 @@ async fn concurrent_writes_to_one_shard_serialise(store: Arc<dyn ControlPlaneSto
     const WRITERS: u64 = 8;
 
     clear(store.as_ref()).await;
-    store
+    let base = store
         .put_shard_assignment(assignment(0, "broker-x"))
         .await
-        .expect("initial");
+        .expect("initial")
+        .generation;
 
     let writers: Vec<_> = (0..WRITERS)
         .map(|i| {
@@ -467,7 +469,7 @@ async fn concurrent_writes_to_one_shard_serialise(store: Arc<dyn ControlPlaneSto
     );
     assert_eq!(
         generations,
-        (1..=WRITERS).collect::<Vec<_>>(),
+        (base + 1..=base + WRITERS).collect::<Vec<_>>(),
         "every write must take a distinct, consecutive generation",
     );
     assert_eq!(
@@ -476,7 +478,7 @@ async fn concurrent_writes_to_one_shard_serialise(store: Arc<dyn ControlPlaneSto
             .await
             .expect("get")
             .generation,
-        WRITERS,
+        base + WRITERS,
         "the stored generation must be the last one handed out",
     );
 }
@@ -507,13 +509,17 @@ async fn the_store_owns_the_generation(store: &dyn ControlPlaneStore) {
         .put_shard_assignment(assignment(0, "broker-x"))
         .await
         .expect("put");
-    assert_eq!(first.generation, 0, "the caller's 999 must be ignored");
+    assert_ne!(first.generation, 999, "the caller's 999 must be ignored");
 
     let second = store
         .put_shard_assignment(assignment(0, "broker-x"))
         .await
         .expect("put again");
-    assert_eq!(second.generation, 1, "every write moves the generation on");
+    assert_eq!(
+        second.generation,
+        first.generation + 1,
+        "every write moves the generation on"
+    );
 }
 
 /// The invariant placement depends on: writing a shard replaces its assignment
@@ -581,7 +587,7 @@ async fn an_unknown_node_is_rejected(store: &dyn ControlPlaneStore) {
 
 async fn an_unsupported_state_transition_is_rejected(store: &dyn ControlPlaneStore) {
     clear(store).await;
-    store
+    let first = store
         .put_shard_assignment(assignment(0, "broker-x"))
         .await
         .expect("assigning");
@@ -598,7 +604,11 @@ async fn an_unsupported_state_transition_is_rejected(store: &dyn ControlPlaneSto
 
     let unchanged = store.get_shard_assignment(&key(0)).await.expect("get");
     assert_eq!(unchanged.state, ShardState::Active);
-    assert_eq!(unchanged.generation, 1, "a rejected write moves nothing");
+    assert_eq!(
+        unchanged.generation,
+        first.generation + 1,
+        "a rejected write moves nothing"
+    );
 }
 
 /// The steps of a planned move, as the store must carry them: the successor
@@ -606,7 +616,7 @@ async fn an_unsupported_state_transition_is_rejected(store: &dyn ControlPlaneSto
 /// cut-over is a fresh `Assigning` naming the successor.
 async fn a_move_in_progress_is_persisted(store: &dyn ControlPlaneStore) {
     clear(store).await;
-    store
+    let first = store
         .put_shard_assignment(assignment(0, "broker-x"))
         .await
         .expect("assigning");
@@ -639,7 +649,7 @@ async fn a_move_in_progress_is_persisted(store: &dyn ControlPlaneStore) {
         .expect("cut over");
     assert_eq!(written.leader, "broker-y");
     assert_eq!(written.successor, None);
-    assert_eq!(written.generation, 3);
+    assert_eq!(written.generation, first.generation + 3);
 }
 
 /// A follower being copied in, and when the move started, survive a round
@@ -757,7 +767,8 @@ async fn a_conditional_write_lands_only_at_the_expected_generation(store: &dyn C
     let AssignmentWrite::Written(first) = first else {
         panic!("a write expecting no assignment lands on an empty shard: {first:?}");
     };
-    assert_eq!(first.generation, 0);
+    // The change seq, not 0: see `model::first_generation`.
+    let at = first.generation;
     let seq = store
         .shard_assignment_snapshot()
         .await
@@ -769,18 +780,18 @@ async fn a_conditional_write_lands_only_at_the_expected_generation(store: &dyn C
             .put_shard_assignment_if(assignment(0, "broker-y"), None, token(store).await)
             .await
             .expect("create again"),
-        AssignmentWrite::Stale { current: Some(0) },
+        AssignmentWrite::Stale { current: Some(at) },
     );
     assert_eq!(
         store
-            .put_shard_assignment_if(assignment(0, "broker-y"), Some(7), token(store).await)
+            .put_shard_assignment_if(assignment(0, "broker-y"), Some(at + 7), token(store).await)
             .await
             .expect("wrong generation"),
-        AssignmentWrite::Stale { current: Some(0) },
+        AssignmentWrite::Stale { current: Some(at) },
     );
     assert_eq!(
         store
-            .put_shard_assignment_if(assignment(1, "broker-y"), Some(0), token(store).await)
+            .put_shard_assignment_if(assignment(1, "broker-y"), Some(at), token(store).await)
             .await
             .expect("no assignment"),
         AssignmentWrite::Stale { current: None },
@@ -805,13 +816,13 @@ async fn a_conditional_write_lands_only_at_the_expected_generation(store: &dyn C
     );
 
     let second = store
-        .put_shard_assignment_if(assignment(0, "broker-y"), Some(0), token(store).await)
+        .put_shard_assignment_if(assignment(0, "broker-y"), Some(at), token(store).await)
         .await
         .expect("update");
     let AssignmentWrite::Written(second) = second else {
         panic!("a write at the current generation lands: {second:?}");
     };
-    assert_eq!(second.generation, 1);
+    assert_eq!(second.generation, at + 1);
     assert_eq!(second.leader, "broker-y");
 
     // Stale is reported ahead of an invalid transition: the caller planned
@@ -819,17 +830,19 @@ async fn a_conditional_write_lands_only_at_the_expected_generation(store: &dyn C
     let mut draining = second.clone();
     draining.state = ShardState::Draining;
     store
-        .put_shard_assignment_if(draining, Some(1), token(store).await)
+        .put_shard_assignment_if(draining, Some(at + 1), token(store).await)
         .await
         .expect("drain");
     let mut active = second;
     active.state = ShardState::Active;
     assert_eq!(
         store
-            .put_shard_assignment_if(active, Some(1), token(store).await)
+            .put_shard_assignment_if(active, Some(at + 1), token(store).await)
             .await
             .expect("stale and disallowed"),
-        AssignmentWrite::Stale { current: Some(2) },
+        AssignmentWrite::Stale {
+            current: Some(at + 2)
+        },
     );
 }
 
@@ -1097,6 +1110,93 @@ pub(crate) async fn assign_for_restart(store: &dyn ControlPlaneStore) -> ShardAs
 ///
 /// Uses names of its own rather than the shared fixtures, because the cases
 /// after it still need those to exist.
+/// A stream deleted and created again under its name, without incarnations
+/// (#1435). The delete puts an unassignment on the shard change log, which
+/// is what a broker follows, and the new stream's first generation is past
+/// every generation of the deleted one, whose logs the brokers keep.
+async fn a_recreated_stream_is_announced_and_starts_past_the_deleted_one(
+    store: &dyn ControlPlaneStore,
+) {
+    const RENEWED: &str = "renewed";
+    let stream = Stream {
+        tenant_id: TENANT.to_string(),
+        namespace: NAMESPACE.to_string(),
+        stream: RENEWED.to_string(),
+        kind: StreamKind::Stream,
+        shards: 1,
+        replication_factor: 1,
+        retention: RetentionPolicy {
+            max_age_seconds: None,
+            max_size_bytes: None,
+        },
+        consistency: ConsistencyLevel::Leader,
+        delivery: DeliveryGuarantee::AtMostOnce,
+        durable: true,
+        region: None,
+        routing: Default::default(),
+        incarnation: 0,
+    };
+    let stream_key = StreamKey {
+        tenant_id: TENANT.to_string(),
+        namespace: NAMESPACE.to_string(),
+        stream: RENEWED.to_string(),
+    };
+    let shard = ShardAssignment {
+        key: ShardKey {
+            stream: RENEWED.to_string(),
+            ..key(0)
+        },
+        ..assignment(0, "broker-x")
+    };
+
+    let created = store.create_stream(stream.clone()).await.expect("create");
+    store
+        .put_shard_assignment(shard.clone())
+        .await
+        .expect("place");
+    store
+        .put_shard_assignment(shard.clone())
+        .await
+        .expect("move");
+    let moved = store
+        .put_shard_assignment(shard.clone())
+        .await
+        .expect("move again");
+    let since = store
+        .shard_assignment_snapshot()
+        .await
+        .expect("snapshot")
+        .next_seq;
+
+    store.delete_stream(&stream_key).await.expect("delete");
+    let changes = store
+        .shard_assignment_changes(since)
+        .await
+        .expect("changes")
+        .items;
+    assert!(
+        changes
+            .iter()
+            .any(|change| change.key == shard.key && change.assignment.is_none()),
+        "the delete must unassign the shard on the change log: {changes:?}",
+    );
+
+    store.create_stream(stream).await.expect("create again");
+    let renewed = store
+        .put_shard_assignment(shard)
+        .await
+        .expect("place again");
+    if created.incarnation == 0 {
+        assert!(
+            renewed.generation > moved.generation,
+            "a recreated shard started at {} below the deleted one's {}",
+            renewed.generation,
+            moved.generation,
+        );
+    }
+    store.delete_stream(&stream_key).await.expect("clean up");
+}
+
 async fn deleting_a_stream_or_cache_takes_its_shard_assignments_with_it(
     store: &dyn ControlPlaneStore,
 ) {

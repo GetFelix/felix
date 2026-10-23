@@ -252,6 +252,7 @@ fn script() -> Vec<MetaCommand> {
         ("broker-2", Some(0)),
     ] {
         commands.push(MetaCommand::PutShardAssignmentIf {
+            seq_generation: false,
             assignment: shard_assignment("t-a", "ns-1", "orders", leader),
             expected_generation,
         });
@@ -356,11 +357,13 @@ fn script() -> Vec<MetaCommand> {
     // A cascade across nine namespaces, six streams, three caches — all of
     // whose delete events take seqs inside one apply.
     commands.push(MetaCommand::DeleteTenant {
+        unassign: false,
         tenant_id: "t-c".to_string(),
         take_shards: true,
         incarnations: false,
     });
     commands.push(MetaCommand::DeleteStream {
+        unassign: false,
         key: StreamKey {
             tenant_id: "t-a".to_string(),
             namespace: "ns-1".to_string(),
@@ -370,6 +373,7 @@ fn script() -> Vec<MetaCommand> {
         incarnations: false,
     });
     commands.push(MetaCommand::DeleteNamespace {
+        unassign: false,
         key: NamespaceKey {
             tenant_id: "t-b".to_string(),
             namespace: "ns-2".to_string(),

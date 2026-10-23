@@ -156,7 +156,8 @@ pub(super) async fn delete_namespace(store: &PostgresStore, key: &NamespaceKey) 
 
     let streams = sqlx::query_as::<_, DbStream>(
         r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing, incarnation
-               FROM streams WHERE tenant_id = $1 AND namespace = $2"#,
+               FROM streams WHERE tenant_id = $1 AND namespace = $2
+               ORDER BY stream FOR UPDATE"#,
     )
     .bind(&key.tenant_id)
     .bind(&key.namespace)
@@ -165,13 +166,34 @@ pub(super) async fn delete_namespace(store: &PostgresStore, key: &NamespaceKey) 
     ?;
 
     let caches = sqlx::query_as::<_, DbCache>(
-        r#"SELECT tenant_id, namespace, cache, display_name, shards, replication_factor, consistency, incarnation FROM caches WHERE tenant_id = $1 AND namespace = $2"#,
+        r#"SELECT tenant_id, namespace, cache, display_name, shards, replication_factor, consistency, incarnation FROM caches WHERE tenant_id = $1 AND namespace = $2 ORDER BY cache FOR UPDATE"#,
     )
     .bind(&key.tenant_id)
     .bind(&key.namespace)
     .fetch_all(&mut *tx)
     .await
     ?;
+
+    for stream in &streams {
+        super::shards::unassign_shards_of(
+            &mut tx,
+            crate::model::ShardKind::Stream,
+            &stream.tenant_id,
+            &stream.namespace,
+            &stream.stream,
+        )
+        .await?;
+    }
+    for cache in &caches {
+        super::shards::unassign_shards_of(
+            &mut tx,
+            crate::model::ShardKind::Cache,
+            &cache.tenant_id,
+            &cache.namespace,
+            &cache.cache,
+        )
+        .await?;
+    }
 
     sqlx::query(r#"DELETE FROM namespaces WHERE tenant_id = $1 AND namespace = $2"#)
         .bind(&key.tenant_id)

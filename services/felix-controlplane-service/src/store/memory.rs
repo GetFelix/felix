@@ -306,23 +306,21 @@ impl InMemoryStore {
     /// stale assignments the deployed system never produces, so a placement bug
     /// that needs orphaned rows is invisible in memory and real in Postgres.
     ///
-    /// No change-log entry, deliberately, because Postgres writes none either:
-    /// a cascade happens inside the database and never reaches the code that
-    /// records unassignments. The delete is already announced on the stream or
-    /// cache change log, and a consumer that has been told the stream is gone
-    /// does not need to be told separately about the shards of a stream that no
-    /// longer exists.
+    /// [`ShardCleanup::Unassign`] records an unassignment for each shard, as
+    /// Postgres does: a broker follows the shard change log, not the stream's,
+    /// and without one keeps leading a shard of a stream that is gone (#1435).
     ///
-    /// `take_reports` also drops the shards' replica reports, as Postgres
-    /// cascades them: a name created again can start at the same generation
-    /// after a restore, and the old log's report would read as the new one's.
+    /// Anything but [`ShardCleanup::Legacy`] also drops the shards' replica
+    /// reports, as Postgres cascades them: a name created again can start at
+    /// the same generation after a restore, and the old log's report would
+    /// read as the new one's.
     async fn drop_shard_assignments_for(
         &self,
         kind: ShardKind,
         tenant_id: &str,
         namespace: &str,
         name: &str,
-        take_reports: bool,
+        cleanup: ShardCleanup,
     ) {
         let of_it = |key: &ShardKey| {
             key.kind == kind
@@ -331,8 +329,21 @@ impl InMemoryStore {
                 && key.stream == name
         };
         let mut state = self.shards.write().await;
+        let mut dropped: Vec<ShardKey> = state
+            .records
+            .keys()
+            .filter(|key| of_it(key))
+            .cloned()
+            .collect();
         state.records.retain(|key, _| !of_it(key));
-        if take_reports {
+        if cleanup == ShardCleanup::Unassign {
+            // Sorted so every Raft member records them at the same seqs.
+            dropped.sort_by_key(|key| key.shard);
+            for key in &dropped {
+                state.record(ShardAssignmentChangeOp::Unassigned, key, None);
+            }
+        }
+        if cleanup.takes_shards() {
             self.replica_reports
                 .write()
                 .await
@@ -362,7 +373,7 @@ impl ControlPlaneStore for InMemoryStore {
     }
 
     async fn delete_tenant(&self, tenant_id: &str) -> StoreResult<()> {
-        tenants::delete_tenant(self, tenant_id, ShardCleanup::Full, Decide::Here).await
+        tenants::delete_tenant(self, tenant_id, ShardCleanup::Unassign, Decide::Here).await
     }
 
     async fn tenant_snapshot(&self) -> StoreResult<Snapshot<Tenant>> {
@@ -390,7 +401,7 @@ impl ControlPlaneStore for InMemoryStore {
     }
 
     async fn delete_namespace(&self, key: &NamespaceKey) -> StoreResult<()> {
-        namespaces::delete_namespace(self, key, ShardCleanup::Full, Decide::Here).await
+        namespaces::delete_namespace(self, key, ShardCleanup::Unassign, Decide::Here).await
     }
 
     async fn namespace_snapshot(&self) -> StoreResult<Snapshot<Namespace>> {
@@ -431,7 +442,7 @@ impl ControlPlaneStore for InMemoryStore {
     }
 
     async fn delete_stream(&self, key: &StreamKey) -> StoreResult<()> {
-        streams::delete_stream(self, key, ShardCleanup::Full, Decide::Here).await
+        streams::delete_stream(self, key, ShardCleanup::Unassign, Decide::Here).await
     }
 
     async fn stream_snapshot(&self) -> StoreResult<Snapshot<Stream>> {
@@ -472,7 +483,7 @@ impl ControlPlaneStore for InMemoryStore {
     }
 
     async fn delete_cache(&self, key: &CacheKey) -> StoreResult<()> {
-        caches::delete_cache(self, key, ShardCleanup::Full, Decide::Here).await
+        caches::delete_cache(self, key, ShardCleanup::Unassign, Decide::Here).await
     }
 
     async fn cache_snapshot(&self) -> StoreResult<Snapshot<Cache>> {
@@ -567,7 +578,7 @@ impl ControlPlaneStore for InMemoryStore {
         &self,
         assignment: ShardAssignment,
     ) -> StoreResult<ShardAssignment> {
-        shards::put_shard_assignment(self, assignment).await
+        shards::put_shard_assignment(self, assignment, true).await
     }
 
     async fn put_shard_assignment_if(
@@ -576,7 +587,8 @@ impl ControlPlaneStore for InMemoryStore {
         expected_generation: Option<u64>,
         fence: u64,
     ) -> StoreResult<crate::store::AssignmentWrite> {
-        shards::put_shard_assignment_if(self, assignment, expected_generation, Some(fence)).await
+        shards::put_shard_assignment_if(self, assignment, expected_generation, Some(fence), true)
+            .await
     }
 
     async fn get_shard_assignment(&self, key: &ShardKey) -> StoreResult<ShardAssignment> {
@@ -960,6 +972,16 @@ pub(crate) enum ShardCleanup {
     Legacy,
     /// Assignments and replica reports, on every delete.
     Full,
+    /// As `Full`, and an unassignment on the shard change log for each
+    /// assignment taken. Metadata level 17.
+    Unassign,
+}
+
+impl ShardCleanup {
+    /// Whether every delete takes assignments and replica reports.
+    pub(crate) fn takes_shards(self) -> bool {
+        self != Self::Legacy
+    }
 }
 
 /// Who decides incarnations and tombstones on a create or delete.

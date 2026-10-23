@@ -110,14 +110,14 @@ pub(super) async fn delete_namespace(
                     stream: Some(stream),
                     deleted_through,
                 });
-            if cleanup == ShardCleanup::Full {
+            if cleanup.takes_shards() {
                 store
                     .drop_shard_assignments_for(
                         ShardKind::Stream,
                         &stream_key.tenant_id,
                         &stream_key.namespace,
                         &stream_key.stream,
-                        true,
+                        cleanup,
                     )
                     .await;
             }
@@ -153,14 +153,14 @@ pub(super) async fn delete_namespace(
                 cache: Some(cache),
                 deleted_through,
             });
-            if cleanup == ShardCleanup::Full {
+            if cleanup.takes_shards() {
                 store
                     .drop_shard_assignments_for(
                         ShardKind::Cache,
                         &cache_key.tenant_id,
                         &cache_key.namespace,
                         &cache_key.cache,
-                        true,
+                        cleanup,
                     )
                     .await;
             }
