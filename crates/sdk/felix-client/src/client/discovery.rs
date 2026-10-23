@@ -11,6 +11,17 @@ use crate::config::ClientRuntimeConfig;
 use crate::connection::{Credentials, NodeConnections, OpenedStream};
 use crate::frame_io::{read_message_with_limit, write_message};
 
+/// [`Client::bounded`] with the limit given.
+pub(crate) async fn bounded_by<T>(
+    limit: std::time::Duration,
+    what: &str,
+    step: impl Future<Output = Result<T>>,
+) -> Result<T> {
+    tokio::time::timeout(limit, step)
+        .await
+        .map_err(|_| anyhow::anyhow!("{what} timed out after {limit:?}"))?
+}
+
 impl Client {
     /// Runs one step of a request/response exchange with the broker, failing
     /// after `connect_timeout` so an unresponsive broker cannot hold the caller.
@@ -19,10 +30,7 @@ impl Client {
         what: &str,
         step: impl Future<Output = Result<T>>,
     ) -> Result<T> {
-        let limit = self.runtime_config.connect_timeout;
-        tokio::time::timeout(limit, step)
-            .await
-            .map_err(|_| anyhow::anyhow!("{what} timed out after {limit:?}"))?
+        bounded_by(self.runtime_config.connect_timeout, what, step).await
     }
 
     /// True if this broker answers [`Client::topology`].

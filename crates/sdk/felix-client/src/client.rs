@@ -12,7 +12,7 @@ mod cache_watch;
 mod commit;
 pub use commit::ConditionalWrite;
 mod connect;
-mod discovery;
+pub(crate) mod discovery;
 mod groups;
 mod identity;
 mod inspect;
