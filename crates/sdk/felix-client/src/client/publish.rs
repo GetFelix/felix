@@ -29,16 +29,18 @@ impl Client {
     }
 
     pub(crate) fn publisher_handle(&self) -> Publisher {
+        let mut inner = PublisherInner::with_runtime_config(
+            Arc::clone(&self.publish_workers),
+            self.publish_sharding,
+            Arc::clone(&self.publish_admission),
+            self.publish_stream_hasher.clone(),
+            Arc::clone(&self.publish_shard_streams),
+            Arc::clone(&self.publish_widths),
+            self.runtime_config.bench_embed_ts,
+        );
+        inner.finish_timeout = Some(self.runtime_config.finish_timeout);
         Publisher {
-            inner: Arc::new(PublisherInner::with_runtime_config(
-                Arc::clone(&self.publish_workers),
-                self.publish_sharding,
-                Arc::clone(&self.publish_admission),
-                self.publish_stream_hasher.clone(),
-                Arc::clone(&self.publish_shard_streams),
-                Arc::clone(&self.publish_widths),
-                self.runtime_config.bench_embed_ts,
-            )),
+            inner: Arc::new(inner),
         }
     }
 

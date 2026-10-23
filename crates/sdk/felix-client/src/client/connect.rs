@@ -128,7 +128,25 @@ impl Client {
         .await
     }
 
+    /// Bounded by `connect_timeout`: a broker that accepts the handshake but
+    /// never grants stream credit would otherwise hold the caller forever.
     async fn build(
+        addr: SocketAddr,
+        server_name: &str,
+        client_config: ClientConfig,
+        transport: TransportConfig,
+        layout: Layout,
+    ) -> Result<Self> {
+        let limit = client_config.connect_timeout;
+        tokio::time::timeout(
+            limit,
+            Self::build_unbounded(addr, server_name, client_config, transport, layout),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("connect to {addr} timed out after {limit:?}"))?
+    }
+
+    async fn build_unbounded(
         addr: SocketAddr,
         server_name: &str,
         client_config: ClientConfig,

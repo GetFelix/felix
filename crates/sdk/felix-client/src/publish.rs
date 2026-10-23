@@ -642,14 +642,39 @@ impl Publisher {
     ///
     /// The streams are shared by every publisher from the same client, so this
     /// ends publishing for all of them.
+    ///
+    /// Bounded by `finish_timeout` (`FELIX_FINISH_TIMEOUT_MS`, 60 s): a broker
+    /// that never settles a commit or never closes the stream fails this with
+    /// an error, and the streams are aborted.
     pub async fn finish(&self) -> Result<()> {
+        let mut handles = Vec::new();
+        let Some(limit) = self.inner.finish_timeout else {
+            return self.finish_streams(&mut handles).await;
+        };
+        match tokio::time::timeout(limit, self.finish_streams(&mut handles)).await {
+            Ok(result) => result,
+            Err(_) => {
+                for handle in &handles {
+                    handle.abort();
+                }
+                Err(anyhow::anyhow!(
+                    "publisher finish timed out after {limit:?}: the broker did not settle \
+                     queued publishes and close the stream"
+                ))
+            }
+        }
+    }
+
+    async fn finish_streams(
+        &self,
+        handles: &mut Vec<tokio::task::JoinHandle<Result<()>>>,
+    ) -> Result<()> {
         let own = self
             .inner
             .shard_streams
             .as_ref()
             .map(|streams| streams.close())
             .unwrap_or_default();
-        let mut handles = Vec::new();
         for worker in self
             .inner
             .workers
@@ -661,6 +686,8 @@ impl Publisher {
                 guard.take()
             };
             if let Some(handle) = handle {
+                // Kept before waiting, so a timeout can still abort it.
+                handles.push(handle);
                 let (response_tx, response_rx) = oneshot::channel();
                 if worker
                     .tx
@@ -674,10 +701,9 @@ impl Publisher {
                         .await
                         .context("publisher finish response dropped")??;
                 }
-                handles.push(handle);
             }
         }
-        for handle in handles {
+        for handle in handles.iter_mut() {
             handle.await.context("publisher writer task")??;
         }
         Ok(())
@@ -823,6 +849,8 @@ pub(crate) struct PublisherInner {
     /// `None` sends such publishes to the pool.
     widths: Option<Arc<StreamWidths>>,
     bench_embed_ts: bool,
+    /// Longest [`Publisher::finish`] waits. `None` waits as long as it takes.
+    pub(crate) finish_timeout: Option<std::time::Duration>,
     /// Intersection of every worker's advertised flags.
     ///
     /// The workers all talk to the same broker, so in practice these agree; the
@@ -864,6 +892,7 @@ impl PublisherInner {
             shard_streams: None,
             widths: None,
             bench_embed_ts: false,
+            finish_timeout: None,
             server_flags,
         }
     }

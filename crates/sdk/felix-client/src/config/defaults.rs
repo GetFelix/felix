@@ -1,6 +1,10 @@
 //! Default pool sizes, windows and queue depths, and the hard caps that
 //! protect a client from a misbehaving peer.
 
+/// Longest one connect to a broker may take.
+pub(crate) const DEFAULT_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Longest a publisher's `finish` may wait for the broker.
+pub(crate) const DEFAULT_FINISH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 pub(crate) const DEFAULT_PUBLISH_QUEUE_DEPTH: usize = 64;
 pub(crate) const DEFAULT_PUBLISH_INFLIGHT_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) const CACHE_WORKER_QUEUE_DEPTH: usize = 1024;
