@@ -125,6 +125,9 @@ rcgen = { workspace = true }
 rustls = { workspace = true }
 # The tests use the demo signing key; see the `demo` feature.
 felix-broker-service = { path = ".", version = "0.6.0-preview.9", features = ["demo"] }
+# Some unit tests slow the fsync through `felix_storage::fault`, which a
+# release build (`cargo bench`) only has with this feature.
+felix-storage = { path = "../../crates/server/felix-storage", version = "0.6.0-preview.9", features = ["fault-injection"] }
 # The membership integration test drives the real control-plane router rather
 # than a stub, so a mismatch in the HTTP contract between the two services fails
 # here instead of in a cluster.
