@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792777910930,
+  "lastUpdate": 1792778203987,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -33644,6 +33644,58 @@ window.BENCHMARK_DATA = {
             "range": "1926.49",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 815692.08\nmean: 816779.08\nstdev: 1926.49\ncv: 0.24%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3ede0136665fc3e91b0197e9f256931e201cbc56",
+          "message": "fix(controlplane): refuse to reuse a deleted name before incarnations are finalized (#1447) (#1448)\n\n* fix(controlplane): refuse to reuse a deleted name before incarnations are finalized (#1447)\n\nWithout incarnations a stream created again under a deleted name opens the\ndeleted one's logs on every broker, each holding what it had of them, so a\nrecreated Quorum stream's followers held old committed records the new\nleader disagreed with, and halted as diverged.\n\nEvery stream and cache delete, cascades included, now records the name, and\na create of a recorded name is refused with 409 until stream_incarnations\n(or cache_incarnations) is finalized. The message names the finalize to run.\n\n- Memory: under the store's locks, in the delete and create paths.\n- Raft: decided from the entry's `names` flag, proposed only once every\n  member is at metadata level 18; an unflagged entry records and refuses\n  nothing, as an older member applies it. The names are in the snapshot.\n- Postgres: migration 0035, triggers that record every delete and refuse\n  the insert under the finalize's shared lock, so older instances are held\n  to it too.\n- The names are part of the exported state.\n\nSpec-Unaffected: the control plane refuses a create; the models do not cover stream creation or deleted names.\n\n* fix(controlplane): record deleted names only before the finalize, and backfill them on Postgres (#1447)\n\nReview round 1 on #1448.\n\n- A delete after stream_incarnations (or cache_incarnations) is finalized\n  records no name: nothing would refuse it, and on a new cluster the set\n  would grow for good and ride every Raft snapshot. Decided from the store's\n  fleet state under the lock the write holds, so every Raft member decides\n  alike; the Postgres trigger reads the finalize under its shared lock.\n- Migration 0035 backfills the names of Deleted changes still in the change\n  tables whose name does not exist now, unless the feature is finalized. The\n  memory and Raft stores have no such history; the docs say so.\n\nSpec-Unaffected: the control plane's record of deleted names; the models do not cover it.",
+          "timestamp": "2026-10-23T10:47:13-07:00",
+          "tree_id": "12de7d1f0f76f3186db680d38d8a64c79d6a2b1f",
+          "url": "https://github.com/GetFelix/felix/commit/3ede0136665fc3e91b0197e9f256931e201cbc56"
+        },
+        "date": 1792778203217,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 348145.35,
+            "range": "9587.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 348145.35\nmean: 345702.94\nstdev: 9587.54\ncv: 2.77%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 348145.35,
+            "range": "9587.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 348145.35\nmean: 345702.94\nstdev: 9587.54\ncv: 2.77%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79843.33,
+            "range": "1233.18",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79843.33\nmean: 79299.44\nstdev: 1233.18\ncv: 1.56%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 798433.33,
+            "range": "12331.78",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 798433.33\nmean: 792994.41\nstdev: 12331.78\ncv: 1.56%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
