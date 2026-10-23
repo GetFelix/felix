@@ -48,13 +48,16 @@ impl ClusterClient {
         endpoints.sort_by_key(|addr| *addr != in_use);
         let client = nodes.connect_any(&endpoints).await?;
         let holder = Arc::new(RwLock::new(client));
+        let owners = Arc::new(RwLock::new(HashMap::new()));
+        let widths = super::cluster_widths(&holder);
         Ok(ClusterClient {
+            discovery: super::discovery::Discovery::new(&holder, &widths, &nodes, &owners),
             seeds: Arc::clone(&self.seeds),
             endpoints: RwLock::new(self.endpoints().await),
             policy: self.policy.clone(),
-            widths: super::cluster_widths(&holder),
+            widths,
             client: holder,
-            owners: RwLock::new(HashMap::new()),
+            owners,
             group_routes: RwLock::new(HashMap::new()),
             cache_routes: RwLock::new(HashMap::new()),
             nodes,

@@ -3,6 +3,8 @@
 
 use anyhow::Result;
 
+use std::sync::Arc;
+
 use super::{ClusterClient, Owner, ShardKey, StreamKey};
 
 impl ClusterClient {
@@ -37,6 +39,11 @@ impl ClusterClient {
             && crate::publish::width_went_stale(err)
         {
             self.widths.forget(tenant_id, namespace, stream);
+            self.discovery.mark_stale(&(
+                tenant_id.to_string(),
+                namespace.to_string(),
+                stream.to_string(),
+            ));
         }
     }
 
@@ -73,7 +80,11 @@ impl ClusterClient {
             return;
         }
 
-        match self.connect_to(addr).await {
+        let connected =
+            tokio::time::timeout(super::discovery::CONNECT_TIMEOUT, self.connect_to(addr))
+                .await
+                .unwrap_or_else(|_| Err(anyhow::anyhow!("connecting timed out")));
+        match connected {
             Ok(client) => {
                 let mut owners = self.owners.write().await;
                 // Re-checked under the write lock: another publish may have
@@ -92,12 +103,13 @@ impl ClusterClient {
                 );
                 owners.insert(
                     key,
-                    Owner {
+                    Arc::new(Owner {
                         node_id: owner.node_id,
                         generation: owner.generation,
-                        client,
+                        addr,
+                        client: tokio::sync::OnceCell::new_with(Some(client)),
                         width,
-                    },
+                    }),
                 );
             }
             Err(err) => {
@@ -126,6 +138,8 @@ impl ClusterClient {
         err: anyhow::Error,
     ) -> anyhow::Error {
         self.owners.write().await.remove(key);
+        self.discovery
+            .mark_stale(&(key.0.clone(), key.1.clone(), key.2.clone()));
         err.context(format!(
             "publish to shard {}'s owner {node_id} failed; forgetting it and \
              forwarding the next one",
@@ -136,15 +150,18 @@ impl ClusterClient {
 
 /// Whether an owner learned now should take the place of `existing`.
 ///
-/// Generations order answers about one shard. Under another width the shard
-/// number names another shard, so the generations say nothing about each
-/// other and the newer report wins: an entry from a stale width must not
-/// keep out the fresh owner. A late answer from the old width can still land
-/// here, and is dropped on its first use under the current width.
+/// Generations order answers about one shard, so they decide whenever both
+/// answers were worked out under the same width, or one of them under none.
+/// Under two different known widths the shard number names different shards,
+/// the generations say nothing about each other, and the newer report wins: an
+/// entry from a stale width must not keep out the fresh owner.
 fn replaces(
     existing: &super::Owner,
     owner: &felix_wire::binary::PublishOwner,
     width: Option<(u32, felix_wire::routing::ShardRouting)>,
 ) -> bool {
-    existing.width != width || existing.generation < owner.generation
+    match (existing.width, width) {
+        (Some(known), Some(now)) if known != now => true,
+        _ => existing.generation < owner.generation,
+    }
 }

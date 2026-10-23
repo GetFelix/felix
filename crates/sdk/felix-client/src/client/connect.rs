@@ -384,7 +384,7 @@ impl Client {
     }
 
     /// The address this client was built for.
-    pub(crate) fn dialled(&self) -> SocketAddr {
+    pub fn dialled(&self) -> SocketAddr {
         self.dialled
     }
 

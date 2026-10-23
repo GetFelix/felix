@@ -29,6 +29,11 @@ pub(crate) fn usage() -> ! {
                               to cover every shard (default: ask the broker)
   --in-flight <n>             ingest: acked batches each publisher keeps outstanding
                               (default 0, fire-and-forget)
+  --cluster                   ingest: one shared cluster client per generator that sends
+                              each shard's records straight to the shard's leader, instead
+                              of a plain connection per publisher whose batches a non-leader
+                              forwards. Works at any --batch; fire-and-forget too. Use it
+                              with --keys so records spread over the shards
   --duration-secs <n>         ingest: publish for n seconds instead of --total records;
                               subscribe: how long to count deliveries (required)
   --start-at <unix-secs>      ingest, subscribe: connect, then start at this wall-clock
@@ -153,6 +158,7 @@ pub(crate) fn parse_args() -> Result<Args> {
                     Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs_f64(secs));
             }
             "--stamp-send-time" => ingest.stamp_send_time = true,
+            "--cluster" => ingest.cluster = true,
             "--concurrency" => {
                 concurrency = value("--concurrency")?.parse().context("--concurrency")?
             }

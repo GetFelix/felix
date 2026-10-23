@@ -363,6 +363,62 @@ publisher.publish_batch(
 ).await?;
 ```
 
+### Batches through a ClusterClient
+
+`ClusterClient` batches go straight to each shard's leader. A plain `Client`
+sends every batch to the broker it is connected to, and on a cluster that broker
+forwards the batches for shards it does not lead.
+
+```rust
+// One key: the batch is one frame to that shard's leader.
+cluster
+    .publish_batch_keyed("acme", "prod", "orders", key, payloads, AckMode::PerBatch)
+    .await?;
+
+// Records with their own keys: split by shard, one ordered frame per shard,
+// sent to the leaders concurrently.
+let report = cluster
+    .publish_records("acme", "prod", "orders", records, AckMode::PerBatch)
+    .await;
+for piece in report.failed() {
+    eprintln!("shard {} failed: {:#}", piece.shard, piece.outcome.as_ref().unwrap_err());
+}
+```
+
+- **Order.** A shard's records go in the order you gave them, as one batch the
+  broker appends contiguously. Different shards have no order between them.
+- **Retries.** As for a single publish: a batch the broker may have written is
+  not sent again, so nothing arrives twice. A batch a cached leader refused
+  without applying (it moved or is draining) is sent once through the entry
+  broker, which forwards it and names the new leader.
+  `publish_records_at_least_once` also re-sends ambiguous batches after the
+  reconnect backoff and **may duplicate**.
+- **Failure is per shard.** `BatchReport` lists each shard's records by their
+  position in your input and whether that shard was accepted. A failed shard
+  does not stop the others, and no record goes unreported. With `AckMode::None`
+  a shard counts as accepted once queued.
+- **Unkeyed.** `publish_batch` puts the whole batch on shard 0, like
+  `publish`.
+- Not idempotent. Use [`IdempotentProducer`](#idempotent-producers) when a
+  re-send must not duplicate.
+
+The first publish to a stream asks the cluster who leads each shard (the pieces
+of a batch racing it wait for the answer, up to a second), and the answer is
+refreshed in the background every few seconds or soon after a leader turns out
+wrong, so even the first batch, and a publish that asks for no ack
+(`AckMode::None`), goes to the leader. A cluster that does not answer in time
+costs one wait and the batch is forwarded as before. Leaders are connected on
+first use, so an unreachable one only affects its own shards. A write that
+lands while leadership is moving may still be forwarded by the old leader. With
+`AckMode::None`, two calls can reach the broker out of order if the route for a
+shard switches between them; await acks where order across calls matters. After
+`publish_records_at_least_once` re-splits records under a new width, the report
+can list a shard twice.
+
+Each shard's batch uses that shard's own publish stream while the client has
+room for one (`FELIX_PUB_SHARD_STREAMS`), so a slow shard does not hold up the
+others.
+
 ### Publisher API
 
 For high-throughput publishing, use the `Publisher` API:

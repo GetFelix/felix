@@ -77,9 +77,9 @@ pub use client::{
     SubscriptionsPage,
 };
 pub use cluster::{
-    ClusterCacheWatch, ClusterClient, ClusterSubscription, ReconnectPolicy, Seed, ShardEvent,
-    ShardOffsets, ShardedCacheWatch, ShardedCacheWatchItem, ShardedGroup, ShardedGroupRecord,
-    ShardedSubscription,
+    BatchReport, ClusterCacheWatch, ClusterClient, ClusterSubscription, ReconnectPolicy, Seed,
+    ShardEvent, ShardOffsets, ShardPublish, ShardedCacheWatch, ShardedCacheWatchItem, ShardedGroup,
+    ShardedGroupRecord, ShardedSubscription,
 };
 pub use commit::{CommitError, CommitOp, CommitReceipt, StateValue};
 pub use config::{ClientConfig, ClientSubQueuePolicy};

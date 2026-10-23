@@ -38,6 +38,9 @@ pub(super) type SubscribeStart = (Option<u32>, Option<StartPosition>);
 /// An idempotent batch's routing key and sequence.
 pub(super) type Sequenced = (Option<bytes::Bytes>, u64);
 
+/// An acked batch as the broker received it: its routing key and payloads.
+pub(super) type Received = (Option<bytes::Bytes>, Vec<bytes::Bytes>);
+
 /// How many shards every stream has here, by modulo.
 pub(super) const STREAM_SHARDS: u32 = 4;
 
@@ -118,6 +121,11 @@ impl StubBroker {
             refusing,
             task,
         })
+    }
+
+    /// Every acked batch it was sent, refused or not, in arrival order.
+    pub(super) fn batches(&self) -> Vec<Received> {
+        self.seen.batches.lock().unwrap().clone()
     }
 
     pub(super) fn publishes(&self) -> usize {
@@ -288,6 +296,8 @@ struct Seen {
     next_producer: Arc<AtomicU64>,
     /// The producer id and sequence of each idempotent batch, in order.
     producers: Arc<Mutex<Vec<(u64, u64)>>>,
+    /// The routing key and payloads of each acked batch it received.
+    batches: Arc<Mutex<Vec<Received>>>,
 }
 
 impl Default for Seen {
@@ -311,6 +321,7 @@ impl Default for Seen {
             width_latency: Arc::default(),
             next_producer: Arc::new(AtomicU64::new(1)),
             producers: Arc::default(),
+            batches: Arc::default(),
         }
     }
 }
@@ -352,6 +363,10 @@ async fn serve_stream(
                 continue;
             }
             seen.publishes.fetch_add(1, Ordering::SeqCst);
+            seen.batches
+                .lock()
+                .unwrap()
+                .push((batch.batch.key.clone(), batch.batch.payloads.clone()));
             if let Some(producer) = batch.producer {
                 seen.batch_streams
                     .lock()
@@ -372,6 +387,15 @@ async fn serve_stream(
                 .await
                 .write_all(&binary_ack(id, script(id))?)
                 .await?;
+            continue;
+        }
+        if frame.header.flags & felix_wire::FLAG_BINARY_PUBLISH_BATCH != 0 {
+            // A publish that asks for no answer.
+            let batch = felix_wire::binary::decode_publish_batch(&frame)?;
+            seen.batches
+                .lock()
+                .unwrap()
+                .push((batch.key.clone(), batch.payloads.clone()));
             continue;
         }
         match Message::decode(frame)? {
@@ -540,16 +564,18 @@ fn binary_ack(request_id: u64, answer: Message) -> Result<bytes::Bytes> {
             message,
             code,
             retry,
+            detail,
             ..
         } => {
             let code = code.map(|code| {
                 let retry = retry.unwrap_or_else(|| code.default_retry());
                 (code, retry)
             });
-            felix_wire::binary::encode_publish_ack_bytes_coded(
+            felix_wire::binary::encode_publish_ack_bytes_detailed(
                 request_id,
                 Some(&message),
                 code.as_ref().map(|(code, retry)| (code, *retry)),
+                detail.as_ref(),
                 None,
             )?
         }

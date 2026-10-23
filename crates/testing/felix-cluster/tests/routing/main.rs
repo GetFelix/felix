@@ -5,6 +5,7 @@
 //! Run with `cargo test -p felix-cluster --test routing`, or one module with
 //! `--test routing sharding::`.
 
+mod cluster_batches;
 mod cross_broker;
 mod generation_start;
 mod jump_hash;
