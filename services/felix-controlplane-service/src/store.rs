@@ -144,6 +144,13 @@ pub trait ControlPlaneStore: Send + Sync {
         true
     }
 
+    /// Whether every control-plane member runs this build's metadata level.
+    /// Only a Raft group with a member that is older, or has not answered,
+    /// answers no.
+    async fn every_member_current(&self) -> bool {
+        true
+    }
+
     /// Register a node, or revive the record a restarting node already has.
     ///
     /// `node_id` identifies a broker across restarts, so registering an id that

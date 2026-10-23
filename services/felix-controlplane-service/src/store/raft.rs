@@ -549,6 +549,12 @@ impl ControlPlaneStore for RaftStore {
         self.handle.cluster_version().await >= CACHE_INCARNATION_LEVEL
     }
 
+    /// An unknown member counts at 0, so one that never answered holds this
+    /// at no.
+    async fn every_member_current(&self) -> bool {
+        self.handle.cluster_version().await >= command::METADATA_VERSION
+    }
+
     async fn create_resources_ready(&self) -> bool {
         let needs = MetaCommand::CreateResources {
             streams: Vec::new(),

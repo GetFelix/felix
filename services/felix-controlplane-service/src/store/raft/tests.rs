@@ -569,6 +569,113 @@ async fn an_incarnated_stream_waits_for_every_member() {
     );
 }
 
+/// A new cluster finalizes nothing while a member runs an older release,
+/// even one at every feature's own level: the follower features are safe only
+/// once every control-plane member is upgraded. The finalize is retried in
+/// the background, so it lands once the member reports this build's level,
+/// even after every broker registered while it was held and one registered
+/// again, which on its own makes the cluster no longer new.
+#[tokio::test]
+async fn a_held_new_cluster_finalize_is_retried_once_every_member_can() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let level = crate::store::raft::command::METADATA_VERSION - 1;
+    let (store, version) = store_with_member_at(dir.path(), level).await;
+    let all: Vec<&str> = felix_common::fleet::IMPLEMENTED
+        .iter()
+        .map(|feature| feature.name())
+        .collect();
+    let shared = Arc::clone(&store) as Arc<dyn crate::store::ControlPlaneStore + Send + Sync>;
+    let pending = Arc::new(crate::cluster::fleet::NewClusterFinalize::default());
+    // What the registration handler does.
+    let register = |id: &'static str, port: u16| {
+        let (store, shared, pending, all) = (
+            Arc::clone(&store),
+            Arc::clone(&shared),
+            Arc::clone(&pending),
+            all.clone(),
+        );
+        async move {
+            let (_, enabled) = store
+                .register_node_in_fleet(crate::store::contract::nodes::with_features(
+                    crate::store::contract::nodes::node(id, port),
+                    &all,
+                ))
+                .await
+                .expect("register");
+            crate::cluster::fleet::finalize_new_cluster(&shared, &pending, enabled).await
+        }
+    };
+    for (id, port) in [("broker-a", 7401), ("broker-b", 7402), ("broker-c", 7403)] {
+        let enabled = register(id, port).await;
+        assert!(enabled.is_empty(), "{id}: {enabled:?}");
+    }
+    let enabled = register("broker-a", 7401).await;
+    assert!(enabled.is_empty(), "registered again: {enabled:?}");
+
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let enabled = store.enabled_fleet_features().await.expect("enabled");
+        if crate::cluster::fleet::NEW_CLUSTER
+            .iter()
+            .all(|feature| enabled.contains(feature.name()))
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "not finalized after every member reported the level: {enabled:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+/// The retry gives up a while after the first held attempt, so a cluster
+/// that has long held data is not finalized behind its operator's back.
+#[tokio::test]
+async fn a_held_new_cluster_finalize_gives_up() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let level = crate::store::raft::command::METADATA_VERSION - 1;
+    let (store, version) = store_with_member_at(dir.path(), level).await;
+    let all: Vec<&str> = felix_common::fleet::IMPLEMENTED
+        .iter()
+        .map(|feature| feature.name())
+        .collect();
+    let shared = Arc::clone(&store) as Arc<dyn crate::store::ControlPlaneStore + Send + Sync>;
+    let pending = Arc::new(crate::cluster::fleet::NewClusterFinalize::giving_up_after(
+        Duration::from_millis(1500),
+    ));
+    let (_, enabled) = store
+        .register_node_in_fleet(crate::store::contract::nodes::with_features(
+            crate::store::contract::nodes::node("broker-a", 7501),
+            &all,
+        ))
+        .await
+        .expect("register");
+    let enabled = crate::cluster::fleet::finalize_new_cluster(&shared, &pending, enabled).await;
+    assert!(enabled.is_empty(), "{enabled:?}");
+    assert!(pending.retrying());
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while pending.retrying() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the retry never gave up"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let enabled = store.enabled_fleet_features().await.expect("enabled");
+    assert!(enabled.is_empty(), "finalized after giving up: {enabled:?}");
+}
+
 /// A member before level 18 records no deleted names and creates a deleted
 /// name again, so while one is in the group every member does; once every
 /// member has the level, a deleted name is refused until the finalize (#1447).

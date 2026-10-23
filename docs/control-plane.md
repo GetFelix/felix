@@ -211,24 +211,66 @@ explicit operator step rather than automatic once every broker reports the
 feature: an automatic switch would make the last broker's upgrade the point
 of no return, and a rollback after it would fail.
 
-**A new cluster starts with incarnations.** A cluster that never ran an older
-release has nothing to roll back to, so `stream_incarnations` and
-`cache_incarnations` are finalized at its first broker registration
-(`cluster::fleet::NEW_CLUSTER`). The registration handler checks that the
-cluster is new: no stream or cache was ever created (the change feeds and
-snapshots are empty) and every node record is at node incarnation 0, which a
-broker leaves when it registers again, as every broker of an upgraded cluster
-does. It then finalizes each feature through the same store call as
+**A new cluster starts with its features finalized.** A cluster that never
+ran an older release has nothing to roll back to, so at its first broker
+registration it finalizes every feature its brokers report except
+`publisher_principal` (`cluster::fleet::NEW_CLUSTER`). That puts a `Quorum`
+write on `majority_ack` from the first stream: without it the leader waits
+for a replica report to reach the control plane before it acknowledges.
+
+The registration handler checks that the cluster is new: no stream or cache
+was ever created (the change feeds and snapshots are empty) and every node
+record is at node incarnation 0, which a broker leaves when it registers
+again, as every broker of an upgraded cluster does. Under Raft it also waits
+for every member to report this build's metadata level, since the upgrade
+runbook finalizes `majority_ack` and the features after it only once every
+control-plane member is upgraded. It then finalizes each feature in the
+order above, prerequisites first, through the same store call as
 `POST /v1/fleet/features/{feature}/finalize`, so the same checks hold: every
 serving broker reported it, a Raft member below the level it needs refuses
 it, and a broker without it is refused from then on. A refusal leaves the
-feature to the operator. The registration answers with the enabled set after
-the finalize, so the broker uses it from its first stream
-(`a_new_cluster_finalizes_incarnations_at_its_first_registration`,
+feature, and any that need it, to the operator. The decision is the
+proposer's, as for an operator's finalize, so every Raft member applies the
+same commands.
+
+When the member check or a store error holds the finalize back, the
+instance that took the registration retries it in the background, from one
+second apart up to thirty, until nothing that passes holds it
+(`cluster::fleet::NewClusterFinalize`). The retry does not check again that
+the cluster is new. Brokers re-registering or streams created meanwhile do
+not make it one that could roll back to an older build, and an operator's
+finalize at that point passes the same checks. Members starting together
+with their brokers, as a Kubernetes rollout does, would otherwise leave
+every registration held and the cluster unfinalized
+(`a_held_new_cluster_finalize_is_retried_once_every_member_can`). It gives
+up ten minutes after the first held attempt, with a warning naming the
+manual finalize (`a_held_new_cluster_finalize_gives_up`): by then the cluster
+may hold data, and its operator may want the rollback window an upgraded
+cluster keeps. The retry lives in that instance's memory and stops with it:
+if it shuts down first, the features are the operator's.
+
+A broker configured out of a feature does not report it, so the feature
+stays off: `FELIX_QUORUM_READS=lease` keeps `lease_free_reads` off, and
+`FELIX_INTERNAL_FENCE=false` keeps `majority_ack`, `lease_free_reads` and
+`fenced_caches` off. The first broker's configuration wins: a later broker
+that lacks a feature it finalized is refused, and the refusal names the
+setting to unset. `docs-site/src/content/docs/deployment/upgrades.md` has
+what the operator sees and how to recover.
+
+`publisher_principal` stays the operator's. It stores each record's
+publisher, which grows every record by the principal id's length plus a
+byte and keeps principal ids in the log, and a lone broker leaves it off too unless
+`FELIX_RECORD_PUBLISHERS=true` asks for it.
+
+The registration answers with the enabled set after the finalize, so the
+broker uses it from its first stream
+(`a_new_cluster_finalizes_every_feature_at_its_first_registration`,
+`a_new_cluster_finalizes_only_what_its_brokers_report`,
 `a_store_with_streams_is_not_finalized_on_registration`,
-`a_store_whose_brokers_registered_before_is_not_finalized`). A cluster that
-creates streams before any broker registers is not new by then, and is
-finalized by the operator as an upgraded one is.
+`a_store_whose_brokers_registered_before_is_not_finalized`,
+`a_new_cluster_waits_for_every_member_to_finalize`). A cluster that creates
+streams before any broker registers is not new by then, and is finalized by
+the operator as an upgraded one is.
 
 **Atomicity.** Registration is the only way a node starts serving, so a
 finalize only has to be serialized with registrations. The memory store holds

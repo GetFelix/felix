@@ -34,6 +34,7 @@ pub(crate) fn app_state(
         in_flight: Default::default(),
         placement_wakes: Default::default(),
         move_policy: Default::default(),
+        new_cluster: Default::default(),
     }
 }
 

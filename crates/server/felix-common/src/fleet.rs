@@ -8,7 +8,9 @@
 //! turns nothing on. An operator finalizes a feature once the whole fleet is
 //! upgraded, the control plane answers registrations and heartbeats with the
 //! enabled set, and a broker uses a feature only once that answer includes
-//! it. Until then any broker may be rolled back.
+//! it. Until then any broker may be rolled back. A new cluster has nothing to
+//! roll back to, so its control plane finalizes them itself at the first
+//! registration.
 //!
 //! Names on the wire are plain strings. A control plane never needs to know
 //! what a feature means to intersect sets of them, and a name it has never

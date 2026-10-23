@@ -98,6 +98,7 @@ async fn app_with(store: Arc<InMemoryStore>) -> axum::routing::RouterIntoService
         in_flight: Default::default(),
         placement_wakes: Default::default(),
         move_policy: Default::default(),
+        new_cluster: Default::default(),
     };
     build_router(state).into_service()
 }
@@ -397,6 +398,11 @@ async fn a_fleet_feature_is_enabled_only_by_finalizing() {
 #[tokio::test]
 async fn follower_features_are_finalized_after_generation_start() {
     let store = store();
+    // Registered before, so not a new cluster, which would finalize all three.
+    store
+        .register_node(node("broker-a"))
+        .await
+        .expect("old run");
     let keys = felix_controlplane_service::auth::keys::generate_signing_keys().expect("keys");
     store
         .set_tenant_signing_keys("t1", keys.clone())
@@ -554,7 +560,18 @@ async fn a_malformed_storage_id_is_a_bad_request() {
     );
 }
 
-const NEW_CLUSTER: [&str; 2] = ["cache_incarnations", "stream_incarnations"];
+/// What a new cluster finalizes, in the order the enabled set answers it.
+const NEW_CLUSTER: [&str; 9] = [
+    "atomic_commit",
+    "cache_incarnations",
+    "fenced_caches",
+    "generation_start",
+    "group_cursor_dependencies",
+    "jump_hash_routing",
+    "lease_free_reads",
+    "majority_ack",
+    "stream_incarnations",
+];
 
 fn orders() -> felix_controlplane_service::model::Stream {
     use felix_controlplane_service::model::{
@@ -607,9 +624,22 @@ async fn register_current(
     id: &str,
     port: u16,
 ) -> serde_json::Value {
+    register_without(app, token, id, port, &[]).await
+}
+
+/// [`register_current`] for a broker that does not report `without`, as one
+/// configured out of a feature does.
+async fn register_without(
+    app: &axum::routing::RouterIntoService<Body, ()>,
+    token: &str,
+    id: &str,
+    port: u16,
+    without: &[&str],
+) -> serde_json::Value {
     let features: Vec<&str> = felix_common::fleet::IMPLEMENTED
         .iter()
         .map(|feature| feature.name())
+        .filter(|name| !without.contains(name))
         .collect();
     let response = app
         .clone()
@@ -630,11 +660,12 @@ async fn register_current(
     read_json(response).await["fleet_features"].clone()
 }
 
-/// **A new cluster starts with incarnations.** Its first broker's
-/// registration finalizes both, and answers with them, so a stream deleted
+/// **A new cluster starts with every feature its brokers support**, except
+/// `publisher_principal`, which stays an opt-in. Its first broker's
+/// registration finalizes them and answers with them, so a stream deleted
 /// and created again gets a new incarnation, and directories of its own.
 #[tokio::test]
-async fn a_new_cluster_finalizes_incarnations_at_its_first_registration() {
+async fn a_new_cluster_finalizes_every_feature_at_its_first_registration() {
     let store = store();
     let token = fleet_token(&store).await;
     let app = app_with(Arc::clone(&store)).await;
@@ -643,6 +674,9 @@ async fn a_new_cluster_finalizes_incarnations_at_its_first_registration() {
     assert_eq!(enabled, serde_json::json!(NEW_CLUSTER));
     let enabled = store.enabled_fleet_features().await.expect("enabled");
     assert!(NEW_CLUSTER.iter().all(|feature| enabled.contains(*feature)));
+    assert!(!enabled.contains("publisher_principal"), "{enabled:?}");
+    let enabled = register_current(&app, &token, "broker-b", 7002).await;
+    assert_eq!(enabled, serde_json::json!(NEW_CLUSTER));
 
     scope(&store).await;
     let first = store.create_stream(orders()).await.expect("create");
@@ -662,6 +696,36 @@ async fn a_new_cluster_finalizes_incarnations_at_its_first_registration() {
         again.incarnation,
         first.incarnation
     );
+}
+
+/// A broker configured out of a feature keeps it, and the features that
+/// need it, off on a new cluster; the rest are still finalized.
+#[tokio::test]
+async fn a_new_cluster_finalizes_only_what_its_brokers_report() {
+    let store = store();
+    let token = fleet_token(&store).await;
+    let app = app_with(Arc::clone(&store)).await;
+
+    // `FELIX_QUORUM_READS=lease` drops `lease_free_reads` alone.
+    let enabled = register_without(&app, &token, "broker-a", 7001, &["lease_free_reads"]).await;
+    let expected: Vec<&str> = NEW_CLUSTER
+        .into_iter()
+        .filter(|name| *name != "lease_free_reads")
+        .collect();
+    assert_eq!(enabled, serde_json::json!(expected));
+
+    // `FELIX_INTERNAL_FENCE=false` drops the follower features, and
+    // `generation_start` goes on without them.
+    let store = self::store();
+    let token = fleet_token(&store).await;
+    let app = app_with(Arc::clone(&store)).await;
+    let fenceless = ["majority_ack", "lease_free_reads", "fenced_caches"];
+    let enabled = register_without(&app, &token, "broker-a", 7001, &fenceless).await;
+    let expected: Vec<&str> = NEW_CLUSTER
+        .into_iter()
+        .filter(|name| !fenceless.contains(name))
+        .collect();
+    assert_eq!(enabled, serde_json::json!(expected));
 }
 
 /// A broker that predates incarnations registering first keeps them off,

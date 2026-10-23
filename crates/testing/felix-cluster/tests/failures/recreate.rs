@@ -105,8 +105,8 @@ async fn every_copy_level(cluster: &Cluster) {
 }
 
 /// **A stream created again on a new cluster replicates from empty.** The
-/// brokers register before any stream exists, so the cluster finalizes
-/// incarnations. A durable `Quorum` stream is written, deleted and created
+/// brokers register before any stream exists, so the cluster finalizes its
+/// features, incarnations among them. A durable `Quorum` stream is written, deleted and created
 /// again under its name. The new stream has an incarnation of its own, so
 /// each broker opens new logs: every copy takes the new records, and none
 /// halts on the deleted stream's.
@@ -122,11 +122,16 @@ async fn a_recreated_quorum_stream_replicates_on_a_new_cluster() {
     .await
     .expect("start cluster");
     let store = &cluster.control_plane.as_ref().expect("control plane").store;
+    // A new cluster starts with every feature but the opt-in
+    // `publisher_principal`; `majority_ack` keeps the control plane's replica
+    // report off a `Quorum` write's path.
     let enabled = store.enabled_fleet_features().await.expect("features");
-    for feature in ["stream_incarnations", "cache_incarnations"] {
-        assert!(
-            enabled.contains(feature),
-            "{feature} not finalized: {enabled:?}"
+    for feature in felix_common::fleet::IMPLEMENTED {
+        let name = feature.name();
+        assert_eq!(
+            enabled.contains(name),
+            *feature != felix_common::fleet::PUBLISHER_PRINCIPAL,
+            "{name}: {enabled:?}"
         );
     }
 

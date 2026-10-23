@@ -65,6 +65,20 @@ fn a_joiner_reading_by_lease_is_told_to_unset_it() {
 }
 
 #[test]
+fn a_joiner_without_the_fence_is_told_to_unset_it() {
+    let refused = admit(
+        &set(&["generation_start", "majority_ack"]),
+        &at("c", NodeLifecycle::Live, &["generation_start"]),
+    );
+    assert!(
+        matches!(&refused, Err(StoreError::Conflict(message))
+            if message.contains("unset FELIX_INTERNAL_FENCE")
+                && !message.contains("FELIX_QUORUM_READS")),
+        "{refused:?}"
+    );
+}
+
+#[test]
 fn nothing_is_refused_before_a_finalize() {
     assert!(admit(&set(&[]), &at("c", NodeLifecycle::Live, &[])).is_ok());
 }
@@ -113,4 +127,32 @@ fn follower_features_wait_for_generation_start() {
     );
     // A fleet that finalized out of order is not refused a repeat.
     assert!(check_prerequisites(&set(&["majority_ack"]), "majority_ack").is_ok());
+}
+
+/// A new cluster starts with every feature this build implements but
+/// `publisher_principal`; a feature added later fails this until it picks.
+#[test]
+fn a_new_cluster_leaves_only_publisher_principal_to_the_operator() {
+    let manual: Vec<_> = felix_common::fleet::IMPLEMENTED
+        .iter()
+        .filter(|feature| !NEW_CLUSTER.contains(feature))
+        .collect();
+    assert_eq!(manual, [&felix_common::fleet::PUBLISHER_PRINCIPAL]);
+    assert_eq!(
+        NEW_CLUSTER.len() + 1,
+        felix_common::fleet::IMPLEMENTED.len()
+    );
+}
+
+/// Finalized in order, a feature never meets a prerequisite still off.
+#[test]
+fn a_new_cluster_finalizes_prerequisites_first() {
+    let mut enabled = BTreeSet::new();
+    for feature in NEW_CLUSTER {
+        assert!(
+            check_prerequisites(&enabled, feature.name()).is_ok(),
+            "{feature} before what it needs"
+        );
+        enabled.insert(feature.name().to_string());
+    }
 }

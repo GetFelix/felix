@@ -1848,6 +1848,7 @@ async fn pg_bootstrap_initialize_and_jwks_includes_previous_keys() -> Result<()>
         in_flight: Default::default(),
         placement_wakes: Default::default(),
         move_policy: Default::default(),
+        new_cluster: Default::default(),
     };
     let bootstrap_app = api::build_bootstrap_router(state.clone());
     let body = json!({
@@ -2101,6 +2102,7 @@ async fn pg_assignment_long_polls_do_not_hold_connections() -> Result<()> {
         in_flight: Default::default(),
         placement_wakes: Default::default(),
         move_policy: Default::default(),
+        new_cluster: Default::default(),
     };
     let app = api::build_router(state);
     let bearer = felix_controlplane_service::auth::felix_token::mint_token_for(

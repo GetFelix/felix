@@ -18,6 +18,8 @@ pub(crate) mod fleet;
 pub(crate) mod listing;
 pub(crate) mod reports;
 
+use std::sync::Arc;
+
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
@@ -33,7 +35,7 @@ use crate::auth::rbac::authorize::{
 };
 use crate::clock::now_millis;
 use crate::model::{Node, NodeLifecycle, NodePatchRequest, NodeSpec, NodeStatus};
-use crate::store::StoreError;
+use crate::store::{ControlPlaneStore, StoreError};
 
 #[utoipa::path(
     post,
@@ -104,8 +106,10 @@ pub(crate) async fn register_node(
         })?;
     // A new broker is somewhere to put held-back shards and missing copies.
     state.placement_wakes.request_pass();
+    let store = Arc::clone(&state.store) as Arc<dyn ControlPlaneStore + Send + Sync>;
     let fleet_features =
-        crate::cluster::fleet::finalize_new_cluster(state.store.as_ref(), fleet_features).await;
+        crate::cluster::fleet::finalize_new_cluster(&store, &state.new_cluster, fleet_features)
+            .await;
 
     Ok(Json(NodeRegistrationResponse {
         node,

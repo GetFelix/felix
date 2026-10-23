@@ -150,6 +150,48 @@ refused at registration with 409 naming the feature, and exits, rather than
 being let in to switch the fleet's routing back. That holds for a broker that
 was down during the finalize too.
 
+**A new cluster starts with them finalized.** A cluster that never ran an
+older release has nothing to roll back to, so its first broker registration
+finalizes every feature its brokers report, in order, except
+`publisher_principal`, which stays an opt-in because it grows every record by
+its publisher's id. The control plane treats a cluster as new when no stream
+or cache was ever created and no broker has registered twice, and, under the
+Raft backend, only once every member runs this release. It finalizes
+through the same checks as the command below, so a feature some broker does
+not report stays off, along with the features that need it. If a
+control-plane member is still starting when the brokers register, the
+control plane retries the finalize in the background until every member
+answers, for up to ten minutes. If it gives up, it logs a warning, and the
+features are finalized as on an upgraded cluster, with the runbook below. Everything below applies to a cluster upgraded from an older
+release, and to `publisher_principal`.
+
+#### A new cluster: the first broker's configuration wins
+
+Two broker settings drop features from what a broker reports:
+`FELIX_QUORUM_READS=lease` drops `lease_free_reads`, and
+`FELIX_INTERNAL_FENCE=false` drops `majority_ack`, `lease_free_reads` and
+`fenced_caches`. The first broker to register decides what a new cluster
+finalizes, and finalizing is one-way, so give every broker the same values
+before any of them starts.
+
+A broker started later with a setting the first one did not have is refused
+at registration with 409, logs the reason and exits:
+
+```text
+node broker-2 does not support fleet feature(s) lease_free_reads that the
+fleet has enabled; run a build that has them, since an enabled feature cannot
+be disabled; a broker started with FELIX_QUORUM_READS=lease does not support
+lease_free_reads: unset FELIX_QUORUM_READS (the default reads by a round) and
+restart the broker
+```
+
+With `FELIX_INTERNAL_FENCE=false` the message names `majority_ack` and says
+to unset `FELIX_INTERNAL_FENCE` instead. To recover, remove the setting from
+that broker and restart it; it registers normally. If you meant the whole
+cluster to run with the setting, the features cannot be turned off again:
+create the cluster afresh (a new control-plane store and empty broker data
+directories) with the setting on every broker from the start.
+
 #### Runbook: rolling out a fleet feature
 
 1. **Roll every broker** to the new build, one at a time as in
@@ -377,10 +419,6 @@ fences caches.
 
 #### `stream_incarnations`
 
-This applies to a cluster upgraded from an older release. A new cluster
-finalizes `stream_incarnations` and `cache_incarnations` itself, at its first
-broker registration, because it has no older build to roll back to.
-
 Once finalized, every stream the control plane creates gets an incarnation,
 higher for every creation of its name, and brokers keep each incarnation's
 logs, group positions and dead letters in directories of their own. A stream
@@ -392,8 +430,7 @@ Before the finalize a deleted stream's data stays on the brokers, and the
 control plane refuses with 409 to create a stream under a name deleted since
 this release, naming the finalize to run first. A stream created again under
 an older deleted name still reopens the old data. That data goes once the name
-is deleted again after the finalize. A new cluster finalizes this feature and
-`cache_incarnations` at its first broker registration.
+is deleted again after the finalize.
 
 - **Upgrade every control-plane instance first.** Under the Raft backend the
   finalize is refused with 409 until every member is at metadata version 10,

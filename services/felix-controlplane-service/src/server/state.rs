@@ -66,6 +66,9 @@ pub(super) async fn build_state(
             bootstrap_tokens: config.bootstrap.accepted_tokens(),
             node_liveness: config.node_liveness,
             move_policy: config.shard_moves,
+            new_cluster: Arc::new(crate::cluster::fleet::NewClusterFinalize::new(
+                api_shutdown.child_token(),
+            )),
         },
         raft_handle,
     ))

@@ -84,6 +84,7 @@ fn state_with_token() -> AppState {
         in_flight: Default::default(),
         placement_wakes: Default::default(),
         move_policy: Default::default(),
+        new_cluster: Default::default(),
     }
 }
 
