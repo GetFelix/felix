@@ -1,3 +1,4 @@
+mod batch;
 mod cache_routing;
 mod cancelled_producer;
 mod connections;

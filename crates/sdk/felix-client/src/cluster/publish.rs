@@ -51,7 +51,8 @@ impl ClusterClient {
             stream.to_string(),
             0,
         );
-        self.publish_to_shard(shard, payload, None, ack, None).await
+        self.publish_to_shard(shard, vec![payload], None, ack, None)
+            .await
     }
 
     /// Publish with a routing key, which decides the shard.
@@ -88,7 +89,7 @@ impl ClusterClient {
             shard,
         );
         let outcome = self
-            .publish_to_shard(shard, payload, Some(key), ack, Some(width))
+            .publish_to_shard(shard, vec![payload], Some(key), ack, Some(width))
             .await;
         self.forget_width_if_stale(tenant_id, namespace, stream, &outcome);
         outcome
@@ -211,10 +212,10 @@ impl ClusterClient {
 
     /// One publish to one shard: through its cached owner when there is one,
     /// else through the entry broker, which forwards.
-    async fn publish_to_shard(
+    pub(super) async fn publish_to_shard(
         &self,
         shard: ShardKey,
-        payload: Vec<u8>,
+        payload: Vec<Vec<u8>>,
         key: Option<bytes::Bytes>,
         ack: AckMode,
         width: Option<Arc<Width>>,
@@ -315,7 +316,7 @@ async fn publish_once(
 async fn publish_once_to(
     client: &Client,
     shard: &ShardKey,
-    payload: Vec<u8>,
+    payload: Vec<Vec<u8>>,
     key: Option<bytes::Bytes>,
     ack: AckMode,
     width: Option<Arc<Width>>,
@@ -325,7 +326,7 @@ async fn publish_once_to(
     match key {
         Some(key) => {
             publisher
-                .publish_keyed_reporting_owner(
+                .publish_keyed_batch_reporting_owner(
                     tenant_id, namespace, stream, key, shard, width, payload, ack,
                 )
                 .await
@@ -333,7 +334,7 @@ async fn publish_once_to(
         // Unkeyed is shard 0, which is what the publisher assumes.
         None => {
             publisher
-                .publish_reporting_owner(tenant_id, namespace, stream, payload, ack)
+                .publish_batch_reporting_owner(tenant_id, namespace, stream, payload, ack)
                 .await
         }
     }

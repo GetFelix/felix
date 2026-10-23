@@ -50,6 +50,7 @@
 //! dialled. That is how a client gets back in after every broker has moved at
 //! once, as in a rollout that restarts every pod.
 
+mod batch;
 mod cache;
 mod cache_watch;
 mod commit;
@@ -64,6 +65,7 @@ mod seeds;
 mod sharded;
 mod subscribe;
 
+pub use batch::{BatchReport, ShardPublish};
 pub use follow::{ClusterCacheWatch, ClusterSubscription};
 pub use retry::ReconnectPolicy;
 pub use seeds::Seed;

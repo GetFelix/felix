@@ -32,6 +32,30 @@ felix-loadgen --brokers 10.0.0.4:5000,10.0.0.5:5000 \
     --scenario pubsub --fanout 10 --payload-bytes 256 --total 20000
 ```
 
+### Ingest against a cluster
+
+By default each `ingest` publisher holds a plain connection to one broker, so
+on a cluster most batches reach a broker that does not lead the shard and are
+forwarded. `--cluster` makes the generator share one `ClusterClient`, which
+sends each shard's records straight to its leader (`publish_keyed` at
+`--batch 1`, `publish_batch_keyed` above it), fire-and-forget or acked:
+
+```text
+felix-loadgen ... --scenario ingest --stream perf --keys 48 --cluster \
+    --concurrency 8 --batch 100 --in-flight 4 --duration-secs 60
+```
+
+A publisher that loses its broker reconnects (another broker, or the cluster
+client's own reconnect) and keeps publishing, so a broker dying mid-run does not
+fail it. The JSON counts `reconnects` and `failed_sends` (records in sends that
+errored, which may or may not have landed), and `per_shard_acked` gives acked
+records by shard so a loss check can compare them with what was delivered. A run
+only exits non-zero when nothing succeeds for 30 s. `acks_with_offset` and
+`acks_without_offset` split acked records by whether the ack carried a log
+offset; on a durable stream a forwarded batch is acked without one, so a high
+`acks_without_offset` means the sends were not leader-direct. `--keys` should be
+set (and spread across the shards), since unkeyed records all go to shard 0.
+
 Run `felix-loadgen --help` for every flag. Each run prints human-readable
 result lines and one `LOADGEN_JSON {...}` line, which is what the perf scripts
 parse.

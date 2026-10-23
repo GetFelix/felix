@@ -697,38 +697,41 @@ impl Publisher {
         payload: Vec<u8>,
         ack: AckMode,
     ) -> AckOutcome {
+        self.publish_batch_reporting_owner(tenant_id, namespace, stream, vec![payload], ack)
+            .await
+    }
+
+    /// [`Self::publish_reporting_owner`] for several unkeyed payloads, which
+    /// go as one batch on shard 0.
+    pub(crate) async fn publish_batch_reporting_owner(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        payloads: Vec<Vec<u8>>,
+        ack: AckMode,
+    ) -> AckOutcome {
         if ack == AckMode::None {
             return self
                 .publish_batch_binary_inner(
-                    None,
-                    None,
-                    None,
-                    tenant_id,
-                    namespace,
-                    stream,
-                    &[payload],
+                    None, None, None, tenant_id, namespace, stream, &payloads,
                 )
                 .await;
         }
         self.publish_batch_binary_acked_inner(
-            None,
-            None,
-            None,
-            tenant_id,
-            namespace,
-            stream,
-            vec![payload],
-            ack,
+            None, None, None, tenant_id, namespace, stream, payloads, ack,
         )
         .await
     }
 
-    /// [`Publisher::publish_keyed`], reporting the shard's owner when this
-    /// broker forwarded the batch rather than owning it. `shard` is the one
-    /// the key resolves to under `width`, the `ClusterClient`'s, which the
-    /// batch is routed and declared by (see [`Self::route_by`]).
+    /// [`Publisher::publish_batch_keyed`], reporting the shard's owner when
+    /// this broker forwarded the batch rather than owning it. `shard` is the
+    /// one the key resolves to under `width`, the `ClusterClient`'s, which the
+    /// batch is routed and declared by (see [`Self::route_by`]). The records
+    /// all resolve to `shard`; the batch goes as one frame on that shard's own
+    /// stream (or the pool, past the per-shard stream cap).
     #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn publish_keyed_reporting_owner(
+    pub(crate) async fn publish_keyed_batch_reporting_owner(
         &self,
         tenant_id: &str,
         namespace: &str,
@@ -736,7 +739,7 @@ impl Publisher {
         key: bytes::Bytes,
         shard: u32,
         width: Option<Arc<Width>>,
-        payload: Vec<u8>,
+        payloads: Vec<Vec<u8>>,
         ack: AckMode,
     ) -> AckOutcome {
         if ack == AckMode::None {
@@ -744,11 +747,11 @@ impl Publisher {
                 .publish_batch_binary_inner(
                     Some(&key),
                     Some(shard),
-                    width.clone(),
+                    width,
                     tenant_id,
                     namespace,
                     stream,
-                    &[payload],
+                    &payloads,
                 )
                 .await;
         }
@@ -759,7 +762,7 @@ impl Publisher {
             tenant_id,
             namespace,
             stream,
-            vec![payload],
+            payloads,
             ack,
         )
         .await

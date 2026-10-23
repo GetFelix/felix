@@ -38,6 +38,9 @@ pub(super) type SubscribeStart = (Option<u32>, Option<StartPosition>);
 /// An idempotent batch's routing key and sequence.
 pub(super) type Sequenced = (Option<bytes::Bytes>, u64);
 
+/// An acked batch as the broker received it: its routing key and payloads.
+pub(super) type Received = (Option<bytes::Bytes>, Vec<bytes::Bytes>);
+
 /// How many shards every stream has here, by modulo.
 pub(super) const STREAM_SHARDS: u32 = 4;
 
@@ -118,6 +121,11 @@ impl StubBroker {
             refusing,
             task,
         })
+    }
+
+    /// Every acked batch it was sent, refused or not, in arrival order.
+    pub(super) fn batches(&self) -> Vec<Received> {
+        self.seen.batches.lock().unwrap().clone()
     }
 
     pub(super) fn publishes(&self) -> usize {
@@ -288,6 +296,8 @@ struct Seen {
     next_producer: Arc<AtomicU64>,
     /// The producer id and sequence of each idempotent batch, in order.
     producers: Arc<Mutex<Vec<(u64, u64)>>>,
+    /// The routing key and payloads of each acked batch it received.
+    batches: Arc<Mutex<Vec<Received>>>,
 }
 
 impl Default for Seen {
@@ -311,6 +321,7 @@ impl Default for Seen {
             width_latency: Arc::default(),
             next_producer: Arc::new(AtomicU64::new(1)),
             producers: Arc::default(),
+            batches: Arc::default(),
         }
     }
 }
@@ -352,6 +363,10 @@ async fn serve_stream(
                 continue;
             }
             seen.publishes.fetch_add(1, Ordering::SeqCst);
+            seen.batches
+                .lock()
+                .unwrap()
+                .push((batch.batch.key.clone(), batch.batch.payloads.clone()));
             if let Some(producer) = batch.producer {
                 seen.batch_streams
                     .lock()
