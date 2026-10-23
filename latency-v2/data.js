@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792770665063,
+  "lastUpdate": 1792777907921,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -42636,6 +42636,72 @@ window.BENCHMARK_DATA = {
             "range": "608.27",
             "unit": "us",
             "extra": "trials: 5\nmedian: 647.00\nmean: 990.80\nstdev: 608.27\ncv: 61.39%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "909af35e27db6af7b77b9b81fa7e0c7ac27268c6",
+          "message": "feat(controlplane): finalize incarnations on a new cluster (#1447) (#1449)\n\n* feat(controlplane): finalize incarnations on a new cluster (#1447)\n\nA cluster that never ran an older release has nothing to roll back to, so\nits first broker registration finalizes stream_incarnations and\ncache_incarnations. A stream or cache deleted and created again there then\nalways starts empty on every broker.\n\nNew means no stream or cache was ever created (empty change feeds and\nsnapshots) and every node record is at node incarnation 0; an upgraded\ncluster's brokers register again and leave it. The finalize goes through the\nstore's finalize_fleet_feature, as an operator's does, so every serving\nbroker must report the feature, a Raft member below its level refuses it,\nand a broker without it is refused afterwards. No apply path changes.\n\nSpec-Unaffected: decides when the control plane finalizes two fleet features; the models do not cover fleet features or stream incarnations.\n\n* test(cluster): a Quorum stream recreated on a new cluster replicates from empty (#1447)\n\nReview on #1449. Brokers register before any stream exists, so the cluster\nfinalizes incarnations; the stream is written, deleted, created again and\nwritten, and every copy must be level with none halted.\n\nSpec-Unaffected: a cluster test only.",
+          "timestamp": "2026-10-23T10:47:08-07:00",
+          "tree_id": "87d34c7ca2e4b5f184ccb5eaa907bb9916467520",
+          "url": "https://github.com/GetFelix/felix/commit/909af35e27db6af7b77b9b81fa7e0c7ac27268c6"
+        },
+        "date": 1792777902931,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 182,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 182.00\nmean: 181.60\nstdev: 1.14\ncv: 0.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 240,
+            "range": "1.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 240.00\nmean: 240.60\nstdev: 1.52\ncv: 0.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 306,
+            "range": "7.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 306.00\nmean: 305.00\nstdev: 7.00\ncv: 2.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 218,
+            "range": "1.95",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 218.00\nmean: 217.40\nstdev: 1.95\ncv: 0.90%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 445,
+            "range": "6.91",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 445.00\nmean: 446.20\nstdev: 6.91\ncv: 1.55%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 632,
+            "range": "110.86",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 632.00\nmean: 660.80\nstdev: 110.86\ncv: 16.78%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
