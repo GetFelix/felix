@@ -239,6 +239,12 @@ impl PublishAdmission {
         Self::new(u32::MAX as usize)
     }
 
+    /// Bytes not held by any permit.
+    #[cfg(test)]
+    pub(crate) fn available(&self) -> usize {
+        self.semaphore.available_permits()
+    }
+
     pub(super) async fn acquire(
         &self,
         bytes: usize,

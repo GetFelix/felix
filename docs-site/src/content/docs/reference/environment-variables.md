@@ -1297,7 +1297,7 @@ export FELIX_BROKER_PUBLISH_WINDOW="256"
 
 ### `FELIX_PUB_INGRESS_WAIT`
 
-**Description**: When enabled, un-acked (fire-and-forget) publishes wait for ingress capacity, bounded by `FELIX_PUBLISH_QUEUE_WAIT_MS`, instead of being shed when the publish queue or byte budget is full. Backpressure then propagates through QUIC flow control to the publisher. Leave off in production for visible shedding under overload. Turn on for lossless pipelines and sustainable-throughput benchmarking.
+**Description**: When enabled, un-acked (fire-and-forget) publishes wait for ingress capacity instead of being shed when the publish queue or byte budget is full. The wait has no timeout; it ends when room frees or the connection goes. A waiting publish does not stop its stream from reading the publishes behind it. Once a stream has 1024 publishes waiting, or the byte budget is spent, the broker stops reading it, and backpressure propagates through QUIC flow control to the publisher. Leave off in production for visible shedding under overload. Turn on for lossless pipelines and sustainable-throughput benchmarking.
 
 **Type**: Boolean (`1`, `true`, `yes` = enabled)
 
