@@ -427,7 +427,7 @@ dealloc() {
   names="$(for vm in ${BROKER_VMS[@]+"${BROKER_VMS[@]}"} "felixperf-controlplane" ${GENS[@]+"${GENS[@]}"}; do echo "${vm}"; done | sort -u)"
   for try in 1 2 3 4; do
     # shellcheck disable=SC2086
-    az vm deallocate -g "${GROUP}" --names $(echo ${names}) -o none || plog "WARN deallocate call failed (attempt ${try})"
+    az vm deallocate --ids $(for n in ${names}; do printf '%s ' "$(az vm show -g "${GROUP}" -n "${n}" --query id -o tsv)"; done) -o none || plog "WARN deallocate call failed (attempt ${try})"
     if listing="$(az vm list -g "${GROUP}" -d --query '[].[name,powerState]' -o tsv 2>/dev/null)" && [ -n "${listing}" ]; then
       left=""
       for vm in ${names}; do
@@ -621,9 +621,10 @@ ensure_ready() {
 # reset_streams <stream>...: delete and recreate on the control plane, the way
 # seed-remote.sh creates them. Recreating frees the disk and re-places the leaders.
 reset_streams() {
-  local s list="$*"
-  cp_remote "STREAMS='${list}'; SHARDS=${SHARDS}; RF=3
-$(cat <<'BODY'
+  local s list="$*" body
+  # Read the body first: bash 3.2 expands variables in a quoted heredoc
+  # nested in $() inside a double-quoted string.
+  body="$(cat <<'BODY'
 for s in $STREAMS; do
   case "$s" in *durable*|perf-failover) d=true ;; *) d=false ;; esac
   curl -s -X DELETE -H "Authorization: Bearer $t" "$u/v1/tenants/perf/namespaces/default/streams/$s" >/dev/null 2>&1 || true
@@ -634,7 +635,9 @@ for s in $STREAMS; do
   case "$code" in 2*) echo "created.$s=$code" ;; *) echo "!! create $s -> $code"; cat /tmp/reset.resp; exit 1 ;; esac
 done
 BODY
-)
+)"
+  cp_remote "STREAMS='${list}'; SHARDS=${SHARDS}; RF=3
+${body}
 echo __RUNOK__" > "${OUT}/system/reset-streams.txt" 2>&1 || { plog "WARN stream recreate failed: $(tail -3 "${OUT}/system/reset-streams.txt" | tr '\n' ' ')"; return 1; }
 }
 
@@ -869,6 +872,9 @@ prep_cell() {
     fi
   else
     ensure_ready || return 1
+    # In-memory streams keep their data, but every broker must lead some shards
+    # or the cell measures one broker.
+    leaders_even "$(cat "${OUT}/rf3/last-replication.txt" 2>/dev/null)" "${s}" || ensure_fresh "${s}" || return 1
   fi
 }
 
