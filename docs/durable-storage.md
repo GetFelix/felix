@@ -1028,6 +1028,13 @@ What this does not cover:
   need every member at metadata level 17; below it the shards start at
   generation 0 again, which a broker that took the deleted stream's leadership
   or fence at a later generation refuses.
+- A control-plane restore, or a restart of the in-memory store, rewinds the
+  change seq, so such a stream created again afterwards can start below the
+  generation its kept logs accepted. Its replicas then refuse its leader and
+  the shard stays unavailable, but no copy diverges. Abandoning the log does
+  not help, since it raises the generation by one; finalize
+  `stream_incarnations`, then delete the stream and create it again, which
+  opens new logs and drops the old records.
 
 ### Deleting a cache
 
