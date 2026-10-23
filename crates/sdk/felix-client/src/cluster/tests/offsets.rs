@@ -167,3 +167,29 @@ async fn an_idempotent_producer_returns_the_offset_of_the_ack_that_settled_it() 
     assert_eq!(broker.publishes(), 3);
     Ok(())
 }
+
+/// **A time lookup on a shard another node leads is answered by that node.**
+/// The entry broker names the leader, and the lookup follows.
+#[tokio::test]
+async fn offset_for_time_follows_a_redirect_to_the_leader() -> Result<()> {
+    let (server_config, cert) = crate::test_support::build_server_config()?;
+    let leader = StubBroker::start_with(server_config.clone(), ok_at(None))?;
+    let leader_addr = leader.addr;
+    let entry = StubBroker::start_with(server_config, move |_| Message::NotLeader {
+        node_id: "leader".to_string(),
+        addr: Some(leader_addr.to_string()),
+        generation: 1,
+    })?;
+    let cluster = ClusterClient::connect_with_policy(
+        &[entry.addr],
+        "localhost",
+        default_config(cert)?,
+        policy(),
+    )
+    .await?;
+    let offset = cluster
+        .offset_for_time("t1", "default", "orders", 0, 1_000)
+        .await?;
+    assert_eq!(offset, Some(42));
+    Ok(())
+}

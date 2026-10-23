@@ -378,4 +378,37 @@ impl ClusterClient {
         })
         .await
     }
+
+    /// The first offset on one shard of a durable stream whose record was
+    /// appended at or after `at_micros` (microseconds since the Unix epoch),
+    /// asked of whichever broker leads the shard. Subscribe at it with
+    /// [`StartPosition::Offset`] to replay from a time.
+    ///
+    /// `None` when no committed record is that recent yet: subscribe at
+    /// [`StartPosition::Latest`] to wait for one. A time older than every
+    /// record the shard holds answers with the oldest. Times are the leading
+    /// broker's clock at append, so if that clock stepped back the answer is
+    /// near the first such record rather than exactly it. Needs the
+    /// `stream.subscribe` permission.
+    pub async fn offset_for_time(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        at_micros: u64,
+    ) -> Result<Option<u64>> {
+        let key = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            stream.to_string(),
+            shard,
+        );
+        self.on_group_shard(key, |client| async move {
+            client
+                .offset_for_time(tenant_id, namespace, stream, shard, at_micros)
+                .await
+        })
+        .await
+    }
 }
