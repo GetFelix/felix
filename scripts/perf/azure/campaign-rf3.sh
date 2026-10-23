@@ -700,8 +700,8 @@ echo __RUNOK__" 2>/dev/null | extract_between BAL)"
 }
 
 # placement_pause / placement_resume: stop or allow placement's own moves.
-# An operator move starts under a pause but does not progress until resumed; a
-# failed leader is still replaced under one.
+# Moves already started, an operator's included, still run to their cut-over
+# under a pause, and a failed leader is still replaced under one.
 # Start as paused: an earlier run may have exited with placement still paused,
 # and the first prep then resumes it.
 PLACEMENT_PAUSED=1
