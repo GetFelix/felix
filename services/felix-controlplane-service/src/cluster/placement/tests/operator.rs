@@ -677,3 +677,137 @@ async fn a_pause_in_the_store_holds_every_instance_placement() {
     let moving = reconcile_once(&store, &liveness, MovePolicy::default()).await;
     assert!(moving.moved > 0, "{moving:?}");
 }
+
+/// One shard of `orders` on three brokers, Quorum with three copies, placed
+/// and reported level.
+async fn quorum_shard() -> (crate::store::memory::InMemoryStore, ShardAssignment) {
+    use super::reconciler::{cluster, shard_zero};
+    let store = cluster(&["broker-x", "broker-y", "broker-z"]).await;
+    store
+        .delete_stream(&crate::model::StreamKey {
+            tenant_id: "t1".to_string(),
+            namespace: "ns".to_string(),
+            stream: "orders".to_string(),
+        })
+        .await
+        .expect("drop the three-shard stream");
+    store
+        .create_stream(Stream {
+            consistency: ConsistencyLevel::Quorum,
+            ..replicated_stream("orders", 1, 3)
+        })
+        .await
+        .expect("stream");
+    reconcile_once(&store, &Default::default(), unsettled()).await;
+    let placed = store
+        .get_shard_assignment(&shard_zero())
+        .await
+        .expect("placed");
+    report_level(&store, &placed).await;
+    (store, placed)
+}
+
+fn unsettled() -> MovePolicy {
+    MovePolicy {
+        settle_millis: None,
+        ..MovePolicy::default()
+    }
+}
+
+/// Report every follower of `assignment` level, and drained while fenced.
+async fn report_level(store: &crate::store::memory::InMemoryStore, assignment: &ShardAssignment) {
+    let followers: Vec<&str> = assignment
+        .replicas
+        .iter()
+        .map(String::as_str)
+        .filter(|replica| *replica != assignment.leader)
+        .collect();
+    super::reconciler::report(
+        store,
+        assignment.generation,
+        &followers,
+        assignment.state == ShardState::Draining,
+    )
+    .await;
+}
+
+/// Run passes until the shard stops moving, and return it.
+async fn settle(store: &crate::store::memory::InMemoryStore) -> ShardAssignment {
+    use super::reconciler::shard_zero;
+    for _ in 0..4 {
+        let current = store
+            .get_shard_assignment(&shard_zero())
+            .await
+            .expect("get");
+        report_level(store, &current).await;
+        reconcile_once(store, &Default::default(), unsettled()).await;
+    }
+    store
+        .get_shard_assignment(&shard_zero())
+        .await
+        .expect("get")
+}
+
+/// A pause stops placement starting moves, never finishing one: a fenced
+/// leader has stopped taking writes, so a move held there stalls the shard.
+/// Placement's own move, fenced before the pause, cuts over under it.
+#[tokio::test]
+async fn a_move_fenced_before_a_pause_cuts_over_under_it() {
+    use super::reconciler::shard_zero;
+    let (store, placed) = quorum_shard().await;
+    let destination = placed.replicas[0].clone();
+    let fenced = store
+        .put_shard_assignment(ShardAssignment {
+            state: ShardState::Draining,
+            successor: Some(destination.clone()),
+            move_started_at_millis: Some(1),
+            move_reason: Some(MoveReason::Balance),
+            ..placed.clone()
+        })
+        .await
+        .expect("fenced");
+    store.set_moves_paused(true).await.expect("pause");
+
+    let after = settle(&store).await;
+    assert_eq!(after.leader, destination, "{after:?}");
+    assert_eq!(after.state, ShardState::Assigning);
+    assert_eq!(after.successor, None);
+    assert!(after.generation > fenced.generation);
+    assert_eq!(
+        store
+            .get_shard_assignment(&shard_zero())
+            .await
+            .expect("get"),
+        after
+    );
+}
+
+/// An operator's move started under a pause runs to its cut-over without a
+/// resume.
+#[tokio::test]
+async fn an_operator_move_started_under_a_pause_runs_to_its_cut_over() {
+    use super::reconciler::shard_zero;
+    let (store, placed) = quorum_shard().await;
+    let destination = placed.replicas[0].clone();
+    store.set_moves_paused(true).await.expect("pause");
+    let started = run_operator(
+        &store,
+        &Default::default(),
+        unsettled(),
+        &PlacementWakes::default(),
+        |catalog| start_move(catalog, &shard_zero(), &destination),
+    )
+    .await
+    .expect("a pause does not stop an operator");
+    assert!(
+        matches!(started.step, MoveStep::Fence | MoveStep::Stage { .. }),
+        "{:?}",
+        started.step
+    );
+
+    let after = settle(&store).await;
+    assert_eq!(after.leader, destination, "{after:?}");
+    assert_eq!(after.successor, None);
+    assert_ne!(after.state, ShardState::Draining);
+    assert!(store.moves_paused().await.expect("read"), "still paused");
+}
