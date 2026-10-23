@@ -823,7 +823,10 @@ FELIX_DURABLE_FSYNC_MODE=on_commit \
 ### Deleting a stream
 
 Once the fleet has finalized `stream_incarnations`, a stream deleted and
-created again under the same name is a new stream. It starts at offset 0 with
+created again under the same name is a new stream. A new cluster finalizes it
+at its first broker registration (see `docs/control-plane.md`, "Fleet
+features"); a cluster upgraded from an older release waits for the
+operator. It starts at offset 0 with
 no records, no idempotent producer state, no consumer-group positions and no
 dead letters, on every broker, including one that was down for the delete.
 

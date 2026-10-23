@@ -296,7 +296,9 @@ deleted.
 
 ### Deleting a stream, and creating it again
 
-Once the fleet has finalized `stream_incarnations`, a stream deleted and
+A new cluster finalizes `stream_incarnations` and `cache_incarnations` at its
+first broker registration; an upgraded one waits for the operator. Once the
+fleet has finalized `stream_incarnations`, a stream deleted and
 created again under the same name starts empty: offset 0, no records, no
 producer state, no group positions, no dead letters.
 

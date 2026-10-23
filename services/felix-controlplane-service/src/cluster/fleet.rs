@@ -143,5 +143,83 @@ pub(crate) fn check_prerequisites(
     )))
 }
 
+/// The features a cluster created on this release starts with. Each keeps a
+/// recreated stream or cache apart from the deleted one, which only works if
+/// the name never had a stream without an incarnation, and nothing older can
+/// be rolled back to on a cluster that never ran it.
+pub(crate) const NEW_CLUSTER: [felix_common::fleet::FleetFeature; 2] = [
+    felix_common::fleet::STREAM_INCARNATIONS,
+    felix_common::fleet::CACHE_INCARNATIONS,
+];
+
+/// Whether `store` is a cluster created on this release, so far untouched: no
+/// stream or cache was ever created, and every broker it knows has registered
+/// once. A broker re-registering takes the next node incarnation, so a store
+/// upgraded from an older release, whose brokers registered before, never
+/// reads as new.
+pub(crate) async fn is_new_cluster(
+    store: &(dyn crate::store::ControlPlaneStore + Send + Sync),
+) -> Result<bool, StoreError> {
+    if store
+        .list_nodes()
+        .await?
+        .iter()
+        .any(|node| node.status.incarnation != 0)
+    {
+        return Ok(false);
+    }
+    Ok(store.stream_changes(0).await?.items.is_empty()
+        && store.cache_changes(0).await?.items.is_empty()
+        && store.stream_snapshot().await?.items.is_empty()
+        && store.cache_snapshot().await?.items.is_empty())
+}
+
+/// Finalize [`NEW_CLUSTER`] on a new cluster, through the same store call as
+/// an operator's finalize, so the same checks hold: every serving broker
+/// reported the feature, under the lock registrations take, and a broker
+/// without it is refused from then on. Answers with the enabled set after.
+///
+/// Called after each registration while a feature is off. Once anything
+/// makes the cluster not new, finalizing is the operator's again.
+pub(crate) async fn finalize_new_cluster(
+    store: &(dyn crate::store::ControlPlaneStore + Send + Sync),
+    mut enabled: BTreeSet<String>,
+) -> BTreeSet<String> {
+    if NEW_CLUSTER
+        .iter()
+        .all(|feature| enabled.contains(feature.name()))
+    {
+        return enabled;
+    }
+    match is_new_cluster(store).await {
+        Ok(true) => {}
+        Ok(false) => return enabled,
+        Err(err) => {
+            tracing::warn!(error = %err, "could not tell whether this is a new cluster");
+            return enabled;
+        }
+    }
+    for feature in NEW_CLUSTER {
+        let name = feature.name();
+        if enabled.contains(name) || check_prerequisites(&enabled, name).is_err() {
+            continue;
+        }
+        match store.finalize_fleet_feature(name).await {
+            Ok(now) => {
+                tracing::info!(feature = name, "fleet feature finalized for a new cluster");
+                enabled = now;
+            }
+            // A broker without it, or a Raft member below the level it needs:
+            // left to the operator, as on an upgraded cluster.
+            Err(err) => tracing::info!(
+                feature = name,
+                error = %err,
+                "not finalizing a fleet feature for a new cluster",
+            ),
+        }
+    }
+    enabled
+}
+
 #[cfg(test)]
 mod tests;
