@@ -34,6 +34,9 @@
 #   m2   the rest of the matrix: mem and on_commit x 256/4096/65536 B x batch
 #        1/64 x acked (64 in flight)/fire-and-forget, spread keys; plus plain
 #        keys for mem 256 B b1/b64 acked. 2 trials.
+#   rab  with RELEASE_SHA set: that build against BUILD_SHA, interleaved, both on
+#        the release loadgen (fire-and-forget, acked and durable 64-batch cells,
+#        one-in-flight latency, shipped-defaults durable cells), 2 trials.
 #   sw   listener sweep (FELIX_QUIC_LISTENERS 1/2/4/8) and the receive-window
 #        check (default vs 32/64 MiB) on mem 4 KiB b64 fire-and-forget, 2 trials.
 #
@@ -90,6 +93,7 @@ fi
 : "${BUILD_SHA:=<BUILD_SHA>}"
 : "${P9_SHA:=71960125bd9a9dee61115a7553f21342a1d136d1}"      # v0.6.0-preview.9
 : "${OLD_LOADGEN:=13b6003e548cf5fd7f9c62813549e36577b5a261}" # the original loadgen (#900)
+: "${RELEASE_SHA:=}"     # set to run the rab step: this release against BUILD_SHA
 : "${PER:=16}"            # publishers per generator
 : "${KEYS:=48}"
 : "${NGEN:=4}"
@@ -266,6 +270,35 @@ build_plan() {
       ing "sw-w${w}-mem-p4096-b64-ff-t${t}" sw "${BUILD_SHA}" "${benv}" "" new mem 4096 64 ff spread
     done
   done
+  # rab: the release build against BUILD_SHA, both on the release loadgen so
+  # only the broker differs; arms alternate by shape and trial.
+  [ -n "${RELEASE_SHA}" ] || return 0
+  local lref lst lfs
+  for t in 1 2; do
+    order="rel base"; [ $((t % 2)) = 0 ] && order="base rel"
+    for s in "mem 4096 64 ff spread" "mem 65536 64 ff spread" "mem 256 64 ff spread" \
+             "mem 4096 64 ack spread" "dur 4096 64 ack spread"; do
+      set -- ${s}
+      for arm in ${order}; do
+        lref="${BUILD_SHA}"; [ "${arm}" = rel ] && lref="${RELEASE_SHA}"
+        ing "rab-${arm}-$(shape_label "$1" "$2" "$3" "$4" "$5")-t${t}" rab "${lref}" "${BASE_B}" "" rel "$1" "$2" "$3" "$(fl_of "$4")" "$5"
+      done
+    done
+    for s in "oncommit 256" "oncommit 4096" "inmem 256"; do
+      set -- ${s}
+      lfs=on_commit; lst=perf-durable
+      [ "$1" = inmem ] && { lfs=periodic; lst=perf; }
+      for arm in ${order}; do
+        lref="${BUILD_SHA}"; [ "${arm}" = rel ] && lref="${RELEASE_SHA}"
+        add "rab-${arm}-l1-$1-p$2-t${t}" rab lat "${lref}" "FELIX_QUIC_LISTENERS=4 FELIX_DURABLE_FSYNC_MODE=${lfs} ${DUR_PROFILE}" "" rel "${lst}" "$2" 1 ff none 1 0
+      done
+    done
+    for arm in ${order}; do
+      lref="${BUILD_SHA}"; [ "${arm}" = rel ] && lref="${RELEASE_SHA}"
+      ing "rab-${arm}-defaults-dur-p256-b1-ack-t${t}" rab "${lref}" "${DEFAULTS_B}" "" rel dur 256 1 "${INFLIGHT}" spread
+      add "rab-${arm}-defaults-lat-dur-p256-t${t}" rab lat "${lref}" "${DEFAULTS_B}" "" rel perf-durable 256 1 ff none 1 0
+    done
+  done
 }
 fl_of() { [ "$1" = ff ] && echo ff || echo "${INFLIGHT}"; }
 
@@ -421,7 +454,7 @@ if [ "${dry}" = 1 ]; then
   echo "  nats-lat: LAT_PAIRS='${LAT_PAIRS}' LAT_PAYLOADS='${LAT_PAYLOADS}' TRIALS=${NATS_LAT_TRIALS} (nats-latency.sh)"
   echo "  curve: in flight 64 reuses the matrix cells m-{mem,dur}-p{256,4096}-b1-ack-spread"
   echo
-  for s in s0 s0b df m1 lat net m2 sw; do
+  for s in s0 s0b df m1 lat net m2 sw rab; do
     n=0; x=0
     for ((i = 0; i < M; i++)); do
       [ "${PSTEP[i]}" = "${s}" ] || continue
@@ -559,15 +592,15 @@ have_label() {   # installed on the broker, not just listed in the inventory
 }
 ensure_builds() {
   local lbl tag sha got
-  for lbl in "${BUILD_SHA}" "${P9_SHA}" "${BUILD_SHA}-fp"; do
+  for lbl in "${BUILD_SHA}" "${P9_SHA}" "${BUILD_SHA}-fp" ${RELEASE_SHA:+"${RELEASE_SHA}"}; do
     have_label "${lbl}" && continue
     plog "build: ${lbl:0:8}$([ "${lbl}" != "${lbl%-fp}" ] && echo -fp) not installed; deploy-ref.sh (15-25 min)"
     SESSION="${SESSION}" "${here}/deploy-ref.sh" "${lbl%-fp}" $([ "${lbl}" != "${lbl%-fp}" ] && echo --fp) > "${OUT}/final/build-${lbl:0:12}.txt" 2>&1 \
       || die "build ${lbl} (see ${OUT}/final/build-${lbl:0:12}.txt)"
   done
   # Side-by-side loadgens: old and new stay on every generator, a cell swaps one in with cp.
-  for tag in old new; do
-    sha="${OLD_LOADGEN}"; [ "${tag}" = new ] && sha="${BUILD_SHA}"
+  for tag in old new ${RELEASE_SHA:+rel}; do
+    sha="${OLD_LOADGEN}"; [ "${tag}" = new ] && sha="${BUILD_SHA}"; [ "${tag}" = rel ] && sha="${RELEASE_SHA}"
     got="$(agent_on "${GENS[$((${#GENS[@]} - 1))]}" "cat /etc/felix/loadgen.${tag}.ref 2>/dev/null || true" 2>/dev/null | grep -E '^[0-9a-f]{40}$' | head -1)"
     [ "${got}" = "${sha}" ] && continue
     plog "build: loadgen ${tag} ${sha:0:8}"
@@ -582,7 +615,7 @@ CURRENT_LG=""
 use_lg() {   # old|new: swap the generators' felix-loadgen
   [ "${CURRENT_LG}" = "$1" ] && return 0
   par_on "${OUT}/system" "lguse" "cp /usr/local/bin/felix-loadgen.$1 /usr/local/bin/felix-loadgen" "${GENS[@]}" || return 1
-  local sha="${BUILD_SHA}"; [ "$1" = old ] && sha="${OLD_LOADGEN}"
+  local sha="${BUILD_SHA}"; [ "$1" = old ] && sha="${OLD_LOADGEN}"; [ "$1" = rel ] && sha="${RELEASE_SHA}"
   echo "${sha}@${sha}" > "${here}/sessions/${SESSION}.loadgen-ref"
   CURRENT_LG="$1"
 }
