@@ -83,6 +83,14 @@ fi
 # The loadgen may come from a newer branch than the brokers (owner-direct ingest,
 # reconnect on broker loss); brokers and control plane stay on BUILD_SHA.
 : "${LOADGEN_SHA:=${BUILD_SHA}}"
+# JSON field names the loadgen reports, in one place. TODO: match the loadgen PR for
+# owner-direct ingest and reconnect once it exists; each entry lists the names tried,
+# first match wins. The loss check says INCOMPLETE when a mapping finds nothing.
+export MAP_ACKED_SHARD="acked_per_shard acked_by_shard per_shard_acked"        # ingest: per-shard acked records
+export MAP_DELIVERED_SHARD="received_per_shard received_by_shard delivered_per_shard per_shard_received"   # subscribe: per-shard delivered
+export MAP_RECONNECTS="reconnects"
+export MAP_FAILED_SENDS="failed_sends"
+
 : "${SHARDS:=12}"            # a multiple of 3, so leaders spread evenly over three brokers
 : "${PER:=16}"               # publishers per generator
 : "${KEYS:=48}"
@@ -825,11 +833,10 @@ prep_cell() {
 }
 
 # ingest_mode_flags <owner|fwd> <batch>: owner-direct publishes go to the shard's
-# leader (b=1 through the cluster client, batches with keys each publisher's broker
-# leads); fwd leaves the old round-robin entry, which forwards to the owner.
+# leader through the cluster client (--cluster, any batch size); fwd leaves the old round-robin entry, which forwards to the owner.
 ingest_mode_flags() {
   [ "$1" = owner ] || return 0
-  if [ "$2" = 1 ]; then echo "--cluster"; else echo "--owner-keys"; fi
+  echo "--cluster"
 }
 
 run_entry() {   # 0 ran, 2 already done, 1 could not start
@@ -942,8 +949,15 @@ print("secs_to_90pct_after_restart=%s" % rec2)
 PY
 
 read -r -d '' LOSS_PY <<'PY' || true
-import glob, json, sys
+import glob, json, os, sys
 cdir = sys.argv[1]
+ACK_KEYS = os.environ["MAP_ACKED_SHARD"].split()
+DELIVERED_KEYS = os.environ["MAP_DELIVERED_SHARD"].split()
+def first_int(j, names):
+    for n in names:
+        if n in j:
+            return int(j[n] or 0)
+    return 0
 def shardmap(j, names):
     for n in names:
         v = j.get(n)
@@ -955,6 +969,7 @@ def shardmap(j, names):
 acked = 0
 ack_shard, have_ack_shard = {}, True
 extra = {"reconnects": 0, "failed_sends": 0, "cut_off_records": 0, "publish_retries": 0}
+REC, FAILED = os.environ["MAP_RECONNECTS"].split(), os.environ["MAP_FAILED_SENDS"].split()
 gens = 0
 for p in glob.glob(cdir + "/*.run.txt"):
     for l in open(p, errors="replace"):
@@ -967,9 +982,11 @@ for p in glob.glob(cdir + "/*.run.txt"):
                 continue
             gens += 1
             acked += int(j.get("acked_records", 0))
-            for k in extra:
-                extra[k] += int(j.get(k, 0) or 0)
-            m = shardmap(j, ("acked_per_shard", "acked_by_shard", "per_shard_acked"))
+            extra["reconnects"] += first_int(j, REC)
+            extra["failed_sends"] += first_int(j, FAILED)
+            extra["cut_off_records"] += int(j.get("cut_off_records", 0) or 0)
+            extra["publish_retries"] += int(j.get("publish_retries", 0) or 0)
+            m = shardmap(j, ACK_KEYS)
             if m is None:
                 have_ack_shard = False
             else:
@@ -993,7 +1010,7 @@ if not have_ack_shard or not ack_shard:
 if sub is None:
     why.append("no subscriber result")
 else:
-    dl = shardmap(sub, ("received_per_shard", "received_by_shard", "delivered_per_shard", "per_shard_received"))
+    dl = shardmap(sub, DELIVERED_KEYS)
     if dl is None:
         why.append("subscriber reports no per-shard delivered counts")
     if sub.get("ended_early"):
@@ -1026,7 +1043,7 @@ run_failover() {
   (
     CELL_SECS="${FAIL_SECS}"
     # shellcheck disable=SC2207 # ingest_flags prints words
-    ffl=($(SHARDS="${SHARDS}" PAYLOAD=4096 BATCH=64 IN_FLIGHT="${INFLIGHT}" ingest_flags perf-failover "${KEYS}" "${PER}") --owner-keys)
+    ffl=($(SHARDS="${SHARDS}" PAYLOAD=4096 BATCH=64 IN_FLIGHT="${INFLIGHT}" ingest_flags perf-failover "${KEYS}" "${PER}") --cluster)
     cell "${name}" $((NGEN - 1)) "${ffl[@]}"
   ) &
   cpid=$!

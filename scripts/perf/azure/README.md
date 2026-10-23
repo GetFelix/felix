@@ -266,8 +266,7 @@ zones 1, 2 and 3; four `Standard_D4as_v5` generators and a `Standard_D2as_v5`
 control plane in zone 1. Every member runs one build, `BUILD_SHA`: `BROKER_REFS`
 builds it on generator 0 and installs it on the brokers and the control plane,
 `LOADGEN_REF` builds the instrument on every generator, from `LOADGEN_SHA`
-(default `BUILD_SHA`; set it to a newer commit for owner-direct ingest and broker-loss
-reconnects), and the preflight refuses to start unless each member reports its SHA. MTU is 3900 on every
+(default `BUILD_SHA`; set it to a newer commit for owner-direct ingest and broker-loss reconnects), and the preflight refuses to start unless each member reports its SHA. MTU is 3900 on every
 VM, with a don't-fragment ping at 3872 bytes from each generator to each broker
 and between the brokers. Unattended upgrades are masked. Streams have 12 shards
 (a multiple of three, so each broker leads four) and RF=3, created by
@@ -297,7 +296,7 @@ is expected near 600-700 MB/s and a degraded one under 300. A broker below the g
 stops the campaign. The measured values are in `system/*.fio.txt`.
 
 **Cells** (2 trials each, A/B pairs interleaved): the Quorum matrix, owner-direct
-(batch 1 through the cluster client with `--cluster`, batches with `--owner-keys`), on the
+(`--cluster`: the cluster client publishes straight to each shard's leader, at any batch size), on the
 durable and in-memory replicated streams at 256 B and 4 KiB, batch 1 and 64,
 acked with 64 in flight, keys spread over every shard (`m`); one-in-flight Quorum
 ack and delivery latency, at the product's delivery batching and with it off
