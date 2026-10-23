@@ -133,6 +133,10 @@ felix-storage = { path = "../../crates/server/felix-storage", version = "0.6.0-p
 # here instead of in a cluster.
 felix-controlplane-service = { path = "../felix-controlplane-service", version = "0.6.0-preview.9" }
 
+# The fire-and-forget ingest test runs the load generator against an
+# in-process broker.
+felix-loadgen = { path = "../../crates/testing/felix-loadgen", version = "0.6.0-preview.9" }
+
 [features]
 default = []
 # `serving::auth::demo`: a fixed signing key and a token minted with it, so a
