@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792758058749,
+  "lastUpdate": 1792760497165,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -42108,6 +42108,72 @@ window.BENCHMARK_DATA = {
             "range": "474.22",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1204.00\nmean: 1021.00\nstdev: 474.22\ncv: 46.45%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1501f6f7f446e451603897c79c606f2e2258b878",
+          "message": "perf(azure): make the NATS install check fail when NATS is missing (#1439)\n\nagent_on runs its body under set -e, which ignores a failing test that is\nnot the last in an && list, so ensure_nats saw a fresh VM as installed and\nevery NATS cell failed its reset.",
+          "timestamp": "2026-10-23T12:56:52Z",
+          "tree_id": "8a59acd205ad77c89c14f92881538847b850f7b7",
+          "url": "https://github.com/GetFelix/felix/commit/1501f6f7f446e451603897c79c606f2e2258b878"
+        },
+        "date": 1792760491687,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 106,
+            "range": "1.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 106.00\nmean: 106.00\nstdev: 1.00\ncv: 0.94%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 145,
+            "range": "4.83",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 145.00\nmean: 142.60\nstdev: 4.83\ncv: 3.38%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 183,
+            "range": "11.65",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 183.00\nmean: 189.40\nstdev: 11.65\ncv: 6.15%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 135,
+            "range": "10.29",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 135.00\nmean: 139.60\nstdev: 10.29\ncv: 7.37%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 299,
+            "range": "371.62",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 299.00\nmean: 458.40\nstdev: 371.62\ncv: 81.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 467,
+            "range": "885.42",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 467.00\nmean: 832.20\nstdev: 885.42\ncv: 106.39%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
