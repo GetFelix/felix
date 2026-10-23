@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792725398511,
+  "lastUpdate": 1792726363199,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -41646,6 +41646,72 @@ window.BENCHMARK_DATA = {
             "range": "753.67",
             "unit": "us",
             "extra": "trials: 5\nmedian: 654.00\nmean: 1096.60\nstdev: 753.67\ncv: 68.73%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "84b23de60c85d604bd151bf5c87f794e243626ef",
+          "message": "perf(azure): RF=3 cluster campaign driver (#1423)\n\n* perf(azure): RF=3 cluster campaign driver\n\nThree L4as_v4 brokers on local NVMe, RF=3 Quorum matrix, latency, forwarding,\ncache, lease-free and a kill -9 failover cell, resumable, with a disk gate and a\ndry run that prints hours and cost.\n\n* perf(azure): owner-direct RF=3 cells, bounded az calls, measured fio gate\n\nIngest cells default to owner-direct, with the round-robin forwarding\ncells kept as a labelled variant. LOADGEN_SHA is separate from BUILD_SHA.\nThe failover loss check compares per-shard acked against delivered and\nreports INCOMPLETE otherwise. Deallocation uses the explicit VM list and\ncounts only a verified listing. Every az call has a timeout. The fio gate\nis a measured baseline. The estimate counts the finalize restart, retries\nand a reserved full reset, and the default trim leaves 45 minutes of slack.\n\n* perf(azure): RF=3 owner-direct cells use --cluster at every batch size\n\nThe loadgen JSON field names the loss check reads sit in one mapping block\nat the top of the script, to be matched to the loadgen change.\n\n* perf(azure): RF=3 failover loss check from felixctl inspect, loadgen fields from #1424\n\nThe check compares each shard's acked count against how far the leader's\nlog grew, read before the cell and after recovery. LOADGEN_SHA defaults\nto the #1424 head.\n\n* perf(azure): RF=3 forwarding measure from the loadgen's exact share and the brokers' forwards_total\n\nLOADGEN_SHA defaults to the #1424 head d70cdad7. An owner-direct cell that\nforwards more than 5% logs a WARN.\n\n* perf(azure): RF=3 loadgen defaults to the build SHA now that #1424 is on main",
+          "timestamp": "2026-10-23T03:28:43Z",
+          "tree_id": "3de22d4c4f2f53750db89453af8497b069db35bb",
+          "url": "https://github.com/GetFelix/felix/commit/84b23de60c85d604bd151bf5c87f794e243626ef"
+        },
+        "date": 1792726357950,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 108,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 108.00\nmean: 108.40\nstdev: 0.55\ncv: 0.51%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 148,
+            "range": "42.54",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 148.00\nmean: 168.80\nstdev: 42.54\ncv: 25.20%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 217,
+            "range": "59.38",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 217.00\nmean: 238.40\nstdev: 59.38\ncv: 24.91%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 143,
+            "range": "1.58",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 143.00\nmean: 143.00\nstdev: 1.58\ncv: 1.11%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 286,
+            "range": "17.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 286.00\nmean: 291.00\nstdev: 17.55\ncv: 6.03%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 379,
+            "range": "519.77",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 379.00\nmean: 627.40\nstdev: 519.77\ncv: 82.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
