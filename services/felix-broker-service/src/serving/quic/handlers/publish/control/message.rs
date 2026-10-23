@@ -21,7 +21,9 @@ use crate::serving::quic::handlers::publish::ack::{
     send_outgoing_best_effort, send_outgoing_critical,
 };
 use crate::serving::quic::handlers::publish::commit_ack::{AckRequest, PendingAck};
-use crate::serving::quic::handlers::publish::ingress::{PublishTarget, enqueue_tenant_publish};
+use crate::serving::quic::handlers::publish::ingress::{
+    PublishTarget, enqueue_acked_tenant_publish,
+};
 use crate::serving::quic::handlers::publish::route::{
     internal_ack, needs_quorum, publish_target, resolve_route, resolve_shard, targets_durable,
 };
@@ -268,7 +270,7 @@ pub(crate) async fn handle_publish_message(
     } else {
         (None, None)
     };
-    let enqueue_result = enqueue_tenant_publish(
+    let enqueue_result = enqueue_acked_tenant_publish(
         publish_ctx,
         &tenant_id,
         PublishJob {
@@ -288,6 +290,7 @@ pub(crate) async fn handle_publish_message(
             EnqueuePolicy::Fail
         },
         Some(cancel_tx.subscribe()),
+        &mut pending,
     )
     .await;
     if let Some(start) = enqueue_start {
@@ -404,7 +407,10 @@ pub(crate) async fn handle_publish_message(
             return Ok(());
         }
         // Commit-ack mode: the waiter was reserved before the enqueue.
-        pending.take().expect("commit ack expected").arm();
+        // Taken by a parked wait, which arms it once the publish is admitted.
+        if let Some(pending) = pending.take() {
+            pending.arm();
+        }
         Ok(())
     }
     .instrument(span)

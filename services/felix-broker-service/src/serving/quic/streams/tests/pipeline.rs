@@ -35,7 +35,7 @@ fn answered(outgoing: &Outgoing) -> Option<u64> {
 
 /// A connection to a server that accepts it and does nothing else, for the
 /// control loops to run on.
-async fn idle_connection() -> Result<QuicConnection> {
+pub(super) async fn idle_connection() -> Result<QuicConnection> {
     let (server_config, cert) = build_server_config()?;
     let server = QuicServer::bind(
         "127.0.0.1:0".parse()?,

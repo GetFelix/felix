@@ -14,9 +14,10 @@ use crate::serving::quic::client_error::ClientError;
 use crate::serving::quic::handlers::publish::PublishContext;
 use crate::serving::quic::handlers::publish::PublishJob;
 use crate::serving::quic::handlers::publish::ack::EnqueuePolicy;
-use crate::serving::quic::handlers::publish::admission::AdmissionPermit;
-use crate::serving::quic::handlers::publish::scheduler::Rejected;
-use crate::serving::quic::telemetry::{t_counter, t_gauge};
+use crate::serving::quic::handlers::publish::admission::{AdmissionPermit, IdentityLimits};
+use crate::serving::quic::handlers::publish::commit_ack::PendingAck;
+use crate::serving::quic::handlers::publish::scheduler::{Rejected, Submitted, Waited};
+use crate::serving::quic::telemetry::{count_publish, t_counter, t_gauge};
 use crate::shards::lifecycle::fence::FenceGuard;
 
 pub(crate) enum PublishTarget {
@@ -77,7 +78,7 @@ impl PublishTarget {
 /// Queue a publish job for `tenant` with explicit overload semantics.
 ///
 /// Return value:
-/// - `Ok(true)`  → job queued
+/// - `Ok(true)`  → job queued, or parked in line for room (see [`enqueue`])
 /// - `Ok(false)` → job intentionally dropped (policy = Drop)
 /// - `Err(...)`  → not queued (policy = Fail, a wait that ran out, closed queue, cancellation).
 ///   A queue with no room is a [`ClientError::queue_full`]: retryable, nothing applied.
@@ -86,13 +87,47 @@ impl PublishTarget {
 /// [`EnqueuePolicy::Backpressure`], which has no timer; `None` means the caller has
 /// no teardown signal to offer (the uni-stream paths), and such a wait ends only
 /// when room frees or the queue closes.
+#[cfg(test)]
 pub(crate) async fn enqueue_publish(
+    publish_ctx: &PublishContext,
+    tenant: &str,
+    job: PublishJob,
+    policy: EnqueuePolicy,
+    cancel: Option<watch::Receiver<bool>>,
+) -> Result<bool> {
+    let enqueued = enqueue(publish_ctx, tenant, job, policy, cancel, false, &mut None).await?;
+    Ok(!matches!(enqueued, Enqueued::Dropped))
+}
+
+/// How [`enqueue`] placed a job.
+enum Enqueued {
+    Queued,
+    /// Shed under `Drop`.
+    Dropped,
+    /// Parked in the queue, its wait handed to the stream's
+    /// [`ParkedPublishes`](super::ParkedPublishes). It holds its place in line and its byte budget;
+    /// the parked wait answers it if it is never admitted.
+    Parked,
+}
+
+/// [`enqueue_publish`], recording what was queued against the identity when
+/// `record` is set.
+///
+/// A job that must wait for room is parked, which fixes its place in line,
+/// and when the caller's stream has a [`ParkedPublishes`](super::ParkedPublishes) slot free the wait
+/// moves there and this returns at once. That is what keeps a control stream
+/// reading while one shard's queue is full. An acked job parks only with its
+/// `pending` ack, which the parked wait arms once the job is admitted, so its
+/// ack timeout starts at admission, as it would inline.
+async fn enqueue(
     publish_ctx: &PublishContext,
     tenant: &str,
     mut job: PublishJob,
     policy: EnqueuePolicy,
     mut cancel: Option<watch::Receiver<bool>>,
-) -> Result<bool> {
+    record: bool,
+    pending: &mut Option<PendingAck>,
+) -> Result<Enqueued> {
     // Byte-based admission gate, independent of the item-count queue depth: bounds total bytes
     // queued-or-processing so a handful of large payloads/batches can't blow past the intended
     // ingress memory budget. Three gates, narrowest first: the publishing identity's share of
@@ -129,7 +164,7 @@ pub(crate) async fn enqueue_publish(
             let refused = |reason: &'static str| match policy {
                 EnqueuePolicy::Drop => {
                     t_counter!("felix_broker_ingress_dropped_total").increment(1);
-                    Ok(false)
+                    Ok(Enqueued::Dropped)
                 }
                 EnqueuePolicy::Fail => {
                     t_counter!("felix_broker_ingress_rejected_total").increment(1);
@@ -174,18 +209,29 @@ pub(crate) async fn enqueue_publish(
         job.fenced = fence_now(publish_ctx, &job.target)?;
     }
 
+    let messages = job.payloads.len() as u64;
+    let recorded = move |identity: &IdentityLimits, tenant: &str| {
+        if record {
+            identity
+                .published
+                .record(tenant, messages, job_bytes as u64);
+        }
+    };
     let scheduler = &publish_ctx.scheduler;
     let job = match scheduler.submit(tenant, job, std::future::ready(())).await {
-        Ok(()) => return Ok(true),
+        Ok(()) => {
+            recorded(&publish_ctx.identity, tenant);
+            return Ok(Enqueued::Queued);
+        }
         Err(Rejected::Closed) => return Err(anyhow!("publish queue closed")),
         Err(Rejected::Full(job)) => *job,
     };
     t_counter!("felix_broker_ingress_queue_full_total").increment(1);
-    let waited = match policy {
+    match policy {
         EnqueuePolicy::Drop => {
             t_counter!("felix_broker_ingress_dropped_total").increment(1);
             tenants::record_queue_full(tenant, tenants::THROTTLE_DROPPED);
-            return Ok(false);
+            return Ok(Enqueued::Dropped);
         }
         EnqueuePolicy::Fail => {
             t_counter!("felix_broker_ingress_rejected_total").increment(1);
@@ -194,23 +240,59 @@ pub(crate) async fn enqueue_publish(
         }
         // Acked publishes with ack_on_commit use Wait; unacked publishes
         // with `pub_ingress_wait` use Backpressure.
-        EnqueuePolicy::Wait => {
+        EnqueuePolicy::Wait | EnqueuePolicy::Backpressure => {
             t_counter!("felix_broker_ingress_waited_total").increment(1);
-            // Shares the deadline computed above with the admission stage, so
-            // the two together cannot exceed `wait_timeout`.
-            scheduler
-                .submit(tenant, job, tokio::time::sleep_until(deadline))
-                .await
         }
-        EnqueuePolicy::Backpressure => {
-            t_counter!("felix_broker_ingress_waited_total").increment(1);
-            scheduler.submit(tenant, job, cancelled(&mut cancel)).await
+    }
+    // An acked job can wait off the read loop only if its ack goes with it.
+    let movable = match policy {
+        EnqueuePolicy::Wait => pending.is_some() && job.response.is_some(),
+        _ => true,
+    };
+    let ticket = match scheduler.park(tenant, job) {
+        Ok(Submitted::Queued) => {
+            recorded(&publish_ctx.identity, tenant);
+            return Ok(Enqueued::Queued);
+        }
+        Ok(Submitted::Parked(ticket)) => ticket,
+        Err(_) => return Err(anyhow!("publish queue closed")),
+    };
+    // Wait shares the deadline computed above with the admission stage, so
+    // the two together cannot exceed `wait_timeout`. Either ends when the
+    // stream is torn down.
+    let give_up = async move {
+        match policy {
+            EnqueuePolicy::Wait => tokio::select! {
+                () = tokio::time::sleep_until(deadline) => {}
+                () = cancelled(&mut cancel) => {}
+            },
+            _ => cancelled(&mut cancel).await,
         }
     };
-    match waited {
-        Ok(()) => Ok(true),
-        Err(Rejected::Closed) => Err(anyhow!("publish queue closed")),
-        Err(Rejected::Full(_)) => match policy {
+    if movable
+        && let Some(parked) = publish_ctx.parked.as_ref()
+        && let Some(slot) = parked.try_slot()
+    {
+        t_counter!("felix_broker_ingress_parked_total").increment(1);
+        let identity = Arc::clone(&publish_ctx.identity);
+        let tenant = tenant.to_owned();
+        let pending = pending.take();
+        parked.spawn(async move {
+            let waited = ticket.wait(give_up).await;
+            drop(slot);
+            settle_parked(waited, policy, pending, &tenant, || {
+                recorded(&identity, &tenant);
+            });
+        });
+        return Ok(Enqueued::Parked);
+    }
+    match ticket.wait(give_up).await {
+        Waited::Admitted => {
+            recorded(&publish_ctx.identity, tenant);
+            Ok(Enqueued::Queued)
+        }
+        Waited::Closed(_) => Err(anyhow!("publish queue closed")),
+        Waited::GaveUp(_) => match policy {
             EnqueuePolicy::Backpressure => {
                 t_counter!("felix_broker_ingress_backpressure_cancelled_total").increment(1);
                 Err(anyhow!("publish cancelled while waiting for ingress queue"))
@@ -221,6 +303,48 @@ pub(crate) async fn enqueue_publish(
                 Err(ClientError::queue_full().into())
             }
         },
+    }
+}
+
+/// Finish a parked publish the way the read loop would have once its wait
+/// ended: arm its ack when it was admitted, and answer it when it was not.
+fn settle_parked(
+    waited: Waited,
+    policy: EnqueuePolicy,
+    pending: Option<PendingAck>,
+    tenant: &str,
+    record: impl FnOnce(),
+) {
+    let refusal = match waited {
+        Waited::Admitted => {
+            record();
+            if let Some(pending) = pending {
+                pending.arm();
+            }
+            return;
+        }
+        Waited::GaveUp(job) => {
+            if policy == EnqueuePolicy::Backpressure {
+                t_counter!("felix_broker_ingress_backpressure_cancelled_total").increment(1);
+            } else {
+                t_counter!("felix_broker_ingress_rejected_total").increment(1);
+                tenants::record_queue_full(tenant, tenants::THROTTLE_REFUSED);
+            }
+            (Some(job), ClientError::queue_full())
+        }
+        Waited::Closed(job) => (
+            job,
+            ClientError::not_enqueued(&anyhow!("publish queue closed")),
+        ),
+    };
+    // Nothing was queued. Only an acked job carries a reply; an unacked one
+    // under Backpressure ends only when the stream or the broker goes away.
+    match refusal {
+        (Some(mut job), error) => match job.response.take() {
+            Some(reply) => reply.send(Err(error.into())),
+            None => count_publish("error"),
+        },
+        (None, _) => count_publish("error"),
     }
 }
 
@@ -241,7 +365,23 @@ pub(crate) async fn enqueue_tenant_publish(
     tenant: &str,
     job: PublishJob,
     policy: EnqueuePolicy,
+    cancel: Option<watch::Receiver<bool>>,
+) -> Result<bool> {
+    enqueue_acked_tenant_publish(publish_ctx, tenant, job, policy, cancel, &mut None).await
+}
+
+/// [`enqueue_tenant_publish`] with the publish's `pending` commit ack, if it
+/// has one, which the caller arms once this returns `Ok(true)`.
+///
+/// When the job has to wait for room and the stream can park it, `pending`
+/// is taken and armed by the parked wait instead; the caller finds it `None`.
+pub(crate) async fn enqueue_acked_tenant_publish(
+    publish_ctx: &PublishContext,
+    tenant: &str,
+    job: PublishJob,
+    policy: EnqueuePolicy,
     mut cancel: Option<watch::Receiver<bool>>,
+    pending: &mut Option<PendingAck>,
 ) -> Result<bool> {
     let messages = job.payloads.len() as u64;
     let bytes = job.payloads.iter().map(Bytes::len).sum::<usize>() as u64;
@@ -275,14 +415,8 @@ pub(crate) async fn enqueue_tenant_publish(
             }
         }
     }
-    let enqueued = enqueue_publish(publish_ctx, tenant, job, policy, cancel).await?;
-    if enqueued {
-        publish_ctx
-            .identity
-            .published
-            .record(tenant, messages, bytes);
-    }
-    Ok(enqueued)
+    let enqueued = enqueue(publish_ctx, tenant, job, policy, cancel, true, pending).await?;
+    Ok(!matches!(enqueued, Enqueued::Dropped))
 }
 
 /// Wait for `bytes` from the identity's share, the connection's ceiling and
