@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792769760422,
+  "lastUpdate": 1792770665063,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -42570,6 +42570,72 @@ window.BENCHMARK_DATA = {
             "range": "222.86",
             "unit": "us",
             "extra": "trials: 5\nmedian: 625.00\nmean: 736.80\nstdev: 222.86\ncv: 30.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "789f85d7f5fe996fdae7e9853ea993defa50b64f",
+          "message": "fix(placement): give a stuck fence back to its leader after a timeout (#1434) (#1444)\n\n* fix(placement): give a stuck fence back to its leader after a timeout (#1434)\n\nA fenced move waited on its leader's drained report with no bound, so a\nlive leader that never reported drained kept its shard without writes\nforever. The instance running placement now watches each fence, and once\na shard has been fenced at one generation for FELIX_SHARD_FENCE_TIMEOUT_MS\n(two minutes, shard_fence_timeout_ms in the file, 0 for the old\nbehaviour) it gives the move up with the same write as an operator's\ncancel after the fence: the leader serves again at a new generation.\n\nNobody has led since the fence, so the leader holds every write it\naccepted, and the successor was never named and took none. The write is\nconditional on the fenced generation, so it and a cut-over decided from a\ndrained report cannot both land. A drained report seen in the same pass\nstill cuts over. The clock is per instance and restarts on a lease\nchange, which only delays the give-up.\n\nNo Raft entry applies differently: the give-up is an ordinary assignment\nwrite decided when it is proposed.\n\nFelixPlacementPacing gains FenceTimeOut, and FencedNeverTimesOut becomes\nFencedOnlyInAMove, which still holds; the race with a cut-over is the\nshard model's Retake under CancelCas.\n\n* fix(placement): back off a shard's moves after give-ups at the fence (#1434)\n\nEach give-up costs the shard its writes for the fence timeout and drops\nthe destination's copy, and a draining leader keeps its shard on the move\npath, so a leader that cannot drain would fence and give up every few\nminutes. The next move of a shard now waits the fence timeout after one\ngive-up, doubling with each in a row up to an hour, and the count resets\nonce the shard has another leader. Waiting moves say so in the plan, and\nrepeated give-ups log a warning naming the shard and its leader.\n\nThe count is kept per instance beside the fence clock; a lease change\nstarts it again, which only shortens a wait.\n\nSpec-Unaffected: FelixPlacementPacing has no clock; the wait only delays a Start the model already allows at any time.",
+          "timestamp": "2026-10-23T08:46:42-07:00",
+          "tree_id": "b7e63af0bc232af671819d7ade8b1565895684e3",
+          "url": "https://github.com/GetFelix/felix/commit/789f85d7f5fe996fdae7e9853ea993defa50b64f"
+        },
+        "date": 1792770660568,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 180,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 180.00\nmean: 180.40\nstdev: 1.14\ncv: 0.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 240,
+            "range": "2.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 240.00\nmean: 241.00\nstdev: 2.00\ncv: 0.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 298,
+            "range": "11.20",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 298.00\nmean: 303.00\nstdev: 11.20\ncv: 3.70%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 218,
+            "range": "4.53",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 218.00\nmean: 220.00\nstdev: 4.53\ncv: 2.06%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 448,
+            "range": "129.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 448.00\nmean: 500.80\nstdev: 129.45\ncv: 25.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 647,
+            "range": "608.27",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 647.00\nmean: 990.80\nstdev: 608.27\ncv: 61.39%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
