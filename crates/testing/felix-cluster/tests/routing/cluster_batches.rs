@@ -14,6 +14,8 @@ use serial_test::serial;
 
 const STREAM: &str = "batched";
 const SHARDS: u32 = 6;
+/// The payload `Cluster::start` publishes to prove a stream accepts writes.
+const HARNESS_PROBE: &[u8] = b"harness-probe";
 
 fn config() -> ClusterConfig {
     ClusterConfig {
@@ -70,8 +72,9 @@ async fn broker_forwards(cluster: &Cluster) -> f64 {
     total
 }
 
-/// Everything in the stream, per shard, as `(offset, payload)` in log order,
-/// read from each shard's current owner.
+/// Everything the test published, per shard, as `(offset, payload)` in log
+/// order, read from each shard's current owner. The harness's own readiness
+/// probe writes one record to shard 0 at startup; it is left out.
 async fn read_all(cluster: &Cluster) -> BTreeMap<u32, Vec<(u64, String)>> {
     let mut out = BTreeMap::new();
     for shard in 0..SHARDS {
@@ -87,6 +90,9 @@ async fn read_all(cluster: &Cluster) -> BTreeMap<u32, Vec<(u64, String)>> {
         while let Ok(Ok(Some(event))) =
             tokio::time::timeout(Duration::from_secs(3), sub.next_event()).await
         {
+            if event.payload.as_ref() == HARNESS_PROBE {
+                continue;
+            }
             rows.push((
                 event.offset.expect("a durable stream carries offsets"),
                 String::from_utf8_lossy(&event.payload).to_string(),
