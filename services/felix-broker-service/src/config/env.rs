@@ -99,10 +99,26 @@ impl BrokerConfig {
             }
             None => None,
         };
-        let ack_on_commit = std::env::var("FELIX_ACK_ON_COMMIT")
-            .ok()
-            .map(|value| matches!(value.as_str(), "1" | "true" | "yes"))
-            .unwrap_or(false);
+        // Unset: durable streams ack after commit, in-memory ones on enqueue.
+        // A true value acks everything after commit, a false one opts out. A
+        // value that is neither keeps the default, with a warning: a typo must
+        // not quietly turn the safer ack off.
+        let ack_on_commit_env = std::env::var("FELIX_ACK_ON_COMMIT").ok().and_then(|value| {
+            match value.trim().to_ascii_lowercase().as_str() {
+                "1" | "true" | "yes" | "on" => Some(true),
+                "0" | "false" | "no" | "off" => Some(false),
+                _ => {
+                    tracing::warn!(
+                        value = %value,
+                        "FELIX_ACK_ON_COMMIT is not a boolean; keeping the default (durable \
+                         streams ack after commit)"
+                    );
+                    None
+                }
+            }
+        });
+        let ack_on_commit = ack_on_commit_env.unwrap_or(false);
+        let ack_durable_on_commit = ack_on_commit_env.unwrap_or(true);
         let record_publishers = std::env::var("FELIX_RECORD_PUBLISHERS")
             .ok()
             .map(|value| matches!(value.as_str(), "1" | "true" | "yes"))
@@ -409,6 +425,7 @@ impl BrokerConfig {
             membership,
             peer_transport,
             ack_on_commit,
+            ack_durable_on_commit,
             record_publishers,
             max_frame_bytes,
             preauth_max_frame_bytes,

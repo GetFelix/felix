@@ -74,6 +74,7 @@ impl BrokerConfig {
         }
         if let Some(value) = override_cfg.ack_on_commit {
             config.ack_on_commit = value;
+            config.ack_durable_on_commit = value;
         }
         if let Some(value) = override_cfg.record_publishers {
             config.record_publishers = value;

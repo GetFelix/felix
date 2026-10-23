@@ -19,6 +19,12 @@ Everything below exists to make that sentence true and to make its cost
 explicit. The window is zero for `OnCommit`, one interval for `Periodic`, and
 undefined for `None`.
 
+The broker sends the acknowledgement after the commit by default, and the table
+under "Durability policies" says what the commit waited for. The broker answers
+on enqueue, before the append, only when started with `FELIX_ACK_ON_COMMIT=0`;
+the guarantee above does not hold for such an ack. An in-memory stream has no
+log and is answered on enqueue either way.
+
 ## Layers
 
 ```mermaid

@@ -127,8 +127,9 @@ The rules that matter when writing a browser app:
   `publish_failed` may still have landed, and only the app knows whether a
   retry is safe.
 - An `ack` carries an offset only when the broker acknowledges after writing
-  the record. That needs [`FELIX_ACK_ON_COMMIT`](/reference/environment-variables/#felix_ack_on_commit)
-  on the brokers; with the default, acks come back with `offset: null`.
+  the record. A durable stream gives one by default; an in-memory stream, or a broker run with
+  [`FELIX_ACK_ON_COMMIT=0`](/reference/environment-variables/#felix_ack_on_commit),
+  answers with `offset: null`.
 - When a cache holds a snapshot of a stream up to some offset, subscribe first,
   wait for `subscribed`, then read the cache. Reading first loses whatever is
   published in between. This is the same ordering rule Felix itself follows

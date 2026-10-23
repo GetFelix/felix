@@ -48,11 +48,12 @@ loop {
 An empty batch means nothing was available, not an error.
 
 A poll sees a record once it is written, which is not always when its publish
-was acknowledged. A broker with `ack_on_commit` off (the default) acknowledges
+was acknowledged. A broker run with `FELIX_ACK_ON_COMMIT=0` acknowledges
 a `Leader` stream's publish when it is queued, so a poll sent right after the
-ack can come back without it. The next poll gets it. If a consumer has to see
-everything acknowledged so far, publish with commit acks: `ack_on_commit: true`
-in the producer's `ClientConfig`, or `FELIX_ACK_ON_COMMIT=true` on the broker.
+ack can come back without it. The next poll gets it. By default a durable
+stream acks after the write and has no such gap. Against a broker that opted
+out, publish with commit acks: `ack_on_commit: true` in the producer's
+`ClientConfig`, or `FELIX_ACK_ON_COMMIT=true` on the broker.
 
 ## What the broker guarantees
 

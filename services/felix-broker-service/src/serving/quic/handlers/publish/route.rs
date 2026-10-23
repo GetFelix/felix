@@ -379,6 +379,15 @@ pub(crate) fn internal_ack(ack: Option<felix_wire::AckMode>) -> felix_wire::inte
     }
 }
 
+/// True when this publish lands on a durable stream owned by this broker.
+pub(crate) fn targets_durable(target: &Option<PublishTarget>) -> bool {
+    matches!(
+        target,
+        Some(PublishTarget::Resolved { handle, .. } | PublishTarget::Idempotent { handle, .. })
+            if handle.is_durable()
+    )
+}
+
 /// True when this publish must not be acknowledged until a majority holds it.
 ///
 /// `Quorum` is the stream that said "accepted by this broker is not good

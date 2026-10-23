@@ -329,6 +329,16 @@ and returns nothing, not zero, when the broker did not say.
 """
 
 [[scenario]]
+id = "ack.default_commits_durable"
+required = false
+title = "A durable stream acks after the write by default"
+detail = """
+A broker with no ack setting touched answers an acked publish to a durable
+stream after the write, so the ack carries the offset the batch landed at. An
+in-memory stream has no log: its ack is sent on enqueue and carries none.
+"""
+
+[[scenario]]
 id = "ack.duplicate_reports_the_original_offset"
 required = false
 title = "A re-sent idempotent batch reports where it first landed"

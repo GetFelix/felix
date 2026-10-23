@@ -493,6 +493,9 @@ fn config_with_handoff(nodes: usize, stream: StreamSpec, handoff_ms: u64) -> Clu
                 "FELIX_SHUTDOWN_DRAIN_TIMEOUT_MS".to_string(),
                 "3000".to_string(),
             ),
+            // The lone-broker test is about records acknowledged before they
+            // are written, which a durable stream no longer does by default.
+            ("FELIX_ACK_ON_COMMIT".to_string(), "0".to_string()),
         ],
         ..Default::default()
     }

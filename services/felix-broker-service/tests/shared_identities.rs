@@ -562,12 +562,13 @@ const CEILING_REFUSAL: &str = "across identities";
 /// queue. Alice's subscriber never reads and every queue on the way to it
 /// blocks when full, so her stream's flushes stall in fanout, its flush
 /// slots run out, and her later publishes stay queued with their bytes held.
-/// Publishes are acknowledged on enqueue (`ack_on_commit` off), so each
+/// Publishes are acknowledged on enqueue (`FELIX_ACK_ON_COMMIT=0`), so each
 /// refusal is the admission check answering, immediately.
 async fn alice_at_her_byte_budget() -> Result<(Running, Client, Client, Client, Subscription)> {
     let mut config = felix_broker_service::config::BrokerConfig::from_env()?;
     config.pub_conn_inflight_bytes = IDENTITY_BUDGET;
     config.pub_conn_total_inflight_bytes = Some(CONN_CEILING);
+    config.ack_durable_on_commit = false;
     config.subscriber_lane_queue_depth = 1;
     config.subscriber_lane_queue_policy = felix_broker::SubQueuePolicy::Block;
     let running = Running::start_tuned(config, |broker| {

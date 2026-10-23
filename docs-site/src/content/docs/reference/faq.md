@@ -97,9 +97,11 @@ restart, right for data whose old values are worthless. A durable stream
 (`durable: true`, and the broker must run with `FELIX_DURABLE_STORAGE_DIR`)
 writes every record to a segmented, CRC-checked, crash-safe log, and
 subscribers can replay from any retained offset. By default a publish to a
-`Leader` stream is acknowledged when it is queued, before the write. Set
-`FELIX_ACK_ON_COMMIT=true` to acknowledge after it, or use a `Quorum` stream,
-which always waits (see [`ack_on_commit`](/reference/configuration/#ack_on_commit)). A stream
+durable stream is acknowledged after the write, under the fsync policy (with
+the default `periodic` fsync the bytes are in the log file, so they survive a
+broker crash). `FELIX_ACK_ON_COMMIT=0` acknowledges when it is queued instead,
+which is faster but can lose an acknowledged record, and a `Quorum` stream
+always waits (see [`ack_on_commit`](/reference/configuration/#ack_on_commit)). A stream
 marked durable on a broker without a storage dir is rejected, not silently
 downgraded.
 

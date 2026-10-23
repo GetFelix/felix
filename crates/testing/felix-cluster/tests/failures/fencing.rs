@@ -202,7 +202,8 @@ async fn a_resumed_leader_does_not_acknowledge_writes_the_cluster_loses() {
     cluster.shutdown().await;
 }
 
-/// The same fault on a `Leader` stream acknowledged on enqueue, the default.
+/// The same fault on a `Leader` stream acknowledged on enqueue, which
+/// `FELIX_ACK_ON_COMMIT=0` asks for.
 ///
 /// Here the ack goes out before the write, so a resumed broker whose cached
 /// lease flag has not caught up could acknowledge a record its worker then
@@ -215,6 +216,7 @@ async fn a_resumed_leader_acking_on_enqueue_does_not_acknowledge_writes_the_clus
     let cluster = Cluster::start(ClusterConfig {
         nodes: 3,
         streams: vec![StreamSpec::replicated(STREAM, 1, 3)],
+        broker_env: vec![("FELIX_ACK_ON_COMMIT".to_string(), "0".to_string())],
         inherit_output: std::env::var("FELIX_TEST_BROKER_OUTPUT").is_ok(),
         ..Default::default()
     })

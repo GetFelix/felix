@@ -129,6 +129,7 @@ async fn uni_loop_breaks_on_enqueue_error() -> Result<()> {
         )),
         tenant_rates: std::sync::Arc::new(crate::serving::limits::TenantRates::unlimited()),
         publish_window: 0,
+        ack_durable_on_commit: false,
     };
     let mut scratch = crate::serving::quic::FrameScratch::new();
     let binary =

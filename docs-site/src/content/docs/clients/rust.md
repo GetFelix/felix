@@ -281,8 +281,8 @@ let offset = publisher
 An acknowledged publish returns `Option<u64>`: the log offset of the first
 record in the batch. The rest of a batch follow it with no gaps, so record `i`
 is at `offset + i`. It is `None` when the broker acknowledged the batch as soon
-as it was queued instead of once it was written (a `Leader` stream with
-`ack_on_commit` off), when the stream has no log, and against a broker older
+as it was queued instead of once it was written (an in-memory stream, or a
+broker run with `FELIX_ACK_ON_COMMIT=0`), when the stream has no log, and against a broker older
 than the offset flag. An unacknowledged publish always returns `None`. On a
 `Quorum` stream the offset is where the batch was committed, and a re-sent
 `IdempotentProducer` batch reports where the first copy landed. Only the
@@ -290,7 +290,8 @@ broker that owns the shard acknowledges before writing; a publish forwarded
 through another broker is answered after the write and has its offset, so one
 stream can return both.
 
-To get the offset of every acknowledged publish without turning
+A durable stream's ack carries its offset by default. To get the offset of every
+acknowledged publish, in-memory streams included, without turning
 `FELIX_ACK_ON_COMMIT` on for the whole broker, set `ack_on_commit: true` in the
 `ClientConfig`. That client's connections ask for commit acks
 (`FEATURE_ACK_ON_COMMIT`), and every other client on the broker keeps the

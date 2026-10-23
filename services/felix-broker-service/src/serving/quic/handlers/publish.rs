@@ -13,9 +13,11 @@
 //! - **Uni-directional publish stream** (ingress-only): fire-and-forget publishes with **no acks**.
 //!
 //! Ack meaning depends on configuration:
-//! - `ack_on_commit = false` → **enqueue-ack**: an ack means “accepted into the ingress queue”.
-//!   Lowest latency, but does not guarantee the publish ultimately commits.
-//! - `ack_on_commit = true` → **commit-ack**: an ack means “the publish job completed/committed”.
+//! - **enqueue-ack**: an ack means “accepted into the ingress queue”. Lowest latency, but does
+//!   not guarantee the publish ultimately commits. The default for an in-memory stream, and for
+//!   a durable one only under `FELIX_ACK_ON_COMMIT=0`.
+//! - **commit-ack**: an ack means “the publish job completed/committed”. The default for a durable
+//!   stream (`ack_durable_on_commit`), and for every stream under `ack_on_commit`.
 //!   Answered by whoever settles the job (see `commit_ack`), bounded by a per-stream permit pool.
 //!
 //! Backpressure strategy:
@@ -174,6 +176,9 @@ pub(crate) struct PublishContext {
     /// pipeline. Every stream gets its own, so a stream stuck behind a stalled
     /// shard cannot use up the slots the connection's other streams need.
     pub(crate) publish_window: u32,
+    /// Acknowledged publishes to a durable stream wait for the commit even when
+    /// the connection did not ask for it. See `BrokerConfig::ack_durable_on_commit`.
+    pub(crate) ack_durable_on_commit: bool,
 }
 
 impl PublishContext {

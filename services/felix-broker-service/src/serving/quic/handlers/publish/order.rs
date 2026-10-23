@@ -8,6 +8,9 @@
 //! answered. Holding back is the only change: nothing is answered that would
 //! not have been, and nothing is answered differently.
 //!
+//! That includes an in-memory publish's ack, which can wait behind an earlier
+//! durable publish's commit ack on the same stream.
+//!
 //! Each registration can carry a permit from the stream's publish window.
 //! It is released when the answer is written, which is what bounds how many
 //! acknowledged publishes one stream has unanswered.

@@ -364,7 +364,8 @@ services:
       - FELIX_NODE_TOKEN_FILE=/run/secrets/felix-node-token
 
       # Publishing
-      - FELIX_ACK_ON_COMMIT=false
+      # Durable streams ack after commit by default. FELIX_ACK_ON_COMMIT=0 acks
+      # on accept instead: faster, but an acked record can be lost in a crash.
       - FELIX_MAX_FRAME_BYTES=16777216
       - FELIX_PUBLISH_QUEUE_WAIT_MS=2000
 

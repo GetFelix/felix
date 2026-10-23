@@ -55,7 +55,7 @@ async fn a_settled_publish_is_answered_once_with_its_result() {
     let (out_tx, mut out_rx) = mpsc::channel(8);
     let acks = acks(&out_tx, 4, Duration::from_secs(5));
 
-    let (reply, pending) = acks.expect(request(1, AckEncoding::Json));
+    let (reply, pending) = acks.reserve(request(1, AckEncoding::Json)).expect("room");
     assert_eq!(pending.arm(), Armed::Waiting);
     assert!(out_rx.try_recv().is_err(), "answered before it settled");
     reply.send(Ok(Some(7)));
@@ -66,7 +66,7 @@ async fn a_settled_publish_is_answered_once_with_its_result() {
         other => panic!("expected publish_ok, got {other:?}"),
     }
 
-    let (reply, pending) = acks.expect(request(2, AckEncoding::Json));
+    let (reply, pending) = acks.reserve(request(2, AckEncoding::Json)).expect("room");
     assert_eq!(pending.arm(), Armed::Waiting);
     reply.send(Err(anyhow::anyhow!("stream full")));
     let (request_id, _, message) = publish_error(next(&mut out_rx).await);
@@ -79,7 +79,7 @@ async fn a_settled_publish_is_answered_once_with_its_result() {
 async fn a_publish_settled_before_it_is_armed_is_still_answered() {
     let (out_tx, mut out_rx) = mpsc::channel(8);
     let acks = acks(&out_tx, 1, Duration::from_secs(5));
-    let (reply, pending) = acks.expect(request(3, AckEncoding::Binary));
+    let (reply, pending) = acks.reserve(request(3, AckEncoding::Binary)).expect("room");
     reply.send(Ok(None));
     assert_eq!(pending.arm(), Armed::Answered);
     assert!(matches!(
@@ -100,7 +100,7 @@ async fn a_dropped_publish_is_answered_with_an_error() {
     let acks = acks(&out_tx, 4, Duration::from_secs(5));
 
     // Dropped after it was queued.
-    let (reply, pending) = acks.expect(request(4, AckEncoding::Json));
+    let (reply, pending) = acks.reserve(request(4, AckEncoding::Json)).expect("room");
     assert_eq!(pending.arm(), Armed::Waiting);
     drop(reply);
     let (request_id, _, message) = publish_error(next(&mut out_rx).await);
@@ -108,7 +108,7 @@ async fn a_dropped_publish_is_answered_with_an_error() {
     assert!(message.contains("dropped"), "{message}");
 
     // Queued and dropped before the control loop armed it.
-    let (reply, pending) = acks.expect(request(5, AckEncoding::Json));
+    let (reply, pending) = acks.reserve(request(5, AckEncoding::Json)).expect("room");
     drop(reply);
     assert_eq!(pending.arm(), Armed::Answered);
     assert_eq!(publish_error(next(&mut out_rx).await).0, 5);
@@ -118,14 +118,14 @@ async fn a_dropped_publish_is_answered_with_an_error() {
 async fn a_publish_that_was_never_queued_is_answered_by_the_control_loop() {
     let (out_tx, mut out_rx) = mpsc::channel(8);
     let acks = acks(&out_tx, 4, Duration::from_secs(5));
-    let (reply, pending) = acks.expect(request(6, AckEncoding::Json));
+    let (reply, pending) = acks.reserve(request(6, AckEncoding::Json)).expect("room");
     // The enqueue dropped the job.
     drop(reply);
     assert!(pending.refuse(), "the control loop answers a refusal");
     assert!(out_rx.try_recv().is_err(), "the dropped reply answered too");
 
     // A publish that settled anyway keeps its own answer.
-    let (reply, pending) = acks.expect(request(7, AckEncoding::Json));
+    let (reply, pending) = acks.reserve(request(7, AckEncoding::Json)).expect("room");
     reply.send(Ok(None));
     assert!(!pending.refuse());
     assert!(matches!(
@@ -135,15 +135,13 @@ async fn a_publish_that_was_never_queued_is_answered_by_the_control_loop() {
 }
 
 #[tokio::test]
-async fn too_many_owed_answers_refuse_the_next() {
+async fn too_many_owed_answers_refuse_the_next_before_it_is_queued() {
     let (out_tx, mut out_rx) = mpsc::channel(8);
     let acks = acks(&out_tx, 1, Duration::from_secs(5));
-    let (first, held) = acks.expect(request(8, AckEncoding::Json));
+    let (first, held) = acks.reserve(request(8, AckEncoding::Json)).expect("room");
     assert_eq!(held.arm(), Armed::Waiting);
-    let (second, pending) = acks.expect(request(9, AckEncoding::Json));
-    assert_eq!(pending.arm(), Armed::Exhausted);
-    // The caller sends the refusal; the publish's own answer is discarded.
-    second.send(Ok(None));
+    // No room: refused before there is a publish to answer.
+    assert!(acks.reserve(request(9, AckEncoding::Json)).is_none());
     assert!(out_rx.try_recv().is_err());
     first.send(Ok(None));
     assert!(matches!(
@@ -160,7 +158,7 @@ async fn a_publish_that_outlives_its_timeout_is_answered_once() {
     let (cancel_tx, cancel_rx) = watch::channel(false);
     let sweep = tokio::spawn(acks.clone().run_deadlines(cancel_rx));
 
-    let (late, pending) = acks.expect(request(10, AckEncoding::Json));
+    let (late, pending) = acks.reserve(request(10, AckEncoding::Json)).expect("room");
     assert_eq!(pending.arm(), Armed::Waiting);
     let (request_id, code, message) = publish_error(next(&mut out_rx).await);
     assert_eq!(request_id, 10);
@@ -173,7 +171,9 @@ async fn a_publish_that_outlives_its_timeout_is_answered_once() {
     assert!(out_rx.try_recv().is_err());
 
     // One that settles in time is not timed out afterwards.
-    let (prompt, pending) = acks.expect(request(11, AckEncoding::Binary));
+    let (prompt, pending) = acks
+        .reserve(request(11, AckEncoding::Binary))
+        .expect("room");
     assert_eq!(pending.arm(), Armed::Waiting);
     prompt.send(Ok(None));
     assert!(matches!(
@@ -201,7 +201,7 @@ async fn the_sweep_ends_once_closed_and_everything_is_answered() {
     let (_cancel_tx, cancel_rx) = watch::channel(false);
     let sweep = tokio::spawn(acks.clone().run_deadlines(cancel_rx));
 
-    let (reply, pending) = acks.expect(request(12, AckEncoding::Json));
+    let (reply, pending) = acks.reserve(request(12, AckEncoding::Json)).expect("room");
     assert_eq!(pending.arm(), Armed::Waiting);
     acks.close();
     tokio::time::sleep(Duration::from_millis(20)).await;
@@ -228,7 +228,7 @@ async fn an_answer_for_a_closed_stream_cancels_it() {
         Arc::new(Semaphore::new(1)),
         Duration::from_secs(5),
     );
-    let (reply, pending) = acks.expect(request(13, AckEncoding::Json));
+    let (reply, pending) = acks.reserve(request(13, AckEncoding::Json)).expect("room");
     assert_eq!(pending.arm(), Armed::Waiting);
     reply.send(Ok(None));
     assert!(*cancelled.borrow_and_update());
@@ -239,7 +239,9 @@ async fn a_full_queue_still_gets_the_answer() {
     let (out_tx, mut out_rx) = mpsc::channel(1);
     let acks = acks(&out_tx, 4, Duration::from_secs(5));
     for request_id in [14, 15] {
-        let (reply, pending) = acks.expect(request(request_id, AckEncoding::Json));
+        let (reply, pending) = acks
+            .reserve(request(request_id, AckEncoding::Json))
+            .expect("room");
         assert_eq!(pending.arm(), Armed::Waiting);
         reply.send(Ok(None));
     }
@@ -267,10 +269,12 @@ async fn a_quorum_timeout_is_answered_as_outcome_unknown() {
         })
     };
     for (request_id, encoding) in [(31, AckEncoding::Json), (32, AckEncoding::Binary)] {
-        let (reply, pending) = acks.expect(AckRequest {
-            single: false,
-            ..request(request_id, encoding)
-        });
+        let (reply, pending) = acks
+            .reserve(AckRequest {
+                single: false,
+                ..request(request_id, encoding)
+            })
+            .expect("room");
         assert_eq!(pending.arm(), Armed::Waiting);
         reply.send(Err(timed_out()));
     }

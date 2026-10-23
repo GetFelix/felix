@@ -24,6 +24,9 @@ use super::checks::{
     ensure_flag_advertised, ensure_offset_follows, ensure_same_frame, publish_ack_offset,
 };
 use super::commit::COMMIT_STREAM;
+
+/// An in-memory stream, which has no log to commit to.
+const MEMORY_STREAM: &str = "memory_updates";
 use super::fixture::{AuthFixture, build_quinn_client_config, build_server_config};
 use super::frames::read_frame;
 
@@ -47,7 +50,21 @@ pub(crate) async fn run_ack_offsets(
         stream.send.finish()?;
     }
 
-    let (connection, server_task, _storage) = serve_commit_acked(auth).await?;
+    // The shipped default: a durable stream acks after the write, an
+    // in-memory one on enqueue, with no setting touched.
+    let (connection, server_task, _storage) = serve(auth, BrokerConfig::default()).await?;
+    let result = shipped_default(&connection, auth).await;
+    server_task.abort();
+    result?;
+
+    let (connection, server_task, _storage) = serve(
+        auth,
+        BrokerConfig {
+            ack_on_commit: true,
+            ..BrokerConfig::from_env()?
+        },
+    )
+    .await?;
     let result = async {
         offered(&connection, auth).await?;
         not_offered(&connection, auth).await
@@ -57,9 +74,11 @@ pub(crate) async fn run_ack_offsets(
     result
 }
 
-/// A durable broker that answers every acked publish after writing it.
-async fn serve_commit_acked(
+/// A broker with a durable stream, `COMMIT_STREAM`, and an in-memory one,
+/// `MEMORY_STREAM`, under `config`.
+async fn serve(
     auth: &AuthFixture,
+    config: BrokerConfig,
 ) -> Result<(
     QuicConnection,
     tokio::task::JoinHandle<Result<()>>,
@@ -83,6 +102,14 @@ async fn serve_commit_acked(
             },
         )
         .await?;
+    broker
+        .register_stream(
+            &auth.tenant_id,
+            "default",
+            MEMORY_STREAM,
+            StreamMetadata::default(),
+        )
+        .await?;
     let (server_config, cert) = build_server_config()?;
     let server = Arc::new(QuicServer::bind(
         "127.0.0.1:0".parse()?,
@@ -90,10 +117,6 @@ async fn serve_commit_acked(
         TransportConfig::default(),
     )?);
     let addr = server.local_addr()?;
-    let config = BrokerConfig {
-        ack_on_commit: true,
-        ..BrokerConfig::from_env()?
-    };
     let server_task = tokio::spawn(quic::serve(
         server,
         broker,
@@ -107,6 +130,27 @@ async fn serve_commit_acked(
     )?;
     let connection = client.connect(addr, "localhost").await?;
     Ok((connection, server_task, storage_dir))
+}
+
+/// ack.default_commits_durable: with no setting touched, a durable stream's ack
+/// carries the offset it was written at, and an in-memory stream's is sent on
+/// enqueue.
+async fn shipped_default(connection: &QuicConnection, auth: &AuthFixture) -> Result<()> {
+    let mut stream = Stream::open(connection, auth, KNOWN_FLAGS).await?;
+    stream
+        .acked_binary_to(COMMIT_STREAM, b"durable".to_vec())
+        .await?
+        .ok_or_else(|| anyhow!("a durable publish acked by default had no offset"))?;
+    let offset = stream
+        .acked_binary_to(MEMORY_STREAM, b"memory".to_vec())
+        .await?;
+    if offset.is_some() {
+        return Err(anyhow!(
+            "an in-memory publish reported offset {offset:?}; it has no log"
+        ));
+    }
+    stream.send.finish()?;
+    Ok(())
 }
 
 /// A client that offered the bit gets the offset, and the offsets agree with
@@ -336,6 +380,21 @@ impl Stream {
 
     async fn acked_binary(&mut self, payload: Vec<u8>) -> Result<Option<u64>> {
         self.acked_binary_batch(&[payload]).await
+    }
+
+    async fn acked_binary_to(&mut self, stream: &str, payload: Vec<u8>) -> Result<Option<u64>> {
+        let request_id = self.next_request_id();
+        self.write_bytes(binary::encode_acked_publish_batch_bytes_keyed(
+            request_id,
+            AckMode::PerBatch,
+            None,
+            &self.tenant,
+            "default",
+            stream,
+            &[payload],
+        )?)
+        .await?;
+        publish_ack_offset(self.read().await?, request_id)
     }
 
     async fn acked_binary_batch(&mut self, payloads: &[Vec<u8>]) -> Result<Option<u64>> {
