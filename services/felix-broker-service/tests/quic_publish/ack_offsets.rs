@@ -256,6 +256,7 @@ async fn a_client_can_ask_for_commit_acks_on_its_own_connection() -> Result<()> 
     let (_broker, addr, cert, auth, _config) =
         serve_orders(dir.path(), FsyncMode::None, |config| {
             config.ack_on_commit = false;
+            config.ack_durable_on_commit = false;
         })
         .await?;
 

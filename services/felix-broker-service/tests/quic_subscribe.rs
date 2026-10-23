@@ -978,19 +978,22 @@ async fn quic_subscribe_reports_record_times_to_a_client_that_asked() -> Result<
         // Apart enough that each publish gets a time of its own.
         tokio::time::sleep(Duration::from_millis(3)).await;
     }
-    let after = felix_broker::append_time_now();
     let mut times = Vec::new();
     for _ in 0..TOTAL {
         let event = timeout(Duration::from_secs(5), told.next_event())
             .await??
             .expect("event");
-        let time = event.timestamp_micros.expect("a time");
-        assert!((before..=after).contains(&time), "{time} outside the run");
-        times.push(time);
+        times.push(event.timestamp_micros.expect("a time"));
         let event = timeout(Duration::from_secs(5), untold.next_event())
             .await??
             .expect("event");
         assert_eq!(event.timestamp_micros, None);
+    }
+    // Read once every event is in: a plain client is acked at enqueue, so the
+    // appends can land after the publish calls return.
+    let after = felix_broker::append_time_now();
+    for time in &times {
+        assert!((before..=after).contains(time), "{time} outside the run");
     }
     assert!(times.windows(2).all(|pair| pair[0] < pair[1]), "{times:?}");
 
