@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792777907921,
+  "lastUpdate": 1792778200997,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -42702,6 +42702,72 @@ window.BENCHMARK_DATA = {
             "range": "110.86",
             "unit": "us",
             "extra": "trials: 5\nmedian: 632.00\nmean: 660.80\nstdev: 110.86\ncv: 16.78%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3ede0136665fc3e91b0197e9f256931e201cbc56",
+          "message": "fix(controlplane): refuse to reuse a deleted name before incarnations are finalized (#1447) (#1448)\n\n* fix(controlplane): refuse to reuse a deleted name before incarnations are finalized (#1447)\n\nWithout incarnations a stream created again under a deleted name opens the\ndeleted one's logs on every broker, each holding what it had of them, so a\nrecreated Quorum stream's followers held old committed records the new\nleader disagreed with, and halted as diverged.\n\nEvery stream and cache delete, cascades included, now records the name, and\na create of a recorded name is refused with 409 until stream_incarnations\n(or cache_incarnations) is finalized. The message names the finalize to run.\n\n- Memory: under the store's locks, in the delete and create paths.\n- Raft: decided from the entry's `names` flag, proposed only once every\n  member is at metadata level 18; an unflagged entry records and refuses\n  nothing, as an older member applies it. The names are in the snapshot.\n- Postgres: migration 0035, triggers that record every delete and refuse\n  the insert under the finalize's shared lock, so older instances are held\n  to it too.\n- The names are part of the exported state.\n\nSpec-Unaffected: the control plane refuses a create; the models do not cover stream creation or deleted names.\n\n* fix(controlplane): record deleted names only before the finalize, and backfill them on Postgres (#1447)\n\nReview round 1 on #1448.\n\n- A delete after stream_incarnations (or cache_incarnations) is finalized\n  records no name: nothing would refuse it, and on a new cluster the set\n  would grow for good and ride every Raft snapshot. Decided from the store's\n  fleet state under the lock the write holds, so every Raft member decides\n  alike; the Postgres trigger reads the finalize under its shared lock.\n- Migration 0035 backfills the names of Deleted changes still in the change\n  tables whose name does not exist now, unless the feature is finalized. The\n  memory and Raft stores have no such history; the docs say so.\n\nSpec-Unaffected: the control plane's record of deleted names; the models do not cover it.",
+          "timestamp": "2026-10-23T10:47:13-07:00",
+          "tree_id": "12de7d1f0f76f3186db680d38d8a64c79d6a2b1f",
+          "url": "https://github.com/GetFelix/felix/commit/3ede0136665fc3e91b0197e9f256931e201cbc56"
+        },
+        "date": 1792778195379,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 182,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 182.00\nmean: 181.80\nstdev: 0.84\ncv: 0.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 245,
+            "range": "4.32",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 245.00\nmean: 242.20\nstdev: 4.32\ncv: 1.79%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 302,
+            "range": "43.40",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 302.00\nmean: 311.80\nstdev: 43.40\ncv: 13.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 219,
+            "range": "10.12",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 219.00\nmean: 223.00\nstdev: 10.12\ncv: 4.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 445,
+            "range": "418.61",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 445.00\nmean: 626.40\nstdev: 418.61\ncv: 66.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 617,
+            "range": "915.25",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 617.00\nmean: 1097.60\nstdev: 915.25\ncv: 83.39%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
