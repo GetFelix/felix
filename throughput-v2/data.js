@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792757803162,
+  "lastUpdate": 1792758062737,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -33124,6 +33124,58 @@ window.BENCHMARK_DATA = {
             "range": "12198.43",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1788061.19\nmean: 1783234.69\nstdev: 12198.43\ncv: 0.68%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1804f77ca6e1e98558ad40b98d596472db105527",
+          "message": "fix(broker): replace a held shard with a recreated stream's first assignment (#1435) (#1437)\n\n* fix(broker): replace a held shard with a recreated stream's first assignment (#1435)\n\nDeleting a stream drops its shard assignments without a change per shard,\nso a broker still holds the deleted stream's assignment when the recreated\nstream's first one arrives. Without incarnations both are at incarnation 0\nand the new one starts at generation 0, so a shard the broker had taken by\na move (generation 2) made the new assignment look stale. The broker kept\nthe old route naming itself as leader, kept replicating and reporting the\ndeleted shard, and a later move of the new shard to it never finished.\n\nThe watch now applies an `assigned` change over whatever it holds and\ncounts a renewal when the incarnation is unchanged (a snapshot that moves a\nshard backwards counts too). The lifecycle treats a renewal it has not\nopened for like a newer incarnation, so a broker that also leads the new\nshard reopens it instead of ignoring the lower generation.\n\nSpec-Unaffected: a recreated stream's shard is a new shard; the model follows one incarnation of a shard, and this only changes how the broker's watch and lifecycle recognise the boundary between two.\n\n* fix(controlplane): unassign a deleted stream's shards and start a recreated one past them (#1435)\n\nReview round 1 on #1437.\n\n- The broker no longer counts a snapshot that moves a shard backwards as a\n  renewal. A snapshot can't tell a recreate from a restored or lagging\n  control plane, and reopening on one could serve a generation a newer\n  leader has written past. Only an `assigned` change renews a shard.\n- A stream, cache, namespace or tenant delete now records an `unassigned`\n  change for each shard it takes, in memory, Raft and Postgres, so a broker\n  leading one lets it go when the delete lands.\n- A shard's first assignment takes the change seq as its generation at any\n  incarnation. Brokers keep an unincarnated stream's logs through a delete,\n  with the generation each accepted, so a recreated shard starting at 0 was\n  refused by every replica that had taken a moved shard's fence, and by its\n  own leader's open.\n\nUnder Raft both are entry flags at metadata level 17 (delete `unassign`,\nput `seq_generation`), proposed only once every member is there.\n\nSpec-Unaffected: the model follows one shard's generations within one incarnation; this changes which generation a recreated shard starts at and adds change-log entries on delete, neither of which the model describes.\n\n* docs(storage): say what a rewound change seq does to a recreated unincarnated stream (#1435)\n\nSpec-Unaffected: documentation only.",
+          "timestamp": "2026-10-23T12:17:21Z",
+          "tree_id": "722441e3595985344760e50952258f7870d2ff6e",
+          "url": "https://github.com/GetFelix/felix/commit/1804f77ca6e1e98558ad40b98d596472db105527"
+        },
+        "date": 1792758062020,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 629653.6,
+            "range": "58059.02",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 629653.60\nmean: 665784.19\nstdev: 58059.02\ncv: 8.72%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 629653.6,
+            "range": "58059.02",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 629653.60\nmean: 665784.19\nstdev: 58059.02\ncv: 8.72%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 156918.81,
+            "range": "2498.91",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 156918.81\nmean: 156934.57\nstdev: 2498.91\ncv: 1.59%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1569188.09,
+            "range": "24989.07",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1569188.09\nmean: 1569345.65\nstdev: 24989.07\ncv: 1.59%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
