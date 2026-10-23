@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792798318006,
+  "lastUpdate": 1792799212957,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -33904,6 +33904,58 @@ window.BENCHMARK_DATA = {
             "range": "5213.68",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 817748.21\nmean: 818493.01\nstdev: 5213.68\ncv: 0.64%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d34046c3520f16a84c8039b3ebb116887f416543",
+          "message": "fix(replication): keep replication off peer streams that forwards hold (#1458) (#1459)\n\n* fix(replication): keep replication off peer streams that forwards hold (#1458)\n\nBrokers forwarding durable Quorum publishes to each other deadlocked: a\npeer served each stream one request at a time, a forward held its stream\nfor the owner's whole quorum wait, and replication shared those streams,\nso each broker's replication queued behind the other's forwards until\nevery quorum timed out.\n\n- The pool opens a control stream plus separate forward and replication\n  stream classes, with separate in-flight allowances.\n- The listener answers ForwardPublish and ForwardCacheOp as they finish\n  (matched by correlation id, up to 256 per stream), so an older requester\n  that still mixes them is served too.\n- A forward waits FELIX_PUBLISH_QUORUM_TIMEOUT_MS + 1 s for the owner's\n  answer, and the ack wait floor rises to quorum + 1.5 s.\n- No stream stays wedged: the listener drops a stream whose in-turn\n  handler overran the request timeout, and the requester replaces a\n  stream after two consecutive timeouts or once it has ended.\n\n* fix(replication): drop an overrun stream only under a requester that renews lanes (#1458)\n\nA requester that predates lane replacement never opens another stream,\nso a stream the listener dropped under it was lost for the life of the\nconnection. Requesters now offer LANE_RENEWAL, and the listener bounds an\nin-turn handler only for one that did; an older requester's slow handler\nstill answers on the same stream.\n\nAlso caps forwards served at once across the broker\n(FELIX_INTERNAL_MAX_SERVED_FORWARDS, 4096) and per stream (256), refusing\npast either as Overload instead of stalling the stream, and tests that one\nshard's forwards still reach the owner in order.\n\n* chore: declare the peer transport change spec-unaffected\n\nSpec-Unaffected: the change splits forwards and replication onto separate QUIC streams, serves forwards concurrently by correlation id, and bounds or renews stalled streams. The messages, the one-exchange-per-follower-and-log rule, per-shard forward order, and the quorum mark, report, promotion and handoff logic the model describes are unchanged; only which stream carries a message and the timeout values differ.",
+          "timestamp": "2026-10-23T16:42:54-07:00",
+          "tree_id": "31a9723d3699fc6dbd702ac35f9f62e923c4072b",
+          "url": "https://github.com/GetFelix/felix/commit/d34046c3520f16a84c8039b3ebb116887f416543"
+        },
+        "date": 1792799212099,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 500393.65,
+            "range": "47726.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 500393.65\nmean: 515708.88\nstdev: 47726.26\ncv: 9.25%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 500393.65,
+            "range": "47726.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 500393.65\nmean: 515708.88\nstdev: 47726.26\ncv: 9.25%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 122135.29,
+            "range": "1211.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 122135.29\nmean: 122139.98\nstdev: 1211.26\ncv: 0.99%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1221352.91,
+            "range": "12112.57",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1221352.91\nmean: 1221399.76\nstdev: 12112.57\ncv: 0.99%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
