@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792766595209,
+  "lastUpdate": 1792768079623,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -33436,6 +33436,58 @@ window.BENCHMARK_DATA = {
             "range": "51894.50",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1181465.99\nmean: 1169500.01\nstdev: 51894.50\ncv: 4.44%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "303504f4fe0e1e3c36e1ff62a40f1f0b4be0d78c",
+          "message": "test(client): don't apply the short timeout to the timeout tests' setup (#1446)\n\nbounded_fails_a_step_that_never_finishes connected its pool under a 200 ms\nconnect_timeout, which a loaded CI runner exceeds before the step under test\nruns. It now calls bounded_by directly; the other timeout tests get slack\nand list the live broker first.",
+          "timestamp": "2026-10-23T15:03:29Z",
+          "tree_id": "caf5a0eff2491cc3e81f92ed620486aa6018caa7",
+          "url": "https://github.com/GetFelix/felix/commit/303504f4fe0e1e3c36e1ff62a40f1f0b4be0d78c"
+        },
+        "date": 1792768079040,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 346268.46,
+            "range": "26125.78",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 346268.46\nmean: 339835.51\nstdev: 26125.78\ncv: 7.69%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 346268.46,
+            "range": "26125.78",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 346268.46\nmean: 339835.51\nstdev: 26125.78\ncv: 7.69%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81548.11,
+            "range": "222.86",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81548.11\nmean: 81417.82\nstdev: 222.86\ncv: 0.27%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 815481.08,
+            "range": "2228.55",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 815481.08\nmean: 814178.23\nstdev: 2228.55\ncv: 0.27%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
