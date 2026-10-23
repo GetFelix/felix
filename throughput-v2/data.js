@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792764683251,
+  "lastUpdate": 1792765553905,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -33332,6 +33332,58 @@ window.BENCHMARK_DATA = {
             "range": "6312.64",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 937524.55\nmean: 940968.62\nstdev: 6312.64\ncv: 0.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "721e543ed426bb013b30fe1aa92d39340c7acc23",
+          "message": "fix(placement): spread each stream's leaders, not only the cluster's (#1429) (#1442)\n\n* fix(placement): spread each stream's leaders, not only the cluster's (#1429)\n\nPlacement balanced the leaders each broker leads across the whole cluster,\nso a stream could sit 1/1/10 on three brokers while the totals read\n21/21/19, and its writes ran on one broker.\n\nLeadership is now counted per stream (and cache) as well as in total.\nA new shard goes to the best-scoring broker under its stream's floor,\nthen its ceiling, each time preferring one under the cluster share. A\nbroker leading two or more of a stream's shards more than another hands\none to the broker leading fewest of that stream. A move for the cluster\ntotal only goes to a broker leading fewer of that shard's stream. Every\nmove lowers a stream's spread, or keeps it and lowers the cluster's, so\nthe two goals cannot trade shards back and forth.\n\nPlacement decides an assignment before it is proposed, and the Raft entry\ncarries the assignment, so no entry applies differently and no cluster\nlevel gate is needed.\n\nSpec-Unaffected: FelixPlacementPacing models how many copies are in flight, not which shard or destination placement picks.\n\n* fix(placement): count promotions, borrow owner keys, and settle streams before totals (#1429)\n\nA failover promotion now counts toward the broker it promotes to in the\nsame pass, so a later shard of the stream does not move a leader onto it\nfor nothing. Leader counts are keyed by a borrowed owner, so a lookup\nallocates nothing.\n\nRebalancing moves only from the node leading the most, to one leading at\nleast two fewer. Moves for the cluster totals wait until no stream wants\none, so a node is not given shards for the totals and then asked for them\nback by a stream. The totals are evened to within one.\n\nNew tests cover zones, three copies on five brokers, a broker joining,\na draining broker and a capped broker.\n\nSpec-Unaffected: FelixPlacementPacing models how many copies are in flight, not which shard or destination placement picks.",
+          "timestamp": "2026-10-23T14:21:58Z",
+          "tree_id": "ca448621020cf56ffb3ae76d15ade623d13a7ad5",
+          "url": "https://github.com/GetFelix/felix/commit/721e543ed426bb013b30fe1aa92d39340c7acc23"
+        },
+        "date": 1792765553131,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 535904.84,
+            "range": "34906.21",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 535904.84\nmean: 537131.37\nstdev: 34906.21\ncv: 6.50%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 535904.84,
+            "range": "34906.21",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 535904.84\nmean: 537131.37\nstdev: 34906.21\ncv: 6.50%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 124406.29,
+            "range": "7094.98",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 124406.29\nmean: 121376.41\nstdev: 7094.98\ncv: 5.85%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1244062.92,
+            "range": "70949.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1244062.92\nmean: 1213764.15\nstdev: 70949.79\ncv: 5.85%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
