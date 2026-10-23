@@ -691,7 +691,10 @@ pub fn spawn_feed(
                 _ = assignments_changed.notified() => true,
             };
 
-            let assignments = ownership.read().await.assignments().clone();
+            let (assignments, renewals) = {
+                let owned = ownership.read().await;
+                (owned.assignments().clone(), owned.renewals().clone())
+            };
 
             // Read on every refresh rather than once, so a refreshed token is
             // in use from the next poll.
@@ -710,7 +713,12 @@ pub fn spawn_feed(
                 )
             };
             let ((), fetched) = tokio::join!(
-                crate::shards::lifecycle::reconcile(&lifecycle, store.as_ref(), &assignments),
+                crate::shards::lifecycle::reconcile_renewed(
+                    &lifecycle,
+                    store.as_ref(),
+                    &assignments,
+                    &renewals,
+                ),
                 refresh,
             );
             match fetched {

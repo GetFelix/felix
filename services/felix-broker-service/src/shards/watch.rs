@@ -81,8 +81,21 @@ impl ShardAssignment {
 #[derive(Debug, Clone, Deserialize)]
 struct ShardAssignmentChange {
     seq: u64,
+    #[serde(default)]
+    op: ChangeOp,
     key: ShardKey,
     assignment: Option<ShardAssignment>,
+}
+
+/// What kind of write a change records.
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+enum ChangeOp {
+    /// The first assignment of a shard the control plane had none for.
+    Assigned,
+    #[default]
+    #[serde(other)]
+    Other,
 }
 
 #[derive(Debug, Deserialize)]
@@ -104,6 +117,9 @@ struct ChangesResponse {
 #[derive(Debug, Default)]
 pub struct ShardOwnership {
     assignments: HashMap<ShardKey, ShardAssignment>,
+    /// How many times each shard was assigned afresh at an incarnation this
+    /// broker already held it at. See [`Self::renewals`].
+    renewals: HashMap<ShardKey, u64>,
 }
 
 impl ShardOwnership {
@@ -134,12 +150,67 @@ impl ShardOwnership {
         }
     }
 
+    /// Apply a shard's first assignment after the control plane had none,
+    /// which replaces whatever this broker still holds for it.
+    ///
+    /// Deleting a stream drops its assignments without a change for each, so
+    /// the deleted stream's assignment is still here when the recreated one's
+    /// arrives. Without incarnations both are at incarnation 0, and the new
+    /// one starts at generation 0, below what a moved shard had reached: by
+    /// [`Self::apply`]'s order it would be stale, and this broker would keep
+    /// leading a shard of a stream that no longer exists (#1435).
+    pub(crate) fn assign_afresh(&mut self, key: &ShardKey, next: ShardAssignment) -> bool {
+        if let Some(current) = self.assignments.get(key) {
+            if next.incarnation < current.incarnation {
+                mm::record_stale_change();
+                return false;
+            }
+            if next.incarnation == current.incarnation {
+                *self.renewals.entry(key.clone()).or_default() += 1;
+            }
+        }
+        self.assignments.insert(key.clone(), next);
+        true
+    }
+
+    /// Apply a page of changes in order. Returns whether anything changed.
+    fn apply_changes(&mut self, changes: &[ShardAssignmentChange]) -> bool {
+        let mut changed = false;
+        for change in changes {
+            changed |= match (&change.assignment, change.op) {
+                (Some(next), ChangeOp::Assigned) => self.assign_afresh(&change.key, next.clone()),
+                (assignment, _) => self.apply(&change.key, assignment.clone()),
+            };
+        }
+        changed
+    }
+
     /// Replace everything with a snapshot.
+    ///
+    /// A shard the snapshot has at a lower generation of the same incarnation
+    /// was deleted and created again while this broker was not following, and
+    /// counts as renewed.
     pub fn reset(&mut self, items: Vec<ShardAssignment>) {
+        for next in &items {
+            if let Some(current) = self.assignments.get(&next.key)
+                && next.incarnation == current.incarnation
+                && next.generation < current.generation
+            {
+                *self.renewals.entry(next.key.clone()).or_default() += 1;
+            }
+        }
         self.assignments = items
             .into_iter()
             .map(|assignment| (assignment.key.clone(), assignment))
             .collect();
+    }
+
+    /// How many times each shard was assigned afresh at the incarnation this
+    /// broker already held it at: its stream deleted and created again with
+    /// no incarnation to tell the two apart. Never decreases, so the lifecycle
+    /// can tell a renewed shard from an old generation delivered late.
+    pub(crate) fn renewals(&self) -> &HashMap<ShardKey, u64> {
+        &self.renewals
     }
 
     /// Everything this broker currently believes about ownership.
@@ -402,10 +473,7 @@ async fn poll(
 
     let mut changed = false;
     if !response.items.is_empty() {
-        let mut owned = ownership.write().await;
-        for change in &response.items {
-            changed |= owned.apply(&change.key, change.assignment.clone());
-        }
+        changed = ownership.write().await.apply_changes(&response.items);
         mm::record_applied(response.items.len());
     }
     Ok(Progress::At {

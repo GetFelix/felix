@@ -1380,6 +1380,14 @@ not the same event as the shard becoming servable.
   control-plane restore rewinds the change seq its first generation can be below
   the deleted stream's. An assignment without an incarnation counts as 0, below
   every incarnated one.
+- **A shard's first assignment replaces whatever the broker holds.** Deleting a
+  stream takes its assignments without a change for each shard, so the broker
+  still holds the deleted stream's when the recreated stream's first one
+  (`op: assigned`) arrives. Without incarnations that one is at incarnation 0
+  and generation 0, below a shard that was moved, so it is applied regardless,
+  and the lifecycle reopens the shard as a new one if this broker leads it. A
+  snapshot that has a held shard at a lower generation of the same incarnation
+  counts the same way.
 - **An open that finishes after a reassignment does not activate.** The shard
   moved on while it was being recovered.
 - **A failed open is not retried by the same assignment arriving again.** Every
