@@ -377,6 +377,33 @@ not worth publishing:
   the pairs are labeled with what each side promises.
 - Where NATS is faster, the page says so.
 
+### How each pair is matched, and where it still differs
+
+The two systems are not built the same way, so no pair is a perfect copy of the
+other. Each pair is matched on what the publisher is promised when it gets its
+answer, as closely as the two systems allow. The table says what each side
+does, and the last column says what still differs. Read every ratio together
+with its row.
+
+| Pair | Felix | NATS JetStream | What still differs |
+|---|---|---|---|
+| Durable, one at a time | Durable stream, batch 1, 64 in flight. The ack comes after the record is fsynced (`on_commit`). | File stream with `sync: always`, fast-batch publish with flow 1. The ack comes after the write is fsynced. | Both fsync before the ack. Felix group-commits the writes that are waiting together into one fsync. JetStream fsyncs per write. |
+| Durable, 64 per request | Batch of 64 records in one request, 64 requests in flight, fsynced before the ack. | File stream, `sync: always`, fast-batch publish with flow 64. | Felix sends 64 records as one request. NATS fast batch acks once per flow of 64 messages. |
+| Durable, atomic 64 | Batch of 64 records, fsynced before the ack. | File stream, `sync: always`, atomic batch publish of 64. | NATS's atomic batch is all-or-nothing. <!-- TODO(verify): state whether a Felix batch is all-or-nothing on failure, with the code reference. --> |
+| Periodic fsync, 64 per request | Durable stream with `periodic` fsync. The ack comes before the fsync. | File stream with the default sync. The ack comes before the fsync. | Both can lose the last interval's writes on a power loss. The intervals differ. <!-- TODO(verify): Felix periodic interval and JetStream's default sync_interval, with sources. --> |
+| In memory | In-memory stream, acked. | Memory-storage stream, acked. | Neither touches disk. Both keep the records and can replay them. |
+| Fire and forget | Unacked publish into an in-memory stream. Every record is appended and can be replayed by offset. | Core NATS publish to a subject. The server routes the message and stores nothing. | **Not the same work.** NATS forwards and forgets. Felix appends to a log. Use this pair to compare fire-and-forget rate, not storage. |
+
+Two differences apply to every pair:
+
+- **Transport and client.** Felix uses QUIC with TLS and its Rust load
+  generator. NATS uses TCP with TLS and `nats bench` (Go). Both are each
+  system's own tool, run with the same publisher count and payload.
+- **What is counted.** Felix rates come from the broker's own counters (bytes
+  appended, or accepted for in-memory and fire-and-forget). NATS rates come from
+  the server's counters (records appended to the stream, or publish requests for
+  core). Both count payload at the server, not at the client.
+
 ## What limits each shape
 
 These are the limits we measured or can explain. They tell you what to expect on
