@@ -17,13 +17,24 @@ real broker defect.
 
 ## Summary
 
-<!-- TODO(data): 3 to 5 headline numbers, each with its cell:
-  - in-memory 4 KiB batch 64 fire-and-forget: broker append MB/s and broker cores (m1 cells)
-  - in-memory 256 B batch 1 acked: MB/s (m1 cells)
-  - durable on_commit 4 KiB batch 64 acked: MB/s as a share of the fio baseline (1414 MB/s)
-  - one-in-flight publish ack latency p50/p99, on_commit and in-memory, 256 B (lat cells)
-  - Felix vs NATS JetStream: ratio per pair, including any pair NATS wins
-  Gate result: new build vs preview.9 on the headline cells (stage 0), percent. -->
+On one 8 vCPU broker with local NVMe, over QUIC with TLS:
+
+- **About 3.7 GB/s of payload without losing anything.** In-memory 4 KiB
+  messages in batches of 64, publishers waiting for room when the broker is
+  full (`FELIX_PUB_INGRESS_WAIT=1`). Nothing was shed. This is the number to
+  plan with if you cannot lose messages.
+- **About 4.2 GB/s at most once.** The same load on the shipped defaults, where
+  a fire-and-forget publish that arrives at a full broker is dropped instead of
+  waiting. 1.2 to 2.2% of what was sent was dropped. The publisher is not told;
+  the broker counts it.
+- **About 1.4 GB/s durable, fsynced before the ack.** Durable 4 KiB in batches of
+  64, acked after an fsync. That is the disk: the same volume does 1414 MB/s in
+  `fio` with an fsync after each write.
+- **This build is as fast as or faster than v0.6.0-preview.9** on every shape
+  in the gate: up to 32% faster for small acked messages, unchanged for durable.
+
+<!-- TODO(data): add the one-in-flight ack and delivery latency (lat cells) and
+the NATS JetStream ratios when those steps finish. -->
 
 ## Exact conditions
 
@@ -119,7 +130,8 @@ What the two durability settings promise:
   fire-and-forget numbers below are what the broker sustained, not what was
   offered. With the default, overload is shed and counted.
 
-The `defaults-*` cells run with `FELIX_ACK_ON_COMMIT=0`, ingress wait unset and
+A separate set of cells runs with ack on accept (`FELIX_ACK_ON_COMMIT=0`, the
+default of the measured build; v0.6.0 changes it), ingress wait unset and
 io_uring off, to show what the settings cost. `on_commit` stays set in those
 cells so they are comparable with the durable rows above.
 
@@ -136,13 +148,28 @@ cells so they are comparable with the durable rows above.
 
 ### How a number is taken
 
-Throughput is the broker's own append rate: the median one-second rate from the
-broker-side per-second series, over the window in which all four generators were
-running, less its first and last 10%. Per-generator rates are never summed. The
-generators start and finish at different times and get unequal shares, so
-summing their averages overstates or understates the true rate by a wide
-margin. For fire-and-forget the client-side figure is an enqueue rate and is not
-used.
+Throughput is measured at the broker, never at the clients. The broker records
+its counters once a second. A cell's number is the median one-second rate over
+the window in which all four generators were running, less its first and last
+10%. Per-generator rates are never summed. The generators start and finish at
+different times and get unequal shares, so summing their averages overstates or
+understates the true rate by a wide margin. For fire-and-forget the client-side
+figure is an enqueue rate and is not used.
+
+Three rates come out of those counters:
+
+- **Payload**: the bytes of message payload the broker accepted
+  (`felix_publish_bytes_total`). A publish the broker sheds is not counted. This
+  is the headline for in-memory cells.
+- **Append**: the bytes written to the durable log, payload plus the record
+  framing. This is the headline for durable cells, because it is what the disk
+  has to absorb.
+- **Wire**: the UDP bytes received on the broker's QUIC ports, with QUIC, TLS
+  and Felix framing. It is 2 to 3% above payload for 4 KiB batches and about 25%
+  above it for single 256 B messages.
+
+Shed is what the load generators sent minus what the broker accepted, from
+their own byte counts at the end of the cell.
 
 Headline cells run three trials and the rest run two, interleaved so drift in the
 VMs, the disk or the network hits both arms equally. Where trials are shown the
@@ -168,8 +195,9 @@ limit: 64 KiB batch-1 cells, plain-key batch-64 cells, listener counts 1 and 8,
 the 64 MiB window arm, the 4-in-flight arm of the latency curve and the second
 trial of the sweeps were dropped.
 
-<!-- TODO(data): confirm the trim list against final/trim and the final cell
-list once the run ends. -->
+`scripts/perf/azure/v060_tables.py <results-dir>` prints every table on this
+page from the cell directories: median of the finished trials, the min to max
+spread, and how many trials finished.
 
 ## How to read the numbers
 
@@ -201,9 +229,27 @@ It is never the request latency of the system.
 
 ## Results
 
-<!-- TODO(data): every table below is generated from final/cells and
-sessions/v060-w3-final-results by summarize.py. Report median of trials with the
-min to max spread. Mark any cell with fewer trials than planned. -->
+Each number is the median of the finished trials. Where trials differ by more
+than half a percent, the range follows in parentheses.
+
+### This build against v0.6.0-preview.9
+
+Before measuring anything else, the campaign ran both builds on the same VMs,
+two trials each, alternating, with identical clients and settings. The new build
+had to be within 3% of preview.9 on every shape or the campaign would stop.
+
+| Shape | preview.9 MB/s | This build MB/s | Change |
+|---|---|---|---|
+| In-memory 256 B, batch 1, acked, keys spread over all shards | 96 | 104 | +8.0% |
+| In-memory 256 B, batch 1, acked, plain keys | 70 | 93 | +32.0% |
+| In-memory 256 B, batch 64, acked, keys spread | 2168 | 2268 | +4.6% |
+| In-memory 256 B, batch 64, acked, plain keys | 2016 | 2215 | +9.9% |
+| In-memory 4 KiB, batch 64, fire-and-forget | 3597 | 3657 | +1.7% |
+| Durable 4 KiB, batch 64, acked after fsync | 1410 | 1414 | +0.3% |
+
+In-memory rows are payload, the durable row is append. The gains come from the
+four fixes listed under [Build](#build). Durable throughput is set by the disk
+and did not move.
 
 ### Throughput by shape
 
@@ -227,12 +273,61 @@ only if the trim kept it. -->
 
 ### Shipped defaults against the durability profile
 
-<!-- TODO(data): the defaults-* cells (ack-on-commit off, ingress wait unset,
-io_uring off) next to the same cells in the durability profile: durable 4 KiB
-b64 acked, durable 256 B b1 acked, one-in-flight durable 256 B, and in-memory
-4 KiB b64 fire-and-forget under overload with the shed count from ack-proof.txt
-(loadgen sent minus broker accepted bytes, since this build has no telemetry
-feature). State what each default costs and what it buys. -->
+The main campaign runs what we call the durability profile: acks after the
+write, publishers wait for room, io_uring on. These cells run the same loads with
+the measured build's defaults instead: ack on accept, no waiting, io_uring off.
+Two trials each.
+
+| Load | Durability profile | Defaults |
+|---|---|---|
+| In-memory 4 KiB, batch 64, fire-and-forget | 3657 MB/s payload, nothing shed | 4169 (4133-4205) MB/s payload, 1.2 to 2.2% shed |
+| Durable 4 KiB, batch 64, acked | 1414 MB/s append | no result: publishes refused (below) |
+| Durable 256 B, batch 1, acked | <!-- TODO(data): m2 cell --> pending | 74 (73-74) MB/s append, ack p50 4.1 ms, p99 99 ms |
+| Durable 256 B, one publish in flight | <!-- TODO(data): lat cells --> pending | ack p50/p99/p999 160/200/217 us, delivery 294/376/419 us |
+
+**Fire-and-forget under overload.** With the defaults, the broker drops a
+fire-and-forget publish that arrives while its ingress queue or byte budget is
+full, counts it in `felix_broker_ingress_dropped_total`, and keeps reading. The
+publisher is not told. Delivery is at most once. The broker then accepts about
+14% more payload than when publishers wait, at the cost of 1 to 2% of messages.
+With `FELIX_PUB_INGRESS_WAIT=1` the publisher waits for room instead and
+nothing is lost. Pick the second if a lost message matters to you.
+
+**Acked publishes under overload.** With the defaults, an acked publish that
+finds the byte budget full is refused with an error: "publish ingress byte
+budget exhausted". The application gets the error and decides whether to send
+again. Felix does not retry it for you. The load generator treats any refused
+publish as fatal, so both trials of the durable 4 KiB cell stopped within
+seconds, as soon as the disk fell behind. With `FELIX_PUB_INGRESS_WAIT=1` the
+same load is paced to the disk and runs at 1.41 GB/s. If you publish durable
+data faster than your disk writes it, either turn on ingress wait or handle the
+refusal.
+
+**What an ack means in these cells.** With ack on accept, the 160 us ack says
+the broker has the message, not that it is on disk. The delivery time of 294 us
+is later in the path: the broker hands a durable record to subscribers only
+once it is durable, which with `on_commit` means fsynced. v0.6.0 acks durable publishes after the write by
+default (#1421).
+
+### The earlier 4.1 GB/s figure
+
+The site previously quoted 4.1 GB/s for in-memory 4 KiB fire-and-forget. To
+check it, the campaign ran the load generator that produced that figure next to
+the current one, on this build, with publishers waiting for room:
+
+| Load generator | Trial 1 | Trial 2 |
+|---|---|---|
+| Current | 3620 MB/s, 744 UDP drops/s | 3619 MB/s, 957 UDP drops/s |
+| The one behind the 4.1 GB/s figure | 3556 MB/s, 1111 UDP drops/s | 4081 MB/s, 108 UDP drops/s |
+
+The older generator reached about 4.1 GB/s once and about 3.6 GB/s once. The run
+that reached it is also the one where the broker's socket buffers almost never
+overflowed. The default-settings cells above, at 4.2 GB/s, show the same pattern:
+25 drops a second. So 4.1 GB/s is real, but it does not reproduce every time
+under the conditions on this page, and we report the number that does.
+
+<!-- TODO(data): reading of the drop pattern once the listener and window sweeps
+finish. -->
 
 ### Listener sweep
 
