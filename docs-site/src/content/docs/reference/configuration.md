@@ -305,8 +305,8 @@ publish_queue_wait_timeout_ms: 2000
 **Description**: How long the broker waits to answer an acknowledged publish
 whose answer depends on a commit: an `ack_on_commit` publish, a `Quorum`
 publish, a forwarded publish or an idempotent one. The value used is the larger
-of this and `FELIX_PUBLISH_QUORUM_TIMEOUT_MS` + 500 ms, so a `Quorum` publish
-gets its full quorum wait and reports why it failed.
+of this and `FELIX_PUBLISH_QUORUM_TIMEOUT_MS` + 1.5 s, so a `Quorum` publish,
+forwarded or not, gets its full quorum wait and reports why it failed.
 
 **Type**: `u64` (milliseconds)
 

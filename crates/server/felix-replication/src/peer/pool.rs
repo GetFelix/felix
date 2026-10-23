@@ -3,14 +3,15 @@
 //! # Shape
 //!
 //! One [`PeerPool`] per broker, holding at most `conns_per_peer` connections to
-//! each peer it has been asked to reach. Each connection carries
-//! `streams_per_conn` multiplexed bidirectional streams; requests are spread
-//! across them round-robin and matched to responses by correlation id, which the
-//! protocol scopes to the connection.
+//! each peer it has been asked to reach. Each connection carries a control
+//! stream plus `streams_per_conn` streams for forwards and as many again for
+//! replication; requests are spread round-robin within their class and matched
+//! to responses by correlation id, which the protocol scopes to the connection.
 //!
 //! Several streams rather than one because a QUIC stream is ordered: a large
 //! forwarded batch on a single stream would hold up every smaller request queued
-//! behind it.
+//! behind it. Separate classes because a forward waits on a quorum that only
+//! replication can reach (#1458).
 //!
 //! # What bounds it
 //!
@@ -19,7 +20,8 @@
 //!
 //! - **In-flight requests per peer.** A peer that accepts frames and never
 //!   answers otherwise accumulates one waiter per forwarded publish. At the
-//!   limit, requests are shed immediately rather than queued.
+//!   limit, requests are shed immediately rather than queued. Forwards and
+//!   replication each have their own allowance.
 //! - **Reconnect backoff.** A peer that refuses connections is dialled on a
 //!   jittered exponential schedule, and requests arriving inside the backoff
 //!   window fail without a dial.
@@ -52,7 +54,7 @@ use super::KnownCapabilities;
 use super::config::PeerTransportConfig;
 use super::metrics;
 use super::tls;
-use connection::PeerConnection;
+use connection::{LaneClass, PeerConnection};
 use state::Peer;
 
 /// Connections to peer brokers.
@@ -254,7 +256,12 @@ impl PeerPool {
         // Taken before the connection is touched, so a peer at its limit is shed
         // without being dialled. Dropping the permit is what releases it, which
         // covers every exit below including a timeout.
-        let Ok(_permit) = Arc::clone(&peer.inflight).try_acquire_owned() else {
+        let class = LaneClass::of(&message);
+        let budget = match class {
+            LaneClass::Forward => &peer.inflight,
+            _ => &peer.replication_inflight,
+        };
+        let Ok(_permit) = Arc::clone(budget).try_acquire_owned() else {
             metrics::record_request_shed();
             return Err(PeerError::Unavailable {
                 node_id: node_id.to_string(),
@@ -276,19 +283,17 @@ impl PeerPool {
                 kind: message.kind(),
             });
         }
-        let response = tokio::time::timeout(
-            self.config.request_timeout,
-            connection.request(message, &self.shutdown),
-        )
-        .await;
-
-        match response {
-            Ok(result) => result.map(|answer| (answer, connection.identity())),
-            Err(_) => Err(PeerError::Timeout {
-                node_id: node_id.to_string(),
-                timeout: self.config.request_timeout,
-            }),
-        }
+        // A forward's answer comes after the owner's quorum wait, so it gets
+        // longer than that wait; anything shorter turns a slow commit into an
+        // indeterminate one.
+        let timeout = match class {
+            LaneClass::Forward => self.config.forward_timeout.max(self.config.request_timeout),
+            _ => self.config.request_timeout,
+        };
+        connection
+            .request(message, timeout, &self.shutdown)
+            .await
+            .map(|answer| (answer, connection.identity()))
     }
 
     fn peer(&self, node_id: &str) -> Arc<Peer> {
@@ -337,8 +342,8 @@ impl PeerPool {
             state.evict_idle(self.config.idle_timeout);
             let live = state.live_connections();
             connections += live;
-            // Each connection's control stream too.
-            streams += live * (self.config.streams_per_conn + 1);
+            // The control stream, and a forward and a replication class.
+            streams += live * (1 + 2 * self.config.streams_per_conn.max(1));
             if live == 0 && !state.in_backoff() {
                 idle_peers.push(id);
             }
@@ -406,7 +411,8 @@ impl PeerPool {
             self.config
                 .capabilities()
                 .union(PeerCapabilities::STORAGE_IDENTITY)
-                .union(PeerCapabilities::NODE_INCARNATION),
+                .union(PeerCapabilities::NODE_INCARNATION)
+                .union(PeerCapabilities::LANE_RENEWAL),
             self.config.streams_per_conn,
             self.config.handshake_timeout,
         )

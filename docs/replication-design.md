@@ -1466,6 +1466,26 @@ Reconciling that needs the two sides to agree on where their histories diverge,
 which is what the generation of each record establishes; see
 [Divergence and truncation](#divergence-and-truncation) (#406).
 
+**Replication never waits behind a forwarded publish.** A leader that was sent
+a forwarded `Quorum` publish answers it only once its replication reaches a
+majority. If that replication could queue behind forwards on a peer stream
+served one request at a time, two brokers forwarding to each other would each
+hold up the other's quorum until every wait timed out (#1458). So replication
+has its own peer streams and in-flight allowance, and a broker answers
+forwards out of order instead of one at a time; see
+`docs/internal-protocol.md`, "The transport". A stream a handler holds past
+the requester's timeout is dropped by the listener and replaced by the
+requester, so one stalled request cannot leave replication on a connection
+timing out for as long as it lives. Per-shard order is the driver's,
+not the stream's: it has at most one exchange outstanding per follower and log.
+
+> `brokers_forwarding_to_each_other_still_replicate`,
+> `a_record_behind_a_waiting_forward_on_one_stream_is_served`,
+> `forwards_at_their_limit_do_not_shed_replication`,
+> `a_stalled_handler_does_not_wedge_replication_on_its_connection`,
+> `the_listener_gives_up_a_stream_whose_handler_overran`, and in the cluster suite
+> `forwarded_quorum_publishes_from_every_broker_do_not_time_out`.
+
 Catch-up for a new or lagging follower is a bounded `read_range` from the leader,
 with sealed-segment checksums to verify wholesale rather than record by record,
 the primitives the storage layer already exposes for this purpose.

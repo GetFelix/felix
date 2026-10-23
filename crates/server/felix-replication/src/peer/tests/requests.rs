@@ -156,6 +156,7 @@ async fn a_silent_peer_times_out() {
     .await;
     let pool = pool(PeerTransportConfig {
         request_timeout: Duration::from_millis(200),
+        forward_timeout: Duration::from_millis(200),
         ..config()
     });
 

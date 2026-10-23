@@ -162,13 +162,15 @@ async fn two_current_brokers_learn_each_others_capabilities() {
         .union(PeerCapabilities::PING);
     assert_eq!(theirs, offered);
     assert_eq!(pool.known_capabilities().get(PEER), Some(offered));
-    // A caller reads an identity whether or not it gives one.
+    // A caller reads an identity whether or not it gives one, and replaces
+    // streams it gets no answer on.
     assert_eq!(
         noted.get("broker-a"),
         Some(
             offered
                 .union(PeerCapabilities::STORAGE_IDENTITY)
                 .union(PeerCapabilities::NODE_INCARNATION)
+                .union(PeerCapabilities::LANE_RENEWAL)
         )
     );
 

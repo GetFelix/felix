@@ -18,6 +18,8 @@ pub const CONNECT_ATTEMPTS_TOTAL: &str = "felix_broker_peer_connect_attempts_tot
 pub const CONNECTION_LOSSES_TOTAL: &str = "felix_broker_peer_connection_losses_total";
 /// Reconnect attempts made after a loss, i.e. redials that were not the first.
 pub const RECONNECTS_TOTAL: &str = "felix_broker_peer_reconnects_total";
+/// Request streams replaced because the peer stopped answering on them.
+pub const LANES_REPLACED_TOTAL: &str = "felix_broker_peer_lanes_replaced_total";
 /// Multiplexed request streams open across all peers, as a gauge.
 pub const STREAMS: &str = "felix_broker_peer_streams";
 /// Requests sent to peers, by `outcome`.
@@ -111,6 +113,10 @@ pub fn record_connect_attempt(outcome: &'static str) {
 
 pub fn record_reconnect() {
     metrics::counter!(RECONNECTS_TOTAL).increment(1);
+}
+
+pub fn record_lane_replaced() {
+    metrics::counter!(LANES_REPLACED_TOTAL).increment(1);
 }
 
 pub fn record_connection_loss(reason: &'static str) {

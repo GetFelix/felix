@@ -88,7 +88,10 @@ pub(super) fn connect_peers(
         (Some(peer_config), Some(membership_config)) => Some(
             peer::PeerPool::new_with_tls(
                 membership_config.node_id.clone(),
-                peer_config.clone(),
+                peer::PeerTransportConfig {
+                    forward_timeout: config.peer_forward_timeout(),
+                    ..peer_config.clone()
+                },
                 peer_shutdown.clone(),
                 peer_tls.clone(),
             )

@@ -6,6 +6,8 @@
 
 mod capabilities;
 mod connections;
+mod forwards;
+mod lanes;
 mod listener;
 mod mtls;
 mod requests;
@@ -31,6 +33,7 @@ fn config() -> PeerTransportConfig {
         // a fixed port being free.
         bind: "127.0.0.1:0".parse().expect("addr"),
         request_timeout: Duration::from_millis(500),
+        forward_timeout: Duration::from_millis(500),
         handshake_timeout: Duration::from_millis(500),
         reconnect_base: Duration::from_millis(20),
         reconnect_max: Duration::from_millis(40),

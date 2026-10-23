@@ -17,7 +17,11 @@ pub(super) struct Peer {
     /// Async because establishing is held across a dial: concurrent requests to
     /// a cold peer must produce one connection attempt, not one each.
     pub(super) state: tokio::sync::Mutex<PeerState>,
+    /// Forwards and everything else are bounded apart: forwards can sit out a
+    /// whole quorum wait, and if they could take every permit the replication
+    /// that ends those waits would be shed.
     pub(super) inflight: Arc<Semaphore>,
+    pub(super) replication_inflight: Arc<Semaphore>,
 }
 
 impl Peer {
@@ -26,6 +30,7 @@ impl Peer {
             node_id,
             state: tokio::sync::Mutex::new(PeerState::default()),
             inflight: Arc::new(Semaphore::new(max_inflight)),
+            replication_inflight: Arc::new(Semaphore::new(max_inflight)),
         }
     }
 

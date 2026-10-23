@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -25,8 +25,11 @@ use crate::peer::metrics;
 pub(super) struct PeerConnection {
     pub(super) node_id: String,
     pub(super) connection: QuicConnection,
-    pub(super) lanes: Vec<mpsc::Sender<Bytes>>,
-    pub(super) cursor: AtomicUsize,
+    pub(super) lanes: Vec<Lane>,
+    /// Streams in each of the forward and replication classes.
+    pub(super) per_class: usize,
+    pub(super) forward_cursor: AtomicUsize,
+    pub(super) replication_cursor: AtomicUsize,
     pub(super) pending: Arc<Mutex<Pending>>,
     pub(super) next_correlation: AtomicU64,
     pub(super) last_used: Mutex<Instant>,
@@ -36,6 +39,108 @@ pub(super) struct PeerConnection {
     pub(super) capabilities: Mutex<PeerCapabilities>,
     /// The peer's storage identity and incarnation from the handshake.
     pub(super) identity: Mutex<PeerIdentity>,
+}
+
+/// Consecutive timeouts on one stream after which it is replaced. One can be
+/// a slow handler; two in a row with nothing answered between them is a
+/// stream that is not being served.
+const RETIRE_AFTER_TIMEOUTS: u32 = 2;
+
+/// One request stream, replaced when it stops being served.
+pub(super) struct Lane {
+    stream: Mutex<Arc<LaneStream>>,
+    /// Held while a replacement is opened, so concurrent timeouts open one.
+    replacing: tokio::sync::Mutex<()>,
+}
+
+impl Lane {
+    fn current(&self) -> Arc<LaneStream> {
+        Arc::clone(&self.stream.lock())
+    }
+}
+
+/// The QUIC stream a lane currently writes to.
+pub(super) struct LaneStream {
+    tx: mpsc::Sender<Bytes>,
+    /// Timeouts since this stream last carried an answer.
+    unanswered: AtomicU32,
+    /// Set when either half has ended; nothing sent on it can be answered.
+    ended: AtomicBool,
+}
+
+impl LaneStream {
+    fn dead(&self) -> bool {
+        self.ended.load(Ordering::Relaxed)
+    }
+}
+
+/// Open one request stream, with its writer and the reader that hands answers
+/// to their waiters.
+async fn open_stream(
+    connection: &QuicConnection,
+    pending: &Arc<Mutex<Pending>>,
+) -> Result<(Arc<LaneStream>, [tokio::task::JoinHandle<()>; 2])> {
+    let (mut send, mut recv) = connection.open_bi().await.context("open peer stream")?;
+    let (tx, mut rx) = mpsc::channel::<Bytes>(64);
+    let stream = Arc::new(LaneStream {
+        tx,
+        unanswered: AtomicU32::new(0),
+        ended: AtomicBool::new(false),
+    });
+
+    // Both halves hold the stream weakly: it owns the writer's sender, so a
+    // strong reference would keep the writer waiting on itself forever.
+    let ended = Arc::downgrade(&stream);
+    let writer = connection.spawn_pump(async move {
+        while let Some(frame) = rx.recv().await {
+            if send.write_all(&frame).await.is_err() {
+                break;
+            }
+        }
+        if let Some(lane) = ended.upgrade() {
+            lane.ended.store(true, Ordering::Relaxed);
+        }
+        let _ = send.finish();
+    });
+
+    let responses = Arc::clone(pending);
+    let lane = Arc::downgrade(&stream);
+    let reader = connection.spawn_pump(async move {
+        loop {
+            match read_frame(&mut recv).await {
+                Ok(Incoming::Message(message)) => {
+                    if let Some(lane) = lane.upgrade() {
+                        lane.unanswered.store(0, Ordering::Relaxed);
+                    }
+                    let waiter = responses.lock().waiters.remove(&message.correlation_id());
+                    // A response with no waiter is one whose request
+                    // already timed out. Dropping it is correct; the
+                    // caller has been told the request failed.
+                    if let Some(waiter) = waiter {
+                        let _ = waiter.send(message);
+                    }
+                }
+                // A *response* kind this build does not know. Nothing
+                // here sends a request whose answer it cannot read, so
+                // this means the peer is from a later build that
+                // answers differently — the waiter is left to time out
+                // rather than given something that cannot be parsed,
+                // and the lane survives for every other request on it.
+                Ok(Incoming::UnknownKind { kind, .. }) => {
+                    tracing::debug!(kind, "peer answered with a kind this build does not know");
+                }
+                Ok(Incoming::Eof) => break,
+                Err(err) => {
+                    tracing::debug!(error = %err, "peer response stream ended");
+                    break;
+                }
+            }
+        }
+        if let Some(lane) = lane.upgrade() {
+            lane.ended.store(true, Ordering::Relaxed);
+        }
+    });
+    Ok((stream, [writer, reader]))
 }
 
 /// Waiters for responses that have not arrived.
@@ -52,11 +157,12 @@ pub(super) struct Pending {
 impl PeerConnection {
     /// Open the request streams and exchange the handshake.
     ///
-    /// One stream more than `streams`: the first carries only the handshake
-    /// and the promotion fence's requests. A peer answers a stream's requests
-    /// one at a time, and a forwarded `Quorum` publish can hold a stream for
-    /// its whole quorum timeout; a promoted leader waiting behind it does not
-    /// serve at all.
+    /// `1 + 2 * streams` streams, one class each (see [`LaneClass`]). A peer
+    /// that predates concurrent forwards answers a stream's requests one at a
+    /// time, and a forwarded `Quorum` publish can hold a stream for its whole
+    /// quorum wait. That wait needs this broker's replication to the peer, so
+    /// replication sharing a stream with forwards can deadlock two brokers
+    /// that forward to each other (#1458).
     pub(super) async fn establish(
         connection: QuicConnection,
         node_id: String,
@@ -66,66 +172,26 @@ impl PeerConnection {
         handshake_timeout: Duration,
     ) -> Result<Arc<Self>> {
         let pending = Arc::new(Mutex::new(Pending::default()));
-        let mut lanes = Vec::with_capacity(streams + 1);
+        let streams = streams.max(1);
+        let mut lanes = Vec::with_capacity(1 + 2 * streams);
         let mut tasks = Vec::new();
 
-        for _ in 0..=streams {
-            let (mut send, mut recv) = connection.open_bi().await.context("open peer stream")?;
-            let (tx, mut rx) = mpsc::channel::<Bytes>(64);
-
-            tasks.push(connection.spawn_pump(async move {
-                while let Some(frame) = rx.recv().await {
-                    if send.write_all(&frame).await.is_err() {
-                        // The reader half sees the same failure and fails every
-                        // waiter, so there is nothing to report here.
-                        break;
-                    }
-                }
-                let _ = send.finish();
-            }));
-
-            let responses = Arc::clone(&pending);
-            tasks.push(connection.spawn_pump(async move {
-                loop {
-                    match read_frame(&mut recv).await {
-                        Ok(Incoming::Message(message)) => {
-                            let waiter = responses.lock().waiters.remove(&message.correlation_id());
-                            // A response with no waiter is one whose request
-                            // already timed out. Dropping it is correct; the
-                            // caller has been told the request failed.
-                            if let Some(waiter) = waiter {
-                                let _ = waiter.send(message);
-                            }
-                        }
-                        // A *response* kind this build does not know. Nothing
-                        // here sends a request whose answer it cannot read, so
-                        // this means the peer is from a later build that
-                        // answers differently — the waiter is left to time out
-                        // rather than given something that cannot be parsed,
-                        // and the lane survives for every other request on it.
-                        Ok(Incoming::UnknownKind { kind, .. }) => {
-                            tracing::debug!(
-                                kind,
-                                "peer answered with a kind this build does not know"
-                            );
-                        }
-                        Ok(Incoming::Eof) => break,
-                        Err(err) => {
-                            tracing::debug!(error = %err, "peer response stream ended");
-                            break;
-                        }
-                    }
-                }
-            }));
-
-            lanes.push(tx);
+        for _ in 0..1 + 2 * streams {
+            let (stream, opened) = open_stream(&connection, &pending).await?;
+            tasks.extend(opened);
+            lanes.push(Lane {
+                stream: Mutex::new(stream),
+                replacing: tokio::sync::Mutex::new(()),
+            });
         }
 
         let peer = Arc::new(Self {
             node_id: node_id.clone(),
             connection,
             lanes,
-            cursor: AtomicUsize::new(0),
+            per_class: streams,
+            forward_cursor: AtomicUsize::new(0),
+            replication_cursor: AtomicUsize::new(0),
             pending: Arc::clone(&pending),
             next_correlation: AtomicU64::new(1),
             last_used: Mutex::new(Instant::now()),
@@ -217,10 +283,12 @@ impl PeerConnection {
             capabilities,
         });
         let shutdown = CancellationToken::new();
-        tokio::time::timeout(timeout, self.request(hello, &shutdown))
+        self.request(hello, timeout, &shutdown)
             .await
-            .map_err(|_| anyhow!("no handshake response within {timeout:?}"))?
-            .map_err(|err| anyhow!("{err}"))
+            .map_err(|err| match err {
+                PeerError::Timeout { .. } => anyhow!("no handshake response within {timeout:?}"),
+                err => anyhow!("{err}"),
+            })
     }
 
     /// What the peer said it can do.
@@ -233,10 +301,11 @@ impl PeerConnection {
         *self.identity.lock()
     }
 
-    /// Send one request and wait for its terminal response.
+    /// Send one request and wait up to `timeout` for its terminal response.
     pub(super) async fn request(
         &self,
         message: InternalMessage,
+        timeout: Duration,
         shutdown: &CancellationToken,
     ) -> std::result::Result<InternalMessage, PeerError> {
         let correlation_id = match &message {
@@ -262,28 +331,76 @@ impl PeerConnection {
         }
         *self.last_used.lock() = Instant::now();
 
-        let lane = if on_control_lane(&message) {
-            0
-        } else {
-            1 + self.cursor.fetch_add(1, Ordering::Relaxed) % (self.lanes.len() - 1)
+        let lane = match LaneClass::of(&message) {
+            LaneClass::Control => 0,
+            LaneClass::Forward => {
+                1 + self.forward_cursor.fetch_add(1, Ordering::Relaxed) % self.per_class
+            }
+            LaneClass::Replication => {
+                1 + self.per_class
+                    + self.replication_cursor.fetch_add(1, Ordering::Relaxed) % self.per_class
+            }
         };
-        if self.lanes[lane].send(frame).await.is_err() {
+        let stream = self.lanes[lane].current();
+        if stream.dead() || stream.tx.send(frame).await.is_err() {
             self.pending.lock().waiters.remove(&correlation_id);
+            self.replace_lane(lane, &stream, timeout).await;
             return Err(PeerError::Disconnected {
                 node_id: self.node_id.clone(),
             });
         }
 
         tokio::select! {
-            response = rx => match response {
-                Ok(message) => Ok(message),
+            response = tokio::time::timeout(timeout, rx) => match response {
+                Ok(Ok(message)) => Ok(message),
                 // The sender is dropped by `fail_all`, so this is the
                 // connection dropping rather than a lost response.
-                Err(_) => Err(PeerError::Disconnected { node_id: self.node_id.clone() }),
+                Ok(Err(_)) => Err(PeerError::Disconnected { node_id: self.node_id.clone() }),
+                Err(_) => {
+                    self.pending.lock().waiters.remove(&correlation_id);
+                    let unanswered = stream.unanswered.fetch_add(1, Ordering::Relaxed) + 1;
+                    if unanswered >= RETIRE_AFTER_TIMEOUTS {
+                        self.replace_lane(lane, &stream, timeout).await;
+                    }
+                    Err(PeerError::Timeout { node_id: self.node_id.clone(), timeout })
+                }
             },
             _ = shutdown.cancelled() => {
                 self.pending.lock().waiters.remove(&correlation_id);
                 Err(PeerError::ShuttingDown)
+            }
+        }
+    }
+
+    /// Swap `lane`'s stream for a fresh one, if it is still `stale`.
+    ///
+    /// A stream whose peer stopped answering stays wedged for as long as the
+    /// connection lives: a peer serves a stream one request at a time, so one
+    /// handler that never returns holds every request behind it. The old
+    /// stream is finished and left to drain; answers that still arrive on it
+    /// reach their waiters if they have any.
+    async fn replace_lane(&self, lane: usize, stale: &Arc<LaneStream>, within: Duration) {
+        let slot = &self.lanes[lane];
+        let _replacing = slot.replacing.lock().await;
+        if !Arc::ptr_eq(&slot.current(), stale) || !self.is_live() {
+            return;
+        }
+        // Bounded: opening waits for stream credit, which a peer still holding
+        // the old streams may be slow to give back.
+        let opened = tokio::time::timeout(within, open_stream(&self.connection, &self.pending))
+            .await
+            .unwrap_or_else(|_| Err(anyhow!("no stream credit within {within:?}")));
+        match opened {
+            Ok((fresh, opened)) => {
+                *slot.stream.lock() = fresh;
+                let mut tasks = self.tasks.lock();
+                tasks.retain(|task| !task.is_finished());
+                tasks.extend(opened);
+                metrics::record_lane_replaced();
+                tracing::warn!(peer = %self.node_id, lane, "replaced a peer stream that stopped answering");
+            }
+            Err(err) => {
+                tracing::debug!(peer = %self.node_id, error = %err, "could not replace a peer stream");
             }
         }
     }
@@ -346,17 +463,36 @@ impl Drop for PeerConnection {
     }
 }
 
-/// Whether `message` goes on the stream nothing slow shares.
-fn on_control_lane(message: &InternalMessage) -> bool {
-    matches!(
-        message,
-        InternalMessage::Hello(_)
+/// Which of a connection's streams a request goes on.
+///
+/// Forwards wait on a quorum, and a quorum waits on replication, so the two
+/// never share a stream. Nothing relies on a stream's order for anything but
+/// framing: the replication driver keeps at most one exchange outstanding per
+/// follower and log, so round-robin within a class cannot reorder a shard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LaneClass {
+    /// The handshake, the promotion fence and pings: one stream nothing slow
+    /// shares. A ping queued behind a forward would read as a dead leader.
+    Control,
+    /// Forwarded publishes and cache operations.
+    Forward,
+    /// Everything else: records, bootstraps and rebuilds for every log.
+    Replication,
+}
+
+impl LaneClass {
+    pub(crate) fn of(message: &InternalMessage) -> Self {
+        match message {
+            InternalMessage::Hello(_)
             | InternalMessage::Fence(_)
             | InternalMessage::ReplicateFetch(_)
-            // A ping queued behind a forwarded publish waiting on a quorum
-            // would time out and read as an unreachable leader.
-            | InternalMessage::Ping(_)
-    )
+            | InternalMessage::Ping(_) => Self::Control,
+            InternalMessage::ForwardPublish(_) | InternalMessage::ForwardCacheOp(_) => {
+                Self::Forward
+            }
+            _ => Self::Replication,
+        }
+    }
 }
 
 /// Stamp the pool's correlation id onto a caller-supplied message.

@@ -77,6 +77,11 @@ impl PeerCapabilities {
     ///
     /// [`HelloOk::incarnation`]: super::HelloOk::incarnation
     pub const NODE_INCARNATION: Self = Self(1 << 11);
+    /// Offered by a caller that replaces a request stream it gets no answer
+    /// on. A listener may then drop a stream whose handler overran the
+    /// request timeout; to a caller without it, the stream is kept and the
+    /// late answer still sent.
+    pub const LANE_RENEWAL: Self = Self(1 << 12);
 
     pub fn from_bits(bits: u64) -> Self {
         Self(bits)

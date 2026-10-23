@@ -7,6 +7,7 @@
 
 mod cluster_batches;
 mod cross_broker;
+mod forwarded_quorum;
 mod generation_start;
 mod jump_hash;
 mod kafka_leaders;
