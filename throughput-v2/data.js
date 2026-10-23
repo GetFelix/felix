@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792725401519,
+  "lastUpdate": 1792726365948,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -32812,6 +32812,58 @@ window.BENCHMARK_DATA = {
             "range": "2019.67",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 818464.83\nmean: 819018.17\nstdev: 2019.67\ncv: 0.25%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "84b23de60c85d604bd151bf5c87f794e243626ef",
+          "message": "perf(azure): RF=3 cluster campaign driver (#1423)\n\n* perf(azure): RF=3 cluster campaign driver\n\nThree L4as_v4 brokers on local NVMe, RF=3 Quorum matrix, latency, forwarding,\ncache, lease-free and a kill -9 failover cell, resumable, with a disk gate and a\ndry run that prints hours and cost.\n\n* perf(azure): owner-direct RF=3 cells, bounded az calls, measured fio gate\n\nIngest cells default to owner-direct, with the round-robin forwarding\ncells kept as a labelled variant. LOADGEN_SHA is separate from BUILD_SHA.\nThe failover loss check compares per-shard acked against delivered and\nreports INCOMPLETE otherwise. Deallocation uses the explicit VM list and\ncounts only a verified listing. Every az call has a timeout. The fio gate\nis a measured baseline. The estimate counts the finalize restart, retries\nand a reserved full reset, and the default trim leaves 45 minutes of slack.\n\n* perf(azure): RF=3 owner-direct cells use --cluster at every batch size\n\nThe loadgen JSON field names the loss check reads sit in one mapping block\nat the top of the script, to be matched to the loadgen change.\n\n* perf(azure): RF=3 failover loss check from felixctl inspect, loadgen fields from #1424\n\nThe check compares each shard's acked count against how far the leader's\nlog grew, read before the cell and after recovery. LOADGEN_SHA defaults\nto the #1424 head.\n\n* perf(azure): RF=3 forwarding measure from the loadgen's exact share and the brokers' forwards_total\n\nLOADGEN_SHA defaults to the #1424 head d70cdad7. An owner-direct cell that\nforwards more than 5% logs a WARN.\n\n* perf(azure): RF=3 loadgen defaults to the build SHA now that #1424 is on main",
+          "timestamp": "2026-10-23T03:28:43Z",
+          "tree_id": "3de22d4c4f2f53750db89453af8497b069db35bb",
+          "url": "https://github.com/GetFelix/felix/commit/84b23de60c85d604bd151bf5c87f794e243626ef"
+        },
+        "date": 1792726365078,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 517454.59,
+            "range": "44029.17",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 517454.59\nmean: 507946.94\nstdev: 44029.17\ncv: 8.67%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 517454.59,
+            "range": "44029.17",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 517454.59\nmean: 507946.94\nstdev: 44029.17\ncv: 8.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 121526.69,
+            "range": "7410.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 121526.69\nmean: 118035.23\nstdev: 7410.88\ncv: 6.28%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1215266.93,
+            "range": "74108.78",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1215266.93\nmean: 1180352.30\nstdev: 74108.78\ncv: 6.28%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
