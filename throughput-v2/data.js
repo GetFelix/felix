@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792758062737,
+  "lastUpdate": 1792760500708,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -33176,6 +33176,58 @@ window.BENCHMARK_DATA = {
             "range": "24989.07",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1569188.09\nmean: 1569345.65\nstdev: 24989.07\ncv: 1.59%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1501f6f7f446e451603897c79c606f2e2258b878",
+          "message": "perf(azure): make the NATS install check fail when NATS is missing (#1439)\n\nagent_on runs its body under set -e, which ignores a failing test that is\nnot the last in an && list, so ensure_nats saw a fresh VM as installed and\nevery NATS cell failed its reset.",
+          "timestamp": "2026-10-23T12:56:52Z",
+          "tree_id": "8a59acd205ad77c89c14f92881538847b850f7b7",
+          "url": "https://github.com/GetFelix/felix/commit/1501f6f7f446e451603897c79c606f2e2258b878"
+        },
+        "date": 1792760500072,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 388039.25,
+            "range": "21250.50",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 388039.25\nmean: 401412.06\nstdev: 21250.50\ncv: 5.29%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 388039.25,
+            "range": "21250.50",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 388039.25\nmean: 401412.06\nstdev: 21250.50\ncv: 5.29%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 93032.37,
+            "range": "500.21",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 93032.37\nmean: 93094.21\nstdev: 500.21\ncv: 0.54%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 930323.68,
+            "range": "5002.11",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 930323.68\nmean: 930942.13\nstdev: 5002.11\ncv: 0.54%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
