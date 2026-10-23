@@ -1019,11 +1019,15 @@ What this does not cover:
   stays on the broker, as it did before incarnations. Nothing opens it unless
   the name is created again at 0, which only happens before the finalize.
 - Copies in the offload directory are not deleted.
-- A stream created again at incarnation 0, before the finalize, starts its
-  shard assignments at generation 0 again, which a broker that held the
-  deleted stream's shard ignores until it resnapshots
-  ([#1209](https://github.com/GetFelix/felix/issues/1209)). Incarnated
-  streams start above the deleted one's generations.
+- A stream created again at incarnation 0, before the finalize, continues the
+  deleted stream's logs on each broker, including the generation each one
+  accepted. Its shards start at the change seq, past every generation the
+  deleted stream reached, as incarnated streams do, and the delete puts an
+  unassignment for each shard on the shard change log
+  ([#1435](https://github.com/GetFelix/felix/issues/1435)). Under Raft both
+  need every member at metadata level 17; below it the shards start at
+  generation 0 again, which a broker that took the deleted stream's leadership
+  or fence at a later generation refuses.
 
 ### Deleting a cache
 

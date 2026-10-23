@@ -1380,14 +1380,15 @@ not the same event as the shard becoming servable.
   control-plane restore rewinds the change seq its first generation can be below
   the deleted stream's. An assignment without an incarnation counts as 0, below
   every incarnated one.
-- **A shard's first assignment replaces whatever the broker holds.** Deleting a
-  stream takes its assignments without a change for each shard, so the broker
-  still holds the deleted stream's when the recreated stream's first one
-  (`op: assigned`) arrives. Without incarnations that one is at incarnation 0
-  and generation 0, below a shard that was moved, so it is applied regardless,
-  and the lifecycle reopens the shard as a new one if this broker leads it. A
-  snapshot that has a held shard at a lower generation of the same incarnation
-  counts the same way.
+- **A shard's first assignment replaces whatever the broker holds.** A control
+  plane before the shard unassignments of #1435 deletes a stream's assignments
+  without a change for each shard, so the broker still holds the deleted
+  stream's when the recreated stream's first one (`op: assigned`) arrives.
+  Without incarnations that one can be at generation 0, below a shard that was
+  moved, so it is applied regardless, and the lifecycle reopens the shard as a
+  new one if this broker leads it. A snapshot does not count: a lower
+  generation there may be a restored or lagging control plane rather than a
+  recreate.
 - **An open that finishes after a reassignment does not activate.** The shard
   moved on while it was being recovered.
 - **A failed open is not retried by the same assignment arriving again.** Every
@@ -1527,9 +1528,12 @@ A request cannot set the incarnation.
 
 Brokers compare an assignment's incarnation before its generation: a higher
 one opens the shard anew whatever its generation, a lower one is stale. The
-first generation of an incarnated shard is the change seq, which a restore
-can rewind below the deleted stream's generations
-(`a_new_incarnation_opens_at_a_lower_generation`).
+first generation of a shard is the change seq, which a restore can rewind
+below the deleted stream's generations
+(`a_new_incarnation_opens_at_a_lower_generation`). An unincarnated shard
+starts there too (on Raft from metadata level 17), since its stream's logs
+outlive a delete and a generation starting over at 0 would be below what
+they accepted.
 
 **Tombstones.** After the finalize every stream delete records a tombstone,
 including the deletes a namespace or tenant delete cascades to. There is one
@@ -1636,7 +1640,10 @@ Two references, two different policies, chosen rather than inherited:
 
 - **Stream**: a foreign key with `ON DELETE CASCADE`. Deleting a stream removes
   its assignments and their replica reports, because the shards no longer exist
-  and keeping ownership records for them leaves placement chasing ghosts. The
+  and keeping ownership records for them leaves placement chasing ghosts. Each
+  assignment taken is recorded as `unassigned` on the shard change log, which is
+  what tells a broker leading the shard to let it go (on Raft, from metadata
+  level 17). The
   in-memory and Raft stores do the same, including when the stream or cache goes
   with its namespace or tenant. On Raft that needs every member at metadata
   level 10. Below it a stream or cache delete keeps the reports and a namespace

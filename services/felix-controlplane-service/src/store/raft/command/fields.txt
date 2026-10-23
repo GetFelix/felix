@@ -147,6 +147,7 @@
 0 delete_cache.key.namespace
 0 delete_cache.key.tenant_id
 10 delete_cache.take_reports
+17 delete_cache.unassign
 0 delete_idp_issuer
 0 delete_idp_issuer.issuer
 0 delete_idp_issuer.tenant_id
@@ -156,6 +157,7 @@
 0 delete_namespace.key.namespace
 0 delete_namespace.key.tenant_id
 10 delete_namespace.take_shards
+17 delete_namespace.unassign
 0 delete_node
 0 delete_node.node_id
 0 delete_shard_assignment
@@ -172,10 +174,12 @@
 0 delete_stream.key.stream
 0 delete_stream.key.tenant_id
 10 delete_stream.take_reports
+17 delete_stream.unassign
 0 delete_tenant
 14 delete_tenant.incarnations
 10 delete_tenant.take_shards
 0 delete_tenant.tenant_id
+17 delete_tenant.unassign
 0 ensure_signing_keys
 0 ensure_signing_keys.candidate
 0 ensure_signing_keys.candidate.current
@@ -556,6 +560,7 @@
 0 put_shard_assignment.assignment.stream
 0 put_shard_assignment.assignment.successor
 0 put_shard_assignment.assignment.tenant_id
+17 put_shard_assignment.seq_generation
 0 put_shard_assignment_fenced
 0 put_shard_assignment_fenced.assignment
 16 put_shard_assignment_fenced.assignment.fence_storage_ids
@@ -576,6 +581,7 @@
 0 put_shard_assignment_fenced.assignment.tenant_id
 0 put_shard_assignment_fenced.expected_generation
 0 put_shard_assignment_fenced.fence
+17 put_shard_assignment_fenced.seq_generation
 0 put_shard_assignment_if
 0 put_shard_assignment_if.assignment
 16 put_shard_assignment_if.assignment.fence_storage_ids
@@ -595,6 +601,7 @@
 0 put_shard_assignment_if.assignment.successor
 0 put_shard_assignment_if.assignment.tenant_id
 0 put_shard_assignment_if.expected_generation
+17 put_shard_assignment_if.seq_generation
 0 record_node_heartbeat
 0 record_node_heartbeat.at_millis
 0 record_node_heartbeat.incarnation

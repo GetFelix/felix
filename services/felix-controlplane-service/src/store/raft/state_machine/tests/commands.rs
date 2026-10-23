@@ -64,6 +64,7 @@ async fn a_stale_conditional_assignment_write_is_answered_not_applied() {
     let first = shard_assignment("t1", "ns", "orders", "broker-1");
     machine
         .dispatch(MetaCommand::PutShardAssignmentIf {
+            seq_generation: false,
             assignment: first.clone(),
             expected_generation: None,
         })
@@ -71,6 +72,7 @@ async fn a_stale_conditional_assignment_write_is_answered_not_applied() {
         .expect("create");
 
     let late = MetaCommand::PutShardAssignmentIf {
+        seq_generation: false,
         assignment: shard_assignment("t1", "ns", "orders", "broker-2"),
         expected_generation: None,
     };
@@ -345,7 +347,10 @@ async fn machine_with_reported_shards() -> MetadataStateMachine {
         let mut report = replica_report("t1", "ns", "orders", 1_000);
         report.key.kind = kind;
         machine
-            .dispatch(MetaCommand::PutShardAssignment { assignment })
+            .dispatch(MetaCommand::PutShardAssignment {
+                seq_generation: false,
+                assignment,
+            })
             .await
             .expect("assign");
         machine
@@ -385,17 +390,20 @@ async fn a_delete_takes_shard_state_only_when_its_entry_says_so() {
     let deletes = |take: bool| {
         [
             vec![MetaCommand::DeleteTenant {
+                unassign: false,
                 tenant_id: "t1".to_string(),
                 take_shards: take,
                 incarnations: false,
             }],
             vec![MetaCommand::DeleteNamespace {
+                unassign: false,
                 key: ns_key(),
                 take_shards: take,
                 incarnations: false,
             }],
             vec![
                 MetaCommand::DeleteStream {
+                    unassign: false,
                     key: StreamKey {
                         tenant_id: "t1".to_string(),
                         namespace: "ns".to_string(),
@@ -405,6 +413,7 @@ async fn a_delete_takes_shard_state_only_when_its_entry_says_so() {
                     incarnations: false,
                 },
                 MetaCommand::DeleteCache {
+                    unassign: false,
                     key: crate::model::CacheKey {
                         tenant_id: "t1".to_string(),
                         namespace: "ns".to_string(),
@@ -443,6 +452,7 @@ async fn an_unknown_flag_on_a_delete_is_refused() {
     let before = crate::raft::AppStateMachine::snapshot(&machine).await;
     let mut envelope: serde_json::Value =
         serde_json::from_slice(&encode_command(&MetaCommand::DeleteTenant {
+            unassign: false,
             tenant_id: "t1".to_string(),
             take_shards: false,
             incarnations: false,

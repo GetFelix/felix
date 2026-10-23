@@ -8,11 +8,13 @@ use crate::store::{
     AssignmentWrite, ChangeSet, PlacementLease, ReportWrite, Snapshot, StoreError, StoreResult,
 };
 
+/// `seq_generation`: see [`crate::model::first_generation`].
 pub(super) async fn put_shard_assignment(
     store: &InMemoryStore,
     assignment: ShardAssignment,
+    seq_generation: bool,
 ) -> StoreResult<ShardAssignment> {
-    match write_shard_assignment(store, assignment, None, None).await? {
+    match write_shard_assignment(store, assignment, None, None, seq_generation).await? {
         AssignmentWrite::Written(stored) => Ok(stored),
         AssignmentWrite::Stale { .. } | AssignmentWrite::Fenced { .. } => {
             unreachable!("an unconditional write is never stale")
@@ -27,8 +29,16 @@ pub(super) async fn put_shard_assignment_if(
     assignment: ShardAssignment,
     expected_generation: Option<u64>,
     fence: Option<u64>,
+    seq_generation: bool,
 ) -> StoreResult<AssignmentWrite> {
-    write_shard_assignment(store, assignment, Some(expected_generation), fence).await
+    write_shard_assignment(
+        store,
+        assignment,
+        Some(expected_generation),
+        fence,
+        seq_generation,
+    )
+    .await
 }
 
 /// `expected`: `None` writes unconditionally, `Some(generation)` only over
@@ -38,6 +48,7 @@ async fn write_shard_assignment(
     assignment: ShardAssignment,
     expected: Option<Option<u64>>,
     fence: Option<u64>,
+    seq_generation: bool,
 ) -> StoreResult<AssignmentWrite> {
     assignment.validate().map_err(invalid_shard)?;
 
@@ -116,7 +127,7 @@ async fn write_shard_assignment(
         }
         None => (
             ShardAssignmentChangeOp::Assigned,
-            crate::model::first_generation(incarnation, state.changes.next_seq),
+            crate::model::first_generation(incarnation, state.changes.next_seq, seq_generation),
         ),
     };
 
@@ -351,7 +362,37 @@ impl InMemoryStore {
         &self,
         assignment: ShardAssignment,
         expected_generation: Option<u64>,
+        seq_generation: bool,
     ) -> StoreResult<AssignmentWrite> {
-        put_shard_assignment_if(self, assignment, expected_generation, None).await
+        put_shard_assignment_if(self, assignment, expected_generation, None, seq_generation).await
+    }
+
+    /// [`ControlPlaneStore::put_shard_assignment`] from a Raft entry, which
+    /// says how a first assignment's generation is chosen.
+    pub(crate) async fn apply_put_shard_assignment(
+        &self,
+        assignment: ShardAssignment,
+        seq_generation: bool,
+    ) -> StoreResult<ShardAssignment> {
+        put_shard_assignment(self, assignment, seq_generation).await
+    }
+
+    /// [`ControlPlaneStore::put_shard_assignment_if`] from a Raft entry, as
+    /// [`Self::apply_put_shard_assignment`].
+    pub(crate) async fn apply_put_shard_assignment_if(
+        &self,
+        assignment: ShardAssignment,
+        expected_generation: Option<u64>,
+        fence: u64,
+        seq_generation: bool,
+    ) -> StoreResult<AssignmentWrite> {
+        put_shard_assignment_if(
+            self,
+            assignment,
+            expected_generation,
+            Some(fence),
+            seq_generation,
+        )
+        .await
     }
 }

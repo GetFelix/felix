@@ -168,6 +168,17 @@ fn a_recreated_streams_first_assignment_replaces_a_moved_shard() {
     assert_eq!(owned.get(&key(0)).expect("present").leader, "broker-c");
 }
 
+/// A snapshot at a lower generation of the same incarnation may come from a
+/// restored or lagging control plane, not a recreate. Counting it as a renewal
+/// would reopen the shard here at a generation a newer leader wrote past.
+#[test]
+fn a_lower_generation_snapshot_is_not_a_renewal() {
+    let mut owned = ShardOwnership::default();
+    owned.apply(&key(0), Some(assignment(0, "broker-b", 2)));
+    owned.reset(vec![assignment(0, "broker-a", 1)]);
+    assert!(owned.renewals().get(&key(0)).is_none());
+}
+
 #[test]
 fn an_unassignment_removes_the_shard() {
     let mut owned = ShardOwnership::default();

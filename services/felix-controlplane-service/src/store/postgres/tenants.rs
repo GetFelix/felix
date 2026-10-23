@@ -149,7 +149,8 @@ pub(super) async fn delete_tenant(store: &PostgresStore, tenant_id: &str) -> Sto
 
     let streams = sqlx::query_as::<_, DbStream>(
         r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing, incarnation
-               FROM streams WHERE tenant_id = $1"#,
+               FROM streams WHERE tenant_id = $1
+               ORDER BY namespace, stream FOR UPDATE"#,
     )
     .bind(tenant_id)
     .fetch_all(&mut *tx)
@@ -157,7 +158,7 @@ pub(super) async fn delete_tenant(store: &PostgresStore, tenant_id: &str) -> Sto
     ?;
 
     let caches = sqlx::query_as::<_, DbCache>(
-        r#"SELECT tenant_id, namespace, cache, display_name, shards, replication_factor, consistency, incarnation FROM caches WHERE tenant_id = $1"#,
+        r#"SELECT tenant_id, namespace, cache, display_name, shards, replication_factor, consistency, incarnation FROM caches WHERE tenant_id = $1 ORDER BY namespace, cache FOR UPDATE"#,
     )
     .bind(tenant_id)
     .fetch_all(&mut *tx)
@@ -165,6 +166,27 @@ pub(super) async fn delete_tenant(store: &PostgresStore, tenant_id: &str) -> Sto
 
     // Delete tenant (schema should cascade or you rely on application-level deletes; either way
     // we emit explicit change events below based on the prefetched rows).
+    for stream in &streams {
+        super::shards::unassign_shards_of(
+            &mut tx,
+            crate::model::ShardKind::Stream,
+            &stream.tenant_id,
+            &stream.namespace,
+            &stream.stream,
+        )
+        .await?;
+    }
+    for cache in &caches {
+        super::shards::unassign_shards_of(
+            &mut tx,
+            crate::model::ShardKind::Cache,
+            &cache.tenant_id,
+            &cache.namespace,
+            &cache.cache,
+        )
+        .await?;
+    }
+
     sqlx::query("DELETE FROM tenants WHERE tenant_id = $1")
         .bind(tenant_id)
         .execute(&mut *tx)

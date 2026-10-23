@@ -116,7 +116,7 @@ pub(super) async fn delete_cache(
             &key.tenant_id,
             &key.namespace,
             &key.cache,
-            cleanup == ShardCleanup::Full,
+            cleanup,
         )
         .await;
     store.cache_changes.write().await.record(|seq| CacheChange {

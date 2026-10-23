@@ -73,7 +73,7 @@ async fn a_placement_write_is_fenced_by_any_placement_write_since_its_read(
         b.put_shard_assignment_if(assignment(0, "broker-y"), None, read + 1)
             .await
             .expect("stale"),
-        AssignmentWrite::Stale { current: Some(0) },
+        AssignmentWrite::Stale { current: Some(_) },
     ));
     assert_eq!(token(a).await, read + 1);
     let chained = b

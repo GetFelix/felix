@@ -204,6 +204,24 @@ pub(super) async fn patch_cache(
 
 pub(super) async fn delete_cache(store: &PostgresStore, key: &CacheKey) -> StoreResult<()> {
     let (_gates, mut tx) = begin_feed_write(store, &[CatalogFeed::Caches]).await?;
+    let locked: Option<i32> = sqlx::query_scalar(
+        r#"SELECT 1 FROM caches WHERE tenant_id = $1 AND namespace = $2 AND cache = $3 FOR UPDATE"#,
+    )
+    .bind(&key.tenant_id)
+    .bind(&key.namespace)
+    .bind(&key.cache)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if locked.is_some() {
+        super::shards::unassign_shards_of(
+            &mut tx,
+            crate::model::ShardKind::Cache,
+            &key.tenant_id,
+            &key.namespace,
+            &key.cache,
+        )
+        .await?;
+    }
     let removed = sqlx::query_as::<_, DbCache>(
         r#"DELETE FROM caches WHERE tenant_id = $1 AND namespace = $2 AND cache = $3
                RETURNING tenant_id, namespace, cache, display_name, shards, replication_factor, consistency, incarnation"#,

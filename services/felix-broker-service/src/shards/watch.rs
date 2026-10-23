@@ -187,18 +187,11 @@ impl ShardOwnership {
 
     /// Replace everything with a snapshot.
     ///
-    /// A shard the snapshot has at a lower generation of the same incarnation
-    /// was deleted and created again while this broker was not following, and
-    /// counts as renewed.
+    /// Counts no renewal. A shard the snapshot has at a lower generation may
+    /// be a recreate, but it may as well be a restored or lagging control
+    /// plane, and reopening on that would serve a generation a newer leader
+    /// has written past.
     pub fn reset(&mut self, items: Vec<ShardAssignment>) {
-        for next in &items {
-            if let Some(current) = self.assignments.get(&next.key)
-                && next.incarnation == current.incarnation
-                && next.generation < current.generation
-            {
-                *self.renewals.entry(next.key.clone()).or_default() += 1;
-            }
-        }
         self.assignments = items
             .into_iter()
             .map(|assignment| (assignment.key.clone(), assignment))

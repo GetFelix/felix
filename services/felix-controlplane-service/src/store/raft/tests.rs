@@ -569,6 +569,90 @@ async fn an_incarnated_stream_waits_for_every_member() {
     );
 }
 
+/// A member before level 17 starts an unincarnated shard at generation 0 and
+/// writes no unassignment on a delete. While one is in the group, entries are
+/// proposed that way on every member; once every member has the level, they
+/// carry both (#1435).
+#[tokio::test]
+async fn shard_renewal_waits_for_every_member() {
+    use crate::model::{ShardAssignment, ShardKey, ShardKind, StreamKey};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), 16).await;
+    store
+        .register_node(crate::store::contract::nodes::node("broker-x", 7101))
+        .await
+        .expect("register");
+    let place = |name: &'static str| {
+        let store = Arc::clone(&store);
+        async move {
+            store
+                .create_stream(routed_stream(name, Default::default()))
+                .await
+                .expect("stream");
+            let placed = store
+                .put_shard_assignment(ShardAssignment {
+                    key: ShardKey {
+                        tenant_id: "t1".to_string(),
+                        namespace: "ns".to_string(),
+                        stream: name.to_string(),
+                        shard: 0,
+                        kind: ShardKind::Stream,
+                    },
+                    leader: "broker-x".to_string(),
+                    replicas: Vec::new(),
+                    generation: 0,
+                    state: crate::model::ShardState::Active,
+                    successor: None,
+                    joining: None,
+                    move_started_at_millis: None,
+                    move_reason: None,
+                    incarnation: 0,
+                    fence_storage_ids: Default::default(),
+                })
+                .await
+                .expect("assign");
+            let since = store
+                .shard_assignment_snapshot()
+                .await
+                .expect("snapshot")
+                .next_seq;
+            store
+                .delete_stream(&StreamKey {
+                    tenant_id: "t1".to_string(),
+                    namespace: "ns".to_string(),
+                    stream: name.to_string(),
+                })
+                .await
+                .expect("delete");
+            let unassigned = store
+                .shard_assignment_changes(since)
+                .await
+                .expect("changes")
+                .items
+                .iter()
+                .any(|change| change.assignment.is_none());
+            (placed.generation, unassigned)
+        }
+    };
+
+    assert_eq!(place("old").await, (0, false));
+    assert!(store.machine.levels_used() < 17);
+
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while store.group_level().await < 17 {
+        assert!(std::time::Instant::now() < deadline, "level never read");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let (generation, unassigned) = place("new").await;
+    assert!(generation > 0, "the first generation is the change seq");
+    assert!(unassigned, "the delete unassigns the shard");
+    assert_eq!(store.machine.levels_used(), 17);
+}
+
 /// A member before level 10 leaves a deleted stream's replica reports, and
 /// leaves every shard of a deleted namespace or tenant. While one is in the
 /// group, deletes are proposed that way on every member; once every member
@@ -1627,7 +1711,7 @@ async fn an_older_member_is_refused_after_a_flagged_delete() {
         .add_learner_without_waiting(2, addr.clone())
         .await;
     assert!(
-        matches!(&refused, Err(err) if err.to_string().contains("the group is at 14")),
+        matches!(&refused, Err(err) if err.to_string().contains("the group is at 17")),
         "{refused:?}"
     );
     version.store(
@@ -1991,7 +2075,7 @@ async fn cache_entries_are_flagged_only_once_every_member_is_at_14() {
     store.delete_cache(&key).await.expect("delete");
     assert_eq!(
         store.machine.levels_used(),
-        14,
+        17,
         "the delete was not flagged"
     );
 }

@@ -757,6 +757,7 @@ the field itself, on every member alike, or refuses the command:
 | replica report `report.leader` and `node_incarnations`, and both in the snapshot | 13 | the report is proposed without them, which placement reads as at level 12 |
 | cache `incarnation`, cache change `deleted_through`, snapshot `cache_tombstones`, command `incarnations` | 14 | the entry carries no flag, so every member creates caches at 0 and writes no cache tombstone; an upgraded proposer refuses the finalize and, once finalized, cache creates with 409 |
 | replica report `given_up`, and in the snapshot | 15 | the report is proposed without it, so placement replaces a leader that gave a shard up only on its storage identity and never names it again |
+| delete `unassign`, shard put `seq_generation` | 17 | the delete records no unassignment for the shards it takes, and an unincarnated shard's first assignment starts at generation 0, on every member; a broker following the shard feed keeps the deleted stream's assignment until a newer one replaces it |
 
 **A member refuses what it would drop.** From level 3 on, a member that
 decodes an entry carrying a non-empty field it does not know answers

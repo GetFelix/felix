@@ -217,7 +217,7 @@ async fn write_shard_assignment(
             change_seq = Some(seq);
             (
                 ShardAssignmentChangeOp::Assigned,
-                crate::model::first_generation(incarnation as u64, seq as u64),
+                crate::model::first_generation(incarnation as u64, seq as u64, true),
             )
         }
     };
@@ -733,6 +733,43 @@ fn replica_report_from_db(row: DbReplicaReport) -> StoreResult<ReplicaReport> {
         // And for the give-up (0033).
         given_up: row.given_up && row.given_up_at == Some(row.reported_at_millis),
     })
+}
+
+/// Delete the assignments of one stream or cache and record an unassignment
+/// for each: a broker follows the shard change log, and one never told keeps
+/// leading a shard of a stream that is gone (#1435). The caller holds the
+/// stream or cache row `FOR UPDATE`, so no assignment lands in between, and
+/// takes it before these rows as an assignment write does.
+pub(super) async fn unassign_shards_of(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    kind: ShardKind,
+    tenant_id: &str,
+    namespace: &str,
+    name: &str,
+) -> StoreResult<()> {
+    let mut shards: Vec<i32> = sqlx::query_scalar(
+        r#"DELETE FROM shard_assignments
+               WHERE tenant_id = $1 AND namespace = $2 AND stream = $3 AND kind = $4
+               RETURNING shard"#,
+    )
+    .bind(tenant_id)
+    .bind(namespace)
+    .bind(name)
+    .bind(kind.as_str())
+    .fetch_all(&mut **tx)
+    .await?;
+    shards.sort_unstable();
+    for shard in shards {
+        let key = ShardKey {
+            tenant_id: tenant_id.to_string(),
+            namespace: namespace.to_string(),
+            stream: name.to_string(),
+            shard: shard as u32,
+            kind,
+        };
+        record_shard_change(tx, ShardAssignmentChangeOp::Unassigned, &key, None).await?;
+    }
+    Ok(())
 }
 
 /// Append a shard change, taking its `seq` from the locked counter.

@@ -483,3 +483,54 @@ async fn a_cache_recreate_between_the_check_and_the_open_is_refused() {
         );
     }
 }
+
+/// A stream without an incarnation deleted and created again keeps its log
+/// here, and the generation this follower accepted for it (#1435). A leader
+/// of the new stream at generation 0 is refused, which is why the control
+/// plane starts the new shard at its change seq: past every generation the
+/// kept log took, and accepted.
+#[tokio::test]
+async fn an_unincarnated_stream_created_again_continues_past_its_generations() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let broker = following_broker(dir.path());
+    register(&broker, 0).await;
+    let moved = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 2));
+    let answer = moved
+        .apply(SENDER, batch(2, 0, &["a"]), felix_broker::LogKind::Stream)
+        .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{:?}",
+        answer.kind()
+    );
+
+    broker
+        .remove_stream_from_catalog(TENANT, NAMESPACE, STREAM, None)
+        .await
+        .expect("delete");
+    register(&broker, 0).await;
+
+    let restarted = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 0));
+    let answer = restarted
+        .apply(
+            SENDER,
+            batch(0, 0, &["a", "b"]),
+            felix_broker::LogKind::Stream,
+        )
+        .await;
+    assert_eq!(refusal(&answer).code, ErrorCode::FencedEpoch);
+
+    let continued = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 9));
+    let answer = continued
+        .apply(
+            SENDER,
+            batch(9, 0, &["a", "b"]),
+            felix_broker::LogKind::Stream,
+        )
+        .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{:?}",
+        answer.kind()
+    );
+}

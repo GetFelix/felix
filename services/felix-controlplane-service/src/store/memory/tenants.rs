@@ -103,14 +103,14 @@ pub(super) async fn delete_tenant(
                     stream: Some(stream),
                     deleted_through,
                 });
-            if cleanup == ShardCleanup::Full {
+            if cleanup.takes_shards() {
                 store
                     .drop_shard_assignments_for(
                         ShardKind::Stream,
                         &key.tenant_id,
                         &key.namespace,
                         &key.stream,
-                        true,
+                        cleanup,
                     )
                     .await;
             }
@@ -142,14 +142,14 @@ pub(super) async fn delete_tenant(
                 cache: Some(cache),
                 deleted_through,
             });
-            if cleanup == ShardCleanup::Full {
+            if cleanup.takes_shards() {
                 store
                     .drop_shard_assignments_for(
                         ShardKind::Cache,
                         &key.tenant_id,
                         &key.namespace,
                         &key.cache,
-                        true,
+                        cleanup,
                     )
                     .await;
             }

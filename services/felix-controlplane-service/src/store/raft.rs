@@ -60,6 +60,11 @@ const GIVEN_UP_LEVEL: u16 = 15;
 /// The metadata level whose members store the storage identities a
 /// promotion's assignment hands the promoted leader's fence.
 const FENCE_STORAGE_LEVEL: u16 = 16;
+
+/// The metadata level whose members record an unassignment for each shard a
+/// delete takes, and start a shard's first generation at the change seq at
+/// any incarnation (#1435).
+const SHARD_RENEWAL_LEVEL: u16 = 17;
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
@@ -138,6 +143,7 @@ impl RaftStore {
             tenant_id: String::new(),
             take_shards: true,
             incarnations: false,
+            unassign: false,
         }
         .version();
         level >= needs
@@ -236,6 +242,7 @@ impl ControlPlaneStore for RaftStore {
                 tenant_id: tenant_id.to_string(),
                 take_shards: Self::takes_shards_at(level),
                 incarnations: Self::decides_at(level),
+                unassign: level >= SHARD_RENEWAL_LEVEL,
             },
         )
         .await
@@ -280,6 +287,7 @@ impl ControlPlaneStore for RaftStore {
                 key: key.clone(),
                 take_shards: Self::takes_shards_at(level),
                 incarnations: Self::decides_at(level),
+                unassign: level >= SHARD_RENEWAL_LEVEL,
             },
         )
         .await
@@ -359,6 +367,7 @@ impl ControlPlaneStore for RaftStore {
                 key: key.clone(),
                 take_reports: Self::takes_shards_at(level),
                 incarnations: Self::decides_at(level),
+                unassign: level >= SHARD_RENEWAL_LEVEL,
             },
         )
         .await
@@ -438,6 +447,7 @@ impl ControlPlaneStore for RaftStore {
                 key: key.clone(),
                 take_reports: Self::takes_shards_at(level),
                 incarnations: Self::decides_at(level),
+                unassign: level >= SHARD_RENEWAL_LEVEL,
             },
         )
         .await
@@ -742,8 +752,15 @@ impl ControlPlaneStore for RaftStore {
         mut assignment: ShardAssignment,
     ) -> StoreResult<ShardAssignment> {
         self.drop_unstorable_fence_ids(&mut assignment).await;
+        let level = self.group_level().await;
         match self
-            .propose(MetaCommand::PutShardAssignment { assignment })
+            .propose_at(
+                level,
+                MetaCommand::PutShardAssignment {
+                    assignment,
+                    seq_generation: level >= SHARD_RENEWAL_LEVEL,
+                },
+            )
             .await?
         {
             MetaResponse::Assignment { assignment } => Ok(assignment),
@@ -758,12 +775,17 @@ impl ControlPlaneStore for RaftStore {
         fence: u64,
     ) -> StoreResult<AssignmentWrite> {
         self.drop_unstorable_fence_ids(&mut assignment).await;
+        let level = self.group_level().await;
         match self
-            .propose(MetaCommand::PutShardAssignmentFenced {
-                assignment,
-                expected_generation,
-                fence,
-            })
+            .propose_at(
+                level,
+                MetaCommand::PutShardAssignmentFenced {
+                    assignment,
+                    expected_generation,
+                    fence,
+                    seq_generation: level >= SHARD_RENEWAL_LEVEL,
+                },
+            )
             .await?
         {
             MetaResponse::Assignment { assignment } => Ok(AssignmentWrite::Written(assignment)),

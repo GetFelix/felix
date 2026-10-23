@@ -56,7 +56,7 @@ pub const COMMAND_VERSION: u16 = 1;
 /// it the next level and raises this, so nothing proposes it until every
 /// member runs that release. New fields get their level in `fields.txt`.
 /// Never lower it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 16;
+pub const METADATA_VERSION: u16 = 17;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -76,6 +76,10 @@ pub enum MetaCommand {
         /// As for [`MetaCommand::CreateStream`].
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         incarnations: bool,
+        /// Level 17: record an unassignment for each shard the delete takes
+        /// (`store::memory::ShardCleanup::Unassign`).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        unassign: bool,
     },
     CreateNamespace {
         namespace: Namespace,
@@ -88,6 +92,10 @@ pub enum MetaCommand {
         /// As for [`MetaCommand::CreateStream`].
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         incarnations: bool,
+        /// Level 17: record an unassignment for each shard the delete takes
+        /// (`store::memory::ShardCleanup::Unassign`).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        unassign: bool,
     },
     CreateStream {
         stream: Stream,
@@ -110,6 +118,10 @@ pub enum MetaCommand {
         /// As for [`MetaCommand::CreateStream`].
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         incarnations: bool,
+        /// Level 17: record an unassignment for each shard the delete takes
+        /// (`store::memory::ShardCleanup::Unassign`).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        unassign: bool,
     },
     CreateCache {
         cache: Cache,
@@ -129,6 +141,10 @@ pub enum MetaCommand {
         /// As for [`MetaCommand::CreateStream`].
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         incarnations: bool,
+        /// Level 17: record an unassignment for each shard the delete takes
+        /// (`store::memory::ShardCleanup::Unassign`).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        unassign: bool,
     },
     /// Registers without fleet features: the entry predates them, and an
     /// older member applies it that way, so this build does too.
@@ -168,6 +184,10 @@ pub enum MetaCommand {
     },
     PutShardAssignment {
         assignment: ShardAssignment,
+        /// Level 17: a first assignment takes the change seq as its
+        /// generation at any incarnation (`model::first_generation`).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        seq_generation: bool,
     },
     /// Write only if the shard is at `expected_generation` (`None`: has no
     /// assignment), checked as the command applies.
@@ -178,6 +198,10 @@ pub enum MetaCommand {
     PutShardAssignmentIf {
         assignment: ShardAssignment,
         expected_generation: Option<u64>,
+        /// Level 17: a first assignment takes the change seq as its
+        /// generation at any incarnation (`model::first_generation`).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        seq_generation: bool,
     },
     /// `PutShardAssignmentIf`, also only at placement token `fence`
     /// (`ControlPlaneStore::put_shard_assignment_if`). Its own variant for the
@@ -188,6 +212,10 @@ pub enum MetaCommand {
         assignment: ShardAssignment,
         expected_generation: Option<u64>,
         fence: u64,
+        /// Level 17: a first assignment takes the change seq as its
+        /// generation at any incarnation (`model::first_generation`).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        seq_generation: bool,
     },
     /// The placement lease goes to `holder`, advancing the token if it
     /// changes hands. Proposed only by a confirmed leader, so no expiry.

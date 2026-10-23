@@ -51,7 +51,11 @@ async fn three_nodes_and_three_shards_each_get_one_owner() {
     let assignments = store.list_shard_assignments().await.expect("list");
     assert_eq!(assignments.len(), 3);
     assert!(assignments.iter().all(|a| a.state == ShardState::Assigning));
-    assert!(assignments.iter().all(|a| a.generation == 0));
+    // Each first generation is the seq of the change that wrote it.
+    let mut generations: Vec<u64> = assignments.iter().map(|a| a.generation).collect();
+    generations.sort_unstable();
+    generations.dedup();
+    assert_eq!(generations.len(), 3);
 }
 
 /// A pass over an already-placed cluster must write nothing, or a timer

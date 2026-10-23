@@ -202,6 +202,7 @@ fn a_request_id_does_not_disturb_the_command() {
 #[test]
 fn an_already_stamped_command_keeps_its_id() {
     let encoded = encode_command(&MetaCommand::DeleteTenant {
+        unassign: false,
         tenant_id: "acme".to_string(),
         take_shards: false,
         incarnations: false,
@@ -219,6 +220,7 @@ fn an_already_stamped_command_keeps_its_id() {
 #[test]
 fn an_unstamped_command_has_no_request_id() {
     let encoded = encode_command(&MetaCommand::DeleteTenant {
+        unassign: false,
         tenant_id: "acme".to_string(),
         take_shards: false,
         incarnations: false,

@@ -382,6 +382,7 @@ fn commands() -> Vec<MetaCommand> {
     vec![
         MetaCommand::CreateTenant { tenant: tenant() },
         MetaCommand::DeleteTenant {
+            unassign: true,
             tenant_id: s("t"),
             take_shards: true,
             incarnations: true,
@@ -390,6 +391,7 @@ fn commands() -> Vec<MetaCommand> {
             namespace: namespace(),
         },
         MetaCommand::DeleteNamespace {
+            unassign: true,
             key: namespace_key(),
             take_shards: true,
             incarnations: true,
@@ -403,6 +405,7 @@ fn commands() -> Vec<MetaCommand> {
             patch: stream_patch(),
         },
         MetaCommand::DeleteStream {
+            unassign: true,
             key: stream_key(),
             take_reports: true,
             incarnations: true,
@@ -418,6 +421,7 @@ fn commands() -> Vec<MetaCommand> {
             },
         },
         MetaCommand::DeleteCache {
+            unassign: true,
             key: cache_key(),
             take_reports: true,
             incarnations: true,
@@ -441,13 +445,16 @@ fn commands() -> Vec<MetaCommand> {
             lifecycle: NodeLifecycle::Draining,
         },
         MetaCommand::PutShardAssignment {
+            seq_generation: true,
             assignment: assignment(),
         },
         MetaCommand::PutShardAssignmentIf {
+            seq_generation: true,
             assignment: assignment(),
             expected_generation: Some(1),
         },
         MetaCommand::PutShardAssignmentFenced {
+            seq_generation: true,
             assignment: assignment(),
             expected_generation: Some(1),
             fence: 1,

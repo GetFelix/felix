@@ -189,8 +189,13 @@ impl MetadataStateMachine {
                 tenant_id,
                 take_shards,
                 incarnations,
+                unassign,
             } => store
-                .apply_delete_tenant(&tenant_id, cleanup(take_shards), decide(incarnations))
+                .apply_delete_tenant(
+                    &tenant_id,
+                    cleanup(take_shards, unassign),
+                    decide(incarnations),
+                )
                 .await
                 .map(|()| MetaResponse::Unit)
                 .map_err(Into::into),
@@ -203,8 +208,9 @@ impl MetadataStateMachine {
                 key,
                 take_shards,
                 incarnations,
+                unassign,
             } => store
-                .apply_delete_namespace(&key, cleanup(take_shards), decide(incarnations))
+                .apply_delete_namespace(&key, cleanup(take_shards, unassign), decide(incarnations))
                 .await
                 .map(|()| MetaResponse::Unit)
                 .map_err(Into::into),
@@ -225,8 +231,9 @@ impl MetadataStateMachine {
                 key,
                 take_reports,
                 incarnations,
+                unassign,
             } => store
-                .apply_delete_stream(&key, cleanup(take_reports), decide(incarnations))
+                .apply_delete_stream(&key, cleanup(take_reports, unassign), decide(incarnations))
                 .await
                 .map(|()| MetaResponse::Unit)
                 .map_err(Into::into),
@@ -247,8 +254,9 @@ impl MetadataStateMachine {
                 key,
                 take_reports,
                 incarnations,
+                unassign,
             } => store
-                .apply_delete_cache(&key, cleanup(take_reports), decide(incarnations))
+                .apply_delete_cache(&key, cleanup(take_reports, unassign), decide(incarnations))
                 .await
                 .map(|()| MetaResponse::Unit)
                 .map_err(Into::into),
@@ -325,16 +333,20 @@ impl MetadataStateMachine {
                 .await
                 .map(|node| MetaResponse::MaybeNode { node })
                 .map_err(Into::into),
-            MetaCommand::PutShardAssignment { assignment } => store
-                .put_shard_assignment(assignment)
+            MetaCommand::PutShardAssignment {
+                assignment,
+                seq_generation,
+            } => store
+                .apply_put_shard_assignment(assignment, seq_generation)
                 .await
                 .map(|assignment| MetaResponse::Assignment { assignment })
                 .map_err(Into::into),
             MetaCommand::PutShardAssignmentIf {
                 assignment,
                 expected_generation,
+                seq_generation,
             } => store
-                .put_shard_assignment_unfenced_if(assignment, expected_generation)
+                .put_shard_assignment_unfenced_if(assignment, expected_generation, seq_generation)
                 .await
                 .map(assignment_written)
                 .map_err(Into::into),
@@ -342,8 +354,14 @@ impl MetadataStateMachine {
                 assignment,
                 expected_generation,
                 fence,
+                seq_generation,
             } => store
-                .put_shard_assignment_if(assignment, expected_generation, fence)
+                .apply_put_shard_assignment_if(
+                    assignment,
+                    expected_generation,
+                    fence,
+                    seq_generation,
+                )
                 .await
                 .map(assignment_written)
                 .map_err(Into::into),
@@ -717,12 +735,13 @@ fn decide(incarnations: bool) -> Decide {
     }
 }
 
-/// What a delete entry's flag means. Without it, the delete applies as a member
-/// before metadata level 10 applies it, which keeps such a member identical.
-fn cleanup(take: bool) -> ShardCleanup {
-    if take {
-        ShardCleanup::Full
-    } else {
-        ShardCleanup::Legacy
+/// What a delete entry's flags mean. Without them, the delete applies as a
+/// member before metadata level 10 (or 17) applies it, which keeps such a
+/// member identical.
+fn cleanup(take: bool, unassign: bool) -> ShardCleanup {
+    match (take, unassign) {
+        (true, true) => ShardCleanup::Unassign,
+        (true, false) => ShardCleanup::Full,
+        (false, _) => ShardCleanup::Legacy,
     }
 }
