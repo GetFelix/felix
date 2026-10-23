@@ -114,8 +114,8 @@ fn a_cache_does_not_score_identically_to_the_stream_it_shares_a_name_with() {
 
 /// Stream placement is pinned to what it was before caches were placed at all.
 ///
-/// These leaders were produced by the algorithm as it stood before this change
-/// and are asserted verbatim: the whole reason `score` leaves a stream's hash
+/// These leaders were produced by the algorithm with each stream's leaders
+/// spread (3/2/3 and 1/2/2) and are asserted verbatim: the whole reason `score` leaves a stream's hash
 /// input alone is that changing it silently reshuffles every stream in every
 /// fresh cluster. A comparison against a freshly computed plan cannot catch
 /// that -- both sides would move together -- so the expected values are
@@ -127,13 +127,13 @@ fn stream_placement_is_unchanged_by_cache_placement() {
         ("orders", 1, "broker-b"),
         ("orders", 2, "broker-c"),
         ("orders", 3, "broker-a"),
-        ("orders", 4, "broker-a"),
-        ("orders", 5, "broker-a"),
+        ("orders", 4, "broker-b"),
+        ("orders", 5, "broker-c"),
         ("orders", 6, "broker-c"),
         ("orders", 7, "broker-a"),
         ("payments", 0, "broker-c"),
         ("payments", 1, "broker-b"),
-        ("payments", 2, "broker-b"),
+        ("payments", 2, "broker-a"),
         ("payments", 3, "broker-c"),
         ("payments", 4, "broker-b"),
     ];

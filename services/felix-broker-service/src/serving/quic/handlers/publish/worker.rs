@@ -134,6 +134,7 @@ pub(crate) fn build_tracked_publish_context(
         tenant_rates: Arc::new(crate::serving::limits::TenantRates::new(&config.limits)),
         publish_window: 0,
         ack_durable_on_commit: config.ack_durable_on_commit,
+        parked: None,
     }
 }
 

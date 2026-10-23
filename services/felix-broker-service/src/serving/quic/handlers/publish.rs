@@ -37,6 +37,7 @@
 //! - `route`: whether a publish is served here, forwarded, or refused.
 //! - `stream_cache`: the per-connection cache of resolved stream handles.
 //! - `control`: acked publish handlers on the bi-directional control stream.
+//! - `parked`: publishes a control stream parked in the queue while it goes on reading.
 //! - `uni`: fire-and-forget publish handlers on uni-directional streams.
 //! - `scheduler`: per-shard ordered lanes and the per-tenant fair queue that feeds them.
 //! - `worker`: what each kind of publish does on its lane, and the process-wide context.
@@ -50,6 +51,7 @@ mod commit_ack;
 mod control;
 mod ingress;
 mod order;
+mod parked;
 mod route;
 mod scheduler;
 mod stream_cache;
@@ -68,9 +70,10 @@ pub(crate) use control::{
 };
 pub(crate) use ingress::{PublishTarget, admit_unqueued, decrement_depth, reset_local_depth_only};
 pub(crate) use order::AckOrder;
+pub(crate) use parked::ParkedPublishes;
 pub(crate) use route::{DeclaredWidth, resolve_shard};
 #[cfg(test)]
-pub(crate) use scheduler::test_channel;
+pub(crate) use scheduler::{PublishScheduler, test_channel};
 pub(crate) use stream_cache::StreamHandleCache;
 pub(crate) use uni::{
     handle_binary_publish_batch_uni, handle_publish_batch_message_uni, handle_publish_message_uni,
@@ -93,6 +96,7 @@ use crate::shards::routing::IngressRouter;
 use ack::EnqueuePolicy;
 use admission::AdmissionPermit;
 use route::Authority;
+#[cfg(not(test))]
 use scheduler::PublishScheduler;
 
 /// Shared publish-ingress configuration and the scheduler it feeds.
@@ -179,6 +183,10 @@ pub(crate) struct PublishContext {
     /// Acknowledged publishes to a durable stream wait for the commit even when
     /// the connection did not ask for it. See `BrokerConfig::ack_durable_on_commit`.
     pub(crate) ack_durable_on_commit: bool,
+    /// Where this control stream's publishes wait for queue room, so the
+    /// stream keeps reading meanwhile. Set per control stream; `None`
+    /// elsewhere, and those callers wait inline.
+    pub(crate) parked: Option<Arc<ParkedPublishes>>,
 }
 
 impl PublishContext {

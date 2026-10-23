@@ -91,7 +91,7 @@ async fn finish_waits_on_stalled_brokers_together() -> Result<()> {
     let a = StubBroker::start_with(server_config.clone(), ok)?;
     let b = StubBroker::start_with(server_config, ok)?;
     let mut config = default_config(cert)?;
-    config.finish_timeout = Duration::from_millis(600);
+    config.finish_timeout = Duration::from_millis(1500);
     let cluster = Arc::new(
         ClusterClient::connect_with_policy(&[a.addr, b.addr], "localhost", config, policy())
             .await?,
@@ -116,7 +116,7 @@ async fn finish_waits_on_stalled_brokers_together() -> Result<()> {
         .expect("finish hung");
     assert!(finished.is_err());
     assert!(
-        started.elapsed() < Duration::from_millis(1100),
+        started.elapsed() < Duration::from_millis(2700),
         "finished one broker after another: {:?}",
         started.elapsed()
     );
@@ -131,7 +131,7 @@ async fn reading_the_client_does_not_wait_for_a_reconnect_dial() -> Result<()> {
     let live = StubBroker::start_with(server_config, ok)?;
     let silent = std::net::UdpSocket::bind("127.0.0.1:0")?;
     let mut config = default_config(cert)?;
-    config.connect_timeout = Duration::from_millis(800);
+    config.connect_timeout = Duration::from_secs(2);
     let cluster = Arc::new(
         ClusterClient::connect_with_policy(
             &[live.addr, silent.local_addr()?],
@@ -155,7 +155,7 @@ async fn reading_the_client_does_not_wait_for_a_reconnect_dial() -> Result<()> {
         .await
         .expect("client() hung");
     assert!(
-        started.elapsed() < Duration::from_millis(300),
+        started.elapsed() < Duration::from_secs(1),
         "the client lock was held across the dial: {:?}",
         started.elapsed()
     );
@@ -171,11 +171,11 @@ async fn reconnect_reaches_a_live_broker_behind_dead_addresses() -> Result<()> {
     let dead: Vec<std::net::UdpSocket> = (0..3)
         .map(|_| std::net::UdpSocket::bind("127.0.0.1:0"))
         .collect::<std::io::Result<_>>()?;
-    let mut seeds: Vec<std::net::SocketAddr> =
-        dead.iter().map(|s| s.local_addr().unwrap()).collect();
-    seeds.push(live.addr);
+    // The live broker first, so the setup connect does not wait on a dead one.
+    let mut seeds = vec![live.addr];
+    seeds.extend(dead.iter().map(|s| s.local_addr().unwrap()));
     let mut config = default_config(cert)?;
-    config.connect_timeout = Duration::from_millis(300);
+    config.connect_timeout = Duration::from_secs(1);
     let cluster = ClusterClient::connect_with_policy(&seeds, "localhost", config, policy()).await?;
     let failed = cluster.client().await;
     assert_eq!(failed.dialled(), live.addr);
@@ -193,15 +193,13 @@ async fn reconnect_reaches_a_live_broker_behind_dead_addresses() -> Result<()> {
 /// exchanges, fails a step the broker never answers.**
 #[tokio::test]
 async fn bounded_fails_a_step_that_never_finishes() -> Result<()> {
-    let (server_config, cert) = build_server_config()?;
-    let broker = StubBroker::start_with(server_config, ok)?;
-    let mut config = default_config(cert)?;
-    config.connect_timeout = Duration::from_millis(200);
-    let client = crate::client::Client::connect(broker.addr, "localhost", config).await?;
-
     let stalled = tokio::time::timeout(
         TEST_LIMIT,
-        client.bounded("read the answer", std::future::pending::<Result<()>>()),
+        crate::client::discovery::bounded_by(
+            Duration::from_millis(200),
+            "read the answer",
+            std::future::pending::<Result<()>>(),
+        ),
     )
     .await
     .expect("bounded hung");

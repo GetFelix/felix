@@ -89,14 +89,7 @@ impl PublishScheduler {
     where
         G: Future<Output = ()>,
     {
-        let lane = LaneKey::of(&job.target);
-        let partition = &self.partitions[lane.partition(self.partitions.len())];
-        let cost = job
-            .payloads
-            .iter()
-            .map(Bytes::len)
-            .sum::<usize>()
-            .saturating_add(JOB_COST_BYTES);
+        let (partition, lane, cost) = self.place(&job);
         let job = match partition.try_push(tenant, lane, job, cost) {
             Err(Rejected::Full(job)) => *job,
             done => return done,
@@ -106,38 +99,45 @@ impl PublishScheduler {
         if futures::FutureExt::now_or_never(&mut give_up).is_some() {
             return Err(Rejected::Full(Box::new(job)));
         }
-        let (id, tenant, admitted) = match partition.park(tenant, lane, job, cost) {
-            Park::Done(done) => return done,
-            Park::Waiting(id, tenant, admitted) => (id, tenant, admitted),
-        };
-        // Dropping the future unparks the job. If a slot was already handed
-        // to it, the job stays queued and runs with no caller waiting: the
-        // client gets no ack and may retry, the same at-least-once window as
-        // a connection that drops right after its publish was enqueued.
-        let mut parked = Unparker {
-            partition,
-            id,
-            tenant,
-        };
-        tokio::select! {
-            biased;
-            admitted = admitted => {
-                parked.id = NOT_PARKED;
-                // A dropped sender means the queue closed under the waiter.
-                admitted.map_err(|_| Rejected::Closed)
-            }
-            _ = &mut give_up => match partition.unpark(id, &parked.tenant) {
-                Some(job) => {
-                    parked.id = NOT_PARKED;
-                    Err(Rejected::Full(Box::new(job)))
-                }
-                // Admitted in the instant before giving up: it is queued.
-                None => {
-                    parked.id = NOT_PARKED;
-                    Ok(())
-                }
+        match self.park(tenant, job)? {
+            Submitted::Queued => Ok(()),
+            Submitted::Parked(ticket) => match ticket.wait(give_up).await {
+                Waited::Admitted => Ok(()),
+                Waited::GaveUp(job) => Err(Rejected::Full(Box::new(job))),
+                Waited::Closed(_) => Err(Rejected::Closed),
             },
         }
+    }
+
+    /// Queue `job`, or park it behind the jobs already waiting for room, without
+    /// waiting. Never [`Rejected::Full`].
+    ///
+    /// Parking takes the job's place in line at once, so the caller can go on
+    /// to its next job and still have this one admitted first.
+    pub(crate) fn park(&self, tenant: &str, job: PublishJob) -> Result<Submitted, Rejected> {
+        let (partition, lane, cost) = self.place(&job);
+        match partition.park(tenant, lane, job, cost) {
+            Park::Done(done) => done.map(|()| Submitted::Queued),
+            Park::Waiting(id, tenant, admitted) => Ok(Submitted::Parked(Ticket {
+                partition: Arc::clone(partition),
+                id,
+                tenant,
+                admitted,
+            })),
+        }
+    }
+
+    /// The partition `job` belongs to, its lane and what it costs.
+    fn place(&self, job: &PublishJob) -> (&Arc<Partition>, LaneKey, usize) {
+        let lane = LaneKey::of(&job.target);
+        let partition = &self.partitions[lane.partition(self.partitions.len())];
+        let cost = job
+            .payloads
+            .iter()
+            .map(Bytes::len)
+            .sum::<usize>()
+            .saturating_add(JOB_COST_BYTES);
+        (partition, lane, cost)
     }
 
     /// Queue `job` as one tenant, waiting for room however long it takes.
@@ -186,6 +186,72 @@ pub(crate) enum Rejected {
     Closed,
 }
 
+/// What [`PublishScheduler::park`] did with a job.
+pub(crate) enum Submitted {
+    Queued,
+    /// Waiting for room. Dropping the ticket takes the job back out.
+    Parked(Ticket),
+}
+
+/// How a parked job's wait ended.
+pub(crate) enum Waited {
+    Admitted,
+    /// The caller gave up first and has the job back.
+    GaveUp(PublishJob),
+    /// The queue closed. The job comes back so it can still be answered.
+    Closed(Option<PublishJob>),
+}
+
+/// A job parked in a partition, waiting for a slot.
+pub(crate) struct Ticket {
+    partition: Arc<Partition>,
+    id: u64,
+    tenant: Arc<str>,
+    admitted: oneshot::Receiver<Wake>,
+}
+
+impl Ticket {
+    /// Wait until the job is admitted, the queue closes, or `give_up`
+    /// resolves.
+    pub(crate) async fn wait<G: Future<Output = ()>>(mut self, give_up: G) -> Waited {
+        tokio::pin!(give_up);
+        let waited = tokio::select! {
+            biased;
+            woken = &mut self.admitted => woken.into(),
+            () = &mut give_up => match self.partition.unpark(self.id, &self.tenant) {
+                Some(job) => Waited::GaveUp(job),
+                // Taken out of line in the instant before giving up, by an
+                // admission or a close whose wake is about to arrive.
+                None => (&mut self.admitted).await.into(),
+            },
+        };
+        self.id = NOT_PARKED;
+        waited
+    }
+}
+
+impl From<Result<Wake, oneshot::error::RecvError>> for Waited {
+    fn from(woken: Result<Wake, oneshot::error::RecvError>) -> Self {
+        match woken {
+            Ok(Ok(())) => Waited::Admitted,
+            Ok(Err(job)) => Waited::Closed(Some(job)),
+            Err(_) => Waited::Closed(None),
+        }
+    }
+}
+
+impl Drop for Ticket {
+    // Dropping the ticket unparks the job. If a slot was already handed to
+    // it, the job stays queued and runs with no caller waiting: the client
+    // gets no ack and may retry, the same at-least-once window as a
+    // connection that drops right after its publish was enqueued.
+    fn drop(&mut self) {
+        if self.id != NOT_PARKED {
+            self.partition.unpark(self.id, &self.tenant);
+        }
+    }
+}
+
 /// One queue and the executors that drain it.
 pub(crate) struct Partition {
     state: Mutex<State>,
@@ -218,31 +284,19 @@ struct Waiter {
     lane: LaneKey,
     cost: usize,
     job: PublishJob,
-    admitted: oneshot::Sender<()>,
+    admitted: oneshot::Sender<Wake>,
 }
+
+/// What a parked job is woken with: admitted, or handed back because the
+/// queue closed.
+type Wake = Result<(), PublishJob>;
 
 enum Park {
     Done(Result<(), Rejected>),
-    Waiting(u64, Arc<str>, oneshot::Receiver<()>),
-}
-
-/// Stands for a parked job while its submitter waits; removes it if the
-/// submitter is dropped first.
-struct Unparker<'a> {
-    partition: &'a Partition,
-    id: u64,
-    tenant: Arc<str>,
+    Waiting(u64, Arc<str>, oneshot::Receiver<Wake>),
 }
 
 const NOT_PARKED: u64 = u64::MAX;
-
-impl Drop for Unparker<'_> {
-    fn drop(&mut self) {
-        if self.id != NOT_PARKED {
-            self.partition.unpark(self.id, &self.tenant);
-        }
-    }
-}
 
 impl Partition {
     fn new(capacity: usize, share: usize) -> Self {
@@ -384,7 +438,7 @@ impl Partition {
             .fetch_add(admitted.len(), Ordering::Relaxed);
         for wake in admitted {
             // A submitter that went away took its job back first.
-            let _ = wake.send(());
+            let _ = wake.send(Ok(()));
         }
     }
 
@@ -406,8 +460,10 @@ impl Partition {
             state.heads.clear();
             std::mem::take(&mut state.waiters)
         };
-        // Dropping each sender tells its submitter the queue is closed.
-        drop(parked);
+        // Each job goes back to its submitter, which still owes it an answer.
+        for waiter in parked.into_values().flat_map(BTreeMap::into_values) {
+            let _ = waiter.admitted.send(Err(waiter.job));
+        }
         self.work.notify_waiters();
     }
 
@@ -448,7 +504,7 @@ impl State {
     /// the rest of the pass without looking at its jobs, since its answer
     /// cannot change until something else leaves. Returns the submitters to
     /// wake.
-    fn admit_waiters(&mut self) -> Vec<oneshot::Sender<()>> {
+    fn admit_waiters(&mut self) -> Vec<oneshot::Sender<Wake>> {
         let mut woken = Vec::new();
         let mut refused: Vec<Arc<str>> = Vec::new();
         while !self.queue.is_full() {

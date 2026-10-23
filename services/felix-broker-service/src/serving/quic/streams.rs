@@ -32,12 +32,15 @@ use crate::config::BrokerConfig;
 use crate::serving::auth::BrokerAuth;
 use crate::serving::quic::client_error::ErrorCodeSupport;
 use crate::serving::quic::handlers::publish::{
-    AckOrder, AckTimeoutState, CommitAcks, Outgoing, PublishContext, reset_local_depth_only,
+    AckOrder, AckTimeoutState, CommitAcks, Outgoing, ParkedPublishes, PublishContext,
+    reset_local_depth_only,
 };
 use crate::serving::quic::telemetry::t_counter;
 #[cfg(feature = "telemetry")]
 use crate::serving::quic::telemetry::t_histogram;
-use crate::serving::quic::{ACK_QUEUE_DEPTH, ACK_WAITERS_MAX, GLOBAL_ACK_DEPTH};
+use crate::serving::quic::{
+    ACK_QUEUE_DEPTH, ACK_WAITERS_MAX, GLOBAL_ACK_DEPTH, PARKED_PUBLISHES_MAX,
+};
 use control::run_control_loop;
 #[cfg(test)]
 use hooks::test_hooks;
@@ -56,7 +59,7 @@ pub(crate) async fn handle_stream(
     connection: felix_transport::QuicConnection,
     config: BrokerConfig,
     auth: Arc<BrokerAuth>,
-    publish_ctx: PublishContext,
+    mut publish_ctx: PublishContext,
     send: SendStream,
     mut recv: RecvStream,
 ) -> Result<()> {
@@ -72,6 +75,10 @@ pub(crate) async fn handle_stream(
     let stream_cache_key = String::new();
 
     let (cancel_tx, cancel_rx) = watch::channel(false);
+
+    // Publishes waiting for queue room wait here, not in the read loop.
+    let parked = ParkedPublishes::new(PARKED_PUBLISHES_MAX);
+    publish_ctx.parked = Some(Arc::clone(&parked));
 
     // Bounds in-flight ack-on-commit waiters so a stalled commit path cannot
     // accumulate unbounded state.
@@ -158,6 +165,9 @@ pub(crate) async fn handle_stream(
     if !graceful_close {
         let _ = cancel_tx.send(true);
     }
+    // Before the answer paths close. After a clean finish this waits for the
+    // parked publishes to be admitted; after a cancel they give up promptly.
+    parked.drain().await;
 
     // Dropping the senders is what lets the background tasks see EOF and exit.
     drop(out_ack_tx);

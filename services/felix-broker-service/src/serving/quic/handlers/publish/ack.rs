@@ -167,6 +167,7 @@ impl AckEncoding {
 /// with no way to tell the client. A timer is the wrong bound for backpressure:
 /// the right one is liveness, so `Backpressure` waits on capacity and gives up only
 /// when the connection does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum EnqueuePolicy {
     Drop,
     Fail,
