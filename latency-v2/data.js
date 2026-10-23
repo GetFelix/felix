@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792760497165,
+  "lastUpdate": 1792763984422,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -42174,6 +42174,72 @@ window.BENCHMARK_DATA = {
             "range": "885.42",
             "unit": "us",
             "extra": "trials: 5\nmedian: 467.00\nmean: 832.20\nstdev: 885.42\ncv: 106.39%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1860df34ce140e0a5ced281dfa5d664320eebb98",
+          "message": "test(placement): pin that a pause never holds a started move (#1434) (#1440)\n\nA pause stops placement starting moves. It does not stop a move that has\nalready started, placement's own or an operator's, from fencing and\ncutting over. Two store-backed tests now drive a fenced move and an\noperator move started under a pause through to the cut-over, so a change\nthat gates move progress on the pause fails them.\n\nThe RF=3 campaign script said an operator move does not progress until\nplacement resumes; that is not what the control plane does.\n\nRefs #1434\n\nSpec-Unaffected: tests and a script comment only; FelixPlacementPacing does not model the pause.",
+          "timestamp": "2026-10-23T06:55:10-07:00",
+          "tree_id": "e844627a56b99eb88ff67d4a1a886a223b08d39d",
+          "url": "https://github.com/GetFelix/felix/commit/1860df34ce140e0a5ced281dfa5d664320eebb98"
+        },
+        "date": 1792763979502,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 184,
+            "range": "2.35",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 184.00\nmean: 183.00\nstdev: 2.35\ncv: 1.28%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 242,
+            "range": "3.51",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 242.00\nmean: 241.40\nstdev: 3.51\ncv: 1.45%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 300,
+            "range": "8.17",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 300.00\nmean: 303.20\nstdev: 8.17\ncv: 2.69%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 222,
+            "range": "1.67",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 222.00\nmean: 221.60\nstdev: 1.67\ncv: 0.76%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 458,
+            "range": "9.01",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 458.00\nmean: 452.80\nstdev: 9.01\ncv: 1.99%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 757,
+            "range": "61.88",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 757.00\nmean: 731.60\nstdev: 61.88\ncv: 8.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
