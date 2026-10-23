@@ -298,3 +298,59 @@ async fn a_record_behind_a_waiting_forward_on_one_stream_is_served() {
     connection.close(0u32.into(), b"done");
     listener.stop().await;
 }
+
+/// Past the broker-wide limit a forward is refused as `Overload`, which says
+/// nothing was applied, rather than queued on its stream.
+#[tokio::test]
+async fn forwards_past_the_served_limit_are_refused_as_overload() {
+    let listener = Listener::start_on(
+        PEER,
+        Arc::new(CountingHandler {
+            seen: AtomicUsize::new(0),
+            delay: Duration::from_secs(2),
+        }),
+        PeerTransportConfig {
+            max_served_forwards: 2,
+            ..config()
+        },
+    )
+    .await;
+    let pool = pool(PeerTransportConfig {
+        forward_timeout: Duration::from_secs(5),
+        ..config()
+    });
+
+    let mut held = Vec::new();
+    for _ in 0..2 {
+        let pool = Arc::clone(&pool);
+        let addr = listener.addr;
+        held.push(tokio::spawn(async move {
+            pool.request(PEER, addr, forward()).await
+        }));
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let refused = tokio::time::timeout(
+        Duration::from_millis(500),
+        pool.request(PEER, listener.addr, forward()),
+    )
+    .await
+    .expect("refused at once, not queued");
+    assert!(
+        matches!(
+            refused,
+            Ok(InternalMessage::ForwardPublishError(ref err)) if err.code == ErrorCode::Overload
+        ),
+        "{refused:?}"
+    );
+    for task in held {
+        let answer = task.await.expect("join");
+        assert!(
+            matches!(answer, Ok(InternalMessage::ForwardPublishOk(_))),
+            "{answer:?}"
+        );
+    }
+
+    pool.shutdown().await;
+    listener.stop().await;
+}

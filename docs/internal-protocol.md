@@ -111,6 +111,7 @@ never have dialled the one that shipped to it.
 | `1 << 8` | `GROUP_FENCE` | answers `Fence` and `ReplicateFetch` for a stream shard's dead-letter and group cursor logs (`log` = `GroupDeadLetters`, `GroupCursors`), refusing a fence older than the generation its stream log accepted and answering as an empty log when it keeps no consumer groups, and reads group batches labelled with their generations |
 | `1 << 10` | `STORAGE_IDENTITY` | answers a `HelloCapable` that offers this bit with its storage identity (see "Storage identity" below) |
 | `1 << 11` | `NODE_INCARNATION` | answers a `HelloCapable` that offers this bit with its node incarnation, and closes the connection once that changes (see "Node incarnation" below) |
+| `1 << 12` | `LANE_RENEWAL` | offered by a caller: it replaces a request stream it gets no answer on, so the listener may drop a stream whose handler overran (see "The transport") |
 
 <!-- `1 << 9` is reserved for `ELECTION` (#1009). -->
 
@@ -228,8 +229,11 @@ Responses are matched within the connection they arrive on and nowhere else.
 
 Responses on one stream need not come back in request order. A broker answers
 `ForwardPublish` and `ForwardCacheOp` as each finishes, up to 256 at once per
-stream, and every other request on that stream in turn. Requesters have always
-matched by correlation id alone, so this needs no capability bit.
+stream and `FELIX_INTERNAL_MAX_SERVED_FORWARDS` (4096) across the broker,
+and every other request on that stream in turn. A forward past either limit
+is refused as `Overload` rather than queued, since queueing would stall the
+stream. Requesters have always matched by correlation id alone, so this needs
+no capability bit.
 
 ## Flows
 
@@ -949,16 +953,18 @@ before sending the next, so per-shard order never depended on a stream's
 order. Forwards are likewise held per shard on the forwarding broker until
 answered.
 
-**No stream stays wedged.** A request answered in turn may hold its stream
-for at most `FELIX_INTERNAL_REQUEST_TIMEOUT_MS`, the requester's own timeout.
-Past that nobody is waiting for the answer, so the broker drops the stream and
-lets the handler finish on its own; dropping it rather than answering is the
-same rule as for a timeout, since the handler may still apply the write. From
-the other end, a requester replaces a stream after two timeouts in a row with
-no answer between them, or as soon as either half of it has ended, and keeps
-the connection and every other request on it
-(`felix_broker_peer_lanes_replaced_total`). Each end does this alone, so a
-peer that predates either half is still recovered from.
+**No stream stays wedged.** A requester replaces a stream after two timeouts
+in a row with no answer between them, or as soon as either half of it has
+ended, and keeps the connection and every other request on it
+(`felix_broker_peer_lanes_replaced_total`). It says so by offering
+`LANE_RENEWAL`. To such a requester, a request answered in turn may hold its
+stream for at most `FELIX_INTERNAL_REQUEST_TIMEOUT_MS`, the requester's own
+timeout: past that nobody is waiting, so the broker drops the stream and lets
+the handler finish on its own. A requester that did not offer the bit never
+opens another stream, so a dropped one would be lost for the life of the
+connection; its streams are kept, and a slow handler's late answer is still
+sent. Closing the whole connection instead was rejected: it would fail every
+forward in flight on it as indeterminate.
 
 Forwards and the other two classes also have separate in-flight allowances of
 `FELIX_INTERNAL_MAX_INFLIGHT` each, so forwards at their limit cannot shed the

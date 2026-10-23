@@ -2,7 +2,7 @@
 //! replaces it, and the listener gives it up once the requester has.
 
 use felix_transport::{QuicClient, TransportConfig};
-use felix_wire::internal::{Hello, ReplicateOk, ReplicateRecords};
+use felix_wire::internal::{Hello, PeerCapabilities, ReplicateOk, ReplicateRecords};
 
 use super::*;
 use crate::peer::codec::{Incoming, read_frame, write_frame};
@@ -95,8 +95,104 @@ async fn a_stalled_handler_does_not_wedge_replication_on_its_connection() {
     listener.stop().await;
 }
 
+/// Connect to `listener` and say hello offering `capabilities`, the way a
+/// requester of either age does.
+async fn greet(
+    connection: &felix_transport::QuicConnection,
+    capabilities: Option<PeerCapabilities>,
+) -> (quinn::SendStream, quinn::RecvStream) {
+    let (mut send, mut recv) = connection.open_bi().await.expect("open");
+    let hello = InternalMessage::Hello(Hello {
+        correlation_id: 1,
+        node_id: "broker-a".to_string(),
+        capabilities,
+    });
+    write_frame(&mut send, &hello).await.expect("hello");
+    assert!(matches!(
+        read_frame(&mut recv).await,
+        Ok(Incoming::Message(InternalMessage::HelloOk(_)))
+    ));
+    (send, recv)
+}
+
+async fn connect(listener: &Listener) -> felix_transport::QuicConnection {
+    let client = QuicClient::bind(
+        "127.0.0.1:0".parse().expect("addr"),
+        crate::peer::tls::client_config(None).expect("client config"),
+        TransportConfig::default(),
+    )
+    .expect("bind");
+    client
+        .connect(listener.addr, crate::peer::tls::INTERNAL_SERVER_NAME)
+        .await
+        .expect("connect")
+}
+
+/// The `first_offset` that makes [`Slow`] take its time.
+const SLOW: u64 = 7;
+
+/// Answers a record at [`SLOW`] only after `delay`, longer than the
+/// listener's request timeout; everything else at once.
+struct Slow {
+    delay: Duration,
+}
+
+#[async_trait::async_trait]
+impl PeerRequestHandler for Slow {
+    async fn handle(&self, request: InternalMessage) -> InternalMessage {
+        if let InternalMessage::ReplicateRecords(records) = &request
+            && records.first_offset == SLOW
+        {
+            tokio::time::sleep(self.delay).await;
+        }
+        InternalMessage::ReplicateOk(ReplicateOk {
+            correlation_id: request.correlation_id(),
+            durable_offset: 1,
+        })
+    }
+}
+
+/// A requester that predates stream replacement never opens another one, so
+/// a stream dropped under it is lost for the life of the connection. A
+/// handler that is slow and then finishes still answers it, and the stream
+/// goes on serving.
+#[tokio::test]
+async fn an_older_requester_keeps_its_stream_through_a_slow_handler() {
+    let listener = Listener::start_on(
+        PEER,
+        Arc::new(Slow {
+            delay: Duration::from_millis(600),
+        }),
+        PeerTransportConfig {
+            request_timeout: Duration::from_millis(200),
+            ..config()
+        },
+    )
+    .await;
+    let connection = connect(&listener).await;
+    let (mut send, mut recv) = greet(&connection, None).await;
+
+    write_frame(&mut send, &record(2, SLOW))
+        .await
+        .expect("slow");
+    write_frame(&mut send, &record(3, 1)).await.expect("record");
+    for expected in [2, 3] {
+        let answer = tokio::time::timeout(Duration::from_secs(2), read_frame(&mut recv))
+            .await
+            .expect("an answer");
+        assert!(
+            matches!(answer, Ok(Incoming::Message(InternalMessage::ReplicateOk(ref ok))) if ok.correlation_id == expected),
+            "the stream was dropped under an older requester"
+        );
+    }
+
+    connection.close(0u32.into(), b"done");
+    listener.stop().await;
+}
+
 /// The listener side alone: a handler that outlives the requester's timeout
-/// gives up its stream, so the requests behind it are not held forever, and
+/// gives up its stream under a requester that replaces streams, so the
+/// requests behind it are not held forever, and
 /// the connection goes on serving other streams.
 #[tokio::test]
 async fn the_listener_gives_up_a_stream_whose_handler_overran() {
@@ -109,27 +205,8 @@ async fn the_listener_gives_up_a_stream_whose_handler_overran() {
         },
     )
     .await;
-    let client = QuicClient::bind(
-        "127.0.0.1:0".parse().expect("addr"),
-        crate::peer::tls::client_config(None).expect("client config"),
-        TransportConfig::default(),
-    )
-    .expect("bind");
-    let connection = client
-        .connect(listener.addr, crate::peer::tls::INTERNAL_SERVER_NAME)
-        .await
-        .expect("connect");
-    let (mut send, mut recv) = connection.open_bi().await.expect("open");
-    let hello = InternalMessage::Hello(Hello {
-        correlation_id: 1,
-        node_id: "broker-a".to_string(),
-        capabilities: None,
-    });
-    write_frame(&mut send, &hello).await.expect("hello");
-    assert!(matches!(
-        read_frame(&mut recv).await,
-        Ok(Incoming::Message(InternalMessage::HelloOk(_)))
-    ));
+    let connection = connect(&listener).await;
+    let (mut send, mut recv) = greet(&connection, Some(PeerCapabilities::LANE_RENEWAL)).await;
 
     write_frame(&mut send, &record(2, STALL))
         .await

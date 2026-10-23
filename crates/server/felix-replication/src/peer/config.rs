@@ -38,6 +38,12 @@ const DEFAULT_STREAMS_PER_CONN: usize = 4;
 /// forwarded publish for as long as the timeout allows.
 const DEFAULT_MAX_INFLIGHT_PER_PEER: usize = 1024;
 
+/// Forwarded publishes and cache operations this broker serves at once, from
+/// all peers together. Each holds its payload through a quorum wait; past
+/// this, a forward is refused as `Overload`, which nothing applied and the
+/// forwarder may retry.
+const DEFAULT_MAX_SERVED_FORWARDS: usize = 4096;
+
 /// Inbound peer connections this broker will hold at once.
 ///
 /// A peer opens `conns_per_peer` (1 by default), so this is room for a cluster
@@ -113,6 +119,9 @@ pub struct PeerTransportConfig {
     pub conns_per_peer: usize,
     pub streams_per_conn: usize,
     pub max_inflight_per_peer: usize,
+    /// `FELIX_INTERNAL_MAX_SERVED_FORWARDS`: forwards served at once, across
+    /// all peers.
+    pub max_served_forwards: usize,
     /// Inbound connections held at once, across all peers.
     pub max_inbound_connections: usize,
     /// Inbound connections held at once from any one address.
@@ -177,6 +186,7 @@ impl Default for PeerTransportConfig {
             max_inflight_per_peer: DEFAULT_MAX_INFLIGHT_PER_PEER,
             max_inbound_connections: DEFAULT_MAX_INBOUND_CONNECTIONS,
             max_inbound_per_source: DEFAULT_MAX_INBOUND_PER_SOURCE,
+            max_served_forwards: DEFAULT_MAX_SERVED_FORWARDS,
             request_timeout: Duration::from_millis(DEFAULT_REQUEST_TIMEOUT_MS),
             forward_timeout: Duration::from_millis(DEFAULT_FORWARD_TIMEOUT_MS),
             idle_timeout: Duration::from_millis(DEFAULT_IDLE_TIMEOUT_MS),
@@ -312,6 +322,9 @@ impl PeerTransportConfig {
         }
         if let Some(value) = env_usize("FELIX_INTERNAL_STREAMS_PER_CONN").filter(|v| *v > 0) {
             config.streams_per_conn = value;
+        }
+        if let Some(value) = env_usize("FELIX_INTERNAL_MAX_SERVED_FORWARDS").filter(|v| *v > 0) {
+            config.max_served_forwards = value;
         }
         if let Some(value) = env_usize("FELIX_INTERNAL_MAX_INFLIGHT").filter(|v| *v > 0) {
             config.max_inflight_per_peer = value;

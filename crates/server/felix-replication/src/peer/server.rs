@@ -20,7 +20,8 @@ use anyhow::{Context, Result};
 use felix_storage::StorageId;
 use felix_transport::{QuicConnection, QuicServer};
 use felix_wire::internal::{
-    ErrorCode, ForwardPublishError, HelloOk, InternalMessage, PeerCapabilities, Pong,
+    ErrorCode, ForwardCacheError, ForwardPublishError, HelloOk, InternalMessage, PeerCapabilities,
+    Pong,
 };
 use futures::FutureExt;
 use tokio::sync::Semaphore;
@@ -157,6 +158,7 @@ pub struct PeerServer {
     max_inbound_connections: usize,
     max_inbound_per_source: usize,
     handler_timeout: std::time::Duration,
+    served_forwards: Arc<Semaphore>,
     /// `Some` when peers must present a certificate, and the name a peer
     /// claims in `Hello` is held to it.
     tls: Option<Arc<tls::PeerTls>>,
@@ -211,6 +213,7 @@ impl PeerServer {
             max_inbound_connections: config.max_inbound_connections,
             max_inbound_per_source: config.max_inbound_per_source,
             handler_timeout: config.request_timeout,
+            served_forwards: Arc::new(Semaphore::new(config.max_served_forwards.max(1))),
             tls,
             app,
             capabilities: config.capabilities(),
@@ -335,6 +338,7 @@ impl PeerServer {
                 identity: self.identity,
                 incarnation: self.incarnation.clone(),
                 handler_timeout: self.handler_timeout,
+                served_forwards: Arc::clone(&self.served_forwards),
             };
             connection.spawn_pump(async move {
                 // The guard lives as long as the connection is served, and
@@ -357,6 +361,8 @@ struct Offered {
     /// How long a request answered in turn may hold its stream: the
     /// requester's own timeout, after which no one is waiting for the answer.
     handler_timeout: std::time::Duration,
+    /// Forwards being served across every connection.
+    served_forwards: Arc<Semaphore>,
 }
 
 /// Serve every stream a peer opens on one connection.
@@ -375,6 +381,9 @@ async fn serve_connection(
     // The pool waits for `HelloOk` before it sends anything else, so no
     // request on this connection arrives before this is set.
     let identity: Arc<parking_lot::Mutex<Option<Arc<str>>>> = Arc::default();
+    // Whether the peer replaces a stream it gets no answer on, from its
+    // `Hello`. Until it says so, a stream is never dropped under it.
+    let renews = Arc::new(std::sync::atomic::AtomicBool::new(false));
     loop {
         let stream = tokio::select! {
             _ = shutdown.cancelled() => break,
@@ -395,6 +404,7 @@ async fn serve_connection(
         let app = app.clone();
         let offered = offered.clone();
         let identity = Arc::clone(&identity);
+        let renews = Arc::clone(&renews);
         connection.spawn_pump(async move {
             let connection = stream_connection;
             let (send, mut recv) = stream;
@@ -477,6 +487,12 @@ async fn serve_connection(
                         }
                         tracing::debug!(peer = %hello.node_id, "internal peer connected");
                         *identity.lock() = Some(Arc::from(hello.node_id.as_str()));
+                        renews.store(
+                            hello
+                                .capabilities
+                                .is_some_and(|c| c.contains(PeerCapabilities::LANE_RENEWAL)),
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
                         // A plain `Hello` is a peer that predates the bits, so
                         // it can do none of it, and is answered as it expects.
                         offered.known.record(
@@ -566,12 +582,21 @@ async fn serve_connection(
                     // holds a shard's next forward until this one is answered.
                     request @ (InternalMessage::ForwardPublish(_)
                     | InternalMessage::ForwardCacheOp(_)) => {
-                        let permit = tokio::select! {
-                            _ = shutdown.cancelled() => break,
-                            permit = Arc::clone(&forwards).acquire_owned() => match permit {
-                                Ok(permit) => permit,
-                                Err(_) => break,
-                            },
+                        // Refused rather than queued: waiting would stall the
+                        // stream, and an older requester puts replication on
+                        // it too. Nothing was applied, so the forwarder may
+                        // retry.
+                        let permits = Arc::clone(&forwards)
+                            .try_acquire_owned()
+                            .ok()
+                            .zip(Arc::clone(&offered.served_forwards).try_acquire_owned().ok());
+                        let Some(permit) = permits else {
+                            metrics::record_served(metrics::OUTCOME_REFUSED);
+                            let refusal = overloaded(&request);
+                            if write_frame(&mut *send.lock().await, &refusal).await.is_err() {
+                                break;
+                            }
+                            continue;
                         };
                         let handler = Arc::clone(&handler);
                         let peer = ballot_identity(&offered, &identity);
@@ -605,13 +630,22 @@ async fn serve_connection(
                         let peer = ballot_identity(&offered, &identity);
                         let handling =
                             app.spawn(async move { handler.handle_from(peer, request).await });
-                        match tokio::time::timeout(offered.handler_timeout, handling).await {
-                            Ok(Ok(response)) => response,
+                        // Only a requester that replaces streams may have this
+                        // one dropped under it; an older one would lose the
+                        // lane for the life of the connection, so it waits.
+                        let bound = if renews.load(std::sync::atomic::Ordering::Relaxed) {
+                            offered.handler_timeout
+                        } else {
+                            std::time::Duration::MAX
+                        };
+                        let handled = tokio::time::timeout(bound, handling).await.ok();
+                        match handled.and_then(|joined| joined.ok()).ok_or(()) {
+                            Ok(response) => response,
                             // A handler that panicked may have applied the
                             // write, so no answer here is safe to retry on.
                             // Drop the stream, as the panic did when it ran
                             // inline.
-                            Err(_) | Ok(Err(_)) => {
+                            Err(()) => {
                                 // Past the requester's own timeout it has given
                                 // up, and every request behind this one on the
                                 // stream would wait too. Drop the stream and let
@@ -641,6 +675,26 @@ async fn serve_connection(
             }
             let _ = send.lock().await.finish();
         });
+    }
+}
+
+/// A forward refused at a limit, in the shape of the request.
+fn overloaded(request: &InternalMessage) -> InternalMessage {
+    let correlation_id = request.correlation_id();
+    let detail = "this broker is serving as many forwards as it allows".to_string();
+    match request {
+        InternalMessage::ForwardCacheOp(_) => {
+            InternalMessage::ForwardCacheError(ForwardCacheError {
+                correlation_id,
+                code: ErrorCode::Overload,
+                detail,
+            })
+        }
+        _ => InternalMessage::ForwardPublishError(ForwardPublishError {
+            correlation_id,
+            code: ErrorCode::Overload,
+            detail,
+        }),
     }
 }
 
