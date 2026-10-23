@@ -36,6 +36,11 @@ use defaults::*;
 /// to the waiter. Small: its only job is to let the inner wait finish first.
 const ACK_WAIT_OVER_QUORUM_MS: u64 = 500;
 
+/// What a forward's owner may spend beyond its quorum wait: the write before
+/// it and the hop back. A forward that gives up sooner reports a slow commit
+/// as indeterminate instead of the owner's answer.
+const FORWARD_OVER_QUORUM_MS: u64 = 1_000;
+
 /// Broker service configuration sourced from environment variables.
 ///
 /// `Serialize` is for `--print-config`, and it is *derived* rather than written
@@ -419,12 +424,25 @@ impl BrokerConfig {
     /// Raising the ceiling does not slow anything down. It is the point at
     /// which a publish that is already stuck is given up on, not a delay any
     /// successful publish pays.
+    ///
+    /// The floor covers a forwarded publish too, which waits on the owner's
+    /// quorum wait plus its write ([`Self::peer_forward_timeout`]).
     pub fn ack_wait_timeout(&self) -> std::time::Duration {
         std::time::Duration::from_millis(
             self.ack_wait_timeout_ms.max(
                 self.publish_quorum_timeout_ms
+                    .saturating_add(FORWARD_OVER_QUORUM_MS)
                     .saturating_add(ACK_WAIT_OVER_QUORUM_MS),
             ),
+        )
+    }
+
+    /// How long one forwarded request waits for the owner's answer: the
+    /// owner's quorum wait, assumed to be this broker's, plus the write.
+    pub fn peer_forward_timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(
+            self.publish_quorum_timeout_ms
+                .saturating_add(FORWARD_OVER_QUORUM_MS),
         )
     }
 

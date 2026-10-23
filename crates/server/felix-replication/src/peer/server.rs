@@ -13,6 +13,7 @@
 //!    parsing into something plausible.
 //!
 //! None of that is peer *authentication*. That is mTLS, configured in `tls.rs`.
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -21,6 +22,8 @@ use felix_transport::{QuicConnection, QuicServer};
 use felix_wire::internal::{
     ErrorCode, ForwardPublishError, HelloOk, InternalMessage, PeerCapabilities, Pong,
 };
+use futures::FutureExt;
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 use super::KnownCapabilities;
@@ -28,6 +31,11 @@ use super::codec::{Incoming, read_frame, write_frame};
 use super::config::{INTERNAL_ALPN, PeerTransportConfig};
 use super::metrics;
 use super::tls;
+
+/// Forwards one stream may have running at once. A requester's own in-flight
+/// limit spread over its forward streams comes to about this, and it bounds
+/// what one stream can make this broker hold.
+const MAX_CONCURRENT_FORWARDS_PER_STREAM: usize = 256;
 
 /// What answers a peer's request.
 ///
@@ -148,6 +156,7 @@ pub struct PeerServer {
     handler: Arc<dyn PeerRequestHandler>,
     max_inbound_connections: usize,
     max_inbound_per_source: usize,
+    handler_timeout: std::time::Duration,
     /// `Some` when peers must present a certificate, and the name a peer
     /// claims in `Hello` is held to it.
     tls: Option<Arc<tls::PeerTls>>,
@@ -201,6 +210,7 @@ impl PeerServer {
             handler,
             max_inbound_connections: config.max_inbound_connections,
             max_inbound_per_source: config.max_inbound_per_source,
+            handler_timeout: config.request_timeout,
             tls,
             app,
             capabilities: config.capabilities(),
@@ -324,6 +334,7 @@ impl PeerServer {
                 known: self.known.clone(),
                 identity: self.identity,
                 incarnation: self.incarnation.clone(),
+                handler_timeout: self.handler_timeout,
             };
             connection.spawn_pump(async move {
                 // The guard lives as long as the connection is served, and
@@ -343,6 +354,9 @@ struct Offered {
     known: KnownCapabilities,
     identity: Option<StorageId>,
     incarnation: Option<tokio::sync::watch::Receiver<Option<u64>>>,
+    /// How long a request answered in turn may hold its stream: the
+    /// requester's own timeout, after which no one is waiting for the answer.
+    handler_timeout: std::time::Duration,
 }
 
 /// Serve every stream a peer opens on one connection.
@@ -383,7 +397,11 @@ async fn serve_connection(
         let identity = Arc::clone(&identity);
         connection.spawn_pump(async move {
             let connection = stream_connection;
-            let (mut send, mut recv) = stream;
+            let (send, mut recv) = stream;
+            // Shared with the forwards answered out of order below. One
+            // `write_frame` per lock, so frames never interleave.
+            let send = Arc::new(tokio::sync::Mutex::new(send));
+            let forwards = Arc::new(Semaphore::new(MAX_CONCURRENT_FORWARDS_PER_STREAM));
             loop {
                 let request = tokio::select! {
                     _ = shutdown.cancelled() => break,
@@ -402,7 +420,7 @@ async fn serve_connection(
                                 code: ErrorCode::UnsupportedKind,
                                 detail: format!("this broker does not know frame kind {kind}"),
                             });
-                            if write_frame(&mut send, &refusal).await.is_err() {
+                            if write_frame(&mut *send.lock().await, &refusal).await.is_err() {
                                 break;
                             }
                             continue;
@@ -448,6 +466,7 @@ async fn serve_connection(
                                     code: ErrorCode::Unauthorized,
                                     detail,
                                 });
+                            let mut send = send.lock().await;
                             let _ = write_frame(&mut send, &refusal).await;
                             let _ = send.finish();
                             connection.close(
@@ -521,7 +540,7 @@ async fn serve_connection(
                             code: ErrorCode::UnsupportedKind,
                             detail: "this broker does not answer the fence".to_string(),
                         });
-                        if write_frame(&mut send, &refusal).await.is_err() {
+                        if write_frame(&mut *send.lock().await, &refusal).await.is_err() {
                             break;
                         }
                         continue;
@@ -539,25 +558,69 @@ async fn serve_connection(
                             Err(_) => break,
                         }
                     }
-                    // Off the pump's runtime; the pump only waits. The stream
-                    // stays one request at a time, as the requester expects.
+                    // A forward can sit out a whole quorum wait, and that wait
+                    // may need replication a peer has queued behind it on this
+                    // stream (#1458). So forwards are answered as they finish,
+                    // matched by correlation id, and the stream reads on.
+                    // Requesters never relied on a stream's order: the ingress
+                    // holds a shard's next forward until this one is answered.
+                    request @ (InternalMessage::ForwardPublish(_)
+                    | InternalMessage::ForwardCacheOp(_)) => {
+                        let permit = tokio::select! {
+                            _ = shutdown.cancelled() => break,
+                            permit = Arc::clone(&forwards).acquire_owned() => match permit {
+                                Ok(permit) => permit,
+                                Err(_) => break,
+                            },
+                        };
+                        let handler = Arc::clone(&handler);
+                        let peer = ballot_identity(&offered, &identity);
+                        let send = Arc::clone(&send);
+                        app.spawn(async move {
+                            let _permit = permit;
+                            let answered = AssertUnwindSafe(handler.handle_from(peer, request))
+                                .catch_unwind()
+                                .await;
+                            let mut send = send.lock().await;
+                            let Ok(response) = answered else {
+                                // As for a request answered inline: the write
+                                // may have been applied, so end the stream
+                                // rather than answer.
+                                tracing::warn!("internal request handler panicked");
+                                metrics::record_served(metrics::OUTCOME_ERROR);
+                                let _ = send.finish();
+                                return;
+                            };
+                            match write_frame(&mut send, &response).await {
+                                Ok(()) => metrics::record_served(metrics::OUTCOME_OK),
+                                Err(_) => metrics::record_served(metrics::OUTCOME_ERROR),
+                            }
+                        });
+                        continue;
+                    }
+                    // Off the pump's runtime; the pump only waits. Everything
+                    // else on a stream is answered one request at a time.
                     request => {
                         let handler = Arc::clone(&handler);
-                        // Ballots name a leader by this identity, so it goes
-                        // to the handler only when this broker keeps them.
-                        let peer = offered
-                            .capabilities
-                            .contains(PeerCapabilities::BALLOTS)
-                            .then(|| identity.lock().clone())
-                            .flatten();
-                        match app.spawn(async move { handler.handle_from(peer, request).await }).await {
-                            Ok(response) => response,
+                        let peer = ballot_identity(&offered, &identity);
+                        let handling =
+                            app.spawn(async move { handler.handle_from(peer, request).await });
+                        match tokio::time::timeout(offered.handler_timeout, handling).await {
+                            Ok(Ok(response)) => response,
                             // A handler that panicked may have applied the
                             // write, so no answer here is safe to retry on.
                             // Drop the stream, as the panic did when it ran
                             // inline.
-                            Err(err) => {
-                                tracing::warn!(error = %err, "internal request handler failed");
+                            Err(_) | Ok(Err(_)) => {
+                                // Past the requester's own timeout it has given
+                                // up, and every request behind this one on the
+                                // stream would wait too. Drop the stream and let
+                                // the handler finish on its own; the requester
+                                // opens another.
+                                tracing::warn!(
+                                    timeout = ?offered.handler_timeout,
+                                    "internal request handler failed or overran; dropping its stream",
+                                );
                                 metrics::record_served(metrics::OUTCOME_ERROR);
                                 break;
                             }
@@ -565,13 +628,32 @@ async fn serve_connection(
                     }
                 };
 
-                if write_frame(&mut send, &response).await.is_err() {
+                if write_frame(&mut *send.lock().await, &response).await.is_err() {
                     metrics::record_served(metrics::OUTCOME_ERROR);
                     break;
                 }
                 metrics::record_served(metrics::OUTCOME_OK);
             }
-            let _ = send.finish();
+            // Let the forwards still running answer before the stream ends.
+            tokio::select! {
+                _ = shutdown.cancelled() => {}
+                _ = forwards.acquire_many(MAX_CONCURRENT_FORWARDS_PER_STREAM as u32) => {}
+            }
+            let _ = send.lock().await.finish();
         });
     }
+}
+
+/// Who the peer said it is, for a handler that keeps ballots. Ballots name a
+/// leader by this identity, so it goes to the handler only when this broker
+/// keeps them.
+fn ballot_identity(
+    offered: &Offered,
+    identity: &parking_lot::Mutex<Option<Arc<str>>>,
+) -> Option<Arc<str>> {
+    offered
+        .capabilities
+        .contains(PeerCapabilities::BALLOTS)
+        .then(|| identity.lock().clone())
+        .flatten()
 }

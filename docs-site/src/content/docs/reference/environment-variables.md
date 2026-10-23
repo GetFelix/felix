@@ -457,8 +457,9 @@ export FELIX_PUBLISH_QUEUE_WAIT_MS="500"   # Fail fast
 **Description**: How long the broker waits to answer an acknowledged publish
 whose answer depends on a commit: an ack-on-commit publish, a `Quorum` publish,
 a forwarded publish or an idempotent one. The value used is the larger of this
-and `FELIX_PUBLISH_QUORUM_TIMEOUT_MS` + 500 ms. The publisher gets an error when
-it is exceeded.
+and `FELIX_PUBLISH_QUORUM_TIMEOUT_MS` + 1.5 s: a forward waits out the owner's
+quorum wait plus up to a second for the write, and the waiter answers 500 ms
+after that. The publisher gets an error when it is exceeded.
 
 **Type**: Positive integer (milliseconds)
 
@@ -2269,7 +2270,7 @@ absent. They are listed in that script rather than here.
 | `FELIX_INTERNAL_CONNS_PER_PEER` | `1` | Connections held to each peer. |
 | `FELIX_INTERNAL_STREAMS_PER_CONN` | `4` | Multiplexed streams per peer connection, so one large forwarded batch does not block smaller requests. |
 | `FELIX_INTERNAL_MAX_INFLIGHT` | `1024` | Outstanding requests allowed per peer. |
-| `FELIX_INTERNAL_REQUEST_TIMEOUT_MS` | `5000` | Bounds one forwarded request. |
+| `FELIX_INTERNAL_REQUEST_TIMEOUT_MS` | `5000` | Bounds one peer request. A forwarded publish or cache operation waits the larger of this and `FELIX_PUBLISH_QUORUM_TIMEOUT_MS` + 1 s, so the owner's quorum wait ends first. |
 | `FELIX_INTERNAL_HANDSHAKE_TIMEOUT_MS` | `2000` | Bounds dialling a peer that is gone. |
 | `FELIX_INTERNAL_FENCE` | `true` | Offer, answer and use the promotion fence (`docs/replication-design.md`, "Fencing a promotion"). `false` makes this broker look to its peers like one that predates the fence: it fences no shard it takes, by promotion, cut-over or hand-back, and a shard it replicates opens on the lease alone wherever it is taken. It also stops the broker keeping ballots ("Ballots" in the same document), so it checks only the generation of what a leader sends it, and stops it reporting the `majority_ack` and `lease_free_reads` fleet features, so neither can be finalized while it serves, and is refused at registration once it has been. A switch for backing the fence out, not a tuning knob. |
 | `FELIX_LEADER_SUSPECT_AFTER_MS` | `5000` | How long a leader of a shard this broker follows may go without answering its pings before the broker names it in its heartbeat. Pinged four times per window. Once a majority of a `Quorum` stream shard's set names its leader, the fleet has finalized `generation_start`, `majority_ack` and `lease_free_reads`, and the leader's own replica report says it serves without the lease, the control plane promotes a follower without waiting for the leader to be marked down (`docs/replication-design.md`, "Failover on the followers' word"). `0` turns the pings off. |

@@ -226,6 +226,11 @@ protocol violation rather than as a refusal.
 Correlation ids are per connection, so two connections may reuse a value.
 Responses are matched within the connection they arrive on and nowhere else.
 
+Responses on one stream need not come back in request order. A broker answers
+`ForwardPublish` and `ForwardCacheOp` as each finishes, up to 256 at once per
+stream, and every other request on that stream in turn. Requesters have always
+matched by correlation id alone, so this needs no capability bit.
+
 ## Flows
 
 ### Forwarded publish
@@ -918,11 +923,49 @@ reach.
 **Connections are pooled and reused.** Repeated requests to one peer share a
 connection; several multiplexed streams carry them, because a QUIC stream is
 ordered and one large forwarded batch would otherwise hold up every smaller
-request behind it. A peer also answers each stream's requests one at a time,
-and a forwarded `Quorum` publish can hold one for its whole quorum timeout, so
-one more stream per connection carries only the handshake, `Fence` and
-`ReplicateFetch`: a promoted leader serves nothing until those are answered,
-and must not wait behind forwarded writes.
+request behind it. The streams come in three classes, and a request only ever
+goes on its own class's streams:
+
+| Class | Streams | Carries |
+| --- | --- | --- |
+| Control | 1 | `Hello`, `Fence`, `ReplicateFetch`, `Ping` |
+| Forward | `FELIX_INTERNAL_STREAMS_PER_CONN` | `ForwardPublish`, `ForwardCacheOp` |
+| Replication | `FELIX_INTERNAL_STREAMS_PER_CONN` | every other `Replicate*` request, for every log |
+
+A forwarded `Quorum` publish is answered only after the owner's quorum wait,
+and that wait ends when the owner's replication to the other replicas is
+answered. When two brokers forward to each other, each one's replication is
+the other's forward's quorum, so replication behind forwards on a stream that
+is served one request at a time is a deadlock until every quorum times out
+([#1458](https://github.com/GetFelix/felix/issues/1458)). Separate classes
+keep it off forward streams on the sending side, and a broker answers forwards
+out of order on the serving side, so a link is safe once either end has the
+fix. A promoted leader serves nothing until its fence is answered, and a ping
+stuck behind a forward would read as a dead leader, hence the control stream.
+
+Round-robin within a class does not reorder replication: the driver keeps at
+most one exchange outstanding per follower and log, and waits for its answer
+before sending the next, so per-shard order never depended on a stream's
+order. Forwards are likewise held per shard on the forwarding broker until
+answered.
+
+**No stream stays wedged.** A request answered in turn may hold its stream
+for at most `FELIX_INTERNAL_REQUEST_TIMEOUT_MS`, the requester's own timeout.
+Past that nobody is waiting for the answer, so the broker drops the stream and
+lets the handler finish on its own; dropping it rather than answering is the
+same rule as for a timeout, since the handler may still apply the write. From
+the other end, a requester replaces a stream after two timeouts in a row with
+no answer between them, or as soon as either half of it has ended, and keeps
+the connection and every other request on it
+(`felix_broker_peer_lanes_replaced_total`). Each end does this alone, so a
+peer that predates either half is still recovered from.
+
+Forwards and the other two classes also have separate in-flight allowances of
+`FELIX_INTERNAL_MAX_INFLIGHT` each, so forwards at their limit cannot shed the
+replication that would let them finish. A forward's own timeout is
+`FELIX_PUBLISH_QUORUM_TIMEOUT_MS` + 1 s (never less than
+`FELIX_INTERNAL_REQUEST_TIMEOUT_MS`), so the owner's quorum wait ends first and
+its answer arrives rather than an indeterminate timeout.
 
 **Every request terminates.** A connection that drops fails every request
 waiting on it at that moment, rather than leaving each to reach its own timeout.

@@ -54,8 +54,15 @@ const DEFAULT_MAX_INBOUND_CONNECTIONS: usize = 512;
 /// anyone notices.
 const DEFAULT_MAX_INBOUND_PER_SOURCE: usize = 16;
 
-/// How long a forwarded request waits for its terminal response.
+/// How long a request waits for its terminal response.
 const DEFAULT_REQUEST_TIMEOUT_MS: u64 = 5_000;
+
+/// How long a forwarded publish or cache operation waits for its answer.
+///
+/// The owner answers after its own quorum wait (5 s by default) plus the
+/// write, so this has to be longer than that or a slow commit reads as
+/// indeterminate. The broker raises it to match its quorum timeout.
+const DEFAULT_FORWARD_TIMEOUT_MS: u64 = 6_000;
 
 /// How long a connection may sit unused before it is closed.
 ///
@@ -112,6 +119,10 @@ pub struct PeerTransportConfig {
     pub max_inbound_per_source: usize,
     #[serde(serialize_with = "as_millis")]
     pub request_timeout: Duration,
+    /// The timeout for `ForwardPublish` and `ForwardCacheOp`, never less than
+    /// `request_timeout`. See `DEFAULT_FORWARD_TIMEOUT_MS`.
+    #[serde(serialize_with = "as_millis")]
+    pub forward_timeout: Duration,
     #[serde(serialize_with = "as_millis")]
     pub idle_timeout: Duration,
     #[serde(serialize_with = "as_millis")]
@@ -167,6 +178,7 @@ impl Default for PeerTransportConfig {
             max_inbound_connections: DEFAULT_MAX_INBOUND_CONNECTIONS,
             max_inbound_per_source: DEFAULT_MAX_INBOUND_PER_SOURCE,
             request_timeout: Duration::from_millis(DEFAULT_REQUEST_TIMEOUT_MS),
+            forward_timeout: Duration::from_millis(DEFAULT_FORWARD_TIMEOUT_MS),
             idle_timeout: Duration::from_millis(DEFAULT_IDLE_TIMEOUT_MS),
             reconnect_base: Duration::from_millis(DEFAULT_RECONNECT_BASE_MS),
             reconnect_max: Duration::from_millis(DEFAULT_RECONNECT_MAX_MS),

@@ -198,6 +198,27 @@ mod correlation {
         assert_eq!(stamped.ack, AckMode::OnCommit);
         assert_eq!(stamped.payloads, vec![Bytes::from_static(b"hello")]);
     }
+
+    /// Forwards wait on a quorum that only replication can reach, so no
+    /// request that replicates may share their streams (#1458).
+    #[test]
+    fn replication_never_shares_a_stream_with_forwards() {
+        for message in every_variant() {
+            let class = LaneClass::of(&message);
+            match message {
+                InternalMessage::ForwardPublish(_) | InternalMessage::ForwardCacheOp(_) => {
+                    assert_eq!(class, LaneClass::Forward, "{:?}", message.kind())
+                }
+                InternalMessage::Hello(_)
+                | InternalMessage::Fence(_)
+                | InternalMessage::ReplicateFetch(_)
+                | InternalMessage::Ping(_) => {
+                    assert_eq!(class, LaneClass::Control, "{:?}", message.kind())
+                }
+                other => assert_eq!(class, LaneClass::Replication, "{:?}", other.kind()),
+            }
+        }
+    }
 }
 
 /// How a connection loss is labelled for metrics.

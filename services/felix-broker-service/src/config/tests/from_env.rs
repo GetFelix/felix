@@ -98,6 +98,17 @@ fn the_ack_wait_outlasts_the_quorum_wait() {
     );
 }
 
+/// A forward waits out the owner's quorum wait and gets its answer, and the
+/// publish budget covers that whole forward.
+#[test]
+fn a_forward_outlasts_the_owners_quorum_wait() {
+    let config = BrokerConfig::default();
+    let quorum = std::time::Duration::from_millis(config.publish_quorum_timeout_ms);
+    assert!(config.peer_forward_timeout() > quorum);
+    assert!(config.forward_budget() >= config.peer_forward_timeout());
+    assert!(config.ack_wait_timeout() > config.forward_budget());
+}
+
 /// A configured ack wait longer than the quorum wait is kept as configured.
 #[test]
 fn a_longer_configured_ack_wait_is_left_alone() {
