@@ -795,11 +795,13 @@ sys.exit(1 if d < -pct else 0)' "${lbl}" "${nv}" "${ov}" "${GATE_PCT}" "${GATE_T
 # ------------------------------------------------------------------- NATS
 ensure_nats() {
   local need=0 needlat=0 vm
-  agent_on "${BROKER_VM}" "test -x /usr/local/bin/nats-server && test -s /etc/nats/tls/ca.pem" >/dev/null 2>&1 || need=1
+  # agent_on runs under set -e, which skips a failure that is not the last in an
+  # && list, so each check is its own command.
+  agent_on "${BROKER_VM}" "test -x /usr/local/bin/nats-server; test -s /etc/nats/tls/ca.pem" >/dev/null 2>&1 || need=1
   for vm in "${GENS[@]}"; do
-    agent_on "${vm}" "test -x /usr/local/bin/nats && test -s /etc/nats/tls/ca.pem" >/dev/null 2>&1 || need=1
+    agent_on "${vm}" "test -x /usr/local/bin/nats; test -s /etc/nats/tls/ca.pem" >/dev/null 2>&1 || need=1
   done
-  agent_on "${GENS[0]}" "test -x /usr/local/bin/nats-latency && grep -q ${BUILD_SHA} /etc/nats/latency.ref" >/dev/null 2>&1 || needlat=1
+  agent_on "${GENS[0]}" "test -x /usr/local/bin/nats-latency; grep -q ${BUILD_SHA} /etc/nats/latency.ref" >/dev/null 2>&1 || needlat=1
   if [ "${need}" = 1 ]; then
     plog "NATS not fully installed; nats/install.sh"
     SESSION="${SESSION}" "${here}/nats/install.sh" || return 1
