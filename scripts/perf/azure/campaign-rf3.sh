@@ -619,7 +619,8 @@ for it in items:
     if it.get("stream") == name and is_cache == want_cache and it.get("leader"):
         mine[it["leader"]].append(it)
 try:
-    inflight = len(json.load(open(inflight_path)).get("items", []))
+    inflight = len([m for m in json.load(open(inflight_path)).get("items", [])
+                    if m.get("stream") == name and (str(m.get("kind", "")).lower() == "cache") == want_cache])
 except Exception:
     inflight = 0
 counts = dict((n, len(v)) for n, v in mine.items())
@@ -681,7 +682,9 @@ echo __RUNOK__" 2>/dev/null | extract_between BAL)"
         n="$(printf '%s\n' "${out}" | sed -n 's/.* started=\([0-9]*\).*/\1/p')"
         total=$(( total + ${n:-0} ))
         case "${out}" in
-          *" even=1 "*)
+          # Even counts are not enough: a move still in flight holds a fence,
+          # and pausing placement then freezes it with the shard's writes stuck.
+          *" even=1 "*" inflight=0"*)
             plog "balanced ${s} leaders ${first} -> ${last} via ${total} moves"
             placement_pause
             return 0 ;;
