@@ -972,6 +972,9 @@ headline() {
 # measuring: a recreated stream for durable cells, fully replicated shards always.
 prep_cell() {
   local s="$1" durable="$2" pct
+  # A stream recreated or moved under a pause never settles; pause again only
+  # once balanced.
+  [ "${PLACEMENT_PAUSED}" = 0 ] || placement_resume
   configure "${CONFIG_LABEL}" ${CONFIG_ARGS[@]+"${CONFIG_ARGS[@]}"} || return 1
   if [ "${durable}" = 1 ]; then
     ensure_fresh "${s}" || return 1
