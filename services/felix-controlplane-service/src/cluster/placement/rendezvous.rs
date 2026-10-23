@@ -5,6 +5,7 @@
 use std::collections::{BTreeSet, HashMap};
 
 use super::CaughtUp;
+use super::leadership::{Leadership, Shares};
 use super::zones::{Domain, domain, domain_of};
 use crate::model::{Node, ShardAssignment, ShardKey, ShardKind};
 
@@ -25,13 +26,16 @@ use crate::model::{Node, ShardAssignment, ShardKey, ShardKind};
 /// and goes to the least loaded node so the overflow is spread too.
 ///
 /// Ties break on `node_id`, which cannot itself tie: node identity is unique.
+/// Leaders are spread too, each stream's first: a node already leading its
+/// share of this shard's stream is passed over, then one at its share of the
+/// cluster's leaders. See `leadership`.
 pub(super) fn choose<'a>(
     key: &ShardKey,
     eligible: &[&'a Node],
     load: &HashMap<&str, u32>,
     cap: u32,
-    leaders: &HashMap<&str, u32>,
-    leader_share: u32,
+    leaders: &Leadership<'_>,
+    shares: Shares,
 ) -> Option<&'a str> {
     let has_capacity = |node: &Node| match node.spec.capacity.max_shards {
         Some(max) => load.get(node.node_id.as_str()).copied().unwrap_or(0) < max,
@@ -42,13 +46,16 @@ pub(super) fn choose<'a>(
     // to the node count every node holds a role for every shard, so the role
     // cap says nothing about who leads -- and a cluster placed with every
     // leader on one node would be moved apart again by the next pass.
-    let under_leader_share =
-        |node: &Node| leaders.get(node.node_id.as_str()).copied().unwrap_or(0) < leader_share;
-    let best = |led: bool| {
+    let under_leader_share = |node: &Node| leaders.total(&node.node_id) < shares.cluster;
+    // Each node gets its floor of the stream before any gets its ceiling, so
+    // a stream ends no more than one apart wherever its shards land.
+    let under_stream = |node: &Node, share: u32| leaders.of(key, &node.node_id) < share;
+    let best = |stream: Option<u32>, led: bool| {
         eligible
             .iter()
             .filter(|node| has_capacity(node))
             .filter(|node| under_share(node))
+            .filter(|node| stream.is_none_or(|share| under_stream(node, share)))
             .filter(|node| !led || under_leader_share(node))
             .max_by(|a, b| {
                 score(key, &a.node_id)
@@ -71,8 +78,12 @@ pub(super) fn choose<'a>(
                     .then_with(|| a.node_id.cmp(&b.node_id))
             })
     };
-    best(true)
-        .or_else(|| best(false))
+    best(Some(shares.floor), true)
+        .or_else(|| best(Some(shares.floor), false))
+        .or_else(|| best(Some(shares.ceil), true))
+        .or_else(|| best(Some(shares.ceil), false))
+        .or_else(|| best(None, true))
+        .or_else(|| best(None, false))
         .or_else(least_loaded)
         .map(|n| n.node_id.as_str())
 }
