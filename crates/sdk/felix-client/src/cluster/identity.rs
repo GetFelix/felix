@@ -55,6 +55,7 @@ impl ClusterClient {
             widths: super::cluster_widths(&holder),
             client: holder,
             owners: RwLock::new(HashMap::new()),
+            discovered: std::sync::Mutex::new(HashMap::new()),
             group_routes: RwLock::new(HashMap::new()),
             cache_routes: RwLock::new(HashMap::new()),
             nodes,

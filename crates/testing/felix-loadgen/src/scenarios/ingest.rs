@@ -70,11 +70,8 @@ struct Tally {
     reconnects: u64,
     /// Records the broker acknowledged, by shard.
     per_shard: BTreeMap<u32, usize>,
-    /// Acked sends whose ack carried a log offset. A broker that forwarded
-    /// the send acks without one on a durable stream, so a high share of
-    /// `acks_no_offset` means the sends were not owner-direct.
-    acks_with_offset: usize,
-    acks_no_offset: usize,
+    /// Acked sends (batches), to set the client's forwarded count against.
+    acked_sends: usize,
     samples: Samples,
 }
 
@@ -153,11 +150,14 @@ pub(crate) async fn ingest(
     // One cluster client for every publisher of this generator, so a shard's
     // owner is learned once and its connection is shared.
     let shared = if use_cluster {
-        Some(Arc::new(cluster(common).await?))
+        let client = Arc::new(cluster(common).await?);
+        let dialled = Arc::new(std::sync::Mutex::new(Some(client.client().await.dialled())));
+        Some((client, dialled))
     } else {
         None
     };
 
+    let forwarded_before = felix_client::publishes_forwarded();
     let started = start_instant(opts.start_at, "ingest");
     let deadline = opts.duration.map(|d| started + d);
     let mut tasks = Vec::new();
@@ -175,14 +175,23 @@ pub(crate) async fn ingest(
             // Each plain publisher owns a connection to a different broker in
             // round-robin, so the write load is spread across the fleet, not
             // funnelled through one ingress.
-            let mut broker = p % brokers.len();
-            let mut sink = match shared {
-                Some(cluster) => Sink::Cluster(cluster),
+            let mut conn = match shared {
+                Some((cluster, dialled)) => Conn {
+                    sink: Sink::Cluster(cluster),
+                    broker: 0,
+                    generation: 0,
+                    dialled,
+                },
                 None => {
                     let (index, publisher) =
-                        connect_publisher(&brokers, broker, &target.tenant, &token).await?;
-                    broker = index;
-                    Sink::Single(publisher)
+                        connect_publisher(&brokers, p % brokers.len(), &target.tenant, &token)
+                            .await?;
+                    Conn {
+                        sink: Sink::Single(publisher),
+                        broker: index,
+                        generation: 0,
+                        dialled: Arc::default(),
+                    }
                 }
             };
             tokio::time::sleep_until(started.into()).await;
@@ -210,7 +219,15 @@ pub(crate) async fn ingest(
                 let shard = slot.map_or_else(|| plan.shard_of(None), |i| plan.shards[i]);
                 batches += 1;
                 if in_flight == 0 {
-                    let send = send(&sink, &target, key, &template, this, AckMode::None, stamp);
+                    let send = send(
+                        &conn.sink,
+                        &target,
+                        key,
+                        &template,
+                        this,
+                        AckMode::None,
+                        stamp,
+                    );
                     match until(deadline, send).await {
                         Some(Ok(sent)) => {
                             tally.retries += sent.retries;
@@ -220,13 +237,12 @@ pub(crate) async fn ingest(
                         }
                         Some(Err(err)) => {
                             tally.failed_sends += this;
-                            recover(
-                                &mut sink,
+                            let failed = failure(&err, conn.generation);
+                            conn.recover(
+                                &failed,
                                 &brokers,
-                                &mut broker,
                                 &target,
                                 &token,
-                                &err,
                                 &mut tally,
                                 last_success,
                             )
@@ -244,13 +260,10 @@ pub(crate) async fn ingest(
                         Some(done) => {
                             let done = done.expect("pending").context("ingest send task")?;
                             outstanding -= done.records;
-                            if settle(&mut tally, done, &mut last_success)
-                                .is_err_and(|e| e.reconnect)
-                            {
-                                recover_sink(
-                                    &mut sink,
+                            if let Err(failed) = settle(&mut tally, done, &mut last_success) {
+                                conn.recover(
+                                    &failed,
                                     &brokers,
-                                    &mut broker,
                                     &target,
                                     &token,
                                     &mut tally,
@@ -264,7 +277,9 @@ pub(crate) async fn ingest(
                 }
                 tally.published += this;
                 outstanding += this;
-                let (sink, target, template) = (sink.clone(), target.clone(), template.clone());
+                let (sink, target, template) =
+                    (conn.sink.clone(), target.clone(), template.clone());
+                let generation = conn.generation;
                 pending.spawn(async move {
                     let started = Instant::now();
                     let result = send(
@@ -282,6 +297,7 @@ pub(crate) async fn ingest(
                         took: started.elapsed(),
                         records: this,
                         shard,
+                        generation,
                     }
                 });
             }
@@ -311,7 +327,7 @@ pub(crate) async fn ingest(
         let t = task.await.context("publisher task")??;
         total.merge(t);
     }
-    if let Some(shared) = &shared {
+    if let Some((shared, _)) = &shared {
         // Fire-and-forget sends return once queued. Flushed inside the
         // measured time, so the rate is for records written, not queued.
         if let Err(err) = shared.finish().await {
@@ -327,8 +343,7 @@ pub(crate) async fn ingest(
         failed_sends,
         reconnects,
         per_shard,
-        acks_with_offset,
-        acks_no_offset,
+        acked_sends,
         samples: mut acks,
     } = total;
     let elapsed = started.elapsed();
@@ -361,6 +376,15 @@ pub(crate) async fn ingest(
             fmt_us(ack.max_us)
         );
     }
+    // The client counts a send as forwarded when its ack names another broker
+    // as the shard's owner (`felix_client::publishes_forwarded`). A send that
+    // asks for no ack gets no such answer, so fire-and-forget cannot be
+    // counted from here; use the brokers' own forward counters for that.
+    let forwarded_sends = (in_flight > 0)
+        .then(|| felix_client::publishes_forwarded().saturating_sub(forwarded_before));
+    let forwarded_share = forwarded_sends
+        .filter(|_| acked_sends > 0)
+        .map(|n| n as f64 / acked_sends as f64);
     let per_shard_acked: BTreeMap<String, usize> = per_shard
         .iter()
         .map(|(shard, n)| (shard.to_string(), *n))
@@ -382,8 +406,9 @@ pub(crate) async fn ingest(
         "failed_sends": failed_sends,
         "reconnects": reconnects,
         "per_shard_acked": per_shard_acked,
-        "acks_with_offset": acks_with_offset,
-        "acks_without_offset": acks_no_offset,
+        "acked_sends": acked_sends,
+        "forwarded_sends": forwarded_sends,
+        "forwarded_share": forwarded_share,
         "cluster": use_cluster,
         "throughput_msg_s": msg_s,
         "throughput_mb_s": mb_s,
@@ -411,7 +436,6 @@ enum Sink {
 /// What an acknowledged or queued send came back with.
 struct Sent {
     retries: u64,
-    offset: Option<u64>,
 }
 
 /// One acked send's result, with what is needed to tally it.
@@ -420,31 +444,39 @@ struct Done {
     took: Duration,
     records: usize,
     shard: u32,
+    generation: u64,
 }
 
-/// A failed send that left the publisher needing a new connection.
-struct Broken {
-    reconnect: bool,
+/// A send that failed, and what it says about the connection.
+struct Failure {
+    /// The connection broke or timed out. A coded refusal from a broker
+    /// (stale width, stream not found, overloaded) is not that: the
+    /// connection is fine, and replacing it would fix nothing.
+    transport: bool,
+    /// The connection generation the send ran on, so many in-flight sends
+    /// failing together replace the connection once.
+    generation: u64,
 }
 
-/// Tally an acked send. `Err` is a failure to recover from; the records are
-/// already counted as failed.
-fn settle(tally: &mut Tally, done: Done, last_success: &mut Instant) -> Result<(), Broken> {
+fn failure(err: &anyhow::Error, generation: u64) -> Failure {
+    Failure {
+        transport: err.downcast_ref::<felix_client::BrokerError>().is_none(),
+        generation,
+    }
+}
+
+/// Tally an acked send. `Err` says what failed; the records are already
+/// counted as failed.
+fn settle(tally: &mut Tally, done: Done, last_success: &mut Instant) -> Result<(), Failure> {
     match done.result {
         Ok(sent) => {
-            tally.acked_one(
-                sent.retries,
-                done.took,
-                done.records,
-                done.shard,
-                sent.offset,
-            );
+            tally.acked_one(sent.retries, done.took, done.records, done.shard);
             *last_success = Instant::now();
             Ok(())
         }
         Err(err) => {
-            tally.failed_one(done.records, &err);
-            Err(Broken { reconnect: true })
+            tally.failed_sends += done.records;
+            Err(failure(&err, done.generation))
         }
     }
 }
@@ -508,58 +540,72 @@ async fn connect_publisher(
     .await
 }
 
-/// After a failed fire-and-forget send: replace the connection.
-#[allow(clippy::too_many_arguments)]
-async fn recover(
-    sink: &mut Sink,
-    brokers: &[SocketAddr],
-    broker: &mut usize,
-    target: &Target,
-    token: &str,
-    err: &anyhow::Error,
-    tally: &mut Tally,
-    last_success: Instant,
-) -> Result<()> {
-    tally.failed_one(0, err);
-    recover_sink(sink, brokers, broker, target, token, tally, last_success).await
+/// A publisher's sink and the state to replace it.
+struct Conn {
+    sink: Sink,
+    /// Index in the broker list of the broker a plain publisher is on.
+    broker: usize,
+    /// Bumped each time the connection is replaced.
+    generation: u64,
+    /// The broker the shared cluster client last dialled, to notice it moved.
+    dialled: Arc<std::sync::Mutex<Option<SocketAddr>>>,
 }
 
-/// Get a working sink back after a failure. A cluster client reconnects on
-/// its own; a plain publisher moves to the next broker. Gives up only when
-/// nothing has succeeded for [`RECONNECT_BUDGET`].
-async fn recover_sink(
-    sink: &mut Sink,
-    brokers: &[SocketAddr],
-    broker: &mut usize,
-    target: &Target,
-    token: &str,
-    tally: &mut Tally,
-    last_success: Instant,
-) -> Result<()> {
-    if last_success.elapsed() > RECONNECT_BUDGET {
-        anyhow::bail!("no publish succeeded for {RECONNECT_BUDGET:?}");
-    }
-    match sink {
-        Sink::Cluster(_) => tokio::time::sleep(Duration::from_millis(100)).await,
-        Sink::Single(_) => {
-            let (index, publisher) = reconnect_with(
-                brokers,
-                *broker,
-                RECONNECT_BUDGET,
-                Duration::from_millis(200),
-                |addr| async move {
-                    let config = crate::tls::client_config(&target.tenant, token)?;
-                    let client = Client::connect(addr, "localhost", config).await?;
-                    client.publisher().await
-                },
-            )
-            .await?;
-            *broker = index;
-            *sink = Sink::Single(publisher);
-            tally.reconnects += 1;
+impl Conn {
+    /// Get a working sink back after `failed`, giving up only when nothing
+    /// has succeeded for [`RECONNECT_BUDGET`] in total. A cluster client
+    /// reconnects by itself, so that is only observed; a plain publisher
+    /// moves to the next broker, once per broken connection.
+    async fn recover(
+        &mut self,
+        failed: &Failure,
+        brokers: &[SocketAddr],
+        target: &Target,
+        token: &str,
+        tally: &mut Tally,
+        last_success: Instant,
+    ) -> Result<()> {
+        let left = RECONNECT_BUDGET.saturating_sub(last_success.elapsed());
+        if left.is_zero() {
+            anyhow::bail!("no publish succeeded for {RECONNECT_BUDGET:?}");
         }
+        // Not the connection's fault; a pause keeps a refusing broker from
+        // being hammered.
+        if !failed.transport {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            return Ok(());
+        }
+        match &self.sink {
+            Sink::Cluster(cluster) => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                let now = cluster.client().await.dialled();
+                let mut last = self.dialled.lock().unwrap();
+                if last.replace(now).is_some_and(|before| before != now) {
+                    tally.reconnects += 1;
+                }
+            }
+            Sink::Single(_) if failed.generation != self.generation => {}
+            Sink::Single(_) => {
+                let (index, publisher) = reconnect_with(
+                    brokers,
+                    self.broker,
+                    left,
+                    Duration::from_millis(200),
+                    |addr| async move {
+                        let config = crate::tls::client_config(&target.tenant, token)?;
+                        let client = Client::connect(addr, "localhost", config).await?;
+                        client.publisher().await
+                    },
+                )
+                .await?;
+                self.broker = index;
+                self.sink = Sink::Single(publisher);
+                self.generation += 1;
+                tally.reconnects += 1;
+            }
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 /// Publish a batch of `count` copies of `template`, retrying the transient
@@ -652,7 +698,7 @@ async fn send(
             }
         };
         match result {
-            Ok(offset) => return Ok(Sent { retries, offset }),
+            Ok(_) => return Ok(Sent { retries }),
             Err(err) if is_retriable_transient(&err) => {
                 retries += 1;
                 tokio::time::sleep(Duration::from_millis(20)).await;
@@ -663,32 +709,13 @@ async fn send(
 }
 
 impl Tally {
-    fn acked_one(
-        &mut self,
-        retries: u64,
-        took: Duration,
-        records: usize,
-        shard: u32,
-        offset: Option<u64>,
-    ) {
+    fn acked_one(&mut self, retries: u64, took: Duration, records: usize, shard: u32) {
         self.retries += retries;
         self.completed += records;
         self.acked += records;
         *self.per_shard.entry(shard).or_default() += records;
-        match offset {
-            Some(_) => self.acks_with_offset += records,
-            None => self.acks_no_offset += records,
-        }
+        self.acked_sends += 1;
         self.samples.record(took);
-    }
-
-    /// A send that failed. A cluster client says in the error when it
-    /// replaced its connection to another broker.
-    fn failed_one(&mut self, records: usize, err: &anyhow::Error) {
-        self.failed_sends += records;
-        if format!("{err:#}").contains("reconnected to another broker") {
-            self.reconnects += 1;
-        }
     }
 
     fn merge(&mut self, other: Tally) {
@@ -702,8 +729,7 @@ impl Tally {
         for (shard, n) in other.per_shard {
             *self.per_shard.entry(shard).or_default() += n;
         }
-        self.acks_with_offset += other.acks_with_offset;
-        self.acks_no_offset += other.acks_no_offset;
+        self.acked_sends += other.acked_sends;
         self.samples.merge(other.samples);
     }
 }

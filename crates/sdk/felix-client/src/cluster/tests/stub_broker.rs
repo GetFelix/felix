@@ -389,6 +389,15 @@ async fn serve_stream(
                 .await?;
             continue;
         }
+        if frame.header.flags & felix_wire::FLAG_BINARY_PUBLISH_BATCH != 0 {
+            // A publish that asks for no answer.
+            let batch = felix_wire::binary::decode_publish_batch(&frame)?;
+            seen.batches
+                .lock()
+                .unwrap()
+                .push((batch.key.clone(), batch.payloads.clone()));
+            continue;
+        }
         match Message::decode(frame)? {
             Message::Auth { token, .. } => {
                 seen.tokens.lock().unwrap().push(token);
@@ -555,16 +564,18 @@ fn binary_ack(request_id: u64, answer: Message) -> Result<bytes::Bytes> {
             message,
             code,
             retry,
+            detail,
             ..
         } => {
             let code = code.map(|code| {
                 let retry = retry.unwrap_or_else(|| code.default_retry());
                 (code, retry)
             });
-            felix_wire::binary::encode_publish_ack_bytes_coded(
+            felix_wire::binary::encode_publish_ack_bytes_detailed(
                 request_id,
                 Some(&message),
                 code.as_ref().map(|(code, retry)| (code, *retry)),
+                detail.as_ref(),
                 None,
             )?
         }

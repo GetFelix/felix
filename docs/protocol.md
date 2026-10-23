@@ -1629,8 +1629,10 @@ u8[key_len] key
 ```
 
 The key decides the shard, and therefore which broker owns the batch. Every record
-in a batch shares one key: a batch is acknowledged as a unit, so splitting it across
-shards would make it several batches.
+in a batch lands on that one shard: a batch is acknowledged as a unit, so splitting
+it across shards would make it several batches. The broker uses the key only to pick
+the shard, so a client batching records of several keys that hash to the same shard
+may send them under any one of those keys.
 
 An empty key is a key. It hashes to a shard like any other, and is not the same as
 an unkeyed frame, which always resolves to shard 0.

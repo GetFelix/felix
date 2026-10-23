@@ -402,6 +402,15 @@ for piece in report.failed() {
 - Not idempotent. Use [`IdempotentProducer`](#idempotent-producers) when a
   re-send must not duplicate.
 
+Owners are looked up from the cluster on a stream's first publish and refreshed
+every few seconds or soon after one turns out wrong, so even the first batch, and
+a publish that asks for no ack (`AckMode::None`), goes to the leader. A write that
+lands while leadership is moving may still be forwarded by the old leader. With
+`AckMode::None`, two calls can reach the broker out of order if the route for a
+shard switches between them; await acks where order across calls matters. After
+`publish_records_at_least_once` re-splits records under a new width, the report
+can list a shard twice.
+
 Each shard's batch uses that shard's own publish stream while the client has
 room for one (`FELIX_PUB_SHARD_STREAMS`), so a slow shard does not hold up the
 others.

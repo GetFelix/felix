@@ -9,11 +9,25 @@
 //! stream while the client has room for one (`FELIX_PUB_SHARD_STREAMS`) and on
 //! the shared pool past that cap, which is the isolation the per-shard
 //! streams exist for.
+//!
+//! Owners come from the cluster's shard-owner discovery on a stream's first
+//! publish, again every few seconds and soon after a publish finds one wrong,
+//! and from acks that name the owner of a forwarded batch. That holds for
+//! [`AckMode::None`](felix_wire::AckMode::None) too, which gets no ack to learn
+//! from. It is a routing snapshot: a write that lands while ownership is moving
+//! may still be forwarded by a broker that is no longer the owner, which is
+//! correct and only costs the hop.
+//!
+//! With `AckMode::None` a call returns once its pieces are queued. When the
+//! route for a shard switches between calls (the owner moved, or discovery
+//! replaced a forwarding route), two un-acked calls travel on different
+//! connections and can reach the broker out of order. Await acks, or keep to
+//! one call at a time, where order across calls matters.
 
 use std::future::Future;
 use std::pin::Pin;
 use std::task::Poll;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use bytes::Bytes;
@@ -39,7 +53,10 @@ pub struct ShardPublish {
 /// every input record is in exactly one [`ShardPublish`].
 #[derive(Debug, Default)]
 pub struct BatchReport {
-    /// One entry per shard, ascending by shard.
+    /// One entry per shard, ascending by shard. After
+    /// [`ClusterClient::publish_records_at_least_once`] re-splits records under
+    /// a new width, one shard number can appear twice: once for the piece that
+    /// was accepted earlier and once for a later one.
     pub shards: Vec<ShardPublish>,
 }
 
@@ -213,9 +230,11 @@ impl ClusterClient {
         // attempt's errors can be reported if the policy gives up.
         let mut held: Vec<ShardPublish> = Vec::new();
         let mut retrying = Retrying::default();
+        // What the broker asked to wait at least, from the last attempt.
+        let mut at_least = Duration::ZERO;
         for attempt in 0..attempts {
             if attempt > 0 {
-                let delay = self.policy.delay_before(attempt - 1);
+                let delay = self.policy.delay_before(attempt - 1).max(at_least);
                 if let Some(budget) = self.policy.deadline
                     && started.elapsed() + delay >= budget
                 {
@@ -228,6 +247,7 @@ impl ClusterClient {
                 .send_pieces(tenant_id, namespace, stream, &records, pending, ack)
                 .await;
             pending = Vec::new();
+            at_least = Duration::ZERO;
             for piece in sent {
                 let again = match &piece.outcome {
                     Ok(_) => false,
@@ -236,7 +256,14 @@ impl ClusterClient {
                             resend_ambiguous: true,
                             ..Attempt::default()
                         };
-                        retrying.next(err, attempt) != Next::Fail
+                        match retrying.next(err, attempt) {
+                            Next::Fail => false,
+                            Next::Reroute => true,
+                            Next::Backoff { at_least: asked } => {
+                                at_least = at_least.max(asked);
+                                true
+                            }
+                        }
                     }
                 };
                 if again {

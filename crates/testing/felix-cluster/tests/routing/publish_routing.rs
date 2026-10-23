@@ -25,8 +25,8 @@ fn config() -> ClusterConfig {
 
 /// **A client that publishes through a non-owner stops forwarding.**
 ///
-/// The first publish is forwarded and its ack names the owner; every publish
-/// after it goes straight there. Asserted on `publishes_forwarded()`, which the
+/// The client asks the cluster who owns the shard before its first publish, so
+/// none of them is forwarded. Asserted on `publishes_forwarded()`, which the
 /// client increments for each ack that came back marked as forwarded -- so this
 /// measures the thing the issue is about rather than a proxy for it.
 #[serial]
@@ -34,8 +34,8 @@ fn config() -> ClusterConfig {
 async fn a_forwarded_publish_teaches_the_client_where_to_send_the_next_one() {
     let cluster = Cluster::start(config()).await.expect("start cluster");
 
-    // Deliberately the wrong broker: one that does not own the shard, so the
-    // first publish has to be forwarded.
+    // Deliberately the wrong broker: one that does not own the shard. The
+    // client asks the cluster who does before its first publish.
     let (_owner, non_owner) = cluster
         .owner_and_non_owner(STREAM)
         .await
@@ -62,12 +62,13 @@ async fn a_forwarded_publish_teaches_the_client_where_to_send_the_next_one() {
         .await
         .expect("first publish");
     let after_first = felix_client::publishes_forwarded();
-    assert!(
-        after_first > before,
-        "publishing through a non-owner should have been forwarded ({before} -> {after_first})",
+    assert_eq!(
+        after_first, before,
+        "the first publish was forwarded although the owner is discoverable \
+         ({before} -> {after_first})",
     );
 
-    // The owner is learned from that ack, so the rest should go direct.
+    // The owner is known from discovery, so the rest should go direct.
     for i in 0..5 {
         client
             .publish(

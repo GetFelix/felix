@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use super::{Tally, reconnect_with, spread_keys};
+use super::{Tally, failure, reconnect_with, spread_keys};
 
 fn per_shard(keys: &[String], shards: u32, routing: ShardRouting) -> BTreeMap<u32, usize> {
     let mut counts = BTreeMap::new();
@@ -143,23 +143,24 @@ async fn reconnect_retries_then_gives_up() {
     assert!(format!("{err:#}").contains("no broker accepted"), "{err:#}");
 }
 
-/// **A failed send is counted, not raised**, and acks are tallied by shard
-/// and by whether they carried an offset.
+/// **A failed send is counted, not raised**, acks are tallied by shard, and
+/// an error with no broker answer behind it is a transport failure that
+/// remembers which connection it ran on.
 #[test]
 fn tally_counts_failures_and_per_shard_acks() {
     let mut tally = Tally::default();
-    tally.acked_one(0, Duration::from_millis(1), 10, 2, Some(5));
-    tally.acked_one(0, Duration::from_millis(1), 10, 2, None);
-    tally.acked_one(1, Duration::from_millis(1), 4, 0, Some(1));
-    let err = anyhow::anyhow!("publish failed; reconnected to another broker");
-    tally.failed_one(7, &err);
-    assert_eq!(tally.failed_sends, 7);
-    assert_eq!(tally.reconnects, 1);
+    tally.acked_one(0, Duration::from_millis(1), 10, 2);
+    tally.acked_one(0, Duration::from_millis(1), 10, 2);
+    tally.acked_one(1, Duration::from_millis(1), 4, 0);
     assert_eq!(tally.per_shard.get(&2), Some(&20));
     assert_eq!(tally.per_shard.get(&0), Some(&4));
-    assert_eq!((tally.acks_with_offset, tally.acks_no_offset), (14, 10));
+    assert_eq!(tally.acked_sends, 3);
+    let failed = failure(&anyhow::anyhow!("connection lost"), 4);
+    assert!(failed.transport);
+    assert_eq!(failed.generation, 4);
     let mut total = Tally::default();
     total.merge(tally);
     assert_eq!(total.acked, 24);
+    assert_eq!(total.acked_sends, 3);
     assert_eq!(total.per_shard.get(&2), Some(&20));
 }

@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use bytes::Bytes;
@@ -65,7 +66,7 @@ async fn own(cluster: &ClusterClient, shard: u32, owner: &StubBroker, node: &str
                 addr: Some(owner.addr.to_string()),
                 generation: 1,
             },
-            None,
+            Some((STREAM_SHARDS, felix_wire::routing::ShardRouting::default())),
         )
         .await;
 }
@@ -272,5 +273,128 @@ async fn an_unkeyed_batch_goes_to_shard_zero_in_order() -> Result<()> {
     assert_eq!(on_b.len(), 1);
     assert_eq!(on_b[0].0, None);
     assert_eq!(payloads(&on_b[0]), ["a", "b", "c"]);
+    Ok(())
+}
+
+fn owners_of(a: &StubBroker, b: &StubBroker) -> Vec<felix_wire::ShardOwner> {
+    // Shards 0 and 2 on `a`, 1 and 3 on `b`.
+    (0..STREAM_SHARDS)
+        .map(|shard| {
+            let (node, broker) = if shard % 2 == 0 { ("a", a) } else { ("b", b) };
+            felix_wire::ShardOwner {
+                shard,
+                node_id: Some(node.to_string()),
+                addr: Some(broker.addr.to_string()),
+                generation: 1,
+                unavailable: None,
+            }
+        })
+        .collect()
+}
+
+async fn until_received(broker: &StubBroker, batches: usize) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while broker.batches().len() < batches && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+/// **Discovery makes the first publish for a shard go to its owner**, for a
+/// publish that asks for no ack as well, which is never told who owns the
+/// shard. Without discovery these would all be forwarded by the entry broker.
+#[tokio::test]
+#[serial_test::serial]
+async fn discovered_owners_take_publishes_that_get_no_ack() -> Result<()> {
+    let (cluster, a, b) = pair(ok, ok).await?;
+    a.set_cache_owners(owners_of(&a, &b));
+    let records = vec![record(&key_on(1, 0), "to-b"), record(&key_on(2, 0), "to-a")];
+
+    let report = cluster
+        .publish_records("t1", "default", "orders", records, AckMode::None)
+        .await;
+    cluster.finish().await?;
+
+    assert!(report.is_ok(), "{report:?}");
+    until_received(&b, 1).await;
+    until_received(&a, 1).await;
+    let (on_a, on_b) = (a.batches(), b.batches());
+    assert_eq!(on_b.len(), 1, "shard 1 went to its owner");
+    assert_eq!(payloads(&on_b[0]), ["to-b"]);
+    assert_eq!(on_a.len(), 1, "only shard 2 reached the entry broker");
+    assert_eq!(payloads(&on_a[0]), ["to-a"]);
+    Ok(())
+}
+
+/// **An owner learned under no width is not trusted for a keyed batch.** It
+/// may have been learned before the stream was recreated at another width.
+#[tokio::test]
+#[serial_test::serial]
+async fn an_owner_learned_under_no_width_is_dropped_for_a_keyed_batch() -> Result<()> {
+    let (cluster, a, b) = pair(ok, ok).await?;
+    cluster
+        .remember_owner(
+            ("t1".into(), "default".into(), "orders".into(), 1),
+            PublishOwner {
+                node_id: "b".to_string(),
+                addr: Some(b.addr.to_string()),
+                generation: 1,
+            },
+            None,
+        )
+        .await;
+    cluster
+        .publish_batch_keyed(
+            "t1",
+            "default",
+            "orders",
+            key_on(1, 0),
+            vec![b"x".to_vec()],
+            AckMode::PerBatch,
+        )
+        .await?;
+    assert_eq!(b.batches().len(), 0);
+    assert_eq!(a.batches().len(), 1);
+    Ok(())
+}
+
+/// **The wait a broker asks for is honoured** between at-least-once attempts,
+/// not just the client's own backoff.
+#[tokio::test]
+#[serial_test::serial]
+async fn at_least_once_waits_as_long_as_the_broker_asked() -> Result<()> {
+    let answered = Arc::new(AtomicUsize::new(0));
+    let script = {
+        let answered = Arc::clone(&answered);
+        move |request_id| match answered.fetch_add(1, Ordering::SeqCst) {
+            0 => Message::PublishError {
+                request_id,
+                message: "busy".to_string(),
+                code: Some(ErrorCode::Overloaded),
+                retry: None,
+                detail: Some(felix_wire::ErrorDetail {
+                    retry_after_ms: Some(300),
+                    ..felix_wire::ErrorDetail::default()
+                }),
+            },
+            _ => ok(request_id),
+        }
+    };
+    let (cluster, _a, _b) = pair(script, ok).await?;
+    let started = Instant::now();
+    let report = cluster
+        .publish_records_at_least_once(
+            "t1",
+            "default",
+            "orders",
+            vec![record(&key_on(0, 0), "r0")],
+            AckMode::PerBatch,
+        )
+        .await;
+    assert!(report.is_ok(), "{report:?}");
+    assert!(
+        started.elapsed() >= Duration::from_millis(290),
+        "{:?}",
+        started.elapsed()
+    );
     Ok(())
 }

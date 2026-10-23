@@ -45,16 +45,20 @@ felix-loadgen ... --scenario ingest --stream perf --keys 48 --cluster \
     --concurrency 8 --batch 100 --in-flight 4 --duration-secs 60
 ```
 
-A publisher that loses its broker reconnects (another broker, or the cluster
-client's own reconnect) and keeps publishing, so a broker dying mid-run does not
-fail it. The JSON counts `reconnects` and `failed_sends` (records in sends that
-errored, which may or may not have landed), and `per_shard_acked` gives acked
-records by shard so a loss check can compare them with what was delivered. A run
-only exits non-zero when nothing succeeds for 30 s. `acks_with_offset` and
-`acks_without_offset` split acked records by whether the ack carried a log
-offset; on a durable stream a forwarded batch is acked without one, so a high
-`acks_without_offset` means the sends were not leader-direct. `--keys` should be
-set (and spread across the shards), since unkeyed records all go to shard 0.
+A publisher whose connection breaks reconnects (to the next broker, or via the
+cluster client's own reconnect) and keeps publishing, so a broker dying mid-run
+does not fail it. A coded refusal from a live broker is counted, not treated as
+a broken connection. The JSON counts `reconnects` and `failed_sends` (records in
+sends that errored, which may or may not have landed), and `per_shard_acked`
+gives acked records by shard so a loss check can compare them with what was
+delivered. A run only exits non-zero when nothing succeeds for 30 s in total.
+
+`forwarded_sends` and `forwarded_share` are exact: the client counts an acked
+send as forwarded when its ack names another broker as the shard's owner
+(`felix_client::publishes_forwarded`), and the share is out of `acked_sends`.
+They are `null` when fire-and-forget (`--in-flight 0`), where no ack comes back;
+read the brokers' forward counters for that. `--keys` should be set (and spread
+across the shards), since unkeyed records all go to shard 0.
 
 Run `felix-loadgen --help` for every flag. Each run prints human-readable
 result lines and one `LOADGEN_JSON {...}` line, which is what the perf scripts

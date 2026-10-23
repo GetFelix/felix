@@ -220,6 +220,13 @@ impl ClusterClient {
         ack: AckMode,
         width: Option<Arc<Width>>,
     ) -> Result<Option<u64>> {
+        // Owners are asked for on a stream's first publish and again when
+        // they are old or a publish found them wrong, so a publish that never
+        // sees an ack still reaches the owner.
+        let stream_key: super::StreamKey = (shard.0.clone(), shard.1.clone(), shard.2.clone());
+        if self.claim_discovery(&stream_key) {
+            self.discover_owners(&stream_key).await;
+        }
         let routed = self.owners.read().await.get(&shard).map(|owner| {
             (
                 Arc::clone(&owner.client),
@@ -227,14 +234,15 @@ impl ClusterClient {
                 owner.width,
             )
         });
-        // An owner learned under another width owns a shard of the stream as
-        // it was, not as it is: dropped, and the batch goes through the entry
-        // broker.
+        // An owner learned under another width, or under none, owns a shard of
+        // the stream as it was or as nobody checked: dropped, and the batch
+        // goes through the entry broker.
         let routed = match (routed, &width) {
-            (Some((_, _, Some(learned))), Some(width))
-                if learned != (width.shards, width.routing) =>
+            (Some((_, _, learned)), Some(width))
+                if learned != Some((width.shards, width.routing)) =>
             {
                 self.owners.write().await.remove(&shard);
+                self.mark_owners_stale(&stream_key);
                 None
             }
             (routed, _) => routed.map(|(client, node_id, _)| (client, node_id)),

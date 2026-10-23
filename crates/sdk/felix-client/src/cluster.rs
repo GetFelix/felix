@@ -168,6 +168,10 @@ pub struct ClusterClient {
     /// `felix_wire::routing::shard_for` -- the function the broker routes
     /// with, shared so the two cannot drift.
     owners: RwLock<HashMap<ShardKey, Owner>>,
+    /// When each stream's shard owners were last asked of the cluster, and
+    /// whether something since said they may have moved. See
+    /// `routing::OWNER_TTL`.
+    discovered: std::sync::Mutex<HashMap<StreamKey, Discovered>>,
     /// How many shards each stream was placed with and how keys map onto
     /// them, as the cluster last said.
     ///
@@ -269,6 +273,7 @@ impl ClusterClient {
             widths: cluster_widths(&holder),
             client: holder,
             owners: RwLock::new(HashMap::new()),
+            discovered: std::sync::Mutex::new(HashMap::new()),
             group_routes: RwLock::new(HashMap::new()),
             cache_routes: RwLock::new(HashMap::new()),
             nodes,
@@ -464,6 +469,13 @@ type StreamKey = (String, String, String);
 
 /// One shard of one stream, as the owner cache keys it.
 type ShardKey = (String, String, String, u32);
+
+/// When a stream's owners were last discovered.
+struct Discovered {
+    at: std::time::Instant,
+    /// A publish since found a cached owner or width stale.
+    stale: bool,
+}
 
 /// The broker that owns one shard of a stream, and a client connected to it.
 struct Owner {
