@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792711593410,
+  "lastUpdate": 1792715058526,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -41514,6 +41514,72 @@ window.BENCHMARK_DATA = {
             "range": "47.27",
             "unit": "us",
             "extra": "trials: 5\nmedian: 602.00\nmean: 616.40\nstdev: 47.27\ncv: 7.67%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "77b6772141af79b1c84b34a3a0eed9cb7052c8fa",
+          "message": "feat(broker): durable streams ack after commit by default (#1421) (#1422)\n\n* feat(broker): durable streams ack after commit by default (#1421)\n\nA durable stream's acknowledged publish is answered after it commits unless\nFELIX_ACK_ON_COMMIT is set to a false value. In-memory streams still answer\non enqueue. FELIX_ACK_ON_COMMIT=1 makes every stream wait.\n\nSpec-Unaffected: the shard model already contains both the ack-on-enqueue path (Admit/Claim with a queued write) and the ack-after-commit path; this changes which one a default broker takes, not either path or any lease, quorum, report, promotion or handoff step.\n\n* fix(broker): refuse a publish with no ack room before queueing it; strict ack env parsing (#1421)\n\nReserve the commit-ack waiter before the enqueue so exhaustion refuses with a\nretryable overloaded and nothing queued. FELIX_ACK_ON_COMMIT accepts on/off,\ntrims and ignores case; an unrecognised value keeps the default with a warning.\nConformance gains a check on the shipped default. Sample configs that silently\nopted out are corrected and stale ack comments updated.\n\nSpec-Unaffected: only the rejection point of a publish with no room for its answer moves, from after the enqueue to before it; no lease, quorum, report, promotion or handoff step changes.",
+          "timestamp": "2026-10-23T00:20:00Z",
+          "tree_id": "dbbf9d6a82d01f9b54f3cde31cbcb0c99ff14a32",
+          "url": "https://github.com/GetFelix/felix/commit/77b6772141af79b1c84b34a3a0eed9cb7052c8fa"
+        },
+        "date": 1792715053800,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 180,
+            "range": "2.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 180.00\nmean: 179.60\nstdev: 2.07\ncv: 1.15%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 244,
+            "range": "16.24",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 244.00\nmean: 249.40\nstdev: 16.24\ncv: 6.51%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 352,
+            "range": "1104.22",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 352.00\nmean: 921.40\nstdev: 1104.22\ncv: 119.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 219,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 219.00\nmean: 218.60\nstdev: 1.14\ncv: 0.52%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 478,
+            "range": "29.56",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 478.00\nmean: 480.20\nstdev: 29.56\ncv: 6.16%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1798,
+            "range": "526.40",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1798.00\nmean: 1754.20\nstdev: 526.40\ncv: 30.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
