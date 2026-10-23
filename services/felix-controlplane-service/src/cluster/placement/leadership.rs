@@ -9,34 +9,63 @@
 //! is what keeps the two from trading shards back and forth.
 use std::collections::HashMap;
 
-use super::plan::owner_of;
-use crate::model::ShardKey;
+use crate::model::{ShardKey, ShardKind};
+
+/// The stream or cache a shard belongs to, borrowed so a lookup allocates
+/// nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) struct Owner<'a> {
+    kind: ShardKind,
+    tenant_id: &'a str,
+    namespace: &'a str,
+    name: &'a str,
+}
+
+impl<'a> Owner<'a> {
+    pub(super) fn new(
+        kind: ShardKind,
+        tenant_id: &'a str,
+        namespace: &'a str,
+        name: &'a str,
+    ) -> Self {
+        Self {
+            kind,
+            tenant_id,
+            namespace,
+            name,
+        }
+    }
+
+    pub(super) fn of(key: &'a ShardKey) -> Self {
+        Self::new(key.kind, &key.tenant_id, &key.namespace, &key.stream)
+    }
+}
 
 /// Leader counts, cluster-wide and per stream or cache.
 #[derive(Debug, Default)]
 pub(super) struct Leadership<'a> {
     total: HashMap<&'a str, u32>,
-    owned: HashMap<String, HashMap<&'a str, u32>>,
+    owned: HashMap<Owner<'a>, HashMap<&'a str, u32>>,
 }
 
 impl<'a> Leadership<'a> {
-    pub(super) fn add(&mut self, key: &ShardKey, node: &'a str) {
+    pub(super) fn add(&mut self, owner: Owner<'a>, node: &'a str) {
         *self.total.entry(node).or_default() += 1;
         *self
             .owned
-            .entry(owner_of(key))
+            .entry(owner)
             .or_default()
             .entry(node)
             .or_default() += 1;
     }
 
-    pub(super) fn remove(&mut self, key: &ShardKey, node: &str) {
+    pub(super) fn remove(&mut self, owner: Owner<'a>, node: &str) {
         if let Some(count) = self.total.get_mut(node) {
             *count = count.saturating_sub(1);
         }
         if let Some(count) = self
             .owned
-            .get_mut(&owner_of(key))
+            .get_mut(&owner)
             .and_then(|owned| owned.get_mut(node))
         {
             *count = count.saturating_sub(1);
@@ -50,8 +79,10 @@ impl<'a> Leadership<'a> {
 
     /// Shards of `key`'s stream or cache that `node` leads.
     pub(super) fn of(&self, key: &ShardKey, node: &str) -> u32 {
-        self.owned
-            .get(&owner_of(key))
+        // Read through a shorter lifetime, so `key` need not outlive the map.
+        let owned: &HashMap<Owner<'_>, HashMap<&str, u32>> = &self.owned;
+        owned
+            .get(&Owner::of(key))
             .and_then(|owned| owned.get(node))
             .copied()
             .unwrap_or(0)

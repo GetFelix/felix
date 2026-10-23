@@ -68,17 +68,27 @@ fn quorum_cache(name: &str, shards: u32) -> Cache {
 /// `kind`/`name`'s shards led as `counts` says, in order: the first
 /// `counts[0]` on `broker-0`, and so on. Every broker holds a copy.
 fn led(kind: ShardKind, name: &str, counts: [u32; 3]) -> Vec<ShardAssignment> {
+    led_on(&NODES, 3, kind, name, &counts)
+}
+
+/// The same over `ids`, each shard with `rf` copies: its leader and the
+/// brokers after it in `ids`, wrapping round.
+fn led_on(
+    ids: &[&str],
+    rf: usize,
+    kind: ShardKind,
+    name: &str,
+    counts: &[u32],
+) -> Vec<ShardAssignment> {
     let mut shard = 0;
     let mut out = Vec::new();
-    for (node, count) in NODES.iter().zip(counts) {
-        for _ in 0..count {
-            let mut a = assigned(name, node, &[]);
+    for (at, count) in counts.iter().enumerate() {
+        for _ in 0..*count {
+            let mut a = assigned(name, ids[at], &[]);
             a.key.shard = shard;
             a.key.kind = kind;
-            a.replicas = NODES
-                .iter()
-                .filter(|n| *n != node)
-                .map(|n| n.to_string())
+            a.replicas = (1..rf)
+                .map(|i| ids[(at + i) % ids.len()].to_string())
                 .collect();
             out.push(a);
             shard += 1;
@@ -98,13 +108,22 @@ fn converge(
     existing: &mut [ShardAssignment],
     passes: usize,
 ) -> Vec<Moved> {
-    let nodes = live(&NODES);
+    converge_on(&live(&NODES), streams, caches, existing, passes)
+}
+
+fn converge_on(
+    nodes: &[Node],
+    streams: &[Stream],
+    caches: &[Cache],
+    existing: &mut [ShardAssignment],
+    passes: usize,
+) -> Vec<Moved> {
     let mut moved = Vec::new();
     for _ in 0..passes {
         let plan = plan_with(
             streams,
             caches,
-            &nodes,
+            nodes,
             existing,
             &Level::of(existing),
             MovePolicy::default(),
@@ -128,18 +147,27 @@ fn converge(
 }
 
 /// Leaders per broker of `name` (any kind when `kind` is `None`).
-fn spread(existing: &[ShardAssignment], kind: Option<ShardKind>, name: Option<&str>) -> [u32; 3] {
-    let mut counts = [0; 3];
+fn spread(existing: &[ShardAssignment], kind: Option<ShardKind>, name: Option<&str>) -> Vec<u32> {
+    spread_on(&NODES, existing, kind, name)
+}
+
+fn spread_on(
+    ids: &[&str],
+    existing: &[ShardAssignment],
+    kind: Option<ShardKind>,
+    name: Option<&str>,
+) -> Vec<u32> {
+    let mut counts = vec![0; ids.len()];
     for a in existing.iter().filter(|a| {
         kind.is_none_or(|kind| a.key.kind == kind) && name.is_none_or(|name| a.key.stream == name)
     }) {
-        let at = NODES.iter().position(|n| *n == a.leader).expect("a broker");
+        let at = ids.iter().position(|n| *n == a.leader).expect("a broker");
         counts[at] += 1;
     }
     counts
 }
 
-fn within_one(counts: [u32; 3]) -> bool {
+fn within_one(counts: &[u32]) -> bool {
     counts.iter().max().unwrap_or(&0) - counts.iter().min().unwrap_or(&0) <= 1
 }
 
@@ -181,7 +209,7 @@ fn a_twelve_shard_stream_on_three_brokers_ends_four_four_four() {
 
     assert_eq!(
         spread(&existing, Some(ShardKind::Stream), Some("perf-quorum")),
-        [4, 4, 4]
+        vec![4, 4, 4]
     );
     for (kind, name) in [
         (ShardKind::Stream, "perf"),
@@ -190,10 +218,10 @@ fn a_twelve_shard_stream_on_three_brokers_ends_four_four_four() {
         (ShardKind::Cache, "perf-quorum"),
     ] {
         let counts = spread(&existing, Some(kind), Some(name));
-        assert!(within_one(counts), "{kind:?} {name}: {counts:?}");
+        assert!(within_one(&counts), "{kind:?} {name}: {counts:?}");
     }
     let total = spread(&existing, None, None);
-    assert!(within_one(total), "totals {total:?}");
+    assert!(within_one(&total), "totals {total:?}");
     assert_no_move_undone(&moved);
 }
 
@@ -221,9 +249,9 @@ fn several_streams_balance_per_stream_and_in_total() {
 
     for name in ["a", "b", "c", "d", "e"] {
         let counts = spread(&existing, None, Some(name));
-        assert!(within_one(counts), "{name}: {counts:?}");
+        assert!(within_one(&counts), "{name}: {counts:?}");
     }
-    assert!(within_one(spread(&existing, None, None)));
+    assert!(within_one(&spread(&existing, None, None)));
     assert_no_move_undone(&moved);
     let shard_moves: HashMap<&ShardKey, usize> =
         moved.iter().fold(HashMap::new(), |mut by, (key, _, _)| {
@@ -254,7 +282,7 @@ fn a_new_stream_beside_full_brokers_is_placed_evenly() {
         .to_place()
         .map(|(key, leader, replicas)| assignment_for(key, leader, replicas.to_vec()))
         .collect();
-    assert_eq!(spread(&placed, None, Some("new")), [4, 4, 4]);
+    assert_eq!(spread(&placed, None, Some("new")), vec![4, 4, 4]);
 
     let mut existing = [existing, placed].concat();
     let moved = converge(&streams, &[], &mut existing, 400);
@@ -262,6 +290,163 @@ fn a_new_stream_beside_full_brokers_is_placed_evenly() {
         moved.iter().all(|(key, _, _)| key.stream == "old"),
         "the new stream moved: {moved:?}"
     );
-    assert_eq!(spread(&existing, None, Some("new")), [4, 4, 4]);
-    assert!(within_one(spread(&existing, None, Some("old"))));
+    assert_eq!(spread(&existing, None, Some("new")), vec![4, 4, 4]);
+    assert!(within_one(&spread(&existing, None, Some("old"))));
+}
+
+/// A failed-over shard counts toward the broker it is promoted to in the same
+/// pass. Otherwise a later shard of the stream sees that broker as two short
+/// and moves a leader onto it for nothing.
+#[test]
+fn a_promotion_counts_toward_its_broker_in_the_same_pass() {
+    let streams = vec![replicated_stream("s", 5, 2)];
+    let mut gone = assigned("s", "broker-gone", &["broker-0"]);
+    gone.key.shard = 0;
+    let mut existing = vec![gone];
+    for (shard, leader) in [
+        (1, "broker-1"),
+        (2, "broker-1"),
+        (3, "broker-2"),
+        (4, "broker-2"),
+    ] {
+        let mut a = assigned("s", leader, &["broker-0"]);
+        a.key.shard = shard;
+        existing.push(a);
+    }
+    let plan = plan_with(
+        &streams,
+        &[],
+        &live(&NODES),
+        &existing,
+        &Level::of(&existing),
+        MovePolicy::default(),
+    );
+    assert_eq!(
+        plan.to_place()
+            .map(|(_, leader, _)| leader)
+            .collect::<Vec<_>>(),
+        vec!["broker-0"]
+    );
+    assert_eq!(
+        plan.moves().count(),
+        0,
+        "{:?}",
+        plan.moves().collect::<Vec<_>>()
+    );
+}
+
+fn zoned(id: &str, zone: &str) -> Node {
+    let mut n = node(id, NodeLifecycle::Live, None);
+    n.spec.zone = Some(zone.to_string());
+    n
+}
+
+/// Six brokers in three zones, three copies a shard: balancing the stream's
+/// leaders keeps every shard in three zones.
+#[test]
+fn balancing_across_zones_keeps_each_shard_spread() {
+    let ids = ["a-0", "b-0", "c-0", "a-1", "b-1", "c-1"];
+    let nodes: Vec<Node> = ids.iter().map(|id| zoned(id, &id[..1])).collect();
+    let streams = vec![quorum("s", 12)];
+    let mut existing = led_on(&ids, 3, ShardKind::Stream, "s", &[12, 0, 0, 0, 0, 0]);
+
+    let moved = converge_on(&nodes, &streams, &[], &mut existing, 2_000);
+
+    assert!(within_one(&spread_on(&ids, &existing, None, Some("s"))));
+    assert_no_move_undone(&moved);
+    for a in &existing {
+        let zones: BTreeSet<&str> = a.nodes().map(|n| &n[..1]).collect();
+        assert_eq!(zones.len(), 3, "{a:?}");
+    }
+}
+
+/// Fewer copies than brokers: each move copies the log to a broker that held
+/// none, and the stream still ends even.
+#[test]
+fn three_copies_on_five_brokers_balance() {
+    let ids = ["broker-0", "broker-1", "broker-2", "broker-3", "broker-4"];
+    let streams = vec![quorum("s", 10), quorum("t", 7)];
+    let mut existing = [
+        led_on(&ids, 3, ShardKind::Stream, "s", &[10, 0, 0, 0, 0]),
+        led_on(&ids, 3, ShardKind::Stream, "t", &[0, 3, 4, 0, 0]),
+    ]
+    .concat();
+
+    let moved = converge_on(&live(&ids), &streams, &[], &mut existing, 2_000);
+
+    assert_eq!(spread_on(&ids, &existing, None, Some("s")), vec![2; 5]);
+    assert!(within_one(&spread_on(&ids, &existing, None, Some("t"))));
+    assert!(within_one(&spread_on(&ids, &existing, None, None)));
+    assert!(existing.iter().all(|a| a.replicas.len() == 2));
+    assert_no_move_undone(&moved);
+}
+
+/// A broker joining a balanced cluster takes its share of every stream, and
+/// no shard moves twice.
+#[test]
+fn a_joining_broker_takes_its_share_without_thrash() {
+    let ids = ["broker-0", "broker-1", "broker-2", "broker-3"];
+    let streams = vec![quorum("s", 12), quorum("t", 6), quorum("u", 3)];
+    let mut existing = [
+        led_on(&ids[..3], 3, ShardKind::Stream, "s", &[4, 4, 4]),
+        led_on(&ids[..3], 3, ShardKind::Stream, "t", &[2, 2, 2]),
+        led_on(&ids[..3], 3, ShardKind::Stream, "u", &[1, 1, 1]),
+    ]
+    .concat();
+
+    let moved = converge_on(&live(&ids), &streams, &[], &mut existing, 2_000);
+
+    assert_eq!(spread_on(&ids, &existing, None, Some("s")), vec![3; 4]);
+    for name in ["t", "u"] {
+        assert!(
+            within_one(&spread_on(&ids, &existing, None, Some(name))),
+            "{name}"
+        );
+    }
+    assert!(within_one(&spread_on(&ids, &existing, None, None)));
+    assert_no_move_undone(&moved);
+    let mut seen = BTreeSet::new();
+    for (key, _, _) in &moved {
+        assert!(
+            seen.insert((key.stream.clone(), key.shard)),
+            "{key:?} moved twice: {moved:?}"
+        );
+    }
+    assert!(moved.iter().all(|(_, _, to)| to == "broker-3"), "{moved:?}");
+}
+
+/// A draining broker is no broker's peer for balance: it is emptied, the
+/// stream spreads over the rest, and nothing is moved onto it.
+#[test]
+fn a_draining_broker_is_left_out_of_the_balance() {
+    let ids = ["broker-0", "broker-1", "broker-2", "broker-3"];
+    let mut nodes = live(&ids);
+    nodes[3].status.lifecycle = NodeLifecycle::Draining;
+    let streams = vec![quorum("s", 12)];
+    let mut existing = led_on(&ids, 3, ShardKind::Stream, "s", &[0, 0, 6, 6]);
+
+    let moved = converge_on(&nodes, &streams, &[], &mut existing, 2_000);
+
+    assert_eq!(
+        spread_on(&ids, &existing, None, Some("s")),
+        vec![4, 4, 4, 0]
+    );
+    assert!(moved.iter().all(|(_, _, to)| to != "broker-3"), "{moved:?}");
+    assert_no_move_undone(&moved);
+}
+
+/// A broker capped by `max_shards` is never pushed past its cap to even a
+/// stream out, and the rest settle without trading shards.
+#[test]
+fn a_capped_broker_is_not_filled_past_its_cap() {
+    let ids = ["broker-0", "broker-1", "broker-2"];
+    let mut nodes = live(&ids);
+    nodes[2].spec.capacity.max_shards = Some(2);
+    let streams = vec![stream("s", 12)];
+    let mut existing = led_on(&ids, 1, ShardKind::Stream, "s", &[10, 0, 2]);
+
+    let moved = converge_on(&nodes, &streams, &[], &mut existing, 2_000);
+
+    assert_eq!(spread_on(&ids, &existing, None, Some("s")), vec![5, 5, 2]);
+    assert_no_move_undone(&moved);
 }

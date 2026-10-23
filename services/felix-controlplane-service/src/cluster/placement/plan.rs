@@ -2,7 +2,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::leadership::{Leadership, Shares};
+use super::leadership::{Leadership, Owner, Shares};
 use super::moves::{MovePolicy, Moves, move_step};
 use super::rendezvous::{choose, choose_replicas, promote};
 use super::restore::{self, replication};
@@ -134,6 +134,39 @@ pub(super) fn plan_abandoning(
     policy: MovePolicy,
     abandoned: Option<&ShardKey>,
 ) -> Plan {
+    // A move for the cluster's totals waits while some stream still wants
+    // one of its own: made first, it lands where the stream's moves then
+    // move shards again.
+    let plan = |cluster_moves| {
+        plan_once(
+            streams,
+            caches,
+            nodes,
+            existing,
+            caught_up,
+            policy.clone(),
+            abandoned,
+            cluster_moves,
+        )
+    };
+    match plan(false) {
+        (plan_, true) => plan_,
+        (_, false) => plan(true).0,
+    }
+}
+
+/// One pass, and whether any shard wanted a move to even out its stream.
+#[allow(clippy::too_many_arguments)]
+fn plan_once(
+    streams: &[Stream],
+    caches: &[Cache],
+    nodes: &[Node],
+    existing: &[ShardAssignment],
+    caught_up: &dyn CaughtUp,
+    policy: MovePolicy,
+    abandoned: Option<&ShardKey>,
+    cluster_moves: bool,
+) -> (Plan, bool) {
     let placeables: Vec<Placeable<'_>> = streams
         .iter()
         .map(Placeable::of_stream)
@@ -215,13 +248,9 @@ pub(super) fn plan_abandoning(
         for node in assignment.nodes().filter(|node| is_live(node)) {
             *load.entry(node.as_str()).or_default() += 1;
         }
-        let will_lead = assignment
-            .successor
-            .as_deref()
-            .filter(|successor| is_live(successor))
-            .unwrap_or(assignment.leader.as_str());
+        let will_lead = will_lead(assignment, &is_live);
         if is_live(will_lead) {
-            leaders.add(&assignment.key, will_lead);
+            leaders.add(Owner::of(&assignment.key), will_lead);
         }
     }
 
@@ -293,6 +322,7 @@ pub(super) fn plan_abandoning(
             .map_or(1, |p| p.replication_factor);
         restore::unpaced(assignment, replication_factor, caught_up, unpaced_max)
     });
+    moves.cluster_moves = cluster_moves;
 
     // Slots go to drains first, then to rebalancing, and last to shards whose
     // previous move timed out; see `start_order`. Planned in that order, and
@@ -322,6 +352,9 @@ pub(super) fn plan_abandoning(
     });
 
     let is_empty_cluster = eligible.is_empty();
+    // The tally above counted leaders live anywhere, before a shard's region
+    // narrows `is_live`.
+    let counted = |id: &str| is_live(id);
     let mut shards = Vec::with_capacity(keys.len());
     let mut unspread = Vec::new();
     for key in keys {
@@ -419,6 +452,7 @@ pub(super) fn plan_abandoning(
                     *count = count.saturating_sub(1);
                 }
             }
+            leaders.remove(Owner::of(&previous.key), will_lead(previous, &counted));
         }
 
         // The leader is gone. Prefer one of its followers -- but only one that
@@ -452,6 +486,7 @@ pub(super) fn plan_abandoning(
             && let Some(promoted) = promote(&key, previous, &promotable, caught_up)
         {
             *load.entry(promoted).or_default() += 1;
+            leaders.add(Owner::of(&previous.key), promoted);
             let replicas = if fenced {
                 keep_replicas(previous, promoted, replication_factor, &is_live, &mut load)
             } else {
@@ -487,6 +522,7 @@ pub(super) fn plan_abandoning(
                 for node in previous.nodes() {
                     *load.entry(node.as_str()).or_default() += 1;
                 }
+                leaders.add(Owner::of(&previous.key), &previous.leader);
                 shards.push(ShardPlan {
                     key,
                     decision: Decision::Place(previous.leader.clone(), previous.replicas.clone()),
@@ -539,7 +575,9 @@ pub(super) fn plan_abandoning(
         let decision = match choose(&key, &eligible, &load, cap, &leaders, shares) {
             Some(leader) => {
                 *load.entry(leader).or_default() += 1;
-                leaders.add(&key, leader);
+                if let Some(p) = placeable {
+                    leaders.add(p.owner(), leader);
+                }
                 // Followers are the next best-scoring nodes for this shard,
                 // excluding the leader. Chosen by the same score so the whole
                 // replica set is a deterministic function of the shard key and
@@ -570,13 +608,27 @@ pub(super) fn plan_abandoning(
 
     shards.sort_by(|a, b| order(&a.key).cmp(&order(&b.key)));
     unspread.sort_by(|a, b| order(a).cmp(&order(b)));
-    Plan {
-        shards,
-        unspread,
-        under_replicated,
-        missing_copies,
-        halted_copies,
-    }
+    let stream_wanted = moves.stream_wanted;
+    (
+        Plan {
+            shards,
+            unspread,
+            under_replicated,
+            missing_copies,
+            halted_copies,
+        },
+        stream_wanted,
+    )
+}
+
+/// Who leads `assignment` once the move in flight completes: a live staged
+/// successor, else the leader.
+fn will_lead<'a>(assignment: &'a ShardAssignment, is_live: &dyn Fn(&str) -> bool) -> &'a str {
+    assignment
+        .successor
+        .as_deref()
+        .filter(|successor| is_live(successor))
+        .unwrap_or(assignment.leader.as_str())
 }
 
 /// Record `planned` in `unspread` if the copies it leaves span fewer zones
@@ -805,6 +857,10 @@ impl<'a> Placeable<'a> {
             fenced: matches!(cache.consistency, ConsistencyLevel::Quorum),
             quorum: matches!(cache.consistency, ConsistencyLevel::Quorum),
         }
+    }
+
+    fn owner(&self) -> Owner<'a> {
+        Owner::new(self.kind, self.tenant_id, self.namespace, self.name)
     }
 
     fn key(&self, shard: u32) -> ShardKey {

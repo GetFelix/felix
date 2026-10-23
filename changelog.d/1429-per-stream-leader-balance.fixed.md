@@ -4,5 +4,6 @@
   because the totals were even, so the stream's writes ran on one broker. New shards now go to
   the broker leading fewest of their stream first, a broker leading two or more of a stream's
   shards more than another hands one over, and a move for the cluster-wide balance never makes a
-  stream's spread wider. Existing clusters even out after the upgrade, one move at a time under
+  stream's spread wider. The totals are now evened to within one, where before a broker was only
+  moved off when it led more than its rounded-up share. Existing clusters even out after the upgrade, one move at a time under
   the usual move limits.

@@ -12,12 +12,12 @@ Three things, and an operator (see
 [Moving shards by hand](/deployment/moving-shards/)):
 
 - **A broker over its share.** Placement counts the shards each live broker
-  leads, per stream and in total. A broker leading two or more of a stream's
-  shards more than another broker hands one to the broker leading fewest of
-  that stream. A broker leading more than `ceil(shards / live brokers)` in
-  total hands shards to a broker under that share, picking a stream the
-  destination leads fewer of. Both go one move at a time by default, until
-  every stream's leaders are within one of even and no broker is over. A new
+  leads, per stream and in total. The broker leading the most of a stream's
+  shards, when that is two or more more than another broker, hands one to the
+  broker leading fewest of that stream. Once every stream is even, the same
+  rule applies to the totals, picking a shard of a stream the destination
+  leads fewer of. Moves go one at a time by default, until every stream's
+  leaders and the totals are each within one of even. A new
   broker registering is the usual cause: it starts with nothing and takes
   shards from whoever has the most.
 - **A draining broker.** `POST /v1/nodes/{id}/drain` marks a broker as

@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use felix_router::RegionRouter;
 
-use super::leadership::{Leadership, Shares};
+use super::leadership::{Leadership, Owner, Shares};
 use super::rendezvous::{choose_replicas, promote, score};
 use super::restore::{newcomer, restore, restore_step};
 use super::zones::{Domain, domain, domain_of, keep_spread};
@@ -111,6 +111,10 @@ pub(super) struct Moves {
     in_flight: usize,
     per_node: HashMap<String, usize>,
     policy: MovePolicy,
+    /// Whether a move may start for the cluster's leader totals.
+    pub(super) cluster_moves: bool,
+    /// Whether some shard wanted a move for its stream's spread.
+    pub(super) stream_wanted: bool,
 }
 
 impl Moves {
@@ -125,6 +129,8 @@ impl Moves {
             in_flight: 0,
             per_node: HashMap::new(),
             policy,
+            cluster_moves: true,
+            stream_wanted: false,
         };
         for assignment in existing {
             if assignment.successor.is_some() || assignment.state == ShardState::Draining {
@@ -239,7 +245,7 @@ impl Moves {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn move_step<'a>(
     key: &ShardKey,
-    existing: &ShardAssignment,
+    existing: &'a ShardAssignment,
     replication_factor: u32,
     eligible: &[&'a Node],
     is_live: &dyn Fn(&str) -> bool,
@@ -334,10 +340,10 @@ pub(super) fn move_step<'a>(
             .unwrap_or(leader);
         if counted != target {
             if catalog_id(counted).is_some() {
-                leaders.remove(key, counted);
+                leaders.remove(Owner::of(&existing.key), counted);
             }
             if let Some(to) = catalog_id(target) {
-                leaders.add(key, to);
+                leaders.add(Owner::of(&existing.key), to);
             }
         }
         return Decision::Move(
@@ -484,19 +490,20 @@ pub(super) fn move_step<'a>(
         .or_else(|| destination(Goal::Drain))
     } else {
         // The stream's own spread first, then the cluster's; see `leadership`.
-        // Each only from more to fewer, so moves converge instead of trading
-        // shards back and forth.
-        let fewest = eligible
-            .iter()
-            .map(|node| leaders.of(key, &node.node_id))
-            .min()
-            .unwrap_or(0);
-        let stream_over = leaders.of(key, leader) >= fewest + 2;
-        let over_share = leaders.total(leader) > shares.cluster;
-        stream_over
-            .then(|| destination(Goal::Stream))
-            .flatten()
-            .or_else(|| over_share.then(|| destination(Goal::Cluster)).flatten())
+        // Each only from the node leading most to one leading at least two
+        // fewer, so moves converge instead of trading shards back and forth,
+        // and a node is never given shards and then asked for them back.
+        let gap = |count: &dyn Fn(&str) -> u32| {
+            let counts = eligible.iter().map(|node| count(&node.node_id));
+            let (fewest, most) = counts.fold((u32::MAX, 0), |(lo, hi), c| (lo.min(c), hi.max(c)));
+            let mine = count(leader);
+            mine == most && mine >= fewest.saturating_add(2)
+        };
+        let stream_over = gap(&|node| leaders.of(key, node));
+        let over_share = moves.cluster_moves && gap(&|node| leaders.total(node));
+        let for_stream = stream_over.then(|| destination(Goal::Stream)).flatten();
+        moves.stream_wanted |= for_stream.is_some();
+        for_stream.or_else(|| over_share.then(|| destination(Goal::Cluster)).flatten())
     };
 
     match wanted {
@@ -505,9 +512,9 @@ pub(super) fn move_step<'a>(
                 return Decision::Waiting(blocked);
             }
             if catalog_id(leader).is_some() {
-                leaders.remove(key, leader);
+                leaders.remove(Owner::of(&existing.key), leader);
             }
-            leaders.add(key, destination);
+            leaders.add(Owner::of(&existing.key), destination);
             if !existing.replicas.iter().any(|r| r == destination) {
                 *load.entry(destination).or_default() += 1;
             }
@@ -932,8 +939,9 @@ enum Goal {
     /// The leader's node leads two or more of the stream's shards more than
     /// some other node does: to a node that leads at least two fewer.
     Stream,
-    /// The leader's node is over the cluster's share: to one under it that
-    /// leads fewer of the stream, so the stream's spread does not widen.
+    /// The leader's node leads two or more shards more than some other node,
+    /// cluster-wide: to a node that leads at least two fewer, and fewer of
+    /// the stream, so the stream's spread does not widen.
     Cluster,
 }
 
@@ -1017,9 +1025,19 @@ fn choose_destination<'a>(
             pick(&tier(&|node| fewest(node) && under_cluster(node)))
                 .or_else(|| pick(&tier(&fewest)))
         }
-        Goal::Cluster => pick(&tier(&|node| {
-            under_cluster(node) && leaders.of(key, &node.node_id) < leads
-        })),
+        Goal::Cluster => {
+            let total = leaders.total(&existing.leader);
+            let eligible = tier(&|node| {
+                leaders.total(&node.node_id) + 2 <= total && leaders.of(key, &node.node_id) < leads
+            });
+            let fewest = eligible
+                .iter()
+                .map(|node| leaders.total(&node.node_id))
+                .min()?;
+            pick(&tier(&|node| {
+                leaders.total(&node.node_id) == fewest && leaders.of(key, &node.node_id) < leads
+            }))
+        }
         Goal::Drain => {
             let under_stream = |node: &&Node| leaders.of(key, &node.node_id) < shares.ceil;
             pick(&tier(&|node| under_cluster(node) && under_stream(node)))
