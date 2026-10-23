@@ -619,7 +619,8 @@ for it in items:
     if it.get("stream") == name and is_cache == want_cache and it.get("leader"):
         mine[it["leader"]].append(it)
 try:
-    inflight = len(json.load(open(inflight_path)).get("items", []))
+    inflight = len([m for m in json.load(open(inflight_path)).get("items", [])
+                    if m.get("stream") == name and (str(m.get("kind", "")).lower() == "cache") == want_cache])
 except Exception:
     inflight = 0
 counts = dict((n, len(v)) for n, v in mine.items())
@@ -681,7 +682,9 @@ echo __RUNOK__" 2>/dev/null | extract_between BAL)"
         n="$(printf '%s\n' "${out}" | sed -n 's/.* started=\([0-9]*\).*/\1/p')"
         total=$(( total + ${n:-0} ))
         case "${out}" in
-          *" even=1 "*)
+          # Even counts are not enough: a move still in flight holds a fence,
+          # and pausing placement then freezes it with the shard's writes stuck.
+          *" even=1 "*" inflight=0"*)
             plog "balanced ${s} leaders ${first} -> ${last} via ${total} moves"
             placement_pause
             return 0 ;;
@@ -699,7 +702,9 @@ echo __RUNOK__" 2>/dev/null | extract_between BAL)"
 # placement_pause / placement_resume: stop or allow placement's own moves.
 # An operator move starts under a pause but does not progress until resumed; a
 # failed leader is still replaced under one.
-PLACEMENT_PAUSED=0
+# Start as paused: an earlier run may have exited with placement still paused,
+# and the first prep then resumes it.
+PLACEMENT_PAUSED=1
 placement_pause() {
   cp_remote 'curl -fsS -X POST -H "Authorization: Bearer $t" "$u/v1/placement/pause" >/dev/null && echo __RUNOK__' >/dev/null 2>&1 \
     && PLACEMENT_PAUSED=1 || plog "WARN could not pause placement; leaders may move during the cell"
@@ -969,6 +974,9 @@ headline() {
 # measuring: a recreated stream for durable cells, fully replicated shards always.
 prep_cell() {
   local s="$1" durable="$2" pct
+  # A stream recreated or moved under a pause never settles; pause again only
+  # once balanced.
+  [ "${PLACEMENT_PAUSED}" = 0 ] || placement_resume
   configure "${CONFIG_LABEL}" ${CONFIG_ARGS[@]+"${CONFIG_ARGS[@]}"} || return 1
   if [ "${durable}" = 1 ]; then
     ensure_fresh "${s}" || return 1
