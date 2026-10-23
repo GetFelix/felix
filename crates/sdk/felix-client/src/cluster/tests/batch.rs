@@ -398,3 +398,144 @@ async fn at_least_once_waits_as_long_as_the_broker_asked() -> Result<()> {
     );
     Ok(())
 }
+
+/// **Pieces for different shards, sent together, all go to their owners.**
+/// Discovery is waited for by every piece racing the first, not just the one
+/// that started it; otherwise the others are forwarded by the entry broker.
+#[tokio::test]
+#[serial_test::serial]
+async fn pieces_racing_the_first_discovery_all_go_to_their_owner() -> Result<()> {
+    let (cluster, a, b) = pair(ok, ok).await?;
+    a.set_cache_owners(owners_of(&a, &b));
+    // Shards 1 and 3 are both `b`'s; neither should touch the entry broker.
+    let records = vec![record(&key_on(1, 0), "one"), record(&key_on(3, 0), "three")];
+
+    let report = cluster
+        .publish_records("t1", "default", "orders", records, AckMode::PerBatch)
+        .await;
+
+    assert!(report.is_ok(), "{report:?}");
+    assert_eq!(a.batches().len(), 0, "a piece was forwarded by the entry");
+    assert_eq!(b.batches().len(), 2);
+    Ok(())
+}
+
+/// **An owner that cannot be reached costs only its own shards.** A publish to
+/// a healthy shard is not held up by it, and one to the dead shard falls back
+/// to the entry broker once the connect gives up.
+#[tokio::test]
+#[serial_test::serial]
+async fn an_unreachable_owner_does_not_stall_a_healthy_shard() -> Result<()> {
+    let (cluster, a, b) = pair(ok, ok).await?;
+    // Nothing answers on this socket, so a connection to it just hangs.
+    let blackhole = std::net::UdpSocket::bind("127.0.0.1:0")?;
+    let mut owners = owners_of(&a, &b);
+    owners[2].node_id = Some("dead".to_string());
+    owners[2].addr = Some(blackhole.local_addr()?.to_string());
+    a.set_cache_owners(owners);
+
+    let healthy = tokio::time::timeout(
+        Duration::from_millis(900),
+        cluster.publish_batch_keyed(
+            "t1",
+            "default",
+            "orders",
+            key_on(1, 0),
+            vec![b"x".to_vec()],
+            AckMode::PerBatch,
+        ),
+    )
+    .await;
+    assert!(healthy.is_ok(), "a healthy shard waited on the dead owner");
+    assert_eq!(b.batches().len(), 1);
+
+    cluster
+        .publish_batch_keyed(
+            "t1",
+            "default",
+            "orders",
+            key_on(2, 0),
+            vec![b"y".to_vec()],
+            AckMode::PerBatch,
+        )
+        .await?;
+    assert_eq!(a.batches().len(), 1, "the dead owner's batch was forwarded");
+    Ok(())
+}
+
+/// **Generations order owners whenever one answer is unkeyed or both share a
+/// width**; only two different known widths let the newer report win.
+#[tokio::test]
+#[serial_test::serial]
+async fn generations_decide_unless_the_widths_differ() -> Result<()> {
+    let (cluster, _a, b) = pair(ok, ok).await?;
+    let wide = Some((4, felix_wire::routing::ShardRouting::default()));
+    let narrow = Some((2, felix_wire::routing::ShardRouting::default()));
+    let key = || {
+        (
+            "t1".to_string(),
+            "default".to_string(),
+            "orders".to_string(),
+            1,
+        )
+    };
+    let learn = |node: &str, generation: u64, width| {
+        cluster.remember_owner(
+            key(),
+            PublishOwner {
+                node_id: node.to_string(),
+                addr: Some(b.addr.to_string()),
+                generation,
+            },
+            width,
+        )
+    };
+    let current = || async {
+        cluster
+            .owners
+            .read()
+            .await
+            .get(&key())
+            .map(|o| o.node_id.clone())
+    };
+
+    learn("five", 5, wide).await;
+    learn("three", 3, None).await;
+    assert_eq!(
+        current().await.as_deref(),
+        Some("five"),
+        "an older unkeyed answer won"
+    );
+    learn("four", 4, wide).await;
+    assert_eq!(current().await.as_deref(), Some("five"));
+    learn("fresh", 1, narrow).await;
+    assert_eq!(
+        current().await.as_deref(),
+        Some("fresh"),
+        "another width: newer report wins"
+    );
+    Ok(())
+}
+
+/// **Idle and surplus streams are dropped**, least recently used first.
+#[test]
+fn tracked_streams_are_bounded() {
+    use super::super::discovery::{prune_for_test, state_used_at};
+    let now = std::time::Instant::now();
+    let key = |n: usize| ("t".to_string(), "ns".to_string(), format!("s{n}"));
+    let mut streams = std::collections::HashMap::new();
+    streams.insert(key(0), state_used_at(now - Duration::from_secs(700)));
+    for n in 1..=5 {
+        streams.insert(
+            key(n),
+            state_used_at(now - Duration::from_secs(10 * (6 - n as u64))),
+        );
+    }
+    let dropped = prune_for_test(&mut streams, 3, Duration::from_secs(600), now);
+    assert!(dropped.contains(&key(0)), "idle stream kept");
+    assert_eq!(streams.len(), 3);
+    // The most recently used survive.
+    for n in 3..=5 {
+        assert!(streams.contains_key(&key(n)), "s{n} was dropped");
+    }
+}

@@ -402,9 +402,13 @@ for piece in report.failed() {
 - Not idempotent. Use [`IdempotentProducer`](#idempotent-producers) when a
   re-send must not duplicate.
 
-Owners are looked up from the cluster on a stream's first publish and refreshed
-every few seconds or soon after one turns out wrong, so even the first batch, and
-a publish that asks for no ack (`AckMode::None`), goes to the leader. A write that
+The first publish to a stream asks the cluster who leads each shard (the pieces
+of a batch racing it wait for the answer, up to a second), and the answer is
+refreshed in the background every few seconds or soon after a leader turns out
+wrong, so even the first batch, and a publish that asks for no ack
+(`AckMode::None`), goes to the leader. A cluster that does not answer in time
+costs one wait and the batch is forwarded as before. Leaders are connected on
+first use, so an unreachable one only affects its own shards. A write that
 lands while leadership is moving may still be forwarded by the old leader. With
 `AckMode::None`, two calls can reach the broker out of order if the route for a
 shard switches between them; await acks where order across calls matters. After

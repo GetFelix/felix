@@ -220,20 +220,25 @@ impl ClusterClient {
         ack: AckMode,
         width: Option<Arc<Width>>,
     ) -> Result<Option<u64>> {
-        // Owners are asked for on a stream's first publish and again when
-        // they are old or a publish found them wrong, so a publish that never
-        // sees an ack still reaches the owner.
+        // The first publish to a stream asks the cluster who owns its shards
+        // (and the ones racing it wait), so a batch with no ack to learn from
+        // still reaches its owner. See `discovery`.
         let stream_key: super::StreamKey = (shard.0.clone(), shard.1.clone(), shard.2.clone());
-        if self.claim_discovery(&stream_key) {
-            self.discover_owners(&stream_key).await;
-        }
-        let routed = self.owners.read().await.get(&shard).map(|owner| {
-            (
-                Arc::clone(&owner.client),
-                owner.node_id.clone(),
-                owner.width,
-            )
-        });
+        let state = self.discovery.state(&stream_key).await;
+        self.discovery.ensure(&stream_key, &state).await;
+        let routed = match self.discovery.route(&shard, &state).await {
+            None => None,
+            Some(owner) => match owner.connect(&self.nodes).await {
+                Ok(client) => Some((client, owner.node_id.clone(), owner.width)),
+                Err(err) => {
+                    // Not an error for the publish: the entry broker forwards.
+                    tracing::debug!(owner = %owner.node_id, error = %err, "shard owner unreachable");
+                    self.owners.write().await.remove(&shard);
+                    self.discovery.mark_unreachable(&stream_key, &owner.node_id);
+                    None
+                }
+            },
+        };
         // An owner learned under another width, or under none, owns a shard of
         // the stream as it was or as nobody checked: dropped, and the batch
         // goes through the entry broker.
@@ -242,12 +247,23 @@ impl ClusterClient {
                 if learned != Some((width.shards, width.routing)) =>
             {
                 self.owners.write().await.remove(&shard);
-                self.mark_owners_stale(&stream_key);
+                self.discovery.mark_stale(&stream_key);
                 None
             }
             (routed, _) => routed.map(|(client, node_id, _)| (client, node_id)),
         };
-        let learned = width.as_ref().map(|width| (width.shards, width.routing));
+        // An unkeyed publish learns shard 0's owner under the stream's width too
+        // when it is known, so keyed and unkeyed publishes share one entry.
+        let learned = match &width {
+            Some(width) => Some((width.shards, width.routing)),
+            None => {
+                let (_, w) = self
+                    .widths
+                    .shard_of(&shard.0, &shard.1, &shard.2, b"")
+                    .await;
+                w.learned.then_some((w.shards, w.routing))
+            }
+        };
         let payload = match routed {
             None => payload,
             Some((owner, node_id)) => {

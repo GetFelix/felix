@@ -10,9 +10,12 @@
 //! the shared pool past that cap, which is the isolation the per-shard
 //! streams exist for.
 //!
-//! Owners come from the cluster's shard-owner discovery on a stream's first
-//! publish, again every few seconds and soon after a publish finds one wrong,
-//! and from acks that name the owner of a forwarded batch. That holds for
+//! Owners come from the cluster's shard-owner discovery, which the first
+//! publish to a stream waits for (the pieces racing it wait too, up to a
+//! second), and which refreshes in the background every few seconds and soon
+//! after a publish finds an owner wrong; they also come from acks that name the
+//! owner of a forwarded batch. If the cluster does not answer in time the
+//! batch is forwarded, as before. That holds for
 //! [`AckMode::None`](felix_wire::AckMode::None) too, which gets no ack to learn
 //! from. It is a routing snapshot: a write that lands while ownership is moving
 //! may still be forwarded by a broker that is no longer the owner, which is

@@ -73,12 +73,13 @@ async fn a_fenced_owner_is_forgotten_and_the_publish_rerouted() -> Result<()> {
     let owner_client = cluster.connect_to(old_owner.addr).await?;
     cluster.owners.write().await.insert(
         shard0(),
-        Owner {
+        std::sync::Arc::new(Owner {
             node_id: "broker-old".into(),
             generation: 1,
-            client: owner_client,
+            addr: old_owner.addr,
+            client: tokio::sync::OnceCell::new_with(Some(owner_client)),
             width: None,
-        },
+        }),
     );
 
     cluster

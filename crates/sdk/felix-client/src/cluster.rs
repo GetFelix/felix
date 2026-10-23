@@ -54,6 +54,7 @@ mod batch;
 mod cache;
 mod cache_watch;
 mod commit;
+mod discovery;
 mod follow;
 mod groups;
 mod identity;
@@ -167,11 +168,10 @@ pub struct ClusterClient {
     /// shard 0's owner. An unkeyed publish resolves to shard 0, a keyed one to
     /// `felix_wire::routing::shard_for` -- the function the broker routes
     /// with, shared so the two cannot drift.
-    owners: RwLock<HashMap<ShardKey, Owner>>,
-    /// When each stream's shard owners were last asked of the cluster, and
-    /// whether something since said they may have moved. See
-    /// `routing::OWNER_TTL`.
-    discovered: std::sync::Mutex<HashMap<StreamKey, Discovered>>,
+    owners: Arc<RwLock<HashMap<ShardKey, Arc<Owner>>>>,
+    /// Asks the cluster who owns a stream's shards, so a shard's first batch
+    /// and publishes that get no ack reach the owner. See `discovery`.
+    discovery: discovery::Discovery,
     /// How many shards each stream was placed with and how keys map onto
     /// them, as the cluster last said.
     ///
@@ -266,14 +266,16 @@ impl ClusterClient {
         }
         let client = nodes.connect_any(&endpoints).await?;
         let holder = Arc::new(RwLock::new(client));
+        let owners = Arc::new(RwLock::new(HashMap::new()));
+        let widths = cluster_widths(&holder);
         let cluster = Self {
+            discovery: discovery::Discovery::new(&holder, &widths, &nodes, &owners),
             seeds,
             endpoints: RwLock::new(endpoints),
             policy,
-            widths: cluster_widths(&holder),
+            widths,
             client: holder,
-            owners: RwLock::new(HashMap::new()),
-            discovered: std::sync::Mutex::new(HashMap::new()),
+            owners,
             group_routes: RwLock::new(HashMap::new()),
             cache_routes: RwLock::new(HashMap::new()),
             nodes,
@@ -470,24 +472,35 @@ type StreamKey = (String, String, String);
 /// One shard of one stream, as the owner cache keys it.
 type ShardKey = (String, String, String, u32);
 
-/// When a stream's owners were last discovered.
-struct Discovered {
-    at: std::time::Instant,
-    /// A publish since found a cached owner or width stale.
-    stale: bool,
-}
-
 /// The broker that owns one shard of a stream, and a client connected to it.
+///
+/// Learned from a forwarded ack the client is already connected; discovered
+/// from the cluster's routing snapshot it connects on first use.
 struct Owner {
     node_id: String,
     /// The ownership epoch this was true for. A lower one is an older answer
     /// arriving late, and must not overwrite a newer one -- two brokers
     /// mid-rebalance would otherwise take turns replacing each other.
     generation: u64,
-    client: Arc<Client>,
-    /// The stream's width when this was learned; `None` for shard 0 of an
-    /// unkeyed publish.
+    addr: SocketAddr,
+    client: tokio::sync::OnceCell<Arc<Client>>,
+    /// The stream's width when this was learned; `None` for an owner learned
+    /// from an unkeyed publish before the stream's width was known.
     width: Option<(u32, felix_wire::routing::ShardRouting)>,
+}
+
+impl Owner {
+    /// A client connected to this owner, connecting if none is yet.
+    async fn connect(&self, nodes: &nodes::Nodes) -> Result<Arc<Client>> {
+        self.client
+            .get_or_try_init(|| async {
+                tokio::time::timeout(discovery::CONNECT_TIMEOUT, nodes.connect_to(self.addr))
+                    .await
+                    .map_err(|_| anyhow::anyhow!("connecting to {} timed out", self.addr))?
+            })
+            .await
+            .cloned()
+    }
 }
 
 #[cfg(test)]
