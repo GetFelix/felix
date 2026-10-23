@@ -664,6 +664,8 @@ SH
 # Pauses placement afterwards so it does not move them back while measuring.
 balance_leaders() {
   local s="$1" deadline out first="" last="" total=0 n
+  # A pause stops a started move from progressing, so lift it while balancing.
+  [ "${PLACEMENT_PAUSED}" = 0 ] || placement_resume
   deadline=$(( $(date +%s) + BAL_WAIT_SECS ))
   while :; do
     out="$(cp_remote "STREAM='${s}'; BATCH=${BAL_BATCH}
@@ -695,7 +697,8 @@ echo __RUNOK__" 2>/dev/null | extract_between BAL)"
 }
 
 # placement_pause / placement_resume: stop or allow placement's own moves.
-# Operator moves ignore a pause; a failed leader is still replaced under one.
+# An operator move starts under a pause but does not progress until resumed; a
+# failed leader is still replaced under one.
 PLACEMENT_PAUSED=0
 placement_pause() {
   cp_remote 'curl -fsS -X POST -H "Authorization: Bearer $t" "$u/v1/placement/pause" >/dev/null && echo __RUNOK__' >/dev/null 2>&1 \
