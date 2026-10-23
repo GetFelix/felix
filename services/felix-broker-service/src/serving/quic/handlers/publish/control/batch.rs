@@ -21,7 +21,7 @@ use crate::serving::quic::handlers::publish::ack::{
 };
 use crate::serving::quic::handlers::publish::commit_ack::{AckRequest, PendingAck};
 use crate::serving::quic::handlers::publish::ingress::{
-    PublishTarget, enqueue_acked_tenant_publish,
+    Enqueued, PublishTarget, enqueue_acked_tenant_publish,
 };
 use crate::serving::quic::handlers::publish::route::{
     DeclaredWidth, PublishRoute, UNKEYED_SHARD, internal_ack, local_shard_key, needs_quorum,
@@ -413,12 +413,14 @@ pub(crate) async fn handle_publish_batch_message(
             t_histogram!("felix_broker_ingress_enqueue_ns").record(fanout_ns as f64);
         }
         match enqueue_result {
-            Ok(true) => {
+            // A parked publish is counted when it is admitted.
+            Ok(Enqueued::Parked) => {}
+            Ok(Enqueued::Queued) => {
                 if ack_mode == felix_wire::AckMode::None {
                     count_publish_accepted("accepted", payload_bytes.iter().sum::<usize>() as u64);
                 }
             }
-            Ok(false) => {
+            Ok(Enqueued::Dropped) => {
                 count_publish("dropped");
                 if ack_mode != felix_wire::AckMode::None
                     && pending.take().is_none_or(PendingAck::refuse)

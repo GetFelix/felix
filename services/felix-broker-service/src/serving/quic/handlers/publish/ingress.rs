@@ -17,7 +17,7 @@ use crate::serving::quic::handlers::publish::ack::EnqueuePolicy;
 use crate::serving::quic::handlers::publish::admission::{AdmissionPermit, IdentityLimits};
 use crate::serving::quic::handlers::publish::commit_ack::PendingAck;
 use crate::serving::quic::handlers::publish::scheduler::{Rejected, Submitted, Waited};
-use crate::serving::quic::telemetry::{count_publish, t_counter, t_gauge};
+use crate::serving::quic::telemetry::{count_publish, count_publish_accepted, t_counter, t_gauge};
 use crate::shards::lifecycle::fence::FenceGuard;
 
 pub(crate) enum PublishTarget {
@@ -100,13 +100,15 @@ pub(crate) async fn enqueue_publish(
 }
 
 /// How [`enqueue`] placed a job.
-enum Enqueued {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Enqueued {
     Queued,
     /// Shed under `Drop`.
     Dropped,
     /// Parked in the queue, its wait handed to the stream's
     /// [`ParkedPublishes`](super::ParkedPublishes). It holds its place in line and its byte budget;
-    /// the parked wait answers it if it is never admitted.
+    /// the parked wait answers it if it is never admitted, and counts an
+    /// unacked one accepted only once it is.
     Parked,
 }
 
@@ -282,6 +284,11 @@ async fn enqueue(
             drop(slot);
             settle_parked(waited, policy, pending, &tenant, || {
                 recorded(&identity, &tenant);
+                // The read loop counts what it queued; a parked unacked
+                // publish is counted here, once it is.
+                if policy == EnqueuePolicy::Backpressure {
+                    count_publish_accepted("accepted", job_bytes as u64);
+                }
             });
         });
         return Ok(Enqueued::Parked);
@@ -367,11 +374,13 @@ pub(crate) async fn enqueue_tenant_publish(
     policy: EnqueuePolicy,
     cancel: Option<watch::Receiver<bool>>,
 ) -> Result<bool> {
-    enqueue_acked_tenant_publish(publish_ctx, tenant, job, policy, cancel, &mut None).await
+    let enqueued =
+        enqueue_acked_tenant_publish(publish_ctx, tenant, job, policy, cancel, &mut None).await?;
+    Ok(enqueued != Enqueued::Dropped)
 }
 
 /// [`enqueue_tenant_publish`] with the publish's `pending` commit ack, if it
-/// has one, which the caller arms once this returns `Ok(true)`.
+/// has one, which the caller arms once this returns `Queued` or `Parked`.
 ///
 /// When the job has to wait for room and the stream can park it, `pending`
 /// is taken and armed by the parked wait instead; the caller finds it `None`.
@@ -382,7 +391,7 @@ pub(crate) async fn enqueue_acked_tenant_publish(
     policy: EnqueuePolicy,
     mut cancel: Option<watch::Receiver<bool>>,
     pending: &mut Option<PendingAck>,
-) -> Result<bool> {
+) -> Result<Enqueued> {
     let messages = job.payloads.len() as u64;
     let bytes = job.payloads.iter().map(Bytes::len).sum::<usize>() as u64;
     let rates = &publish_ctx.tenant_rates;
@@ -391,7 +400,7 @@ pub(crate) async fn enqueue_acked_tenant_publish(
             EnqueuePolicy::Drop => {
                 tenants::record_throttled(tenant, tenants::THROTTLE_DROPPED);
                 t_counter!("felix_broker_ingress_dropped_total").increment(1);
-                return Ok(false);
+                return Ok(Enqueued::Dropped);
             }
             EnqueuePolicy::Fail | EnqueuePolicy::Wait => {
                 tenants::record_throttled(tenant, tenants::THROTTLE_REFUSED);
@@ -415,8 +424,7 @@ pub(crate) async fn enqueue_acked_tenant_publish(
             }
         }
     }
-    let enqueued = enqueue(publish_ctx, tenant, job, policy, cancel, true, pending).await?;
-    Ok(!matches!(enqueued, Enqueued::Dropped))
+    enqueue(publish_ctx, tenant, job, policy, cancel, true, pending).await
 }
 
 /// Wait for `bytes` from the identity's share, the connection's ceiling and

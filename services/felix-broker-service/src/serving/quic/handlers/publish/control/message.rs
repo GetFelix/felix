@@ -22,7 +22,7 @@ use crate::serving::quic::handlers::publish::ack::{
 };
 use crate::serving::quic::handlers::publish::commit_ack::{AckRequest, PendingAck};
 use crate::serving::quic::handlers::publish::ingress::{
-    PublishTarget, enqueue_acked_tenant_publish,
+    Enqueued, PublishTarget, enqueue_acked_tenant_publish,
 };
 use crate::serving::quic::handlers::publish::route::{
     internal_ack, needs_quorum, publish_target, resolve_route, resolve_shard, targets_durable,
@@ -306,12 +306,14 @@ pub(crate) async fn handle_publish_message(
     );
     async move {
         match enqueue_result {
-            Ok(true) => {
+            // A parked publish is counted when it is admitted.
+            Ok(Enqueued::Parked) => {}
+            Ok(Enqueued::Queued) => {
                 if ack_mode == felix_wire::AckMode::None {
                     count_publish_accepted("accepted", payload_len as u64);
                 }
             }
-            Ok(false) => {
+            Ok(Enqueued::Dropped) => {
                 count_publish("dropped");
                 if ack_mode != felix_wire::AckMode::None
                     && pending.take().is_none_or(PendingAck::refuse)
