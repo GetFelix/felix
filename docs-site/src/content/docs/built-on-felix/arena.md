@@ -18,7 +18,7 @@ not built yet; the development stack runs one broker with a stand-in identity
 provider. The sections below describe the full design and say which parts run
 today.
 
-![A felix-arena match: Coral and Violet hover-craft trading fire around the crystal at the centre of the arena, with the score, the kill feed and the hull and boost bars](/built-on-felix/arena-match.webp?v=1)
+![A felix-arena match: Coral and Violet hover-craft trading fire around the crystal at the centre of the arena, with the score, the kill feed and the hull and boost bars](/built-on-felix/arena-match.webp?v=2)
 
 ## How it uses Felix
 
@@ -56,9 +56,9 @@ in-memory replay ring, so a kill cam does not read from disk. Any kill in the
 feed can be replayed the same way, from this match or an earlier one, until
 retention trims the records.
 
-![The moment of a kill: the player's craft is destroyed and waits to respawn while the fight goes on](/built-on-felix/arena-kill.webp?v=1)
+![The moment of a kill: the player's craft is destroyed and waits to respawn while the fight goes on](/built-on-felix/arena-kill.webp?v=2)
 
-![The kill cam replaying that kill at half speed from the match's log, with the killer and the victim named and keys to switch between the victim's view, the killer's and an orbit](/built-on-felix/arena-killcam.webp?v=1)
+![The kill cam replaying that kill from the match's log at the moment the victim explodes, with the killer and the victim named and keys to switch between the victim's view, the killer's and an orbit](/built-on-felix/arena-killcam.webp?v=2)
 
 Inputs go on an in-memory stream because an input 40 ms old is worthless and
 the next one replaces it. Each input repeats the previous two, so a dropped
