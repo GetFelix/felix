@@ -84,7 +84,7 @@ impl Client {
             server_features,
             server_features_hi,
             &cache_request_counter,
-            self.runtime_config.max_frame_bytes,
+            self.runtime_config,
         );
         Ok(Client {
             dialled: self.dialled,

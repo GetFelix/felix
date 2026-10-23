@@ -7,10 +7,24 @@ use bytes::BytesMut;
 use felix_wire::Message;
 
 use super::Client;
+use crate::config::ClientRuntimeConfig;
 use crate::connection::{Credentials, NodeConnections, OpenedStream};
 use crate::frame_io::{read_message_with_limit, write_message};
 
 impl Client {
+    /// Runs one step of a request/response exchange with the broker, failing
+    /// after `connect_timeout` so an unresponsive broker cannot hold the caller.
+    pub(crate) async fn bounded<T>(
+        &self,
+        what: &str,
+        step: impl Future<Output = Result<T>>,
+    ) -> Result<T> {
+        let limit = self.runtime_config.connect_timeout;
+        tokio::time::timeout(limit, step)
+            .await
+            .map_err(|_| anyhow::anyhow!("{what} timed out after {limit:?}"))?
+    }
+
     /// True if this broker answers [`Client::topology`].
     pub fn supports_topology(&self) -> bool {
         felix_wire::supports_feature(self.server_features, felix_wire::FEATURE_TOPOLOGY)
@@ -60,14 +74,23 @@ impl Client {
             mut recv,
             lease: _lease,
             ..
-        } = self.open_event_stream().await?;
+        } = self
+            .bounded("open a stream", self.open_event_stream())
+            .await?;
         write_message(&mut send, Message::Topology)
             .await
             .context("send topology request")?;
         let mut scratch = BytesMut::with_capacity(64 * 1024);
-        let answer =
-            read_message_with_limit(&mut recv, &mut scratch, self.runtime_config.max_frame_bytes)
-                .await?;
+        let answer = self
+            .bounded(
+                "read the broker's answer",
+                read_message_with_limit(
+                    &mut recv,
+                    &mut scratch,
+                    self.runtime_config.max_frame_bytes,
+                ),
+            )
+            .await?;
         let _ = send.finish();
         match answer {
             Some(Message::TopologyView { brokers }) => Ok(brokers),
@@ -135,7 +158,7 @@ impl Client {
             &self.event_node,
             &self.credentials,
             request_id,
-            self.runtime_config.max_frame_bytes,
+            self.runtime_config,
             tenant_id,
             namespace,
             stream,
@@ -164,7 +187,9 @@ impl Client {
             mut recv,
             lease: _lease,
             ..
-        } = self.open_event_stream().await?;
+        } = self
+            .bounded("open a stream", self.open_event_stream())
+            .await?;
         let request_id = self
             .cache_request_counter
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -180,9 +205,16 @@ impl Client {
         .await
         .context("send cache shards request")?;
         let mut scratch = BytesMut::with_capacity(4 * 1024);
-        let answer =
-            read_message_with_limit(&mut recv, &mut scratch, self.runtime_config.max_frame_bytes)
-                .await?;
+        let answer = self
+            .bounded(
+                "read the broker's answer",
+                read_message_with_limit(
+                    &mut recv,
+                    &mut scratch,
+                    self.runtime_config.max_frame_bytes,
+                ),
+            )
+            .await?;
         let _ = send.finish();
         match answer {
             Some(Message::CacheShardsView { shards, .. }) => Ok(shards),
@@ -238,7 +270,9 @@ impl Client {
             mut recv,
             lease: _lease,
             ..
-        } = self.open_event_stream().await?;
+        } = self
+            .bounded("open a stream", self.open_event_stream())
+            .await?;
         let request_id = self
             .cache_request_counter
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -255,9 +289,16 @@ impl Client {
         .await
         .context("send shard owners request")?;
         let mut scratch = BytesMut::with_capacity(4 * 1024);
-        let answer =
-            read_message_with_limit(&mut recv, &mut scratch, self.runtime_config.max_frame_bytes)
-                .await?;
+        let answer = self
+            .bounded(
+                "read the broker's answer",
+                read_message_with_limit(
+                    &mut recv,
+                    &mut scratch,
+                    self.runtime_config.max_frame_bytes,
+                ),
+            )
+            .await?;
         let _ = send.finish();
         match answer {
             Some(Message::ShardOwnersView { owners, .. }) => Ok(owners),
@@ -287,16 +328,21 @@ pub(super) async fn ask_stream_routing(
     event_node: &NodeConnections,
     credentials: &Credentials,
     request_id: u64,
-    max_frame_bytes: usize,
+    runtime_config: ClientRuntimeConfig,
     tenant_id: &str,
     namespace: &str,
     stream: &str,
 ) -> Result<(u32, felix_wire::routing::ShardRouting)> {
-    let mut opened = event_node.open_as(credentials).await?;
+    let mut opened = tokio::time::timeout(
+        runtime_config.connect_timeout,
+        event_node.open_as(credentials),
+    )
+    .await
+    .context("open a stream to ask for the routing timed out")??;
     let answer = ask_stream_routing_on(
         &mut opened,
         request_id,
-        max_frame_bytes,
+        runtime_config,
         tenant_id,
         namespace,
         stream,
@@ -311,11 +357,12 @@ pub(super) async fn ask_stream_routing(
 pub(super) async fn ask_stream_routing_on(
     opened: &mut OpenedStream,
     request_id: u64,
-    max_frame_bytes: usize,
+    runtime_config: ClientRuntimeConfig,
     tenant_id: &str,
     namespace: &str,
     stream: &str,
 ) -> Result<(u32, felix_wire::routing::ShardRouting)> {
+    let max_frame_bytes = runtime_config.max_frame_bytes;
     write_message(
         &mut opened.send,
         Message::StreamShards {
@@ -328,7 +375,12 @@ pub(super) async fn ask_stream_routing_on(
     .await
     .context("send stream shards request")?;
     let mut scratch = BytesMut::with_capacity(4 * 1024);
-    let answer = read_message_with_limit(&mut opened.recv, &mut scratch, max_frame_bytes).await?;
+    let answer = tokio::time::timeout(
+        runtime_config.connect_timeout,
+        read_message_with_limit(&mut opened.recv, &mut scratch, max_frame_bytes),
+    )
+    .await
+    .context("the broker did not answer the routing request in time")??;
     match answer {
         Some(Message::StreamShardsView {
             shards,

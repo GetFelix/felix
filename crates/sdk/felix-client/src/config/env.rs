@@ -19,6 +19,12 @@ impl ClientConfig {
         {
             config.publish_shard_streams = value;
         }
+        if let Some(value) = read_u64_env("FELIX_CONNECT_TIMEOUT_MS") {
+            config.connect_timeout = std::time::Duration::from_millis(value);
+        }
+        if let Some(value) = read_u64_env("FELIX_FINISH_TIMEOUT_MS") {
+            config.finish_timeout = std::time::Duration::from_millis(value);
+        }
         if let Some(value) = read_usize_env("FELIX_PUBLISH_CHUNK_BYTES") {
             config.publish_chunk_bytes = value;
         }
