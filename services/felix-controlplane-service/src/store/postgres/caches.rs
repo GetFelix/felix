@@ -134,6 +134,7 @@ pub(super) async fn insert_cache(
                 cache.cache
             )));
         }
+        Err(err) if let Some(refused) = super::reused_name(&err) => return Err(refused),
         Err(err) => return Err(StoreError::Unexpected(err.into())),
     }
 

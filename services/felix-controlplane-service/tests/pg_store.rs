@@ -98,7 +98,9 @@ async fn reset_postgres(url: &str, schema: &str) -> Result<(), sqlx::Error> {
     let truncate = format!(
         "TRUNCATE {schema_ident}.tenant_changes, {schema_ident}.namespace_changes, \
          {schema_ident}.stream_changes, {schema_ident}.cache_changes, {schema_ident}.streams, \
-         {schema_ident}.caches, {schema_ident}.namespaces, {schema_ident}.tenants RESTART IDENTITY CASCADE",
+         {schema_ident}.caches, {schema_ident}.namespaces, {schema_ident}.tenants, \
+         {schema_ident}.deleted_stream_names, {schema_ident}.deleted_cache_names \
+         RESTART IDENTITY CASCADE",
     );
     // Same generated-schema identifier as `ensure_schema`; it cannot be bound as a parameter.
     sqlx::query(AssertSqlSafe(truncate))

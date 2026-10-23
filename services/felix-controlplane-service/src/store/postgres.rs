@@ -346,6 +346,40 @@ impl ControlPlaneStore for PostgresStore {
         caches::cache_tombstones(self).await
     }
 
+    async fn deleted_stream_names(&self) -> StoreResult<Vec<StreamKey>> {
+        let rows: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT tenant_id, namespace, stream FROM deleted_stream_names \
+             ORDER BY tenant_id, namespace, stream",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(tenant_id, namespace, stream)| StreamKey {
+                tenant_id,
+                namespace,
+                stream,
+            })
+            .collect())
+    }
+
+    async fn deleted_cache_names(&self) -> StoreResult<Vec<CacheKey>> {
+        let rows: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT tenant_id, namespace, cache FROM deleted_cache_names \
+             ORDER BY tenant_id, namespace, cache",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(tenant_id, namespace, cache)| CacheKey {
+                tenant_id,
+                namespace,
+                cache,
+            })
+            .collect())
+    }
+
     async fn cache_changes(&self, since: u64) -> StoreResult<ChangeSet<CacheChange>> {
         caches::cache_changes(self, since).await
     }
@@ -983,6 +1017,17 @@ async fn ensure_namespace(
         Ok(())
     } else {
         Err(StoreError::NotFound("namespace".into()))
+    }
+}
+
+/// The refusal of a create reusing a deleted name, raised by migration
+/// 0035's trigger in the words `store::reused_name` uses.
+fn reused_name(err: &sqlx::Error) -> Option<StoreError> {
+    match err {
+        sqlx::Error::Database(db_err) if db_err.code().as_deref() == Some("FX447") => {
+            Some(StoreError::Conflict(db_err.message().to_string()))
+        }
+        _ => None,
     }
 }
 

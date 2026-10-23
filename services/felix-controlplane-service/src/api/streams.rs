@@ -87,7 +87,7 @@ pub(crate) async fn list_streams(
         (status = 201, description = "Stream created", body = Stream),
         (status = 200, description = "Stream already exists with this configuration; nothing changed", body = Stream),
         (status = 404, description = "Tenant or namespace not found", body = crate::api::types::ErrorResponse),
-        (status = 409, description = "Stream already exists with a different configuration, or `jump_hash` routing was asked for before the fleet finalized it", body = crate::api::types::ErrorResponse),
+        (status = 409, description = "Stream already exists with a different configuration, `jump_hash` routing was asked for before the fleet finalized it, or a stream of this name was deleted before the fleet finalized `stream_incarnations`", body = crate::api::types::ErrorResponse),
         (status = 503, description = "`busy`: on Postgres, other writes to the same feed held it for more than 5 s and nothing was written, so retry. `unavailable`: on Raft, no quorum committed the write in time, and it may still land, so do not blindly retry", body = crate::api::types::ErrorResponse)
     )
 )]
@@ -104,6 +104,9 @@ pub(crate) async fn create_stream(
     let stream = stream_to_create(&state, tenant_id, namespace, body).await?;
     match state.store.create_stream(stream.clone()).await {
         Ok(created) => Ok((StatusCode::CREATED, Json(created))),
+        Err(ref err) if let Some(refusal) = crate::store::reused_name_refusal(err) => {
+            Err(api_conflict("conflict", refusal))
+        }
         Err(StoreError::Conflict(_)) => match state.store.get_stream(&stream_key(&stream)).await {
             Ok(existing) if same_stream(&existing, &stream, asked) => {
                 Ok((StatusCode::OK, Json(existing)))

@@ -291,6 +291,7 @@ async fn a_pass_after_the_last_broker_registers_places_every_copy() {
         })
         .await
         .expect("drop the default stream");
+    store.forget_deleted_names().await;
     store
         .create_stream(replicated_stream("orders", 11, 3))
         .await

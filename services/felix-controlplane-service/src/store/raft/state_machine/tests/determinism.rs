@@ -179,6 +179,7 @@ async fn a_restored_machine_can_fail_over_on_the_leaders_reports() {
             namespace: namespace("t-a", "ns-1"),
         },
         MetaCommand::CreateStream {
+            names: false,
             stream: stream("t-a", "ns-1", "orders"),
             incarnations: false,
         },
@@ -270,6 +271,7 @@ async fn a_restored_stream_keeps_its_routing() {
     jumpy.routing = crate::model::StreamRouting::JumpHash;
     original
         .dispatch(MetaCommand::CreateStream {
+            names: false,
             stream: jumpy,
             incarnations: false,
         })
@@ -333,6 +335,7 @@ async fn a_level_10_field_raises_the_mark_and_survives_a_snapshot() {
 
     // `acme` has no namespaces; the entry's field is what counts.
     let flagged = MetaCommand::DeleteTenant {
+        names: false,
         unassign: false,
         tenant_id: "missing".to_string(),
         take_shards: true,
@@ -442,6 +445,7 @@ async fn storage_identities_apply_identically() {
             namespace: namespace("t-a", "ns-1"),
         },
         MetaCommand::CreateStream {
+            names: false,
             stream: stream("t-a", "ns-1", "orders"),
             incarnations: false,
         },
@@ -547,25 +551,30 @@ async fn cache_entries_from_level_13_store_what_level_13_stores() {
     // As a level-13 proposer writes them: no flag, no incarnation.
     let legacy = [
         MetaCommand::CreateCache {
+            names: false,
             cache: cache("acme", "ns", "single"),
             incarnations: false,
         },
         MetaCommand::CreateResources {
+            names: false,
             streams: Vec::new(),
             caches: vec![cache("acme", "ns", "batched")],
             incarnations: false,
         },
         MetaCommand::DeleteCache {
+            names: false,
             unassign: false,
             key: key("ns", "single"),
             take_reports: true,
             incarnations: false,
         },
         MetaCommand::CreateCache {
+            names: false,
             cache: cache("acme", "doomed", "inside"),
             incarnations: false,
         },
         MetaCommand::DeleteNamespace {
+            names: false,
             unassign: false,
             key: NamespaceKey {
                 tenant_id: "acme".to_string(),
@@ -614,6 +623,7 @@ async fn cache_entries_from_level_13_store_what_level_13_stores() {
 
     // Flagged entries decide from their own fields.
     let unproposed = apply(MetaCommand::CreateCache {
+        names: false,
         cache: cache("acme", "ns", "unproposed"),
         incarnations: true,
     })
@@ -623,6 +633,7 @@ async fn cache_entries_from_level_13_store_what_level_13_stores() {
         "{unproposed:?}"
     );
     let created = apply(MetaCommand::CreateCache {
+        names: false,
         cache: Cache {
             incarnation: 7,
             ..cache("acme", "ns", "single")
@@ -635,6 +646,7 @@ async fn cache_entries_from_level_13_store_what_level_13_stores() {
         "{created:?}"
     );
     apply(MetaCommand::DeleteCache {
+        names: false,
         unassign: false,
         key: key("ns", "single"),
         take_reports: true,
@@ -692,12 +704,14 @@ async fn a_flagged_stream_create_decides_from_its_proposal() {
         other => panic!("{other:?}"),
     };
     let flagged = apply(MetaCommand::CreateStream {
+        names: false,
         stream: stream("acme", "ns", "flagged"),
         incarnations: true,
     })
     .await;
     assert_eq!(incarnation(flagged), 0);
     let unflagged = apply(MetaCommand::CreateStream {
+        names: false,
         stream: stream("acme", "ns", "unflagged"),
         incarnations: false,
     })
@@ -750,25 +764,30 @@ async fn stream_entries_from_a_level_8_proposer_store_what_level_8_stores() {
             feature: felix_common::fleet::STREAM_INCARNATIONS.name().to_string(),
         },
         MetaCommand::CreateStream {
+            names: false,
             stream: stream("acme", "ns", "single"),
             incarnations: false,
         },
         MetaCommand::CreateResources {
+            names: false,
             streams: vec![stream("acme", "ns", "batched")],
             caches: Vec::new(),
             incarnations: false,
         },
         MetaCommand::DeleteStream {
+            names: false,
             unassign: false,
             key: key("ns", "single"),
             take_reports: false,
             incarnations: false,
         },
         MetaCommand::CreateStream {
+            names: false,
             stream: stream("acme", "doomed", "inside"),
             incarnations: false,
         },
         MetaCommand::DeleteNamespace {
+            names: false,
             unassign: false,
             key: NamespaceKey {
                 tenant_id: "acme".to_string(),
@@ -807,6 +826,7 @@ async fn stream_entries_from_a_level_8_proposer_store_what_level_8_stores() {
 
     // An unflagged create that proposes one, as levels 10 to 13 wrote it.
     let proposed = apply(MetaCommand::CreateStream {
+        names: false,
         stream: Stream {
             incarnation: 9,
             ..stream("acme", "ns", "proposed")

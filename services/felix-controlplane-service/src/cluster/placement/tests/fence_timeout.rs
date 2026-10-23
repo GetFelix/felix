@@ -157,6 +157,7 @@ async fn a_watched_fence_is_given_up_through_the_store() {
         })
         .await
         .expect("drop the three-shard stream");
+    store.forget_deleted_names().await;
     store
         .create_stream(replicated_stream("orders", 1, 2))
         .await

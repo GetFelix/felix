@@ -18,6 +18,7 @@ async fn led_by_x(silent_for_ms: u64) -> InMemoryStore {
         })
         .await
         .expect("drop the three-shard stream");
+    store.forget_deleted_names().await;
     store
         .create_stream(replicated_stream("orders", 1, 3))
         .await

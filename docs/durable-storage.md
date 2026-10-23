@@ -900,6 +900,18 @@ marker keeps it as deleted, as a tombstone would; for incarnation 0 the marker
 is removed, so a broker that registers its own streams can create the name
 again.
 
+**A deleted name is not created again before the finalize.** The control
+plane refuses with 409 to create a stream under a name that was deleted on
+the cluster until `stream_incarnations` is finalized, and a cache likewise
+until `cache_incarnations` is (see `docs/control-plane.md`, "Deleted
+names"). At incarnation 0 the new stream would open the deleted one's
+directories on every broker, each holding whatever it had of the deleted
+stream, and a new leader's first writes could disagree with records its
+followers hold as committed, which halts them as diverged
+([#1447](https://github.com/GetFelix/felix/issues/1447)). Finalizing first
+gives the new stream an incarnation and directories of its own. A new
+cluster finalizes both at its first broker registration.
+
 **A delete from before the finalize keeps the data.** A `Deleted` change with
 neither `deleted_through` nor an incarnation in its payload is of a stream
 created before incarnations and deleted before the finalize. The broker
@@ -1024,7 +1036,9 @@ What this does not cover:
 - Copies in the offload directory are not deleted.
 - A stream created again at incarnation 0, before the finalize, continues the
   deleted stream's logs on each broker, including the generation each one
-  accepted. Its shards start at the change seq, past every generation the
+  accepted. The control plane refuses that create for a name it recorded as
+  deleted, so this is left to names deleted before it recorded them (on
+  Raft, before every member reached metadata level 18). Its shards start at the change seq, past every generation the
   deleted stream reached, as incarnated streams do, and the delete puts an
   unassignment for each shard on the shard change log
   ([#1435](https://github.com/GetFelix/felix/issues/1435)). Under Raft both

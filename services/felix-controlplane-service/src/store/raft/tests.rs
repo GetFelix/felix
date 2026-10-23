@@ -569,6 +569,52 @@ async fn an_incarnated_stream_waits_for_every_member() {
     );
 }
 
+/// A member before level 18 records no deleted names and creates a deleted
+/// name again, so while one is in the group every member does; once every
+/// member has the level, a deleted name is refused until the finalize (#1447).
+#[tokio::test]
+async fn deleted_names_wait_for_every_member() {
+    use crate::model::StreamKey;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), 17).await;
+    let recreate = |name: &'static str| {
+        let store = Arc::clone(&store);
+        async move {
+            store
+                .create_stream(routed_stream(name, Default::default()))
+                .await
+                .expect("stream");
+            store
+                .delete_stream(&StreamKey {
+                    tenant_id: "t1".to_string(),
+                    namespace: "ns".to_string(),
+                    stream: name.to_string(),
+                })
+                .await
+                .expect("delete");
+            store
+                .create_stream(routed_stream(name, Default::default()))
+                .await
+        }
+    };
+
+    assert!(recreate("old").await.is_ok());
+    assert!(store.machine.levels_used() < 18);
+
+    version.store(18, std::sync::atomic::Ordering::SeqCst);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while store.group_level().await < 18 {
+        assert!(std::time::Instant::now() < deadline, "level never read");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let refused = recreate("new").await;
+    assert!(
+        matches!(&refused, Err(StoreError::Conflict(message)) if message.contains("stream_incarnations")),
+        "{refused:?}"
+    );
+    assert_eq!(store.machine.levels_used(), 18);
+}
+
 /// A member before level 17 starts an unincarnated shard at generation 0 and
 /// writes no unassignment on a delete. While one is in the group, entries are
 /// proposed that way on every member; once every member has the level, they
@@ -638,10 +684,8 @@ async fn shard_renewal_waits_for_every_member() {
     assert_eq!(place("old").await, (0, false));
     assert!(store.machine.levels_used() < 17);
 
-    version.store(
-        crate::store::raft::command::METADATA_VERSION,
-        std::sync::atomic::Ordering::SeqCst,
-    );
+    // 17 itself: a member at a later level adds that level's flags.
+    version.store(17, std::sync::atomic::Ordering::SeqCst);
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while store.group_level().await < 17 {
         assert!(std::time::Instant::now() < deadline, "level never read");
@@ -1711,7 +1755,10 @@ async fn an_older_member_is_refused_after_a_flagged_delete() {
         .add_learner_without_waiting(2, addr.clone())
         .await;
     assert!(
-        matches!(&refused, Err(err) if err.to_string().contains("the group is at 17")),
+        matches!(&refused, Err(err) if err.to_string().contains(&format!(
+            "the group is at {}",
+            crate::store::raft::command::METADATA_VERSION
+        ))),
         "{refused:?}"
     );
     version.store(
@@ -2036,10 +2083,8 @@ async fn cache_entries_are_flagged_only_once_every_member_is_at_14() {
         store.machine.levels_used()
     );
 
-    version.store(
-        crate::store::raft::command::METADATA_VERSION,
-        std::sync::atomic::Ordering::SeqCst,
-    );
+    // 14 itself: a member at a later level adds that level's flags.
+    version.store(14, std::sync::atomic::Ordering::SeqCst);
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while !store.takes_cache_incarnation_proposals().await {
         assert!(
@@ -2075,7 +2120,7 @@ async fn cache_entries_are_flagged_only_once_every_member_is_at_14() {
     store.delete_cache(&key).await.expect("delete");
     assert_eq!(
         store.machine.levels_used(),
-        17,
+        crate::store::raft::command::METADATA_VERSION,
         "the delete was not flagged"
     );
 }

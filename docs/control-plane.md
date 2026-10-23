@@ -1597,6 +1597,41 @@ starts there too (on Raft from metadata level 17), since its stream's logs
 outlive a delete and a generation starting over at 0 would be below what
 they accepted.
 
+**Deleted names.** Every stream and cache delete before the matching
+incarnations finalize, including the ones a namespace or tenant delete
+cascades to, records the name; after it nothing is recorded, since nothing is
+refused, and the set stops growing. Until
+`stream_incarnations` is finalized, creating a stream under a recorded name
+is refused with `409`, alone or in a batch, and the same for a cache until
+`cache_incarnations` is:
+
+```json
+{ "code": "conflict", "message": "a stream named orders was deleted on this cluster; finalize stream_incarnations before reusing the name (POST /v1/fleet/features/stream_incarnations/finalize)" }
+```
+
+Without an incarnation the new stream would open the deleted one's logs on
+every broker, where each replica holds whatever it had of them, and replicas
+could diverge (#1447). After the finalize the name is created again at an
+incarnation of its own. A new cluster finalizes both at its first broker
+registration, so only clusters upgraded from a release before incarnations
+see the refusal. Names are kept for good and travel with the state
+(`deleted_stream_names` and `deleted_cache_names` in the Raft snapshot and
+`migrate export`). The store decides inside the write: the memory store under
+its locks; Raft in the applied command, from the entry's `names` flag, which
+the proposer sets only once every member is at metadata level 18 (an entry
+without it records nothing and refuses nothing, as an older member applies
+it, `deleted_names_wait_for_every_member`); and Postgres in triggers
+(migration 0035), so an instance from before it records deletes too and is
+held to the refusal. Migration 0035 also
+backfills the names of `Deleted` changes still in the change tables whose
+name does not exist now. The memory and Raft stores have no such history to
+backfill from, so on them a name deleted before the store recorded names (on
+Raft, before every member reached level 18) is not refused, nor is one whose
+change Postgres had already trimmed. The contract is
+`before_the_finalize_a_deleted_name_is_not_created_again` and
+`after_the_finalize_a_deleted_name_is_created_again`, and the API answer
+`a_deleted_stream_name_is_refused_before_the_finalize`.
+
 **Tombstones.** After the finalize every stream delete records a tombstone,
 including the deletes a namespace or tenant delete cascades to. There is one
 per name, holding the highest incarnation deleted: every incarnation of the

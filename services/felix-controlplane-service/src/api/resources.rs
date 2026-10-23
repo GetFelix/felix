@@ -179,6 +179,9 @@ pub(crate) async fn create_resources(
                 }
                 return Ok((StatusCode::CREATED, Json(response)));
             }
+            Err(ref err) if let Some(refusal) = crate::store::reused_name_refusal(err) => {
+                return Err(api_conflict("conflict", refusal));
+            }
             // Something in the batch was created after it was looked at.
             // Nothing was written; look again.
             Err(StoreError::Conflict(_)) => continue,

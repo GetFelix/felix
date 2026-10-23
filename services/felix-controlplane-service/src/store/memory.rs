@@ -103,6 +103,11 @@ pub struct InMemoryStore {
     /// As `stream_tombstones`, for caches, once the fleet finalized
     /// `cache_incarnations`.
     cache_tombstones: Arc<RwLock<HashMap<CacheKey, u64>>>,
+    /// Every stream name deleted, so one is not created again before the
+    /// fleet finalized `stream_incarnations` (#1447).
+    deleted_stream_names: Arc<RwLock<std::collections::HashSet<StreamKey>>>,
+    /// As `deleted_stream_names`, for caches and `cache_incarnations`.
+    deleted_cache_names: Arc<RwLock<std::collections::HashSet<CacheKey>>>,
     /// Broker membership keyed by `node_id`, with its change log.
     ///
     /// One lock over both, unlike the entities above: a snapshot has to read
@@ -254,6 +259,14 @@ impl InMemoryStore {
         nodes::register_node(self, node, rule).await
     }
 
+    /// Forget every deleted name, so a test can replace a fixture's stream
+    /// under the same name before the finalize.
+    #[cfg(test)]
+    pub(crate) async fn forget_deleted_names(&self) {
+        self.deleted_stream_names.write().await.clear();
+        self.deleted_cache_names.write().await.clear();
+    }
+
     pub fn new(config: StoreConfig) -> Self {
         let capacity = config.change_window();
         // The change window is a retention bound for incremental sync consumers.
@@ -268,6 +281,8 @@ impl InMemoryStore {
             stream_tombstones: Arc::new(RwLock::new(HashMap::new())),
             caches: Arc::new(RwLock::new(HashMap::new())),
             cache_tombstones: Arc::new(RwLock::new(HashMap::new())),
+            deleted_stream_names: Default::default(),
+            deleted_cache_names: Default::default(),
             nodes: Arc::new(RwLock::new(NodeState {
                 records: HashMap::new(),
                 changes: ChangeLog::new(capacity),
@@ -492,6 +507,14 @@ impl ControlPlaneStore for InMemoryStore {
 
     async fn cache_tombstones(&self) -> StoreResult<Vec<crate::model::CacheTombstone>> {
         Ok(caches::cache_tombstones(self).await)
+    }
+
+    async fn deleted_stream_names(&self) -> StoreResult<Vec<StreamKey>> {
+        Ok(streams::deleted_stream_names(self).await)
+    }
+
+    async fn deleted_cache_names(&self) -> StoreResult<Vec<CacheKey>> {
+        Ok(caches::deleted_cache_names(self).await)
     }
 
     async fn cache_changes(&self, since: u64) -> StoreResult<ChangeSet<CacheChange>> {
@@ -1001,6 +1024,17 @@ pub(crate) enum Decide {
     /// before incarnations applies them; a proposal still gets one, as at
     /// levels 10 to 13. Caches are never incarnated or tombstoned.
     Legacy,
+    /// A level-18 entry: as `Entry`, and deleted names are recorded and
+    /// refused for a create before the finalize, as `Here` does.
+    Named,
+}
+
+impl Decide {
+    /// Whether this records deleted names and refuses to create one again
+    /// before incarnations are finalized (`streams::refuse_reused_name`).
+    pub(crate) fn guards_names(self) -> bool {
+        matches!(self, Self::Here | Self::Named)
+    }
 }
 
 /// Node records and their change log under one lock.

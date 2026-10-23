@@ -90,6 +90,14 @@ pub struct ExportedState {
     /// Cache tombstones, ordered by name, kept for the same reason.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) cache_tombstones: Vec<crate::model::CacheTombstone>,
+    /// Every stream name deleted, ordered, so one is not created again
+    /// before `stream_incarnations` is finalized. Absent from older snapshots
+    /// and left out while empty, as for `moves_paused`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) deleted_stream_names: Vec<crate::model::StreamKey>,
+    /// As `deleted_stream_names`, for caches.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) deleted_cache_names: Vec<crate::model::CacheKey>,
 }
 
 fn is_zero(value: &u64) -> bool {
@@ -309,6 +317,8 @@ pub async fn export_state_from(
         principal_revocations: all_principal_revocations(store).await?,
         stream_tombstones: store.stream_tombstones().await?,
         cache_tombstones: store.cache_tombstones().await?,
+        deleted_stream_names: store.deleted_stream_names().await?,
+        deleted_cache_names: store.deleted_cache_names().await?,
     })
 }
 

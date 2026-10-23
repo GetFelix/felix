@@ -65,6 +65,11 @@ const FENCE_STORAGE_LEVEL: u16 = 16;
 /// delete takes, and start a shard's first generation at the change seq at
 /// any incarnation (#1435).
 const SHARD_RENEWAL_LEVEL: u16 = 17;
+
+/// The metadata level whose members record deleted stream and cache names
+/// and refuse to create one again before its incarnations are finalized
+/// (#1447).
+const DELETED_NAMES_LEVEL: u16 = 18;
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
@@ -144,6 +149,7 @@ impl RaftStore {
             take_shards: true,
             incarnations: false,
             unassign: false,
+            names: false,
         }
         .version();
         level >= needs
@@ -243,6 +249,7 @@ impl ControlPlaneStore for RaftStore {
                 take_shards: Self::takes_shards_at(level),
                 incarnations: Self::decides_at(level),
                 unassign: level >= SHARD_RENEWAL_LEVEL,
+                names: level >= DELETED_NAMES_LEVEL,
             },
         )
         .await
@@ -288,6 +295,7 @@ impl ControlPlaneStore for RaftStore {
                 take_shards: Self::takes_shards_at(level),
                 incarnations: Self::decides_at(level),
                 unassign: level >= SHARD_RENEWAL_LEVEL,
+                names: level >= DELETED_NAMES_LEVEL,
             },
         )
         .await
@@ -333,6 +341,7 @@ impl ControlPlaneStore for RaftStore {
                 MetaCommand::CreateStream {
                     stream,
                     incarnations,
+                    names: level >= DELETED_NAMES_LEVEL,
                 },
             )
             .await?
@@ -368,6 +377,7 @@ impl ControlPlaneStore for RaftStore {
                 take_reports: Self::takes_shards_at(level),
                 incarnations: Self::decides_at(level),
                 unassign: level >= SHARD_RENEWAL_LEVEL,
+                names: level >= DELETED_NAMES_LEVEL,
             },
         )
         .await
@@ -417,6 +427,7 @@ impl ControlPlaneStore for RaftStore {
                 MetaCommand::CreateCache {
                     cache,
                     incarnations,
+                    names: level >= DELETED_NAMES_LEVEL,
                 },
             )
             .await?
@@ -448,6 +459,7 @@ impl ControlPlaneStore for RaftStore {
                 take_reports: Self::takes_shards_at(level),
                 incarnations: Self::decides_at(level),
                 unassign: level >= SHARD_RENEWAL_LEVEL,
+                names: level >= DELETED_NAMES_LEVEL,
             },
         )
         .await
@@ -460,6 +472,14 @@ impl ControlPlaneStore for RaftStore {
 
     async fn cache_tombstones(&self) -> StoreResult<Vec<crate::model::CacheTombstone>> {
         self.local().cache_tombstones().await
+    }
+
+    async fn deleted_stream_names(&self) -> StoreResult<Vec<StreamKey>> {
+        self.local().deleted_stream_names().await
+    }
+
+    async fn deleted_cache_names(&self) -> StoreResult<Vec<CacheKey>> {
+        self.local().deleted_cache_names().await
     }
 
     async fn cache_changes(&self, since: u64) -> StoreResult<ChangeSet<CacheChange>> {
@@ -500,6 +520,7 @@ impl ControlPlaneStore for RaftStore {
                     streams: streams.clone(),
                     caches: caches.clone(),
                     incarnations,
+                    names: level >= DELETED_NAMES_LEVEL,
                 },
             )
             .await?
@@ -533,6 +554,7 @@ impl ControlPlaneStore for RaftStore {
             streams: Vec::new(),
             caches: Vec::new(),
             incarnations: false,
+            names: false,
         }
         .version();
         self.group_level().await >= needs

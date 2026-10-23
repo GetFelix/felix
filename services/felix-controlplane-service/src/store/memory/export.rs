@@ -125,6 +125,8 @@ impl InMemoryStore {
             principal_revocations: self.revocations.read().await.sorted_rows(),
             stream_tombstones: super::streams::stream_tombstones(self).await,
             cache_tombstones: super::caches::cache_tombstones(self).await,
+            deleted_stream_names: super::streams::deleted_stream_names(self).await,
+            deleted_cache_names: super::caches::deleted_cache_names(self).await,
         }
     }
 
@@ -162,6 +164,8 @@ impl InMemoryStore {
             })
             .collect();
         *self.caches.write().await = state.caches.into_iter().collect();
+        *self.deleted_stream_names.write().await = state.deleted_stream_names.into_iter().collect();
+        *self.deleted_cache_names.write().await = state.deleted_cache_names.into_iter().collect();
         *self.cache_tombstones.write().await = state
             .cache_tombstones
             .into_iter()

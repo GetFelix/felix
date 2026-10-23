@@ -1181,19 +1181,26 @@ async fn a_recreated_stream_is_announced_and_starts_past_the_deleted_one(
         "the delete must unassign the shard on the change log: {changes:?}",
     );
 
-    store.create_stream(stream).await.expect("create again");
+    let again = store.create_stream(stream).await;
+    if created.incarnation == 0 {
+        // Before the finalize the name is not created again at all (#1447).
+        assert!(
+            matches!(&again, Err(StoreError::Conflict(message)) if message.contains("stream_incarnations")),
+            "a deleted name was created again before the finalize: {again:?}",
+        );
+        return;
+    }
+    again.expect("create again");
     let renewed = store
         .put_shard_assignment(shard)
         .await
         .expect("place again");
-    if created.incarnation == 0 {
-        assert!(
-            renewed.generation > moved.generation,
-            "a recreated shard started at {} below the deleted one's {}",
-            renewed.generation,
-            moved.generation,
-        );
-    }
+    assert!(
+        renewed.generation > moved.generation,
+        "a recreated shard started at {} below the deleted one's {}",
+        renewed.generation,
+        moved.generation,
+    );
     store.delete_stream(&stream_key).await.expect("clean up");
 }
 

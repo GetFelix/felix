@@ -190,14 +190,17 @@ fn script() -> Vec<MetaCommand> {
                 namespace: namespace(t, ns),
             });
             commands.push(MetaCommand::CreateStream {
+                names: false,
                 stream: stream(t, ns, "orders"),
                 incarnations: false,
             });
             commands.push(MetaCommand::CreateStream {
+                names: false,
                 stream: stream(t, ns, "events"),
                 incarnations: false,
             });
             commands.push(MetaCommand::CreateCache {
+                names: false,
                 cache: cache(t, ns, "primary"),
                 incarnations: false,
             });
@@ -357,12 +360,14 @@ fn script() -> Vec<MetaCommand> {
     // A cascade across nine namespaces, six streams, three caches — all of
     // whose delete events take seqs inside one apply.
     commands.push(MetaCommand::DeleteTenant {
+        names: false,
         unassign: false,
         tenant_id: "t-c".to_string(),
         take_shards: true,
         incarnations: false,
     });
     commands.push(MetaCommand::DeleteStream {
+        names: false,
         unassign: false,
         key: StreamKey {
             tenant_id: "t-a".to_string(),
@@ -373,6 +378,7 @@ fn script() -> Vec<MetaCommand> {
         incarnations: false,
     });
     commands.push(MetaCommand::DeleteNamespace {
+        names: false,
         unassign: false,
         key: NamespaceKey {
             tenant_id: "t-b".to_string(),

@@ -293,6 +293,7 @@ async fn a_fence_planned_before_a_cut_over_is_not_written_after_it() {
         })
         .await
         .expect("drop the three-shard stream");
+    store.forget_deleted_names().await;
     store
         .create_stream(stream("orders", 1))
         .await
@@ -432,6 +433,7 @@ async fn a_promotion_planned_from_an_old_read_is_not_written_later() {
         })
         .await
         .expect("drop the three-shard stream");
+    store.forget_deleted_names().await;
     store
         .create_stream(replicated_stream("orders", 1, 3))
         .await
@@ -532,6 +534,7 @@ async fn failed_over(ids: &[(&str, &str)]) -> (InMemoryStore, ShardAssignment) {
         })
         .await
         .expect("drop the three-shard stream");
+    store.forget_deleted_names().await;
     store
         .create_stream(replicated_stream("orders", 1, 3))
         .await

@@ -105,6 +105,15 @@ pub trait ControlPlaneStore: Send + Sync {
     async fn cache_snapshot(&self) -> StoreResult<Snapshot<Cache>>;
     /// Every cache tombstone, as [`Self::stream_tombstones`] for streams.
     async fn cache_tombstones(&self) -> StoreResult<Vec<crate::model::CacheTombstone>>;
+    /// Every stream name ever deleted on this store, which a create refuses
+    /// before `stream_incarnations` is finalized (#1447). For an export.
+    async fn deleted_stream_names(&self) -> StoreResult<Vec<StreamKey>> {
+        Ok(Vec::new())
+    }
+    /// As [`Self::deleted_stream_names`], for caches.
+    async fn deleted_cache_names(&self) -> StoreResult<Vec<CacheKey>> {
+        Ok(Vec::new())
+    }
     async fn cache_changes(&self, since: u64) -> StoreResult<ChangeSet<CacheChange>>;
 
     /// Create every stream and cache in one write: all of them, or none.
@@ -773,6 +782,31 @@ pub enum StoreError {
     Conflict(String),
     #[error(transparent)]
     Unexpected(#[from] anyhow::Error),
+}
+
+/// The refusal of a create reusing a name deleted before `feature`, the
+/// name's incarnations, was finalized. The same words from every store.
+pub(crate) fn reused_name(
+    kind: &str,
+    name: &str,
+    feature: felix_common::fleet::FleetFeature,
+) -> StoreError {
+    let feature = feature.name();
+    StoreError::Conflict(format!(
+        "a {kind} named {name} was deleted on this cluster; finalize {feature} before reusing \
+         the name (POST /v1/fleet/features/{feature}/finalize)"
+    ))
+}
+
+/// Whether `err` is [`reused_name`]'s refusal, and its words if so: a create
+/// that must not be retried or reported as a different configuration.
+pub(crate) fn reused_name_refusal(err: &StoreError) -> Option<&str> {
+    match err {
+        StoreError::Conflict(message) if message.contains("was deleted on this cluster") => {
+            Some(message)
+        }
+        _ => None,
+    }
 }
 
 impl From<sqlx::Error> for StoreError {

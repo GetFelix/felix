@@ -18,7 +18,9 @@ pub(crate) async fn run_cache_incarnation_contract(store: Arc<dyn ControlPlaneSt
     super::shards::seed(store.as_ref()).await;
     let s = store.as_ref();
     before_the_finalize_a_cache_is_at_0_and_its_delete_names_nothing(s).await;
+    before_the_finalize_a_deleted_name_is_not_created_again(s).await;
     finalize(s).await;
+    after_the_finalize_a_deleted_name_is_created_again(s).await;
     a_create_proposing_nothing_still_gets_an_incarnation(s).await;
     a_names_incarnations_only_increase(s).await;
     a_batch_create_answers_the_incarnation_it_stored(s).await;
@@ -541,4 +543,60 @@ fn cache(namespace: &str, name: &str, proposed: u64) -> Cache {
         consistency: ConsistencyLevel::Leader,
         incarnation: proposed,
     }
+}
+
+/// As for streams (`incarnations`): before the finalize a deleted cache name
+/// is not created again, alone or in a batch.
+async fn before_the_finalize_a_deleted_name_is_not_created_again(store: &dyn ControlPlaneStore) {
+    let refused = |result: &Result<Cache, crate::store::StoreError>| {
+        matches!(
+            result,
+            Err(crate::store::StoreError::Conflict(message))
+                if message.contains("was deleted on this cluster")
+                    && message.contains("finalize cache_incarnations")
+        )
+    };
+    let again = store.create_cache(cache(NAMESPACE, "early", 0)).await;
+    assert!(refused(&again), "{again:?}");
+    let batch = store
+        .create_resources(Vec::new(), vec![cache(NAMESPACE, "early", 0)])
+        .await
+        .map(|(_, mut caches)| caches.remove(0));
+    assert!(refused(&batch), "{batch:?}");
+    assert!(
+        store
+            .deleted_cache_names()
+            .await
+            .expect("names")
+            .contains(&key(NAMESPACE, "early"))
+    );
+}
+
+async fn after_the_finalize_a_deleted_name_is_created_again(store: &dyn ControlPlaneStore) {
+    let again = store
+        .create_cache(cache(NAMESPACE, "early", 0))
+        .await
+        .expect("create again");
+    assert_ne!(again.incarnation, 0);
+    store
+        .delete_cache(&key(NAMESPACE, "early"))
+        .await
+        .expect("clean up");
+
+    // As for streams: no name recorded after the finalize.
+    store
+        .create_cache(cache(NAMESPACE, "late", 0))
+        .await
+        .expect("create");
+    store
+        .delete_cache(&key(NAMESPACE, "late"))
+        .await
+        .expect("delete");
+    assert!(
+        !store
+            .deleted_cache_names()
+            .await
+            .expect("names")
+            .contains(&key(NAMESPACE, "late"))
+    );
 }

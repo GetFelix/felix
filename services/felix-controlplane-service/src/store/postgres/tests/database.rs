@@ -218,7 +218,8 @@ async fn reset_db(url: &str, schema: &str) -> Result<(), sqlx::Error> {
          {schema_ident}.node_changes, {schema_ident}.shard_assignments, \
          {schema_ident}.shard_assignment_changes, {schema_ident}.tenants, \
          {schema_ident}.fleet_features, {schema_ident}.stream_tombstones, \
-         {schema_ident}.cache_tombstones RESTART IDENTITY CASCADE",
+         {schema_ident}.cache_tombstones, {schema_ident}.deleted_stream_names, \
+         {schema_ident}.deleted_cache_names RESTART IDENTITY CASCADE",
     );
     // Same as `ensure_schema`: the interpolated identifier is our own generated schema name,
     // which cannot be passed as a bind parameter.
