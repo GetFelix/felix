@@ -12,7 +12,7 @@ use felix_wire::Message;
 use tokio::sync::{mpsc, watch};
 use tracing::Instrument;
 
-use super::batch::{overloaded_after_enqueue, refusal_for_client};
+use super::batch::refusal_for_client;
 use crate::observability::timings;
 use crate::serving::quic::client_error::ClientError;
 use crate::serving::quic::errors::AckEnqueueError;
@@ -20,7 +20,7 @@ use crate::serving::quic::handlers::publish::ack::{
     AckEncoding, AckTimeoutState, EnqueuePolicy, Outgoing, handle_ack_enqueue_result,
     send_outgoing_best_effort, send_outgoing_critical,
 };
-use crate::serving::quic::handlers::publish::commit_ack::{AckRequest, Armed, PendingAck};
+use crate::serving::quic::handlers::publish::commit_ack::{AckRequest, PendingAck};
 use crate::serving::quic::handlers::publish::ingress::{PublishTarget, enqueue_tenant_publish};
 use crate::serving::quic::handlers::publish::route::{
     internal_ack, needs_quorum, publish_target, resolve_route, resolve_shard, targets_durable,
@@ -198,8 +198,7 @@ pub(crate) async fn handle_publish_message(
     // Without this the quorum wait still runs, in a worker holding a response
     // channel nobody created, and its answer -- including its refusals -- goes
     // nowhere. The client is told the record is on a majority the moment it is
-    // queued. `ack_on_commit` is off by default, so that was every direct
-    // `Quorum` publish.
+    // queued. With `ack_on_commit` off that was every direct `Quorum` publish.
     let quorum = needs_quorum(&target);
     // Last because it reads the clock: an ack on enqueue promises a write the
     // lease may not live to allow.
@@ -235,7 +234,7 @@ pub(crate) async fn handle_publish_message(
     // Made before the enqueue: an in-memory publish can settle before the
     // enqueue returns, and is answered from there.
     let (response, mut pending) = if ack_mode != felix_wire::AckMode::None && commit_ack {
-        let (reply, pending) = commit_acks.expect(AckRequest {
+        let Some((reply, pending)) = commit_acks.reserve(AckRequest {
             request_id: request_id.expect("request id checked"),
             // There is no binary encoding for single publishes; the binary
             // fast path is batch-only, so this always replies in JSON.
@@ -244,7 +243,27 @@ pub(crate) async fn handle_publish_message(
             forwarded_to: None,
             start,
             single: true,
-        });
+        }) else {
+            // Too many answers owed. Nothing is queued, so the client may
+            // retry without writing the record twice.
+            count_publish("error");
+            let request_id = request_id.expect("request id checked");
+            handle_ack_enqueue_result(
+                send_outgoing_critical(
+                    out_ack_tx,
+                    out_ack_depth,
+                    "felix_broker_out_ack_depth",
+                    ack_throttle_tx,
+                    Outgoing::Message(ClientError::queue_full().into_publish_error(request_id)),
+                )
+                .await,
+                ack_timeout_state,
+                ack_throttle_tx,
+                cancel_tx,
+            )
+            .await?;
+            return Ok(());
+        };
         (Some(PublishReply::Ack(reply)), Some(pending))
     } else {
         (None, None)
@@ -352,7 +371,7 @@ pub(crate) async fn handle_publish_message(
         // Nor does a `Quorum` publish. "Accepted into the ingress queue" is not an
         // answer to "is this on a majority", and answering it anyway is how a
         // `Quorum` stream came to behave exactly like a `Leader` one whenever
-        // `ack_on_commit` was off -- which is the default.
+        // `ack_on_commit` was off.
         if !commit_ack {
             // Enqueue-ack mode:
             // Ack means "accepted into the ingress queue", not "committed". This keeps
@@ -384,20 +403,8 @@ pub(crate) async fn handle_publish_message(
             }
             return Ok(());
         }
-        let request_id = request_id.expect("request id checked");
-        // Commit-ack mode. Failing here, after the enqueue, means the publish
-        // may still commit while the client hears it was refused; enforcing
-        // the bound before the enqueue would avoid that.
-        if pending.take().expect("commit ack expected").arm() == Armed::Exhausted {
-            let _ = send_outgoing_best_effort(
-                out_ack_tx,
-                out_ack_depth,
-                "felix_broker_out_ack_depth",
-                ack_throttle_tx,
-                Outgoing::Message(overloaded_after_enqueue().into_publish_error(request_id)),
-            )
-            .await;
-        }
+        // Commit-ack mode: the waiter was reserved before the enqueue.
+        pending.take().expect("commit ack expected").arm();
         Ok(())
     }
     .instrument(span)

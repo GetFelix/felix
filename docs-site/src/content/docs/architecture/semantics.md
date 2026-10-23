@@ -398,8 +398,13 @@ is guaranteed `pub_queue_depth` slots, so one tenant's burst fills its own
 share first. When there is no room for a tenant:
 - An enqueue-acked publish is answered at once with `overloaded`
   (`detail.reason = "publish_queue_full"`), which is retryable: nothing was queued
-- A commit-acked publish waits up to `publish_queue_wait_timeout_ms`, then is
-  answered the same way
+- A commit-acked publish, which is a durable stream's by default, waits up to
+  `publish_queue_wait_timeout_ms`, then is answered the same way. The wait is on
+  the connection's control loop, so it holds up everything behind it on that
+  stream, reads included
+- A stream with more than 1024 answers owed refuses the next acked publish with
+  the same retryable `overloaded` before queueing it, so a retry cannot write it
+  twice
 - A fire-and-forget publish is shed (or waits, with `pub_ingress_wait`)
 - Each is counted in `felix_tenant_publish_queue_full_total{tenant,action}`
 

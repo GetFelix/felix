@@ -184,7 +184,7 @@ fn from_env_respects_env_vars() {
 #[test]
 fn from_env_ack_on_commit_variations() {
     clear_felix_env();
-    for val in &["1", "true", "yes"] {
+    for val in &["1", "true", "yes", "on", " TRUE ", "Yes"] {
         unsafe {
             env::set_var("FELIX_ACK_ON_COMMIT", val);
         }
@@ -192,7 +192,7 @@ fn from_env_ack_on_commit_variations() {
         assert!(config.ack_on_commit, "expected true for {}", val);
         assert!(config.ack_durable_on_commit, "expected true for {}", val);
     }
-    for val in &["0", "false", "no", "anything"] {
+    for val in &["0", "false", "no", "off", " False ", "NO"] {
         unsafe {
             env::set_var("FELIX_ACK_ON_COMMIT", val);
         }
@@ -201,6 +201,18 @@ fn from_env_ack_on_commit_variations() {
         assert!(
             !config.ack_durable_on_commit,
             "{val} must opt durable streams out"
+        );
+    }
+    // A value that is not a boolean must not weaken the default.
+    for val in &["anything", "", "ture", "2"] {
+        unsafe {
+            env::set_var("FELIX_ACK_ON_COMMIT", val);
+        }
+        let config = BrokerConfig::from_env().expect("from_env");
+        assert!(!config.ack_on_commit, "{val:?} must not ack everything");
+        assert!(
+            config.ack_durable_on_commit,
+            "{val:?} must keep durable acks on commit"
         );
     }
     clear_felix_env();

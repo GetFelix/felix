@@ -193,7 +193,8 @@ event_batch_max_bytes: 1048576
 event_batch_max_delay_us: 2000
 fanout_batch_size: 256
 
-# Async acknowledgements
+# Acknowledge on accept, before the write: faster, but an acknowledged record
+# can be lost if the broker crashes. Durable streams ack after commit without it.
 ack_on_commit: false
 
 # Deep queues, lossless end-to-end backpressure (paces the publisher to the

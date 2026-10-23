@@ -117,6 +117,9 @@ pipeline's sustainable rate instead of shedding: every message is delivered,
 `delivery drops 0`.
 
 ```yaml
+# Opts out of commit acks: a publish is acknowledged on accept, before the
+# write, so an acknowledged record can be lost if the broker crashes. Durable
+# streams ack after commit when this key is left out.
 ack_on_commit: false
 publish_queue_wait_timeout_ms: 60000
 ack_wait_timeout_ms: 3000

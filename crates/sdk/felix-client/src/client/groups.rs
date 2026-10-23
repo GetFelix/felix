@@ -93,7 +93,7 @@ impl Client {
     /// redelivered once the broker's visibility timeout lapses.
     ///
     /// A record can be polled once it is written. A publish acknowledged on
-    /// enqueue (a `Leader` stream with `ack_on_commit` off) may not be yet, so
+    /// enqueue (a broker run with `FELIX_ACK_ON_COMMIT=0`) may not be yet, so
     /// a poll right after that ack can miss it; the next one gets it. Publish
     /// with [`crate::ClientConfig::ack_on_commit`] when a poll must see every
     /// acknowledged record.

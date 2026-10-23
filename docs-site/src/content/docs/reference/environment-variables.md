@@ -314,10 +314,12 @@ it is queued.
 
 **Accepted values**:
 - unset: durable streams ack after commit, in-memory streams on enqueue
-- `1`, `true`, `yes` (case-insensitive): every stream acks after commit
-- anything else, such as `0` or `false`: ack on accept for every stream. This
+- `1`, `true`, `yes`, `on` (trimmed, case-insensitive): every stream acks after
+  commit
+- `0`, `false`, `no`, `off`: ack on accept for every stream. This
   is faster, but an acknowledged record can be lost if the broker crashes, or
   its cluster lease lapses, before the record is written
+- any other value: logged as a warning, and the default is kept
 
 **Example**:
 ```bash

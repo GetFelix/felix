@@ -394,7 +394,7 @@ stopping broker hands some shards off and still leads others when it gives
 up; those fail over once it exits, and every acknowledged record is read back
 from the new leaders exactly once, with no gap in any shard's offsets
 (`a_handoff_that_times_out_loses_no_acknowledged_record`). A lone broker
-stopped under per-message acks with `FELIX_ACK_ON_COMMIT` off (acked once
+stopped under per-message acks with `FELIX_ACK_ON_COMMIT=0` (acked once
 queued) has every acknowledged record on restart
 (`a_lone_broker_that_stops_keeps_what_it_acknowledged`). The claim is for
 `Quorum`: a `Leader` stream acknowledges before a follower has the record, so

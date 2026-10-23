@@ -119,6 +119,14 @@ durable stream's default ack is sent after the write and has no such gap. A
 client of a broker that opted out can ask for commit acks on its own
 connections (`ClientConfig::ack_on_commit`).
 
+A commit-acked publish, which is a durable stream's by default, waits for room
+when the ingress queue is full instead of being refused at once, up to
+`publish_queue_wait_timeout_ms`. The wait is on the connection's control loop,
+so it holds up everything behind it on that stream, including its reads. A
+stream with more than 1024 answers owed refuses the next acked publish with a
+retryable `overloaded` (`publish queue full`) before queueing it, so a retry
+cannot write it twice.
+
 **The `Leader` loss window is bounded by replication lag**, exported as
 `felix_broker_replication_lag_records`. An operator choosing `Leader` is
 choosing that window, and a bound nobody can observe is not a bound.

@@ -1258,7 +1258,8 @@ field of `detail` is optional. See [Error codes](#error-codes).
 - A stream may carry several acked publishes before any is answered. Answers
   come back in completion order, matched by `request_id`, unless the client
   negotiated [pipelining](#pipelined-publishes), in which case they come back
-  in the order the stream carried the publishes.
+  in the order the stream carried the publishes. Then an in-memory stream's ack
+  can wait behind an earlier durable publish's commit ack on the same stream.
 - CachePut returns `ok` when stored (TTL is optional).
 - CacheGet returns `cache_value` with `null` when missing/expired.
 - CacheDelete returns `cache_value` carrying whatever was removed, and `null`

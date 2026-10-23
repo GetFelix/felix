@@ -37,7 +37,6 @@ quic_bind: "0.0.0.0:5000"
 metrics_bind: "0.0.0.0:8080"
 controlplane_url: "http://controlplane:8443"
 controlplane_sync_interval_ms: 2000
-ack_on_commit: false
 max_frame_bytes: 16777216
 publish_queue_wait_timeout_ms: 2000
 ack_wait_timeout_ms: 2000
@@ -191,11 +190,14 @@ is queued.
 
 **Default**: unset
 
-**Environment**: `FELIX_ACK_ON_COMMIT` (`1`, `true`, `yes` = enabled; any other
-value = disabled)
+**Environment**: `FELIX_ACK_ON_COMMIT` (`1`, `true`, `yes`, `on` = every stream; `0`,
+`false`, `no`, `off` = opt out; case-insensitive. Any other value is logged and
+the default is kept)
 
 **Example**:
 ```yaml
+# Opt out: ack on accept, before the write. Faster, but an acknowledged record
+# can be lost in a broker crash. Leave the key out to keep the default.
 ack_on_commit: false
 ```
 

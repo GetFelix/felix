@@ -426,7 +426,7 @@ async fn handle_publish_message_ack_waiters_exhausted() {
         )
         .await
         .expect("stream");
-    let (publish_ctx, _rx, _tx) = make_publish_context(8);
+    let (publish_ctx, mut rx, _tx) = make_publish_context(8);
     let mut cache = HashMap::new();
     let mut key = String::new();
     let (out_tx, mut out_rx) = mpsc::channel(1);
@@ -473,10 +473,12 @@ async fn handle_publish_message_ack_waiters_exhausted() {
             ..
         }) => {
             assert_eq!(request_id, 7);
-            assert!(message.contains("server overloaded"));
+            assert!(message.contains("publish queue full"));
         }
         _ => panic!("unexpected outgoing"),
     }
+    // Refused before the enqueue: a retry cannot write it twice.
+    assert!(rx.try_recv().is_err(), "the refused publish was queued");
 }
 
 /// The single-publish path answers an unservable shard the same way the batch

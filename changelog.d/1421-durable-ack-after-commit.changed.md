@@ -8,3 +8,7 @@
   latency. `FELIX_ACK_ON_COMMIT=0` (or `ack_on_commit: false`) restores the old behaviour for every
   stream; `FELIX_ACK_ON_COMMIT=1` makes in-memory streams wait too. The wire is unchanged, so a
   client that predates commit-ack negotiation works as before.
+- `FELIX_ACK_ON_COMMIT` now reads `1/true/yes/on` and `0/false/no/off` (trimmed, any case). Any other
+  value keeps the default and logs a warning instead of turning commit acks off. A stream with more
+  than 1024 answers owed now refuses an acked publish before queueing it, so a retry cannot write
+  it twice.

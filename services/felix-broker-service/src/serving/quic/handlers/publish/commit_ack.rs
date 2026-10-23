@@ -115,8 +115,6 @@ pub(crate) enum Armed {
     Waiting,
     /// Already answered; nothing more to do.
     Answered,
-    /// Too many answers are owed. The caller must refuse the publish.
-    Exhausted,
 }
 
 impl CommitAcks {
@@ -170,10 +168,19 @@ impl CommitAcks {
 
     /// Create the answer for one publish, before it is queued, so that a
     /// publish settled before the control loop hears back is still answered.
-    pub(crate) fn expect(&self, request: AckRequest) -> (CommitReply, PendingAck) {
+    ///
+    /// Takes the publish's place among the answers owed now, and `None` when
+    /// there is no room. The caller refuses then, before the enqueue: refusing
+    /// after it would tell the client "overloaded" about a publish that goes on
+    /// to commit, and a retry would write it twice.
+    pub(crate) fn reserve(&self, request: AckRequest) -> Option<(CommitReply, PendingAck)> {
+        let Ok(permit) = Arc::clone(&self.inner.waiters).try_acquire_owned() else {
+            t_counter!("felix_broker_ack_waiters_exhausted_total").increment(1);
+            return None;
+        };
         let slot = Arc::new(Slot {
             state: AtomicU8::new(PENDING),
-            permit: Mutex::new(None),
+            permit: Mutex::new(Some(permit)),
             request_id: request.request_id,
             encoding: request.encoding,
             payload_bytes: request.payload_bytes,
@@ -181,7 +188,7 @@ impl CommitAcks {
             start: request.start,
             single: request.single,
         });
-        (
+        Some((
             CommitReply {
                 inner: Arc::clone(&self.inner),
                 slot: Some(Arc::clone(&slot)),
@@ -190,7 +197,7 @@ impl CommitAcks {
                 inner: Arc::clone(&self.inner),
                 slot,
             },
-        )
+        ))
     }
 
     /// No more publishes will be armed. The sweep ends once every armed
@@ -433,19 +440,6 @@ impl Drop for CommitReply {
 impl PendingAck {
     /// The publish was queued: start its timeout.
     pub(crate) fn arm(self) -> Armed {
-        let Ok(permit) = Arc::clone(&self.inner.waiters).try_acquire_owned() else {
-            t_counter!("felix_broker_ack_waiters_exhausted_total").increment(1);
-            return if self
-                .slot
-                .take(|state| state == PENDING || state == ORPHANED)
-            {
-                Armed::Exhausted
-            } else {
-                Armed::Answered
-            };
-        };
-        // Stored before arming, so whoever answers releases it.
-        *self.slot.permit.lock() = Some(permit);
         match self
             .slot
             .state

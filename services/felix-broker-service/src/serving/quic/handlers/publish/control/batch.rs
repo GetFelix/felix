@@ -19,7 +19,7 @@ use crate::serving::quic::handlers::publish::ack::{
     AckEncoding, AckTimeoutState, EnqueuePolicy, Outgoing, handle_ack_enqueue_result,
     send_outgoing_best_effort, send_outgoing_critical,
 };
-use crate::serving::quic::handlers::publish::commit_ack::{AckRequest, Armed, PendingAck};
+use crate::serving::quic::handlers::publish::commit_ack::{AckRequest, PendingAck};
 use crate::serving::quic::handlers::publish::ingress::{PublishTarget, enqueue_tenant_publish};
 use crate::serving::quic::handlers::publish::route::{
     DeclaredWidth, PublishRoute, UNKEYED_SHARD, internal_ack, local_shard_key, needs_quorum,
@@ -349,14 +349,34 @@ pub(crate) async fn handle_publish_batch_message(
         // Made before the enqueue: an in-memory publish can settle before the
         // enqueue returns, and is answered from there.
         let (response, mut pending) = if ack_mode != felix_wire::AckMode::None && commit_ack {
-            let (reply, pending) = commit_acks.expect(AckRequest {
+            let Some((reply, pending)) = commit_acks.reserve(AckRequest {
                 request_id: request_id.expect("request id checked"),
                 encoding,
                 payload_bytes: payload_bytes.iter().sum::<usize>() as u64,
                 forwarded_to,
                 start: crate::serving::quic::telemetry::t_instant_now(),
                 single: false,
-            });
+            }) else {
+                // Too many answers owed. Nothing is queued, so the client may
+                // retry without writing the batch twice.
+                count_publish("error");
+                let request_id = request_id.expect("request id checked");
+                handle_ack_enqueue_result(
+                    send_outgoing_critical(
+                        out_ack_tx,
+                        out_ack_depth,
+                        "felix_broker_out_ack_depth",
+                        ack_throttle_tx,
+                        encoding.error(request_id, ClientError::queue_full()),
+                    )
+                    .await,
+                    ack_timeout_state,
+                    ack_throttle_tx,
+                    cancel_tx,
+                )
+                .await?;
+                return Ok(());
+            };
             (Some(PublishReply::Ack(reply)), Some(pending))
         } else {
             (None, None)
@@ -454,7 +474,7 @@ pub(crate) async fn handle_publish_batch_message(
         // Nor does a `Quorum` publish. "Accepted into the ingress queue" is not an
         // answer to "is this on a majority", and answering it anyway is how a
         // `Quorum` stream came to behave exactly like a `Leader` one whenever
-        // `ack_on_commit` was off -- which is the default.
+        // `ack_on_commit` was off.
         if !commit_ack {
             // Enqueue-ack mode:
             // Ack means "accepted into the ingress queue", not "committed". This keeps
@@ -478,20 +498,8 @@ pub(crate) async fn handle_publish_batch_message(
             count_publish_accepted("ok", payload_bytes.iter().sum::<usize>() as u64);
             return Ok(());
         }
-        let request_id = request_id.expect("request id checked");
-        // Commit-ack mode. Failing here, after the enqueue, means the publish
-        // may still commit while the client hears it was refused; enforcing
-        // the bound before the enqueue would avoid that.
-        if pending.take().expect("commit ack expected").arm() == Armed::Exhausted {
-            let _ = send_outgoing_best_effort(
-                out_ack_tx,
-                out_ack_depth,
-                "felix_broker_out_ack_depth",
-                ack_throttle_tx,
-                encoding.error(request_id, overloaded_after_enqueue()),
-            )
-            .await;
-        }
+        // Commit-ack mode: the waiter was reserved before the enqueue.
+        pending.take().expect("commit ack expected").arm();
         Ok(())
     }
     .instrument(span)
@@ -521,12 +529,6 @@ pub(super) fn refusal_for_client(
                 "stream not found: tenant={tenant_id} namespace={namespace} stream={stream}"
             )),
     }
-}
-
-/// The batch is already queued, so it may still land: overloaded, but
-/// with the outcome unknown rather than "not applied".
-pub(super) fn overloaded_after_enqueue() -> ClientError {
-    ClientError::overloaded("server overloaded").with_retry(felix_wire::RetryClass::OutcomeUnknown)
 }
 
 /// What a client's idempotent batch gets when its sequence already holds a

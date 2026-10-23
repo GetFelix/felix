@@ -129,7 +129,6 @@ metrics_bind: "0.0.0.0:8080"
 controlplane_url: "http://127.0.0.1:8443"
 controlplane_sync_interval_ms: 2000
 
-ack_on_commit: false
 max_frame_bytes: 16777216          # 16 MiB
 
 publish_queue_wait_timeout_ms: 2000
