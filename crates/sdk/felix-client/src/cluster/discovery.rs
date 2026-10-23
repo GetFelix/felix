@@ -34,6 +34,10 @@ use crate::publish::StreamWidths;
 /// How long the shard-owner question may take.
 pub(super) const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(1);
 
+/// How long a whole discovery may take: the owners question, the stream's
+/// width and resolving the owners' names.
+const ASK_TIMEOUT: Duration = Duration::from_secs(3);
+
 /// How long a snapshot is trusted before a refresh starts.
 const OWNER_TTL: Duration = Duration::from_secs(5);
 
@@ -106,7 +110,7 @@ impl StreamState {
     }
 
     /// Whether a refresh should start, claiming it so only one does.
-    fn claim_refresh(&self) -> bool {
+    pub(super) fn claim_refresh(&self) -> bool {
         let mut meta = self.meta.lock().unwrap();
         let Some(at) = meta.at else {
             return false;
@@ -229,6 +233,15 @@ impl Discovery {
     /// question, does not answer in time, or describes another width than the
     /// stream's (which is changing).
     async fn ask(&self, key: &StreamKey) -> Option<Snapshot> {
+        tokio::time::timeout(ASK_TIMEOUT, self.ask_unbounded(key))
+            .await
+            .unwrap_or_else(|_| {
+                tracing::debug!("discovering shard owners timed out");
+                None
+            })
+    }
+
+    async fn ask_unbounded(&self, key: &StreamKey) -> Option<Snapshot> {
         let client = Arc::clone(&*self.client.read().await);
         if !client.supports_shard_owners() {
             return None;
@@ -253,23 +266,32 @@ impl Discovery {
         if !width.learned || width.shards as usize != owners.len() {
             return None;
         }
-        let mut found = HashMap::new();
-        for owner in owners {
+        let resolved = owners.into_iter().map(|owner| async move {
             let (Some(node_id), Some(addr)) = (owner.node_id, owner.addr) else {
-                continue;
+                return None;
             };
-            let Some(addr) = self.nodes.resolve(&addr).await else {
-                continue;
-            };
-            found.insert(
+            let addr = self.nodes.resolve(&addr).await?;
+            Some((
                 owner.shard,
                 Advertised {
                     node_id,
                     addr,
                     generation: owner.generation,
                 },
-            );
-        }
+            ))
+        });
+        let found: HashMap<u32, Advertised> = super::batch::join_all(
+            resolved
+                .map(|f| {
+                    Box::pin(f)
+                        as std::pin::Pin<Box<dyn std::future::Future<Output = _> + Send + '_>>
+                })
+                .collect(),
+        )
+        .await
+        .into_iter()
+        .flatten()
+        .collect();
         Some(Snapshot {
             width: (width.shards, width.routing),
             owners: found,

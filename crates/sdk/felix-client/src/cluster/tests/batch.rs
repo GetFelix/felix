@@ -539,3 +539,30 @@ fn tracked_streams_are_bounded() {
         assert!(streams.contains_key(&key(n)), "s{n} was dropped");
     }
 }
+
+/// **A discovery that hangs is given up on, and the stream can refresh
+/// again.** The stream's width never arrives, so only the overall bound ends
+/// the ask.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_hung_discovery_is_bounded_and_the_stream_stays_refreshable() -> Result<()> {
+    let (cluster, a, b) = pair(ok, ok).await?;
+    a.set_cache_owners(owners_of(&a, &b));
+    a.delay_widths(60_000);
+    let key = (
+        "t1".to_string(),
+        "default".to_string(),
+        "orders".to_string(),
+    );
+    let state = cluster.discovery.state(&key).await;
+    let started = Instant::now();
+    cluster.discovery.ensure(&key, &state).await;
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(state.claim_refresh(), "the stream cannot refresh again");
+    Ok(())
+}

@@ -340,7 +340,7 @@ impl ClusterClient {
                     records: indices,
                     outcome,
                 }
-            }) as Pin<Box<dyn Future<Output = ShardPublish> + '_>>
+            }) as Pin<Box<dyn Future<Output = ShardPublish> + Send + '_>>
         });
         let mut done = join_all(sends.collect()).await;
         done.sort_by_key(|piece| piece.shard);
@@ -349,7 +349,9 @@ impl ClusterClient {
 }
 
 /// Drive every future to completion on the current task.
-async fn join_all<'a, T>(futures: Vec<Pin<Box<dyn Future<Output = T> + 'a>>>) -> Vec<T> {
+pub(super) async fn join_all<'a, T>(
+    futures: Vec<Pin<Box<dyn Future<Output = T> + Send + 'a>>>,
+) -> Vec<T> {
     let mut futures: Vec<_> = futures.into_iter().map(Some).collect();
     let mut results: Vec<Option<T>> = futures.iter().map(|_| None).collect();
     std::future::poll_fn(|cx| {

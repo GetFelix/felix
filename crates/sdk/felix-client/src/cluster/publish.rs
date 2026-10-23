@@ -233,7 +233,13 @@ impl ClusterClient {
                 Err(err) => {
                     // Not an error for the publish: the entry broker forwards.
                     tracing::debug!(owner = %owner.node_id, error = %err, "shard owner unreachable");
-                    self.owners.write().await.remove(&shard);
+                    // Only if it is still this one: a newer owner may have been
+                    // remembered while the connect hung.
+                    let mut owners = self.owners.write().await;
+                    if owners.get(&shard).is_some_and(|c| Arc::ptr_eq(c, &owner)) {
+                        owners.remove(&shard);
+                    }
+                    drop(owners);
                     self.discovery.mark_unreachable(&stream_key, &owner.node_id);
                     None
                 }
