@@ -80,10 +80,9 @@ fi
 : "${SESSION:=<session>}"
 : "${BUILD_SHA:=<BUILD_SHA>}"
 : "${LOCATION:=centralus}"
-# The loadgen may come from a newer branch than the brokers (owner-direct ingest,
-# reconnect on broker loss); brokers and control plane stay on BUILD_SHA.
-# TODO: move to the merged main SHA once #1424 lands.
-: "${LOADGEN_SHA:=d70cdad74f02dd46cf7b8b3bc7532d620a315faf}"   # feat/cluster-client-batch head (#1424)
+# The loadgen builds from BUILD_SHA unless overridden; it needs owner-aware batch
+# publishing and reconnect on broker loss (#1424).
+: "${LOADGEN_SHA:=${BUILD_SHA}}"
 # JSON field names the loadgen reports (#1424), in one place; each entry lists the
 # names tried, first match wins. A mapping that finds nothing makes the loss check
 # INCOMPLETE. There is no delivered side: what the brokers appended comes from
