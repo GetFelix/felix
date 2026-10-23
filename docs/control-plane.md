@@ -1003,6 +1003,7 @@ does not run placement (a Raft follower) waits for the leader's next tick.
 | `max_shard_moves_per_node` | `FELIX_SHARD_MOVES_MAX_PER_NODE` | unset (no per-node limit) |
 | `shard_move_fence_max_lag_records` | `FELIX_SHARD_MOVE_FENCE_MAX_LAG_RECORDS` | 1000 |
 | `shard_move_timeout_ms` | `FELIX_SHARD_MOVE_TIMEOUT_MS` | 1800000 (30 min); `0` never gives up |
+| `shard_fence_timeout_ms` | `FELIX_SHARD_FENCE_TIMEOUT_MS` | 120000 (2 min); `0` waits for a fenced leader forever |
 | `shard_restore_after_ms` | `FELIX_SHARD_RESTORE_AFTER_MS` | 300000 (5 min); `0` never replaces a lost follower |
 | `shard_restore_stall_ms` | `FELIX_SHARD_RESTORE_STALL_MS` | 120000 (2 min); `0` waits for the move timeout |
 | `placement_settle_ms` | `FELIX_PLACEMENT_SETTLE_MS` | 10000 (10 s); `0` places new shards on whatever is live |
@@ -1069,6 +1070,29 @@ the successor is a candidate like any other replica, except on a durable
 fenced would open the shard as a cut-over, without the fence, so failover
 passes it over. An ephemeral stream has
 no log to hand off and is reassigned as it always was.
+
+A fenced leader that is live but never reports drained would hold its shard
+without writes forever, so the move has a second timeout. Once the instance
+running placement has watched the shard fenced at one generation for
+`shard_fence_timeout_ms`, it gives the move up (`fence_timed_out`): the same
+write as an operator's cancel after the fence, so the leader serves again at a
+new generation and holds every write it accepted, since nobody else has led
+since the fence. The write is conditional on the fenced generation, so a
+cut-over decided from a drained report and the give-up cannot both land. The
+clock is the instance's own and starts again when the lease changes hands,
+which delays the give-up but never hastens it. The shard keeps its move's
+start time, so it waits behind other shards for its next move, and
+`felix_shard_moves_timed_out_total` counts it.
+
+Each give-up costs the shard its writes for the whole timeout and drops the
+destination's copy, so the next move of that shard waits: the fence timeout
+after one give-up, twice that after two in a row, and so on up to an hour.
+The count starts again once the shard has another leader. A draining leader
+whose shards cannot drain would otherwise fence and give up every few
+minutes; with the wait it does so ever more rarely. `admin plan` shows a move
+held by the wait and when it ends, and from the second give-up in a row
+the control plane logs a warning naming the shard and its leader. The
+count is kept by the instance running placement, like the fence clock.
 
 Between the fence and the new owner opening, nobody serves the shard. A
 publish, cache write or counter add that arrives then is held by the broker

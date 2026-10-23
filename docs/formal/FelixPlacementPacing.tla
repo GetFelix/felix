@@ -8,8 +8,9 @@
 (*   CopiesWithinLimit -- never more copies in flight than `MaxConcurrent`, *)
 (*                        and never more than `MaxPerNode` into or out of   *)
 (*                        one node.                                         *)
-(*   FencedNeverTimesOut -- a move past its fence is finished, never       *)
-(*                        abandoned.                                        *)
+(*   FencedOnlyInAMove -- a fence stands only on a move in flight: one     *)
+(*                        given up clears both at once, so a fence never    *)
+(*                        outlives the slot it holds.                       *)
 (*                                                                         *)
 (* Placement counts copies from what the store says is in progress. A move *)
 (* names its destination as `successor`; a replacement names the follower  *)
@@ -159,6 +160,18 @@ TimeOut(s) ==
     /\ WrittenByNobody
     /\ UNCHANGED << leader, fenced, holder, view >>
 
+\* A fenced leader that has not reported drained by
+\* `FELIX_SHARD_FENCE_TIMEOUT_MS` serves again, and the move ends. Its
+\* safety against a cut-over is the generation check `Retake` has in the
+\* shard model; here it only frees the slot.
+FenceTimeOut(s) ==
+    /\ fenced[s]
+    /\ copy' = [copy EXCEPT ![s] = None]
+    /\ kind' = [kind EXCEPT ![s] = None]
+    /\ fenced' = [fenced EXCEPT ![s] = FALSE]
+    /\ WrittenByNobody
+    /\ UNCHANGED << leader, holder, view >>
+
 Next ==
     \/ \E p \in Planners : TakeLease(p) \/ Read(p)
     \/ \E p \in Planners, s \in Shards, n \in Nodes :
@@ -168,6 +181,7 @@ Next ==
         \/ CutOver(s)
         \/ Seat(s)
         \/ TimeOut(s)
+        \/ FenceTimeOut(s)
 
 Spec == Init /\ [][Next]_vars
 
@@ -178,7 +192,7 @@ CopiesWithinLimit ==
     /\ \A n \in Nodes :
         Cardinality({s \in Shards : Copying(s) /\ Touches(s, n)}) <= MaxPerNode
 
-FencedNeverTimesOut == \A s \in Shards : fenced[s] => Copying(s) /\ kind[s] = "move"
+FencedOnlyInAMove == \A s \in Shards : fenced[s] => Copying(s) /\ kind[s] = "move"
 
 TypeOK ==
     /\ leader \in [Shards -> Nodes]

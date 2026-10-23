@@ -301,9 +301,9 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardCancel.cfg` | writes acknowledged on admission, a fenced move cancelled and the shard taken back, a second move after | pass every invariant (6.28M distinct states) |
 | `FelixShardCancelStalePlannerCas.cfg` | a cancel decided from a held read while the move cuts over; every write conditional | pass every invariant (447K distinct states) |
 | `FelixShardCancelStalePlanner.cfg` | the same with the cancel written unconditionally | violate `AtMostOneServing` |
-| `FelixPlacementPacing.cfg` | `FelixPlacementPacing.tla`: moves and follower replacements across four shards, two copies at once, one per node, one planner | pass `CopiesWithinLimit` and `FencedNeverTimesOut` (313 distinct states) |
+| `FelixPlacementPacing.cfg` | `FelixPlacementPacing.tla`: moves and follower replacements across four shards, two copies at once, one per node, one planner | pass `CopiesWithinLimit` and `FencedOnlyInAMove` |
 | `FelixPlacementPacingUncountedReplacement.cfg` | the same with a follower replacement invisible to the count, as it used to be written | violate `CopiesWithinLimit` |
-| `FelixPlacementPacingTwoPlanners.cfg` | two planners over three shards and one slot, the lease changing hands at any step, one also reading without it as an operator does; every start fenced by the placement token | pass `CopiesWithinLimit` and `FencedNeverTimesOut` (56K distinct states) |
+| `FelixPlacementPacingTwoPlanners.cfg` | two planners over three shards and one slot, the lease changing hands at any step, one also reading without it as an operator does; every start fenced by the placement token | pass `CopiesWithinLimit` and `FencedOnlyInAMove` |
 | `FelixPlacementPacingUnfenced.cfg` | the same with starts conditional only on their shard's generation | violate `CopiesWithinLimit` |
 | `FelixShardIdempotentFailover.cfg` | a write re-sent across a failover, checked against the promoted broker's log | pass every invariant and `NoDuplicate` (0.20M distinct states) |
 | `FelixShardIdempotentFailoverMemory.cfg` | the same with the sequences in the leader's memory | violate `NoDuplicate` |
@@ -487,7 +487,11 @@ level, and that is what keeps an acknowledged write on whoever leads next.
 `FelixPlacementPacing.tla` is a second, much smaller model: many shards, no
 records, only the copies placement starts and finishes. It checks the move
 limits hold when every copy is one the store names -- a move's `successor`, a
-replacement's `joining` -- and that only a move before its fence times out.
+replacement's `joining` -- and that a fence stands only on a move in flight.
+A fenced leader that never reports drained serves again after
+`FELIX_SHARD_FENCE_TIMEOUT_MS` (`FenceTimeOut`), which ends the move and its
+fence together; whether that can race a cut-over is the shard model's
+`Retake` under `CancelCas`.
 `FelixPlacementPacingUncountedReplacement.cfg` writes a replacement the way it
 used to be, with nothing in the assignment saying a copy is running, and TLC
 finds a move starting beside it under a limit of one.

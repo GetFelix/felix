@@ -74,6 +74,10 @@ pub enum MoveStep {
     /// serves again, at a new generation. `successor` is the destination
     /// dropped, if the move still had one.
     Retake { successor: Option<String> },
+    /// The leader stayed fenced past `MovePolicy::fence_timeout_millis`
+    /// without reporting drained: it serves again at a new generation, as for
+    /// `Retake`, and `successor` is dropped.
+    FenceTimedOut { successor: Option<String> },
     /// An operator gave up the log of a shard whose only copies are out of
     /// reach: `to` leads it afresh, and whatever `from` held is lost.
     Discard { from: String, to: String },
@@ -94,6 +98,7 @@ impl MoveStep {
             Self::Seat { .. } => "seat",
             Self::Cancel { .. } => "cancel",
             Self::Retake { .. } => "retake",
+            Self::FenceTimedOut { .. } => "fence_timed_out",
             Self::Discard { .. } => "discard",
         }
     }
@@ -121,6 +126,10 @@ pub enum Blocked {
     DestinationHalted { node: String, reason: String },
     /// A move is wanted, and placement is paused.
     Paused,
+    /// A move is wanted, and this shard's last `given_up` moves in a row
+    /// were given up at the fence: the next starts at `until_millis`, on the
+    /// store's clock.
+    BackingOff { given_up: u32, until_millis: u64 },
 }
 
 impl std::fmt::Display for Blocked {
@@ -141,6 +150,14 @@ impl std::fmt::Display for Blocked {
                 "no live node can take this shard: the copy on {node} is halted ({reason})"
             ),
             Self::Paused => write!(f, "placement is paused"),
+            Self::BackingOff {
+                given_up,
+                until_millis,
+            } => write!(
+                f,
+                "the last {given_up} moves of this shard were given up at the fence; \
+                 the next starts at {until_millis}"
+            ),
         }
     }
 }

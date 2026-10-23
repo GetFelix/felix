@@ -11,13 +11,28 @@
 use std::collections::HashMap;
 
 use super::CaughtUp;
-use crate::model::{MoveReason, ShardAssignment, ShardKey};
+use crate::model::{MoveReason, ShardAssignment, ShardKey, ShardState};
 
 /// Restores in flight, by shard, new copy and generation: the copy's last
 /// reported position, and when this instance saw it change.
 #[derive(Debug, Default)]
 pub(super) struct CopyProgress {
     seen: HashMap<(ShardKey, String, u64), Seen>,
+    /// Fenced shards, by shard and generation: when this instance first saw
+    /// the fence. The store keeps no fence time, and the move's start time
+    /// counts the copy before it.
+    fences: HashMap<(ShardKey, u64), u64>,
+    /// Moves given up at the fence in a row, by shard: the leader they left
+    /// in place, how many, and when the last was. Forgotten once the shard
+    /// has another leader, which a cut-over gives it.
+    give_ups: HashMap<ShardKey, GiveUps>,
+}
+
+#[derive(Debug, Clone)]
+struct GiveUps {
+    leader: String,
+    count: u32,
+    at_millis: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -84,6 +99,82 @@ impl CopyProgress {
         self.seen
             .iter()
             .map(|((key, joining, _), seen)| ((key.clone(), joining.clone()), seen.at_millis))
+            .collect()
+    }
+}
+
+impl CopyProgress {
+    /// Note every fenced shard in `existing`, and answer when this instance
+    /// first saw each fenced at its generation. Fences no longer in
+    /// `existing` are forgotten.
+    pub(super) fn observe_fences(
+        &mut self,
+        existing: &[ShardAssignment],
+        caught_up: &dyn CaughtUp,
+    ) -> HashMap<(ShardKey, u64), u64> {
+        let Some(now) = caught_up.as_of_millis() else {
+            return HashMap::new();
+        };
+        self.fences = existing
+            .iter()
+            .filter(|assignment| assignment.state == ShardState::Draining)
+            .map(|assignment| {
+                let id = (assignment.key.clone(), assignment.generation);
+                let since = self.fences.get(&id).copied().unwrap_or(now);
+                (id, since)
+            })
+            .collect();
+        self.fences.clone()
+    }
+
+    /// Count the moves `plan` gives up at the fence, as of `now`. Counted
+    /// from the plan rather than the write: one that loses its write to
+    /// another instance waits all the same, which only delays a move.
+    pub(super) fn note_give_ups(&mut self, plan: &super::Plan, now: Option<u64>) {
+        let Some(now) = now else {
+            return;
+        };
+        for (key, step, assignment) in plan.moves() {
+            if let super::MoveStep::FenceTimedOut { .. } = step {
+                let entry = self.give_ups.entry(key.clone()).or_insert(GiveUps {
+                    leader: assignment.leader.clone(),
+                    count: 0,
+                    at_millis: now,
+                });
+                entry.count = entry.count.saturating_add(1);
+                entry.at_millis = now;
+                entry.leader = assignment.leader.clone();
+                // A draining leader keeps its shard on the move path, so a
+                // drain that cannot finish repeats this until someone looks.
+                if entry.count > 1 {
+                    tracing::warn!(
+                        kind = %key.kind,
+                        name = %key.stream,
+                        shard = key.shard,
+                        leader = %entry.leader,
+                        given_up = entry.count,
+                        "this shard's moves keep failing at the fence; each retry waits longer",
+                    );
+                }
+            }
+        }
+    }
+
+    /// The give-ups still standing against `existing`: a shard led by
+    /// someone else since, or gone, starts afresh.
+    pub(super) fn give_ups(
+        &mut self,
+        existing: &[ShardAssignment],
+    ) -> HashMap<ShardKey, (u32, u64)> {
+        let leaders: HashMap<&ShardKey, &str> = existing
+            .iter()
+            .map(|assignment| (&assignment.key, assignment.leader.as_str()))
+            .collect();
+        self.give_ups
+            .retain(|key, given| leaders.get(key) == Some(&given.leader.as_str()));
+        self.give_ups
+            .iter()
+            .map(|(key, given)| (key.clone(), (given.count, given.at_millis)))
             .collect()
     }
 }

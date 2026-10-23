@@ -8,7 +8,7 @@
 //! That is how a request on any instance keeps to the same limits as the
 //! lease holder's placement.
 use super::moves::{
-    AtGeneration, MovePolicy, Moves, spread_if_led_by, start, undo_replacement, undo_staged,
+    AtGeneration, MovePolicy, Moves, retake, spread_if_led_by, start, undo_replacement, undo_staged,
 };
 use super::plan::{assignment_for, owner_of, plan_abandoning, replication_factors};
 use super::{Blocked, CaughtUp, Decision, MoveStep, Unplaceable, zones};
@@ -316,23 +316,11 @@ pub fn cancel_move(catalog: &Catalog<'_>, key: &ShardKey) -> Result<OperatorStep
         ) {
             return Err(Refused::LeaderUnavailable(existing.leader.clone()));
         }
-        let successor = existing.successor.clone();
-        let replicas = match successor.as_deref() {
-            Some(successor) => undo_staged(existing, successor, replication_factor).replicas,
-            None => existing.replicas.clone(),
-        };
         (
-            MoveStep::Retake { successor },
-            ShardAssignment {
-                replicas,
-                generation: 0,
-                state: ShardState::Assigning,
-                successor: None,
-                joining: None,
-                move_reason: None,
-                fence_storage_ids: Default::default(),
-                ..existing.clone()
+            MoveStep::Retake {
+                successor: existing.successor.clone(),
             },
+            retake(existing, replication_factor),
         )
     } else if let Some(successor) = existing.successor.as_deref() {
         (
