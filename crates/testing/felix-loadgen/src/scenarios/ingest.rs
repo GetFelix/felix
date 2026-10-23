@@ -72,8 +72,21 @@ struct Tally {
     per_shard: BTreeMap<u32, usize>,
     /// Acked sends (batches), to set the client's forwarded count against.
     acked_sends: usize,
+    /// Records acked after the publisher stopped issuing, during the drain.
+    /// Counted in `acked` but not in the steady-state window.
+    drained_acks: usize,
+    /// Publishers whose `finish()` failed or timed out; their last sends may
+    /// not have been accepted.
+    finish_failed: u64,
+    /// When the publisher stopped issuing sends, before it drained.
+    stopped: Option<Instant>,
     samples: Samples,
 }
+
+/// How long the drain after the deadline may take: outstanding acks, a send
+/// still waiting in client admission, and each publisher's `finish()`. Matches
+/// the client's default `finish_timeout`.
+const DRAIN_BOUND: Duration = Duration::from_secs(60);
 
 /// Aggregate ingest ceiling — the write throughput measured the way a
 /// multi-partition system quotes it. `concurrency` publishers, each on its own
@@ -92,9 +105,13 @@ struct Tally {
 /// count is known the key names are chosen so they cover the shards evenly;
 /// see [`spread_keys`].
 ///
-/// With a duration, every send is bounded by the deadline. A fire-and-forget
-/// send can otherwise wait in client admission until the broker drains its
-/// backlog, long after the run should have ended.
+/// With a duration, publishing stops at the deadline and the run then drains:
+/// outstanding acks are awaited and every publisher calls `finish()` (flush,
+/// FIN, read to EOF), so a record counted as published is one the broker
+/// accepted. The drain is bounded by [`DRAIN_BOUND`], reported as `finish_ms`,
+/// and excluded from the duration and throughput figures. Dropping the
+/// connection at the deadline instead cancels publishes still queued at the
+/// broker, which showed up as sent bytes above accepted bytes.
 ///
 /// `in_flight` above 0 switches to acknowledged batches: each publisher keeps
 /// up to that many `PerBatch` publishes unanswered on its connection, which is
@@ -228,7 +245,9 @@ pub(crate) async fn ingest(
                         AckMode::None,
                         stamp,
                     );
-                    match until(deadline, send).await {
+                    // A send in progress at the deadline gets the drain bound
+                    // to finish being written, so it is not half-counted.
+                    match until(deadline.map(|d| d + DRAIN_BOUND), send).await {
                         Some(Ok(sent)) => {
                             tally.retries += sent.retries;
                             tally.published += this;
@@ -301,22 +320,35 @@ pub(crate) async fn ingest(
                     }
                 });
             }
+            tally.stopped = Some(Instant::now());
+            let drain_until = Instant::now() + DRAIN_BOUND;
             loop {
-                match until(deadline, pending.join_next()).await {
+                match until(Some(drain_until), pending.join_next()).await {
                     Some(Some(done)) => {
                         let done = done.context("ingest send task")?;
                         outstanding -= done.records;
-                        let _ = settle(&mut tally, done, &mut last_success);
+                        let records = done.records;
+                        if settle(&mut tally, done, &mut last_success).is_ok() {
+                            tally.drained_acks += records;
+                        }
                     }
                     Some(None) => break,
                     None => {
-                        // Abandoned sends are not counted as published.
+                        // The broker did not answer within the bound. These
+                        // were written but are unconfirmed, so they leave
+                        // `published` and show up as cut off.
                         pending.abort_all();
                         tally.published -= outstanding;
                         tally.cut_off += outstanding;
                         break;
                     }
                 }
+            }
+            if let Sink::Single(publisher) = &conn.sink
+                && let Err(err) = publisher.finish().await
+            {
+                eprintln!("ingest: finishing a publisher: {err:#}");
+                tally.finish_failed += 1;
             }
             Ok::<Tally, anyhow::Error>(tally)
         }));
@@ -328,12 +360,16 @@ pub(crate) async fn ingest(
         total.merge(t);
     }
     if let Some((shared, _)) = &shared {
-        // Fire-and-forget sends return once queued. Flushed inside the
-        // measured time, so the rate is for records written, not queued.
+        // Fire-and-forget sends return once queued; finishing waits for them
+        // to be written and the broker to close the stream.
         if let Err(err) = shared.finish().await {
-            eprintln!("ingest: flushing the cluster client: {err:#}");
+            eprintln!("ingest: finishing the cluster client: {err:#}");
+            total.finish_failed += 1;
         }
     }
+    let finished = Instant::now();
+    // The steady-state window ends when the last publisher stopped issuing.
+    let stopped = total.stopped.unwrap_or(finished);
     let Tally {
         published,
         completed,
@@ -344,19 +380,22 @@ pub(crate) async fn ingest(
         reconnects,
         per_shard,
         acked_sends,
+        drained_acks,
+        finish_failed,
+        stopped: _,
         samples: mut acks,
     } = total;
-    let elapsed = started.elapsed();
-    let secs = elapsed.as_secs_f64();
+    let secs = stopped.saturating_duration_since(started).as_secs_f64();
+    let finish_ms = finished.saturating_duration_since(stopped).as_secs_f64() * 1000.0;
     let msg_s = published as f64 / secs;
     let mb_s = msg_s * payload_bytes as f64 / 1_000_000.0;
     // Fire-and-forget has no acked count: a completed send there is one the
     // client wrote, which says nothing about what the broker appended.
     let acked_records = (in_flight > 0).then_some(acked);
-    let acked_msg_s = acked_records.map(|n| n as f64 / secs);
+    let acked_msg_s = acked_records.map(|n| n.saturating_sub(drained_acks) as f64 / secs);
     report!(
         common,
-        "ingest: publishers = {publishers}, in_flight = {in_flight}, cluster = {use_cluster}, published = {published} in {secs:.1} s, {msg_s:.0} msg/s, {mb_s:.1} MB/s, publish_retries = {retries}, cut_off = {cut_off}, failed_sends = {failed_sends}, reconnects = {reconnects}"
+        "ingest: publishers = {publishers}, in_flight = {in_flight}, cluster = {use_cluster}, published = {published} in {secs:.1} s, {msg_s:.0} msg/s, {mb_s:.1} MB/s, publish_retries = {retries}, cut_off = {cut_off}, failed_sends = {failed_sends}, reconnects = {reconnects}, finish = {finish_ms:.0} ms"
     );
     match acked_msg_s {
         Some(rate) => report!(common, "  acked = {acked} ({rate:.0} msg/s)"),
@@ -416,6 +455,8 @@ pub(crate) async fn ingest(
         "in_flight": in_flight,
         "stamp_send_time": stamp,
         "duration_s": secs,
+        "finish_ms": finish_ms,
+        "finish_failed": finish_failed,
         "batch_ack_latency_us": ack.map(|p| serde_json::json!({
             "p50": p.p50_us, "p99": p.p99_us, "p999": p.p999_us, "max": p.max_us,
         })),
@@ -730,6 +771,9 @@ impl Tally {
             *self.per_shard.entry(shard).or_default() += n;
         }
         self.acked_sends += other.acked_sends;
+        self.drained_acks += other.drained_acks;
+        self.finish_failed += other.finish_failed;
+        self.stopped = self.stopped.max(other.stopped);
         self.samples.merge(other.samples);
     }
 }

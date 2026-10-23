@@ -1107,6 +1107,7 @@ dependencies = [
  "felix-common",
  "felix-controlplane-service",
  "felix-kafka",
+ "felix-loadgen",
  "felix-replication",
  "felix-router",
  "felix-storage",
