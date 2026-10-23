@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792768079623,
+  "lastUpdate": 1792769762908,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -33488,6 +33488,58 @@ window.BENCHMARK_DATA = {
             "range": "2228.55",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 815481.08\nmean: 814178.23\nstdev: 2228.55\ncv: 0.27%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "390d63041b9a7a729170e33b2d33cfbddde66416",
+          "message": "fix(build): let cargo bench build the broker's lib tests (#1445)\n\nThe commit-ack unit tests call felix_storage::fault, which is compiled\nonly with debug assertions or the fault-injection feature, so the release\nlib-test build cargo bench does failed. Turn the feature on for the\nbroker's dev-dependency on felix-storage.\n\nSpec-Unaffected: build configuration only.",
+          "timestamp": "2026-10-23T15:31:37Z",
+          "tree_id": "0c786ce024b97937c1d2ce20f5a3a0cab5464aab",
+          "url": "https://github.com/GetFelix/felix/commit/390d63041b9a7a729170e33b2d33cfbddde66416"
+        },
+        "date": 1792769762347,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 359154.94,
+            "range": "10096.51",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 359154.94\nmean: 355343.17\nstdev: 10096.51\ncv: 2.84%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 359154.94,
+            "range": "10096.51",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 359154.94\nmean: 355343.17\nstdev: 10096.51\ncv: 2.84%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81483.06,
+            "range": "341.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81483.06\nmean: 81589.94\nstdev: 341.58\ncv: 0.42%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 814830.55,
+            "range": "3415.78",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 814830.55\nmean: 815899.35\nstdev: 3415.78\ncv: 0.42%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
