@@ -582,4 +582,21 @@ async fn after_the_finalize_a_deleted_name_is_created_again(store: &dyn ControlP
         .delete_cache(&key(NAMESPACE, "early"))
         .await
         .expect("clean up");
+
+    // As for streams: no name recorded after the finalize.
+    store
+        .create_cache(cache(NAMESPACE, "late", 0))
+        .await
+        .expect("create");
+    store
+        .delete_cache(&key(NAMESPACE, "late"))
+        .await
+        .expect("delete");
+    assert!(
+        !store
+            .deleted_cache_names()
+            .await
+            .expect("names")
+            .contains(&key(NAMESPACE, "late"))
+    );
 }

@@ -236,7 +236,10 @@ pub(super) async fn record_tombstone(
     incarnation: u64,
     decide: Decide,
 ) -> Option<u64> {
-    if decide.guards_names() {
+    // Only while a create could reuse it: after the finalize the set would
+    // only grow. Read from the node state the caller holds, so every Raft
+    // member decides alike.
+    if decide.guards_names() && !incarnations_finalized(nodes) {
         store.deleted_stream_names.write().await.insert(key.clone());
     }
     // An older entry tombstones only an incarnated stream, which a member

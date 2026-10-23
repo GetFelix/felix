@@ -218,7 +218,8 @@ pub(super) async fn record_tombstone(
     incarnation: u64,
     decide: Decide,
 ) -> Option<u64> {
-    if decide.guards_names() {
+    // As for streams: only while a create could reuse it.
+    if decide.guards_names() && !incarnations_finalized(nodes) {
         store.deleted_cache_names.write().await.insert(key.clone());
     }
     if decide == Decide::Legacy || !incarnations_finalized(nodes) {

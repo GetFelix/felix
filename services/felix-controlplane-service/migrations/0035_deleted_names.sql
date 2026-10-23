@@ -1,10 +1,11 @@
--- Every stream and cache name deleted on this database (#1447). Without
--- incarnations a stream created again under a deleted name opens the deleted
--- one's logs on every broker, each holding what it had of them, and its
--- replicas can diverge. So until the name's incarnations are finalized, a
--- create of a deleted name is refused. Kept for good, like tombstones, and
--- written for every delete, including a cascade from a namespace or tenant
--- and one by an instance that predates this migration.
+-- Every stream and cache name deleted on this database before its
+-- incarnations were finalized (#1447). Without incarnations a stream created
+-- again under a deleted name opens the deleted one's logs on every broker,
+-- each holding what it had of them, and its replicas can diverge. So until
+-- the name's incarnations are finalized, a create of a deleted name is
+-- refused. Written for every delete before the finalize, including a cascade
+-- from a namespace or tenant and one by an instance that predates this
+-- migration; nothing after it, when no create is refused any more.
 CREATE TABLE IF NOT EXISTS deleted_stream_names (
     tenant_id TEXT NOT NULL,
     namespace TEXT NOT NULL,
@@ -22,9 +23,11 @@ CREATE TABLE IF NOT EXISTS deleted_cache_names (
 CREATE OR REPLACE FUNCTION felix_record_deleted_stream_name() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
-    INSERT INTO deleted_stream_names (tenant_id, namespace, stream)
-        VALUES (OLD.tenant_id, OLD.namespace, OLD.stream)
-        ON CONFLICT DO NOTHING;
+    IF NOT felix_stream_incarnations_finalized() THEN
+        INSERT INTO deleted_stream_names (tenant_id, namespace, stream)
+            VALUES (OLD.tenant_id, OLD.namespace, OLD.stream)
+            ON CONFLICT DO NOTHING;
+    END IF;
     RETURN OLD;
 END;
 $$;
@@ -37,9 +40,11 @@ CREATE TRIGGER streams_deleted_name
 CREATE OR REPLACE FUNCTION felix_record_deleted_cache_name() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
-    INSERT INTO deleted_cache_names (tenant_id, namespace, cache)
-        VALUES (OLD.tenant_id, OLD.namespace, OLD.cache)
-        ON CONFLICT DO NOTHING;
+    IF NOT felix_cache_incarnations_finalized() THEN
+        INSERT INTO deleted_cache_names (tenant_id, namespace, cache)
+            VALUES (OLD.tenant_id, OLD.namespace, OLD.cache)
+            ON CONFLICT DO NOTHING;
+    END IF;
     RETURN OLD;
 END;
 $$;
@@ -88,3 +93,23 @@ DROP TRIGGER IF EXISTS caches_reused_name ON caches;
 CREATE TRIGGER caches_reused_name
     BEFORE INSERT ON caches
     FOR EACH ROW EXECUTE FUNCTION felix_refuse_reused_cache_name();
+
+-- Names deleted before this migration, as far as the retained change rows
+-- go back: a `Deleted` change for a name that does not exist now. Older
+-- deletes the change window has dropped are not recovered. Nothing once the
+-- name's incarnations are finalized.
+INSERT INTO deleted_stream_names (tenant_id, namespace, stream)
+    SELECT DISTINCT c.tenant_id, c.namespace, c.stream FROM stream_changes c
+        WHERE c.op = 'Deleted'
+          AND NOT EXISTS (SELECT 1 FROM fleet_features WHERE feature = 'stream_incarnations')
+          AND NOT EXISTS (SELECT 1 FROM streams s
+              WHERE s.tenant_id = c.tenant_id AND s.namespace = c.namespace AND s.stream = c.stream)
+    ON CONFLICT DO NOTHING;
+
+INSERT INTO deleted_cache_names (tenant_id, namespace, cache)
+    SELECT DISTINCT c.tenant_id, c.namespace, c.cache FROM cache_changes c
+        WHERE c.op = 'Deleted'
+          AND NOT EXISTS (SELECT 1 FROM fleet_features WHERE feature = 'cache_incarnations')
+          AND NOT EXISTS (SELECT 1 FROM caches k
+              WHERE k.tenant_id = c.tenant_id AND k.namespace = c.namespace AND k.cache = c.cache)
+    ON CONFLICT DO NOTHING;

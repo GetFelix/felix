@@ -389,4 +389,22 @@ async fn after_the_finalize_a_deleted_name_is_created_again(store: &dyn ControlP
         .delete_stream(&key(NAMESPACE, "early"))
         .await
         .expect("clean up");
+
+    // A delete after the finalize records no name: nothing would refuse it,
+    // and the set would only grow.
+    store
+        .create_stream(stream(NAMESPACE, "late", 0))
+        .await
+        .expect("create");
+    store
+        .delete_stream(&key(NAMESPACE, "late"))
+        .await
+        .expect("delete");
+    assert!(
+        !store
+            .deleted_stream_names()
+            .await
+            .expect("names")
+            .contains(&key(NAMESPACE, "late"))
+    );
 }
