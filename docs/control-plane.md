@@ -801,6 +801,17 @@ and no virtual-node tuning, distributes better at the handful-of-brokers scale a
 cluster starts at, and because removing a node moves only the shards that node
 held.
 
+The highest-scoring node is passed over when it already carries its share,
+which keeps a small cluster even where plain rendezvous would not. Roles
+(leaders and followers) are capped at `ceil(roles / live nodes)`, and
+leaders twice: per stream or cache first, then across the cluster. A new
+shard goes to the best-scoring node still under its stream's floor
+(`floor(shards / nodes)`), then under its stream's ceiling, each time
+preferring a node under its cluster-wide share (`ceil(all shards / nodes)`).
+A 12-shard stream on three brokers is placed 4/4/4 whatever the other streams
+already lead, and the cluster-wide count is evened out afterwards by moving
+other streams' shards (see [Moving a shard](#moving-a-shard)).
+
 The placement *plan* is deterministic: the same rows give the same decision,
 whatever order streams, nodes, or existing assignments arrive in. Its input is
 not one consistent snapshot, though. A pass reads the catalog, nodes,
@@ -1033,12 +1044,20 @@ holds for some other shard is replaced by one on a node that is staying. The
 replacement is copied in beside it, named in the assignment as `joining`
 (`reseat`), and the departing follower leaves only once the replacement is
 within the lag bound (`seat`), so the shard never has fewer copies than it
-asked for while the new one fills. A
-**live node over its share** of leadership (more than `ceil(shards /
-live nodes)`) gives a shard to a node under its share. Moves in flight are
-counted as complete for the share calculation, so a node never stages more
-moves than it needs, and only over-to-under moves are made, so the process
-converges without trading shards back and forth. A follower that is merely
+asked for while the new one fills. The live
+node leading the most of a stream's shards, when that is **two or more more
+than another node** leads, gives one to the node leading fewest of that
+stream. Once no stream wants a move, the node leading the most shards
+cluster-wide, when that is two or more more than another node, gives one to
+the node leading fewest, choosing a shard of a stream the destination leads
+fewer of, so evening the totals never unevens a stream. The totals wait for
+the streams because a shard moved for the totals first can land where a
+stream's move then takes it away again. Balancing only the totals let one stream land 1/1/10 on three
+brokers while the cluster read 21/21/19, and that stream then ran on one
+broker. Moves in flight are counted as complete for both counts, so a node
+never stages more moves than it needs. Every move lowers each stream's
+spread, or keeps it and lowers the cluster's, so the process converges
+without trading shards back and forth. A follower that is merely
 down is left where it is: a rolling restart would otherwise copy every shard
 once per node.
 

@@ -304,9 +304,11 @@ FELIX_TENANT_PUBLISH_QUOTAS=acme:209715200:20000,batch:0:0
   below `pub_conn_inflight_bytes` or above `pub_inflight_bytes`.
 - `pub_conn_recv_window` and `pub_stream_recv_window` are the QUIC receive windows of the
   client listeners, which carry publishes and cache requests alike. Unset, both follow
-  `pub_conn_inflight_bytes`, raised to `max_frame_bytes` if that is larger. When ingress is full
-  and `pub_ingress_wait` is on, the broker stops reading publishes, and the window is how much
-  more a client can park in the broker before QUIC flow control holds it back. Bigger windows
+  `pub_conn_inflight_bytes`, raised to `max_frame_bytes` if that is larger. A publish that
+  finds the queue full under `pub_ingress_wait` (or an acked one under `ack_on_commit`) waits
+  in line without stopping its stream: the stream keeps reading, up to 1024 waiting publishes
+  or the byte budget. Past that the broker stops reading that stream, and the window is how
+  much more a client can park in the broker before QUIC flow control holds it back. Bigger windows
   cost broker memory and delay backpressure; smaller ones can cap throughput on a path with a
   large bandwidth-delay product. Startup refuses a window below `max_frame_bytes` or a stream
   window above the connection window.

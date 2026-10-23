@@ -906,7 +906,7 @@ pub_conn_recv_window: 16777216
 ```
 
 **Tuning**:
-- When ingress is full and `pub_ingress_wait` is on, the broker stops reading a connection's publishes. The client can then park up to this many more bytes in the broker's receive buffers before QUIC flow control stops it, so a connection holds at most `pub_conn_inflight_bytes` plus this window.
+- When ingress is full and `pub_ingress_wait` is on, a publish waits in line for room while its stream keeps reading. Once a stream has 1024 publishes waiting, or the byte budget is spent, the broker stops reading it. The client can then park up to this many more bytes in the broker's receive buffers before QUIC flow control stops it, so a connection holds at most `pub_conn_inflight_bytes` plus this window.
 - A bigger window costs broker memory and delays the moment a publisher feels backpressure. A smaller one can cap a connection's throughput on a path with a large bandwidth-delay product: 16 MiB covers 10 Gbit/s up to about 13 ms of round trip.
 - Must be at least `max_frame_bytes` and at least `pub_stream_recv_window`. Startup refuses anything else.
 
@@ -949,7 +949,7 @@ publish_window: 256
 
 ### `pub_ingress_wait`
 
-**Description**: When true, un-acked (fire-and-forget) publishes wait for ingress capacity, bounded by `publish_queue_wait_timeout_ms`, instead of being shed when the publish queue or byte budget is full.
+**Description**: When true, un-acked (fire-and-forget) publishes wait for ingress capacity instead of being shed when the publish queue or byte budget is full. The wait has no timeout, since an unacked publish has no way to report one; it ends when room frees or the connection goes. A publish waiting for queue room does not stop its stream: the stream keeps reading, so publishes behind it to shards with room still go through.
 
 **Type**: `bool`
 
@@ -964,7 +964,7 @@ pub_ingress_wait: true
 
 **Tuning**:
 - Off (default): overload sheds fire-and-forget publishes visibly (`felix_broker_ingress_dropped_total`) and keeps latency bounded.
-- On: backpressure propagates through QUIC flow control to the publisher. Nothing is shed, and producers slow down. Use for lossless pipelines and sustainable-throughput benchmarking.
+- On: backpressure propagates through QUIC flow control to the publisher. Nothing is shed, and producers slow down. Each stream keeps reading until it has 1024 publishes waiting or the byte budget is spent, then stops, which is what slows its publisher. Use for lossless pipelines and sustainable-throughput benchmarking.
 
 ### `core_shards`
 

@@ -395,8 +395,8 @@ fn past_every_share_the_least_loaded_node_is_chosen() {
         &eligible,
         &load,
         1,
-        &HashMap::new(),
-        1,
+        &crate::cluster::placement::leadership::Leadership::default(),
+        crate::cluster::placement::leadership::Shares::new(1, 1, 2),
     );
     assert_eq!(chosen, Some(other));
 }

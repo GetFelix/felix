@@ -1297,7 +1297,7 @@ export FELIX_BROKER_PUBLISH_WINDOW="256"
 
 ### `FELIX_PUB_INGRESS_WAIT`
 
-**Description**: When enabled, un-acked (fire-and-forget) publishes wait for ingress capacity, bounded by `FELIX_PUBLISH_QUEUE_WAIT_MS`, instead of being shed when the publish queue or byte budget is full. Backpressure then propagates through QUIC flow control to the publisher. Leave off in production for visible shedding under overload. Turn on for lossless pipelines and sustainable-throughput benchmarking.
+**Description**: When enabled, un-acked (fire-and-forget) publishes wait for ingress capacity instead of being shed when the publish queue or byte budget is full. The wait has no timeout; it ends when room frees or the connection goes. A waiting publish does not stop its stream from reading the publishes behind it. Once a stream has 1024 publishes waiting, or the byte budget is spent, the broker stops reading it, and backpressure propagates through QUIC flow control to the publisher. Leave off in production for visible shedding under overload. Turn on for lossless pipelines and sustainable-throughput benchmarking.
 
 **Type**: Boolean (`1`, `true`, `yes` = enabled)
 
@@ -1528,6 +1528,30 @@ export FELIX_ACK_ELICITING_THRESHOLD="1"   # RFC-like cadence
 
 ```bash
 export FELIX_ACK_FREQ_DISABLE="1"
+```
+
+### `FELIX_CONNECT_TIMEOUT_MS`
+
+**Description**: Longest a client's connect to one broker may take, handshake and stream setup included, before it fails with an error (client). A cluster client dials addresses one after another, so a reconnect over several dead addresses takes up to that many times this.
+
+**Type**: Positive integer (milliseconds)
+
+**Default**: `10000`
+
+```bash
+export FELIX_CONNECT_TIMEOUT_MS="5000"
+```
+
+### `FELIX_FINISH_TIMEOUT_MS`
+
+**Description**: Longest `Publisher::finish` and `ClusterClient::finish` wait for queued publishes to be written and acknowledged and for the broker to close its side of each stream (client). On expiry the streams are aborted and the call returns an error, so a stalled commit does not hang the caller.
+
+**Type**: Positive integer (milliseconds)
+
+**Default**: `60000`
+
+```bash
+export FELIX_FINISH_TIMEOUT_MS="30000"
 ```
 
 ### `FELIX_CONN_STATS_MS`

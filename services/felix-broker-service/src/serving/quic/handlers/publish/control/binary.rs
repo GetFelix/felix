@@ -19,7 +19,7 @@ use crate::serving::quic::client_error::ClientError;
 use crate::serving::quic::handlers::publish::ack::{
     AckEncoding, AckTimeoutState, Outgoing, handle_ack_enqueue_result, send_outgoing_critical,
 };
-use crate::serving::quic::handlers::publish::ingress::enqueue_tenant_publish;
+use crate::serving::quic::handlers::publish::ingress::{Enqueued, enqueue_acked_tenant_publish};
 use crate::serving::quic::handlers::publish::route::{
     DeclaredWidth, publish_target, resolve_declared_shard, resolve_route,
 };
@@ -138,7 +138,7 @@ pub(crate) async fn handle_binary_publish_batch_control(
         let payloads = batch.payloads;
         let payload_bytes = payload_len_sum(&payloads);
         let fanout_start = t_now_if(sample);
-        let r = enqueue_tenant_publish(
+        let r = enqueue_acked_tenant_publish(
             publish_ctx,
             &batch.tenant_id,
             PublishJob {
@@ -152,13 +152,16 @@ pub(crate) async fn handle_binary_publish_batch_control(
             },
             publish_ctx.overflow_policy(),
             Some(cancel_tx.subscribe()),
+            &mut None,
         )
         .await;
         match r {
-            Ok(true) => {
+            // A parked publish is counted when it is admitted.
+            Ok(Enqueued::Parked) => {}
+            Ok(Enqueued::Queued) => {
                 count_publish_accepted("accepted", payload_bytes);
             }
-            Ok(false) => {
+            Ok(Enqueued::Dropped) => {
                 count_publish("dropped");
             }
             Err(err) => {

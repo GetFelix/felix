@@ -15,6 +15,7 @@ pub(crate) use defaults::*;
 
 use std::fs;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use felix_transport::TransportConfig;
@@ -124,6 +125,17 @@ pub struct ClientConfig {
     /// consumer-group record. Off by default, since it adds eight bytes to
     /// every event. [`crate::Client::offset_for_time`] works either way.
     pub timestamps: bool,
+    /// Longest a connect to one broker may take, handshake and stream setup
+    /// included, before it fails with an error. Default 10 s;
+    /// `FELIX_CONNECT_TIMEOUT_MS`. A cluster client dials one address after
+    /// another, so a reconnect over `n` dead addresses takes up to `n` times
+    /// this.
+    pub connect_timeout: Duration,
+    /// Longest [`crate::Publisher::finish`] waits for queued publishes to be
+    /// written and acknowledged and for the broker to close its side of the
+    /// stream, before it aborts the streams and fails. Default 60 s;
+    /// `FELIX_FINISH_TIMEOUT_MS`.
+    pub finish_timeout: Duration,
 }
 
 impl ClientConfig {
@@ -167,6 +179,8 @@ impl ClientConfig {
             broker_sub_queue_capacity: None,
             max_frame_bytes: DEFAULT_MAX_FRAME_BYTES,
             bench_embed_ts: false,
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
+            finish_timeout: DEFAULT_FINISH_TIMEOUT,
         }
     }
 
@@ -216,6 +230,8 @@ impl ClientConfig {
             client_sub_queue_policy: self.client_sub_queue_policy,
             broker_sub_queue_capacity: self.broker_sub_queue_capacity,
             bench_embed_ts: self.bench_embed_ts,
+            connect_timeout: self.connect_timeout,
+            finish_timeout: self.finish_timeout,
         }
     }
 }
@@ -253,6 +269,8 @@ pub(crate) struct ClientRuntimeConfig {
     pub(crate) client_sub_queue_policy: ClientSubQueuePolicy,
     pub(crate) broker_sub_queue_capacity: Option<u32>,
     pub(crate) bench_embed_ts: bool,
+    pub(crate) connect_timeout: Duration,
+    pub(crate) finish_timeout: Duration,
 }
 
 pub(crate) fn event_transport_config(

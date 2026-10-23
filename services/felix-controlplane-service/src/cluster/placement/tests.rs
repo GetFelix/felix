@@ -1,6 +1,7 @@
 //! Placement tests, by theme. The helpers here build the catalogs and
 //! clusters every theme plans over.
 mod abandon;
+mod balance;
 mod caches;
 mod departed;
 mod failover;

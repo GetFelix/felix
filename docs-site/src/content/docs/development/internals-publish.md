@@ -164,6 +164,20 @@ do not mean more concurrent callers contending on shared stream state.
    where "overload becomes visible instead of silently buffering" is enforced
    on ingest.
 
+   A `Wait` or `Backpressure` publish that finds no room is *parked*: it
+   takes its place in the queue's line of waiters at once, and the wait
+   itself runs in a task the control stream owns
+   (`handlers/publish/parked.rs`). The stream goes on reading, so a full
+   queue holds up its own publish and not the publishes behind it to shards
+   with room. Line order is per tenant and first come, first served, so a
+   later publish on the same stream never overtakes a parked one. A parked
+   acked publish keeps its byte budget, arms its ack timeout only once it is
+   admitted, and is answered `publish_queue_full` if its wait runs out. A
+   stream may have 1024 publishes parked; past that, or with the byte budget
+   spent, it waits inline and stops reading, which leaves the backpressure
+   to QUIC stream flow control. Parked publishes are counted in
+   `felix_broker_ingress_parked_total`.
+
 3. **Lanes and the fair queue** (`handlers/publish/scheduler.rs`). Every job
    belongs to a *lane*: the shard it writes (keyed by `handle.id()`), or the
    remote shard it is forwarded to (keyed by a hash of its name). A lane runs

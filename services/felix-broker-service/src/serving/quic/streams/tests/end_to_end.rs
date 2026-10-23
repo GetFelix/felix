@@ -826,6 +826,7 @@ async fn handle_stream_drain_timeout_sleep_branch() -> Result<()> {
             tenant_rates: std::sync::Arc::new(crate::serving::limits::TenantRates::unlimited()),
             publish_window: 0,
             ack_durable_on_commit: false,
+            parked: None,
         };
         let config = BrokerConfig {
             ack_on_commit: true,

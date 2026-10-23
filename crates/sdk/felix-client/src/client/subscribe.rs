@@ -81,7 +81,9 @@ impl Client {
             mut recv,
             negotiated,
             lease,
-        } = self.open_event_stream().await?;
+        } = self
+            .bounded("open a stream", self.open_event_stream())
+            .await?;
         let connection_index = lease.slot();
         let server_flags = negotiated.server_flags;
         // Sent only where it will be answered: an older broker ignores it.
@@ -126,12 +128,16 @@ impl Client {
         )
         .await?;
         send.finish()?;
-        let response = read_message_with_limit(
-            &mut recv,
-            &mut frame_scratch,
-            self.runtime_config.max_frame_bytes,
-        )
-        .await?;
+        let response = self
+            .bounded(
+                "read the broker's answer",
+                read_message_with_limit(
+                    &mut recv,
+                    &mut frame_scratch,
+                    self.runtime_config.max_frame_bytes,
+                ),
+            )
+            .await?;
         let (subscription_id, start_offset, live_offset, granted_capacity) = match response {
             Some(Message::Subscribed {
                 subscription_id,

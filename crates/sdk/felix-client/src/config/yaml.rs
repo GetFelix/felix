@@ -34,6 +34,8 @@ pub(super) struct ClientConfigOverride {
     client_sub_queue_policy: Option<String>,
     max_frame_bytes: Option<usize>,
     bench_embed_ts: Option<bool>,
+    connect_timeout_ms: Option<u64>,
+    finish_timeout_ms: Option<u64>,
 }
 
 /// A copy of `felix_common::yaml`'s options, which this published crate cannot
@@ -94,6 +96,16 @@ impl ClientConfigOverride {
         // Zero is meaningful here: it turns shard streams off.
         if let Some(value) = self.publish_shard_streams {
             config.publish_shard_streams = value;
+        }
+        if let Some(value) = self.connect_timeout_ms
+            && value > 0
+        {
+            config.connect_timeout = std::time::Duration::from_millis(value);
+        }
+        if let Some(value) = self.finish_timeout_ms
+            && value > 0
+        {
+            config.finish_timeout = std::time::Duration::from_millis(value);
         }
         if let Some(value) = &self.auth_tenant_id {
             config.auth_tenant_id = Some(value.clone());

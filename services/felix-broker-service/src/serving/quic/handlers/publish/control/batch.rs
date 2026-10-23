@@ -20,7 +20,9 @@ use crate::serving::quic::handlers::publish::ack::{
     send_outgoing_best_effort, send_outgoing_critical,
 };
 use crate::serving::quic::handlers::publish::commit_ack::{AckRequest, PendingAck};
-use crate::serving::quic::handlers::publish::ingress::{PublishTarget, enqueue_tenant_publish};
+use crate::serving::quic::handlers::publish::ingress::{
+    Enqueued, PublishTarget, enqueue_acked_tenant_publish,
+};
 use crate::serving::quic::handlers::publish::route::{
     DeclaredWidth, PublishRoute, UNKEYED_SHARD, internal_ack, local_shard_key, needs_quorum,
     publish_target, resolve_declared_shard, resolve_route, targets_durable,
@@ -382,7 +384,7 @@ pub(crate) async fn handle_publish_batch_message(
             (None, None)
         };
         let fanout_start = t_now_if(sample);
-        let enqueue_result = enqueue_tenant_publish(
+        let enqueue_result = enqueue_acked_tenant_publish(
             publish_ctx,
             &tenant_id,
             PublishJob {
@@ -402,6 +404,7 @@ pub(crate) async fn handle_publish_batch_message(
                 EnqueuePolicy::Fail
             },
             Some(cancel_tx.subscribe()),
+            &mut pending,
         )
         .await;
         if let Some(start) = fanout_start {
@@ -410,12 +413,14 @@ pub(crate) async fn handle_publish_batch_message(
             t_histogram!("felix_broker_ingress_enqueue_ns").record(fanout_ns as f64);
         }
         match enqueue_result {
-            Ok(true) => {
+            // A parked publish is counted when it is admitted.
+            Ok(Enqueued::Parked) => {}
+            Ok(Enqueued::Queued) => {
                 if ack_mode == felix_wire::AckMode::None {
                     count_publish_accepted("accepted", payload_bytes.iter().sum::<usize>() as u64);
                 }
             }
-            Ok(false) => {
+            Ok(Enqueued::Dropped) => {
                 count_publish("dropped");
                 if ack_mode != felix_wire::AckMode::None
                     && pending.take().is_none_or(PendingAck::refuse)
@@ -499,7 +504,10 @@ pub(crate) async fn handle_publish_batch_message(
             return Ok(());
         }
         // Commit-ack mode: the waiter was reserved before the enqueue.
-        pending.take().expect("commit ack expected").arm();
+        // Taken by a parked wait, which arms it once the publish is admitted.
+        if let Some(pending) = pending.take() {
+            pending.arm();
+        }
         Ok(())
     }
     .instrument(span)

@@ -3,7 +3,8 @@ title: "Moving shards by hand"
 ---
 
 Placement moves shards on its own: off a draining broker, and from a broker
-leading more than its share to one leading less (see
+leading more than its share, of one stream or of the cluster, to one leading
+less (see
 [Adding, draining and removing brokers](/deployment/scaling/)). This
 page is for when you want to steer that: see what is moving and what would
 move next, move a shard yourself, cancel a move, stop placement starting any,

@@ -88,6 +88,7 @@ pub(super) fn context_with(scheduler: Arc<PublishScheduler>) -> PublishContext {
         tenant_rates: std::sync::Arc::new(crate::serving::limits::TenantRates::unlimited()),
         publish_window: 0,
         ack_durable_on_commit: false,
+        parked: None,
     }
 }
 
