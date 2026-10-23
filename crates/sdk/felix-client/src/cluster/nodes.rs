@@ -77,6 +77,14 @@ impl Nodes {
         })
     }
 
+    /// The configured limit on one connect.
+    pub(super) fn connect_timeout(&self) -> std::time::Duration {
+        match &self.source {
+            Source::Dial { config, .. } => config.connect_timeout,
+            Source::Identity { base, .. } => base.connect_timeout(),
+        }
+    }
+
     fn with_source(source: Source) -> Self {
         Self {
             source,

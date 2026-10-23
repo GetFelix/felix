@@ -198,13 +198,28 @@ impl ClusterClient {
     /// [`Publisher::finish`]: crate::Publisher::finish
     pub async fn finish(&self) -> Result<()> {
         let mut first: Option<anyhow::Error> = None;
+        // All at once, so brokers that stall cost one `finish_timeout` between
+        // them rather than one each.
+        let mut finishing = tokio::task::JoinSet::new();
         for client in self.nodes.clients().await {
-            // The shard publisher finishes the pooled streams and the shard
-            // streams this client's publishes go on.
-            let finished = client.publisher_handle().finish().await;
-            if let Err(err) = finished {
-                let err = err.context(format!("finish publishing to {}", client.dialled()));
-                first.get_or_insert(err);
+            finishing.spawn(async move {
+                // The shard publisher finishes the pooled streams and the shard
+                // streams this client's publishes go on.
+                let finished = client.publisher_handle().finish().await;
+                finished.map_err(|err| {
+                    err.context(format!("finish publishing to {}", client.dialled()))
+                })
+            });
+        }
+        while let Some(joined) = finishing.join_next().await {
+            match joined {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => {
+                    first.get_or_insert(err);
+                }
+                Err(join) => {
+                    first.get_or_insert(anyhow::anyhow!("finish task failed: {join}"));
+                }
             }
         }
         first.map_or(Ok(()), Err)

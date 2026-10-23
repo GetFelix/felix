@@ -62,11 +62,16 @@ let cfg = ClientConfig::from_env_or_yaml(quinn, Some("client.yml"))?;
 - `connect_timeout` (env: `FELIX_CONNECT_TIMEOUT_MS`, YAML `connect_timeout_ms`)
   - Longest one connect to a broker may take before it errors. Default: 10 s.
     A cluster client dials addresses in turn, so a reconnect can take up to
-    that many times this.
+    that many times this, and is capped at three times it in all. The same limit
+    bounds each request/response step of topology, shard-count and subscribe
+    exchanges.
 - `finish_timeout` (env: `FELIX_FINISH_TIMEOUT_MS`, YAML `finish_timeout_ms`)
   - Longest `finish` waits for queued publishes to settle and the broker to
     close each stream. On expiry the streams are aborted and it errors.
-    Default: 60 s.
+    Publishes still waiting for an ack then fail and are unconfirmed: they may
+    or may not have been committed, so resend them (at least once). Buffered
+    `AckMode::None` data is lost. `ClusterClient::finish` finishes brokers
+    together, so the total is about one timeout. Default: 60 s.
 - `publish_shard_streams` (env: `FELIX_PUB_SHARD_STREAMS`)
   - Most publish streams a client opens per broker for one shard each,
     beside the pool. Default: `4`. `0` turns them off. The first

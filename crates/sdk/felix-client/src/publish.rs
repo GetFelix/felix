@@ -645,7 +645,10 @@ impl Publisher {
     ///
     /// Bounded by `finish_timeout` (`FELIX_FINISH_TIMEOUT_MS`, 60 s): a broker
     /// that never settles a commit or never closes the stream fails this with
-    /// an error, and the streams are aborted.
+    /// an error, and the streams are aborted. Publishes still waiting for an
+    /// ack then fail and are unconfirmed: they may or may not have been
+    /// committed, so resend them (delivery is at least once). Data from
+    /// `AckMode::None` publishes still buffered is lost.
     pub async fn finish(&self) -> Result<()> {
         let mut handles = Vec::new();
         let Some(limit) = self.inner.finish_timeout else {
@@ -659,7 +662,8 @@ impl Publisher {
                 }
                 Err(anyhow::anyhow!(
                     "publisher finish timed out after {limit:?}: the broker did not settle \
-                     queued publishes and close the stream"
+                     queued publishes and close the stream; unacknowledged publishes are \
+                     unconfirmed and buffered unacked data is lost"
                 ))
             }
         }

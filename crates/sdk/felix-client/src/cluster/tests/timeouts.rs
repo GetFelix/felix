@@ -34,7 +34,7 @@ async fn finish_errors_when_the_broker_never_acks() -> Result<()> {
     );
     broker.hold_acks();
     let publisher = cluster.client().await.publisher_handle();
-    let _publish = tokio::spawn(async move {
+    let publish = tokio::spawn(async move {
         publisher
             .publish("t1", "default", "orders", b"x".to_vec(), AckMode::PerBatch)
             .await
@@ -48,6 +48,11 @@ async fn finish_errors_when_the_broker_never_acks() -> Result<()> {
         .expect("finish hung");
     let err = finished.expect_err("finish must fail");
     assert!(format!("{err:#}").contains("timed out"), "{err:#}");
+    // The aborted stream fails the publish still waiting for its ack.
+    let waited = tokio::time::timeout(TEST_LIMIT, publish)
+        .await
+        .expect("pending publish hung")?;
+    assert!(waited.is_err(), "the unconfirmed publish errors");
     Ok(())
 }
 
@@ -75,5 +80,85 @@ async fn connect_errors_when_the_broker_never_answers() -> Result<()> {
         "{:?}",
         started.elapsed()
     );
+    Ok(())
+}
+
+/// **Brokers that all stall cost one `finish_timeout` between them**, not
+/// one each.
+#[tokio::test]
+async fn finish_waits_on_stalled_brokers_together() -> Result<()> {
+    let (server_config, cert) = build_server_config()?;
+    let a = StubBroker::start_with(server_config.clone(), ok)?;
+    let b = StubBroker::start_with(server_config, ok)?;
+    let mut config = default_config(cert)?;
+    config.finish_timeout = Duration::from_millis(600);
+    let cluster = Arc::new(
+        ClusterClient::connect_with_policy(&[a.addr, b.addr], "localhost", config, policy())
+            .await?,
+    );
+    a.hold_acks();
+    b.hold_acks();
+    for broker in [&a, &b] {
+        let publisher = cluster.connect_to(broker.addr).await?.publisher_handle();
+        tokio::spawn(async move {
+            publisher
+                .publish("t1", "default", "orders", b"x".to_vec(), AckMode::PerBatch)
+                .await
+        });
+        while broker.publishes() < 1 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
+    let started = std::time::Instant::now();
+    let finished = tokio::time::timeout(TEST_LIMIT, cluster.finish())
+        .await
+        .expect("finish hung");
+    assert!(finished.is_err());
+    assert!(
+        started.elapsed() < Duration::from_millis(1100),
+        "finished one broker after another: {:?}",
+        started.elapsed()
+    );
+    Ok(())
+}
+
+/// **Publishes are not queued behind a reconnect's dial.** The dead address
+/// is tried first and takes the whole connect timeout to give up.
+#[tokio::test]
+async fn reading_the_client_does_not_wait_for_a_reconnect_dial() -> Result<()> {
+    let (server_config, cert) = build_server_config()?;
+    let live = StubBroker::start_with(server_config, ok)?;
+    let silent = std::net::UdpSocket::bind("127.0.0.1:0")?;
+    let mut config = default_config(cert)?;
+    config.connect_timeout = Duration::from_millis(800);
+    let cluster = Arc::new(
+        ClusterClient::connect_with_policy(
+            &[live.addr, silent.local_addr()?],
+            "localhost",
+            config,
+            policy(),
+        )
+        .await?,
+    );
+    let failed = cluster.client().await;
+    assert_eq!(failed.dialled(), live.addr);
+
+    let reconnecting = {
+        let cluster = Arc::clone(&cluster);
+        tokio::spawn(async move { cluster.reconnect(&failed).await })
+    };
+    // Past the point where the reconnect is dialling the silent address.
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let started = std::time::Instant::now();
+    tokio::time::timeout(TEST_LIMIT, cluster.client())
+        .await
+        .expect("client() hung");
+    assert!(
+        started.elapsed() < Duration::from_millis(300),
+        "the client lock was held across the dial: {:?}",
+        started.elapsed()
+    );
+    reconnecting.await??;
     Ok(())
 }

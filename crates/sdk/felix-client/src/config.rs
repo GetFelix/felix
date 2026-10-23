@@ -230,6 +230,7 @@ impl ClientConfig {
             client_sub_queue_policy: self.client_sub_queue_policy,
             broker_sub_queue_capacity: self.broker_sub_queue_capacity,
             bench_embed_ts: self.bench_embed_ts,
+            connect_timeout: self.connect_timeout,
             finish_timeout: self.finish_timeout,
         }
     }
@@ -268,6 +269,7 @@ pub(crate) struct ClientRuntimeConfig {
     pub(crate) client_sub_queue_policy: ClientSubQueuePolicy,
     pub(crate) broker_sub_queue_capacity: Option<u32>,
     pub(crate) bench_embed_ts: bool,
+    pub(crate) connect_timeout: Duration,
     pub(crate) finish_timeout: Duration,
 }
 

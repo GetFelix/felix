@@ -155,6 +155,9 @@ pub struct ClusterClient {
     /// client being replaced.
     /// Shared with `widths`, which asks whichever client is in use.
     client: Arc<RwLock<Arc<Client>>>,
+    /// Held across a reconnect's dial, so one failure builds one replacement
+    /// without holding `client` while it does.
+    reconnecting: tokio::sync::Mutex<()>,
     /// Where a shard's publishes should go, learned from the acks of the ones
     /// that were forwarded.
     ///
@@ -276,6 +279,7 @@ impl ClusterClient {
             widths,
             client: holder,
             owners,
+            reconnecting: tokio::sync::Mutex::new(()),
             group_routes: RwLock::new(HashMap::new()),
             cache_routes: RwLock::new(HashMap::new()),
             nodes,
@@ -368,38 +372,36 @@ impl ClusterClient {
     /// Does nothing when the client in use is no longer `failed`: someone
     /// else has already replaced it, and every operation that failed on the
     /// same broker must not each throw away the replacement and dial again.
-    /// Held exclusively while dialling, so publishes queue behind it rather
-    /// than racing to build several replacements for the same failure.
+    /// Reconnects take turns, so they do not build several replacements for
+    /// one failure, but the dial happens outside the client lock: publishes
+    /// keep reading it, and fail on the dead client, rather than queueing
+    /// behind the dial. The whole attempt is bounded by three times
+    /// `connect_timeout`.
     pub(crate) async fn reconnect(&self, failed: &Arc<Client>) -> Result<()> {
-        let (endpoints, stranded) = {
-            let mut slot = self.client.write().await;
-            if !Arc::ptr_eq(&slot, failed) {
-                return Ok(());
-            }
-            // Read under the lock, so a reconnect that queued behind another
-            // one dials what that one left, not what was there before it.
-            let mut endpoints = self.endpoints.read().await.clone();
-            // The broker in use just failed, so it is dialled afresh rather
-            // than handed back from the shared clients. It goes last because
-            // a draining broker still completes handshakes and would be
-            // picked again until it exits.
-            self.nodes.forget(&slot).await;
-            let failed_addr = slot.dialled();
-            endpoints.sort_by_key(|addr| *addr == failed_addr);
-            match self.nodes.connect_any(&endpoints).await {
-                Ok(client) => {
-                    *slot = client;
-                    (endpoints, None)
-                }
-                Err(err) => (endpoints, Some(err)),
-            }
-        };
-        if let Some(err) = stranded
-            && !self.reconnect_by_name(&endpoints, failed, err).await?
-        {
-            // Another caller replaced the client while this one was
-            // resolving, and has run discovery for it.
+        let budget = self.nodes.connect_timeout() * 3;
+        tokio::time::timeout(budget, self.reconnect_within(failed))
+            .await
+            .map_err(|_| anyhow::anyhow!("reconnect timed out after {budget:?}"))?
+    }
+
+    async fn reconnect_within(&self, failed: &Arc<Client>) -> Result<()> {
+        let _turn = self.reconnecting.lock().await;
+        if !Arc::ptr_eq(&*self.client.read().await, failed) {
             return Ok(());
+        }
+        // Read after taking the turn, so a reconnect that queued behind another
+        // one dials what that one left, not what was there before it.
+        let mut endpoints = self.endpoints.read().await.clone();
+        // The broker in use just failed, so it is dialled afresh rather
+        // than handed back from the shared clients. It goes last because
+        // a draining broker still completes handshakes and would be
+        // picked again until it exits.
+        self.nodes.forget(failed).await;
+        let failed_addr = failed.dialled();
+        endpoints.sort_by_key(|addr| *addr == failed_addr);
+        match self.nodes.connect_any(&endpoints).await {
+            Ok(client) => *self.client.write().await = client,
+            Err(err) => self.reconnect_by_name(&endpoints, err).await?,
         }
         // After the swap, and outside the write lock: the broker that answered
         // is the one that knows what the cluster looks like now, and a failover
@@ -412,15 +414,10 @@ impl ClusterClient {
     /// back in through one of them, and after a rollout that moved every
     /// broker none will ever answer again.
     ///
-    /// Resolves outside the client lock, since lookups can take seconds and
-    /// every operation reads the client. `false` when someone else replaced
-    /// `failed` meanwhile, which leaves theirs in place.
-    async fn reconnect_by_name(
-        &self,
-        tried: &[SocketAddr],
-        failed: &Arc<Client>,
-        err: anyhow::Error,
-    ) -> Result<bool> {
+    /// Resolves and dials outside the client lock, since both can take seconds
+    /// and every operation reads the client. Called with the reconnect turn
+    /// held, so nobody else replaces the client meanwhile.
+    async fn reconnect_by_name(&self, tried: &[SocketAddr], err: anyhow::Error) -> Result<()> {
         let fresh: Vec<SocketAddr> = self
             .seeds
             .resolve(&self.nodes)
@@ -428,16 +425,13 @@ impl ClusterClient {
             .into_iter()
             .filter(|addr| !tried.contains(addr))
             .collect();
-        let mut slot = self.client.write().await;
-        if !Arc::ptr_eq(&slot, failed) {
-            return Ok(false);
-        }
         if fresh.is_empty() {
             return Err(err);
         }
-        *slot = self.nodes.connect_any(&fresh).await.map_err(|by_name| {
+        let client = self.nodes.connect_any(&fresh).await.map_err(|by_name| {
             anyhow::anyhow!("{err:#}; nor did the names resolved again ({by_name:#})")
         })?;
+        *self.client.write().await = client;
         // Every address tried just failed, so only the new ones and the
         // configured seeds are kept. Discovery adds the rest back.
         let mut next = fresh;
@@ -447,7 +441,7 @@ impl ClusterClient {
             }
         }
         *self.endpoints.write().await = next;
-        Ok(true)
+        Ok(())
     }
 
     /// Refresh if the broker supports it, and carry on if it does not.
