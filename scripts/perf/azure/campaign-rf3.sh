@@ -113,6 +113,9 @@ export MAP_FORWARDED_SENDS="forwarded_sends"    # null for fire-and-forget
 : "${FAIL_VICTIM:=1}"        # broker index; not 0, which the loadgen dials first
 : "${LF_WAIT_SECS:=45}"      # brokers pick up finalized features on their next control-plane contact
 : "${REPL_WAIT_SECS:=240}"
+: "${BAL_WAIT_SECS:=600}"      # overall limit for moving leaders into balance
+: "${BAL_BATCH:=3}"            # moves started per round (move limits)
+: "${BAL_POLL_SECS:=15}"
 : "${RUNCMD_TIMEOUT:=900}"   # one az vm run-command; bounds every wait that polls through one
 : "${AZ_TIMEOUT:=600}"
 : "${SLACK_MIN:=45}"         # the honest estimate must leave this much under MAX_HOURS
@@ -444,7 +447,7 @@ dealloc() {
   echo "!!!! ${GROUP} may still be running and billing; deallocate it by hand" >&2
   return 1
 }
-on_exit() { dealloc; rm -f "${LOCK}"; }
+on_exit() { [ "${PLACEMENT_PAUSED:-0}" = 0 ] || [ "${VMS_STARTED:-0}" = 0 ] || placement_resume; dealloc; rm -f "${LOCK}"; }
 trap on_exit EXIT
 trap 'plog "interrupted"; exit 143' INT TERM
 exec >> "${RUNOUT}" 2>&1
@@ -599,6 +602,110 @@ leaders_even() {
     | awk -F= -v n="${NBROKERS}" '{ c[NR] = $2 } END { if (NR != n) exit 1; lo = hi = c[1]; for (i = 2; i <= NR; i++) { if (c[i] < lo) lo = c[i]; if (c[i] > hi) hi = c[i] } exit (hi - lo > 1) }'
 }
 
+# Placement balances leadership cluster-wide, not per stream, so leftover streams
+# can leave the measured one 1/1/10. The operator move API fixes that where
+# recreating cannot. Plan: counts per broker for one stream, then moves from the
+# fullest broker to the emptiest until they differ by at most one.
+IFS= read -r -d '' BAL_PY <<'PY' || true
+import json, sys
+stream, batch, inflight_path = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+want_cache = stream.startswith("cache/")
+name = stream[6:] if want_cache else stream
+items = json.load(sys.stdin).get("items", [])
+nodes = sorted(set(it["leader"] for it in items if it.get("leader")))
+mine = {n: [] for n in nodes}
+for it in items:
+    is_cache = str(it.get("kind", "")).lower() == "cache"
+    if it.get("stream") == name and is_cache == want_cache and it.get("leader"):
+        mine[it["leader"]].append(it)
+try:
+    inflight = len(json.load(open(inflight_path)).get("items", []))
+except Exception:
+    inflight = 0
+counts = dict((n, len(v)) for n, v in mine.items())
+moves = []
+if inflight == 0:
+    while len(moves) < batch and nodes:
+        hi = max(nodes, key=lambda n: counts[n])
+        lo = min(nodes, key=lambda n: counts[n])
+        if counts[hi] - counts[lo] <= 1:
+            break
+        it = mine[hi].pop()
+        counts[hi] -= 1
+        counts[lo] += 1
+        mine[lo].append(it)
+        moves.append({"tenant_id": it["tenant_id"], "namespace": it["namespace"], "stream": it["stream"],
+                      "shard": it["shard"], "kind": it.get("kind", "stream"), "destination": lo, "dry_run": False})
+now = [len([1 for it in items if it.get("leader") == n and it.get("stream") == name
+            and (str(it.get("kind", "")).lower() == "cache") == want_cache]) for n in nodes]
+even = 1 if nodes and max(now) - min(now) <= 1 else 0
+print("counts=%s even=%d planned=%d inflight=%d" % ("/".join(str(c) for c in now), even, len(moves), inflight))
+for m in moves:
+    print(json.dumps(m))
+PY
+
+# One balancing round, run on generator 0 (cp_remote supplies $u and $t).
+IFS= read -r -d '' BAL_SH <<'SH' || true
+curl -fsS -H "Authorization: Bearer $t" "$u/v1/placement/replication" > /tmp/bal.repl || { echo "__BAL_BEGIN__error=replication__BAL_END__"; exit 0; }
+curl -fsS -H "Authorization: Bearer $t" "$u/v1/shard-moves" > /tmp/bal.inflight || echo '{"items":[]}' > /tmp/bal.inflight
+python3 /tmp/bal.py "$STREAM" "$BATCH" /tmp/bal.inflight < /tmp/bal.repl > /tmp/bal.plan || { echo "__BAL_BEGIN__error=plan__BAL_END__"; exit 0; }
+head -n 1 /tmp/bal.plan > /tmp/bal.head
+tail -n +2 /tmp/bal.plan > /tmp/bal.moves
+started=0; refused=0
+while IFS= read -r b; do
+  code=$(curl -s -o /tmp/bal.resp -w '%{http_code}' -X POST "$u/v1/shard-moves" -H "Authorization: Bearer $t" -H 'Content-Type: application/json' -d "$b")
+  case "$code" in 2*) started=$((started + 1)) ;; *) refused=$((refused + 1)) ;; esac
+done < /tmp/bal.moves
+echo "__BAL_BEGIN__$(cat /tmp/bal.head) started=${started} refused=${refused}__BAL_END__"
+SH
+
+# balance_leaders <stream>: operator moves until the stream's leaders differ by
+# at most one per broker, a few at a time (move limits), within BAL_WAIT_SECS.
+# Pauses placement afterwards so it does not move them back while measuring.
+balance_leaders() {
+  local s="$1" deadline out first="" last="" total=0 n
+  deadline=$(( $(date +%s) + BAL_WAIT_SECS ))
+  while :; do
+    out="$(cp_remote "STREAM='${s}'; BATCH=${BAL_BATCH}
+cat > /tmp/bal.py <<'PYEOF'
+${BAL_PY}
+PYEOF
+${BAL_SH}
+echo __RUNOK__" 2>/dev/null | extract_between BAL)"
+    case "${out}" in
+      counts=*)
+        last="$(printf '%s\n' "${out}" | sed 's/^counts=\([^ ]*\) .*/\1/')"
+        [ -n "${first}" ] || first="${last}"
+        n="$(printf '%s\n' "${out}" | sed -n 's/.* started=\([0-9]*\).*/\1/p')"
+        total=$(( total + ${n:-0} ))
+        case "${out}" in
+          *" even=1 "*)
+            plog "balanced ${s} leaders ${first} -> ${last} via ${total} moves"
+            placement_pause
+            return 0 ;;
+        esac ;;
+      *) plog "WARN balance ${s}: ${out:-no answer}" ;;
+    esac
+    if [ "$(date +%s)" -ge "${deadline}" ]; then
+      plog "WARN ${s}: leaders still ${last:-unknown} after ${BAL_WAIT_SECS} s of moves (${total} started); not measuring"
+      return 1
+    fi
+    sleep "${BAL_POLL_SECS}"
+  done
+}
+
+# placement_pause / placement_resume: stop or allow placement's own moves.
+# Operator moves ignore a pause; a failed leader is still replaced under one.
+PLACEMENT_PAUSED=0
+placement_pause() {
+  cp_remote 'curl -fsS -X POST -H "Authorization: Bearer $t" "$u/v1/placement/pause" >/dev/null && echo __RUNOK__' >/dev/null 2>&1 \
+    && PLACEMENT_PAUSED=1 || plog "WARN could not pause placement; leaders may move during the cell"
+}
+placement_resume() {
+  cp_remote 'curl -fsS -X POST -H "Authorization: Bearer $t" "$u/v1/placement/resume" >/dev/null && echo __RUNOK__' >/dev/null 2>&1 \
+    && PLACEMENT_PAUSED=0 || plog "WARN could not resume placement"
+}
+
 # ensure_ready: brokers ready and every shard fully replicated (#1155: a cluster
 # started together settles before it places; recreated streams and restarts need
 # the copies caught up before a cell is allowed to measure).
@@ -622,9 +729,9 @@ ensure_ready() {
 # seed-remote.sh creates them. Recreating frees the disk and re-places the leaders.
 reset_streams() {
   local s list="$*" body
-  # Read the body first: bash 3.2 expands variables in a quoted heredoc
-  # nested in $() inside a double-quoted string.
-  body="$(cat <<'BODY'
+  # Not $(cat <<'BODY'): bash 3.2 mis-parses a quoted heredoc inside $() and
+  # expands the remote script's variables here.
+  IFS= read -r -d '' body <<'BODY' || true
 for s in $STREAMS; do
   case "$s" in *durable*|perf-failover) d=true ;; *) d=false ;; esac
   curl -s -X DELETE -H "Authorization: Bearer $t" "$u/v1/tenants/perf/namespaces/default/streams/$s" >/dev/null 2>&1 || true
@@ -635,13 +742,13 @@ for s in $STREAMS; do
   case "$code" in 2*) echo "created.$s=$code" ;; *) echo "!! create $s -> $code"; cat /tmp/reset.resp; exit 1 ;; esac
 done
 BODY
-)"
   cp_remote "STREAMS='${list}'; SHARDS=${SHARDS}; RF=3
 ${body}
 echo __RUNOK__" > "${OUT}/system/reset-streams.txt" 2>&1 || { plog "WARN stream recreate failed: $(tail -3 "${OUT}/system/reset-streams.txt" | tr '\n' ' ')"; return 1; }
 }
 
-# ensure_fresh <stream>: a recreated stream, fully replicated, with evenly spread leaders.
+# ensure_fresh <stream>: a recreated stream (frees the disk), fully replicated,
+# with evenly spread leaders (moved into place, not re-rolled by recreating).
 ensure_fresh() {
   local s="$1" attempt st
   for attempt in 1 2 3; do
@@ -649,11 +756,10 @@ ensure_fresh() {
     sleep 12
     ensure_ready || continue
     st="$(cat "${OUT}/rf3/last-replication.txt" 2>/dev/null)"
-    if leaders_even "${st}" "${s}"; then return 0; fi
-    plog "WARN ${s} leaders uneven (${st}); recreating (attempt ${attempt})"
+    leaders_even "${st}" "${s}" || { plog "WARN ${s} leaders uneven (${st}); balancing"; balance_leaders "${s}" && ensure_ready || return 1; }
+    return 0
   done
-  plog "WARN ${s}: gave up getting even leaders; measuring on $(cat "${OUT}/rf3/last-replication.txt" 2>/dev/null)"
-  [ -s "${OUT}/rf3/last-replication.txt" ]
+  return 1
 }
 
 # disk_guard: the highest /data use across the brokers. Over DISK_MAX_PCT the
@@ -874,7 +980,7 @@ prep_cell() {
     ensure_ready || return 1
     # In-memory streams keep their data, but every broker must lead some shards
     # or the cell measures one broker.
-    leaders_even "$(cat "${OUT}/rf3/last-replication.txt" 2>/dev/null)" "${s}" || ensure_fresh "${s}" || return 1
+    leaders_even "$(cat "${OUT}/rf3/last-replication.txt" 2>/dev/null)" "${s}" || { balance_leaders "${s}" && ensure_ready || return 1; }
   fi
 }
 
@@ -1160,6 +1266,7 @@ run_failover() {
   # shellcheck disable=SC2086
   stage "${BUILD_SHA}" ${benv}
   prep_cell perf-failover 1 || { echo "!! ${name}: prep failed" >&2; return 1; }
+  placement_resume   # the kill needs normal placement
   ensure_felixctl >/dev/null 2>&1
   inspect_tails "${OUT}/rf3/${name}.inspect-before.txt" || plog "WARN ${name}: no complete inspect snapshot before the cell"
   rm -rf "${dir}"

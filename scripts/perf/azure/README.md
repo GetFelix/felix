@@ -272,7 +272,12 @@ and between the brokers. Unattended upgrades are masked. Streams have 12 shards
 (a multiple of three, so each broker leads four) and RF=3, created by
 `seed-remote.sh`; the driver recreates a durable stream before each durable cell
 and waits for `GET /v1/placement/replication` to show no under-replicated shard
-and an even leader spread before any cell measures (#1155).
+and an even leader spread before any cell measures (#1155). Placement
+balances leaders across the whole cluster, not per stream, so leftover streams
+can leave the measured stream lopsided; the driver then moves its leaders with
+`POST /v1/shard-moves` until brokers differ by at most one (10 minutes at most,
+else the cell is skipped), and pauses placement's own moves while cells run.
+Placement is resumed before the failover cell and on exit.
 
 Broker settings on every cell: `FELIX_ACK_ON_COMMIT=1`,
 `FELIX_PUB_INGRESS_WAIT=1`, `FELIX_DURABLE_FSYNC_MODE=on_commit`,
