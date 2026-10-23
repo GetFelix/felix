@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792770667523,
+  "lastUpdate": 1792777910930,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -33592,6 +33592,58 @@ window.BENCHMARK_DATA = {
             "range": "4576.32",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 810609.90\nmean: 809062.82\nstdev: 4576.32\ncv: 0.57%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "909af35e27db6af7b77b9b81fa7e0c7ac27268c6",
+          "message": "feat(controlplane): finalize incarnations on a new cluster (#1447) (#1449)\n\n* feat(controlplane): finalize incarnations on a new cluster (#1447)\n\nA cluster that never ran an older release has nothing to roll back to, so\nits first broker registration finalizes stream_incarnations and\ncache_incarnations. A stream or cache deleted and created again there then\nalways starts empty on every broker.\n\nNew means no stream or cache was ever created (empty change feeds and\nsnapshots) and every node record is at node incarnation 0; an upgraded\ncluster's brokers register again and leave it. The finalize goes through the\nstore's finalize_fleet_feature, as an operator's does, so every serving\nbroker must report the feature, a Raft member below its level refuses it,\nand a broker without it is refused afterwards. No apply path changes.\n\nSpec-Unaffected: decides when the control plane finalizes two fleet features; the models do not cover fleet features or stream incarnations.\n\n* test(cluster): a Quorum stream recreated on a new cluster replicates from empty (#1447)\n\nReview on #1449. Brokers register before any stream exists, so the cluster\nfinalizes incarnations; the stream is written, deleted, created again and\nwritten, and every copy must be level with none halted.\n\nSpec-Unaffected: a cluster test only.",
+          "timestamp": "2026-10-23T10:47:08-07:00",
+          "tree_id": "87d34c7ca2e4b5f184ccb5eaa907bb9916467520",
+          "url": "https://github.com/GetFelix/felix/commit/909af35e27db6af7b77b9b81fa7e0c7ac27268c6"
+        },
+        "date": 1792777910100,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 343074.47,
+            "range": "4391.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 343074.47\nmean: 344752.93\nstdev: 4391.59\ncv: 1.27%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 343074.47,
+            "range": "4391.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 343074.47\nmean: 344752.93\nstdev: 4391.59\ncv: 1.27%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81569.21,
+            "range": "192.65",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81569.21\nmean: 81677.91\nstdev: 192.65\ncv: 0.24%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 815692.08,
+            "range": "1926.49",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 815692.08\nmean: 816779.08\nstdev: 1926.49\ncv: 0.24%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
