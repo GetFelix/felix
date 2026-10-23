@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792765553905,
+  "lastUpdate": 1792766595209,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -33384,6 +33384,58 @@ window.BENCHMARK_DATA = {
             "range": "70949.79",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1244062.92\nmean: 1213764.15\nstdev: 70949.79\ncv: 5.85%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ea1509fc13ecfe211f8706c9b9ec97172deca050",
+          "message": "perf(broker): park a publish waiting for queue room off the read loop (#1416) (#1443)\n\n* perf(broker): park a publish waiting for queue room off the read loop (#1416)\n\nA Wait or Backpressure publish that found the publish queue full awaited\nroom inside the control loop, so the stream stopped reading and every\npublish behind it waited too, even to shards whose queues had room.\n\nThe job is now parked in the scheduler at once, which fixes its place in\nthe per-tenant FIFO line, and the wait runs in a task the control stream\nowns. The stream goes on reading. Up to 1024 publishes may be parked per\nstream; past that, or with the byte budget spent, the loop waits inline\nand QUIC stream flow control holds the client back. A parked acked publish\narms its commit ack once admitted and is answered publish_queue_full if\nits wait runs out. A clean stream end drains the parked waits first.\n\nSpec-Unaffected: parking happens after the fence entry and admission, the\njob keeps its fence guard while it waits as it did inline, and the lane\norder and claim path are unchanged.\n\n* fix(broker): count a parked publish accepted only once it is admitted (#1416)\n\nAn unacked publish that parked was counted accepted by the handler and\nthen error if its wait was given up. It is now counted by the parked wait\nwhen the job is admitted, so the accepted counters stay exact.\n\nAdds tests for the accepted count, send order of same-key publishes\nthrough parking, cancellation releasing the byte budget, a clean stream\nend still answering its parked publish, and a closing queue answering it.\n\nSpec-Unaffected: metrics and tests only; the parking, fence and lane\norder are unchanged.",
+          "timestamp": "2026-10-23T07:39:12-07:00",
+          "tree_id": "ceb61f8d983da6cfe396390d16cf20e4290549ab",
+          "url": "https://github.com/GetFelix/felix/commit/ea1509fc13ecfe211f8706c9b9ec97172deca050"
+        },
+        "date": 1792766594324,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 517069.31,
+            "range": "67966.30",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 517069.31\nmean: 503170.21\nstdev: 67966.30\ncv: 13.51%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 517069.31,
+            "range": "67966.30",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 517069.31\nmean: 503170.21\nstdev: 67966.30\ncv: 13.51%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 118146.6,
+            "range": "5189.45",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 118146.60\nmean: 116950.00\nstdev: 5189.45\ncv: 4.44%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1181465.99,
+            "range": "51894.50",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1181465.99\nmean: 1169500.01\nstdev: 51894.50\ncv: 4.44%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
