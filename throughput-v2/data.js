@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792760500708,
+  "lastUpdate": 1792763988375,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -33228,6 +33228,58 @@ window.BENCHMARK_DATA = {
             "range": "5002.11",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 930323.68\nmean: 930942.13\nstdev: 5002.11\ncv: 0.54%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1860df34ce140e0a5ced281dfa5d664320eebb98",
+          "message": "test(placement): pin that a pause never holds a started move (#1434) (#1440)\n\nA pause stops placement starting moves. It does not stop a move that has\nalready started, placement's own or an operator's, from fencing and\ncutting over. Two store-backed tests now drive a fenced move and an\noperator move started under a pause through to the cut-over, so a change\nthat gates move progress on the pause fails them.\n\nThe RF=3 campaign script said an operator move does not progress until\nplacement resumes; that is not what the control plane does.\n\nRefs #1434\n\nSpec-Unaffected: tests and a script comment only; FelixPlacementPacing does not model the pause.",
+          "timestamp": "2026-10-23T06:55:10-07:00",
+          "tree_id": "e844627a56b99eb88ff67d4a1a886a223b08d39d",
+          "url": "https://github.com/GetFelix/felix/commit/1860df34ce140e0a5ced281dfa5d664320eebb98"
+        },
+        "date": 1792763987481,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 356227.89,
+            "range": "14137.36",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 356227.89\nmean: 354086.95\nstdev: 14137.36\ncv: 3.99%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 356227.89,
+            "range": "14137.36",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 356227.89\nmean: 354086.95\nstdev: 14137.36\ncv: 3.99%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80368.5,
+            "range": "1674.35",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80368.50\nmean: 79951.46\nstdev: 1674.35\ncv: 2.09%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 803685.02,
+            "range": "16743.49",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 803685.02\nmean: 799514.61\nstdev: 16743.49\ncv: 2.09%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
