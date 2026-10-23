@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792769762908,
+  "lastUpdate": 1792770667523,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -33540,6 +33540,58 @@ window.BENCHMARK_DATA = {
             "range": "3415.78",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 814830.55\nmean: 815899.35\nstdev: 3415.78\ncv: 0.42%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "789f85d7f5fe996fdae7e9853ea993defa50b64f",
+          "message": "fix(placement): give a stuck fence back to its leader after a timeout (#1434) (#1444)\n\n* fix(placement): give a stuck fence back to its leader after a timeout (#1434)\n\nA fenced move waited on its leader's drained report with no bound, so a\nlive leader that never reported drained kept its shard without writes\nforever. The instance running placement now watches each fence, and once\na shard has been fenced at one generation for FELIX_SHARD_FENCE_TIMEOUT_MS\n(two minutes, shard_fence_timeout_ms in the file, 0 for the old\nbehaviour) it gives the move up with the same write as an operator's\ncancel after the fence: the leader serves again at a new generation.\n\nNobody has led since the fence, so the leader holds every write it\naccepted, and the successor was never named and took none. The write is\nconditional on the fenced generation, so it and a cut-over decided from a\ndrained report cannot both land. A drained report seen in the same pass\nstill cuts over. The clock is per instance and restarts on a lease\nchange, which only delays the give-up.\n\nNo Raft entry applies differently: the give-up is an ordinary assignment\nwrite decided when it is proposed.\n\nFelixPlacementPacing gains FenceTimeOut, and FencedNeverTimesOut becomes\nFencedOnlyInAMove, which still holds; the race with a cut-over is the\nshard model's Retake under CancelCas.\n\n* fix(placement): back off a shard's moves after give-ups at the fence (#1434)\n\nEach give-up costs the shard its writes for the fence timeout and drops\nthe destination's copy, and a draining leader keeps its shard on the move\npath, so a leader that cannot drain would fence and give up every few\nminutes. The next move of a shard now waits the fence timeout after one\ngive-up, doubling with each in a row up to an hour, and the count resets\nonce the shard has another leader. Waiting moves say so in the plan, and\nrepeated give-ups log a warning naming the shard and its leader.\n\nThe count is kept per instance beside the fence clock; a lease change\nstarts it again, which only shortens a wait.\n\nSpec-Unaffected: FelixPlacementPacing has no clock; the wait only delays a Start the model already allows at any time.",
+          "timestamp": "2026-10-23T08:46:42-07:00",
+          "tree_id": "b7e63af0bc232af671819d7ade8b1565895684e3",
+          "url": "https://github.com/GetFelix/felix/commit/789f85d7f5fe996fdae7e9853ea993defa50b64f"
+        },
+        "date": 1792770666922,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 347479.7,
+            "range": "12934.18",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 347479.70\nmean: 348180.02\nstdev: 12934.18\ncv: 3.71%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 347479.7,
+            "range": "12934.18",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 347479.70\nmean: 348180.02\nstdev: 12934.18\ncv: 3.71%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81060.99,
+            "range": "457.63",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81060.99\nmean: 80906.28\nstdev: 457.63\ncv: 0.57%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 810609.9,
+            "range": "4576.32",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 810609.90\nmean: 809062.82\nstdev: 4576.32\ncv: 0.57%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
