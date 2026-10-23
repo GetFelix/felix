@@ -65,6 +65,20 @@ fn a_joiner_reading_by_lease_is_told_to_unset_it() {
 }
 
 #[test]
+fn a_joiner_without_the_fence_is_told_to_unset_it() {
+    let refused = admit(
+        &set(&["generation_start", "majority_ack"]),
+        &at("c", NodeLifecycle::Live, &["generation_start"]),
+    );
+    assert!(
+        matches!(&refused, Err(StoreError::Conflict(message))
+            if message.contains("unset FELIX_INTERNAL_FENCE")
+                && !message.contains("FELIX_QUORUM_READS")),
+        "{refused:?}"
+    );
+}
+
+#[test]
 fn nothing_is_refused_before_a_finalize() {
     assert!(admit(&set(&[]), &at("c", NodeLifecycle::Live, &[])).is_ok());
 }

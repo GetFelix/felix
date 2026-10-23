@@ -569,12 +569,14 @@ async fn an_incarnated_stream_waits_for_every_member() {
     );
 }
 
-/// A new cluster finalizes nothing by itself while a member runs an older
-/// release, even one at every feature's own level: the follower features are
-/// safe only once every control-plane member is upgraded. Once the member
-/// reports this build's level, the next registration finalizes them.
+/// A new cluster finalizes nothing while a member runs an older release,
+/// even one at every feature's own level: the follower features are safe only
+/// once every control-plane member is upgraded. The finalize is retried in
+/// the background, so it lands once the member reports this build's level,
+/// even after every broker registered while it was held and one registered
+/// again, which on its own makes the cluster no longer new.
 #[tokio::test]
-async fn a_new_cluster_waits_for_every_member_to_finalize() {
+async fn a_held_new_cluster_finalize_is_retried_once_every_member_can() {
     let dir = tempfile::tempdir().expect("tempdir");
     let level = crate::store::raft::command::METADATA_VERSION - 1;
     let (store, version) = store_with_member_at(dir.path(), level).await;
@@ -582,35 +584,52 @@ async fn a_new_cluster_waits_for_every_member_to_finalize() {
         .iter()
         .map(|feature| feature.name())
         .collect();
-    let (_, enabled) = store
-        .register_node_in_fleet(crate::store::contract::nodes::with_features(
-            crate::store::contract::nodes::node("broker-a", 7401),
-            &all,
-        ))
-        .await
-        .expect("register");
-    let enabled = crate::cluster::fleet::finalize_new_cluster(store.as_ref(), enabled).await;
-    assert!(enabled.is_empty(), "{enabled:?}");
+    let shared = Arc::clone(&store) as Arc<dyn crate::store::ControlPlaneStore + Send + Sync>;
+    let pending = Arc::new(crate::cluster::fleet::NewClusterFinalize::default());
+    // What the registration handler does.
+    let register = |id: &'static str, port: u16| {
+        let (store, shared, pending, all) = (
+            Arc::clone(&store),
+            Arc::clone(&shared),
+            Arc::clone(&pending),
+            all.clone(),
+        );
+        async move {
+            let (_, enabled) = store
+                .register_node_in_fleet(crate::store::contract::nodes::with_features(
+                    crate::store::contract::nodes::node(id, port),
+                    &all,
+                ))
+                .await
+                .expect("register");
+            crate::cluster::fleet::finalize_new_cluster(&shared, &pending, enabled).await
+        }
+    };
+    for (id, port) in [("broker-a", 7401), ("broker-b", 7402), ("broker-c", 7403)] {
+        let enabled = register(id, port).await;
+        assert!(enabled.is_empty(), "{id}: {enabled:?}");
+    }
+    let enabled = register("broker-a", 7401).await;
+    assert!(enabled.is_empty(), "registered again: {enabled:?}");
 
     version.store(
         crate::store::raft::command::METADATA_VERSION,
         std::sync::atomic::Ordering::SeqCst,
     );
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    let enabled = loop {
-        let enabled =
-            crate::cluster::fleet::finalize_new_cluster(store.as_ref(), Default::default()).await;
-        if !enabled.is_empty() {
-            break enabled;
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let enabled = store.enabled_fleet_features().await.expect("enabled");
+        if crate::cluster::fleet::NEW_CLUSTER
+            .iter()
+            .all(|feature| enabled.contains(feature.name()))
+        {
+            break;
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "nothing finalized after every member reported the level"
+            "not finalized after every member reported the level: {enabled:?}"
         );
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    };
-    for feature in crate::cluster::fleet::NEW_CLUSTER {
-        assert!(enabled.contains(feature.name()), "{feature}: {enabled:?}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
     }
 }
 

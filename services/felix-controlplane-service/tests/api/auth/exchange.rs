@@ -224,6 +224,7 @@ async fn exchange_returns_tenant_scoped_token() {
         in_flight: Default::default(),
         placement_wakes: Default::default(),
         move_policy: Default::default(),
+        new_cluster: Default::default(),
     };
     let app: axum::routing::RouterIntoService<axum::body::Body, ()> =
         build_router(state.clone()).into_service();
@@ -377,6 +378,7 @@ async fn exchange_forbidden_without_policies() {
         in_flight: Default::default(),
         placement_wakes: Default::default(),
         move_policy: Default::default(),
+        new_cluster: Default::default(),
     };
     let app: axum::routing::RouterIntoService<axum::body::Body, ()> =
         build_router(state).into_service();
@@ -502,6 +504,7 @@ async fn exchange_supports_group_claim_based_rbac() {
         in_flight: Default::default(),
         placement_wakes: Default::default(),
         move_policy: Default::default(),
+        new_cluster: Default::default(),
     };
     let app: axum::routing::RouterIntoService<axum::body::Body, ()> =
         build_router(state).into_service();
@@ -644,6 +647,7 @@ async fn exchange_group_claim_rbac_requires_groups_claim_mapping() {
         in_flight: Default::default(),
         placement_wakes: Default::default(),
         move_policy: Default::default(),
+        new_cluster: Default::default(),
     };
     let app: axum::routing::RouterIntoService<axum::body::Body, ()> =
         build_router(state).into_service();
@@ -768,6 +772,7 @@ async fn exchange_does_not_map_a_prefixed_group_claim_onto_the_bare_group() {
         in_flight: Default::default(),
         placement_wakes: Default::default(),
         move_policy: Default::default(),
+        new_cluster: Default::default(),
     };
     let app: axum::routing::RouterIntoService<axum::body::Body, ()> =
         build_router(state).into_service();

@@ -9,7 +9,9 @@
   every record by its publisher's id. Each finalize goes through the
   operator's checks, so a feature some broker does not report stays off with
   the features that need it, and under the Raft backend nothing is finalized
-  until every member runs this release. Start every broker with the same
+  until every member runs this release; a finalize held back that way is
+  retried in the background until it is. Start every broker with the same
   `FELIX_QUORUM_READS` and `FELIX_INTERNAL_FENCE`: a broker that lacks a
-  feature the first one finalized is refused. An upgraded cluster still waits
-  for the operator.
+  feature the first one finalized is refused, and the refusal now names
+  `FELIX_INTERNAL_FENCE` as well as `FELIX_QUORUM_READS`. An upgraded cluster
+  still waits for the operator.

@@ -158,11 +158,38 @@ its publisher's id. The control plane treats a cluster as new when no stream
 or cache was ever created and no broker has registered twice, and, under the
 Raft backend, only once every member runs this release. It finalizes
 through the same checks as the command below, so a feature some broker does
-not report stays off, along with the features that need it. Start every
-broker with the same `FELIX_QUORUM_READS` and `FELIX_INTERNAL_FENCE`: a broker
-that lacks a feature the first one finalized is refused. Everything below
-applies to a cluster upgraded from an older release, and to
-`publisher_principal`.
+not report stays off, along with the features that need it. If a
+control-plane member is still starting when the brokers register, the
+control plane retries the finalize in the background until every member
+answers. Everything below applies to a cluster upgraded from an older
+release, and to `publisher_principal`.
+
+#### A new cluster: the first broker's configuration wins
+
+Two broker settings drop features from what a broker reports:
+`FELIX_QUORUM_READS=lease` drops `lease_free_reads`, and
+`FELIX_INTERNAL_FENCE=false` drops `majority_ack`, `lease_free_reads` and
+`fenced_caches`. The first broker to register decides what a new cluster
+finalizes, and finalizing is one-way, so give every broker the same values
+before any of them starts.
+
+A broker started later with a setting the first one did not have is refused
+at registration with 409, logs the reason and exits:
+
+```text
+node broker-2 does not support fleet feature(s) lease_free_reads that the
+fleet has enabled; run a build that has them, since an enabled feature cannot
+be disabled; a broker started with FELIX_QUORUM_READS=lease does not support
+lease_free_reads: unset FELIX_QUORUM_READS (the default reads by a round) and
+restart the broker
+```
+
+With `FELIX_INTERNAL_FENCE=false` the message names `majority_ack` and says
+to unset `FELIX_INTERNAL_FENCE` instead. To recover, remove the setting from
+that broker and restart it; it registers normally. If you meant the whole
+cluster to run with the setting, the features cannot be turned off again:
+create the cluster afresh (a new control-plane store and empty broker data
+directories) with the setting on every broker from the start.
 
 #### Runbook: rolling out a fleet feature
 

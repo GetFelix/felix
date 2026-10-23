@@ -233,11 +233,26 @@ feature, and any that need it, to the operator. The decision is the
 proposer's, as for an operator's finalize, so every Raft member applies the
 same commands.
 
+When the member check or a store error holds the finalize back, the
+instance that took the registration retries it in the background, from one
+second apart up to thirty, until nothing that passes holds it
+(`cluster::fleet::NewClusterFinalize`). The retry does not check again that
+the cluster is new. Brokers re-registering or streams created meanwhile do
+not make it one that could roll back to an older build, and an operator's
+finalize at that point passes the same checks. Members starting together
+with their brokers, as a Kubernetes rollout does, would otherwise leave
+every registration held and the cluster unfinalized
+(`a_held_new_cluster_finalize_is_retried_once_every_member_can`). The retry
+lives in that instance's memory: if it restarts first, the features are the
+operator's.
+
 A broker configured out of a feature does not report it, so the feature
 stays off: `FELIX_QUORUM_READS=lease` keeps `lease_free_reads` off, and
 `FELIX_INTERNAL_FENCE=false` keeps `majority_ack`, `lease_free_reads` and
-`fenced_caches` off. Set them on every broker before the first one starts;
-a later broker that lacks a feature the first one finalized is refused.
+`fenced_caches` off. The first broker's configuration wins: a later broker
+that lacks a feature it finalized is refused, and the refusal names the
+setting to unset. `docs-site/src/content/docs/deployment/upgrades.md` has
+what the operator sees and how to recover.
 
 `publisher_principal` stays the operator's. It stores each record's
 publisher, which grows every record by the principal id's length plus a

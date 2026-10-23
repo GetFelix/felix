@@ -19,6 +19,9 @@
 //! ([`check_prerequisites`]). A new cluster finalizes [`NEW_CLUSTER`] itself
 //! ([`finalize_new_cluster`]).
 use std::collections::BTreeSet;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use crate::model::Node;
 use crate::store::StoreError;
@@ -65,9 +68,23 @@ pub(crate) fn admit(enabled: &BTreeSet<String>, joining: &Node) -> Result<(), St
     } else {
         ""
     };
+    // Likewise for the fence, which the follower features rest on.
+    let fenceless = if [
+        felix_common::fleet::MAJORITY_ACK,
+        felix_common::fleet::FENCED_CACHES,
+    ]
+    .iter()
+    .any(|feature| missing.contains(&feature.name()))
+    {
+        "; a broker started with FELIX_INTERNAL_FENCE=false does not support \
+         majority_ack or fenced_caches: unset FELIX_INTERNAL_FENCE and restart the broker"
+    } else {
+        ""
+    };
     Err(StoreError::Conflict(format!(
         "node {} does not support fleet feature(s) {} that the fleet has enabled; \
-         run a build that has them, since an enabled feature cannot be disabled{reads_by_lease}",
+         run a build that has them, since an enabled feature cannot be disabled\
+         {reads_by_lease}{fenceless}",
         joining.node_id,
         missing.join(", "),
     )))
@@ -187,32 +204,38 @@ pub(crate) async fn is_new_cluster(
         && store.cache_snapshot().await?.items.is_empty())
 }
 
-/// Finalize [`NEW_CLUSTER`] on a new cluster, in order, through the same
-/// store call as an operator's finalize, so the same checks hold: every
-/// serving broker reported the feature, under the lock registrations take, a
-/// Raft member below the level it needs refuses it, and a broker without it
-/// is refused from then on. A feature whose prerequisites did not finalize is
-/// skipped. Answers with the enabled set after.
+/// A new cluster's finalize that could not finish at a registration, retried
+/// in the background. One per control-plane instance, shared by its handlers.
+#[derive(Debug, Default)]
+pub struct NewClusterFinalize {
+    retrying: AtomicBool,
+}
+
+/// The first retry's delay; each later one doubles, up to [`RETRY_MAX`].
+const RETRY_FIRST: Duration = Duration::from_secs(1);
+const RETRY_MAX: Duration = Duration::from_secs(30);
+
+type Store = Arc<dyn crate::store::ControlPlaneStore + Send + Sync>;
+
+/// Finalize [`NEW_CLUSTER`] after a registration if the cluster is new, and
+/// answer with the enabled set after.
 ///
-/// Called after each registration while a feature is off. Once anything
-/// makes the cluster not new, finalizing is the operator's again.
+/// When something that passes held it back, a control-plane member below
+/// this build or a store error, the finalize is retried in the background
+/// until it gets past them. The retry does not ask again whether the cluster
+/// is new: its brokers re-registering, or streams created meanwhile, change
+/// nothing about the rollback the check is for, and an operator could
+/// finalize just the same with them. Once anything makes the cluster not new
+/// before a first attempt, finalizing is the operator's again.
 pub(crate) async fn finalize_new_cluster(
-    store: &(dyn crate::store::ControlPlaneStore + Send + Sync),
-    mut enabled: BTreeSet<String>,
+    store: &Store,
+    pending: &Arc<NewClusterFinalize>,
+    enabled: BTreeSet<String>,
 ) -> BTreeSet<String> {
-    if NEW_CLUSTER
-        .iter()
-        .all(|feature| enabled.contains(feature.name()))
-    {
+    if all_enabled(&enabled) || pending.retrying.load(Ordering::Acquire) {
         return enabled;
     }
-    // `majority_ack` and the features after it are safe only once every
-    // control-plane member is upgraded (docs/control-plane.md), so a group
-    // part-way through an upgrade is left to the operator.
-    if !store.every_member_current().await {
-        return enabled;
-    }
-    match is_new_cluster(store).await {
+    match is_new_cluster(store.as_ref()).await {
         Ok(true) => {}
         Ok(false) => return enabled,
         Err(err) => {
@@ -220,6 +243,67 @@ pub(crate) async fn finalize_new_cluster(
             return enabled;
         }
     }
+    let (enabled, again) = finalize_in_order(store.as_ref(), enabled).await;
+    if again {
+        retry(store, pending);
+    }
+    enabled
+}
+
+fn all_enabled(enabled: &BTreeSet<String>) -> bool {
+    NEW_CLUSTER
+        .iter()
+        .all(|feature| enabled.contains(feature.name()))
+}
+
+/// Retry [`finalize_in_order`] until nothing that passes holds it back.
+fn retry(store: &Store, pending: &Arc<NewClusterFinalize>) {
+    if pending
+        .retrying
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    tracing::info!("new cluster: finalizing fleet features once every control-plane member can");
+    let store = Arc::clone(store);
+    let pending = Arc::clone(pending);
+    drop(tokio::spawn(async move {
+        let mut delay = RETRY_FIRST;
+        loop {
+            tokio::time::sleep(delay).await;
+            delay = (delay * 2).min(RETRY_MAX);
+            let enabled = match store.enabled_fleet_features().await {
+                Ok(enabled) => enabled,
+                Err(err) => {
+                    tracing::warn!(error = %err, "new cluster: could not read the enabled features");
+                    continue;
+                }
+            };
+            if all_enabled(&enabled) || !finalize_in_order(store.as_ref(), enabled).await.1 {
+                break;
+            }
+        }
+        pending.retrying.store(false, Ordering::Release);
+    }));
+}
+
+/// Finalize [`NEW_CLUSTER`] in order, through the same store call as an
+/// operator's finalize, so the same checks hold: every serving broker
+/// reported the feature, under the lock registrations take, a Raft member
+/// below the level it needs refuses it, and a broker without it is refused
+/// from then on. A feature whose prerequisites did not finalize is skipped.
+/// Answers with the enabled set after, and whether to try again.
+async fn finalize_in_order(
+    store: &(dyn crate::store::ControlPlaneStore + Send + Sync),
+    mut enabled: BTreeSet<String>,
+) -> (BTreeSet<String>, bool) {
+    // `majority_ack` and the features after it are safe only once every
+    // control-plane member is upgraded (docs/control-plane.md).
+    if !store.every_member_current().await {
+        return (enabled, true);
+    }
+    let mut again = false;
     for feature in NEW_CLUSTER {
         let name = feature.name();
         if enabled.contains(name) || check_prerequisites(&enabled, name).is_err() {
@@ -232,14 +316,18 @@ pub(crate) async fn finalize_new_cluster(
             }
             // A broker without it, or a Raft member below the level it needs:
             // left to the operator, as on an upgraded cluster.
-            Err(err) => tracing::info!(
+            Err(StoreError::Conflict(message)) => tracing::info!(
                 feature = name,
-                error = %err,
+                error = %message,
                 "not finalizing a fleet feature for a new cluster",
             ),
+            Err(err) => {
+                tracing::warn!(feature = name, error = %err, "new cluster: finalize failed");
+                again = true;
+            }
         }
     }
-    enabled
+    (enabled, again)
 }
 
 #[cfg(test)]

@@ -464,6 +464,7 @@ async fn spawn_controlplane(store: Arc<PostgresStore>) -> Result<(SocketAddr, Jo
         in_flight: Default::default(),
         placement_wakes: Default::default(),
         move_policy: Default::default(),
+        new_cluster: Default::default(),
     };
 
     let app = build_router(state.clone()).merge(build_bootstrap_router(state));

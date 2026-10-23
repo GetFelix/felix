@@ -234,6 +234,7 @@ fn router_over(store: Arc<PostgresStore>) -> axum::Router {
         in_flight: Default::default(),
         placement_wakes: Default::default(),
         move_policy: Default::default(),
+        new_cluster: Default::default(),
     };
     api::build_router(state)
 }

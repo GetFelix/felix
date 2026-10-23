@@ -29,4 +29,6 @@ pub struct AppState {
     /// The limits an operator's move is held to, and the plan is previewed
     /// under: placement's own.
     pub move_policy: crate::cluster::placement::MovePolicy,
+    /// A new cluster's fleet-feature finalize still being retried.
+    pub new_cluster: Arc<crate::cluster::fleet::NewClusterFinalize>,
 }

@@ -43,6 +43,7 @@ fn build_state(store: Arc<InMemoryStore>) -> AppState {
         in_flight: Default::default(),
         placement_wakes: Default::default(),
         move_policy: Default::default(),
+        new_cluster: Default::default(),
     }
 }
 

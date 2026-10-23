@@ -66,6 +66,7 @@ pub(super) async fn build_state(
             bootstrap_tokens: config.bootstrap.accepted_tokens(),
             node_liveness: config.node_liveness,
             move_policy: config.shard_moves,
+            new_cluster: Default::default(),
         },
         raft_handle,
     ))
