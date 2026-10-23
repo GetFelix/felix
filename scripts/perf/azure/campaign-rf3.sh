@@ -784,6 +784,19 @@ heavy_reset() {
   CURRENT_REF=""; CURRENT_OVERRIDES=""
 }
 
+# finalize_incarnations: each cell deletes and recreates its durable stream, and
+# reusing a deleted name needs stream and cache incarnations (#1447). A new
+# cluster finalizes them itself; this covers one seeded before its brokers
+# registered. Finalizing an enabled feature again changes nothing.
+finalize_incarnations() {
+  local f out
+  for f in stream_incarnations cache_incarnations; do
+    out="$(cp_remote "curl -fsS -X POST -H \"Authorization: Bearer \$t\" \"\$u/v1/fleet/features/${f}/finalize\" >/dev/null && echo __RUNOK__" 2>&1)" \
+      || { plog "WARN could not finalize ${f}: $(printf '%s' "${out}" | tail -2 | tr '\n' ' ')"; return 1; }
+  done
+  plog "setup: stream and cache incarnations finalized"
+}
+
 setup_session() {
   local down f vm
   down="$(az vm list -g "${GROUP}" -d --query "[?powerState!='VM running'].name" -o tsv 2>/dev/null)"
@@ -803,6 +816,7 @@ setup_session() {
   # start within seconds of each other, and ensure_ready below proves it.
   SESSION="${SESSION}" "${here}/reseed.sh" > "${OUT}/rf3/reseed.txt" 2>&1 || die "reseed (see ${OUT}/rf3/reseed.txt)"
   distribute_token || die "client token"
+  finalize_incarnations || die "finalize incarnations"
   for vm in "${BROKER_VMS[@]}"; do
     f="${OUT}/system/${vm}.fio.txt"
     [ -f "${f}" ] && mv "${f}" "${f%.txt}.pre-rf3-$(date +%H%M).txt"
