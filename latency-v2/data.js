@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792798314644,
+  "lastUpdate": 1792799210247,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -43032,6 +43032,72 @@ window.BENCHMARK_DATA = {
             "range": "812.00",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1560.00\nmean: 1432.00\nstdev: 812.00\ncv: 56.70%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d34046c3520f16a84c8039b3ebb116887f416543",
+          "message": "fix(replication): keep replication off peer streams that forwards hold (#1458) (#1459)\n\n* fix(replication): keep replication off peer streams that forwards hold (#1458)\n\nBrokers forwarding durable Quorum publishes to each other deadlocked: a\npeer served each stream one request at a time, a forward held its stream\nfor the owner's whole quorum wait, and replication shared those streams,\nso each broker's replication queued behind the other's forwards until\nevery quorum timed out.\n\n- The pool opens a control stream plus separate forward and replication\n  stream classes, with separate in-flight allowances.\n- The listener answers ForwardPublish and ForwardCacheOp as they finish\n  (matched by correlation id, up to 256 per stream), so an older requester\n  that still mixes them is served too.\n- A forward waits FELIX_PUBLISH_QUORUM_TIMEOUT_MS + 1 s for the owner's\n  answer, and the ack wait floor rises to quorum + 1.5 s.\n- No stream stays wedged: the listener drops a stream whose in-turn\n  handler overran the request timeout, and the requester replaces a\n  stream after two consecutive timeouts or once it has ended.\n\n* fix(replication): drop an overrun stream only under a requester that renews lanes (#1458)\n\nA requester that predates lane replacement never opens another stream,\nso a stream the listener dropped under it was lost for the life of the\nconnection. Requesters now offer LANE_RENEWAL, and the listener bounds an\nin-turn handler only for one that did; an older requester's slow handler\nstill answers on the same stream.\n\nAlso caps forwards served at once across the broker\n(FELIX_INTERNAL_MAX_SERVED_FORWARDS, 4096) and per stream (256), refusing\npast either as Overload instead of stalling the stream, and tests that one\nshard's forwards still reach the owner in order.\n\n* chore: declare the peer transport change spec-unaffected\n\nSpec-Unaffected: the change splits forwards and replication onto separate QUIC streams, serves forwards concurrently by correlation id, and bounds or renews stalled streams. The messages, the one-exchange-per-follower-and-log rule, per-shard forward order, and the quorum mark, report, promotion and handoff logic the model describes are unchanged; only which stream carries a message and the timeout values differ.",
+          "timestamp": "2026-10-23T16:42:54-07:00",
+          "tree_id": "31a9723d3699fc6dbd702ac35f9f62e923c4072b",
+          "url": "https://github.com/GetFelix/felix/commit/d34046c3520f16a84c8039b3ebb116887f416543"
+        },
+        "date": 1792799205148,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 107,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 107.00\nmean: 107.60\nstdev: 0.89\ncv: 0.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 142,
+            "range": "5.85",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 142.00\nmean: 143.80\nstdev: 5.85\ncv: 4.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 198,
+            "range": "9.73",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 198.00\nmean: 197.20\nstdev: 9.73\ncv: 4.93%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 142,
+            "range": "1.48",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 142.00\nmean: 141.80\nstdev: 1.48\ncv: 1.05%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 283,
+            "range": "101.73",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 283.00\nmean: 328.20\nstdev: 101.73\ncv: 31.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1269,
+            "range": "711.28",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1269.00\nmean: 1075.20\nstdev: 711.28\ncv: 66.15%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
