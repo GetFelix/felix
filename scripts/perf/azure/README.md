@@ -265,8 +265,9 @@ SESSION=v060-c4 BUILD_SHA=<sha> nohup ./campaign-rf3.sh &                       
 zones 1, 2 and 3; four `Standard_D4as_v5` generators and a `Standard_D2as_v5`
 control plane in zone 1. Every member runs one build, `BUILD_SHA`: `BROKER_REFS`
 builds it on generator 0 and installs it on the brokers and the control plane,
-`LOADGEN_REF` builds the instrument from it on every generator, and the
-preflight refuses to start unless each member reports it. MTU is 3900 on every
+`LOADGEN_REF` builds the instrument on every generator, from `LOADGEN_SHA`
+(default `BUILD_SHA`; set it to a newer commit for owner-direct ingest and broker-loss
+reconnects), and the preflight refuses to start unless each member reports its SHA. MTU is 3900 on every
 VM, with a don't-fragment ping at 3872 bytes from each generator to each broker
 and between the brokers. Unattended upgrades are masked. Streams have 12 shards
 (a multiple of three, so each broker leads four) and RF=3, created by
@@ -284,19 +285,25 @@ commit by default, so `ACK_ON_COMMIT` only changes what in-memory streams do;
 Clients set the UDP buffers and the MTU bound. Node tokens refresh through
 `FELIX_NODE_REFRESH_TOKEN_FILE`, and the client token is renewed every six hours.
 
-**Disk gate.** Each broker runs the harness's `seq256k-j1` fio job (256 KiB
-sequential writes, an fdatasync after each) before the first cell. It must reach
-525 MB/s, 70% of the 750 MBps Microsoft publishes for the L4as_v4 temp disks
-("Temp Disk Sequential Write Throughput", Lasv4 series page). A broker below it
-stops the campaign. Earlier sessions found hosts at 18-36% of spec, so this is
-not a formality.
+**Disk gate.** Before the first cell each broker runs the harness's `seq256k-j1`
+fio job (256 KiB sequential writes, one job, an fdatasync after each). A broker
+must reach 85% of the best of the three and 400 MB/s. The absolute floor is there
+because three equally bad hosts pass a relative test. It is not Microsoft's
+750 MBps for the L4as_v4 temp disks (two NVMe disks of 480 GB, Lasv4 series page):
+that is a direct-I/O, deep-queue peak a queue-depth-1 fdatasync job cannot reach.
+The floor comes from the same job on L8as_v4 (four disks): 1197-1416 MB/s on a good
+host and 386-562 on the degraded eastus2 hosts (#1406). With two disks a good L4as_v4
+is expected near 600-700 MB/s and a degraded one under 300. A broker below the gate
+stops the campaign. The measured values are in `system/*.fio.txt`.
 
-**Cells** (2 trials each, A/B pairs interleaved): the Quorum matrix on the
+**Cells** (2 trials each, A/B pairs interleaved): the Quorum matrix, owner-direct
+(batch 1 through the cluster client with `--cluster`, batches with `--owner-keys`), on the
 durable and in-memory replicated streams at 256 B and 4 KiB, batch 1 and 64,
 acked with 64 in flight, keys spread over every shard (`m`); one-in-flight Quorum
 ack and delivery latency, at the product's delivery batching and with it off
-(`lat`, `latp`); owner-direct publish against publish through one entry broker
-(`fwd`); Quorum cache put and get at 1, 8 and 32 workers (`cache`); the headline
+(`lat`, `latp`); owner-direct publish against publish through one entry broker, and the 256 B / 4 KiB
+batch-64 ingest through the old round-robin entry, labelled `rf3-fwdq-*`, where a publish
+entering a non-leader is forwarded (`fwd`); Quorum cache put and get at 1, 8 and 32 workers (`cache`); the headline
 cells again after finalizing `generation_start`, `majority_ack` and
 `lease_free_reads`, named `rf3-lf-*` (`lf`, skipped with a log line if the build
 lists fewer than the three features); and a failover cell (`fail`). Every cell
@@ -315,17 +322,22 @@ subscriber would have seen; an unusual result is worth a manual read. Rates are
 cluster append bytes, which are three copies of the payload; with one broker down
 about 67% of baseline is the best possible.
 
-**What the instrument cannot do.** `felix-loadgen ingest` dials brokers
-round-robin with a plain client, so about two thirds of its publishes enter a
-non-leader and are forwarded; there is no leader-direct ingest. The forwarding
-cost is therefore measured on single publishes (`fwd`: cluster client to the
-owner against `--via-entry`), and ingest cells report the forwarded share.
+**Failover loss check.** Per shard, the acked count from the generators must be at
+most the delivered count at the subscriber, with no offset gap and no shard loss.
+No acked records, no per-shard counts on either side, or a subscriber that ended
+early gives `INCOMPLETE`, never a clean result. Duplicates after a reconnect can
+hide a loss inside one shard, so a clean result still deserves a read of
+`failover.txt` and the loadgen's `reconnects` and `failed_sends`.
 
 **Cost.** The dry run prices the plan with Azure retail list prices for
 `centralus` (L4as_v4 $0.388/h, D4as_v5 $0.194/h, D2as_v5 $0.0972/h, about $2.04/h
 for the session); `PRICE_BROKER`, `PRICE_GEN` and `PRICE_CP` override them (at
-$0.33, $0.172 and $0.086 the session is $1.76/h). The plan is trimmed to fit
-`MAX_HOURS` (8) and the dry run names what it dropped.
+$0.33, $0.172 and $0.086 the session is $1.76/h). The plan is trimmed until the estimate (cells, setup, the post-finalize restart
+and wait, stream recreations, one reserved full reset) leaves 45 minutes under
+`MAX_HOURS` (8); the dry run names what it dropped and prints the slack. Every
+`az` call is bounded (`RUNCMD_TIMEOUT` 900 s for run-command, `AZ_TIMEOUT` 600 s), and
+deallocation uses the inventory's explicit VM list and counts as done only when a
+listing shows every VM deallocated.
 
 ### What is committed, and what is not
 

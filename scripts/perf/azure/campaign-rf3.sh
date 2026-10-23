@@ -50,8 +50,8 @@
 # lease-free latency cells, in that order. The level is saved and reused on resume.
 set -uo pipefail
 
-self="$(cd "$(dirname "$0")" && pwd)"
-if [ -f "${self}/lib.sh" ]; then here="${self}"; else here="$(cd "${self}/../.." && pwd)"; fi
+self="$(cd "$(dirname "$0")" && pwd -P)"
+if [ -f "${self}/lib.sh" ]; then here="${self}"; else here="$(cd "${self}/../.." && pwd -P)"; fi
 logs_dir="${here}/sessions/logs"
 mkdir -p "${logs_dir}"
 PLOG="${logs_dir}/rf3-campaign.log"     # progress: one line per step and finished cell
@@ -68,7 +68,7 @@ for a in "$@"; do
     --print-provision) printprov=1 ;;
     --force) FORCE=1 ;;
     --trim=*) TRIM_ARG="${a#--trim=}" ;;
-    *) echo "usage: $0 [--dry-run] [--print-provision] [--force] [--trim=0..5]" >&2; exit 2 ;;
+    *) echo "usage: $0 [--dry-run] [--print-provision] [--force] [--trim=0..7]" >&2; exit 2 ;;
   esac
 done
 
@@ -80,6 +80,9 @@ fi
 : "${SESSION:=<session>}"
 : "${BUILD_SHA:=<BUILD_SHA>}"
 : "${LOCATION:=centralus}"
+# The loadgen may come from a newer branch than the brokers (owner-direct ingest,
+# reconnect on broker loss); brokers and control plane stay on BUILD_SHA.
+: "${LOADGEN_SHA:=${BUILD_SHA}}"
 : "${SHARDS:=12}"            # a multiple of 3, so leaders spread evenly over three brokers
 : "${PER:=16}"               # publishers per generator
 : "${KEYS:=48}"
@@ -100,14 +103,21 @@ fi
 : "${FAIL_VICTIM:=1}"        # broker index; not 0, which the loadgen dials first
 : "${LF_WAIT_SECS:=45}"      # brokers pick up finalized features on their next control-plane contact
 : "${REPL_WAIT_SECS:=240}"
+: "${RUNCMD_TIMEOUT:=900}"   # one az vm run-command; bounds every wait that polls through one
+: "${AZ_TIMEOUT:=600}"
+: "${SLACK_MIN:=45}"         # the honest estimate must leave this much under MAX_HOURS
 : "${DISK_MAX_PCT:=60}"
-# fio gate: 70% of Microsoft's published sequential write rate for the L4as_v4
-# local NVMe (2 disks, 750 MBps, learn.microsoft.com Lasv4 series, "Temp Disk
-# Sequential Write Throughput"). The harness's job is 256k, one job, fdatasync
-# after each write; MBps there is 10^6 bytes/s, as fio prints.
-: "${FIO_SPEC_MBS:=750}"
-: "${FIO_GATE_PCT:=70}"
-FIO_MIN=$(( FIO_SPEC_MBS * FIO_GATE_PCT / 100 ))
+# fio gate, a measured baseline: the harness job (256 KiB writes, one job, an
+# fdatasync after each) runs once per broker. A broker must reach FIO_REL_PCT of
+# the best broker and FIO_FLOOR MB/s. The floor is absolute because three equally
+# bad hosts would pass the relative test. It is not Microsoft's 750 MBps for the
+# L4as_v4 (direct I/O, deep queue): a queue-depth-1 fdatasync job cannot reach
+# that. Basis for 400: the same job on L8as_v4 (4 disks) read 1197-1416 MB/s on a
+# good host and 386-562 on the degraded eastus2 hosts (#1406); the L4as_v4 has two
+# disks (Lasv4 docs), so a good host is expected near 600-700 and a degraded one
+# under 300.
+: "${FIO_REL_PCT:=85}"
+: "${FIO_FLOOR:=400}"
 # Wall-clock minutes per step, in tenths (run-command overhead dominates).
 : "${MIN_ING_X10:=55}"
 : "${MIN_LAT_X10:=40}"
@@ -115,7 +125,8 @@ FIO_MIN=$(( FIO_SPEC_MBS * FIO_GATE_PCT / 100 ))
 : "${MIN_FAIL_X10:=80}"
 : "${MIN_FIN_X10:=50}"
 : "${RESTART_X10:=25}"       # all three brokers: stop, activate, start, ready, settle, replicated
-: "${RESET_X10:=20}"         # recreate a durable stream and wait for full replication
+: "${RESET_X10:=30}"         # recreate a durable stream, wait for replication; allows for the uneven-leader retries
+: "${HEAVY_MIN:=25}"          # one full wipe and reseed (disk guard), reserved in the total
 : "${SETUP_MIN:=75}"         # start, repair, reseed, fio, preflight
 : "${MAX_HOURS:=8}"
 # Hourly prices, centralus, Azure retail list (prices.azure.com, 2026-10-22):
@@ -144,11 +155,13 @@ SESSION=${SESSION} LOCATION=${LOCATION} TIER=t2 \\
   BROKER_COUNT=3 BROKER_VM_SIZE=Standard_L4as_v4 USE_LOCAL_NVME=true \\
   LOADGEN_COUNT=4 LOADGEN_VM_SIZE=Standard_D4as_v5 CONTROLPLANE_VM_SIZE=Standard_D2as_v5 \\
   REPLICATION_FACTOR=3 SHARDS=${SHARDS} BROKER_LISTENERS=2 \\
-  BROKER_REFS=${BUILD_SHA} LOADGEN_REF=${BUILD_SHA} TEARDOWN_AFTER_H=12 \\
+  BROKER_REFS=${BUILD_SHA} LOADGEN_REF=${LOADGEN_SHA} TEARDOWN_AFTER_H=12 \\
   ${here}/session.sh
 # BROKER_REFS builds the SHA on generator 0 and installs it on the three brokers and
-# the control plane; LOADGEN_REF builds the instrument from it on every generator.
-# The campaign checks every member reports ${BUILD_SHA:0:12} before it measures.
+# the control plane; LOADGEN_REF builds the instrument on every generator (set
+# LOADGEN_SHA to a newer commit for owner-direct ingest and reconnects).
+# The campaign checks the brokers and control plane report ${BUILD_SHA:0:12} and the
+# generators ${LOADGEN_SHA:0:12} before it measures.
 # Quota: Lasv4 12 of 20 vCPUs, Dasv5 18 of 20, regional 30 of 40.
 PROV
   exit 0
@@ -178,7 +191,7 @@ build_plan() {
       # The headline shapes keep every trial; the others lose trial 2 at trim 4.
       if trim_has 4 && [ "${t}" -gt 1 ] && ! { [ "${p}" = 256 ] && [ "${b}" = 1 ]; } && ! { [ "${p}" = 4096 ] && [ "${b}" = 64 ]; }; then continue; fi
       for m in ${order}; do
-        add "rf3-q-${m}-p${p}-b${b}-ack-t${t}" m ingest "$(stream_of "${m}")" "${p}" "${b}" "${INFLIGHT}" "${BASE_B}" -
+        add "rf3-q-${m}-p${p}-b${b}-ack-t${t}" m ingest "$(stream_of "${m}")" "${p}" "${b}" "${INFLIGHT}" "${BASE_B}" owner
       done
     done; done
   done
@@ -199,8 +212,18 @@ build_plan() {
       add "rf3-fwd-${w}-${m}-p256-t${t}" fwd fwd "$(stream_of "${m}")" 256 1 1 "${BASE_B}" "${w}"
     done; done
   done
+  # fwd ingest: the old round-robin publishers, a publish entering a non-leader is forwarded.
+  for t in $(seq 1 "${FWD_TRIALS}"); do
+    trim_has 3 && [ "${t}" -gt 1 ] && continue
+    order="mem dur"; [ $((t % 2)) = 0 ] && order="dur mem"
+    for p in 256 4096; do for m in ${order}; do
+      trim_has 6 && [ "${m}" = dur ] && continue
+      add "rf3-fwdq-${m}-p${p}-b64-ack-t${t}" fwd ingest "$(stream_of "${m}")" "${p}" 64 "${INFLIGHT}" "${BASE_B}" fwd
+    done; done
+  done
   # cache: Quorum put and get.
   for t in $(seq 1 "${CACHE_TRIALS}"); do for c in 1 8 32; do
+    trim_has 7 && [ "${t}" -gt 1 ] && continue
     add "rf3-qcache-c${c}-t${t}" cache cache perf-quorum 256 1 0 "${BASE_B}" "${c}"
   done; done
   # lf: after the one-way finalize.
@@ -213,7 +236,7 @@ build_plan() {
       # shellcheck disable=SC2086
       set -- ${tr}
       for m in ${order}; do
-        add "${pre}-q-${m}-p$1-b$2-ack-t${t}" lf ingest "$(stream_of "${m}")" "$1" "$2" "${INFLIGHT}" "${BASE_B}" -
+        add "${pre}-q-${m}-p$1-b$2-ack-t${t}" lf ingest "$(stream_of "${m}")" "$1" "$2" "${INFLIGHT}" "${BASE_B}" owner
       done
     done
     for c in 1 8; do add "${pre}-qcache-c${c}-t${t}" lf cache perf-quorum 256 1 0 "${BASE_B}" "${c}"; done
@@ -224,7 +247,7 @@ build_plan() {
   done
   # fail: last.
   for t in $(seq 1 "${FAIL_TRIALS}"); do
-    add "rf3-fail-t${t}" fail fail perf-failover 4096 64 "${INFLIGHT}" "${BASE_B}" -
+    add "rf3-fail-t${t}" fail fail perf-failover 4096 64 "${INFLIGHT}" "${BASE_B}" owner
   done
 }
 
@@ -252,7 +275,9 @@ compute_rem() {   # COST[i] = tenths of minutes for entry i; REM[i] = pending te
   for ((i = 0; i < M; i++)); do
     c="$(spec_x10 "${PSPEC[i]}")"
     IFS='|' read -r name _ kind stream _ _ _ benv _ <<<"${PSPEC[i]}"
-    if [ "${c}" -gt 0 ] && [ "${kind}" != fin ]; then
+    if [ "${c}" -gt 0 ] && [ "${kind}" = fin ]; then
+      c=$((c + LF_WAIT_SECS * 10 / 60 + RESTART_X10)); prevkey=""   # the wait, then the restart on the finalized fleet
+    elif [ "${c}" -gt 0 ]; then
       [ "${benv}" != "${prevkey}" ] && c=$((c + RESTART_X10))
       is_durable_stream "${stream}" && c=$((c + RESET_X10))
       prevkey="${benv}"
@@ -265,19 +290,22 @@ compute_rem() {   # COST[i] = tenths of minutes for entry i; REM[i] = pending te
   done
 }
 hours_of() { awk -v x="$1" 'BEGIN { printf "%.1f", x / 600 }'; }
-total_x10() { echo $(( REM[0] + SETUP_MIN * 10 + 120 )); }   # plus two token refreshes and slack
+# The cells, setup, one heavy reset held in reserve, token refreshes and the failover
+# teardown; the budget the trim must meet leaves SLACK_MIN under MAX_HOURS.
+total_x10() { echo $(( REM[0] + SETUP_MIN * 10 + HEAVY_MIN * 10 + 120 )); }
+budget_x10() { echo $(( MAX_HOURS * 600 - SLACK_MIN * 10 )); }
 
 choose_trim() {
   local saved="${OUT}/rf3/trim" lvl
   if [ -n "${TRIM_ARG}" ]; then TRIM="${TRIM_ARG}"; build_plan; compute_rem; return; fi
   if [ -s "${saved}" ] && [ "${dry}" = 0 ]; then TRIM="$(cat "${saved}")"; build_plan; compute_rem; return; fi
-  for lvl in 0 1 2 3 4 5; do
+  for lvl in 0 1 2 3 4 5 6 7; do
     TRIM="${lvl}"; build_plan
     IGNORE_DONE=1 compute_rem
-    [ "$(total_x10)" -le $((MAX_HOURS * 600)) ] && break
+    [ "$(total_x10)" -le "$(budget_x10)" ] && break
   done
   OVER=0
-  [ "$(total_x10)" -le $((MAX_HOURS * 600)) ] || OVER=1
+  [ "$(total_x10)" -le "$(budget_x10)" ] || OVER=1
   [ "${dry}" = 0 ] && { mkdir -p "${OUT}/rf3"; echo "${TRIM}" > "${saved}"; }
   IGNORE_DONE=0 compute_rem
 }
@@ -285,10 +313,12 @@ trim_text() {
   case "$1" in
     0) echo "nothing" ;;
     1) echo "latency-profile cells" ;;
-    2) echo "latency-profile cells, second lease-free trial" ;;
-    3) echo "latency-profile cells, second lease-free trial, second forwarding trial" ;;
-    4) echo "latency-profile cells, second lease-free trial, second forwarding trial, second trial of the non-headline matrix shapes" ;;
-    5) echo "latency-profile cells, second lease-free trial, second forwarding trial, second trial of the non-headline matrix shapes, lease-free latency cells" ;;
+    2) echo "$(trim_text 1), second lease-free trial" ;;
+    3) echo "$(trim_text 2), second forwarding trial" ;;
+    4) echo "$(trim_text 3), second trial of the non-headline matrix shapes" ;;
+    5) echo "$(trim_text 4), lease-free latency cells" ;;
+    6) echo "$(trim_text 5), the durable forwarding-ingest arm" ;;
+    7) echo "$(trim_text 6), second cache trial" ;;
   esac
 }
 
@@ -310,12 +340,12 @@ if [ "${dry}" = 1 ]; then
   self_test || exit 4
   choose_trim
   echo "session ${SESSION} (${LOCATION})  results ${OUT}"
-  echo "BUILD_SHA ${BUILD_SHA}  (brokers, control plane and loadgen all built from it)"
+  echo "BUILD_SHA ${BUILD_SHA}  (brokers and control plane); LOADGEN_SHA ${LOADGEN_SHA}"
   echo "topology: ${NBROKERS} x Standard_L4as_v4 (local NVMe RAID0, zones 1/2/3), ${NGEN} x Standard_D4as_v5, 1 x Standard_D2as_v5; RF=3, ${SHARDS} shards"
   echo "broker env: ${BASE_B} (+ lib.sh base: STORAGE_IO_URING=1 IO_RUNTIME_THREADS=0 UDP buffers 24 MiB, MTU_UPPER_BOUND=3872)"
   echo "client env: ${CLIENT_B}"
   echo "cell run: ${CELL_SECS} s, ${PER} publishers/generator x ${NGEN} generators, ${KEYS} keys over ${SHARDS} shards, in flight ${INFLIGHT}; failover cell ${FAIL_SECS} s, kill at +${FAIL_KILL_AFTER} s, down ${FAIL_DOWN_SECS} s"
-  echo "fio gate: each broker's seq256k-j1 >= ${FIO_MIN} MB/s (${FIO_GATE_PCT}% of ${FIO_SPEC_MBS} MBps published L4as_v4 sequential write)"
+  echo "fio gate: each broker's seq256k-j1 >= ${FIO_REL_PCT}% of the best broker and >= ${FIO_FLOOR} MB/s (measured baseline; see the header of FIO_FLOOR)"
   echo "trim level ${TRIM}: trimmed: $(trim_text "${TRIM}")"
   echo
   for ((i = 0; i < M; i++)); do
@@ -336,7 +366,7 @@ if [ "${dry}" = 1 ]; then
   perh="$(awk -v b="${PRICE_BROKER}" -v g="${PRICE_GEN}" -v c="${PRICE_CP}" -v nb="${NBROKERS}" -v ng="${NGEN}" 'BEGIN { printf "%.3f", nb * b + ng * g + c }')"
   printf 'setup %d min (start, repair, reseed, fio gate, preflight); restarts %d min, stream recreations %d min each\n' "${SETUP_MIN}" "$((RESTART_X10 / 10))" "$((RESET_X10 / 10))"
   [ "${OVER}" = 1 ] && echo "!! WARNING: even the deepest trim exceeds ${MAX_HOURS} h; a live run refuses without --force"
-  printf 'cells %d, total about %s h, estimated cost $%s at $%s/h (%d x $%s + %d x $%s + $%s; budget %s h)\n' "${M}" "$(hours_of "${tot}")" \
+  printf 'cells %d, total about %s h incl. one reserved full reset (slack %s min under %s h), estimated cost $%s at $%s/h (%d x $%s + %d x $%s + $%s; budget %s h)\n' "${M}" "$(hours_of "${tot}")" "$(( (MAX_HOURS * 600 - tot) / 10 ))" "${MAX_HOURS}" \
     "$(awk -v x="${tot}" -v p="${perh}" 'BEGIN { printf "%.0f", x / 600 * p }')" "${perh}" "${NBROKERS}" "${PRICE_BROKER}" "${NGEN}" "${PRICE_GEN}" "${PRICE_CP}" "${MAX_HOURS}"
   exit 0
 fi
@@ -346,21 +376,61 @@ if [ -s "${LOCK}" ] && kill -0 "$(cat "${LOCK}")" 2>/dev/null; then
   echo "!! rf3-campaign already running (pid $(cat "${LOCK}"))" >&2; exit 1
 fi
 [[ "${BUILD_SHA}" =~ ^[0-9a-f]{40}$ ]] || { echo "!! BUILD_SHA must be a 40-char commit sha" >&2; exit 2; }
+[[ "${LOADGEN_SHA}" =~ ^[0-9a-f]{40}$ ]] || { echo "!! LOADGEN_SHA must be a 40-char commit sha" >&2; exit 2; }
 [ -f "${here}/sessions/${SESSION}.env" ] || { echo "!! no sessions/${SESSION}.env" >&2; exit 2; }
 echo $$ > "${LOCK}"
 VMS_STARTED=0
+# with_timeout <secs> <cmd>...: the command, killed after secs. timeout(1) where there
+# is one; otherwise a background job and a killer.
+with_timeout() {
+  local secs="$1" p w rc
+  shift
+  if command -v timeout >/dev/null 2>&1; then timeout "${secs}" "$@"; return $?; fi
+  if command -v gtimeout >/dev/null 2>&1; then gtimeout "${secs}" "$@"; return $?; fi
+  "$@" & p=$!
+  ( sleep "${secs}"; kill "${p}" 2>/dev/null; sleep 5; kill -9 "${p}" 2>/dev/null ) >/dev/null 2>&1 & w=$!
+  wait "${p}"; rc=$?
+  kill "${w}" 2>/dev/null; wait "${w}" 2>/dev/null
+  return "${rc}"
+}
+# Every az call is bounded, and run-command (what run_on and agent_on use, in the
+# scripts this one starts too) gets RUNCMD_TIMEOUT, so a hung call cannot outlast
+# the deadline of the wait that polls through it.
+AZ_BIN="$(command -v az || true)"
+az() {
+  case "$1 $2" in
+    "vm run-command") with_timeout "${RUNCMD_TIMEOUT}" "${AZ_BIN}" "$@" ;;
+    *) with_timeout "${AZ_TIMEOUT}" "${AZ_BIN}" "$@" ;;
+  esac
+}
+export -f az with_timeout
+export AZ_BIN RUNCMD_TIMEOUT AZ_TIMEOUT
+
+# dealloc: by the explicit VM list from the inventory, never from a listing that
+# can fail. Done only when a listing succeeds and shows every one of them
+# deallocated; a failed or short listing is unverified and retried.
 dealloc() {
   [ "${VMS_STARTED}" = 1 ] && [ "${NO_DEALLOC:-0}" != 1 ] || return 0
-  local try left
-  for try in 1 2 3; do
-    # shellcheck disable=SC2046
-    az vm deallocate --ids $(az vm list -g "${GROUP}" --query '[].id' -o tsv) -o none
-    left="$(az vm list -g "${GROUP}" -d --query "[?powerState!='VM deallocated'].name" -o tsv 2>/dev/null)"
-    if [ -z "${left}" ]; then plog "${GROUP} deallocated (verified)"; return 0; fi
-    plog "WARN deallocate attempt ${try}: still running: $(echo "${left}" | tr '\n' ' ')"
+  local try left listing names vm
+  names="$(for vm in ${BROKER_VMS[@]+"${BROKER_VMS[@]}"} "felixperf-controlplane" ${GENS[@]+"${GENS[@]}"}; do echo "${vm}"; done | sort -u)"
+  for try in 1 2 3 4; do
+    # shellcheck disable=SC2086
+    az vm deallocate -g "${GROUP}" --names $(echo ${names}) -o none || plog "WARN deallocate call failed (attempt ${try})"
+    if listing="$(az vm list -g "${GROUP}" -d --query '[].[name,powerState]' -o tsv 2>/dev/null)" && [ -n "${listing}" ]; then
+      left=""
+      for vm in ${names}; do
+        printf '%s\n' "${listing}" | grep -q "^${vm}[[:space:]]VM deallocated$" || left="${left} ${vm}"
+      done
+      if [ -z "${left}" ]; then plog "${GROUP} deallocated (verified: $(echo "${names}" | wc -l | tr -d ' ') VMs)"; return 0; fi
+      plog "WARN deallocate attempt ${try}: not deallocated:${left}"
+    else
+      plog "WARN deallocate attempt ${try}: could not list the VMs; not verified"
+    fi
     sleep $((try * 30))
   done
-  plog "FAIL deallocate: ${GROUP} STILL RUNNING ($(echo "${left}" | tr '\n' ' ')); stop it by hand"
+  plog "FAIL deallocate: ${GROUP} NOT VERIFIED DEALLOCATED (${names//$'\n'/ }); check and stop it by hand NOW"
+  echo "!!!! ${GROUP} may still be running and billing; deallocate it by hand" >&2
+  return 1
 }
 on_exit() { dealloc; rm -f "${LOCK}"; }
 trap on_exit EXIT
@@ -415,7 +485,7 @@ do_mtu() {
 # do_preflight: one line per check, PREFLIGHT OK or PREFLIGHT FAIL. The fio gate
 # is part of it: a broker below FIO_MIN stops the campaign before any cell runs.
 do_preflight() {
-  local fail=0 vm out r mbs f nic sizes want
+  local fail=0 vm out r mbs nic sizes want best
   nic='dev=$(ip route show default | awk "{print \$5; exit}"); echo "mtu=$(cat /sys/class/net/$dev/mtu) uu=$(systemctl is-enabled unattended-upgrades 2>&1)"'
   sizes="$(az vm list -g "${GROUP}" --query '[].[name,hardwareProfile.vmSize]' -o tsv 2>/dev/null)"
   for vm in $(az vm list -g "${GROUP}" --query '[].name' -o tsv); do
@@ -452,7 +522,7 @@ do_preflight() {
   done
   for vm in "${GENS[@]}"; do
     out="$(run_on_str "${vm}" 'cat /etc/felix/loadgen.ref; echo __RUNOK__' 2>&1 | grep -v '__RUNOK__\|^\[std' | tr '\n' ' ')"
-    case "${out}" in *"${BUILD_SHA}"*) printf '%-28s OK loadgen %s\n' "${vm}" "${BUILD_SHA:0:12}" ;; *) printf '%-28s BAD loadgen %s\n' "${vm}" "${out}"; fail=1 ;; esac
+    case "${out}" in *"${LOADGEN_SHA}"*) printf '%-28s OK loadgen %s\n' "${vm}" "${LOADGEN_SHA:0:12}" ;; *) printf '%-28s BAD loadgen %s\n' "${vm}" "${out}"; fail=1 ;; esac
   done
   for vm in "${BROKER_VMS[@]}"; do
     out="$(run_on_str "${vm}" 'findmnt -n -o SOURCE /data; systemctl is-active felix-broker; grep -c NODE_REFRESH_TOKEN_FILE /etc/felix/broker.env; test -s /etc/felix/node.refresh_token && echo refresh=yes' 2>&1 | grep -v '^\[std\|Enable succ\|__RUNOK' | tr '\n' ' ')"
@@ -460,10 +530,20 @@ do_preflight() {
       */dev/md0*active*1*refresh=yes*) printf '%-28s OK storage-auth %s\n' "${vm}" "${out}" ;;
       *) printf '%-28s BAD storage-auth %s\n' "${vm}" "${out}"; fail=1 ;;
     esac
-    f="${OUT}/system/${vm}.fio.txt"
-    mbs="$(grep -h 'seq256k-j1.mb_s=' "${f}" 2>/dev/null | cut -d= -f2 | cut -d. -f1)"
-    if [ -n "${mbs}" ] && [ "${mbs}" -ge "${FIO_MIN}" ]; then printf '%-28s OK fio %s MB/s (gate %s)\n' "${vm}" "${mbs}" "${FIO_MIN}"
-    else printf '%-28s BAD fio %s MB/s (gate %s)\n' "${vm}" "${mbs:-none}" "${FIO_MIN}"; fail=1; fi
+  done
+  # The fio gate: measured per broker, then judged against the best of the three.
+  best=0
+  for vm in "${BROKER_VMS[@]}"; do
+    mbs="$(grep -h 'seq256k-j1.mb_s=' "${OUT}/system/${vm}.fio.txt" 2>/dev/null | cut -d= -f2 | cut -d. -f1)"
+    [ -n "${mbs}" ] && [ "${mbs}" -gt "${best}" ] && best="${mbs}"
+  done
+  for vm in "${BROKER_VMS[@]}"; do
+    mbs="$(grep -h 'seq256k-j1.mb_s=' "${OUT}/system/${vm}.fio.txt" 2>/dev/null | cut -d= -f2 | cut -d. -f1)"
+    if [ -n "${mbs}" ] && [ "${mbs}" -ge "${FIO_FLOOR}" ] && [ $(( mbs * 100 )) -ge $(( best * FIO_REL_PCT )) ]; then
+      printf '%-28s OK fio %s MB/s (best %s; gate %s%% of best and floor %s)\n' "${vm}" "${mbs}" "${best}" "${FIO_REL_PCT}" "${FIO_FLOOR}"
+    else
+      printf '%-28s BAD fio %s MB/s (best %s; gate %s%% of best and floor %s)\n' "${vm}" "${mbs:-none}" "${best}" "${FIO_REL_PCT}" "${FIO_FLOOR}"; fail=1
+    fi
   done
   [ "${fail}" = 0 ] && echo "PREFLIGHT OK" || echo "PREFLIGHT FAIL"
 }
@@ -603,7 +683,7 @@ setup_session() {
   if ! grep -q 'PREFLIGHT OK' "${OUT}/rf3/preflight.txt"; then
     plog "FAIL preflight (see ${OUT}/rf3/preflight.txt): $(grep BAD "${OUT}/rf3/preflight.txt" | head -3 | tr '\n' ';')"; plog DONE; exit 1
   fi
-  plog "setup: preflight OK (fio >= ${FIO_MIN} MB/s on all ${NBROKERS} brokers)"
+  plog "setup: preflight OK (fio within ${FIO_REL_PCT}% of the best broker and >= ${FIO_FLOOR} MB/s on all ${NBROKERS} brokers)"
   touch "${OUT}/rf3/setup.ok"
 }
 
@@ -611,14 +691,15 @@ collect_facts() {
   local cmds
   {
     echo "session=${SESSION} region=${LOCATION} group=${GROUP}"
-    echo "BUILD_SHA=${BUILD_SHA}"
+    echo "BUILD_SHA=${BUILD_SHA} LOADGEN_SHA=${LOADGEN_SHA}"
     echo "trim=${TRIM} ($(trim_text "${TRIM}"))"
     echo "driver BASE_B=${BASE_B}"
     echo "driver LATP_B=${LATP_B}"
     echo "driver CLIENT_B=${CLIENT_B}"
     echo "CELL_SECS=${CELL_SECS} PER=${PER} NGEN=${NGEN} KEYS=${KEYS} SHARDS=${SHARDS} INFLIGHT=${INFLIGHT} RF=3"
     echo "FAIL_SECS=${FAIL_SECS} FAIL_KILL_AFTER=${FAIL_KILL_AFTER} FAIL_DOWN_SECS=${FAIL_DOWN_SECS} FAIL_VICTIM=${FAIL_VICTIM}"
-    echo "FIO gate ${FIO_MIN} MB/s = ${FIO_GATE_PCT}% of ${FIO_SPEC_MBS} MBps (Lasv4 docs, L4as_v4 temp disk sequential write)"
+    echo "FIO gate: >= ${FIO_REL_PCT}% of the best broker and >= ${FIO_FLOOR} MB/s on seq256k-j1"
+    echo "LOADGEN_SHA=${LOADGEN_SHA}"
     echo "lib.sh base_overrides:"; base_overrides | sed 's/^/  /'
     echo "Exact conditions, every Felix cell, against the product default:"
     echo "  FELIX_ACK_ON_COMMIT=1          default: durable streams already ack after commit (#1421); set so in-memory acks match the main campaign"
@@ -743,6 +824,14 @@ prep_cell() {
   fi
 }
 
+# ingest_mode_flags <owner|fwd> <batch>: owner-direct publishes go to the shard's
+# leader (b=1 through the cluster client, batches with keys each publisher's broker
+# leads); fwd leaves the old round-robin entry, which forwards to the owner.
+ingest_mode_flags() {
+  [ "$1" = owner ] || return 0
+  if [ "$2" = 1 ]; then echo "--cluster"; else echo "--owner-keys"; fi
+}
+
 run_entry() {   # 0 ran, 2 already done, 1 could not start
   local name step kind stream p b f benv extra durable=0 flags=()
   IFS='|' read -r name step kind stream p b f benv extra <<<"$1"
@@ -759,6 +848,7 @@ run_entry() {   # 0 ran, 2 already done, 1 could not start
     ingest)
       # shellcheck disable=SC2207 # ingest_flags prints words
       flags=($(SHARDS="${SHARDS}" PAYLOAD="${p}" BATCH="${b}" IN_FLIGHT="${f}" ingest_flags "${stream}" "${KEYS}" "${PER}"))
+      flags+=($(ingest_mode_flags "${extra}" "${b}"))
       cell "${name}" "${NGEN}" "${flags[@]}" ;;
     lat)
       cell "${name}" 1 --scenario pubsub --stream "${stream}" --payload-bytes "${p}" --fanout 1 --batch 1 --warmup "${LAT_WARMUP}" --total "${LAT_TOTAL}" ;;
@@ -854,7 +944,18 @@ PY
 read -r -d '' LOSS_PY <<'PY' || true
 import glob, json, sys
 cdir = sys.argv[1]
-acked = cut = retries = published = 0
+def shardmap(j, names):
+    for n in names:
+        v = j.get(n)
+        if isinstance(v, dict):
+            return {str(k): int(x) for k, x in v.items()}
+        if isinstance(v, list):
+            return {str(i): int(x) for i, x in enumerate(v)}
+    return None
+acked = 0
+ack_shard, have_ack_shard = {}, True
+extra = {"reconnects": 0, "failed_sends": 0, "cut_off_records": 0, "publish_retries": 0}
+gens = 0
 for p in glob.glob(cdir + "/*.run.txt"):
     for l in open(p, errors="replace"):
         if l.startswith("LOADGEN_JSON "):
@@ -862,24 +963,50 @@ for p in glob.glob(cdir + "/*.run.txt"):
                 j = json.loads(l.split(" ", 1)[1])
             except Exception:
                 continue
-            if j.get("scenario") == "ingest":
-                acked += int(j.get("acked_records", 0)); cut += int(j.get("cut_off_records", 0))
-                retries += int(j.get("publish_retries", 0)); published += int(j.get("published", 0))
-recv = gaps = losses = None
+            if j.get("scenario") != "ingest":
+                continue
+            gens += 1
+            acked += int(j.get("acked_records", 0))
+            for k in extra:
+                extra[k] += int(j.get(k, 0) or 0)
+            m = shardmap(j, ("acked_per_shard", "acked_by_shard", "per_shard_acked"))
+            if m is None:
+                have_ack_shard = False
+            else:
+                for k, x in m.items():
+                    ack_shard[k] = ack_shard.get(k, 0) + x
+sub = None
 for l in open(cdir + "/subscriber.txt", errors="replace") if glob.glob(cdir + "/subscriber.txt") else []:
     if l.startswith("LOADGEN_JSON "):
         try:
-            j = json.loads(l.split(" ", 1)[1])
+            sub = json.loads(l.split(" ", 1)[1])
         except Exception:
-            continue
-        recv, gaps, losses = int(j.get("received", 0)), int(j.get("gaps", 0)), int(j.get("shard_losses", 0))
-print("acked_records=%d published=%d cut_off=%d publish_retries=%d" % (acked, published, cut, retries))
-if recv is None:
-    print("subscriber_received=none loss_check=NOT RUN (no subscriber result)")
+            pass
+print("generators_reporting=%d acked_records=%d %s" % (gens, acked, " ".join("%s=%d" % kv for kv in sorted(extra.items()))))
+why = []
+if gens == 0:
+    why.append("no generator result")
+if acked <= 0:
+    why.append("acked_records is %d" % acked)
+if not have_ack_shard or not ack_shard:
+    why.append("generators report no per-shard acked counts (loadgen too old?)")
+if sub is None:
+    why.append("no subscriber result")
 else:
-    ok = gaps == 0 and losses == 0 and recv >= acked
-    print("subscriber_received=%d gaps=%d shard_losses=%d" % (recv, gaps, losses))
-    print("acked_record_loss=%s" % ("0 (every acked record reached the live subscriber, no offset gap)" if ok else "SUSPECTED: received %d for %d acked, gaps %d, shard losses %d" % (recv, acked, gaps, losses)))
+    dl = shardmap(sub, ("received_per_shard", "received_by_shard", "delivered_per_shard", "per_shard_received"))
+    if dl is None:
+        why.append("subscriber reports no per-shard delivered counts")
+    if sub.get("ended_early"):
+        why.append("subscriber ended early")
+    print("subscriber_received=%s gaps=%s shard_losses=%s" % (sub.get("received"), sub.get("gaps"), sub.get("shard_losses")))
+if why:
+    print("acked_record_loss=INCOMPLETE (%s); not a clean result" % "; ".join(why))
+else:
+    short = {k: (x, dl.get(k, 0)) for k, x in ack_shard.items() if dl.get(k, 0) < x}
+    if short or int(sub.get("gaps", 0)) or int(sub.get("shard_losses", 0)):
+        print("acked_record_loss=SUSPECTED: shards delivered<acked %s, gaps %s, shard losses %s" % (short, sub.get("gaps"), sub.get("shard_losses")))
+    else:
+        print("acked_record_loss=0 (delivered >= acked on all %d shards, no offset gap, %d acked)" % (len(ack_shard), acked))
 PY
 
 # run_failover <name> <benv>: acked durable load on perf-failover from three
@@ -899,7 +1026,7 @@ run_failover() {
   (
     CELL_SECS="${FAIL_SECS}"
     # shellcheck disable=SC2207 # ingest_flags prints words
-    ffl=($(SHARDS="${SHARDS}" PAYLOAD=4096 BATCH=64 IN_FLIGHT="${INFLIGHT}" ingest_flags perf-failover "${KEYS}" "${PER}"))
+    ffl=($(SHARDS="${SHARDS}" PAYLOAD=4096 BATCH=64 IN_FLIGHT="${INFLIGHT}" ingest_flags perf-failover "${KEYS}" "${PER}") --owner-keys)
     cell "${name}" $((NGEN - 1)) "${ffl[@]}"
   ) &
   cpid=$!
@@ -952,11 +1079,17 @@ echo __RUNOK__" > "${dir}/kill.txt" 2>&1 ) &
     cat "${dir}/catchup.txt"
   } > "${dir}/failover.txt" 2>&1
   # A cell is done when the instrument finished; the loss line decides what it means.
+  grep -q 'acked_record_loss=0 ' "${dir}/failover.txt" || plog "WARN ${name}: loss check not clean: $(grep acked_record_loss "${dir}/failover.txt" | head -1)"
   return 0
 }
 
 # ----------------------------------------------------------------- the run
 setup_session
+# A failover cell that was interrupted may have left the no-restart drop-in behind.
+par_on "${OUT}/system" dropin "rm -f /etc/systemd/system/felix-broker.service.d/norestart.conf
+systemctl daemon-reload
+systemctl reset-failed felix-broker 2>/dev/null || true
+systemctl start felix-broker" "${BROKER_VMS[@]}" || plog "WARN could not clear the failover drop-in on every broker"
 refresh_client_token || distribute_token || die "client token"
 if ! ensure_ready; then die "cluster not ready and fully replicated after setup (see ${OUT}/rf3/last-replication.txt)"; fi
 record_session rf3-campaign
