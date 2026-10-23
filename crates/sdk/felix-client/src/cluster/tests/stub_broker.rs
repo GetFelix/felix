@@ -414,6 +414,7 @@ async fn serve_stream(
                             | felix_wire::FEATURE_IDEMPOTENT_PRODUCER
                             | felix_wire::FEATURE_STREAM_SHARDS
                             | felix_wire::FEATURE_SHARD_OWNERS
+                            | felix_wire::FEATURE_RECORD_TIMESTAMPS
                             | extended,
                     ),
                     server_features_hi: checks_width.then_some(felix_wire::FEATURE_PUBLISH_WIDTH),
@@ -448,6 +449,18 @@ async fn serve_stream(
                     tokio::time::sleep(std::time::Duration::from_millis(latency)).await;
                     let _ = write_message(&mut *send.lock().await, answer).await;
                 });
+            }
+            // The script's NotLeader or error is the answer; anything else
+            // is the offset 42.
+            Message::OffsetForTime { request_id, .. } => {
+                let answer = match script(request_id) {
+                    refusal @ (Message::NotLeader { .. } | Message::Error { .. }) => refusal,
+                    _ => Message::OffsetValue {
+                        offset: Some(42),
+                        request_id,
+                    },
+                };
+                write_message(&mut *send.lock().await, answer).await?;
             }
             Message::ShardOwners { request_id, .. } => {
                 let owners = seen.cache_owners.lock().unwrap().clone();

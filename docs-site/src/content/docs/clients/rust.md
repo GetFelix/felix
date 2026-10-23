@@ -838,7 +838,8 @@ The answer is the first record on that shard appended at or after the time,
 and the oldest record when the time is older than all of them. Times come from
 the leading broker's clock, so the search is exact while that clock only moves
 forward, and close otherwise. `client.supports_offset_for_time()` says whether
-the broker answers it.
+the broker answers it. `ClusterClient::offset_for_time` asks whichever broker
+leads the shard, following redirects.
 
 ### Reading a range and stopping
 
