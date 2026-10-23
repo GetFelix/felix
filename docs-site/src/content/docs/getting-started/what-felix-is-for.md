@@ -277,7 +277,7 @@ ship rather than being marked off here.
 
 | Capability | Status | Current state of the code |
 |---|---|---|
-| Load-aware placement | 🎯 Target | Not implemented. Placement moves a shard off a broker only when that broker leads more than its share of shards, counted, or is draining. It reads no traffic, disk or CPU figures, so a broker leading its share of hot shards is left as it is. An operator can move a hot shard by hand (`felix-controlplane admin move`) |
+| Load-aware placement | 🎯 Target | Not implemented. Placement spreads each stream's leaders evenly across brokers, then the cluster's, and moves a shard off a broker only when that broker leads more than its share of a stream's shards or of all shards, counted, or is draining. It reads no traffic, disk or CPU figures, so a broker leading its share of hot shards is left as it is. An operator can move a hot shard by hand (`felix-controlplane admin move`) |
 
 **Target scale**, stated as ambition and nothing more: a single update fanning out
 to tens of thousands of subscribers across a multi-node cluster. Measured fanout

@@ -2,6 +2,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use super::leadership::{Leadership, Shares};
 use super::moves::{MovePolicy, Moves, move_step};
 use super::rendezvous::{choose, choose_replicas, promote};
 use super::restore::{self, replication};
@@ -208,7 +209,7 @@ pub(super) fn plan_abandoning(
     // Leaders per live node as they will stand once every move in flight
     // completes: a staged successor already counts. Otherwise an over-share
     // node stages more moves than it needs and the destination ends up over.
-    let mut leaders: HashMap<&str, u32> = HashMap::new();
+    let mut leaders = Leadership::default();
     for assignment in existing {
         // Every role, followers too: `max_shards` caps roles.
         for node in assignment.nodes().filter(|node| is_live(node)) {
@@ -220,7 +221,7 @@ pub(super) fn plan_abandoning(
             .filter(|successor| is_live(successor))
             .unwrap_or(assignment.leader.as_str());
         if is_live(will_lead) {
-            *leaders.entry(will_lead).or_default() += 1;
+            leaders.add(&assignment.key, will_lead);
         }
     }
 
@@ -257,8 +258,9 @@ pub(super) fn plan_abandoning(
     } else {
         total_roles.div_ceil(eligible.len() as u32).max(1)
     };
-    // Fair share of leadership, for the rebalance trigger. Leaders only: that
-    // is the load a client feels.
+    // Fair share of leadership, cluster-wide; each stream's own share is
+    // worked out per shard below. Leaders only: that is the load a client
+    // feels.
     let leader_share = if eligible.is_empty() {
         u32::MAX
     } else {
@@ -347,6 +349,11 @@ pub(super) fn plan_abandoning(
             .collect();
         let is_live = |id: &str| is_live(id) && allowed(id);
         let is_draining = |id: &str| is_draining(id) || (!allowed(id) && is_serving(id));
+        let shares = Shares::new(
+            leader_share,
+            placeable.map_or(1, |p| p.shards),
+            eligible.len(),
+        );
 
         // A majority of the set says the leader is gone, though the control
         // plane still hears from it. Only where a promoted leader fences a
@@ -395,7 +402,7 @@ pub(super) fn plan_abandoning(
                 caught_up,
                 &mut load,
                 &mut leaders,
-                leader_share,
+                shares,
                 &mut moves,
                 fenced,
                 &is_lost,
@@ -529,10 +536,10 @@ pub(super) fn plan_abandoning(
             continue;
         }
 
-        let decision = match choose(&key, &eligible, &load, cap, &leaders, leader_share) {
+        let decision = match choose(&key, &eligible, &load, cap, &leaders, shares) {
             Some(leader) => {
                 *load.entry(leader).or_default() += 1;
-                *leaders.entry(leader).or_default() += 1;
+                leaders.add(&key, leader);
                 // Followers are the next best-scoring nodes for this shard,
                 // excluding the leader. Chosen by the same score so the whole
                 // replica set is a deterministic function of the shard key and

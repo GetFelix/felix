@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use felix_router::RegionRouter;
 
+use super::leadership::{Leadership, Shares};
 use super::rendezvous::{choose_replicas, promote, score};
 use super::restore::{newcomer, restore, restore_step};
 use super::zones::{Domain, domain, domain_of, keep_spread};
@@ -245,8 +246,8 @@ pub(super) fn move_step<'a>(
     is_draining: &dyn Fn(&str) -> bool,
     caught_up: &dyn CaughtUp,
     load: &mut HashMap<&'a str, u32>,
-    leaders: &mut HashMap<&'a str, u32>,
-    leader_share: u32,
+    leaders: &mut Leadership<'a>,
+    shares: Shares,
     moves: &mut Moves,
     fenced: bool,
     is_lost: &dyn Fn(&str) -> bool,
@@ -332,13 +333,11 @@ pub(super) fn move_step<'a>(
             .filter(|successor| is_live(successor))
             .unwrap_or(leader);
         if counted != target {
-            if let Some(from) = catalog_id(counted) {
-                leaders
-                    .entry(from)
-                    .and_modify(|count| *count = count.saturating_sub(1));
+            if catalog_id(counted).is_some() {
+                leaders.remove(key, counted);
             }
             if let Some(to) = catalog_id(target) {
-                *leaders.entry(to).or_default() += 1;
+                leaders.add(key, to);
             }
         }
         return Decision::Move(
@@ -462,36 +461,7 @@ pub(super) fn move_step<'a>(
     }
 
     // Should a move start?
-    let over_share = leaders.get(leader).copied().unwrap_or(0) > leader_share;
-    let wanted = if !leader_live {
-        // Draining: a caught-up live replica under its share is cheapest, the
-        // copy already exists; otherwise the bounded choice, or any live node
-        // with room.
-        promote_under_share(
-            key,
-            existing,
-            eligible,
-            &is_halted,
-            caught_up,
-            leaders,
-            leader_share,
-        )
-        .or_else(|| {
-            choose_destination(
-                key,
-                existing,
-                replication_factor,
-                eligible,
-                &is_halted,
-                leaders,
-                load,
-                leader_share,
-                false,
-            )
-        })
-    } else if leader_live && over_share {
-        // Only from over share to under share, so moves converge instead of
-        // trading shards back and forth.
+    let destination = |goal: Goal| {
         choose_destination(
             key,
             existing,
@@ -500,11 +470,33 @@ pub(super) fn move_step<'a>(
             &is_halted,
             leaders,
             load,
-            leader_share,
-            true,
+            shares,
+            goal,
         )
+    };
+    let wanted = if !leader_live {
+        // Draining: a caught-up live replica under its share is cheapest, the
+        // copy already exists; otherwise the bounded choice, or any live node
+        // with room.
+        promote_under_share(
+            key, existing, eligible, &is_halted, caught_up, leaders, shares,
+        )
+        .or_else(|| destination(Goal::Drain))
     } else {
-        None
+        // The stream's own spread first, then the cluster's; see `leadership`.
+        // Each only from more to fewer, so moves converge instead of trading
+        // shards back and forth.
+        let fewest = eligible
+            .iter()
+            .map(|node| leaders.of(key, &node.node_id))
+            .min()
+            .unwrap_or(0);
+        let stream_over = leaders.of(key, leader) >= fewest + 2;
+        let over_share = leaders.total(leader) > shares.cluster;
+        stream_over
+            .then(|| destination(Goal::Stream))
+            .flatten()
+            .or_else(|| over_share.then(|| destination(Goal::Cluster)).flatten())
     };
 
     match wanted {
@@ -512,12 +504,10 @@ pub(super) fn move_step<'a>(
             if let Err(blocked) = moves.begin(leader, destination) {
                 return Decision::Waiting(blocked);
             }
-            if let Some(from) = catalog_id(leader) {
-                leaders
-                    .entry(from)
-                    .and_modify(|count| *count = count.saturating_sub(1));
+            if catalog_id(leader).is_some() {
+                leaders.remove(key, leader);
             }
-            *leaders.entry(destination).or_default() += 1;
+            leaders.add(key, destination);
             if !existing.replicas.iter().any(|r| r == destination) {
                 *load.entry(destination).or_default() += 1;
             }
@@ -908,27 +898,48 @@ pub(super) fn spread_if_led_by(
     used.len() + free.min(wanted - kept.len())
 }
 
-/// A caught-up live follower under its leadership share, furthest ahead first.
+/// A caught-up live follower under its leadership share, furthest ahead first,
+/// and under its share of the stream if one is.
 fn promote_under_share<'a>(
     key: &ShardKey,
     existing: &ShardAssignment,
     eligible: &[&'a Node],
     is_halted: &dyn Fn(&str) -> bool,
     caught_up: &dyn CaughtUp,
-    leaders: &HashMap<&str, u32>,
-    leader_share: u32,
+    leaders: &Leadership<'_>,
+    shares: Shares,
 ) -> Option<&'a str> {
     let under_share: Vec<&'a Node> = eligible
         .iter()
         .copied()
         .filter(|node| !is_halted(&node.node_id))
-        .filter(|node| leaders.get(node.node_id.as_str()).copied().unwrap_or(0) < leader_share)
+        .filter(|node| leaders.total(&node.node_id) < shares.cluster)
         .collect();
-    promote(key, existing, &under_share, caught_up)
+    let under_stream: Vec<&'a Node> = under_share
+        .iter()
+        .copied()
+        .filter(|node| leaders.of(key, &node.node_id) < shares.ceil)
+        .collect();
+    promote(key, existing, &under_stream, caught_up)
+        .or_else(|| promote(key, existing, &under_share, caught_up))
 }
 
-/// The live node to move a shard to, by score, preferring nodes under their
-/// leadership share. `balanced_only` answers `None` rather than spill over.
+/// Why a move is wanted, which decides where it may go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Goal {
+    /// The leader is leaving: anywhere live, balanced if possible.
+    Drain,
+    /// The leader's node leads two or more of the stream's shards more than
+    /// some other node does: to a node that leads at least two fewer.
+    Stream,
+    /// The leader's node is over the cluster's share: to one under it that
+    /// leads fewer of the stream, so the stream's spread does not widen.
+    Cluster,
+}
+
+/// The live node to move a shard to for `goal`, by score, preferring nodes
+/// under their leadership shares. A balancing goal answers `None` rather than
+/// spill over.
 ///
 /// Zones come before balance: a drain goes where the shard keeps the most
 /// zones, and a rebalance, which is optional, only where it loses none.
@@ -942,11 +953,12 @@ fn choose_destination<'a>(
     replication_factor: u32,
     eligible: &[&'a Node],
     is_halted: &dyn Fn(&str) -> bool,
-    leaders: &HashMap<&str, u32>,
+    leaders: &Leadership<'_>,
     load: &HashMap<&str, u32>,
-    leader_share: u32,
-    balanced_only: bool,
+    shares: Shares,
+    goal: Goal,
 ) -> Option<&'a str> {
+    let balanced_only = goal != Goal::Drain;
     let spread_of =
         |node: &Node| spread_if_led_by(existing, &node.node_id, replication_factor, eligible);
     let mut candidates: Vec<&'a Node> = eligible
@@ -972,11 +984,15 @@ fn choose_destination<'a>(
             .unwrap_or(0)
     };
     candidates.retain(|node| spread_of(node) >= floor);
-    let under_share = candidates
-        .iter()
-        .copied()
-        .filter(|node| leaders.get(node.node_id.as_str()).copied().unwrap_or(0) < leader_share)
-        .collect::<Vec<_>>();
+    let leads = leaders.of(key, &existing.leader);
+    let under_cluster = |node: &&Node| leaders.total(&node.node_id) < shares.cluster;
+    let tier = |keep: &dyn Fn(&&'a Node) -> bool| {
+        candidates
+            .iter()
+            .copied()
+            .filter(|node| keep(node))
+            .collect::<Vec<_>>()
+    };
     let pick = |from: &[&'a Node]| {
         from.iter()
             .copied()
@@ -988,10 +1004,29 @@ fn choose_destination<'a>(
             })
             .map(|node| node.node_id.as_str())
     };
-    if balanced_only {
-        pick(&under_share)
-    } else {
-        pick(&under_share).or_else(|| pick(&candidates))
+    match goal {
+        Goal::Stream => {
+            // To the node leading fewest of the stream, or a node between
+            // gets the shard now and gives it on later.
+            let fewest = candidates
+                .iter()
+                .map(|node| leaders.of(key, &node.node_id))
+                .min()
+                .filter(|fewest| fewest + 2 <= leads)?;
+            let fewest = |node: &&Node| leaders.of(key, &node.node_id) == fewest;
+            pick(&tier(&|node| fewest(node) && under_cluster(node)))
+                .or_else(|| pick(&tier(&fewest)))
+        }
+        Goal::Cluster => pick(&tier(&|node| {
+            under_cluster(node) && leaders.of(key, &node.node_id) < leads
+        })),
+        Goal::Drain => {
+            let under_stream = |node: &&Node| leaders.of(key, &node.node_id) < shares.ceil;
+            pick(&tier(&|node| under_cluster(node) && under_stream(node)))
+                .or_else(|| pick(&tier(&under_cluster)))
+                .or_else(|| pick(&tier(&under_stream)))
+                .or_else(|| pick(&candidates))
+        }
     }
 }
 
