@@ -161,7 +161,8 @@ through the same checks as the command below, so a feature some broker does
 not report stays off, along with the features that need it. If a
 control-plane member is still starting when the brokers register, the
 control plane retries the finalize in the background until every member
-answers. Everything below applies to a cluster upgraded from an older
+answers, for up to ten minutes. If it gives up, it logs a warning, and the
+features are finalized as on an upgraded cluster, with the runbook below. Everything below applies to a cluster upgraded from an older
 release, and to `publisher_principal`.
 
 #### A new cluster: the first broker's configuration wins

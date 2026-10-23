@@ -23,6 +23,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use tokio_util::sync::CancellationToken;
+
 use crate::model::Node;
 use crate::store::StoreError;
 
@@ -206,14 +208,51 @@ pub(crate) async fn is_new_cluster(
 
 /// A new cluster's finalize that could not finish at a registration, retried
 /// in the background. One per control-plane instance, shared by its handlers.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct NewClusterFinalize {
     retrying: AtomicBool,
+    shutdown: CancellationToken,
+    give_up_after: Duration,
+}
+
+impl NewClusterFinalize {
+    /// Retries stop when `shutdown` is cancelled.
+    pub fn new(shutdown: CancellationToken) -> Self {
+        Self {
+            retrying: AtomicBool::new(false),
+            shutdown,
+            give_up_after: GIVE_UP_AFTER,
+        }
+    }
+}
+
+#[cfg(test)]
+impl NewClusterFinalize {
+    pub(crate) fn giving_up_after(give_up_after: Duration) -> Self {
+        Self {
+            give_up_after,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn retrying(&self) -> bool {
+        self.retrying.load(Ordering::Acquire)
+    }
+}
+
+impl Default for NewClusterFinalize {
+    fn default() -> Self {
+        Self::new(CancellationToken::new())
+    }
 }
 
 /// The first retry's delay; each later one doubles, up to [`RETRY_MAX`].
 const RETRY_FIRST: Duration = Duration::from_secs(1);
 const RETRY_MAX: Duration = Duration::from_secs(30);
+/// How long after the first held attempt the retry gives up. Much later the
+/// cluster holds data, and its operator may want the rollback window an
+/// upgraded cluster keeps.
+const GIVE_UP_AFTER: Duration = Duration::from_secs(600);
 
 type Store = Arc<dyn crate::store::ControlPlaneStore + Send + Sync>;
 
@@ -256,7 +295,8 @@ fn all_enabled(enabled: &BTreeSet<String>) -> bool {
         .all(|feature| enabled.contains(feature.name()))
 }
 
-/// Retry [`finalize_in_order`] until nothing that passes holds it back.
+/// Retry [`finalize_in_order`] until nothing that passes holds it back, for
+/// at most [`GIVE_UP_AFTER`].
 fn retry(store: &Store, pending: &Arc<NewClusterFinalize>) {
     if pending
         .retrying
@@ -269,9 +309,22 @@ fn retry(store: &Store, pending: &Arc<NewClusterFinalize>) {
     let store = Arc::clone(store);
     let pending = Arc::clone(pending);
     drop(tokio::spawn(async move {
+        let give_up_at = tokio::time::Instant::now() + pending.give_up_after;
         let mut delay = RETRY_FIRST;
         loop {
-            tokio::time::sleep(delay).await;
+            tokio::select! {
+                () = pending.shutdown.cancelled() => break,
+                () = tokio::time::sleep(delay) => {}
+            }
+            if tokio::time::Instant::now() >= give_up_at {
+                tracing::warn!(
+                    "new cluster: gave up finalizing fleet features; finalize them with \
+                     `felix-controlplane admin features finalize <feature>` \
+                     (POST /v1/fleet/features/{{feature}}/finalize) once every \
+                     control-plane member runs this release"
+                );
+                break;
+            }
             delay = (delay * 2).min(RETRY_MAX);
             let enabled = match store.enabled_fleet_features().await {
                 Ok(enabled) => enabled,

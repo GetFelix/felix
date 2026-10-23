@@ -242,9 +242,12 @@ not make it one that could roll back to an older build, and an operator's
 finalize at that point passes the same checks. Members starting together
 with their brokers, as a Kubernetes rollout does, would otherwise leave
 every registration held and the cluster unfinalized
-(`a_held_new_cluster_finalize_is_retried_once_every_member_can`). The retry
-lives in that instance's memory: if it restarts first, the features are the
-operator's.
+(`a_held_new_cluster_finalize_is_retried_once_every_member_can`). It gives
+up ten minutes after the first held attempt, with a warning naming the
+manual finalize (`a_held_new_cluster_finalize_gives_up`): by then the cluster
+may hold data, and its operator may want the rollback window an upgraded
+cluster keeps. The retry lives in that instance's memory and stops with it:
+if it shuts down first, the features are the operator's.
 
 A broker configured out of a feature does not report it, so the feature
 stays off: `FELIX_QUORUM_READS=lease` keeps `lease_free_reads` off, and

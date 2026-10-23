@@ -10,7 +10,7 @@
   operator's checks, so a feature some broker does not report stays off with
   the features that need it, and under the Raft backend nothing is finalized
   until every member runs this release; a finalize held back that way is
-  retried in the background until it is. Start every broker with the same
+  retried in the background for up to ten minutes. Start every broker with the same
   `FELIX_QUORUM_READS` and `FELIX_INTERNAL_FENCE`: a broker that lacks a
   feature the first one finalized is refused, and the refusal now names
   `FELIX_INTERNAL_FENCE` as well as `FELIX_QUORUM_READS`. An upgraded cluster
