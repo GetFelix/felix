@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792766591101,
+  "lastUpdate": 1792768076453,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -42438,6 +42438,72 @@ window.BENCHMARK_DATA = {
             "range": "442.20",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1087.00\nmean: 867.40\nstdev: 442.20\ncv: 50.98%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "303504f4fe0e1e3c36e1ff62a40f1f0b4be0d78c",
+          "message": "test(client): don't apply the short timeout to the timeout tests' setup (#1446)\n\nbounded_fails_a_step_that_never_finishes connected its pool under a 200 ms\nconnect_timeout, which a loaded CI runner exceeds before the step under test\nruns. It now calls bounded_by directly; the other timeout tests get slack\nand list the live broker first.",
+          "timestamp": "2026-10-23T15:03:29Z",
+          "tree_id": "caf5a0eff2491cc3e81f92ed620486aa6018caa7",
+          "url": "https://github.com/GetFelix/felix/commit/303504f4fe0e1e3c36e1ff62a40f1f0b4be0d78c"
+        },
+        "date": 1792768071904,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 185,
+            "range": "4.28",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 185.00\nmean: 183.40\nstdev: 4.28\ncv: 2.33%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 245,
+            "range": "4.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 245.00\nmean: 244.00\nstdev: 4.64\ncv: 1.90%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 310,
+            "range": "23.35",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 310.00\nmean: 317.00\nstdev: 23.35\ncv: 7.36%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 222,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 222.00\nmean: 221.80\nstdev: 1.30\ncv: 0.59%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 448,
+            "range": "13.63",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 448.00\nmean: 455.80\nstdev: 13.63\ncv: 2.99%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 696,
+            "range": "236.54",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 696.00\nmean: 779.60\nstdev: 236.54\ncv: 30.34%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
