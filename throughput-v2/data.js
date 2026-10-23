@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792763988375,
+  "lastUpdate": 1792764683251,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -33280,6 +33280,58 @@ window.BENCHMARK_DATA = {
             "range": "16743.49",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 803685.02\nmean: 799514.61\nstdev: 16743.49\ncv: 2.09%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a6312398c04f4c7e6c96cc5407a7ade1a27854d5",
+          "message": "fix(client): bound finish and broker connects (#1433) (#1441)\n\n* fix(client): bound finish and broker connects so a stalled broker errors instead of hanging (#1433)\n\n* fix(client): dial reconnects outside the client lock, finish brokers together, bound control exchanges (#1433)\n\n* fix(client): try every reconnect address, each bounded; routing asks use the configured timeout (#1433)",
+          "timestamp": "2026-10-23T14:06:30Z",
+          "tree_id": "dc27e9880012f5f9fd3d2c6d779b26fc74b6e252",
+          "url": "https://github.com/GetFelix/felix/commit/a6312398c04f4c7e6c96cc5407a7ade1a27854d5"
+        },
+        "date": 1792764682585,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 412993.24,
+            "range": "21622.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 412993.24\nmean: 412944.41\nstdev: 21622.64\ncv: 5.24%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 412993.24,
+            "range": "21622.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 412993.24\nmean: 412944.41\nstdev: 21622.64\ncv: 5.24%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 93752.46,
+            "range": "631.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 93752.46\nmean: 94096.86\nstdev: 631.26\ncv: 0.67%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 937524.55,
+            "range": "6312.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 937524.55\nmean: 940968.62\nstdev: 6312.64\ncv: 0.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
