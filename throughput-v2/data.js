@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792827499831,
+  "lastUpdate": 1792851866662,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -34372,6 +34372,58 @@ window.BENCHMARK_DATA = {
             "range": "8221.15",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 799703.14\nmean: 801347.92\nstdev: 8221.15\ncv: 1.03%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "368ca784101adac691c136c7792e253935a4e3d4",
+          "message": "fix(replication): count a busy follower's late answer toward the quorum mark (#1479) (#1481)\n\n* fix(replication): count a busy follower's late answer toward the quorum mark (#1479)\n\nA pass counts a follower only on an answer it got itself. An exchange that a\npass handed to the driver could end with an answer the mark needed but no\ncursor movement: a level follower asked again for its position. merge()\nreported \"not moved\", so no pass ran, and with every publisher waiting on\nthe mark no append came to start one. The mark waited for the replication\ntick (2 s), which matches the ~1.86 s p999 seen on every generator after\nfinalizing majority_ack.\n\nTwo changes:\n- An answer that names more than the mark counts starts a pass even when it\n  moved no cursor.\n- A pass waiting for a majority counts a busy follower's answer the driver\n  hands it, instead of only being cut short by it. Otherwise two followers\n  answering a pass behind each other keep cutting each pass short.\n\nAdds felix_broker_publish_quorum_wait_seconds and replica-state write\ncount/duration metrics.\n\nSpec-Unaffected: changes when the driver runs a pass and which answers a pass sees; what a mark may count (answers from the copy the cursor describes, at the pass's generation and incarnation) is unchanged.\n\n* fix(replication): restart a shard on an answer its pass took but could not count (#1479)\n\nAn answer handed to a running pass no longer reaches merge(), so the pass\nreports what merge would have: the follower moved or halted, or it answered\nfor more than the mark counts. An answer from a node dropped from the set is\nskipped, as put_back skips it.\n\nSpec-Unaffected: driver scheduling only; what a mark may count is unchanged.",
+          "timestamp": "2026-10-24T14:19:54Z",
+          "tree_id": "b3091c1f2f7b170ab5ffb934313086e065d94a2d",
+          "url": "https://github.com/GetFelix/felix/commit/368ca784101adac691c136c7792e253935a4e3d4"
+        },
+        "date": 1792851865883,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 349920.91,
+            "range": "9207.68",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 349920.91\nmean: 348518.16\nstdev: 9207.68\ncv: 2.64%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 349920.91,
+            "range": "9207.68",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 349920.91\nmean: 348518.16\nstdev: 9207.68\ncv: 2.64%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81661.59,
+            "range": "809.39",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81661.59\nmean: 81336.18\nstdev: 809.39\ncv: 1.00%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 816615.9,
+            "range": "8093.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 816615.90\nmean: 813361.82\nstdev: 8093.88\ncv: 1.00%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
