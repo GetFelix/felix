@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792874657941,
+  "lastUpdate": 1792876801284,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -35256,6 +35256,58 @@ window.BENCHMARK_DATA = {
             "range": "10941.05",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1237137.29\nmean: 1234178.54\nstdev: 10941.05\ncv: 0.89%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "89da23859ad9f271bb50da06e54f416254fde32a",
+          "message": "test(capi): fault, broker-loss and discovery scenarios; C conformance gate (#1493) (#1516)\n\n* test(capi): fault, broker-loss and discovery scenarios; felix_client_endpoints; blocking C conformance gate (#1493)\n* test(capi): require the fault to be posted, record fixture pids at start (#1493)\n* docs(clients): the C ABI passes the conformance suite",
+          "timestamp": "2026-10-24T21:16:12Z",
+          "tree_id": "6f2b1c1e31e736b647f3ab59729781f7da1b88e3",
+          "url": "https://github.com/GetFelix/felix/commit/89da23859ad9f271bb50da06e54f416254fde32a"
+        },
+        "date": 1792876800426,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 502034.31,
+            "range": "13851.71",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 502034.31\nmean: 502594.51\nstdev: 13851.71\ncv: 2.76%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 502034.31,
+            "range": "13851.71",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 502034.31\nmean: 502594.51\nstdev: 13851.71\ncv: 2.76%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 125099.72,
+            "range": "1783.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 125099.72\nmean: 124561.50\nstdev: 1783.81\ncv: 1.43%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1250997.17,
+            "range": "17838.06",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1250997.17\nmean: 1245615.03\nstdev: 17838.06\ncv: 1.43%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
