@@ -27,8 +27,18 @@ const FEATURES: [&str; 9] = [
     "stream_incarnations",
     "cache_incarnations",
 ];
-/// The replication tick. A wake the mark misses costs about this long.
+/// `FELIX_CONTROLPLANE_SYNC_INTERVAL_MS`, which is the replication tick and
+/// also the cadence of the broker's metadata and routing feeds. A wake the
+/// mark misses costs about this long. Fine here: placement is driven by the
+/// harness, the membership heartbeat runs on the interval the control plane
+/// hands out, and the settle wait below covers routes and leaders.
 const TICK_MS: u64 = 30_000;
+/// Consecutive non-stall errors a publisher retries before giving up.
+const RETRIES: u32 = 3;
+/// Non-stall errors allowed in the whole run, each retried successfully.
+const OTHER_ERRORS_ALLOWED: usize = 5;
+/// What the broker says when a Quorum publish times out waiting on its mark.
+const STALL_TEXT: &str = "did not reach a majority";
 /// A healthy ack takes milliseconds; this leaves room for a slow runner.
 const LIMIT: Duration = Duration::from_secs(10);
 
@@ -62,6 +72,20 @@ async fn a_busy_followers_answer_moves_the_mark_without_the_tick() {
         .await
         .expect("every broker enables the fleet features");
 
+    // Finalizing runs after the startup wait, so let the leaders and their
+    // replica reports settle again before the clock starts.
+    felix_cluster::wait::until(Duration::from_secs(60), "the cluster to settle", || async {
+        let placed = cluster.place_shards().await;
+        placed.moved == 0
+            && placed.waiting == 0
+            && cluster
+                .unreported_shards()
+                .await
+                .is_ok_and(|s| s.is_empty())
+    })
+    .await
+    .expect("every shard has a leader and reported replicas");
+
     let mut clients = Vec::new();
     for _ in 0..CONNECTIONS {
         clients.push(Arc::new(
@@ -75,6 +99,28 @@ async fn a_busy_followers_answer_moves_the_mark_without_the_tick() {
         ));
     }
 
+    // One publish per shard on every connection, so routes are learned before
+    // the clock starts.
+    for client in &clients {
+        for shard in 0..SHARDS {
+            felix_cluster::wait::until(Duration::from_secs(60), "a warm-up publish", || async {
+                client
+                    .publish_on_shard(
+                        &cluster.tenant_id,
+                        &cluster.namespace,
+                        STREAM,
+                        shard,
+                        vec![b'w'; PAYLOAD],
+                        AckMode::PerMessage,
+                    )
+                    .await
+                    .is_ok()
+            })
+            .await
+            .expect("every shard acknowledges a publish");
+        }
+    }
+
     let stop = Instant::now() + LOAD;
     let mut tasks = Vec::new();
     for (c, client) in clients.iter().enumerate() {
@@ -84,7 +130,8 @@ async fn a_busy_followers_answer_moves_the_mark_without_the_tick() {
             let namespace = cluster.namespace.clone();
             let shard = ((c * PUBLISHERS_PER_CONNECTION + p) as u32) % SHARDS;
             tasks.push(tokio::spawn(async move {
-                let mut latencies = Vec::new();
+                let mut run = Run::default();
+                let mut failures = 0;
                 while Instant::now() < stop {
                     let sent = Instant::now();
                     // Bounded so a stalled ack is reported rather than hanging.
@@ -102,29 +149,68 @@ async fn a_busy_followers_answer_moves_the_mark_without_the_tick() {
                     .await;
                     let latency = sent.elapsed();
                     match acked {
-                        Ok(Ok(_)) => latencies.push(latency),
-                        Ok(Err(err)) => panic!("publish failed after {latency:?}: {err:#}"),
-                        Err(_) => panic!("publish unacknowledged after {latency:?}"),
+                        Ok(Ok(_)) => {
+                            failures = 0;
+                            run.latencies.push(latency);
+                        }
+                        Ok(Err(err)) if format!("{err:#}").contains(STALL_TEXT) => {
+                            run.stalls += 1;
+                            run.latencies.push(latency);
+                        }
+                        Ok(Err(err)) => {
+                            run.others.push(format!("{err:#}"));
+                            failures += 1;
+                            if failures > RETRIES {
+                                run.gave_up = true;
+                                break;
+                            }
+                        }
+                        Err(_) => {
+                            run.stalls += 1;
+                            run.latencies.push(latency);
+                        }
                     }
                 }
-                latencies
+                run
             }));
         }
     }
-    let mut latencies = Vec::new();
+    let mut total = Run::default();
     for task in tasks {
-        latencies.extend(task.await.expect("publisher"));
+        let run = task.await.expect("publisher");
+        total.latencies.extend(run.latencies);
+        total.stalls += run.stalls;
+        total.others.extend(run.others);
+        total.gave_up |= run.gave_up;
     }
     cluster.shutdown().await;
 
-    assert!(!latencies.is_empty(), "no publish was acknowledged");
-    latencies.sort();
-    let max = *latencies.last().unwrap();
-    let p99 = latencies[(latencies.len() * 99 / 100).min(latencies.len() - 1)];
+    assert!(!total.latencies.is_empty(), "no publish was acknowledged");
+    total.latencies.sort();
+    let max = *total.latencies.last().unwrap();
+    let p99 = total.latencies[(total.latencies.len() * 99 / 100).min(total.latencies.len() - 1)];
     assert!(
-        max < LIMIT,
-        "an ack took {max:?} (p99 {p99:?}, {} acks) with the replication tick at {TICK_MS} ms: \
-         the quorum mark waited for the tick (#1479)",
-        latencies.len()
+        total.stalls == 0
+            && max < LIMIT
+            && !total.gave_up
+            && total.others.len() <= OTHER_ERRORS_ALLOWED,
+        "the quorum mark waited for the replication tick instead of a follower's answer (#1479): \
+         max ack {max:?}, p99 {p99:?}, {} acks, {} stalled, {} other errors (gave up: {}): {:?}",
+        total.latencies.len(),
+        total.stalls,
+        total.others.len(),
+        total.gave_up,
+        total.others.iter().take(3).collect::<Vec<_>>(),
     );
+}
+
+/// What one publisher saw.
+#[derive(Default)]
+struct Run {
+    latencies: Vec<Duration>,
+    /// Acks that never came: the broker's quorum timeout, or none in a minute.
+    stalls: usize,
+    /// Errors that are not a stall (a stale route, a reconnect), each retried.
+    others: Vec<String>,
+    gave_up: bool,
 }
