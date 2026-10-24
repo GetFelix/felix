@@ -536,7 +536,7 @@ static bool load_step(const struct fixture *f, const char *id,
             json_number(json, "hold_ms", &step->hold_ms);
   free(json);
   return ok && step->records > 0 && step->after_records >= 0 &&
-         step->after_records <= step->records;
+         step->after_records < step->records;
 }
 
 /* Addresses in a comma separated list. */
@@ -3998,10 +3998,11 @@ static void publish_through_fault(const struct fixture *f,
   struct timespec began;
   clock_gettime(CLOCK_MONOTONIC, &began);
   double healed_at = 0;
+  bool posted = false;
   bool stall = strcmp(step->fault, "stall") == 0;
   for (int i = 0; i < step->records && i < MAX_ACKED - 1; i++) {
     if (i == step->after_records) {
-      inject_fault(f, step);
+      posted = inject_fault(f, step);
       healed_at = seconds_since(&began) + step->hold_ms / 1000.0;
     }
     char payload[PAYLOAD_CAP], message[256] = "";
@@ -4035,6 +4036,7 @@ static void publish_through_fault(const struct fixture *f,
       pause_ms(POLL_MS);
     }
   }
+  CHECK(posted, "the fault was never injected");
   CHECK(recovered, "the client never published again after the fault");
   felix_client_free(linked);
 
@@ -4074,7 +4076,7 @@ static void subscribe_through_fault(const struct fixture *f,
       CHECK(status == FELIX_STATUS_OK, "publish %d gave %d", i, (int)status);
     }
     bool stall = strcmp(step->fault, "stall") == 0;
-    bool injected = false, has_previous = false;
+    bool injected = false, posted = false, has_previous = false;
     uint64_t previous = 0;
     int received = 0;
     struct timespec began;
@@ -4082,7 +4084,7 @@ static void subscribe_through_fault(const struct fixture *f,
     double deadline = SETTLE_MS / 1000.0;
     while (received < total) {
       if (!injected && received == step->after_records) {
-        inject_fault(f, step);
+        posted = inject_fault(f, step);
         injected = true;
         deadline = seconds_since(&began) + step->hold_ms / 1000.0 +
                    SETTLE_MS / 1000.0;
@@ -4135,6 +4137,7 @@ static void subscribe_through_fault(const struct fixture *f,
         break;
       }
     }
+    CHECK(posted, "the fault was never injected");
   }
   felix_subscription_free(sub);
   felix_client_free(direct);
@@ -4160,9 +4163,10 @@ static void cache_through_fault(const struct fixture *f,
   char counter[PAYLOAD_CAP];
   snprintf(counter, sizeof counter, "%s-count", stamp);
   int added = 0;
+  bool posted = false;
   for (int i = 0; i < step->records; i++) {
     if (i == step->after_records) {
-      inject_fault(f, step);
+      posted = inject_fault(f, step);
     }
     char key[PAYLOAD_CAP];
     snprintf(key, sizeof key, "%s-%d", stamp, i);
@@ -4188,6 +4192,7 @@ static void cache_through_fault(const struct fixture *f,
       pause_ms(POLL_MS);
     }
   }
+  CHECK(posted, "the fault was never injected");
   CHECK(recovered, "the client never wrote to the cache again after the fault");
 
   for (size_t i = 0; i < acked.count; i++) {

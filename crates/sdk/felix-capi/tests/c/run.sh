@@ -53,7 +53,8 @@ if [ "$mode" = offline ]; then
 fi
 
 # Starts `felix-cluster client-fixture` over $1 and waits until it has written
-# its fixture document and certificates. Sets `started_pid`. Returns 1 rather
+# its fixture document and certificates. The process id goes into the variable
+# named by $2 as soon as it exists. Returns 1 rather
 # than exiting, so a disposable fixture that fails to start fails its scenario
 # and not the whole run.
 start_fixture() {
@@ -62,7 +63,8 @@ start_fixture() {
   RUST_LOG=warn "$target/felix-cluster" client-fixture \
     --out "$dir/fixture.json" --ca-file "$dir/ca.pem" >"$dir/fixture.log" 2>&1 &
   pid=$!
-  started_pid="$pid"
+  # Recorded before the startup wait, so the trap stops it if killed during it.
+  printf -v "$2" %s "$pid"
   for _ in $(seq 1 600); do
     if [ -s "$dir/fixture.json" ] && [ -s "$dir/ca.pem" ] &&
       python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$dir/fixture.json" 2>/dev/null; then
@@ -109,11 +111,7 @@ for fault in f.get("faults", []):
 PY
 }
 
-if ! start_fixture "$work/shared"; then
-  fixture_pid="$started_pid"
-  exit 1
-fi
-fixture_pid="$started_pid"
+start_fixture "$work/shared" fixture_pid || exit 1
 
 "$work/pubsub-shared" offline
 "$work/pubsub-static" offline
@@ -129,12 +127,10 @@ run_build() {
   FELIX_CONFORMANCE_LINES="$work/lines-$build" "$work/pubsub-$build" fixture "$work/shared/fixture.env" || status=1
   for scenario in broker_loss lost_shard; do
     dir="$work/$scenario-$build"
-    if start_fixture "$dir"; then
-      disposable_pid="$started_pid"
+    if start_fixture "$dir" disposable_pid; then
       FELIX_CONFORMANCE_LINES="$work/lines-$build" "$work/pubsub-$build" disposable "$dir/fixture.env" "$scenario" || status=1
     else
       status=1
-      disposable_pid="$started_pid"
     fi
     kill "$disposable_pid" 2>/dev/null || true
     wait "$disposable_pid" 2>/dev/null || true

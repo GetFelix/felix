@@ -348,8 +348,6 @@ pub unsafe extern "C" fn felix_client_free(client: *mut FelixClient) {
     });
 }
 
-/// Each comma-separated `host:port`. Names are kept for the client to resolve,
-/// on connect and again whenever every address it holds stops answering.
 /// The addresses a client would try, ready to hand to C.
 pub(crate) struct Endpoints(Vec<CString>);
 
@@ -436,6 +434,8 @@ pub unsafe extern "C" fn felix_client_endpoints(
     })
 }
 
+/// Each comma-separated `host:port`. Names are kept for the client to resolve,
+/// on connect and again whenever every address it holds stops answering.
 fn parse_addrs(addrs: &str) -> Result<Vec<Seed>, Failure> {
     let seeds = addrs
         .split(',')
