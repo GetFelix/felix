@@ -33,7 +33,7 @@ felix_client_publish(client, "t1", "default", "events",
                      FELIX_DELIVERY_AT_MOST_ONCE, NULL, on_published, my_state);
 ```
 
-The calls are `felix_client_connect`, the publishes (`felix_client_publish`,
+The calls are `felix_client_connect` and `felix_client_endpoints` (the brokers a client would try), the publishes (`felix_client_publish`,
 `felix_client_publish_batch`, `felix_client_publish_on_shard` and
 `felix_client_publish_records`), the subscribes (`felix_client_subscribe` for one
 shard and `felix_client_subscribe_sharded` for all of them),
@@ -379,7 +379,11 @@ FELIX_CONFORMANCE_RESULTS=c-conformance.json crates/sdk/felix-capi/tests/c/run.s
 cargo run -p felix-conformance -- verify c-conformance.json
 ```
 
-The scenarios that break a cluster (connection faults, losing a broker or a
-shard) are skipped until the harness can start a cluster of its own. The
-shard-move and lost-quorum scenarios use the fixture's `/fence`, `/partition`
-and `/heal` endpoint, so they need `curl`.
+The connection-fault scenarios drive the fixture's `/link` interposer. The ones
+that kill a broker (`reconnect.survives_broker_loss` and
+`sharded.a_lost_shard_is_surfaced`) get a fixture of their own per build, which
+`run.sh` starts and stops, and kill one broker through
+[`tests/c/kill-broker.sh`](tests/c/kill-broker.sh) (it needs `lsof` and kills
+only the process listening on the broker's port). The shard-move and
+lost-quorum scenarios use the fixture's `/fence`, `/partition` and `/heal`
+endpoints, so they need `curl`.

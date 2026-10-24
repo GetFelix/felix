@@ -38,6 +38,10 @@
 
 static int failures = 0;
 
+/* A call waits at least this long for its callback. The fault scenarios raise
+   it: a call may legitimately take a hold plus the idle timeout to give up. */
+static int wait_floor_ms = 0;
+
 /* The conformance ledger. Scenarios open and close like a stack; a failed
    CHECK fails every scenario open at that moment, and one still open when the
    run ends counts as failed, since an early return skipped its checks. */
@@ -82,13 +86,20 @@ static void ledger_begin(const char *id) {
   open_count++;
 }
 
-static void ledger_end(const char *id) {
+/* Closes `id`. `skip` is a reason to record it as skipped instead of passed,
+   unless a check inside it already failed. */
+static void ledger_finish(const char *id, const char *skip) {
   for (size_t i = open_count; i > 0; i--) {
     if (strcmp(open_scenarios[i - 1].id, id) != 0) {
       continue;
     }
-    ledger_write(id, open_scenarios[i - 1].failed ? "fail" : "pass",
-                 open_scenarios[i - 1].where);
+    if (open_scenarios[i - 1].failed) {
+      ledger_write(id, "fail", open_scenarios[i - 1].where);
+    } else if (skip) {
+      ledger_write(id, "skip", skip);
+    } else {
+      ledger_write(id, "pass", "");
+    }
     for (size_t j = i; j < open_count; j++) {
       open_scenarios[j - 1] = open_scenarios[j];
     }
@@ -98,6 +109,8 @@ static void ledger_end(const char *id) {
   fprintf(stderr, "no open scenario %s\n", id);
   failures++;
 }
+
+static void ledger_end(const char *id) { ledger_finish(id, NULL); }
 
 static void ledger_failed(const char *file, int line) {
   for (size_t i = 0; i < open_count; i++) {
@@ -126,6 +139,8 @@ static void ledger_close_all(void) {
 #define SCENARIO_BEGIN(id) ledger_begin(id)
 #define SCENARIO_END(id) ledger_end(id)
 #define SKIP(id, reason) ledger_write(id, "skip", reason)
+/* Gives up an open scenario for a reason that is not a failure. */
+#define SCENARIO_SKIP(id, reason) ledger_finish(id, reason)
 
 #define CHECK(cond, ...)                                                       \
   do {                                                                         \
@@ -283,8 +298,28 @@ static void on_offset(void *user_data, FelixStatus status, const char *message,
   on_publish(user_data, status, message, has_offset, offset);
 }
 
+struct endpoint_list {
+  struct waiter w;
+  size_t count, with_port;
+};
+
+static void on_endpoints(void *user_data, FelixStatus status,
+                         const char *message, const char *const *addrs,
+                         size_t count) {
+  struct endpoint_list *list = user_data;
+  list->count = count;
+  list->with_port = 0;
+  for (size_t i = 0; i < count; i++) {
+    list->with_port += addrs[i] && strchr(addrs[i], ':') != NULL;
+  }
+  finish(&list->w, status, message, NULL);
+}
+
 /* The callback's status. Exits the test if it does not arrive in time. */
 static FelixStatus wait_for(struct waiter *w, int ms) {
+  if (ms < wait_floor_ms) {
+    ms = wait_floor_ms;
+  }
   struct timespec deadline;
   clock_gettime(CLOCK_REALTIME, &deadline);
   deadline.tv_sec += ms / 1000;
@@ -374,6 +409,13 @@ struct fixture {
       *unauthorized_token, *group_operator_token, *cache, *single_shard_cache;
   /* Empty when the fixture has no control endpoint. */
   const char *movable_stream, *quorum_stream, *control_url;
+  /* The link interposer: a broker address that faults can be injected on, and
+     the single-shard stream behind it. Empty when the fixture has none. */
+  const char *link_addr, *link_stream;
+  /* The script that kills the broker listening on an address. */
+  const char *kill_helper;
+  /* The fixture file, which also holds the fault.<id> steps. */
+  const char *path;
 };
 
 /* The fixture file: one key=value per line, the value running to the end of
@@ -421,6 +463,9 @@ static bool load_fixture(const char *path, struct fixture *f) {
       {&f->movable_stream, "movable_stream", false},
       {&f->quorum_stream, "quorum_stream", false},
       {&f->control_url, "control_url", false},
+      {&f->link_addr, "link_addr", false},
+      {&f->link_stream, "link_stream", false},
+      {&f->kill_helper, "kill_helper", false},
   };
   bool ok = true;
   for (size_t i = 0; i < sizeof fields / sizeof *fields; i++) {
@@ -432,7 +477,92 @@ static bool load_fixture(const char *path, struct fixture *f) {
     *fields[i].field = value ? value : strdup("");
   }
   fclose(in);
+  f->path = strdup(path);
   return ok;
+}
+
+/* One connection-fault step from the catalogue, as the fixture file holds it:
+   fault.<id>={"during":"publish","fault":"drop","after_records":3,...}. */
+struct step {
+  char during[24], fault[24];
+  int after_records, records, hold_ms;
+};
+
+static bool json_text(const char *json, const char *key, char *out, size_t cap) {
+  char needle[64];
+  snprintf(needle, sizeof needle, "\"%s\":\"", key);
+  const char *at = strstr(json, needle);
+  if (!at) {
+    return false;
+  }
+  at += strlen(needle);
+  const char *end = strchr(at, '"');
+  if (!end || (size_t)(end - at) >= cap) {
+    return false;
+  }
+  memcpy(out, at, (size_t)(end - at));
+  out[end - at] = '\0';
+  return true;
+}
+
+static bool json_number(const char *json, const char *key, int *out) {
+  char needle[64];
+  snprintf(needle, sizeof needle, "\"%s\":", key);
+  const char *at = strstr(json, needle);
+  if (!at) {
+    return false;
+  }
+  *out = atoi(at + strlen(needle));
+  return true;
+}
+
+static bool load_step(const struct fixture *f, const char *id,
+                      struct step *step) {
+  FILE *in = fopen(f->path, "r");
+  if (!in) {
+    return false;
+  }
+  char key[160];
+  snprintf(key, sizeof key, "fault.%s", id);
+  char *json = fixture_value(in, key);
+  fclose(in);
+  if (!json) {
+    return false;
+  }
+  bool ok = json_text(json, "during", step->during, sizeof step->during) &&
+            json_text(json, "fault", step->fault, sizeof step->fault) &&
+            json_number(json, "after_records", &step->after_records) &&
+            json_number(json, "records", &step->records) &&
+            json_number(json, "hold_ms", &step->hold_ms);
+  free(json);
+  return ok && step->records > 0 && step->after_records >= 0 &&
+         step->after_records <= step->records;
+}
+
+/* Addresses in a comma separated list. */
+static size_t addr_count(const char *addrs) {
+  size_t n = *addrs ? 1 : 0;
+  for (const char *c = addrs; *c; c++) {
+    n += *c == ',';
+  }
+  return n;
+}
+
+static bool addr_at(const char *addrs, size_t index, char *out, size_t cap) {
+  for (size_t i = 0; i < index; i++) {
+    addrs = strchr(addrs, ',');
+    if (!addrs) {
+      return false;
+    }
+    addrs++;
+  }
+  size_t len = strcspn(addrs, ",");
+  if (len == 0 || len >= cap) {
+    return false;
+  }
+  memcpy(out, addrs, len);
+  out[len] = '\0';
+  return true;
 }
 
 static void offline(void) {
@@ -460,6 +590,10 @@ static void offline(void) {
   status = felix_client_connect("127.0.0.1:1", "t1", "token", NULL,
                                 "/nonexistent/ca.pem", NULL, on_connect, &w);
   CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "missing ca_file gave %d",
+        (int)status);
+
+  status = felix_client_endpoints(NULL, NULL, on_endpoints, &w);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "endpoints of a null client gave %d",
         (int)status);
 
   status = felix_client_publish(NULL, "t", "n", "s", NULL, 0, NULL, 0,
@@ -3492,13 +3626,14 @@ static void redirects(const struct fixture *f, const char *run) {
 
 /* POSTs to the control endpoint and returns the HTTP status, 0 if curl could
    not get one. The body is copied to `body`. */
-static int control_post(const struct fixture *f, const char *path, char *body,
-                        size_t cap) {
-  char command[MAX_LINE + 256];
+static int control_post_json(const struct fixture *f, const char *path,
+                             const char *json, char *body, size_t cap) {
+  char command[MAX_LINE + 512];
   int n = snprintf(command, sizeof command,
-                   "curl -sS -m 150 -X POST -w '\n%%{http_code}' '%s%s' "
+                   "curl -sS -m 150 -X POST %s%s%s -w '\n%%{http_code}' '%s%s' "
                    "2>/dev/null",
-                   f->control_url, path);
+                   json ? "-H 'content-type: application/json' -d '" : "",
+                   json ? json : "", json ? "'" : "", f->control_url, path);
   body[0] = '\0';
   if (n < 0 || (size_t)n >= sizeof command) {
     return 0;
@@ -3519,6 +3654,11 @@ static int control_post(const struct fixture *f, const char *path, char *body,
   *last = '\0';
   snprintf(body, cap, "%s", out);
   return code;
+}
+
+static int control_post(const struct fixture *f, const char *path, char *body,
+                        size_t cap) {
+  return control_post_json(f, path, NULL, body, cap);
 }
 
 /* The broker address in a control answer, `{"node_id":..,"addr":".."}`. */
@@ -3708,11 +3848,368 @@ static void faults(const struct fixture *f, const char *run) {
   }
 }
 
-/* Scenarios the second harness step covers, because they need a cluster of
-   their own to break. Recorded here so a run reports every required id. */
-static void deferred(void) {
-  static const char *const needs_cluster[] = {
-      "reconnect.survives_broker_loss", "sharded.a_lost_shard_is_surfaced",
+/* ---- discovery ---------------------------------------------------------- */
+
+/* A client given one broker learns the others while it connects. */
+static void discovery(const struct fixture *f) {
+  const char *id = "reconnect.discovers_brokers_from_one_seed";
+  if (addr_count(f->addrs) < 2) {
+    SKIP(id, "the fixture has one broker");
+    return;
+  }
+  SCENARIO_BEGIN(id);
+  char seed[128];
+  CHECK(addr_at(f->addrs, 0, seed, sizeof seed), "no first address in %s",
+        f->addrs);
+  FelixClient *client = NULL;
+  FelixStatus status =
+      connect_sync(seed, f->tenant, f->token, f->ca_file, &client);
+  CHECK(status == FELIX_STATUS_OK, "connect to one seed gave %d", (int)status);
+  if (client) {
+    struct endpoint_list list;
+    memset(&list, 0, sizeof list);
+    waiter_init(&list.w);
+    status = felix_client_endpoints(client, NULL, on_endpoints, &list);
+    if (status == FELIX_STATUS_OK) {
+      status = wait_for(&list.w, WAIT_MS);
+    }
+    CHECK(status == FELIX_STATUS_OK, "endpoints gave %d", (int)status);
+    CHECK(list.count > 1,
+          "the client knows %zu endpoint(s) after one seed; it never learned "
+          "the cluster",
+          list.count);
+    CHECK(list.with_port == list.count, "an endpoint had no port");
+    waiter_destroy(&list.w);
+    felix_client_free(client);
+  }
+  SCENARIO_END(id);
+}
+
+/* ---- connection faults through the link interposer ---------------------- */
+
+/* Room for the idle timeout to fire and a reconnect to land, on top of the
+   fault's own hold. */
+#define SETTLE_MS 45000
+#define POLL_MS 250
+#define PAYLOAD_CAP 160
+#define MAX_ACKED 16
+
+/* The payloads (or cache keys) a scenario got an acknowledgement for. */
+struct acked {
+  char payload[MAX_ACKED][PAYLOAD_CAP];
+  size_t count;
+};
+
+static void acked_add(struct acked *a, const char *payload) {
+  if (a->count < MAX_ACKED) {
+    snprintf(a->payload[a->count++], PAYLOAD_CAP, "%s", payload);
+  }
+}
+
+static bool inject_fault(const struct fixture *f, const struct step *step) {
+  char json[192], body[2048];
+  snprintf(json, sizeof json, "{\"fault\":\"%s\",\"hold_ms\":%d}", step->fault,
+           step->hold_ms);
+  int code = control_post_json(f, "/link", json, body, sizeof body);
+  CHECK(code == 200, "injecting %s answered %d: %s", step->fault, code, body);
+  return code == 200;
+}
+
+/* The next event's payload and offset, or the read's status. */
+static FelixStatus read_event(FelixSubscription *sub, int timeout_ms,
+                              char *payload, size_t cap, bool *has_offset,
+                              uint64_t *offset) {
+  struct waiter w;
+  waiter_init(&w);
+  FelixStatus status = felix_subscription_next(sub, timeout_ms, NULL, on_event, &w);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&w, timeout_ms + WAIT_MS);
+  }
+  FelixEvent *event = status == FELIX_STATUS_OK ? w.handle : NULL;
+  waiter_destroy(&w);
+  if (event) {
+    const uint8_t *data = NULL;
+    size_t len = 0;
+    felix_event_payload(event, &data, &len);
+    copy_bounded(payload, cap, data, len);
+    *has_offset = false;
+    felix_event_offset(event, offset, has_offset);
+    felix_event_free(event);
+  }
+  return status;
+}
+
+/* How many acknowledged payloads `stream` does not hold, read on a connection
+   the fault never touched. */
+static size_t unread(const struct fixture *f, const char *stream,
+                     const struct acked *acked) {
+  bool found[MAX_ACKED] = {false};
+  size_t missing = acked->count;
+  FelixClient *client = NULL;
+  if (connect_sync(f->addrs, f->tenant, f->token, f->ca_file, &client) !=
+      FELIX_STATUS_OK) {
+    return missing;
+  }
+  struct fixture q = *f;
+  q.stream = stream;
+  FelixSubscription *sub = NULL;
+  if (subscribe(client, &q, FELIX_START_EARLIEST, 0, &sub) == FELIX_STATUS_OK) {
+    struct timespec began;
+    clock_gettime(CLOCK_MONOTONIC, &began);
+    while (missing > 0 && seconds_since(&began) < SETTLE_MS / 1000.0) {
+      char payload[PAYLOAD_CAP];
+      bool has_offset = false;
+      uint64_t offset = 0;
+      FelixStatus status = read_event(sub, 1000, payload, sizeof payload,
+                                      &has_offset, &offset);
+      if (status == FELIX_STATUS_TIMEOUT) {
+        continue;
+      }
+      if (status != FELIX_STATUS_OK) {
+        break;
+      }
+      for (size_t i = 0; i < acked->count; i++) {
+        if (!found[i] && strcmp(payload, acked->payload[i]) == 0) {
+          found[i] = true;
+          missing--;
+        }
+      }
+    }
+    felix_subscription_free(sub);
+  }
+  felix_client_free(client);
+  return missing;
+}
+
+static void publish_through_fault(const struct fixture *f,
+                                  const struct step *step, const char *stamp) {
+  FelixClient *linked = NULL;
+  FelixStatus status =
+      connect_sync(f->link_addr, f->tenant, f->token, f->ca_file, &linked);
+  CHECK(status == FELIX_STATUS_OK, "connect through the link gave %d",
+        (int)status);
+  if (!linked) {
+    return;
+  }
+  struct acked acked;
+  memset(&acked, 0, sizeof acked);
+  CHECK(step->records < MAX_ACKED, "%d records is more than this test tracks",
+        step->records);
+  struct timespec began;
+  clock_gettime(CLOCK_MONOTONIC, &began);
+  double healed_at = 0;
+  bool stall = strcmp(step->fault, "stall") == 0;
+  for (int i = 0; i < step->records && i < MAX_ACKED - 1; i++) {
+    if (i == step->after_records) {
+      inject_fault(f, step);
+      healed_at = seconds_since(&began) + step->hold_ms / 1000.0;
+    }
+    char payload[PAYLOAD_CAP], message[256] = "";
+    snprintf(payload, sizeof payload, "%s-%d", stamp, i);
+    status = publish(linked, f, f->link_stream, payload, NULL, message,
+                     sizeof message);
+    if (status == FELIX_STATUS_OK) {
+      acked_add(&acked, payload);
+    } else {
+      CHECK(!stall, "publish %d failed during a stall: %d (%s)", i, (int)status,
+            message);
+    }
+  }
+
+  /* Once the fault is over, the client has to publish again. */
+  double wait = healed_at - seconds_since(&began);
+  if (healed_at > 0 && wait > 0) {
+    pause_ms((long)(wait * 1000));
+  }
+  char payload[PAYLOAD_CAP];
+  snprintf(payload, sizeof payload, "%s-after", stamp);
+  struct timespec settling;
+  clock_gettime(CLOCK_MONOTONIC, &settling);
+  bool recovered = false;
+  while (!recovered && seconds_since(&settling) < SETTLE_MS / 1000.0) {
+    if (publish(linked, f, f->link_stream, payload, NULL, NULL, 0) ==
+        FELIX_STATUS_OK) {
+      acked_add(&acked, payload);
+      recovered = true;
+    } else {
+      pause_ms(POLL_MS);
+    }
+  }
+  CHECK(recovered, "the client never published again after the fault");
+  felix_client_free(linked);
+
+  size_t missing = unread(f, f->link_stream, &acked);
+  CHECK(missing == 0, "%zu of %zu acknowledged records were not in the stream",
+        missing, acked.count);
+}
+
+static void subscribe_through_fault(const struct fixture *f,
+                                    const struct step *step,
+                                    const char *stamp) {
+  FelixClient *linked = NULL, *direct = NULL;
+  FelixStatus status =
+      connect_sync(f->link_addr, f->tenant, f->token, f->ca_file, &linked);
+  CHECK(status == FELIX_STATUS_OK, "connect through the link gave %d",
+        (int)status);
+  status = connect_sync(f->addrs, f->tenant, f->token, f->ca_file, &direct);
+  CHECK(status == FELIX_STATUS_OK, "direct connect gave %d", (int)status);
+  CHECK(step->records <= MAX_ACKED, "%d records is more than this test tracks",
+        step->records);
+  FelixSubscription *sub = NULL;
+  if (linked && direct && step->records <= MAX_ACKED) {
+    struct fixture q = *f;
+    q.stream = f->link_stream;
+    status = subscribe(linked, &q, FELIX_START_LATEST, 0, &sub);
+    CHECK(status == FELIX_STATUS_OK, "subscribe through the link gave %d",
+          (int)status);
+  }
+  if (sub) {
+    char payloads[MAX_ACKED][PAYLOAD_CAP];
+    int total = step->records;
+    for (int i = 0; i < total; i++) {
+      snprintf(payloads[i], sizeof payloads[i], "%s-%d", stamp, i);
+    }
+    for (int i = 0; i < step->after_records; i++) {
+      status = publish(direct, f, f->link_stream, payloads[i], NULL, NULL, 0);
+      CHECK(status == FELIX_STATUS_OK, "publish %d gave %d", i, (int)status);
+    }
+    bool stall = strcmp(step->fault, "stall") == 0;
+    bool injected = false, has_previous = false;
+    uint64_t previous = 0;
+    int received = 0;
+    struct timespec began;
+    clock_gettime(CLOCK_MONOTONIC, &began);
+    double deadline = SETTLE_MS / 1000.0;
+    while (received < total) {
+      if (!injected && received == step->after_records) {
+        inject_fault(f, step);
+        injected = true;
+        deadline = seconds_since(&began) + step->hold_ms / 1000.0 +
+                   SETTLE_MS / 1000.0;
+        for (int i = step->after_records; i < total; i++) {
+          status = publish(direct, f, f->link_stream, payloads[i], NULL, NULL, 0);
+          CHECK(status == FELIX_STATUS_OK, "publish %d gave %d", i, (int)status);
+        }
+      }
+      if (seconds_since(&began) >= deadline) {
+        CHECK(0, "neither resumed nor reported the loss: %d of %d records, "
+                 "then nothing",
+              received, total);
+        break;
+      }
+      char got[PAYLOAD_CAP];
+      bool has_offset = false;
+      uint64_t offset = 0;
+      status = read_event(sub, POLL_MS, got, sizeof got, &has_offset, &offset);
+      if (status == FELIX_STATUS_OK) {
+        if (strncmp(got, stamp, strlen(stamp)) != 0) {
+          /* Not ours: another run's record on the shared stream. */
+          has_previous = false;
+          continue;
+        }
+        if (strcmp(got, payloads[received]) != 0) {
+          CHECK(0, "record %d was %s: a gap, a duplicate or a reordering",
+                received, got);
+          break;
+        }
+        CHECK(has_offset, "a durable stream delivered an event without an offset");
+        CHECK(!has_previous || !has_offset || offset == previous + 1,
+              "offsets jumped: %" PRIu64 " then %" PRIu64, previous, offset);
+        has_previous = has_offset;
+        previous = offset;
+        received++;
+      } else if (status == FELIX_STATUS_TIMEOUT) {
+        continue;
+      } else if (status == FELIX_STATUS_CLOSED) {
+        CHECK(0, "the subscription ended cleanly after %d of %d records; a "
+                 "dead connection must be resumed or reported, not read as "
+                 "the end of the stream",
+              received, total);
+        break;
+      } else {
+        /* An error is the other right answer to a dead connection, but only
+           once one was caused: and never during a stall. */
+        CHECK(injected && !stall,
+              "the subscription failed with no loss to report: %d",
+              (int)status);
+        break;
+      }
+    }
+  }
+  felix_subscription_free(sub);
+  felix_client_free(direct);
+  felix_client_free(linked);
+}
+
+static void cache_through_fault(const struct fixture *f,
+                                const struct step *step, const char *stamp) {
+  FelixClient *linked = NULL;
+  FelixStatus status =
+      connect_sync(f->link_addr, f->tenant, f->token, f->ca_file, &linked);
+  CHECK(status == FELIX_STATUS_OK, "connect through the link gave %d",
+        (int)status);
+  CHECK(step->records < MAX_ACKED, "%d records is more than this test tracks",
+        step->records);
+  if (!linked || step->records >= MAX_ACKED) {
+    felix_client_free(linked);
+    return;
+  }
+  struct cctx c = {linked, f, f->cache};
+  struct acked acked;
+  memset(&acked, 0, sizeof acked);
+  char counter[PAYLOAD_CAP];
+  snprintf(counter, sizeof counter, "%s-count", stamp);
+  int added = 0;
+  for (int i = 0; i < step->records; i++) {
+    if (i == step->after_records) {
+      inject_fault(f, step);
+    }
+    char key[PAYLOAD_CAP];
+    snprintf(key, sizeof key, "%s-%d", stamp, i);
+    if (c_put(&c, key, key, 0) == FELIX_STATUS_OK) {
+      acked_add(&acked, key);
+    }
+    struct cres r;
+    if (c_add(&c, counter, 1, &r) == FELIX_STATUS_OK) {
+      added++;
+    }
+  }
+
+  char after[PAYLOAD_CAP];
+  snprintf(after, sizeof after, "%s-after", stamp);
+  struct timespec settling;
+  clock_gettime(CLOCK_MONOTONIC, &settling);
+  bool recovered = false;
+  while (!recovered && seconds_since(&settling) < SETTLE_MS / 1000.0) {
+    if (c_put(&c, after, after, 0) == FELIX_STATUS_OK) {
+      acked_add(&acked, after);
+      recovered = true;
+    } else {
+      pause_ms(POLL_MS);
+    }
+  }
+  CHECK(recovered, "the client never wrote to the cache again after the fault");
+
+  for (size_t i = 0; i < acked.count; i++) {
+    struct cres r;
+    status = c_get(&c, acked.payload[i], false, &r);
+    CHECK(status == FELIX_STATUS_OK && r.found &&
+              strcmp(r.value, acked.payload[i]) == 0,
+          "the acknowledged put of %s did not read back (%d)",
+          acked.payload[i], (int)status);
+  }
+  struct cres r;
+  status = c_counter(&c, counter, &r);
+  CHECK(status == FELIX_STATUS_OK, "reading the counter gave %d", (int)status);
+  int64_t count = r.has_counter ? r.counter : 0;
+  CHECK(count >= added && count <= step->records,
+        "the counter is %" PRId64 " after %d acknowledged adds of %d", count,
+        added, step->records);
+  felix_client_free(linked);
+}
+
+static void link_faults(const struct fixture *f, const char *run) {
+  static const char *const ids[] = {
       "fault.publish_through_a_dropped_link",
       "fault.publish_through_a_reset_link",
       "fault.publish_through_a_stalled_link",
@@ -3720,12 +4217,193 @@ static void deferred(void) {
       "fault.subscription_through_a_reset_link",
       "fault.subscription_through_a_stalled_link",
       "fault.cache_through_a_reset_link"};
-  for (size_t i = 0; i < sizeof needs_cluster / sizeof *needs_cluster; i++) {
-    SKIP(needs_cluster[i], "C harness: needs a disposable fixture (8b-2)");
+  for (size_t i = 0; i < sizeof ids / sizeof *ids; i++) {
+    const char *id = ids[i];
+    if (!f->link_addr[0] || !f->link_stream[0] || !f->control_url[0]) {
+      SKIP(id, "the fixture file has no link interposer");
+      continue;
+    }
+    SCENARIO_BEGIN(id);
+    struct step step;
+    memset(&step, 0, sizeof step);
+    if (!load_step(f, id, &step)) {
+      CHECK(0, "the fixture file has no usable step for %s", id);
+      SCENARIO_END(id);
+      continue;
+    }
+    char stamp[160];
+    snprintf(stamp, sizeof stamp, "c-%s-%s", run, id + strlen("fault."));
+    /* A call may take a hold plus the idle timeout to give up. */
+    wait_floor_ms = SETTLE_MS + 15000;
+    if (strcmp(step.during, "publish") == 0) {
+      publish_through_fault(f, &step, stamp);
+    } else if (strcmp(step.during, "cache") == 0) {
+      cache_through_fault(f, &step, stamp);
+    } else {
+      subscribe_through_fault(f, &step, stamp);
+    }
+    wait_floor_ms = 0;
+    /* A client that resumed elsewhere can finish inside a drop's hold, and
+       the next scenario would connect into it. */
+    char body[2048];
+    int code = control_post(f, "/heal", body, sizeof body);
+    CHECK(code == 200, "heal answered %d: %s", code, body);
+    SCENARIO_END(id);
   }
-  /* The C ABI has no call that lists the endpoints a client knows. */
-  SKIP("reconnect.discovers_brokers_from_one_seed",
-       "the C ABI exposes no endpoint listing to observe discovery with");
+}
+
+/* ---- losing brokers, on a cluster of the scenario's own ----------------- */
+
+/* Kills the broker listening on `addr`, and only that process. */
+static bool kill_broker(const struct fixture *f, const char *addr) {
+  if (!f->kill_helper[0]) {
+    return false;
+  }
+  char command[2 * MAX_LINE + 64];
+  int n = snprintf(command, sizeof command, "'%s' '%s' >/dev/null 2>&1",
+                   f->kill_helper, addr);
+  return n > 0 && (size_t)n < sizeof command && system(command) == 0;
+}
+
+static void skip_unkillable(const char *id, const char *addr) {
+  char reason[256];
+  snprintf(reason, sizeof reason,
+           "could not identify the broker process listening on %.100s", addr);
+  SCENARIO_SKIP(id, reason);
+}
+
+/* Kill the broker the client was configured with; the next call must still
+   succeed once the cluster has given its shards a new leader. */
+static void broker_loss(const struct fixture *f, const char *run) {
+  const char *id = "reconnect.survives_broker_loss";
+  if (addr_count(f->addrs) < 2) {
+    SKIP(id, "the disposable fixture has one broker");
+    return;
+  }
+  SCENARIO_BEGIN(id);
+  FelixClient *client = NULL;
+  FelixStatus status =
+      connect_sync(f->addrs, f->tenant, f->token, f->ca_file, &client);
+  CHECK(status == FELIX_STATUS_OK, "connect gave %d", (int)status);
+  if (client) {
+    char seed[128], payload[PAYLOAD_CAP];
+    CHECK(addr_at(f->addrs, 0, seed, sizeof seed), "no first address in %s",
+          f->addrs);
+    snprintf(payload, sizeof payload, "c-%s-before-loss", run);
+    status = publish(client, f, f->stream, payload, NULL, NULL, 0);
+    CHECK(status == FELIX_STATUS_OK, "publish before the loss gave %d",
+          (int)status);
+    if (!kill_broker(f, seed)) {
+      skip_unkillable(id, seed);
+      felix_client_free(client);
+      return;
+    }
+    /* Generous: the client has to notice the broker is gone, and the cluster
+       has to give its shards a new leader. Only the first is the client's. */
+    snprintf(payload, sizeof payload, "c-%s-after-loss", run);
+    bool recovered = false;
+    char message[256] = "";
+    for (int attempt = 0; attempt < 60 && !recovered; attempt++) {
+      status = publish(client, f, f->stream, payload, NULL, message,
+                       sizeof message);
+      if (status == FELIX_STATUS_OK) {
+        recovered = true;
+      } else {
+        pause_ms(1000);
+      }
+    }
+    CHECK(recovered, "the client never recovered from losing %s: %d (%s)",
+          seed, (int)status, message);
+    felix_client_free(client);
+  }
+  SCENARIO_END(id);
+}
+
+/* A sharded subscription is told when a shard's broker dies. */
+static void lost_shard(const struct fixture *f, const char *run) {
+  const char *id = "sharded.a_lost_shard_is_surfaced";
+  size_t brokers = addr_count(f->addrs);
+  if (brokers < 2) {
+    SKIP(id, "the disposable fixture has one broker");
+    return;
+  }
+  SCENARIO_BEGIN(id);
+  FelixClient *client = NULL;
+  FelixStatus status =
+      connect_sync(f->addrs, f->tenant, f->token, f->ca_file, &client);
+  CHECK(status == FELIX_STATUS_OK, "connect gave %d", (int)status);
+  FelixShardedSubscription *sub = NULL;
+  uint32_t width = 0;
+  if (client) {
+    struct waiter w;
+    waiter_init(&w);
+    status = felix_client_subscribe_sharded(client, f->tenant, f->ns, f->stream,
+                                            FELIX_START_LATEST, 0, NULL,
+                                            on_sharded_subscribe, &w);
+    if (status == FELIX_STATUS_OK) {
+      status = wait_for(&w, WAIT_MS);
+      sub = w.handle;
+    }
+    waiter_destroy(&w);
+    CHECK(status == FELIX_STATUS_OK, "sharded subscribe gave %d", (int)status);
+  }
+  if (sub) {
+    CHECK(felix_sharded_shards(sub, &width) == FELIX_STATUS_OK && width > 1,
+          "the subscription covers %u shards", (unsigned)width);
+    /* Every feed is live before anything is killed. */
+    enum { KEYED = 8 };
+    char prefix[64];
+    snprintf(prefix, sizeof prefix, "c-%s-lost-", run);
+    for (int i = 0; i < KEYED; i++) {
+      char key[16], payload[96];
+      snprintf(key, sizeof key, "key-%d", i);
+      snprintf(payload, sizeof payload, "%s%d", prefix, i);
+      CHECK(publish_keyed(client, f, key, payload) == FELIX_STATUS_OK,
+            "keyed publish %d failed", i);
+    }
+    struct seen seen;
+    memset(&seen, 0, sizeof seen);
+    int forbidden = 0;
+    bool live = read_prefixed(sub, prefix, KEYED, NULL, &forbidden, &seen);
+
+    /* One broker at a time, never the last: whichever owns a shard ends that
+       shard's feed, and the first kill almost always does. */
+    bool lost = false;
+    for (size_t k = 0; live && k + 1 < brokers && !lost; k++) {
+      char addr[128] = "";
+      if (!addr_at(f->addrs, k, addr, sizeof addr) || !kill_broker(f, addr)) {
+        skip_unkillable(id, addr);
+        felix_sharded_subscription_free(sub);
+        felix_client_free(client);
+        return;
+      }
+      struct timespec began;
+      clock_gettime(CLOCK_MONOTONIC, &began);
+      while (!lost && seconds_since(&began) < 30.0) {
+        struct item_waiter it;
+        status = next_item(sub, 1000, &it);
+        if (status == FELIX_STATUS_TIMEOUT) {
+          continue;
+        }
+        if (status != FELIX_STATUS_OK) {
+          CHECK(0, "a read after the kill gave %d (%s)", (int)status,
+                it.w.message);
+          break;
+        }
+        if (it.kind == FELIX_SHARD_LOST) {
+          CHECK(it.shard < width, "shard %u is not one of %u", (unsigned)it.shard,
+                (unsigned)width);
+          CHECK(it.w.message[0] != '\0', "a lost shard carried no message");
+          lost = true;
+        }
+      }
+    }
+    CHECK(!live || lost,
+          "no shard was reported lost after a broker was killed");
+  }
+  felix_sharded_subscription_free(sub);
+  felix_client_free(client);
+  SCENARIO_END(id);
 }
 
 int main(int argc, char **argv) {
@@ -3753,11 +4431,32 @@ int main(int argc, char **argv) {
     concurrency(&f, run);
     delivery(&f, run);
     redirects(&f, run);
-    deferred();
+    discovery(&f);
+    link_faults(&f, run);
     /* Last: they break the cluster, then heal and wait for it. */
     faults(&f, run);
+  } else if (argc == 4 && strcmp(argv[1], "disposable") == 0) {
+    /* The scenarios that kill a broker, on a cluster run.sh started for this
+       one scenario alone. */
+    struct fixture f;
+    memset(&f, 0, sizeof f);
+    if (!load_fixture(argv[2], &f)) {
+      return 2;
+    }
+    struct timespec ts;
+    timespec_get(&ts, TIME_UTC);
+    char run[32];
+    snprintf(run, sizeof run, "%ld-%09ld", (long)ts.tv_sec, (long)ts.tv_nsec);
+    if (strcmp(argv[3], "broker_loss") == 0) {
+      broker_loss(&f, run);
+    } else if (strcmp(argv[3], "lost_shard") == 0) {
+      lost_shard(&f, run);
+    } else {
+      fprintf(stderr, "unknown disposable scenario %s\n", argv[3]);
+      return 2;
+    }
   } else {
-    fprintf(stderr, "usage: %s offline | fixture FILE\n", argv[0]);
+    fprintf(stderr, "usage: %s offline | fixture FILE | disposable FILE SCENARIO\n", argv[0]);
     return 2;
   }
   ledger_close_all();

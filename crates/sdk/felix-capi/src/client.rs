@@ -1,7 +1,8 @@
 //! Connecting, and the runtime a client owns.
 
-use std::ffi::{c_char, c_void};
+use std::ffi::{CString, c_char, c_void};
 use std::future::Future;
+use std::ptr;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -14,6 +15,7 @@ use tokio_util::task::TaskTracker;
 use crate::boundary::{Failure, guard, guard_void, optional_str, required_str};
 use crate::cancel::{FelixCancelToken, user_token};
 use crate::completion::{Completion, Deliver, user_cancelled};
+use crate::groups::spawn_read;
 use crate::status::{FELIX_STATUS_CANCELLED, FELIX_STATUS_OK, FelixStatus};
 
 /// Two workers are plenty for one client's connections and background tasks,
@@ -33,6 +35,19 @@ pub type FelixConnectCallback = Option<
         status: FelixStatus,
         message: *const c_char,
         client: *mut FelixClient,
+    ),
+>;
+
+/// Called once when `felix_client_endpoints` finishes. On `FELIX_STATUS_OK`,
+/// `addrs` holds `count` NUL-terminated `host:port` strings. The array and the
+/// strings are valid only while the callback runs; both are null on failure.
+pub type FelixEndpointsCallback = Option<
+    unsafe extern "C" fn(
+        user_data: *mut c_void,
+        status: FelixStatus,
+        message: *const c_char,
+        addrs: *const *const c_char,
+        count: usize,
     ),
 >;
 
@@ -335,6 +350,92 @@ pub unsafe extern "C" fn felix_client_free(client: *mut FelixClient) {
 
 /// Each comma-separated `host:port`. Names are kept for the client to resolve,
 /// on connect and again whenever every address it holds stops answering.
+/// The addresses a client would try, ready to hand to C.
+pub(crate) struct Endpoints(Vec<CString>);
+
+impl Endpoints {
+    fn new(addrs: Vec<String>) -> Self {
+        // A socket address never holds a NUL, so none is dropped.
+        Self(
+            addrs
+                .into_iter()
+                .filter_map(|addr| CString::new(addr).ok())
+                .collect(),
+        )
+    }
+}
+
+impl Deliver for Endpoints {
+    type Callback = FelixEndpointsCallback;
+
+    fn is_null(callback: Self::Callback) -> bool {
+        callback.is_none()
+    }
+
+    unsafe fn deliver(
+        callback: Self::Callback,
+        user_data: *mut c_void,
+        status: FelixStatus,
+        message: *const c_char,
+        value: Option<Self>,
+    ) {
+        if let Some(callback) = callback {
+            let addrs: Vec<*const c_char> = value
+                .iter()
+                .flat_map(|endpoints| endpoints.0.iter().map(|addr| addr.as_ptr()))
+                .collect();
+            let at = if addrs.is_empty() {
+                ptr::null()
+            } else {
+                addrs.as_ptr()
+            };
+            // SAFETY: the callback's contract is the header's; `value` and
+            // `addrs` live until it returns.
+            unsafe { callback(user_data, status, message, at, addrs.len()) };
+        }
+    }
+}
+
+/// List everywhere this client would try to reach the cluster: the seeds it
+/// was given and the brokers it learned from them. A client given one seed
+/// that reports more than one address has discovered the cluster.
+///
+/// `cancel` is null or a token that stops the call, which then completes with
+/// `FELIX_STATUS_CANCELLED`. `callback` runs once, unless this returns
+/// something other than `FELIX_STATUS_OK`.
+///
+/// # Safety
+///
+/// `client` is a live client, `cancel` is null or a live token, and
+/// `callback` is safe to call with `user_data` from any thread.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn felix_client_endpoints(
+    client: *const FelixClient,
+    cancel: *const FelixCancelToken,
+    callback: FelixEndpointsCallback,
+    user_data: *mut c_void,
+) -> FelixStatus {
+    guard(|| {
+        // SAFETY: null or a live client, per the contract above.
+        let client =
+            unsafe { client.as_ref() }.ok_or_else(|| Failure::invalid("client is null"))?;
+        // SAFETY: null or a live token, per the contract above.
+        let user = unsafe { user_token(cancel) };
+        let done = Completion::<Endpoints>::new(callback, user_data)?;
+        let cluster = Arc::clone(client.shared.client());
+        let ask = async move {
+            Ok(cluster
+                .endpoints()
+                .await
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>())
+        };
+        spawn_read(client, user, done, ask, Endpoints::new);
+        Ok(FELIX_STATUS_OK)
+    })
+}
+
 fn parse_addrs(addrs: &str) -> Result<Vec<Seed>, Failure> {
     let seeds = addrs
         .split(',')

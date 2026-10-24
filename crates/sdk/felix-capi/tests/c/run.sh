@@ -6,6 +6,8 @@
 #                            must already be built (as CI's Python job does).
 #                            Writes the conformance results document to
 #                            $FELIX_CONFORMANCE_RESULTS when that is set.
+#                            The scenarios that kill a broker each get a
+#                            fixture of their own, started and stopped here.
 set -euo pipefail
 
 mode="${1:-offline}"
@@ -14,8 +16,11 @@ repo="$(cd "$crate/../../.." && pwd)"
 target="${CARGO_TARGET_DIR:-$repo/target}/debug"
 work="$(mktemp -d)"
 fixture_pid=""
+disposable_pid=""
 cleanup() {
-  if [ -n "$fixture_pid" ]; then kill "$fixture_pid" 2>/dev/null || true; wait "$fixture_pid" 2>/dev/null || true; fi
+  for pid in "$disposable_pid" "$fixture_pid"; do
+    if [ -n "$pid" ]; then kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; fi
+  done
   rm -rf "$work"
 }
 trap cleanup EXIT
@@ -47,31 +52,40 @@ if [ "$mode" = offline ]; then
   exit 0
 fi
 
-RUST_LOG=warn "$target/felix-cluster" client-fixture \
-  --out "$work/fixture.json" --ca-file "$work/ca.pem" >"$work/fixture.log" 2>&1 &
-fixture_pid=$!
-for _ in $(seq 1 600); do
-  if [ -s "$work/fixture.json" ] && [ -s "$work/ca.pem" ] &&
-    python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$work/fixture.json" 2>/dev/null; then
-    break
-  fi
-  if ! kill -0 "$fixture_pid" 2>/dev/null; then
-    echo "the fixture exited during startup:" >&2
-    cat "$work/fixture.log" >&2
-    exit 1
-  fi
-  sleep 0.2
-done
-if [ ! -s "$work/fixture.json" ]; then
+# Starts `felix-cluster client-fixture` over $1 and waits until it has written
+# its fixture document and certificates. Sets `started_pid`. Returns 1 rather
+# than exiting, so a disposable fixture that fails to start fails its scenario
+# and not the whole run.
+start_fixture() {
+  local dir="$1" pid
+  mkdir -p "$dir"
+  RUST_LOG=warn "$target/felix-cluster" client-fixture \
+    --out "$dir/fixture.json" --ca-file "$dir/ca.pem" >"$dir/fixture.log" 2>&1 &
+  pid=$!
+  started_pid="$pid"
+  for _ in $(seq 1 600); do
+    if [ -s "$dir/fixture.json" ] && [ -s "$dir/ca.pem" ] &&
+      python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$dir/fixture.json" 2>/dev/null; then
+      write_env "$dir/fixture.json" "$dir/fixture.env" || return 1
+      return 0
+    fi
+    if ! kill -0 "$pid" 2>/dev/null; then
+      echo "the fixture exited during startup:" >&2
+      cat "$dir/fixture.log" >&2
+      return 1
+    fi
+    sleep 0.2
+  done
   echo "the fixture was not ready in time" >&2
-  cat "$work/fixture.log" >&2
-  exit 1
-fi
+  cat "$dir/fixture.log" >&2
+  return 1
+}
 
 # The test reads the fixture as key=value lines, which C parses without a JSON
 # library. The catalogue's fault steps ride along as fault.<id>=<json> for the
-# fault scenarios.
-python3 -I - "$work/fixture.json" >"$work/fixture.env" <<'PY'
+# fault scenarios, and kill_helper names the script that kills one broker.
+write_env() {
+  python3 -I - "$1" "$crate/tests/c/kill-broker.sh" >"$2" <<'PY'
 import json, sys
 f = json.load(open(sys.argv[1]))
 def emit(key, value):
@@ -88,10 +102,18 @@ for key in ("movable_stream", "quorum_stream", "control_url", "link_addr",
             "link_stream"):
     if f.get(key):
         emit(key, f[key])
+emit("kill_helper", sys.argv[2])
 for fault in f.get("faults", []):
     step = {k: v for k, v in fault.items() if k != "id"}
     emit(f"fault.{fault['id']}", json.dumps(step, separators=(",", ":")))
 PY
+}
+
+if ! start_fixture "$work/shared"; then
+  fixture_pid="$started_pid"
+  exit 1
+fi
+fixture_pid="$started_pid"
 
 "$work/pubsub-shared" offline
 "$work/pubsub-static" offline
@@ -99,8 +121,28 @@ PY
 # Each build appends its outcomes to its own file; they are merged below, so a
 # scenario passes only if it passed in both.
 status=0
-FELIX_CONFORMANCE_LINES="$work/lines-shared" "$work/pubsub-shared" fixture "$work/fixture.env" || status=1
-FELIX_CONFORMANCE_LINES="$work/lines-static" "$work/pubsub-static" fixture "$work/fixture.env" || status=1
+# The scenarios that kill a broker each get a fixture of their own, because a
+# cluster someone else damaged would fail every scenario after it, and the
+# shared and static builds each need an undamaged one.
+run_build() {
+  local build="$1" scenario dir
+  FELIX_CONFORMANCE_LINES="$work/lines-$build" "$work/pubsub-$build" fixture "$work/shared/fixture.env" || status=1
+  for scenario in broker_loss lost_shard; do
+    dir="$work/$scenario-$build"
+    if start_fixture "$dir"; then
+      disposable_pid="$started_pid"
+      FELIX_CONFORMANCE_LINES="$work/lines-$build" "$work/pubsub-$build" disposable "$dir/fixture.env" "$scenario" || status=1
+    else
+      status=1
+      disposable_pid="$started_pid"
+    fi
+    kill "$disposable_pid" 2>/dev/null || true
+    wait "$disposable_pid" 2>/dev/null || true
+    disposable_pid=""
+  done
+}
+run_build shared
+run_build static
 
 if [ -n "${FELIX_CONFORMANCE_RESULTS:-}" ]; then
   version="$(sed -n 's/^version = "\(.*\)"$/\1/p' "$repo/Cargo.toml" | head -n 1)"

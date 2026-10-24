@@ -56,7 +56,10 @@ pub use cache_watch::{
 pub use cancel::{
     FelixCancelToken, felix_cancel_token_cancel, felix_cancel_token_free, felix_cancel_token_new,
 };
-pub use client::{FelixClient, FelixConnectCallback, felix_client_connect, felix_client_free};
+pub use client::{
+    FelixClient, FelixConnectCallback, FelixEndpointsCallback, felix_client_connect,
+    felix_client_endpoints, felix_client_free,
+};
 pub use commit::{
     FELIX_COMMIT_DELETE, FELIX_COMMIT_ENQUEUE, FELIX_COMMIT_PUBLISH, FELIX_COMMIT_PUT,
     FelixCommitCallback, FelixCommitOp, FelixCommitOpKind, FelixConditionalCallback,
