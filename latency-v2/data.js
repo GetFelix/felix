@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792822729877,
+  "lastUpdate": 1792824562263,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -43494,6 +43494,72 @@ window.BENCHMARK_DATA = {
             "range": "460.96",
             "unit": "us",
             "extra": "trials: 5\nmedian: 322.00\nmean: 520.60\nstdev: 460.96\ncv: 88.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e9a62cefb342576be73ba68d5c2ffd03de5590d1",
+          "message": "fix(subscribe): join latest before trailing generation-start records (#1476)\n\n* fix(subscribe): join latest before trailing generation-start records (#1475)\n\nA subscribe from latest on a log that ends in generation-start records\nreported start_offset and live_offset at the raw tail. Those records are\nnever delivered, so a client reading history up to live_offset - 1 waited\nforever. Latest now reports both just past the last event, which also makes\nthe first event's skipped_before count no drop against start_offset - 1.\nRegistration and delivery are unchanged.\n\n* fix(subscribe): document drops at a latest join for clients without the skip bit\n\nA client that negotiated offsets but not FLAG_EVENT_BATCH_SKIPPED now reads\none false drop per trailing generation start at a latest join, as it already\ndid mid-stream. Count drops before the first event from start_offset, which\ncan be 0, without subtracting 1. Adds a test for both kinds of client.",
+          "timestamp": "2026-10-24T06:46:02Z",
+          "tree_id": "67026a22eebc435f95729d5fbe824d9c47aec36c",
+          "url": "https://github.com/GetFelix/felix/commit/e9a62cefb342576be73ba68d5c2ffd03de5590d1"
+        },
+        "date": 1792824558445,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 73,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 73.00\nmean: 73.20\nstdev: 0.84\ncv: 1.14%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 97,
+            "range": "1.58",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 97.00\nmean: 97.00\nstdev: 1.58\ncv: 1.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 128,
+            "range": "68.59",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 128.00\nmean: 167.60\nstdev: 68.59\ncv: 40.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 90,
+            "range": "1.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 90.00\nmean: 90.80\nstdev: 1.10\ncv: 1.21%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 234,
+            "range": "29.82",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 234.00\nmean: 231.20\nstdev: 29.82\ncv: 12.90%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 891,
+            "range": "386.70",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 891.00\nmean: 728.40\nstdev: 386.70\ncv: 53.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
