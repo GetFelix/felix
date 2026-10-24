@@ -51,22 +51,31 @@ async fn retention_waits_for_the_followers_of_a_quorum_stream() {
     // The harness publishes a probe of its own first, so the log's start is
     // read from offsets rather than payloads.
     let mut early = None;
+    let mut last_early = 0;
     for i in 0..5 {
         let offset = cluster
             .publish_via_at(&leader, STREAM, format!("early-{i}").into_bytes())
             .await
             .expect("publish while whole");
         early = early.or(offset);
+        last_early = offset.unwrap_or(last_early);
     }
     let early = early.expect("a durable publish reports its offset");
-    felix_cluster::wait::until(Duration::from_secs(20), "every copy level", || async {
-        cluster
-            .replica_report(STREAM, 0)
-            .await
-            .ok()
-            .flatten()
-            .is_some_and(|report| followers.iter().all(|f| report.caught_up.contains(f)))
-    })
+    // The leader's tail once both followers hold every early record. A report
+    // can lag the last ack, so the tail must also be past the last early
+    // offset, or the first waiting record could not be told apart.
+    let settled_tail = felix_cluster::wait::until_some(
+        Duration::from_secs(20),
+        "both followers at the leader's tail",
+        || async {
+            let report = cluster.replica_report(STREAM, 0).await.ok().flatten()?;
+            let tail = report.leader_offset.filter(|tail| *tail > last_early)?;
+            followers
+                .iter()
+                .all(|f| report.offsets.get(f) == Some(&tail))
+                .then_some(tail)
+        },
+    )
     .await
     .expect("both followers hold the early records");
 
@@ -87,8 +96,23 @@ async fn retention_waits_for_the_followers_of_a_quorum_stream() {
             // the early ones. Arriving together, the rest can start a new
             // segment there, leaving one wholly below the commit offset that
             // retention may delete, and a replay from the start then waits for
-            // the commit offset to move.
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            // the commit offset to move. Wait for the leader to have appended
+            // it before sending the rest.
+            felix_cluster::wait::until(
+                Duration::from_secs(20),
+                "the leader's tail to pass the commit offset",
+                || async {
+                    cluster
+                        .replica_report(STREAM, 0)
+                        .await
+                        .ok()
+                        .flatten()
+                        .and_then(|report| report.leader_offset)
+                        .is_some_and(|tail| tail > settled_tail)
+                },
+            )
+            .await
+            .expect("the first waiting record reached the leader");
         }
         let (tenant, namespace) = (cluster.tenant_id.clone(), cluster.namespace.clone());
         let payload = format!("{i}-{filler}").into_bytes();
