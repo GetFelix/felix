@@ -7,7 +7,7 @@
  *     are cancelled. Needs no broker.
  *
  *   pubsub fixture ADDRS TENANT NAMESPACE TOKEN CA_FILE STREAM MISSING UNAUTHORIZED_TOKEN
- *     The publish, batch and subscribe scenarios, against `felix-cluster
+ *     The publish, batch, subscribe and subscription scenarios, against `felix-cluster
  *     client-fixture`. tests/c/run.sh starts the fixture and passes its
  *     fields in.
  *
@@ -130,6 +130,49 @@ static void on_subscribe(void *user_data, FelixStatus status,
 static void on_event(void *user_data, FelixStatus status, const char *message,
                      FelixEvent *event) {
   finish(user_data, status, message, event);
+}
+
+struct item_waiter {
+  struct waiter w;
+  FelixShardItemKind kind;
+  uint32_t shard;
+  bool has_event;
+  char payload[128];
+  uint64_t offset;
+  bool has_offset;
+};
+
+static void on_item(void *user_data, FelixStatus status, const char *message,
+                    FelixShardItemKind kind, uint32_t shard,
+                    FelixEvent *event) {
+  struct item_waiter *it = user_data;
+  it->kind = kind;
+  it->shard = shard;
+  it->has_event = event != NULL;
+  if (event) {
+    const uint8_t *data = NULL;
+    size_t len = 0;
+    felix_event_payload(event, &data, &len);
+    if (len >= sizeof it->payload) {
+      len = sizeof it->payload - 1;
+    }
+    memcpy(it->payload, data, len);
+    it->payload[len] = '\0';
+    felix_event_offset(event, &it->offset, &it->has_offset);
+    felix_event_free(event);
+  }
+  finish(&it->w, status, message, NULL);
+}
+
+static void on_sharded_subscribe(void *user_data, FelixStatus status,
+                                 const char *message,
+                                 FelixShardedSubscription *sub) {
+  finish(user_data, status, message, sub);
+}
+
+static void on_offset(void *user_data, FelixStatus status, const char *message,
+                      bool has_offset, uint64_t offset) {
+  on_publish(user_data, status, message, has_offset, offset);
 }
 
 /* The callback's status. Exits the test if it does not arrive in time. */
@@ -268,6 +311,35 @@ static void offline(void) {
   CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "null subscription gave %d",
         (int)status);
 
+  status = felix_client_subscribe(NULL, "t", "n", "s", 0, FELIX_START_LATEST, 0,
+                                  NULL, on_subscribe, &w);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "null client gave %d",
+        (int)status);
+  status = felix_client_subscribe_sharded(NULL, "t", "n", "s",
+                                          FELIX_START_LATEST, 0, NULL,
+                                          on_sharded_subscribe, &w);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "null client gave %d",
+        (int)status);
+  status = felix_client_resubscribe_sharded(
+      NULL, "t", "n", "s", NULL, NULL, 0, FELIX_START_LATEST, 0, NULL,
+      on_sharded_subscribe, &w);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "null client gave %d",
+        (int)status);
+  status = felix_client_offset_for_time(NULL, "t", "n", "s", 0, 1, NULL,
+                                        on_offset, &w);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "null client gave %d",
+        (int)status);
+  status = felix_sharded_next(NULL, 0, NULL, on_item, &w);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "null sharded gave %d",
+        (int)status);
+  FelixCloseReason reason = 0;
+  status = felix_subscription_close_reason(NULL, &reason);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "null close reason gave %d",
+        (int)status);
+  status = felix_sharded_positions(NULL, NULL, NULL, 0, NULL);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "null positions gave %d",
+        (int)status);
+
   pause_ms(100);
   CHECK(w.calls == 0, "a refused call ran its callback %d time(s)", w.calls);
   CHECK(b.w.calls == 0, "a refused batch ran its callback %d time(s)",
@@ -278,6 +350,7 @@ static void offline(void) {
   /* Every free takes null, and so does cancel. */
   felix_client_free(NULL);
   felix_subscription_free(NULL);
+  felix_sharded_subscription_free(NULL);
   felix_event_free(NULL);
   felix_cancel_token_cancel(NULL);
   felix_cancel_token_free(NULL);
@@ -347,20 +420,27 @@ static FelixStatus publish(FelixClient *client, const struct fixture *f,
   return status;
 }
 
-static FelixStatus subscribe(FelixClient *client, const struct fixture *f,
-                             FelixStartKind start, uint64_t offset,
-                             FelixSubscription **out) {
+static FelixStatus subscribe_shard(FelixClient *client,
+                                   const struct fixture *f, uint32_t shard,
+                                   FelixStartKind start, uint64_t offset,
+                                   FelixSubscription **out) {
   struct waiter w;
   waiter_init(&w);
   FelixStatus status =
-      felix_client_subscribe(client, f->tenant, f->ns, f->stream, start, offset,
-                             NULL, on_subscribe, &w);
+      felix_client_subscribe(client, f->tenant, f->ns, f->stream, shard, start,
+                             offset, NULL, on_subscribe, &w);
   if (status == FELIX_STATUS_OK) {
     status = wait_for(&w, WAIT_MS);
     *out = w.handle;
   }
   waiter_destroy(&w);
   return status;
+}
+
+static FelixStatus subscribe(FelixClient *client, const struct fixture *f,
+                             FelixStartKind start, uint64_t offset,
+                             FelixSubscription **out) {
+  return subscribe_shard(client, f, 0, start, offset, out);
 }
 
 /* Reads until `count` expected payloads arrive, starting each read from the
@@ -749,6 +829,327 @@ static void batches(const struct fixture *f, const char *run) {
   felix_client_free(client);
 }
 
+/* One read of a sharded subscription, waited for. */
+static FelixStatus next_item(FelixShardedSubscription *sub, int timeout_ms,
+                             struct item_waiter *it) {
+  memset(it, 0, sizeof *it);
+  waiter_init(&it->w);
+  FelixStatus status = felix_sharded_next(sub, timeout_ms, NULL, on_item, it);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&it->w, WAIT_MS * 2);
+  }
+  waiter_destroy(&it->w);
+  return status;
+}
+
+#define MAX_SHARDS 16
+
+/* The highest offset read from each shard, whoever published it. */
+struct seen {
+  bool any[MAX_SHARDS];
+  uint64_t max_offset[MAX_SHARDS];
+};
+
+/* Reads until `want` payloads starting with `prefix` arrive, counting the
+   ones starting with `forbid` on the way. Other runs' records are skipped. */
+static bool read_prefixed(FelixShardedSubscription *sub, const char *prefix,
+                          int want, const char *forbid, int *forbidden,
+                          struct seen *seen) {
+  int found = 0;
+  while (found < want) {
+    struct item_waiter it;
+    FelixStatus status = next_item(sub, WAIT_MS, &it);
+    if (status != FELIX_STATUS_OK) {
+      CHECK(0, "sharded read after %d of %d records gave %d (%s)", found, want,
+            (int)status, it.w.message);
+      return false;
+    }
+    CHECK(it.kind == FELIX_SHARD_RECORD || !it.has_event,
+          "kind %d carried an event", (int)it.kind);
+    if (it.kind != FELIX_SHARD_RECORD) {
+      continue;
+    }
+    if (it.has_offset && it.shard < MAX_SHARDS) {
+      if (!seen->any[it.shard] || it.offset > seen->max_offset[it.shard]) {
+        seen->max_offset[it.shard] = it.offset;
+      }
+      seen->any[it.shard] = true;
+    }
+    if (strncmp(it.payload, prefix, strlen(prefix)) == 0) {
+      found++;
+    }
+    if (forbid && strncmp(it.payload, forbid, strlen(forbid)) == 0) {
+      (*forbidden)++;
+    }
+  }
+  return true;
+}
+
+static FelixStatus publish_keyed(FelixClient *client, const struct fixture *f,
+                                 const char *key, const char *payload) {
+  struct waiter w;
+  waiter_init(&w);
+  FelixStatus status = felix_client_publish(
+      client, f->tenant, f->ns, f->stream, (const uint8_t *)payload,
+      strlen(payload), (const uint8_t *)key, strlen(key),
+      FELIX_ACK_PER_MESSAGE, FELIX_DELIVERY_AT_MOST_ONCE, NULL, on_publish, &w);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&w, WAIT_MS);
+  }
+  waiter_destroy(&w);
+  return status;
+}
+
+/* subscribe on a named shard, the sharded subscription and its positions,
+   resuming from them, offset_for_time, and close reasons. */
+static void subscriptions(const struct fixture *f, const char *run) {
+  FelixClient *client = NULL;
+  REQUIRE_OK(connect_sync(f->addrs, f->tenant, f->token, f->ca_file, &client));
+
+  /* Each named shard reads back what was published to it. */
+  for (uint32_t shard = 1; shard <= 3; shard++) {
+    FelixSubscription *sub = NULL;
+    FelixStatus status = subscribe_shard(client, f, shard, FELIX_START_LATEST, 0, &sub);
+    CHECK(status == FELIX_STATUS_OK, "subscribe on shard %u gave %d",
+          (unsigned)shard, (int)status);
+    if (status != FELIX_STATUS_OK) {
+      continue;
+    }
+    FelixCloseReason reason = -1;
+    CHECK(felix_subscription_close_reason(sub, &reason) == FELIX_STATUS_OK &&
+              reason == FELIX_CLOSE_OPEN,
+          "a live subscription reported close reason %d", (int)reason);
+    uint64_t start = 0;
+    bool has_start = false;
+    CHECK(felix_subscription_start_offset(sub, &start, &has_start) ==
+              FELIX_STATUS_OK,
+          "start_offset failed");
+    CHECK(has_start, "a durable stream reported no start offset");
+
+    char payloads[2][64];
+    const char *expected[2];
+    uint8_t data[128];
+    size_t lens[2], used = 0;
+    for (int i = 0; i < 2; i++) {
+      snprintf(payloads[i], sizeof payloads[i], "c-%s-shard%u-%d", run,
+               (unsigned)shard, i);
+      expected[i] = payloads[i];
+      lens[i] = strlen(payloads[i]);
+      memcpy(data + used, payloads[i], lens[i]);
+      used += lens[i];
+    }
+    struct batch_waiter b;
+    batch_init(&b);
+    FelixStatus sent = batch_wait(
+        &b, felix_client_publish_on_shard(client, f->tenant, f->ns, f->stream,
+                                          shard, data, lens, 2,
+                                          FELIX_ACK_PER_BATCH, NULL, on_batch,
+                                          &b));
+    CHECK(sent == FELIX_STATUS_OK, "publish on shard %u gave %d (%s)",
+          (unsigned)shard, (int)sent, b.w.message);
+    waiter_destroy(&b.w);
+    uint64_t offsets[2];
+    read_expected(sub, expected, 2, offsets);
+    CHECK(offsets[0] >= start, "read at %" PRIu64 " below the start %" PRIu64,
+          offsets[0], start);
+    felix_subscription_free(sub);
+  }
+
+  /* A shard past the stream's width is refused by the broker. */
+  FelixSubscription *none = NULL;
+  FelixStatus status = subscribe_shard(client, f, 1000, FELIX_START_LATEST, 0, &none);
+  CHECK(status != FELIX_STATUS_OK && status != FELIX_STATUS_PANIC &&
+            none == NULL,
+        "a missing shard gave %d", (int)status);
+
+  /* Every shard, merged. Distinct keys spread the records. */
+  FelixShardedSubscription *sharded = NULL;
+  struct waiter w;
+  waiter_init(&w);
+  status = felix_client_subscribe_sharded(client, f->tenant, f->ns, f->stream,
+                                          FELIX_START_LATEST, 0, NULL,
+                                          on_sharded_subscribe, &w);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&w, WAIT_MS);
+    sharded = w.handle;
+  }
+  waiter_destroy(&w);
+  CHECK(status == FELIX_STATUS_OK, "sharded subscribe gave %d", (int)status);
+  if (status != FELIX_STATUS_OK) {
+    felix_client_free(client);
+    return;
+  }
+  uint32_t width = 0;
+  CHECK(felix_sharded_shards(sharded, &width) == FELIX_STATUS_OK && width > 1,
+        "the sharded subscription covers %u shards", (unsigned)width);
+
+  enum { KEYED = 8, RESUMED = 4 };
+  char prefix[64], resumed_prefix[64];
+  snprintf(prefix, sizeof prefix, "c-%s-sh-", run);
+  snprintf(resumed_prefix, sizeof resumed_prefix, "c-%s-re-", run);
+  for (int i = 0; i < KEYED; i++) {
+    char key[16], payload[96];
+    snprintf(key, sizeof key, "key-%d", i);
+    snprintf(payload, sizeof payload, "%s%d", prefix, i);
+    CHECK(publish_keyed(client, f, key, payload) == FELIX_STATUS_OK,
+          "keyed publish %d failed", i);
+  }
+  struct seen seen;
+  memset(&seen, 0, sizeof seen);
+  int forbidden = 0;
+  read_prefixed(sharded, prefix, KEYED, NULL, &forbidden, &seen);
+
+  /* Positions are what was handed out, per shard that delivered. */
+  size_t total = 0;
+  CHECK(felix_sharded_positions(sharded, NULL, NULL, 0, &total) ==
+            FELIX_STATUS_OK,
+        "counting positions failed");
+  uint32_t pos_shards[MAX_SHARDS];
+  uint64_t pos_offsets[MAX_SHARDS];
+  size_t count = 0;
+  CHECK(felix_sharded_positions(sharded, pos_shards, pos_offsets, MAX_SHARDS,
+                                &count) == FELIX_STATUS_OK &&
+            count == total && count > 0 && count <= MAX_SHARDS,
+        "positions gave %zu of %zu", count, total);
+  size_t delivered = 0;
+  for (uint32_t s = 0; s < MAX_SHARDS; s++) {
+    delivered += seen.any[s];
+  }
+  CHECK(count == delivered, "%zu positions for %zu shards that delivered",
+        count, delivered);
+  for (size_t i = 0; i < count && i < MAX_SHARDS; i++) {
+    CHECK(pos_shards[i] < MAX_SHARDS && seen.any[pos_shards[i]] &&
+              pos_offsets[i] == seen.max_offset[pos_shards[i]],
+          "shard %u position %" PRIu64 " is not the last offset read",
+          (unsigned)pos_shards[i], pos_offsets[i]);
+  }
+
+  /* A read in flight can be cancelled, and loses nothing. */
+  struct item_waiter it;
+  memset(&it, 0, sizeof it);
+  waiter_init(&it.w);
+  FelixCancelToken *cancel = felix_cancel_token_new();
+  REQUIRE_OK(felix_sharded_next(sharded, -1, cancel, on_item, &it));
+  CHECK(felix_sharded_next(sharded, -1, NULL, on_item, &it) ==
+            FELIX_STATUS_INVALID_ARGUMENT,
+        "a second pending sharded read was accepted");
+  size_t during = 0;
+  CHECK(felix_sharded_positions(sharded, NULL, NULL, 0, &during) ==
+                FELIX_STATUS_OK &&
+            during == total,
+        "positions are not readable while a read is pending");
+  pause_ms(50);
+  felix_cancel_token_cancel(cancel);
+  status = wait_for(&it.w, WAIT_MS);
+  CHECK(status == FELIX_STATUS_CANCELLED, "a cancelled sharded read gave %d",
+        (int)status);
+  felix_cancel_token_free(cancel);
+  waiter_destroy(&it.w);
+  CHECK(next_item(sharded, 100, &it) == FELIX_STATUS_TIMEOUT,
+        "an idle sharded read did not time out");
+
+  /* Resume from the positions: only later records arrive. */
+  for (int i = 0; i < RESUMED; i++) {
+    char key[16], payload[96];
+    snprintf(key, sizeof key, "key-%d", i);
+    snprintf(payload, sizeof payload, "%s%d", resumed_prefix, i);
+    CHECK(publish_keyed(client, f, key, payload) == FELIX_STATUS_OK,
+          "keyed publish %d failed", i);
+  }
+  felix_sharded_subscription_free(sharded);
+  sharded = NULL;
+
+  waiter_init(&w);
+  status = felix_client_resubscribe_sharded(
+      client, f->tenant, f->ns, f->stream, pos_shards, pos_offsets, count,
+      FELIX_START_EARLIEST, 0, NULL, on_sharded_subscribe, &w);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&w, WAIT_MS);
+    sharded = w.handle;
+  }
+  waiter_destroy(&w);
+  CHECK(status == FELIX_STATUS_OK, "resubscribe gave %d", (int)status);
+  if (sharded) {
+    memset(&seen, 0, sizeof seen);
+    forbidden = 0;
+    read_prefixed(sharded, resumed_prefix, RESUMED, prefix, &forbidden, &seen);
+    /* Shards that resumed at EARLIEST replay history, which can still be
+       queued. Drain it, still counting replays, so the pending read below
+       waits on an empty feed. */
+    for (int drained = 0; drained < 200; drained++) {
+      struct item_waiter extra;
+      if (next_item(sharded, 100, &extra) != FELIX_STATUS_OK) {
+        break;
+      }
+      if (extra.kind == FELIX_SHARD_RECORD &&
+          strncmp(extra.payload, prefix, strlen(prefix)) == 0) {
+        forbidden++;
+      }
+    }
+    CHECK(forbidden == 0, "a resumed subscription replayed %d records",
+          forbidden);
+
+    /* Freeing with a read pending completes it as cancelled. */
+    memset(&it, 0, sizeof it);
+    waiter_init(&it.w);
+    REQUIRE_OK(felix_sharded_next(sharded, -1, NULL, on_item, &it));
+    pause_ms(50);
+    felix_sharded_subscription_free(sharded);
+    status = wait_for(&it.w, WAIT_MS);
+    CHECK(status == FELIX_STATUS_CANCELLED,
+          "a sharded read pending at free gave %d", (int)status);
+    waiter_destroy(&it.w);
+  }
+
+  /* The same shard twice is refused before anything starts. */
+  uint32_t twice[] = {1, 1};
+  uint64_t at[] = {5, 6};
+  waiter_init(&w);
+  status = felix_client_resubscribe_sharded(
+      client, f->tenant, f->ns, f->stream, twice, at, 2, FELIX_START_LATEST, 0,
+      NULL, on_sharded_subscribe, &w);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "a duplicate shard gave %d",
+        (int)status);
+  pause_ms(100);
+  CHECK(w.calls == 0, "a refused resubscribe ran its callback");
+  waiter_destroy(&w);
+
+  /* A record exists by now: an hour ago has an offset, an hour ahead none. */
+  uint64_t now = (uint64_t)time(NULL) * 1000000ULL;
+  uint64_t hour = 3600ULL * 1000000ULL;
+  for (int ahead = 0; ahead < 2; ahead++) {
+    waiter_init(&w);
+    status = felix_client_offset_for_time(
+        client, f->tenant, f->ns, f->stream, 0, ahead ? now + hour : now - hour,
+        NULL, on_offset, &w);
+    if (status == FELIX_STATUS_OK) {
+      status = wait_for(&w, WAIT_MS);
+    }
+    CHECK(status == FELIX_STATUS_OK, "offset_for_time gave %d (%s)",
+          (int)status, w.message);
+    CHECK(status != FELIX_STATUS_OK || w.has_offset == !ahead,
+          "offset_for_time %s: has_offset was %d", ahead ? "ahead" : "behind",
+          (int)w.has_offset);
+    waiter_destroy(&w);
+  }
+
+  /* A cancelled lookup says so. */
+  waiter_init(&w);
+  cancel = felix_cancel_token_new();
+  felix_cancel_token_cancel(cancel);
+  status = felix_client_offset_for_time(client, f->tenant, f->ns, f->stream, 0,
+                                        now, cancel, on_offset, &w);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&w, WAIT_MS);
+  }
+  felix_cancel_token_free(cancel);
+  CHECK(status == FELIX_STATUS_CANCELLED, "a cancelled lookup gave %d",
+        (int)status);
+  waiter_destroy(&w);
+
+  felix_client_free(client);
+}
+
 int main(int argc, char **argv) {
   if (argc == 2 && strcmp(argv[1], "offline") == 0) {
     offline();
@@ -759,6 +1160,7 @@ int main(int argc, char **argv) {
     snprintf(run, sizeof run, "%ld", (long)time(NULL));
     pubsub(&f, run);
     batches(&f, run);
+    subscriptions(&f, run);
   } else {
     fprintf(stderr, "usage: %s offline | fixture ADDRS TENANT NAMESPACE TOKEN "
                     "CA_FILE STREAM MISSING UNAUTHORIZED_TOKEN\n",
