@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792827496666,
+  "lastUpdate": 1792851863921,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -43626,6 +43626,72 @@ window.BENCHMARK_DATA = {
             "range": "493.92",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1038.00\nmean: 1108.00\nstdev: 493.92\ncv: 44.58%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "368ca784101adac691c136c7792e253935a4e3d4",
+          "message": "fix(replication): count a busy follower's late answer toward the quorum mark (#1479) (#1481)\n\n* fix(replication): count a busy follower's late answer toward the quorum mark (#1479)\n\nA pass counts a follower only on an answer it got itself. An exchange that a\npass handed to the driver could end with an answer the mark needed but no\ncursor movement: a level follower asked again for its position. merge()\nreported \"not moved\", so no pass ran, and with every publisher waiting on\nthe mark no append came to start one. The mark waited for the replication\ntick (2 s), which matches the ~1.86 s p999 seen on every generator after\nfinalizing majority_ack.\n\nTwo changes:\n- An answer that names more than the mark counts starts a pass even when it\n  moved no cursor.\n- A pass waiting for a majority counts a busy follower's answer the driver\n  hands it, instead of only being cut short by it. Otherwise two followers\n  answering a pass behind each other keep cutting each pass short.\n\nAdds felix_broker_publish_quorum_wait_seconds and replica-state write\ncount/duration metrics.\n\nSpec-Unaffected: changes when the driver runs a pass and which answers a pass sees; what a mark may count (answers from the copy the cursor describes, at the pass's generation and incarnation) is unchanged.\n\n* fix(replication): restart a shard on an answer its pass took but could not count (#1479)\n\nAn answer handed to a running pass no longer reaches merge(), so the pass\nreports what merge would have: the follower moved or halted, or it answered\nfor more than the mark counts. An answer from a node dropped from the set is\nskipped, as put_back skips it.\n\nSpec-Unaffected: driver scheduling only; what a mark may count is unchanged.",
+          "timestamp": "2026-10-24T14:19:54Z",
+          "tree_id": "b3091c1f2f7b170ab5ffb934313086e065d94a2d",
+          "url": "https://github.com/GetFelix/felix/commit/368ca784101adac691c136c7792e253935a4e3d4"
+        },
+        "date": 1792851858513,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 184,
+            "range": "2.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 184.00\nmean: 185.60\nstdev: 2.30\ncv: 1.24%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 248,
+            "range": "17.40",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 248.00\nmean: 254.20\nstdev: 17.40\ncv: 6.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 321,
+            "range": "20.96",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 321.00\nmean: 330.00\nstdev: 20.96\ncv: 6.35%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 223,
+            "range": "1.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 223.00\nmean: 222.40\nstdev: 1.52\ncv: 0.68%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 457,
+            "range": "16.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 457.00\nmean: 456.40\nstdev: 16.52\ncv: 3.62%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 639,
+            "range": "163.19",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 639.00\nmean: 717.00\nstdev: 163.19\ncv: 22.76%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
