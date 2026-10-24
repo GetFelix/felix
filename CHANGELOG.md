@@ -11,6 +11,195 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-23
+
+0.6.0, the build the release performance runs measured. The previews below
+describe most of the series; this section lists what changed since
+0.6.0-preview.9. A durable stream now acknowledges a publish only after it
+commits, a new cluster finalizes its fleet features at its first broker
+registration, `ClusterClient` publishes batches straight to each shard's
+leader, and brokers forwarding `Quorum` publishes to each other no longer
+deadlock their replication. The publish ingress path got a deeper default
+queue, one wake per freed slot, and waits that no longer stop a control stream
+from reading.
+
+**Upgrade notes.**
+
+- Acked publishes on durable streams now wait for the commit and cost a write's
+  latency. `FELIX_ACK_ON_COMMIT=0` restores acknowledging on queue.
+- `FELIX_BROKER_PUB_QUEUE_DEPTH` defaults to 512 (was 64) and
+  `FELIX_PUB_SHARD_STREAMS` to 4 (was 16).
+- A Postgres control plane runs migration `0035` on start. Under Raft, the
+  recreated-stream fix needs every member at metadata level 17 and the record
+  of deleted names needs level 18.
+- Creating a stream or cache under a deleted name returns 409 until
+  `stream_incarnations` (or `cache_incarnations`) is finalized.
+- On a new cluster, start every broker with the same `FELIX_QUORUM_READS` and
+  `FELIX_INTERNAL_FENCE`.
+
+### Security
+- Updated `rustls-webpki` to 0.103.16 and `webpki-roots` and `webpki-root-certs` to 1.0.10 for RUSTSEC-2026-0382 and
+  RUSTSEC-2026-0383, in the workspace and every out-of-workspace lockfile.
+
+### Added
+- `ClusterClient::offset_for_time` looks up the offset for a time on one shard of a durable stream, asking whichever broker leads the shard and following `NotLeader` redirects, as `ClusterClient::read` does.
+- `ClusterClient` publishes batches owner-direct: `publish_batch`, `publish_batch_keyed`, and
+  `publish_records`/`publish_records_at_least_once`, which split records by shard and send each
+  shard's ordered batch to its leader, reporting failures per shard in a `BatchReport`. Before, only
+  single records were leader-direct, so batched publishing on a cluster was forwarded by a
+  non-leader. `felix-loadgen ingest --cluster` uses it, and a loadgen publisher now survives a
+  broker loss and reports `reconnects`, `failed_sends` and per-shard acked counts.
+- `ClusterClient` now looks up shard leaders from the cluster (`FEATURE_SHARD_OWNERS`) on a stream's
+  first publish, every few seconds, and after a publish finds one wrong, so the first batch and
+  publishes that ask for no ack go leader-direct. Before, a leader was learned only from the ack of
+  a forwarded batch, so fire-and-forget publishing was forwarded for as long as it ran. A cached
+  leader learned under no stream width is no longer trusted for a keyed publish.
+
+### Changed
+- Behaviour change: a durable stream now acknowledges a publish after it commits by default
+  (#1421). Before, the broker answered when the publish was queued, so a broker crash or a lapsed
+  lease could lose a record the client had been told was stored. Committed means written to the
+  stream's log under `FELIX_DURABLE_FSYNC_MODE`: with the default `periodic` mode the bytes are in
+  the log file (they survive a broker crash, and a machine crash can lose the last 250 ms), and
+  `on_commit` flushes to the device first. In-memory streams still answer when the publish is
+  queued. Acks now carry their offset on durable streams, and acked publishes cost a write's
+  latency. `FELIX_ACK_ON_COMMIT=0` (or `ack_on_commit: false`) restores the old behaviour for every
+  stream; `FELIX_ACK_ON_COMMIT=1` makes in-memory streams wait too. The wire is unchanged, so a
+  client that predates commit-ack negotiation works as before.
+- `FELIX_ACK_ON_COMMIT` now reads `1/true/yes/on` and `0/false/no/off` (trimmed, any case). Any other
+  value keeps the default and logs a warning instead of turning commit acks off. A stream with more
+  than 1024 answers owed now refuses an acked publish before queueing it, so a retry cannot write
+  it twice.
+- The control plane refuses with 409 to create a stream or cache under a name that was deleted on
+  the cluster until `stream_incarnations` (or `cache_incarnations`) is finalized, and the message
+  says to finalize first (#1447). Without an incarnation, a stream created again opened the
+  deleted stream's logs on every broker, so a recreated `Quorum` stream's followers held old
+  committed records that the new leader's writes disagreed with, and they halted as diverged.
+  Every store records deleted names (Postgres migration 0035; on Raft once every member is at
+  metadata level 18), and they are part of the exported state.
+- A new cluster finalizes `stream_incarnations` and `cache_incarnations` at its first broker
+  registration, so a stream or cache deleted and created again there always starts empty on every
+  broker (#1447). The control plane treats a cluster as new when no stream or cache was ever
+  created and no broker has registered twice, and finalizes through the same checks as an
+  operator's finalize, so a broker without the features keeps them off or is refused afterwards.
+  A cluster upgraded from an older release still waits for the operator to finalize.
+- The one-command `compose.yaml` stack now runs its broker with `FELIX_DURABLE_STORAGE_DIR`, so
+  `orders` is a durable stream, consumer groups work, and cache watches work. It also creates the
+  caches `config` and `stats`, and its development tokens can use caches, counters and groups.
+  CI exercises these commands through the stack.
+- A new cluster finalizes every fleet feature its brokers report at its first
+  broker registration, not only the incarnations: `generation_start`,
+  `majority_ack`, `lease_free_reads`, `fenced_caches`, `jump_hash_routing`,
+  `atomic_commit`, `group_cursor_dependencies`, `stream_incarnations` and
+  `cache_incarnations`, in that order. A fresh RF=3 cluster used to acknowledge
+  `Quorum` writes on the control plane's replica report until an operator
+  finalized `majority_ack`; it now acknowledges on its followers from the
+  first stream. `publisher_principal` stays an operator step, since it grows
+  every record by its publisher's id. Each finalize goes through the
+  operator's checks, so a feature some broker does not report stays off with
+  the features that need it, and under the Raft backend nothing is finalized
+  until every member runs this release; a finalize held back that way is
+  retried in the background for up to ten minutes. Start every broker with the same
+  `FELIX_QUORUM_READS` and `FELIX_INTERNAL_FENCE`: a broker that lacks a
+  feature the first one finalized is refused, and the refusal now names
+  `FELIX_INTERNAL_FENCE` as well as `FELIX_QUORUM_READS`. An upgraded cluster
+  still waits for the operator.
+
+### Fixed
+- Placement now spreads each stream's and cache's leaders evenly across brokers, not only the
+  cluster-wide total (#1429). A 12-shard stream on three brokers could be placed 0/0/12 beside
+  other streams that already filled two brokers to their share, and rebalancing left it at 1/1/10
+  because the totals were even, so the stream's writes ran on one broker. New shards now go to
+  the broker leading fewest of their stream first, a broker leading two or more of a stream's
+  shards more than another hands one over, and a move for the cluster-wide balance never makes a
+  stream's spread wider. The totals are now evened to within one, where before a broker was only
+  moved off when it led more than its rounded-up share. Existing clusters even out after the upgrade, one move at a time under
+  the usual move limits.
+- `finish()` and broker connects no longer hang a client forever when a broker stalls (#1433).
+  `Publisher::finish` and `ClusterClient::finish` give up after `finish_timeout`
+  (`FELIX_FINISH_TIMEOUT_MS`, default 60 s) and abort the streams, and each connect, including a
+  cluster reconnect, fails after `connect_timeout` (`FELIX_CONNECT_TIMEOUT_MS`, default 10 s).
+  A cluster reconnect now dials outside the client lock and within three times `connect_timeout`,
+  `ClusterClient::finish` finishes brokers concurrently, and the topology, shard-count and subscribe
+  exchanges give up after `connect_timeout`.
+- A fenced shard move whose leader is live but never reports drained no longer holds the shard
+  without writes forever (#1434). After `FELIX_SHARD_FENCE_TIMEOUT_MS` (two minutes by default,
+  `shard_fence_timeout_ms` in the config file) placement gives the move up the way an operator's
+  cancel does: the leader serves again at a new generation, holding every write it accepted, and
+  the move counts in `felix_shard_moves_timed_out_total`. The shard's next move waits the
+  timeout, doubling with each give-up in a row up to an hour, so a leader that cannot drain does
+  not cut its shard's writes every few minutes; repeated give-ups log a warning. `0` keeps the old
+  behaviour.
+- A stream deleted and created again under the same name without incarnations no longer leaves a
+  zombie leader behind (#1435). The delete now puts an `unassigned` change for each shard on the
+  shard change log, so a broker leading one lets it go. The recreated stream's shards start at the
+  change seq instead of generation 0, because brokers keep an unincarnated stream's logs and the
+  generations those logs accepted: a broker that had taken a shard by a move refused to lead or
+  follow the new shard at generation 0. Under Raft both need every member at metadata level 17. A
+  broker also takes a shard's first assignment over whatever it still holds, which covers control
+  planes that don't record the unassignments yet.
+- Brokers forwarding durable `Quorum` publishes to each other no longer deadlock their
+  replication (#1458). Replication shared peer streams with forwarded publishes, and a peer
+  answered each stream one request at a time, so a forward waiting on its quorum held up the
+  replication that quorum needed until every wait timed out. Replication now has its own peer
+  streams and in-flight allowance, and a broker answers forwarded publishes and cache operations
+  as they finish rather than in arrival order. Both ends are fixed independently, so a mixed
+  cluster improves as soon as either side of a link is upgraded.
+- A forwarded publish now waits `FELIX_PUBLISH_QUORUM_TIMEOUT_MS` + 1 s for the owner's answer
+  (was `FELIX_INTERNAL_REQUEST_TIMEOUT_MS`, 5 s), so a slow commit returns the owner's result
+  instead of an indeterminate one. The publish ack wait floor rises to match: the larger of
+  `FELIX_ACK_WAIT_TIMEOUT_MS` and `FELIX_PUBLISH_QUORUM_TIMEOUT_MS` + 1.5 s (6.5 s by default).
+- A peer stream whose requests stopped being answered no longer stays wedged for the life of
+  the connection (#1458). A requester replaces a stream after two timeouts in a row
+  (`felix_broker_peer_lanes_replaced_total`) and offers the new `LANE_RENEWAL` capability, and to
+  such a requester a broker drops a stream once a request on it has run past
+  `FELIX_INTERNAL_REQUEST_TIMEOUT_MS`. Streams from an older requester are never dropped. After a forwarding storm, peer requests and
+  quorum waits on an affected link kept timing out for more than ten minutes with no load.
+- A broker serves at most `FELIX_INTERNAL_MAX_SERVED_FORWARDS` (4096) forwarded publishes and
+  cache operations at once, and 256 per peer stream; past that a forward is refused as
+  `Overload`, which nothing applied and the forwarder may retry (#1458).
+- `cargo bench --workspace --no-run` builds again: the broker's unit tests that
+  slow the fsync now get `felix-storage`'s `fault-injection` feature in a
+  release build too.
+
+### Performance
+- Per-tenant publish counters and the subscriber-queue metrics are resolved once and reused
+  instead of looked up in the metrics registry on every publish (#1406). On a broker publishing
+  small batches this removed about 3% of CPU spent hashing and registering metric keys.
+  `felix_broker_ingress_queue_depth` is now refreshed when the depth has moved by 16 or more
+  since the last refresh and when it reaches zero, so while jobs are queued it can differ from
+  the true depth by up to 15; an emptied queue reads zero.
+- A freed publish-queue slot now admits one waiting publisher, in arrival order, instead of waking
+  every publisher blocked on a full queue (#1406). With `pub_ingress_wait` on and thousands of
+  publishes in flight, each pop used to wake all of them to contend for one slot.
+- The default `FELIX_BROKER_PUB_QUEUE_DEPTH` is now 512 (was 64), so the publish queue holds
+  2048 jobs with the default executors instead of 256 (#1406). With many pipelining publishers the
+  queue filled first, and a full queue stops the publishing connection from being read. With 64
+  publisher connections and spread keys, 256 B unbatched acked publishes went from 95 to 163 MB/s
+  (p50 12.6 to 7.5 ms), and 4 KiB batch-64 p99 fell from about 460-600 ms to about 360-380 ms;
+  throughput at large batches is unchanged (about 4.7 GB/s). Set the variable to go back to a
+  shallower queue.
+- `FELIX_PUB_SHARD_STREAMS` (`publish_shard_streams`) now defaults to 4 instead of 16 (#1406). With
+  keys spread over 48 shards, 256 B acked publishes measured about 125 MB/s at 4 and about 97 MB/s
+  at 16. Behaviour change: only the first four shards a client publishes to on a broker (first come,
+  across all streams) get a dedicated stream; later shards use the shared pool, where a stalled
+  shard can hold up the other pooled shards. Raise the variable to the total number of shards the
+  client publishes to on a broker for full isolation.
+- A publish that finds the broker's publish queue full no longer stops its
+  control stream from reading (#1416). Under `FELIX_PUB_INGRESS_WAIT=1`, and for
+  acked publishes under `ack_on_commit`, the publish waits in line off the read
+  loop, so publishes behind it to shards with room still go through. A stream
+  stops reading only once it has 1024 publishes waiting or its byte budget is
+  spent. Order per shard, the queue's first-come admission and the wait timeout
+  are unchanged.
+- The load generator's `ingest` scenario now stops issuing at the deadline, waits for outstanding
+  acks, and calls `finish()` on every publisher instead of dropping the connections. Publishes
+  still queued at the broker used to be cancelled, so published bytes exceeded accepted bytes by a
+  few batches per connection. The drain is reported as `finish_ms` in `LOADGEN_JSON` (with
+  `finish_failed`) and is excluded from `duration_s` and the throughput figures. Acked runs no
+  longer remove in-flight sends from `published` at the deadline; only sends still unanswered
+  after the 60 s drain bound count as `cut_off_records`.
+
 ## [0.6.0-preview.9] - 2026-10-17
 
 The ninth preview of 0.6.0, mostly about what a crash does to a broker's
