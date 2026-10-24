@@ -11,6 +11,96 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-24
+
+0.6.1 fixes a stall in `Quorum` publishes. A fresh 0.6.0 cluster finalizes
+`majority_ack`, and under load a `Quorum` stream on three or more brokers could
+then stall for up to the replication tick (2 s by default) before its publishes
+were acknowledged (#1479). Upgrading is recommended for anyone running `Quorum`
+on three or more brokers. The release also closes a placement race when a
+stream's consistency changes (#1253), makes a forward refuse a stream recreated
+under the same name (#1324), and brings back the small-batch fire-and-forget
+throughput that 0.6.0 listed as a known issue (#1469).
+
+**Upgrading.**
+
+- Under a Raft control plane, the consistency-change fence (#1253) takes effect
+  once every member runs 0.6.1 (metadata level 19). Until then a change of
+  consistency fences nothing, as in 0.6.0.
+- A Postgres control plane runs migration `0036` on start.
+- The forward incarnation check (#1324) applies between brokers that both run
+  0.6.1, which offer the `FORWARD_INCARNATION` peer capability. A forward to a
+  0.6.0 broker is sent as before and checked by generation alone.
+
+### Added
+- A write can name its shard instead of hashing a key (#1465). `publish`, `publish_batch`,
+  `publish_idempotent`, `publish_if`, `commit` and `state_get` take an optional `shard`,
+  negotiated as `FEATURE_EXPLICIT_SHARD` (bit `0x8` of the extended feature word). A shard the
+  stream does not have is refused with `invalid_request` and nothing is written. The Rust client
+  adds `publish_on_shard` and `publish_batch_on_shard` (`Publisher`, `ClusterClient`), and
+  `commit_on_shard`, `commit_if_on_shard`, `publish_if_on_shard` and `state_get_on_shard`
+  (`Client`, `ClusterClient`). `ClusterClient` sends each to the named shard's owner or leader.
+  They fail without sending against a broker that did not advertise the bit. Caches and counters
+  take no shard.
+- Metrics for what a `Quorum` acknowledgement waits on (#1479):
+  `felix_broker_publish_quorum_wait_seconds`, how long a publish waited for its
+  majority, and `felix_storage_replica_state_writes_total` with
+  `felix_storage_replica_state_write_duration_seconds`, the replica-state writes
+  a follower makes for commit offsets.
+
+### Fixed
+- Changing a stream's consistency or durability now fences placement passes
+  that read the stream before the change (#1253). A pass that read a `Quorum`
+  stream could otherwise replace its leader on its followers' word after the
+  stream became `Leader` and the leader was serving on its lease, leaving two
+  brokers serving. Postgres gets migration 0036; under Raft it applies once
+  every member is at metadata level 19.
+- A forwarded publish or cache op now names the incarnation of the stream or
+  cache its route was for, and the owner refuses one for another incarnation
+  (#1324). Before, a forward routed by a deleted stream's assignment could land
+  in a stream recreated at the same generation, which a control-plane restore
+  makes possible. Sent only to brokers that offer `FORWARD_INCARNATION`.
+- A leader that crashed under `Periodic` or `None` no longer answers its
+  successor's fence just because the routes now show a set of two (#1336). The
+  set can shrink from three to two under the same leader, and a record the
+  three acknowledged may be on neither copy. It answers only when the
+  generation it led had those same two copies and its own last record is from
+  that generation.
+- A subscribe from `latest` on a durable stream whose log ends in generation-start
+  records now reports `start_offset` and `live_offset` just past the last event,
+  not at the raw tail (#1475). Those records are never delivered, so a client that
+  read history up to `live_offset - 1` after joining at `latest` waited forever,
+  which on a 0.6.0 cluster is any Quorum shard with no write since its leader
+  started. A client that negotiated `FLAG_EVENT_BATCH_SKIPPED` counts no drop at
+  the join. A client with offsets but without it now reads one false drop per
+  trailing generation start at a `latest` join, as it already did mid-stream.
+  Count drops before the first event as `offset - start_offset - skipped_before`:
+  `start_offset` can be 0.
+- A `Quorum` stream on three or more brokers no longer stalls for up to the
+  replication tick (2 s by default) under load (#1479). A follower's answer that
+  arrived after the pass that asked for it moved no cursor, so no pass counted
+  it, and with every publisher waiting on the mark nothing else started one.
+  Such an answer now starts a pass, and a pass waiting for a majority counts a
+  busy follower's answer itself instead of only giving up on it. The stall was
+  most visible once `majority_ack` is finalized: 256 B durable publishes at 64
+  in flight fell 38% with a p999 of 1.86 s.
+
+### Performance
+- A replicated durable shard no longer writes its replica state on the
+  acknowledgement path under `fsync_mode = on_commit` (#1456). The commit offset
+  is written behind, and one write in flight carries every advance made while it
+  runs, so a `Quorum` ack costs one data fsync per replica instead of about
+  three. After a crash the commit offset can read back one write behind; the
+  accepted generation is still on disk before a fence is answered.
+- Fire-and-forget publishes of small batches under `pub_ingress_wait` are back to the throughput the
+  0.6.0 performance runs measured (#1469). A control stream now parks at most 16 unacked publishes while it
+  waits for queue room; past that it waits inline. With the acked cap of 1024, a busy broker's
+  streams parked until the process-wide byte budget ran out, and every publish then waited on
+  that budget: 256 B batch-64 fire-and-forget lost 13%.
+  The trade-off: a fire-and-forget stream to one full shard stops reading after 16 frames
+  instead of after the byte budget runs out, and with the default stream window it can then
+  hold the connection's flow-control credit and stall the connection's other streams.
+
 ## [0.6.0] - 2026-10-23
 
 0.6.0, the build the release performance runs measured. The previews below
@@ -41,7 +131,7 @@ from reading.
 
 - With `pub_ingress_wait` on, fire-and-forget batches of 256 B messages run about
   13% slower than on the build the performance runs measured (#1469). Larger
-  messages and acked publishes measured the same as that build.
+  messages and acked publishes measured the same as that build. Fixed in 0.6.1.
 
 ### Security
 - Updated `rustls-webpki` to 0.103.16 and `webpki-roots` and `webpki-root-certs` to 1.0.10 for RUSTSEC-2026-0382 and
