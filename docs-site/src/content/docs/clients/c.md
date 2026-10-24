@@ -455,6 +455,12 @@ returned, and they do not wait for each other's answers.
   handle either complete with `FELIX_STATUS_CLOSED` or return it directly. `felix_producer_free` drops what is
   left without waiting.
 
+## Brokers the client knows
+
+`felix_client_endpoints` reports the `host:port` of every broker the client
+would try, including the ones it discovered from its seeds. The strings are
+valid while the callback runs.
+
 ## Status codes
 
 | Code | Value | Meaning | Retry? |
@@ -510,7 +516,10 @@ The sharded group (a group composed over every shard), the group `*_stream`
 admin calls, and the record publisher and timestamp fields are not in the ABI.
 Use one group per shard with `felix_client_stream_shards`.
 
-The C test, `crates/sdk/felix-capi/tests/c/pubsub.c`, runs against the
-conformance fixture in CI. It does not report a claimed run of the
-[conformance suite](/clients/overview/#the-conformance-suite), which gates
-Python and TypeScript.
+## Conformance
+
+The C test, `crates/sdk/felix-capi/tests/c/pubsub.c`, is a claimed run of the
+[conformance suite](/clients/overview/#the-conformance-suite), like Python's and
+TypeScript's. It runs every scenario in both the shared and the static build
+against the fixture, fault injection and broker loss included, and CI fails
+unless every required scenario passes in both.

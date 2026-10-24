@@ -166,6 +166,15 @@ typedef void (*FelixConnectCallback)(void *user_data,
                                      const char *message,
                                      struct FelixClient *client);
 
+// Called once when `felix_client_endpoints` finishes. On `FELIX_STATUS_OK`,
+// `addrs` holds `count` NUL-terminated `host:port` strings. The array and the
+// strings are valid only while the callback runs; both are null on failure.
+typedef void (*FelixEndpointsCallback)(void *user_data,
+                                       FelixStatus status,
+                                       const char *message,
+                                       const char *const *addrs,
+                                       size_t count);
+
 // What one operation of a commit does.
 typedef int32_t FelixCommitOpKind;
 
@@ -934,6 +943,23 @@ FelixStatus felix_client_connect(const char *addrs,
 // `client` is null or a pointer from a connect callback that has not been
 // freed, and no other thread is using it.
 void felix_client_free(struct FelixClient *client);
+
+// List everywhere this client would try to reach the cluster: the seeds it
+// was given and the brokers it learned from them. A client given one seed
+// that reports more than one address has discovered the cluster.
+//
+// `cancel` is null or a token that stops the call, which then completes with
+// `FELIX_STATUS_CANCELLED`. `callback` runs once, unless this returns
+// something other than `FELIX_STATUS_OK`.
+//
+// # Safety
+//
+// `client` is a live client, `cancel` is null or a live token, and
+// `callback` is safe to call with `user_data` from any thread.
+FelixStatus felix_client_endpoints(const struct FelixClient *client,
+                                   const struct FelixCancelToken *cancel,
+                                   FelixEndpointsCallback callback,
+                                   void *user_data);
 
 // Commit `ops` on the shard `entity_key` routes to, as one record: every
 // reader sees all of it or none of it.
