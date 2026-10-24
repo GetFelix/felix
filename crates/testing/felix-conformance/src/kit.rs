@@ -369,6 +369,11 @@ pub struct Fixture {
     /// discard, redrive); `token` only consumes them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group_operator_token: Option<String>,
+    /// True when the brokers store each record's publisher, so a client that
+    /// asks for it (`ClientConfig::publishers`) gets one back. Absent from a
+    /// fixture whose brokers do not, and a suite then expects none.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub records_publishers: bool,
     /// The catalogue's fault scenarios, so a suite that cannot read TOML gets
     /// the steps without hard-coding them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
