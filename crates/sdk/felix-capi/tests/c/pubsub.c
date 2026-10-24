@@ -988,7 +988,7 @@ static void subscriptions(const struct fixture *f, const char *run) {
   snprintf(prefix, sizeof prefix, "c-%s-sh-", run);
   snprintf(resumed_prefix, sizeof resumed_prefix, "c-%s-re-", run);
   for (int i = 0; i < KEYED; i++) {
-    char key[16], payload[64];
+    char key[16], payload[96];
     snprintf(key, sizeof key, "key-%d", i);
     snprintf(payload, sizeof payload, "%s%d", prefix, i);
     CHECK(publish_keyed(client, f, key, payload) == FELIX_STATUS_OK,
@@ -1050,7 +1050,7 @@ static void subscriptions(const struct fixture *f, const char *run) {
 
   /* Resume from the positions: only later records arrive. */
   for (int i = 0; i < RESUMED; i++) {
-    char key[16], payload[64];
+    char key[16], payload[96];
     snprintf(key, sizeof key, "key-%d", i);
     snprintf(payload, sizeof payload, "%s%d", resumed_prefix, i);
     CHECK(publish_keyed(client, f, key, payload) == FELIX_STATUS_OK,
