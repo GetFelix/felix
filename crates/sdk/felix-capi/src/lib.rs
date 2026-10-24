@@ -32,6 +32,7 @@ mod completion;
 mod error;
 mod event;
 mod groups;
+mod producer;
 mod publish;
 mod sharded;
 mod status;
@@ -76,6 +77,11 @@ pub use groups::{
     felix_client_group_describe, felix_client_group_discard, felix_client_group_extend,
     felix_client_group_nack, felix_client_group_poll, felix_client_group_redrive,
     felix_client_group_seek, felix_client_stream_shards,
+};
+pub use producer::{
+    FelixProducer, FelixProducerCallback, felix_client_idempotent_producer,
+    felix_producer_abandon_in_doubt, felix_producer_close, felix_producer_free, felix_producer_id,
+    felix_producer_id_for, felix_producer_publish, felix_producer_publish_batches,
 };
 pub use publish::{
     FELIX_ACK_NONE, FELIX_ACK_PER_BATCH, FELIX_ACK_PER_MESSAGE, FELIX_DELIVERY_AT_LEAST_ONCE,

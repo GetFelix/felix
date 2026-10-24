@@ -200,7 +200,7 @@ C# is next, then Go. Each is gated on passing the conformance suite.
 The C# SDK will live in this repository and, like Python and TypeScript, wrap
 the Rust client rather than reimplement it: it binds through P/Invoke to
 `crates/sdk/felix-capi`, a C ABI over the client. That crate exists now with connect,
-keyed, batched and named-shard publishes, subscribes to one shard or every shard, consumer groups, caches, counters and cache watches, and atomic commits, conditional publishes and state reads, asynchronous through callbacks so a `Task` needs no
+keyed, batched and named-shard publishes, subscribes to one shard or every shard, consumer groups, caches, counters and cache watches, atomic commits, conditional publishes and state reads, and idempotent producers, asynchronous through callbacks so a `Task` needs no
 waiting thread, a generated header, and a C test that runs
 against the conformance fixture in CI. Its README describes the calling rules.
 It is brought up to the Rust client's full surface before the C# work starts,

@@ -30,6 +30,13 @@ typedef struct FelixClient FelixClient;
 // `felix_event_free`.
 typedef struct FelixEvent FelixEvent;
 
+// A producer whose publishes are numbered, so a batch the caller never got
+// an answer for can be sent again without landing twice.
+//
+// Calls on one producer are sent in the order they were made. It must not be
+// freed while another thread is calling it.
+typedef struct FelixProducer FelixProducer;
+
 // A live subscription to every shard of a stream, merged into one feed.
 //
 // Order holds within a shard and nowhere across shards. Losing a shard is
@@ -317,12 +324,13 @@ typedef void (*FelixShardsCallback)(void *user_data,
                                     const char *message,
                                     uint32_t shards);
 
-// What the broker must have done before a publish completes.
-typedef int32_t FelixAckMode;
-
-// What a publish does when the connection is lost after the record may have
-// been written.
-typedef int32_t FelixDelivery;
+// Called once when `felix_client_idempotent_producer` finishes. On
+// `FELIX_STATUS_OK`, `producer` is a new producer the callee owns and frees
+// with `felix_producer_free`; otherwise it is null.
+typedef void (*FelixProducerCallback)(void *user_data,
+                                      FelixStatus status,
+                                      const char *message,
+                                      struct FelixProducer *producer);
 
 // Called once when `felix_client_publish` finishes. On `FELIX_STATUS_OK`,
 // `has_offset` says whether the broker reported the record's log offset,
@@ -332,6 +340,13 @@ typedef void (*FelixPublishCallback)(void *user_data,
                                      const char *message,
                                      bool has_offset,
                                      uint64_t offset);
+
+// What the broker must have done before a publish completes.
+typedef int32_t FelixAckMode;
+
+// What a publish does when the connection is lost after the record may have
+// been written.
+typedef int32_t FelixDelivery;
 
 // How one record of a batch fared.
 typedef struct FelixRecordResult {
@@ -1420,6 +1435,190 @@ FelixStatus felix_client_stream_shards(const struct FelixClient *client,
                                        const struct FelixCancelToken *cancel,
                                        FelixShardsCallback callback,
                                        void *user_data);
+
+// Ask the broker for a producer id and make a producer under it.
+//
+// A producer sends its batches under that id, numbered per shard, so the
+// leader can tell a batch it already holds from a new one. Read the
+// guarantees on `felix_producer_publish` before relying on them.
+//
+// `callback` runs once, unless this returns something other than
+// `FELIX_STATUS_OK`. A cancelled call never hands out a producer; an id the
+// broker had already assigned is simply never used.
+//
+// # Safety
+//
+// `client` is a live client, `cancel` is null or a live token, and
+// `callback` is safe to call with `user_data` from any thread.
+FelixStatus felix_client_idempotent_producer(const struct FelixClient *client,
+                                             const struct FelixCancelToken *cancel,
+                                             FelixProducerCallback callback,
+                                             void *user_data);
+
+// Publish a batch of `count` records (at least one) exactly once.
+//
+// The payloads lie end to end in `data`, the i-th `lens[i]` bytes long, and
+// are copied before this returns. The batch takes one sequence whatever its
+// size. A null `key` sends it to shard 0; otherwise to the shard the key
+// routes to, which needs a broker that reports the stream's shards. The
+// producer numbers each shard separately, so keys that share a shard share
+// its sequence.
+//
+// `callback` runs once the leader has acknowledged the batch, and
+// `has_offset` and `offset` report the batch's first record (not set when
+// the leader reported none). It can fail in a way that leaves the batch in
+// doubt: any status but a refusal. The sequence has not advanced then and
+// the batch may have landed. **To settle it, call again with the same
+// payloads and key**: the leader answers a batch it holds without
+// appending it, so it cannot land twice. A different batch is refused
+// without being sent until then. A cancel after the batch was handed to the
+// producer reports `FELIX_STATUS_OUTCOME_UNKNOWN`; the batch is still sent,
+// so settle it the same way and do not treat it as lost.
+//
+// A refusal by the broker (for example, the shard no longer knows this
+// producer) ends the producer on that stream: every later call on it fails
+// with the same reason, and its message says why. Start a new producer, or
+// call `felix_producer_abandon_in_doubt`, after deciding whether the last
+// batch landed.
+//
+// A closed producer completes with `FELIX_STATUS_CLOSED`.
+//
+// # Safety
+//
+// `producer` is a live producer and the strings are NUL-terminated. `lens`
+// is valid for `count` lengths and `data` for their sum; `key` is null or
+// valid for `key_len` bytes. `cancel` is null or a live token, and
+// `callback` is safe to call with `user_data` from any thread.
+FelixStatus felix_producer_publish(const struct FelixProducer *producer,
+                                   const char *tenant_id,
+                                   const char *ns,
+                                   const char *stream,
+                                   const uint8_t *data,
+                                   const size_t *lens,
+                                   size_t count,
+                                   const uint8_t *key,
+                                   size_t key_len,
+                                   const struct FelixCancelToken *cancel,
+                                   FelixPublishCallback callback,
+                                   void *user_data);
+
+// Publish several batches exactly once each, under consecutive sequences.
+//
+// The `count` payloads lie end to end in `data` as for
+// `felix_producer_publish`, and `batch_sizes` splits them in order into
+// `batch_count` batches. The sizes must each be at least one and add up to
+// `count`. All go to shard 0. Against a broker that pipelines publishes the
+// batches are in flight together.
+//
+// On a failure the batches already acknowledged stay acknowledged and the
+// rest are in doubt together. Call again with the same batches to settle
+// them: only the unacknowledged ones are sent. The call may also start with
+// those batches and carry more after them. Anything else is refused without
+// sending. The cancel and refusal rules of `felix_producer_publish` apply.
+//
+// # Safety
+//
+// As for `felix_producer_publish`, and `batch_sizes` is valid for
+// `batch_count` values.
+FelixStatus felix_producer_publish_batches(const struct FelixProducer *producer,
+                                           const char *tenant_id,
+                                           const char *ns,
+                                           const char *stream,
+                                           const uint8_t *data,
+                                           const size_t *lens,
+                                           size_t count,
+                                           const size_t *batch_sizes,
+                                           size_t batch_count,
+                                           const struct FelixCancelToken *cancel,
+                                           FelixDoneCallback callback,
+                                           void *user_data);
+
+// Give up on the stream's batches in doubt and number the stream from zero
+// under a fresh producer id.
+//
+// For a stream that cannot settle them: one deleted and created again at
+// another width while a batch was in doubt is refused every re-send.
+// **A batch given up may land twice**: it may have been appended before, and
+// sent again it is a new record under the fresh id. Every sequence on the
+// stream starts again, not only the ones in doubt.
+//
+// # Safety
+//
+// `producer` is a live producer, the strings are NUL-terminated, `cancel` is
+// null or a live token, and `callback` is safe to call with `user_data` from
+// any thread.
+FelixStatus felix_producer_abandon_in_doubt(const struct FelixProducer *producer,
+                                            const char *tenant_id,
+                                            const char *ns,
+                                            const char *stream,
+                                            const struct FelixCancelToken *cancel,
+                                            FelixDoneCallback callback,
+                                            void *user_data);
+
+// The producer id the broker assigned, which its batches go out under
+// unless a stream has been given one of its own.
+//
+// `FELIX_STATUS_CLOSED` once the producer has been closed.
+//
+// # Safety
+//
+// `producer` is a live producer and `out` is writable.
+FelixStatus felix_producer_id(const struct FelixProducer *producer, uint64_t *out);
+
+// The id a stream's batches go out under. The producer's own id, unless the
+// stream was created again at another width or given up with
+// `felix_producer_abandon_in_doubt`: it is then numbered afresh under an id
+// of its own.
+//
+// `FELIX_STATUS_CLOSED` once the producer has been closed.
+//
+// # Safety
+//
+// `producer` is a live producer, the strings are NUL-terminated and `out` is
+// writable.
+FelixStatus felix_producer_id_for(const struct FelixProducer *producer,
+                                  const char *tenant_id,
+                                  const char *ns,
+                                  const char *stream,
+                                  uint64_t *out);
+
+// Wait for every publish already handed to the producer to be answered,
+// then stop it.
+//
+// The producer leaves the handle as soon as this returns `FELIX_STATUS_OK`:
+// later calls on the handle complete, or return, `FELIX_STATUS_CLOSED`. A
+// negative `timeout_ms` waits as long as it takes. Otherwise a producer
+// that has not finished by then is stopped where it is, with a failure
+// status: nothing more is sent or re-sent, and a batch it had already sent
+// may or may not land.
+//
+// A cancelled close completes with `FELIX_STATUS_CANCELLED`. The producer
+// is closed all the same and its task finishes on its own. The handle is
+// still freed with `felix_producer_free`.
+//
+// # Safety
+//
+// `producer` is a live producer, `cancel` is null or a live token, and
+// `callback` is safe to call with `user_data` from any thread.
+FelixStatus felix_producer_close(const struct FelixProducer *producer,
+                                 int64_t timeout_ms,
+                                 const struct FelixCancelToken *cancel,
+                                 FelixDoneCallback callback,
+                                 void *user_data);
+
+// Free a producer. Null is ignored.
+//
+// This does not wait for anything: calls pending on the handle complete
+// with `FELIX_STATUS_CANCELLED` (`FELIX_STATUS_OUTCOME_UNKNOWN` for a send
+// that may already be out), possibly after this returns, and batches
+// already handed to the producer may still be sent. To wait for them, call
+// `felix_producer_close` first.
+//
+// # Safety
+//
+// `producer` is null or a pointer from a producer callback that has not been
+// freed, and no other thread is using it.
+void felix_producer_free(struct FelixProducer *producer);
 
 // Publish one record.
 //

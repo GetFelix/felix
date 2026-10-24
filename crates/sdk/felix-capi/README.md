@@ -40,14 +40,15 @@ shard and `felix_client_subscribe_sharded` for all of them),
 `felix_subscription_next`, `felix_sharded_next` and
 `felix_client_offset_for_time`, the group calls (`felix_client_group_*` and
 `felix_client_stream_shards`), and the cache calls (`felix_client_cache_*`,
-`felix_client_counter_*`, `felix_client_watch_cache*` and `felix_cache_watch_*`), and the commit calls (`felix_client_commit*`,
-`felix_client_publish_if*` and `felix_client_state_get*`). Each takes a callback, a `void *user_data`
+`felix_client_counter_*`, `felix_client_watch_cache*` and `felix_cache_watch_*`), the commit calls (`felix_client_commit*`,
+`felix_client_publish_if*` and `felix_client_state_get*`), and the producer calls
+(`felix_client_idempotent_producer` and `felix_producer_*`). Each takes a callback, a `void *user_data`
 passed back to it untouched, and an optional `FelixCancelToken`.
 
 The rules are the same for every function:
 
 - Handles (`FelixClient`, `FelixSubscription`,
-  `FelixShardedSubscription`, `FelixCacheWatch`, `FelixEvent`, `FelixCancelToken`) are opaque. Everything the library hands out has a
+  `FelixShardedSubscription`, `FelixCacheWatch`, `FelixProducer`, `FelixEvent`, `FelixCancelToken`) are opaque. Everything the library hands out has a
   `*_free` function, which accepts null. A handle may be used from several
   threads, but never freed while another thread is using it, a callback
   included.
@@ -288,6 +289,41 @@ publish, enqueue or put. Everything is copied before the call returns.
 For a C# binding, build the `FelixCommitOp` array in pinned memory for the call
 only, since the library copies it, and copy the state's value inside the
 callback.
+
+### Idempotent producers
+
+`felix_client_idempotent_producer` asks the broker for a producer id and hands
+back a `FelixProducer`. Its batches are numbered per shard and the shard's leader
+answers a number it already holds without appending again, so a batch that got
+no answer can be sent again and cannot land twice, across a reconnection or a
+leader change. Calls on one producer are sent in the order they were made.
+
+- `felix_producer_publish` sends a batch of one or more records as one
+  sequence, to shard 0 or, with a `key`, to the key's shard. It takes the
+  payload arrays of `felix_client_publish_batch` and reports the batch's first
+  offset. `felix_producer_publish_batches` takes several batches in one call,
+  split by `batch_sizes`, each at least one record and summing to the record
+  count, and reports only success.
+- A failure other than a broker refusal leaves the batch in doubt: the
+  sequence has not advanced and the batch may have landed. Call again with the
+  same payloads and key to settle it; a different batch is refused without
+  being sent until then. A cancel after the batch was handed over reports
+  `FELIX_STATUS_OUTCOME_UNKNOWN` and the batch is still sent, so settle it the
+  same way rather than treating it as lost.
+- A refusal (for example, the shard forgot the producer) ends the producer on
+  that stream, and its message says why. `felix_producer_abandon_in_doubt`
+  numbers the stream afresh under a new id, and a batch given up that way may
+  land twice.
+- `felix_producer_id` and `felix_producer_id_for` read the id a producer, or one
+  stream of it, sends under.
+- `felix_producer_close` waits for what was handed over, then stops the
+  producer; a non-negative `timeout_ms` bounds the wait. After it, async calls
+  on the handle complete with `FELIX_STATUS_CLOSED` and the id calls return it.
+  `felix_producer_free` drops what is left without waiting; use close to drain.
+
+For a C# binding, keep one producer per logical writer and queue the calls
+through it instead of racing several, since they are sent in call order anyway.
+Retry a failed publish with the same buffers rather than building a new batch.
 
 ### Why callbacks, and why pull
 

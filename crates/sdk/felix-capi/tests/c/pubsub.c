@@ -99,6 +99,16 @@ static void on_publish(void *user_data, FelixStatus status,
   finish(w, status, message, NULL);
 }
 
+static void on_producer(void *user_data, FelixStatus status,
+                        const char *message, FelixProducer *producer) {
+  finish(user_data, status, message, producer);
+}
+
+static void on_producer_done(void *user_data, FelixStatus status,
+                             const char *message) {
+  finish(user_data, status, message, NULL);
+}
+
 /* Up to MAX_RECORDS per batch are kept; the scenarios send fewer. */
 #define MAX_RECORDS 8
 
@@ -339,6 +349,32 @@ static void offline(void) {
   status = felix_sharded_positions(NULL, NULL, NULL, 0, NULL);
   CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "null positions gave %d",
         (int)status);
+  status = felix_client_idempotent_producer(NULL, NULL, on_producer, &w);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "null producer client gave %d",
+        (int)status);
+  status = felix_producer_publish(NULL, "t", "n", "s", NULL, NULL, 1, NULL, 0,
+                                  NULL, on_publish, &w);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "null producer gave %d",
+        (int)status);
+  status = felix_producer_publish_batches(NULL, "t", "n", "s", NULL, NULL, 1,
+                                          NULL, 1, NULL, on_producer_done, &w);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "null producer batches gave %d",
+        (int)status);
+  status = felix_producer_abandon_in_doubt(NULL, "t", "n", "s", NULL,
+                                           on_producer_done, &w);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "null producer abandon gave %d",
+        (int)status);
+  status = felix_producer_close(NULL, -1, NULL, on_producer_done, &w);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "null producer close gave %d",
+        (int)status);
+  uint64_t producer_id = 0;
+  status = felix_producer_id(NULL, &producer_id);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "null producer id gave %d",
+        (int)status);
+  status = felix_producer_id_for(NULL, "t", "n", "s", &producer_id);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "null producer id_for gave %d",
+        (int)status);
+  felix_producer_free(NULL);
 
   pause_ms(100);
   CHECK(w.calls == 0, "a refused call ran its callback %d time(s)", w.calls);
@@ -2477,6 +2513,193 @@ static void commits(const struct fixture *f, const char *run) {
   felix_client_free(client);
 }
 
+/* ---- idempotent producers ---------------------------------------------- */
+
+/* `count` payloads, each under 64 bytes, laid end to end. */
+struct laid {
+  char data[8 * 64];
+  size_t lens[8];
+  size_t count;
+};
+
+static void lay(struct laid *l, const char *run, const char *tag, size_t count) {
+  size_t at = 0;
+  l->count = count;
+  for (size_t i = 0; i < count; i++) {
+    int n = snprintf(l->data + at, 64, "pr-%s-%s-%zu", run, tag, i);
+    l->lens[i] = (size_t)n;
+    at += (size_t)n;
+  }
+}
+
+static FelixStatus producer_publish(FelixProducer *p, const struct fixture *f,
+                                    const struct laid *l, const char *key,
+                                    struct waiter *w) {
+  FelixStatus status = felix_producer_publish(
+      p, f->tenant, f->ns, f->stream, (const uint8_t *)l->data, l->lens,
+      l->count, (const uint8_t *)key, key ? strlen(key) : 0, NULL, on_publish,
+      w);
+  return status == FELIX_STATUS_OK ? wait_for(w, WAIT_MS) : status;
+}
+
+static void producers(const struct fixture *f, const char *run) {
+  FelixClient *client = NULL;
+  REQUIRE_OK(connect_sync(f->addrs, f->tenant, f->token, f->ca_file, &client));
+
+  struct waiter made;
+  waiter_init(&made);
+  FelixStatus status =
+      felix_client_idempotent_producer(client, NULL, on_producer, &made);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&made, WAIT_MS);
+  }
+  FelixProducer *p = made.handle;
+  if (status != FELIX_STATUS_OK || !p) {
+    CHECK(0, "making a producer gave %d: %s", (int)status, made.message);
+    waiter_destroy(&made);
+    felix_client_free(client);
+    return;
+  }
+  waiter_destroy(&made);
+
+  uint64_t id = 0, stream_id = 0;
+  CHECK(felix_producer_id(p, &id) == FELIX_STATUS_OK && id != 0,
+        "producer id %" PRIu64, id);
+  CHECK(felix_producer_id_for(p, f->tenant, f->ns, f->stream, &stream_id) ==
+                FELIX_STATUS_OK &&
+            stream_id == id,
+        "id_for gave %" PRIu64 " against %" PRIu64, stream_id, id);
+
+  /* Single-record publishes get increasing offsets, when the broker reports
+     them. */
+  bool seen = false;
+  uint64_t previous = 0;
+  for (int i = 0; i < 3; i++) {
+    struct laid l;
+    char tag[16];
+    snprintf(tag, sizeof tag, "one%d", i);
+    lay(&l, run, tag, 1);
+    struct waiter w;
+    waiter_init(&w);
+    status = producer_publish(p, f, &l, NULL, &w);
+    CHECK(status == FELIX_STATUS_OK, "publish %d gave %d: %s", i, (int)status,
+          w.message);
+    if (status == FELIX_STATUS_OK && w.has_offset) {
+      CHECK(!seen || w.offset > previous,
+            "offset %" PRIu64 " did not follow %" PRIu64, w.offset, previous);
+      seen = true;
+      previous = w.offset;
+    }
+    waiter_destroy(&w);
+  }
+
+  /* A keyed batch of two. */
+  {
+    struct laid l;
+    char key[64];
+    snprintf(key, sizeof key, "pk-%s", run);
+    lay(&l, run, "keyed", 2);
+    struct waiter w;
+    waiter_init(&w);
+    status = producer_publish(p, f, &l, key, &w);
+    CHECK(status == FELIX_STATUS_OK, "keyed batch gave %d: %s", (int)status,
+          w.message);
+    waiter_destroy(&w);
+  }
+
+  /* Two batches in one call: sizes 2 and 1. */
+  {
+    struct laid l;
+    lay(&l, run, "many", 3);
+    size_t sizes[2] = {2, 1};
+    struct waiter w;
+    waiter_init(&w);
+    status = felix_producer_publish_batches(
+        p, f->tenant, f->ns, f->stream, (const uint8_t *)l.data, l.lens, 3,
+        sizes, 2, NULL, on_producer_done, &w);
+    if (status == FELIX_STATUS_OK) {
+      status = wait_for(&w, WAIT_MS);
+    }
+    CHECK(status == FELIX_STATUS_OK, "publish_batches gave %d: %s",
+          (int)status, w.message);
+    /* Sizes that do not add up are refused at the call. */
+    size_t bad[2] = {2, 2};
+    status = felix_producer_publish_batches(
+        p, f->tenant, f->ns, f->stream, (const uint8_t *)l.data, l.lens, 3,
+        bad, 2, NULL, on_producer_done, &w);
+    CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "uneven sizes gave %d",
+          (int)status);
+    size_t zero[2] = {3, 0};
+    status = felix_producer_publish_batches(
+        p, f->tenant, f->ns, f->stream, (const uint8_t *)l.data, l.lens, 3,
+        zero, 2, NULL, on_producer_done, &w);
+    CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "a zero size gave %d",
+          (int)status);
+    status = felix_producer_publish(p, f->tenant, f->ns, f->stream, NULL, NULL,
+                                    0, NULL, 0, NULL, on_publish, &w);
+    CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "an empty publish gave %d",
+          (int)status);
+    waiter_destroy(&w);
+  }
+
+  /* Nothing is in doubt, so giving up is a no-op that succeeds. */
+  {
+    struct waiter w;
+    waiter_init(&w);
+    status = felix_producer_abandon_in_doubt(p, f->tenant, f->ns, f->stream,
+                                             NULL, on_producer_done, &w);
+    if (status == FELIX_STATUS_OK) {
+      status = wait_for(&w, WAIT_MS);
+    }
+    CHECK(status == FELIX_STATUS_OK, "abandon_in_doubt gave %d: %s",
+          (int)status, w.message);
+    waiter_destroy(&w);
+  }
+
+  /* Closing waits for what was sent; the handle then reports CLOSED. */
+  {
+    struct waiter w;
+    waiter_init(&w);
+    status = felix_producer_close(p, 5000, NULL, on_producer_done, &w);
+    if (status == FELIX_STATUS_OK) {
+      status = wait_for(&w, WAIT_MS);
+    }
+    CHECK(status == FELIX_STATUS_OK, "close gave %d: %s", (int)status,
+          w.message);
+    waiter_destroy(&w);
+
+    struct laid l;
+    lay(&l, run, "late", 1);
+    waiter_init(&w);
+    status = producer_publish(p, f, &l, NULL, &w);
+    CHECK(status == FELIX_STATUS_CLOSED, "publish after close gave %d",
+          (int)status);
+    waiter_destroy(&w);
+    CHECK(felix_producer_id(p, &id) == FELIX_STATUS_CLOSED,
+          "id after close was not CLOSED");
+    waiter_init(&w);
+    status = felix_producer_close(p, -1, NULL, on_producer_done, &w);
+    if (status == FELIX_STATUS_OK) {
+      status = wait_for(&w, WAIT_MS);
+    }
+    CHECK(status == FELIX_STATUS_CLOSED, "a second close gave %d", (int)status);
+    waiter_destroy(&w);
+  }
+  felix_producer_free(p);
+
+  /* A producer that is freed without being closed. */
+  waiter_init(&made);
+  status = felix_client_idempotent_producer(client, NULL, on_producer, &made);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&made, WAIT_MS);
+  }
+  CHECK(status == FELIX_STATUS_OK && made.handle, "second producer gave %d",
+        (int)status);
+  felix_producer_free(made.handle);
+  waiter_destroy(&made);
+  felix_client_free(client);
+}
+
 int main(int argc, char **argv) {
   if (argc == 2 && strcmp(argv[1], "offline") == 0) {
     offline();
@@ -2496,6 +2719,7 @@ int main(int argc, char **argv) {
     groups(&f, run);
     caches(&f, run);
     commits(&f, run);
+    producers(&f, run);
   } else {
     fprintf(stderr, "usage: %s offline | fixture ADDRS TENANT NAMESPACE TOKEN "
                     "CA_FILE STREAM MISSING UNAUTHORIZED_TOKEN "
