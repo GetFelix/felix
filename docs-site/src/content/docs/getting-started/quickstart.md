@@ -228,8 +228,7 @@ broker's certificate. Where each comes from:
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use felix_client::{Client, ClientConfig, quic_client_config};
-use felix_client::AckMode;
+use felix_client::{AckMode, ClientConfig, ClusterClient, quic_client_config};
 use rustls::pki_types::CertificateDer;
 use rustls::pki_types::pem::PemObject;
 
@@ -246,8 +245,9 @@ async fn main() -> anyhow::Result<()> {
     config.auth_tenant_id = Some("t1".to_string());
     config.auth_token = Some("<felix token>".to_string());
 
-    let addr: SocketAddr = "127.0.0.1:5000".parse()?;
-    let client = Client::connect(addr, "localhost", config).await?;
+    // One broker is enough; the client discovers the rest of a cluster.
+    let seeds: Vec<SocketAddr> = vec!["127.0.0.1:5000".parse()?];
+    let client = Arc::new(ClusterClient::connect(&seeds, "localhost", config).await?);
 
     let mut subscription = client.subscribe("t1", "ns", "orders").await?;
     tokio::spawn(async move {
@@ -256,9 +256,8 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    let publisher = client.publisher().await?;
     for i in 0..10 {
-        publisher
+        client
             .publish("t1", "ns", "orders", format!("order {i}").into_bytes(), AckMode::PerMessage)
             .await?;
     }
@@ -268,8 +267,11 @@ async fn main() -> anyhow::Result<()> {
 
 The stream must already exist in the control plane. `felix-cluster up`
 creates `orders` in tenant `t1`, namespace `ns`. A subscription is served only
-by the broker that owns the stream's shard, so connect to the owner that `up`
-prints. A publish can go through any broker.
+by the broker that owns the stream's shard, and a publish is cheapest sent
+straight to it. `ClusterClient` finds that broker and follows it when it
+changes, so any broker `up` prints works as the seed. Use `ClusterClient` for
+a single broker too; the plain `Client` is a single-connection building block
+for tools (see [Which client to use](/clients/rust/#which-client-to-use)).
 
 ### Cache
 

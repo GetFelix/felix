@@ -151,11 +151,12 @@ A native service skips the gateway. It subscribes with a Felix client and a
 token narrowed to the scope it serves:
 
 ```rust
-use felix_client::{Client, ClientConfig};
+use std::sync::Arc;
+use felix_client::{ClientConfig, ClusterClient};
 
 let quinn = quinn::ClientConfig::with_platform_verifier();
-let client = Client::connect("127.0.0.1:5000".parse()?, "localhost",
-    ClientConfig::optimized_defaults(quinn)).await?;
+let client = Arc::new(ClusterClient::connect(&["127.0.0.1:5000".parse()?], "localhost",
+    ClientConfig::optimized_defaults(quinn)).await?);
 let mut subscription = client.subscribe("acme", "default", "app.ops.lobby").await?;
 while let Some(event) = subscription.next_event().await? {
     handle(event.offset, &event.payload);
