@@ -198,14 +198,19 @@ def chart_throughput(g, out, done):
     ]
     fig, ax = plt.subplots(figsize=(9, 4.4))
     width = 0.2
+    # Each size group is centred on the shapes it has, so a shape that was not
+    # measured leaves no gap.
+    have = {(i, j): stat(vals(g, f"m-{kind}-p{p}-b{b}-ack-spread", "payload"))
+            for i, (kind, b, _, _, _) in enumerate(series) for j, (p, _) in enumerate(sizes)}
+    slot = {}
+    for j in range(len(sizes)):
+        present = [i for i in range(len(series)) if have[(i, j)]]
+        for k, i in enumerate(present):
+            slot[(i, j)] = j + (k - (len(present) - 1) / 2) * width
     any_bar = False
     for i, (kind, b, label, color, hatch) in enumerate(series):
-        xs, ss = [], []
-        for j, (p, _) in enumerate(sizes):
-            s = stat(vals(g, f"m-{kind}-p{p}-b{b}-ack-spread", "payload"))
-            if s:
-                xs.append(j + (i - 1.5) * width)
-                ss.append(s)
+        xs = [slot[(i, j)] for j in range(len(sizes)) if have[(i, j)]]
+        ss = [have[(i, j)] for j in range(len(sizes)) if have[(i, j)]]
         if not ss:
             continue
         any_bar = True
@@ -219,7 +224,6 @@ def chart_throughput(g, out, done):
         return skip("throughput", "no m-* cells")
     ax.axhline(1414, color=TEXT, lw=1, ls=":")
     ax.text(-0.48, 1414 * 1.08, "disk with an fsync per write (fio)", ha="left", va="bottom", fontsize=8)
-    ax.text(2.0 + 0.5 * width, 40, "batch 1\nnot run", ha="center", fontsize=8, color=TEXT)
     ax.set_yscale("log")
     ax.set_ylim(30, 60000)
     ax.yaxis.set_major_formatter(FuncFormatter(mbs))
