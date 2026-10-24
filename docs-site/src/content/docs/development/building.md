@@ -232,9 +232,6 @@ The payload a companion workflow can rely on:
 `on: repository_dispatch: types: [felix-release]` and reads
 `github.event.client_payload`.
 
-To add a companion, append its repo name to `.github/companions.txt`, install
-the release bot on it (below), and add the workflow that handles the event.
-
 The job needs a GitHub App, so that the dispatch and the bump PRs are not tied
 to a person and the PRs trigger CI. Without the two secrets the job only leaves
 a notice. An org owner sets it up once:
@@ -249,6 +246,53 @@ a notice. An org owner sets it up once:
 5. Add the App ID as the org secret `FELIX_RELEASE_BOT_APP_ID` and the key as
    `FELIX_RELEASE_BOT_PRIVATE_KEY`, shared with felix and the companion repos.
    The companions use the same App to open their PRs.
+
+#### The receiving side
+
+Each companion handles the event with the same reusable workflow,
+`.github/workflows/felix-bump.yml` in
+[GetFelix/.github](https://github.com/GetFelix/.github). The companion keeps
+three files:
+
+- `.felix-version`, a `key=value` manifest: `version` (the Felix version the
+  repo is on), `cargo_dirs` and `cargo_crates` (where to regenerate
+  `Cargo.lock`, and which Felix crates must end up locked at the new version),
+  `npm_dirs` (where to regenerate `package-lock.json`) and `prerelease` (`true`
+  to also take prereleases).
+- `.github/felix-bump.sh <old> <new>`, which edits every place the repo pins the
+  Felix version: Cargo and npm dependencies, image tags in compose files and
+  workflows, install lines in the README and docs, and the Felix entry in the
+  CHANGELOG's unreleased section. It fails if a pin it expects is missing, so a
+  moved pin breaks the bump instead of being skipped.
+- `.github/workflows/felix-release.yml`, which runs on the `felix-release`
+  dispatch and on `workflow_dispatch`, and calls the reusable workflow with
+  `secrets: inherit`.
+
+The reusable workflow mints a release bot token scoped to the calling repo and
+reads `.felix-version`. It stops with a notice if the repo is already on that
+version, if the version is older, or if it is a prerelease the repo has not
+opted into. Otherwise it runs the bump script, regenerates the lockfiles
+(retrying while crates.io and npm catch up with the release), and pushes
+`felix/bump-<version>` as the bot. It opens or updates the PR
+`chore: use Felix <version>` with that version's CHANGELOG section, enables
+squash auto-merge, and closes any older bump PR still open. The repo's required
+checks decide whether the bump merges.
+
+Running the companion's workflow by hand with `test_pr: true` opens a draft PR
+titled `TEST: felix bump bot` that only touches `.felix-version`. It checks
+that the bot can open PRs there and that CI starts on them. Close it without
+merging.
+
+To add a companion:
+
+1. Add `.felix-version`, `.github/felix-bump.sh` and
+   `.github/workflows/felix-release.yml`, copied from an existing companion such
+   as felix-gateway. Write the bump script's pins from the repo's last manual
+   bump.
+2. Turn on "Allow auto-merge" in the repo's settings.
+3. Install the release bot on the repo, and share the two
+   `FELIX_RELEASE_BOT_*` org secrets with it.
+4. Append the repo's name to `.github/companions.txt` here.
 
 ### crates.io credentials
 
