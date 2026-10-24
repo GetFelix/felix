@@ -122,6 +122,7 @@ export default defineConfig({
             { label: 'Rust', slug: 'clients/rust' },
             { label: 'Python', slug: 'clients/python' },
             { label: 'TypeScript', slug: 'clients/typescript' },
+            { label: 'C', slug: 'clients/c' },
             { label: 'Browsers (felix-gateway)', slug: 'clients/browsers' },
           ],
         },
