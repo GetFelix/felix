@@ -961,6 +961,7 @@ impl ReplicaHandler {
                 log_kind,
                 &log,
                 generation,
+                sender,
                 request.shard.incarnation,
             )
             .await
@@ -1218,7 +1219,9 @@ impl ReplicaHandler {
     ///
     /// Judged on the shard's own log, which a group or counter log follows.
     /// On an unclean start a copy whose ballot names this broker is given up
-    /// on disk here, so a later restart still refuses. Not in a set of two.
+    /// on disk here, so a later restart still refuses. Not when a set of two
+    /// acknowledged what it may have lost (`acknowledged_by_two`).
+    #[allow(clippy::too_many_arguments)]
     async fn refuse_short_copy(
         &self,
         correlation_id: u64,
@@ -1226,6 +1229,7 @@ impl ReplicaHandler {
         log_kind: felix_broker::LogKind,
         log: &felix_broker::StreamLog,
         generation: u64,
+        sender: Option<&str>,
         sent: Option<u64>,
     ) -> Option<InternalMessage> {
         let opened;
@@ -1253,19 +1257,9 @@ impl ReplicaHandler {
         if !log.gave_up() && !led_before {
             return None;
         }
-        // In a set of two the other copy holds every record a majority of the
-        // two acknowledged, so this broker's vote cannot stand in for one it
-        // lost, and refusing would leave the shard with no majority at all.
-        // Any other size is refused: the set that acknowledged may not be the
-        // one the routes show now, as during a replacement.
-        let set_size = self.router.snapshot().get(key).map(|route| {
-            1 + route
-                .replicas
-                .iter()
-                .filter(|replica| replica.node_id != route.leader.node_id)
-                .count()
-        });
-        if set_size == Some(2) {
+        // Refusing the other copy of a set of two would leave no majority at
+        // all, and it holds every record the two acknowledged.
+        if self.acknowledged_by_two(key, log, sender).await {
             return None;
         }
         if led_before
@@ -1296,6 +1290,57 @@ impl ReplicaHandler {
              records, and no newer leader has shipped to it since"
                 .to_string(),
         ))
+    }
+
+    /// Whether every record `log` may have lost in a crash was acknowledged
+    /// by a set of two whose other member is `sender`, so `sender` holds it.
+    ///
+    /// Read from what acknowledged, not from the routes now: placement can
+    /// shrink a set from three to two at a new generation under the same
+    /// leader, and a record the three acknowledged may be on neither of the
+    /// two (#1336). The copy's last record must be from the generation it
+    /// accepted, which puts everything it lost in that generation. The
+    /// failover that followed it names that generation's set
+    /// (`fence_storage_ids`, from the assignment just before it), and that
+    /// set must be the two the routes show.
+    async fn acknowledged_by_two(
+        &self,
+        key: &felix_router::ShardKey,
+        log: &felix_broker::StreamLog,
+        sender: Option<&str>,
+    ) -> bool {
+        let Some(sender) = sender else {
+            return false;
+        };
+        let accepted = log.accepted_generation();
+        let Ok(log_end) = log.tail_offset().await else {
+            return false;
+        };
+        if last_generation(&log.generations(), log_end) != accepted {
+            return false;
+        }
+        let snapshot = self.router.snapshot();
+        let Some(route) = snapshot.get(key) else {
+            return false;
+        };
+        let Some(acknowledged) = route.fence_storage_ids.as_deref() else {
+            return false;
+        };
+        if accepted.checked_add(1) != Some(route.generation) {
+            return false;
+        }
+        let routed: std::collections::BTreeSet<&str> = std::iter::once(&route.leader)
+            .chain(&route.replicas)
+            .map(|node| node.node_id.as_str())
+            .collect();
+        let local = self.router.local_node_id();
+        routed.len() == 2
+            && routed.contains(local)
+            && routed.contains(sender)
+            && acknowledged
+                .keys()
+                .map(String::as_str)
+                .eq(routed.iter().copied())
     }
 
     /// Refuse a fence for a copy that holds no promise on disk unless the
