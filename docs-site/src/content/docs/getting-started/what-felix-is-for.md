@@ -196,27 +196,22 @@ These are shipped and measured. If you need one of these, Felix is usable now.
 
 ### Measured performance
 
-Single host, loopback, release build, TLS 1.3 on, defaults, zero delivery drops:
+The current numbers are on [v0.6.0 Performance](/features/v060-performance/),
+measured on Azure over a real network with TLS, with every condition stated.
+In short, on one 8 vCPU broker with local NVMe:
 
-- **Latency (batch = 1, per-message ack, JSON framing):** p50 109–136 µs,
-  p99 138–176 µs at fanout 1 across 0 B–4 KiB payloads; p50 236–269 µs,
-  p99 278–399 µs at fanout 10.
+- 3.6 GB/s of in-memory 4 KiB messages fire-and-forget without losing any, and
+  4.4 GB/s acked.
+- 1.40 to 1.48 GB/s durable with an fsync before every ack, which is the
+  disk's own rate.
+- About 0.3 ms for one fsynced durable publish when nothing else is running,
+  and 160 to 180 µs in memory.
 
-  The framing matters and is easy to get wrong. `latency-demo` enables
-  per-message acks only when `batch <= 1 && !binary`, so passing `--binary`
-  silently measures a different thing: fire-and-forget delivery rather than a
-  request round trip. Those two are not comparable.
-- **Throughput (batch = 64, lossless, fanout 1):** ~461 MB/s at 1 KiB,
-  ~508 MB/s at 4 KiB, ~503 MB/s at 16 KiB of payload.
-
-  A minority of runs land several times lower. This is a known open issue in the
-  transport's scheduling, documented under
-  [Benchmarks](/features/benchmarks/). Take a median of several runs;
-  a single run is not a measurement.
-
-Full methodology and per-platform tables are in [Benchmarks](/features/benchmarks/).
-These are **single-node loopback numbers at fanout ≤ 10**. They are not evidence
-for behavior at thousands of subscribers or across a network.
+The same page covers a three-broker cluster with three copies of every durable
+record, and a comparison with NATS JetStream on the same machines. The
+loopback harness and its methodology are under
+[Benchmarks](/features/benchmarks/); its numbers catch regressions in Felix's
+own code and are not a measure of a deployment.
 
 ### Delivery semantics today
 

@@ -3,6 +3,12 @@ title: "Real-Network Performance (Azure T1)"
 description: "Felix measured on a real Azure cluster with a real IdP on the hot path: latency, throughput ceilings, durability cost, and each semantic, compared with the loopback baseline and the raw network line rate."
 ---
 
+:::note[An earlier campaign; the current numbers are elsewhere]
+This page records an earlier campaign on an earlier build. The current
+numbers, with every condition stated, are on [v0.6.0
+Performance](/features/v060-performance/).
+:::
+
 Every performance number Felix published before this page was measured over
 loopback, most of it against an in-process broker. Loopback is good for
 catching regressions in Felix's own code, but it does not show what a

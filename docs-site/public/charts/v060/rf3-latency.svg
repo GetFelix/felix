@@ -57,8 +57,8 @@ z
    <g id="patch_5">
     <path d="M 459.296743 231.794531 
 L 528.279639 231.794531 
-L 528.279639 93.271308 
-L 459.296743 93.271308 
+L 528.279639 91.83488 
+L 459.296743 91.83488 
 z
 " clip-path="url(#p59c95490a7)" style="fill: #0f92b3"/>
    </g>
@@ -210,7 +210,7 @@ L 130.72032 103.21581
 L 312.254255 94.486747 
 " clip-path="url(#p59c95490a7)" style="fill: none; stroke: #767e89; stroke-width: 1.5"/>
     <path d="M 493.788191 93.271308 
-L 493.788191 93.271308 
+L 493.788191 90.398452 
 " clip-path="url(#p59c95490a7)" style="fill: none; stroke: #767e89; stroke-width: 1.5"/>
    </g>
    <g id="line2d_16">
@@ -229,7 +229,7 @@ L -2 -0
     <g clip-path="url(#p59c95490a7)">
      <use xlink:href="#m8c1eabd4a4" x="130.72032" y="103.21581" style="fill: #1f77b4; stroke: #767e89"/>
      <use xlink:href="#m8c1eabd4a4" x="312.254255" y="94.486747" style="fill: #1f77b4; stroke: #767e89"/>
-     <use xlink:href="#m8c1eabd4a4" x="493.788191" y="93.271308" style="fill: #1f77b4; stroke: #767e89"/>
+     <use xlink:href="#m8c1eabd4a4" x="493.788191" y="90.398452" style="fill: #1f77b4; stroke: #767e89"/>
     </g>
    </g>
    <g id="patch_6">
@@ -251,8 +251,8 @@ L 637.2 231.794531
     <text style="font-size: 8px; font-family: 'Inter', 'DejaVu Sans', sans-serif; fill: #767e89" transform="translate(298.468005 91.540228)">2 trials</text>
    </g>
    <g id="text_13">
-    <text style="font-size: 8px; font-family: 'Inter', 'DejaVu Sans', sans-serif; fill: #767e89" transform="translate(477.630691 80.722602)">3.76 ms</text>
-    <text style="font-size: 8px; font-family: 'Inter', 'DejaVu Sans', sans-serif; fill: #767e89" transform="translate(482.085691 90.324789)">1 trial</text>
+    <text style="font-size: 8px; font-family: 'Inter', 'DejaVu Sans', sans-serif; fill: #767e89" transform="translate(480.175691 77.849746)">3.8 ms</text>
+    <text style="font-size: 8px; font-family: 'Inter', 'DejaVu Sans', sans-serif; fill: #767e89" transform="translate(480.001941 87.451933)">2 trials</text>
    </g>
    <g id="text_14">
     <text style="font-weight: 700; font-size: 11.5px; font-family: 'Inter', 'DejaVu Sans', sans-serif; text-anchor: start; fill: #767e89" x="56.291406" y="19.538203" transform="rotate(-0 56.291406 19.538203)">Before finalizing, every replicated ack waits about 3.5 ms</text>

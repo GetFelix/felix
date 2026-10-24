@@ -113,6 +113,7 @@ def load(root):
             "ack": ack,
             "del": dl,
             "cache": cache_lat(d),
+            "trial": int(m.group("t")) if m else 1,
         })
     return groups
 
@@ -475,34 +476,40 @@ def chart_nats(g, out, done):
 
 
 def chart_nats_latency(g, out, done):
-    pairs = [("oncommit", "Durable, fsync before ack"), ("periodic", "Durable, periodic fsync"),
-             ("inmem", "In memory"), ("core", "Fire and forget")]
+    """One-in-flight ack p50 (bar) and p99 (tick), first trial of each pair."""
+    pairs = [("oncommit", "fsync before the ack"), ("periodic", "periodic fsync"),
+             ("inmem", "in memory")]
+
+    def first(group, pct):
+        ts = [t for t in g.get(group, []) if t.get("trial") == 1 and t.get("ack")]
+        return ts[0]["ack"][pct] / 1000 if ts else None
+
     rows = []
     for pr, label in pairs:
         for p, ps in ((256, "256 B"), (4096, "4 KiB")):
-            f = stat([v / 1000 for v in vals(g, f"felix-lat-{pr}-p{p}", "ack", "p50")]
-                     or [v / 1000 for v in vals(g, f"felix-lat-{pr}-p{p}", "del", "p50")])
-            n = stat([v / 1000 for v in vals(g, f"nats-lat-{pr}-p{p}", "ack", "p50")]
-                     or [v / 1000 for v in vals(g, f"nats-lat-{pr}-p{p}", "del", "p50")])
+            f, n = first(f"felix-lat-{pr}-p{p}", "p50"), first(f"nats-lat-{pr}-p{p}", "p50")
             if f and n:
-                rows.append((f"{label}, {ps}", f, n))
+                rows.append((f"{ps}, {label}", f, first(f"felix-lat-{pr}-p{p}", "p99"),
+                             n, first(f"nats-lat-{pr}-p{p}", "p99")))
     if not rows:
         return skip("nats-latency", "no felix-lat-*/nats-lat-* cells yet")
-    fig, ax = plt.subplots(figsize=(8, 4))
+    fig, ax = plt.subplots(figsize=(9, 4))
     y = list(range(len(rows)))[::-1]
     h = 0.38
-    ax.barh([v + h / 2 for v in y], [r[1][0] for r in rows], h, color=FELIX, label="Felix",
-            xerr=[[r[1][0] - r[1][1] for r in rows], [r[1][2] - r[1][0] for r in rows]],
-            error_kw={"ecolor": TEXT, "capsize": 2})
-    ax.barh([v - h / 2 for v in y], [r[2][0] for r in rows], h, color=NEUTRAL, label="NATS",
-            xerr=[[r[2][0] - r[2][1] for r in rows], [r[2][2] - r[2][0] for r in rows]],
-            error_kw={"ecolor": TEXT, "capsize": 2})
+    for off, i, color, label in ((h / 2, 1, FELIX, "Felix"), (-h / 2, 3, NEUTRAL, "NATS JetStream")):
+        ys = [v + off for v in y]
+        ax.barh(ys, [r[i] for r in rows], h, color=color, label=f"{label}, p50")
+        ax.scatter([r[i + 1] for r in rows], ys, marker="|", s=120, color=TEXT, zorder=3)
+        for yy, r in zip(ys, rows):
+            ax.text(r[i + 1] + 0.008, yy, lat(r[i]), va="center", fontsize=8)
+    ax.scatter([], [], marker="|", s=120, color=TEXT, label="p99")
     ax.set_yticks(y, [r[0] for r in rows], fontsize=8.5)
+    ax.set_xlim(0, 0.6)
     ax.xaxis.set_major_formatter(FuncFormatter(lat))
-    ax.set_xlabel("p50 latency, one publish in flight (whiskers min to max over trials)")
-    ax.legend(fontsize=9)
+    ax.set_xlabel("Ack latency, one publish in flight, same VMs (one trial each)")
+    ax.legend(fontsize=8.5, loc="lower right")
     ax.grid(axis="y", visible=False)
-    ax.set_title("One publish at a time: Felix against NATS JetStream")
+    ax.set_title("NATS answers a lone publish 13 to 80 µs sooner; both stay under 0.5 ms")
     save(fig, out, "nats-latency", done)
 
 

@@ -25,8 +25,9 @@ The page is in this order:
 5. [Felix against NATS JetStream](#felix-against-nats-jetstream)
 6. [Three-broker cluster](#three-broker-cluster)
 7. [What limits each shape](#what-limits-each-shape)
-8. [What the campaign found and fixed](#what-the-campaign-found-and-fixed)
-9. [How we got here](#how-we-got-here): the investigation behind the single
+8. [Known issues](#known-issues)
+9. [What the campaign found and fixed](#what-the-campaign-found-and-fixed)
+10. [How we got here](#how-we-got-here): the investigation behind the single
    broker numbers
 
 ## Summary
@@ -321,6 +322,46 @@ In-memory rows are payload, the durable row is append. The gains come from the
 four fixes listed under [Build](#build). Durable throughput is set by the disk
 and did not move.
 
+### The release build against this build
+
+The release build (`6ec23a8f71c90e8aa688415e58adc92647be8b67`) adds, among
+others, #1421, #1443, #1457, #1459 and #1460 to this build. To check that none of them cost
+throughput, the two builds ran on the same VMs in a later session, cell by
+cell, alternating, both driven by the release load generator. One trial each.
+
+| Shape | This build | Release | Change |
+|---|---|---|---|
+| In-memory 4 KiB, batch 64, fire-and-forget | 3650 MB/s | 3685 MB/s | +1.0% |
+| In-memory 64 KiB, batch 64, fire-and-forget | 4147 MB/s | 4154 MB/s | +0.2% |
+| In-memory 256 B, batch 64, fire-and-forget | 2043 MB/s | 1774 MB/s | **-13.2%** |
+| In-memory 4 KiB, batch 64, acked | 4593 MB/s | 4642 MB/s | +1.1% |
+| Durable 4 KiB, batch 64, acked after fsync | 1402 MB/s | 1402 MB/s | 0.0% |
+| Durable 256 B, one in flight, `on_commit`, ack p50 / p99 / p999 | 333 / 412 / 458 µs | 348 / 426 / 511 µs | +4.5% at p50 |
+| Durable 4 KiB, one in flight, `on_commit`, ack p50 / p99 / p999 | 392 / 467 / 518 µs | 395 / 466 / 508 µs | +0.8% at p50 |
+| In-memory 256 B, one in flight, ack p50 / p99 / p999 | 185 / 226 / 246 µs | 175 / 224 / 251 µs | -5.4% at p50 |
+| Durable 256 B, batch 1, acked, the defaults cells' settings | 64 MB/s | 62 MB/s | -2.9% |
+| Durable 256 B, one in flight, the defaults cells' settings, ack p50 / p99 / p999 | 175 / 231 / 253 µs | 173 / 215 / 236 µs | -1.1% at p50 |
+
+Throughput is payload; for latency, lower is better. The verdict: no
+regression on any headline shape except 256 B fire-and-forget, which is 13%
+slower on the release (#1469). Only small messages are affected; the 4 KiB and
+64 KiB rows of the same mode moved by under 1%. The release broker also
+dropped almost no UDP datagrams in that cell (1 a second against 68). The 256 B
+`on_commit` ack is 15 µs slower at p50 and 53 µs at p999. That is within the
+spread between single trials of this cell (the campaign's three trials of this
+build ran 312 µs at p50, this session's 333 µs), so it is not a finding on one
+trial, and #1469 tracks it as a watch item.
+
+The headline figures on this page come from the campaign session, not this
+one, because this session's VMs ran 0 to 4% faster for the same build: acked
+4 KiB batches at 4593 against 4403 MB/s, fire-and-forget 4 KiB at 3650 against
+3624. Comparing the release from this session with this build from the
+campaign would credit the release with that drift.
+
+With the graceful finish in the release load generator (#1460), sent and
+accepted bytes now match exactly in these cells, for example 159,886 MB each
+in the 256 B fire-and-forget cell.
+
 ### Throughput by shape
 
 In-memory stream, keys spread over all shards:
@@ -398,29 +439,21 @@ defaults go faster than fire-and-forget with waiting only by dropping
 messages.
 
 Fire-and-forget should be the faster of the two, because the broker sends no
-acks. The measured build has a defect that holds it back (#1416). When the
-ingress queue was full, a publish waiting for room was awaited inside the
-control stream's read loop, so the loop stopped reading the whole QUIC stream,
-not just that one publish. With four shared publish streams per connection, one
-full shard queue stalled the connection's publishing. Both modes can hit the
-stall. The data in hand does not show why fire-and-forget pays more for it than
-acked publishing does.
+acks. It is not, and the cause is not yet known.
+
+The first suspect was a defect in this build (#1416). When the ingress queue
+was full, a publish waiting for room was awaited inside the control stream's
+read loop, so the loop stopped reading the whole QUIC stream, not just that one
+publish. The release build fixes it (#1443): a publish that finds the queue
+full parks on its own and the loop keeps reading. In the [release
+comparison](#the-release-build-against-this-build) the release ran
+fire-and-forget 4 KiB at 3685 MB/s and acked at 4642, so the gap remains, and
+the stall was not its cause.
 
 The shipped defaults show what happens without the wait. With
-`FELIX_PUB_INGRESS_WAIT` unset the broker sheds instead of waiting, so the read
-loop never stalls. It then accepted 4169 MB/s, and the kernel dropped 26
-datagrams a second instead of 866. #1443 moves the wait off the read loop: a
-publish that finds the queue full parks on its own, and the loop keeps reading
-the publishes behind it. It is in the release build, and we expect
-fire-and-forget with ingress wait to at least match acked publishing there.
-
-<!-- TODO(data): release A/B, under a "#### After the fix" heading. In-memory 4 KiB batch 64, fire-and-forget with
-FELIX_PUB_INGRESS_WAIT=1 and acked with 64 in flight, on 88a91681 against the
-release build (with #1443 and #1460), interleaved on the same VMs. Report
-payload, shed and UDP drops/s for every arm, and say whether fire-and-forget
-now matches or beats acked. Re-run v060_charts.py with --release <dir> to add
-the release bars to lossless.svg, and retitle its caption. If this run does
-not complete, delete this subsection; the paragraph above stands on its own. -->
+`FELIX_PUB_INGRESS_WAIT` unset the broker sheds instead of waiting. It then
+accepted 4169 MB/s, and the kernel dropped 26 datagrams a second instead of
+866, at the cost of 1.2 to 2.2% of the messages.
 
 ### Unloaded latency
 
@@ -493,6 +526,7 @@ Two trials each.
 | Durable 4 KiB, batch 64, acked | 1411 MB/s append | no result: publishes refused (below) |
 | Durable 256 B, batch 1, acked | 59 MB/s append, ack p50 18.1 ms | 74 (73-74) MB/s append, ack p50 4.1 ms, p99 99 ms |
 | Durable 256 B, one publish in flight | ack 312 / 393 / 437 µs, delivery 313 / 392 / 434 µs | ack 160 / 200 / 217 µs, delivery 294 / 376 / 419 µs |
+| Durable 256 B, one publish in flight, release build | | ack 173 / 215 / 236 µs, delivery 303 / 379 / 424 µs (one trial) |
 
 **Fire-and-forget under overload.** With the defaults, the broker drops a
 fire-and-forget publish that arrives while its ingress queue or byte budget is
@@ -518,9 +552,14 @@ refusal.
 **What an ack means in these cells.** With ack on accept, the 160 µs ack says
 the broker has the message, not that it is on disk. The delivery time of 294 µs
 is later in the path: the broker hands a durable record to subscribers only
-once it is durable, which with `on_commit` means fsynced. v0.6.0 acks durable
-publishes after the write by default (#1421), so on the release the first
-column is what an unconfigured durable stream does.
+once it is durable, which with `on_commit` means fsynced. The release row runs
+the same settings on the release build: it sets ack on accept explicitly, so
+it shows the release's cost for the same work, not the release's defaults.
+v0.6.0 acks a durable publish after the write by default (#1421, #1422), and
+its default fsync is `periodic`. A durable stream with no settings therefore
+acks once the record is written to the log and fsyncs on the 250 ms timer,
+which is the `periodic` row of [Unloaded latency](#unloaded-latency): 180 µs
+at p50 for 256 B.
 
 ### Sent against accepted
 
@@ -680,22 +719,45 @@ What the pairs show:
   get there: 7.4 cores against 5.3 to 6.0.
 - **Core NATS wins fire-and-forget by 1.34 to 1.39×.** With no subscriber,
   core NATS checks for interest and discards, while Felix routes each record to
-  its shard and keeps it in the ring. The Felix arm also ran on the build with
-  the read-loop stall (#1416) that held back its fire-and-forget cells.
+  its shard and keeps it in the ring.
 
 One Felix fire-and-forget 256 B trial had a shorter steady window, 46 seconds
 instead of 72, because its generators finished unevenly. It measured 2041 MB/s
 against 2051 for the other trial, and both are in the mean.
 
-<!-- TODO(data): NATS latency run (nats/nats-latency.sh), under a "#### Latency
-pairs" heading. One publish in
-flight, 256 B and 4 KiB: Felix on_commit against JetStream sync always, Felix
-periodic against JetStream default sync, Felix in-memory against a JetStream
-memory stream, Felix in-memory fire-and-forget delivery against core NATS. Ack
-and delivery p50/p99/p999 for each side, two trials, means. A sentence for
-every pair NATS wins or ties. If this run does not complete, delete this
-subsection. v060_charts.py draws nats-latency.svg from the same cells; embed
-it here. -->
+#### Latency pairs
+
+One publisher, one publish in flight, batch 1, one subscriber, on the same VMs
+and with the same pairings as above. Felix ran this build. One trial each,
+the first of each pair:
+
+| Pair | Payload | Felix ack p50 / p99 / p999 | NATS ack p50 / p99 / p999 | Felix delivery p50 / p99 / p999 | NATS delivery p50 / p99 / p999 |
+|---|---|---|---|---|---|
+| Fsync before the ack (`on_commit` / `sync_interval: always`) | 256 B | 351 / 436 / 486 µs | 280 / 366 / 406 µs | 364 / 449 / 495 µs | 276 / 356 / 408 µs |
+| Fsync before the ack | 4 KiB | 416 / 495 / 531 µs | 336 / 401 / 554 µs | 435 / 507 / 550 µs | 369 / 449 / 610 µs |
+| Periodic fsync (`periodic` / default sync) | 256 B | 200 / 255 / 282 µs | 173 / 226 / 325 µs | 188 / 242 / 273 µs | 167 / 212 / 315 µs |
+| Periodic fsync | 4 KiB | 206 / 259 / 304 µs | 193 / 252 / 484 µs | 223 / 290 / 332 µs | 217 / 272 / 603 µs |
+| In memory | 256 B | 168 / 212 / 281 µs | 150 / 209 / 257 µs | 172 / 232 / 282 µs | 153 / 200 / 333 µs |
+| In memory | 4 KiB | 191 / 242 / 270 µs | 167 / 230 / 271 µs | 212 / 274 / 295 µs | 214 / 298 / 370 µs |
+
+![Ack latency with one publish in flight, Felix against NATS JetStream: NATS is 13 to 80 µs faster at p50 in every pair, and both stay under 0.5 ms at p99.](/charts/v060/nats-latency.svg)
+
+NATS answers a lone publish sooner in every pair, by 13 to 80 µs at p50. The
+largest gap is with an fsync before the ack: 280 against 351 µs at 256 B. A
+second trial of that pair measured 279 µs for NATS and 419 µs for Felix, and
+the campaign's own three trials of the same Felix cell measured 312 µs, so the
+Felix figure moves between runs more than the NATS one does. At the tail the
+two are closer: at 4 KiB NATS's ack p999 is the longer one in both fsync
+pairs, and its delivery p999 is longer in five of the six rows. These are
+one-publish latencies. Under load the [throughput pairs](#results) are the
+ones to read.
+
+Core NATS has no Felix pair here, because its publish has no server
+acknowledgement. The measuring tool times a core publish followed by a flush,
+which returns in 34 µs at p50 for 256 B and 37 µs for 4 KiB. Delivery to the
+subscriber takes 827 µs at p50 and 2.82 ms at p99 for 256 B, and 594 µs and
+1.24 ms for 4 KiB. A fast return from a fire-and-forget publish says nothing
+about when a subscriber sees the message.
 
 ## Three-broker cluster
 
@@ -804,7 +866,7 @@ client publishing to the shard's owner. Two trials each:
 | In-memory, one copy | 256 B | 461 / 520 / 560 µs | 450 / 516 / 553 µs |
 | In-memory, one copy | 4 KiB | 504 / 560 / 604 µs | 498 / 561 / 601 µs |
 
-![p50 with one operation in flight before finalizing the fleet features: 3.48 ms for a durable 256 B publish, 3.68 ms for 4 KiB, and 3.76 ms for a Quorum cache put.](/charts/v060/rf3-latency.svg)
+![p50 with one operation in flight before finalizing the fleet features: 3.48 ms for a durable 256 B publish, 3.68 ms for 4 KiB, and 3.80 ms for a Quorum cache put.](/charts/v060/rf3-latency.svg)
 
 A durable ack takes about 3.5 ms at either payload, so it is set by neither the
 disk nor the bytes on the network. Without `majority_ack` and
@@ -828,19 +890,28 @@ another zone.
 
 ### Quorum cache
 
-A `Quorum` cache with RF=3, 256 B values, one trial each. A put is answered
-once a majority holds it, so before finalizing it pays the same control-plane
-round as a durable publish:
+A `Quorum` cache with RF=3, 256 B values. Each worker keeps one operation in
+flight. Two trials each; the figures are their means. A put is answered once a
+majority holds it, so before finalizing it pays the same control-plane round
+as a durable publish:
 
 | Workers | Put ops/s | Put p50 / p99 / p999 | Get ops/s | Get p50 / p99 / p999 |
 |---|---|---|---|---|
-| 1 | 265 | 3.76 / 5.19 / 5.49 ms | 1077 | 982 µs / 1.32 ms / 1.54 ms |
-| 8 | 1522 | 4.80 / 12.2 / 19.9 ms | 2901 | 2.25 / 8.54 / 12.5 ms |
+| 1 | 260 | 3.80 / 5.26 / 5.55 ms | 1109 | 951 µs / 1.32 ms / 1.54 ms |
+| 8 | 1515 | 4.82 / 12.2 / 19.9 ms | 2872 | 2.27 / 8.67 / 13.5 ms |
+| 32 | 4582 | 5.78 / 25.3 / 43.0 ms | 2982 | 7.39 / 45.8 / 64.6 ms |
 
-<!-- TODO(data): Quorum cache at 32 workers (rf3-qcache-c32) and after
-finalizing at 1 and 8 workers (rf3-lf-qcache-c1, rf3-lf-qcache-c8), in the
-release RF=3 results. Add the rows; the put p50 after finalizing is the number
-to compare with 3.76 ms. If they never arrive, delete this comment. -->
+These figures are bound by latency: with one operation in flight per worker,
+throughput is the worker count divided by the latency, as Little's law says.
+Puts scale with workers. Gets stop near 3,000 a second between 8 and 32
+workers, and we have not yet found why. They show what one operation costs,
+not what the cache can sustain; a dedicated cache campaign will measure that
+(#1473).
+
+<!-- TODO(data): Quorum cache after finalizing at 1 and 8 workers
+(rf3-lf-qcache-c1, rf3-lf-qcache-c8), in the release RF=3 results. Add the
+rows; the put p50 after finalizing is the number to compare with 3.80 ms. If
+they never arrive, delete this comment. -->
 
 ### Forwarding
 
@@ -959,6 +1030,22 @@ only for shards that stall.
 **Core shards are neutral.** Once the wake-up problem described below was fixed,
 the number of broker core shards no longer changed throughput in these cells.
 
+## Known issues
+
+- **256 B fire-and-forget is 13% slower on the release** than on the campaign
+  build, with the 4 KiB and 64 KiB rows unchanged (#1469). The 4.5% on the 256
+  B `on_commit` p50 is tracked there too, as a watch item.
+- **Fire-and-forget trails acked publishing.** Lossless, in memory, 4 KiB
+  batches of 64: 3.6 GB/s fire-and-forget against 4.4 GB/s acked. The cause is
+  not yet found. The release comparison ruled out the connection stall (#1416).
+- **The cache figures are bound by latency.** They measure one operation in
+  flight per worker on the RF=3 cluster. A dedicated campaign will measure
+  cache throughput on a single broker and on a cluster (#1473).
+- **Forwarding costs throughput on a cluster.** A publish that enters a broker
+  that does not own its shard is 1.3 to 4.4 times slower under load than one
+  sent straight to the owner. Use the cluster client
+  ([Forwarding](#forwarding)).
+
 ## What the campaign found and fixed
 
 Running Felix at full load on real hardware for days found defects that the
@@ -967,7 +1054,7 @@ test suites had not. Each one below is fixed on main.
 | Issue | What failed | Impact | Fix |
 |---|---|---|---|
 | #1406 | Unbatched publishes cost about 55% more broker CPU per message than in an earlier campaign. | In-memory 256 B batch 1 acked fell from 136 to 87 MB/s on the same broker. | A thundering herd on the ingress queue, a queue too small for the load, too many per-shard streams by default, and a metric lookup per publish: #1414, #1415, #1418, #1419. See [How we got here](#how-we-got-here). |
-| #1416 | A publish waiting for room in a full ingress queue stopped the control stream's read loop, stalling every publish on the connection. | Fire-and-forget with ingress wait ran slower than acked publishing. | #1443 parks the waiting publish and keeps the loop reading. |
+| #1416 | A publish waiting for room in a full ingress queue stopped the control stream's read loop, stalling every publish on the connection. | One full shard queue stalled every publish stream on the connection. | #1443 parks the waiting publish and keeps the loop reading. |
 | #1435 | A broker that took a shard by an operator move kept serving it after the stream was deleted. | A recreated stream could not move a shard to that broker, and the stuck move held the cluster's only move slot for 30 minutes. | #1437 replaces the held shard with the recreated stream's first assignment. |
 | #1447 | Recreating a deleted stream under the same name reopened its old logs on the followers, which then held committed records the new leader did not have. | The followers halted as diverged and the stream's `Quorum` writes stalled. The halt is the safety check working: a follower refuses to drop a record it holds as committed. | #1448 refuses to reuse a deleted name until stream incarnations are finalized. #1449 finalizes incarnations on every new cluster, so a recreated stream gets directories of its own. |
 | #1429 | Placement balanced leaders across the cluster, not per stream, so one stream's 12 leaders could land 1/1/10. | A deployment dominated by one stream got about a third of the cluster's write capacity for it. | #1442 spreads each stream's leaders, not only the cluster's. |
