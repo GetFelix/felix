@@ -1600,8 +1600,12 @@ int main(int argc, char **argv) {
   } else if (argc == 10 && strcmp(argv[1], "fixture") == 0) {
     struct fixture f = {argv[2], argv[3], argv[4], argv[5], argv[6],
                         argv[7], argv[8], argv[9]};
+    /* Nanoseconds too: the shared and static builds run within a second of
+       each other against the same fixture, and group names must not repeat. */
+    struct timespec ts;
+    timespec_get(&ts, TIME_UTC);
     char run[32];
-    snprintf(run, sizeof run, "%ld", (long)time(NULL));
+    snprintf(run, sizeof run, "%ld-%09ld", (long)ts.tv_sec, (long)ts.tv_nsec);
     pubsub(&f, run);
     batches(&f, run);
     subscriptions(&f, run);
