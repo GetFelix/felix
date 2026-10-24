@@ -91,45 +91,37 @@ public class CancelRaceTests
 
 public class HandleOwnershipTests
 {
-    // Freeing a GCHandle slot twice frees whichever call was given it since. That call's
-    // callback then finds no state, and the NullReferenceException escaped it.
+    // The failure behind the net8.0 test host crash: a test ran a callback by hand (which
+    // freed the call's GCHandle) and then Abandoned the call (which freed it again). The
+    // double free leaves a slot in the runtime's handle table twice, so later calls that are
+    // live together are given the same slot, and one callback completes another call's state
+    // or finds none (a NullReferenceException in OnPublish). Fails on the old code.
     [Fact]
-    public void AbandoningTwiceDoesNotFreeANewCallsHandle()
+    public void ADoubleFreeNeverMakesLiveCallsShareAHandle()
     {
-        for (var i = 0; i < 100; i++)
+        for (var round = 0; round < 200; round++)
         {
-            var first = new CallState<long?>(default);
-            first.Pin();
-            first.Abandon();
-            first.Abandon();
-            AssertTwoLiveCallsKeepTheirOwnHandles();
-        }
-    }
+            for (var i = 0; i < 70; i++)
+            {
+                var done = new CallState<long?>(default);
+                var userData = done.Pin();
+                CallState<long?>.Take(userData);
+                done.Abandon();
+            }
 
-    [Fact]
-    public void AbandoningAfterTheCallbackTookTheHandleDoesNotFreeItAgain()
-    {
-        for (var i = 0; i < 100; i++)
-        {
-            var first = new CallState<long?>(default);
-            var firstData = first.Pin();
-            Assert.Same(first, CallState<long?>.Take(firstData));
-            first.Abandon();
-            AssertTwoLiveCallsKeepTheirOwnHandles();
-        }
-    }
+            var live = new List<(CallState<long?> State, nint Data)>();
+            for (var i = 0; i < 150; i++)
+            {
+                var state = new CallState<long?>(default);
+                live.Add((state, state.Pin()));
+            }
 
-    // A slot freed twice is handed to the next two calls, so one callback finds the
-    // other's state, or nothing.
-    private static void AssertTwoLiveCallsKeepTheirOwnHandles()
-    {
-        var a = new CallState<long?>(default);
-        var b = new CallState<long?>(default);
-        var aData = a.Pin();
-        var bData = b.Pin();
-        Assert.NotEqual(aData, bData);
-        Assert.Same(a, CallState<long?>.Take(aData));
-        Assert.Same(b, CallState<long?>.Take(bData));
+            Assert.Equal(live.Count, live.Select(l => l.Data).Distinct().Count());
+            foreach (var (state, data) in live)
+            {
+                Assert.Same(state, CallState<long?>.Take(data));
+            }
+        }
     }
 
     // The callback frees the handle through the state, so a later Abandon, or a second

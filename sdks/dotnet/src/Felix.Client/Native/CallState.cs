@@ -100,10 +100,8 @@ internal sealed class CallState<T> : CallStateBase
         {
             return Release<CallState<T>>(userData);
         }
-        catch (Exception e)
+        catch
         {
-            // No state to fail, so say so: this call's task can no longer be completed.
-            Console.Error.WriteLine($"felix: a native callback arrived for a call that is no longer pending ({e.GetType().Name})");
             return null;
         }
     }

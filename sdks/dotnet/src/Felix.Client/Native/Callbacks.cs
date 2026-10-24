@@ -16,11 +16,7 @@ internal static unsafe class Callbacks
         var state = CallState<FelixClientHandle>.Take(userData);
         if (state is null)
         {
-            if (status == 0)
-            {
-                TryFree(() => NativeMethods.felix_client_free(client));
-            }
-
+            Lost();
             return;
         }
 
@@ -58,6 +54,7 @@ internal static unsafe class Callbacks
         var state = CallState<long?>.Take(userData);
         if (state is null)
         {
+            Lost();
             return;
         }
 
@@ -84,6 +81,7 @@ internal static unsafe class Callbacks
         var state = CallState<long?[]>.Take(userData);
         if (state is null)
         {
+            Lost();
             return;
         }
 
@@ -122,11 +120,7 @@ internal static unsafe class Callbacks
         var state = CallState<FelixSubscriptionHandle>.Take(userData);
         if (state is null)
         {
-            if (status == 0)
-            {
-            TryFree(() => NativeMethods.felix_subscription_free(subscription));
-            }
-
+            Lost();
             return;
         }
 
@@ -164,11 +158,7 @@ internal static unsafe class Callbacks
         var state = CallState<FelixEvent?>.Take(userData);
         if (state is null)
         {
-            if (status == 0)
-            {
-                TryFree(() => NativeMethods.felix_event_free(ev));
-            }
-
+            Lost();
             return;
         }
 
@@ -192,6 +182,13 @@ internal static unsafe class Callbacks
             CallState<FelixEvent?>.TryFail(state, e);
         }
     }
+
+    /// <summary>
+    /// A callback with no pending call means the handle table is corrupt: completing some
+    /// other call, or none, would hang or misreport. Ending the process is the honest option.
+    /// </summary>
+    private static void Lost() =>
+        Environment.FailFast("felix: a native callback arrived for a call that is no longer pending; the SDK's call table is corrupt");
 
     private static void TryFree(Action free)
     {
