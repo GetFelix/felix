@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792865903444,
+  "lastUpdate": 1792867086122,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -34944,6 +34944,58 @@ window.BENCHMARK_DATA = {
             "range": "26138.08",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1229668.89\nmean: 1219977.92\nstdev: 26138.08\ncv: 2.14%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "07a7eb9dcdd8ba9bbc985468a7907b6cb4950a7f",
+          "message": "feat(capi): consumer groups on a shard, stream_shards (#1493) (#1504)\n\n* feat(capi): consumer groups on a shard, stream_shards (#1493)\n* test(capi): make the C run id unique below a second\n* test(capi): run group admin calls through the fixture's group operator token",
+          "timestamp": "2026-10-24T18:33:14Z",
+          "tree_id": "f41887331faa46929590b1dc445d2749bd937c43",
+          "url": "https://github.com/GetFelix/felix/commit/07a7eb9dcdd8ba9bbc985468a7907b6cb4950a7f"
+        },
+        "date": 1792867085306,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 344386.17,
+            "range": "8672.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 344386.17\nmean: 343127.40\nstdev: 8672.46\ncv: 2.53%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 344386.17,
+            "range": "8672.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 344386.17\nmean: 343127.40\nstdev: 8672.46\ncv: 2.53%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79968.64,
+            "range": "799.34",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79968.64\nmean: 80130.52\nstdev: 799.34\ncv: 1.00%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 799686.41,
+            "range": "7993.39",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 799686.41\nmean: 801305.19\nstdev: 7993.39\ncv: 1.00%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
