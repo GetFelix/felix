@@ -23,7 +23,7 @@ async fn a_declared_width_must_match_the_streams_own() {
     context.ingress = Some(Arc::new(ingress_with_routing(8, ShardRouting::JumpHash)));
     let key = Some(&b"customer-7"[..]);
     let resolve = |declared: Option<&DeclaredWidth>, stream: &str, key: Option<&[u8]>| {
-        resolve_declared_shard(&context, declared, "t1", "ns", stream, key)
+        resolve_declared_shard(&context, declared, "t1", "ns", stream, key, None)
     };
 
     let current = declared("stream", 8, ShardRouting::JumpHash);
@@ -64,7 +64,7 @@ async fn an_unknown_stream_is_not_checked() {
     context.ingress = Some(Arc::new(ingress_with_routing(8, ShardRouting::JumpHash)));
     let stale = declared("gone", 4, ShardRouting::Modulo);
     assert_eq!(
-        resolve_declared_shard(&context, Some(&stale), "t1", "ns", "gone", Some(b"k"))
+        resolve_declared_shard(&context, Some(&stale), "t1", "ns", "gone", Some(b"k"), None)
             .expect("not checked"),
         0
     );
@@ -154,6 +154,7 @@ async fn an_acked_batch_routed_by_a_stale_width_is_told_stale_width() {
         "stream".to_string(),
         vec![Bytes::from_static(b"payload")],
         Some(Bytes::from_static(b"customer-7")),
+        None,
         Some(9),
         Some(felix_wire::AckMode::PerBatch),
         false,

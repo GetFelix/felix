@@ -4,6 +4,7 @@
 mod ack_offset;
 mod checks;
 mod commit;
+mod explicit_shard;
 mod faults;
 mod fixture;
 mod frames;
@@ -22,6 +23,7 @@ use felix_transport::{QuicClient, QuicServer, TransportConfig};
 
 use ack_offset::run_ack_offsets;
 use commit::{COMMIT_STREAM, run_client_commit, run_commit};
+use explicit_shard::run_explicit_shard;
 use faults::run_link_faults;
 use fixture::{
     build_auth_fixture, build_client_config, build_quinn_client_config, build_server_config,
@@ -106,6 +108,7 @@ pub(crate) async fn run_protocol_suite() -> Result<()> {
     run_client_cache(addr, cert.clone(), &auth).await?;
     run_commit(&connection, &auth).await?;
     run_client_commit(addr, cert.clone(), &auth).await?;
+    run_explicit_shard(&connection, &auth).await?;
     run_ack_offsets(&connection, &auth, ack_on_commit).await?;
     run_shard_move(&connection, &auth, &broker).await?;
     run_stream_deleted(&connection, &auth, &broker).await?;

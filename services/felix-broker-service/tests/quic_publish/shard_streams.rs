@@ -60,16 +60,16 @@ fn leading_both_shards() -> Arc<IngressRouter> {
 }
 
 /// A broker leading both shards of the durable stream `orders`.
-struct TwoShards {
-    broker: Arc<Broker>,
-    addr: std::net::SocketAddr,
-    cert: CertificateDer<'static>,
-    auth: AuthFixture,
+pub(super) struct TwoShards {
+    pub(super) broker: Arc<Broker>,
+    pub(super) addr: std::net::SocketAddr,
+    pub(super) cert: CertificateDer<'static>,
+    pub(super) auth: AuthFixture,
     _dir: tempfile::TempDir,
 }
 
 impl TwoShards {
-    async fn start() -> Result<Self> {
+    pub(super) async fn start() -> Result<Self> {
         let dir = tempfile::tempdir()?;
         let storage = felix_broker::DurableStorage::open(
             dir.path(),
@@ -132,12 +132,12 @@ impl TwoShards {
         })
     }
 
-    fn client_config(&self) -> Result<ClientConfig> {
+    pub(super) fn client_config(&self) -> Result<ClientConfig> {
         build_client_config(self.cert.clone(), &self.auth)
     }
 
     /// A key that routes to `shard`, the `nth` such key.
-    fn key_for(&self, shard: u32, nth: usize) -> bytes::Bytes {
+    pub(super) fn key_for(&self, shard: u32, nth: usize) -> bytes::Bytes {
         (0..)
             .map(|i| bytes::Bytes::from(format!("key-{i}")))
             .filter(|key| {

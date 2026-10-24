@@ -10,6 +10,7 @@ mod control_binary;
 mod control_message;
 mod declared_width;
 mod durable_default_ack;
+mod explicit_shard;
 mod group_commit;
 mod idempotent_acks;
 mod ingress;

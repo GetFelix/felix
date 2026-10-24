@@ -620,6 +620,10 @@ pub(super) fn spawn_publish_worker(
             negotiated.server_features_hi,
             felix_wire::FEATURE_PUBLISH_WIDTH,
         ),
+        takes_shard: felix_wire::supports_feature(
+            negotiated.server_features_hi,
+            felix_wire::FEATURE_EXPLICIT_SHARD,
+        ),
     }
 }
 

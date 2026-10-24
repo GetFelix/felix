@@ -16,6 +16,7 @@ fn pipelining_auth(fixture: &AuthFixture) -> Message {
 
 fn acked_publish(request_id: u64) -> Message {
     Message::Publish {
+        shard: None,
         tenant_id: "t1".to_string(),
         namespace: "default".to_string(),
         stream: "updates".to_string(),
@@ -427,6 +428,7 @@ async fn pipelined_commit_acks_reach_the_client_in_request_order() -> Result<()>
         crate::serving::quic::write_message(
             &mut send,
             Message::Publish {
+                shard: None,
                 tenant_id: "t1".to_string(),
                 namespace: "default".to_string(),
                 stream: format!("s{}", request_id % 4),

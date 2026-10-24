@@ -65,6 +65,7 @@ async fn answered_while_queued(durable: bool, ack_durable_on_commit: bool) -> bo
         "orders".to_string(),
         b"payload".to_vec(),
         None,
+        None,
         Some(1),
         Some(felix_wire::AckMode::PerMessage),
         false,

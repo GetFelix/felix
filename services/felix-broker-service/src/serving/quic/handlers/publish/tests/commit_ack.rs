@@ -89,6 +89,7 @@ async fn a_commit_ack_is_not_sent_before_the_flush() {
         "orders".to_string(),
         b"held".to_vec(),
         None,
+        None,
         Some(1),
         Some(felix_wire::AckMode::PerMessage),
         false,

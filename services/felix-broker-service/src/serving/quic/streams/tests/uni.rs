@@ -19,6 +19,7 @@ async fn uni_loop_publish_and_errors() -> Result<()> {
         Ok(Some(frame_from_message(auth_message(&auth)))),
         Ok(Some(binary)),
         Ok(Some(frame_from_message(Message::Publish {
+            shard: None,
             tenant_id: "t1".to_string(),
             namespace: "default".to_string(),
             stream: "updates".to_string(),
@@ -28,6 +29,7 @@ async fn uni_loop_publish_and_errors() -> Result<()> {
             key: None,
         }))),
         Ok(Some(frame_from_message(Message::PublishBatch {
+            shard: None,
             tenant_id: "t1".to_string(),
             namespace: "default".to_string(),
             stream: "updates".to_string(),
@@ -157,6 +159,7 @@ async fn uni_loop_breaks_on_enqueue_error() -> Result<()> {
     let mut source = TestFrameSource::new(vec![
         Ok(Some(frame_from_message(auth_message(&auth)))),
         Ok(Some(frame_from_message(Message::Publish {
+            shard: None,
             tenant_id: "t1".to_string(),
             namespace: "default".to_string(),
             stream: "updates".to_string(),
@@ -184,6 +187,7 @@ async fn uni_loop_breaks_on_enqueue_error() -> Result<()> {
     let mut source = TestFrameSource::new(vec![
         Ok(Some(frame_from_message(auth_message(&auth)))),
         Ok(Some(frame_from_message(Message::PublishBatch {
+            shard: None,
             tenant_id: "t1".to_string(),
             namespace: "default".to_string(),
             stream: "updates".to_string(),

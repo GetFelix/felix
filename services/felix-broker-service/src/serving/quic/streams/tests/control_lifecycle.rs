@@ -43,6 +43,7 @@ async fn control_loop_handles_publish_and_cache_requests() -> Result<()> {
     let frames = vec![
         Ok(Some(frame_from_message(auth_message(&auth)))),
         Ok(Some(frame_from_message(Message::Publish {
+            shard: None,
             tenant_id: "t1".to_string(),
             namespace: "default".to_string(),
             stream: "updates".to_string(),
@@ -52,6 +53,7 @@ async fn control_loop_handles_publish_and_cache_requests() -> Result<()> {
             key: None,
         }))),
         Ok(Some(frame_from_message(Message::PublishBatch {
+            shard: None,
             tenant_id: "t1".to_string(),
             namespace: "default".to_string(),
             stream: "updates".to_string(),

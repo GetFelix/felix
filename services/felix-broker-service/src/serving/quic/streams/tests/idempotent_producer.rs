@@ -52,6 +52,7 @@ async fn an_idempotent_publish_is_appended_once() -> Result<()> {
     let mut sub = broker.subscribe("t1", "default", "orders", 0).await?;
     let auth = auth_fixture("t1", default_perms());
     let batch = |request_id: u64, sequence: u64, payload: &[u8]| Message::PublishIdempotent {
+        shard: None,
         tenant_id: "t1".to_string(),
         namespace: "default".to_string(),
         stream: "orders".to_string(),

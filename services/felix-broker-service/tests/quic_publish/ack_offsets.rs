@@ -54,6 +54,7 @@ async fn json_publish(
     felix_broker_service::serving::quic::write_message(
         send,
         Message::Publish {
+            shard: None,
             tenant_id: "t1".to_string(),
             namespace: "default".to_string(),
             stream: "orders".to_string(),

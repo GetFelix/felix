@@ -55,6 +55,7 @@ pub(crate) async fn run_commit(
     quic::write_message(
         &mut send,
         Message::Commit {
+            shard: None,
             tenant_id: auth.tenant_id.clone(),
             namespace: "default".to_string(),
             stream: COMMIT_STREAM.to_string(),
@@ -82,6 +83,7 @@ pub(crate) async fn run_commit(
     quic::write_message(
         &mut send,
         Message::StateGet {
+            shard: None,
             tenant_id: auth.tenant_id.clone(),
             namespace: "default".to_string(),
             stream: COMMIT_STREAM.to_string(),
@@ -119,6 +121,7 @@ async fn conditional_writes(
     quic::write_message(
         send,
         Message::Commit {
+            shard: None,
             tenant_id: auth.tenant_id.clone(),
             namespace: "default".to_string(),
             stream: COMMIT_STREAM.to_string(),
@@ -143,6 +146,7 @@ async fn conditional_writes(
     quic::write_message(
         send,
         Message::PublishIf {
+            shard: None,
             tenant_id: auth.tenant_id.clone(),
             namespace: "default".to_string(),
             stream: COMMIT_STREAM.to_string(),
@@ -165,6 +169,7 @@ async fn conditional_writes(
     quic::write_message(
         send,
         Message::PublishIf {
+            shard: None,
             tenant_id: auth.tenant_id.clone(),
             namespace: "default".to_string(),
             stream: COMMIT_STREAM.to_string(),

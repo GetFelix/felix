@@ -46,8 +46,8 @@ impl NotWritten {
 }
 
 /// Commit `event` and `changes` to the shard of `stream` that `entity_key`
-/// routes to, only at `expected_offset` when there is one, and return the
-/// commit's offset.
+/// routes to, or to `shard` when the client named one, only at
+/// `expected_offset` when there is one, and return the commit's offset.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn commit(
     broker: &Broker,
@@ -56,6 +56,7 @@ pub(crate) async fn commit(
     namespace: &str,
     stream: &str,
     entity_key: &[u8],
+    shard: Option<u32>,
     event: Bytes,
     changes: Vec<StateChange>,
     expected_offset: Option<u64>,
@@ -76,7 +77,14 @@ pub(crate) async fn commit(
         )
         .into());
     }
-    let key = shard_key(publish_ctx, tenant_id, namespace, stream, Some(entity_key));
+    let key = shard_key(
+        publish_ctx,
+        tenant_id,
+        namespace,
+        stream,
+        Some(entity_key),
+        shard,
+    )?;
     let ops = changes.into_iter().map(state_op).collect();
     leader_write(
         broker,
@@ -92,9 +100,9 @@ pub(crate) async fn commit(
     .await
 }
 
-/// Append `payloads` to the shard of `stream` that `key` routes to, only if
-/// the batch would start at exactly `expected_offset`, and return its first
-/// offset.
+/// Append `payloads` to the shard of `stream` that `key` routes to, or to
+/// `named`, only if the batch would start at exactly `expected_offset`, and
+/// return its first offset.
 ///
 /// Not forwarded, for the reason a commit is not: the check is against the
 /// leader's tail, and a refusal has to name that tail. Not queued either, but
@@ -108,6 +116,7 @@ pub(crate) async fn publish_at(
     namespace: &str,
     stream: &str,
     key: Option<&[u8]>,
+    named: Option<u32>,
     payloads: Vec<Bytes>,
     expected_offset: u64,
     publisher: Option<&Bytes>,
@@ -115,7 +124,7 @@ pub(crate) async fn publish_at(
     let _permit =
         crate::serving::quic::handlers::publish::admit_unqueued(publish_ctx, tenant_id, &payloads)
             .await?;
-    let shard = shard_key(publish_ctx, tenant_id, namespace, stream, key);
+    let shard = shard_key(publish_ctx, tenant_id, namespace, stream, key, named)?;
     leader_write(
         broker,
         publish_ctx,
@@ -177,7 +186,9 @@ where
     Ok(offset)
 }
 
-/// Read `key` in the state of the shard `entity_key` routes to.
+/// Read `key` in the state of the shard `entity_key` routes to, or of
+/// `named`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn state_get(
     broker: &Broker,
     publish_ctx: &PublishContext,
@@ -185,9 +196,17 @@ pub(crate) async fn state_get(
     namespace: &str,
     stream: &str,
     entity_key: &[u8],
+    named: Option<u32>,
     key: &str,
 ) -> Result<StateRead, ClientError> {
-    let shard = shard_key(publish_ctx, tenant_id, namespace, stream, Some(entity_key));
+    let shard = shard_key(
+        publish_ctx,
+        tenant_id,
+        namespace,
+        stream,
+        Some(entity_key),
+        named,
+    )?;
     owned(dispatch(publish_ctx.ingress.as_deref(), &shard), &shard)?;
     // The view holds only what the ring holds, which on a `Quorum` stream is
     // what the committed mark covers, so the answer is never one a failover
@@ -246,21 +265,23 @@ fn shard_key(
     namespace: &str,
     stream: &str,
     key: Option<&[u8]>,
-) -> ShardKey {
-    let shard = crate::serving::quic::handlers::publish::resolve_shard(
+    named: Option<u32>,
+) -> Result<ShardKey, ClientError> {
+    let shard = crate::serving::quic::handlers::publish::resolve_publish_shard(
         publish_ctx,
         tenant_id,
         namespace,
         stream,
         key,
-    );
-    ShardKey {
+        named,
+    )?;
+    Ok(ShardKey {
         tenant_id: tenant_id.to_string(),
         namespace: namespace.to_string(),
         stream: stream.to_string(),
         shard,
         kind: ShardKind::Stream,
-    }
+    })
 }
 
 /// The generation this broker leads `key` at, or who to ask instead.

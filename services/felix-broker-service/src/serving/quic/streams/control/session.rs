@@ -15,7 +15,8 @@ use crate::serving::quic::handlers::publish::{
 /// it reads is deleted.
 const SERVED_FEATURES_HI: u32 = felix_wire::FEATURE_INSPECT
     | felix_wire::FEATURE_STREAM_DELETED
-    | felix_wire::FEATURE_PUBLISH_WIDTH;
+    | felix_wire::FEATURE_PUBLISH_WIDTH
+    | felix_wire::FEATURE_EXPLICIT_SHARD;
 
 pub(super) async fn authenticate(
     cx: &Ctx<'_>,

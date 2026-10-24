@@ -148,6 +148,7 @@ pub(super) async fn run_uni_loop<S: FrameSource + ?Sized>(
                 namespace,
                 stream,
                 payload,
+                shard,
                 ..
             } => {
                 let Some(auth_ctx) = auth_ctx.as_ref() else {
@@ -176,6 +177,7 @@ pub(super) async fn run_uni_loop<S: FrameSource + ?Sized>(
                     namespace,
                     stream,
                     payload,
+                    shard,
                     auth_ctx.publishing_as(),
                 )
                 .await?;
@@ -188,6 +190,7 @@ pub(super) async fn run_uni_loop<S: FrameSource + ?Sized>(
                 namespace,
                 stream,
                 payloads,
+                shard,
                 ..
             } => {
                 let Some(auth_ctx) = auth_ctx.as_ref() else {
@@ -216,6 +219,7 @@ pub(super) async fn run_uni_loop<S: FrameSource + ?Sized>(
                     namespace,
                     stream,
                     payloads,
+                    shard,
                     auth_ctx.publishing_as(),
                 )
                 .await?;

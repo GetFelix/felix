@@ -20,14 +20,14 @@ fn text_publish_batch_json_round_trips_through_decoder() {
     for (request_id, ack) in cases {
         let mut buf = BytesMut::new();
         crate::text::write_publish_batch_json(
-            &mut buf, "t1", "default", "updates", &payloads, None, request_id, ack,
+            &mut buf, "t1", "default", "updates", &payloads, None, None, request_id, ack,
         )
         .expect("write");
 
         // The declared length must match what was actually written, or callers
         // that pre-reserve using it will mis-size the frame.
         let declared = crate::text::publish_batch_json_len(
-            "t1", "default", "updates", &payloads, None, request_id, ack,
+            "t1", "default", "updates", &payloads, None, None, request_id, ack,
         )
         .expect("len");
         assert_eq!(
@@ -46,6 +46,7 @@ fn text_publish_batch_json_round_trips_through_decoder() {
                 request_id: decoded_id,
                 ack: decoded_ack,
                 key: None,
+                shard: None,
             } => {
                 assert_eq!(tenant_id, "t1");
                 assert_eq!(namespace, "default");
@@ -71,6 +72,7 @@ fn text_publish_batch_json_with_special_chars() {
         request_id: Some(123),
         ack: Some(AckMode::PerBatch),
         key: None,
+        shard: None,
     };
     let frame = message.encode().expect("encode");
     let decoded = Message::decode(frame).expect("decode");
@@ -94,6 +96,7 @@ fn the_fast_batch_encoder_carries_the_routing_key() {
         "updates",
         &payloads,
         Some(&key),
+        None,
         Some(7),
         Some(AckMode::PerMessage),
     )
@@ -105,6 +108,7 @@ fn the_fast_batch_encoder_carries_the_routing_key() {
         "updates",
         &payloads,
         Some(&key),
+        None,
         Some(7),
         Some(AckMode::PerMessage),
     )
@@ -131,12 +135,66 @@ fn an_unkeyed_batch_omits_the_field() {
     let payloads = vec![b"one".to_vec()];
     let mut buf = BytesMut::new();
     crate::text::write_publish_batch_json(
-        &mut buf, "t1", "default", "updates", &payloads, None, None, None,
+        &mut buf, "t1", "default", "updates", &payloads, None, None, None, None,
     )
     .expect("write");
     let json = std::str::from_utf8(&buf).expect("utf8");
     assert!(
+        !json.contains("shard"),
+        "an absent shard must not appear: {json}"
+    );
+    assert!(
         !json.contains("key"),
         "an absent key must not appear: {json}"
     );
+}
+
+/// **The hand-written batch encoder carries an explicit shard**, for the
+/// reason it carries the key: without it the broker routes by the key and the
+/// record lands on another shard.
+#[test]
+fn the_fast_batch_encoder_carries_the_shard() {
+    let payloads = vec![b"one".to_vec()];
+    for (key, shard) in [
+        (None, 0u32),
+        (Some(b"d03".to_vec()), 3),
+        (Some(Vec::new()), u32::MAX),
+    ] {
+        let mut buf = BytesMut::new();
+        crate::text::write_publish_batch_json(
+            &mut buf,
+            "t1",
+            "default",
+            "updates",
+            &payloads,
+            key.as_deref(),
+            Some(shard),
+            Some(9),
+            Some(AckMode::PerBatch),
+        )
+        .expect("write");
+        let declared = crate::text::publish_batch_json_len(
+            "t1",
+            "default",
+            "updates",
+            &payloads,
+            key.as_deref(),
+            Some(shard),
+            Some(9),
+            Some(AckMode::PerBatch),
+        )
+        .expect("len");
+        assert_eq!(declared, buf.len());
+        match Message::decode(Frame::new(0, buf.freeze()).expect("frame")).expect("decode") {
+            Message::PublishBatch {
+                key: decoded_key,
+                shard: decoded,
+                ..
+            } => {
+                assert_eq!(decoded, Some(shard));
+                assert_eq!(decoded_key.as_deref(), key.as_deref());
+            }
+            other => panic!("expected a publish batch, got {other:?}"),
+        }
+    }
 }

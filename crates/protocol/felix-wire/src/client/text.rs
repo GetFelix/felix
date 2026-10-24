@@ -18,6 +18,7 @@ const PUBLISH_BATCH_PAYLOADS: &str = "\",\"payloads\":[";
 // publish-batch writer below, where the preceding token is always `]` or a number.
 const REQUEST_ID_PREFIX: &str = ",\"request_id\":";
 const KEY_PREFIX: &str = ",\"key\":\"";
+const SHARD_PREFIX: &str = ",\"shard\":";
 const ACK_PREFIX: &str = ",\"ack\":\"";
 
 /// How often the output buffer had to grow while encoding. Zero when the
@@ -35,6 +36,7 @@ pub fn publish_batch_json_len(
     stream: &str,
     payloads: &[Vec<u8>],
     key: Option<&[u8]>,
+    shard: Option<u32>,
     request_id: Option<u64>,
     ack: Option<AckMode>,
 ) -> Result<usize> {
@@ -77,6 +79,11 @@ pub fn publish_batch_json_len(
             .checked_add(base64_len(key.len())?)
             .ok_or(Error::FrameTooLarge)?;
     }
+    if let Some(shard) = shard {
+        len = len
+            .checked_add(SHARD_PREFIX.len() + decimal_len(u64::from(shard)))
+            .ok_or(Error::FrameTooLarge)?;
+    }
     if let Some(request_id) = request_id {
         len = len
             .checked_add(REQUEST_ID_PREFIX.len())
@@ -106,7 +113,8 @@ pub fn publish_batch_json_len(
 /// `key` is the batch's routing key, base64 like any other byte field. It has
 /// to be written here as well as by serde: this encoder is what the client's
 /// writer task actually uses, so a key omitted here is a key that never reaches
-/// the broker and a record that silently lands on shard 0.
+/// the broker and a record that silently lands on shard 0. The same goes for
+/// `shard`.
 #[allow(clippy::too_many_arguments)]
 pub fn write_publish_batch_json(
     buf: &mut BytesMut,
@@ -115,6 +123,7 @@ pub fn write_publish_batch_json(
     stream: &str,
     payloads: &[Vec<u8>],
     key: Option<&[u8]>,
+    shard: Option<u32>,
     request_id: Option<u64>,
     ack: Option<AckMode>,
 ) -> Result<EncodeStats> {
@@ -164,6 +173,10 @@ pub fn write_publish_batch_json(
         debug_assert_eq!(written, encoded_len);
         buf.put_u8(b'"');
         check_realloc(buf, &mut stats, &mut cap);
+    }
+    if let Some(shard) = shard {
+        buf.extend_from_slice(SHARD_PREFIX.as_bytes());
+        write_decimal(buf, u64::from(shard));
     }
     if let Some(request_id) = request_id {
         buf.extend_from_slice(REQUEST_ID_PREFIX.as_bytes());

@@ -56,6 +56,7 @@ pub(super) fn fake_worker() -> PublishWorker {
         server_flags: felix_wire::KNOWN_FLAGS,
         publish_window: 0,
         takes_width: true,
+        takes_shard: true,
     }
 }
 

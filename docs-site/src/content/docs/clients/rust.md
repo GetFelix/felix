@@ -341,6 +341,32 @@ hash, fixed when the stream was created. `ClusterClient` asks for it once per
 stream along with the shard count (`Client::stream_routing`), so it computes
 the same shard the broker does.
 
+### Naming the shard
+
+A producer that owns its partitioning, one shard per partition, can name the
+shard instead of searching for keys that hash where it wants them:
+
+```rust
+// District 2 of the city writes to shard 2, whatever its name hashes to.
+cluster
+    .publish_batch_on_shard("acme", "city", "ticks", 2, vec![tick], AckMode::PerBatch)
+    .await?;
+```
+
+`publish_on_shard` and `publish_batch_on_shard` (on `Publisher` and
+`ClusterClient`) use the shard as given. `ClusterClient` sends the batch to
+that shard's owner, the way it does for a key's shard, and the batch goes on
+the same writer as keyed publishes to that shard, so the two stay in order.
+A shard the stream does not have is refused with `invalid_request` and nothing
+is written; it is never wrapped onto another shard. The same goes for
+`publish_if_on_shard` and the commits below.
+
+It needs a broker that advertised `FEATURE_EXPLICIT_SHARD`, and fails without
+sending anything otherwise: an older broker would ignore the shard and write
+the batch to shard 0. The binary publish frames have no room for a shard, so
+these batches are sent as JSON. Caches take no shard: a cache value is found
+by hashing its key on every read.
+
 ### At-least-once may duplicate
 
 By default a publish whose outcome was ambiguous (the broker may or may not
@@ -1553,7 +1579,24 @@ A refusal is an answer, not an error, and writes nothing. Both need
 `FEATURE_PUBLISH_CONDITIONAL`, and fail without sending anything against a
 broker that did not advertise it. `ClusterClient` follows the leader; neither
 is forwarded between brokers. Do not resend one whose answer was lost: read
-the shard at the expected offset instead. What atomic does and does not cover is in
+the shard at the expected offset instead.
+
+`commit_on_shard`, `commit_if_on_shard`, `publish_if_on_shard` and
+`state_get_on_shard` take a shard instead of hashing the entity key, for a
+writer that keeps one shard per partition:
+
+```rust
+let written = cluster
+    .commit_if_on_shard(
+        "acme", "city", district, b"district",
+        vec![CommitOp::publish("ticks", tick), CommitOp::put("ticks", "district", state)],
+        next,
+    )
+    .await?;
+let state = cluster.state_get_on_shard("acme", "city", "ticks", district, "district").await?;
+```
+
+What atomic does and does not cover is in
 [`docs/atomic-commit.md`](https://github.com/GetFelix/felix/blob/main/docs/atomic-commit.md).
 
 ## Clusters

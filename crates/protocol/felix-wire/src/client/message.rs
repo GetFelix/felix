@@ -39,6 +39,7 @@ use crate::error::{Error, Result};
 ///     payload: b"hello".to_vec(),
 ///     // No routing key: shard 0, exactly as before routing keys existed.
 ///     key: None,
+///     shard: None,
 ///     request_id: None,
 ///     ack: None,
 /// };
@@ -325,6 +326,13 @@ pub enum Message {
             with = "crate::client::message::base64_serde::base64_option_bytes"
         )]
         key: Option<Bytes>,
+        /// The shard to write to, used instead of hashing `key`. Out of range
+        /// for the stream is refused with `invalid_request`. The key still
+        /// travels for whatever else reads it. Absent routes by `key`, as
+        /// every client did before. Sent only to a broker that advertised
+        /// `FEATURE_EXPLICIT_SHARD`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shard: Option<u32>,
         #[serde(skip_serializing_if = "Option::is_none")]
         request_id: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -348,6 +356,13 @@ pub enum Message {
             with = "crate::client::message::base64_serde::base64_option_bytes"
         )]
         key: Option<Bytes>,
+        /// The shard to write to, used instead of hashing `key`. Out of range
+        /// for the stream is refused with `invalid_request`. The key still
+        /// travels for whatever else reads it. Absent routes by `key`, as
+        /// every client did before. Sent only to a broker that advertised
+        /// `FEATURE_EXPLICIT_SHARD`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shard: Option<u32>,
         #[serde(skip_serializing_if = "Option::is_none")]
         request_id: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -406,6 +421,10 @@ pub enum Message {
             with = "crate::client::message::base64_serde::base64_option_bytes"
         )]
         key: Option<Bytes>,
+        /// Names the shard as on `publish_batch`. The sequence is then the
+        /// named shard's.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shard: Option<u32>,
         request_id: u64,
         producer_id: u64,
         sequence: u64,
@@ -433,6 +452,10 @@ pub enum Message {
             with = "crate::client::message::base64_serde::base64_option_bytes"
         )]
         key: Option<Bytes>,
+        /// Names the shard as on `publish_batch`; the expected offset is
+        /// then that shard's tail.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shard: Option<u32>,
         expected_offset: u64,
         request_id: u64,
     },
@@ -861,6 +884,11 @@ pub enum Message {
         /// sent before.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expected_offset: Option<u64>,
+        /// The shard to commit to, used instead of hashing `entity_key`.
+        /// Out of range is refused with `invalid_request`. Sent only to a
+        /// broker that advertised `FEATURE_EXPLICIT_SHARD`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shard: Option<u32>,
     },
     /// The commit is durable (on a `Quorum` stream, on a majority) at
     /// `offset`, which is also the version of every key it wrote.
@@ -876,6 +904,11 @@ pub enum Message {
         entity_key: Bytes,
         key: String,
         request_id: u64,
+        /// Read the state of this shard instead of the one `entity_key`
+        /// hashes to, as `commit.shard` wrote it. Sent only to a broker that
+        /// advertised `FEATURE_EXPLICIT_SHARD`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shard: Option<u32>,
     },
     /// A key's value and the offset of the commit that wrote it, as of
     /// `as_of`: every commit at or below it and no later one.

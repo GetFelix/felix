@@ -840,3 +840,38 @@ The broker advertises FEATURE_ATOMIC_COMMIT in auth_ok. A client uses commit
 and state_get only when it saw the bit, and a peer that offers no capabilities
 gets the same plain ok, byte for byte, that it always did.
 """
+
+# ---------------------------------------------------------------------------
+# Explicit shard
+#
+# A write that names its shard rather than hashing a key. See docs/protocol.md.
+# ---------------------------------------------------------------------------
+
+[[scenario]]
+id = "explicit_shard.negotiated"
+required = false
+title = "A broker that honours a named shard says so"
+detail = """
+The broker advertises FEATURE_EXPLICIT_SHARD in server_features_hi. A client
+sends shard only to a broker that did; any other would ignore the field and
+route by the key.
+"""
+
+[[scenario]]
+id = "explicit_shard.commit_lands_on_the_named_shard"
+required = false
+title = "A commit to a named shard is read back from that shard"
+detail = """
+A commit naming shard 0 is answered with commit_ok, and a state_get naming the
+same shard, with no entity key, returns the value at the commit's offset.
+"""
+
+[[scenario]]
+id = "explicit_shard.out_of_range_is_refused"
+required = false
+title = "A shard the stream does not have is refused, and nothing is written"
+detail = """
+publish_batch and commit naming a shard at or past the stream's shard count are
+refused with invalid_request rather than wrapped onto another shard. The
+shard's next offset is unchanged afterwards.
+"""

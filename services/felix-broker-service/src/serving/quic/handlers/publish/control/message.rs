@@ -25,7 +25,8 @@ use crate::serving::quic::handlers::publish::ingress::{
     Enqueued, PublishTarget, enqueue_acked_tenant_publish,
 };
 use crate::serving::quic::handlers::publish::route::{
-    internal_ack, needs_quorum, publish_target, resolve_route, resolve_shard, targets_durable,
+    internal_ack, needs_quorum, publish_target, resolve_publish_shard, resolve_route,
+    targets_durable,
 };
 use crate::serving::quic::handlers::publish::{
     CommitAcks, PublishAs, PublishContext, PublishJob, PublishReply, StreamHandleCache,
@@ -54,6 +55,8 @@ pub(crate) async fn handle_publish_message(
     stream: String,
     payload: Vec<u8>,
     key: Option<bytes::Bytes>,
+    // Used instead of hashing `key` when the client named a shard.
+    shard: Option<u32>,
     request_id: Option<u64>,
     ack: Option<felix_wire::AckMode>,
     sample: bool,
@@ -161,27 +164,36 @@ pub(crate) async fn handle_publish_message(
     // Resolved once and then carried: the route and the batch must name the
     // same shard, or the owner appends to a different log than the one this
     // broker dispatched on.
-    let shard = resolve_shard(publish_ctx, &tenant_id, &namespace, &stream, key.as_deref());
-    let target = publish_target(
-        resolve_route(
-            broker,
-            publish_ctx.authority(),
-            stream_cache,
-            stream_cache_key,
-            &tenant_id,
-            &namespace,
-            &stream,
-            shard,
-        )
-        .await,
+    let target = match resolve_publish_shard(
         publish_ctx,
         &tenant_id,
         &namespace,
         &stream,
+        key.as_deref(),
         shard,
-        internal_ack(ack),
-        &credential,
-    );
+    ) {
+        Ok(shard) => publish_target(
+            resolve_route(
+                broker,
+                publish_ctx.authority(),
+                stream_cache,
+                stream_cache_key,
+                &tenant_id,
+                &namespace,
+                &stream,
+                shard,
+            )
+            .await,
+            publish_ctx,
+            &tenant_id,
+            &namespace,
+            &stream,
+            shard,
+            internal_ack(ack),
+            &credential,
+        ),
+        Err(refusal) => Err(refusal),
+    };
     let refusal = target.as_ref().err().cloned();
     let target = target.ok();
 

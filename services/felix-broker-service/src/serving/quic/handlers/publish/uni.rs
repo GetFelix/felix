@@ -12,7 +12,7 @@ use felix_wire::Frame;
 use crate::serving::auth::AuthContext;
 use crate::serving::quic::handlers::publish::ingress::enqueue_tenant_publish;
 use crate::serving::quic::handlers::publish::route::{
-    UNKEYED_SHARD, publish_target, resolve_route, resolve_shard,
+    UNKEYED_SHARD, named_shard, publish_target, resolve_route, resolve_shard,
 };
 use crate::serving::quic::handlers::publish::{
     PublishAs, PublishContext, PublishJob, StreamHandleCache,
@@ -144,6 +144,8 @@ pub(crate) async fn handle_publish_message_uni(
     namespace: String,
     stream: String,
     payload: Vec<u8>,
+    // A uni publish routes by no key; a named shard is still honoured.
+    shard: Option<u32>,
     // The publisher's token, carried on a forward for the owner to verify,
     // and the principal recorded on what is written here.
     publishing_as: impl Into<PublishAs>,
@@ -160,6 +162,13 @@ pub(crate) async fn handle_publish_message_uni(
         counters.pub_batches_in_ok.fetch_add(1, Ordering::Relaxed);
         counters.pub_items_in_ok.fetch_add(1, Ordering::Relaxed);
     }
+    let shard = match shard {
+        None => UNKEYED_SHARD,
+        Some(shard) => match named_shard(publish_ctx, &tenant_id, &namespace, &stream, shard) {
+            Ok(shard) => shard,
+            Err(_) => return Ok(true),
+        },
+    };
     let Ok(target) = publish_target(
         resolve_route(
             broker,
@@ -169,14 +178,14 @@ pub(crate) async fn handle_publish_message_uni(
             &tenant_id,
             &namespace,
             &stream,
-            UNKEYED_SHARD,
+            shard,
         )
         .await,
         publish_ctx,
         &tenant_id,
         &namespace,
         &stream,
-        UNKEYED_SHARD,
+        shard,
         // Fire-and-forget: the owner is told no acknowledgement is expected, the
         // same contract the client gave this broker.
         felix_wire::internal::AckMode::None,
@@ -229,6 +238,8 @@ pub(crate) async fn handle_publish_batch_message_uni(
     namespace: String,
     stream: String,
     payloads: Vec<Vec<u8>>,
+    // A uni publish routes by no key; a named shard is still honoured.
+    shard: Option<u32>,
     // The publisher's token, carried on a forward for the owner to verify,
     // and the principal recorded on what is written here.
     publishing_as: impl Into<PublishAs>,
@@ -247,6 +258,13 @@ pub(crate) async fn handle_publish_batch_message_uni(
             .pub_items_in_ok
             .fetch_add(payloads.len() as u64, Ordering::Relaxed);
     }
+    let shard = match shard {
+        None => UNKEYED_SHARD,
+        Some(shard) => match named_shard(publish_ctx, &tenant_id, &namespace, &stream, shard) {
+            Ok(shard) => shard,
+            Err(_) => return Ok(true),
+        },
+    };
     let Ok(target) = publish_target(
         resolve_route(
             broker,
@@ -256,14 +274,14 @@ pub(crate) async fn handle_publish_batch_message_uni(
             &tenant_id,
             &namespace,
             &stream,
-            UNKEYED_SHARD,
+            shard,
         )
         .await,
         publish_ctx,
         &tenant_id,
         &namespace,
         &stream,
-        UNKEYED_SHARD,
+        shard,
         // Fire-and-forget: the owner is told no acknowledgement is expected, the
         // same contract the client gave this broker.
         felix_wire::internal::AckMode::None,

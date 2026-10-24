@@ -80,6 +80,7 @@ async fn acked_publishes_pipeline_without_waiting_per_ack() -> Result<()> {
         let (response_tx, response_rx) = oneshot::channel();
         tx.send(PublishRequest::Message {
             message: Message::PublishBatch {
+                shard: None,
                 tenant_id: "t".into(),
                 namespace: "ns".into(),
                 stream: "s".into(),
@@ -170,6 +171,7 @@ async fn acks_answered_out_of_order_reach_their_own_requests() -> Result<()> {
         let (response_tx, response_rx) = oneshot::channel();
         tx.send(PublishRequest::Message {
             message: Message::PublishBatch {
+                shard: None,
                 tenant_id: "t".into(),
                 namespace: "ns".into(),
                 stream: "s".into(),
@@ -255,6 +257,7 @@ async fn finish_skips_finish_request_when_channel_closed() {
                 server_flags: felix_wire::KNOWN_FLAGS,
                 publish_window: 0,
                 takes_width: false,
+                takes_shard: false,
             }]),
             PublishSharding::RoundRobin,
         )),
@@ -289,6 +292,7 @@ async fn run_publisher_writer_publish_batch_no_ack_ok() -> Result<()> {
     let (response_tx, response_rx) = oneshot::channel();
     tx.send(PublishRequest::Message {
         message: Message::PublishBatch {
+            shard: None,
             tenant_id: "t1".to_string(),
             namespace: "ns".to_string(),
             stream: "s".to_string(),
@@ -435,6 +439,7 @@ async fn drain_publish_queue_returns_errors() {
 
     tx.send(PublishRequest::Message {
         message: Message::Publish {
+            shard: None,
             tenant_id: "t".to_string(),
             namespace: "ns".to_string(),
             stream: "s".to_string(),

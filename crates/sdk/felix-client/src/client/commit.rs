@@ -28,7 +28,7 @@ impl Client {
         ops: Vec<CommitOp>,
     ) -> Result<CommitReceipt> {
         match self
-            .send_commit(tenant_id, namespace, entity_key, ops, None)
+            .send_commit(tenant_id, namespace, entity_key, None, ops, None)
             .await?
         {
             Message::CommitOk { offset, .. } => Ok(CommitReceipt { offset }),
@@ -57,7 +57,72 @@ impl Client {
     ) -> Result<ConditionalWrite> {
         self.require_conditional_publish()?;
         let answer = self
-            .send_commit(tenant_id, namespace, entity_key, ops, Some(expected_offset))
+            .send_commit(
+                tenant_id,
+                namespace,
+                entity_key,
+                None,
+                ops,
+                Some(expected_offset),
+            )
+            .await?;
+        match answer {
+            Message::CommitOk { offset, .. } => Ok(ConditionalWrite::Written { offset }),
+            other => conditional_answer("commit_if", other),
+        }
+    }
+
+    /// [`Self::commit`] to `shard` of the stream, rather than the shard
+    /// `entity_key` hashes to.
+    ///
+    /// For a writer that owns its partitioning: one shard per partition, each
+    /// committing at its own offsets. `entity_key` still travels with the
+    /// commit, but does not choose the shard. A shard the stream does not
+    /// have is refused with `invalid_request`, and nothing is written. Read
+    /// what it wrote with [`Self::state_get_on_shard`].
+    ///
+    /// Fails without sending anything when the broker did not advertise
+    /// [`felix_wire::FEATURE_EXPLICIT_SHARD`]: an older broker would ignore
+    /// the shard and commit wherever `entity_key` hashes.
+    pub async fn commit_on_shard(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        shard: u32,
+        entity_key: &[u8],
+        ops: Vec<CommitOp>,
+    ) -> Result<CommitReceipt> {
+        match self
+            .send_commit(tenant_id, namespace, entity_key, Some(shard), ops, None)
+            .await?
+        {
+            Message::CommitOk { offset, .. } => Ok(CommitReceipt { offset }),
+            other => Err(unexpected("commit", &other)),
+        }
+    }
+
+    /// [`Self::commit_if`] to `shard` of the stream; see
+    /// [`Self::commit_on_shard`]. `expected_offset` is that shard's next
+    /// offset.
+    pub async fn commit_if_on_shard(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        shard: u32,
+        entity_key: &[u8],
+        ops: Vec<CommitOp>,
+        expected_offset: u64,
+    ) -> Result<ConditionalWrite> {
+        self.require_conditional_publish()?;
+        let answer = self
+            .send_commit(
+                tenant_id,
+                namespace,
+                entity_key,
+                Some(shard),
+                ops,
+                Some(expected_offset),
+            )
             .await?;
         match answer {
             Message::CommitOk { offset, .. } => Ok(ConditionalWrite::Written { offset }),
@@ -70,11 +135,15 @@ impl Client {
         tenant_id: &str,
         namespace: &str,
         entity_key: &[u8],
+        shard: Option<u32>,
         ops: Vec<CommitOp>,
         expected_offset: Option<u64>,
     ) -> Result<Message> {
         let prepared = prepare(ops)?;
         self.require_commits()?;
+        if shard.is_some() {
+            self.require_explicit_shard()?;
+        }
         let request_id = self.cache_request_counter.fetch_add(1, Ordering::Relaxed);
         let message = Message::Commit {
             tenant_id: tenant_id.to_owned(),
@@ -85,6 +154,7 @@ impl Client {
             changes: prepared.changes,
             request_id,
             expected_offset,
+            shard,
         };
         self.group_round_trip(message, request_id).await
     }
@@ -117,7 +187,60 @@ impl Client {
         payloads: Vec<Vec<u8>>,
         expected_offset: u64,
     ) -> Result<ConditionalWrite> {
+        self.send_publish_if(
+            tenant_id,
+            namespace,
+            stream,
+            key,
+            None,
+            payloads,
+            expected_offset,
+        )
+        .await
+    }
+
+    /// [`Self::publish_if`] to `shard` of the stream, rather than the shard a
+    /// key would hash to. `expected_offset` is that shard's next offset.
+    ///
+    /// A shard the stream does not have is refused with `invalid_request`.
+    /// Fails without sending anything when the broker did not advertise
+    /// [`felix_wire::FEATURE_EXPLICIT_SHARD`].
+    pub async fn publish_if_on_shard(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        payloads: Vec<Vec<u8>>,
+        expected_offset: u64,
+    ) -> Result<ConditionalWrite> {
+        self.send_publish_if(
+            tenant_id,
+            namespace,
+            stream,
+            None,
+            Some(shard),
+            payloads,
+            expected_offset,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn send_publish_if(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        key: Option<&[u8]>,
+        shard: Option<u32>,
+        payloads: Vec<Vec<u8>>,
+        expected_offset: u64,
+    ) -> Result<ConditionalWrite> {
         self.require_conditional_publish()?;
+        if shard.is_some() {
+            self.require_explicit_shard()?;
+        }
         if payloads.is_empty() {
             return Err(anyhow::anyhow!(
                 "a conditional publish needs at least one record"
@@ -130,6 +253,7 @@ impl Client {
             stream: stream.to_owned(),
             payloads,
             key: key.map(Bytes::copy_from_slice),
+            shard,
             expected_offset,
             request_id,
         };
@@ -151,7 +275,39 @@ impl Client {
         entity_key: &[u8],
         key: &str,
     ) -> Result<StateValue> {
+        self.send_state_get(tenant_id, namespace, stream, entity_key, None, key)
+            .await
+    }
+
+    /// `key` in the state of `shard` of `stream`, as
+    /// [`Self::commit_on_shard`] wrote it. Fails without sending anything
+    /// when the broker did not advertise
+    /// [`felix_wire::FEATURE_EXPLICIT_SHARD`].
+    pub async fn state_get_on_shard(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        key: &str,
+    ) -> Result<StateValue> {
+        self.send_state_get(tenant_id, namespace, stream, &[], Some(shard), key)
+            .await
+    }
+
+    async fn send_state_get(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        entity_key: &[u8],
+        shard: Option<u32>,
+        key: &str,
+    ) -> Result<StateValue> {
         self.require_commits()?;
+        if shard.is_some() {
+            self.require_explicit_shard()?;
+        }
         let request_id = self.cache_request_counter.fetch_add(1, Ordering::Relaxed);
         let message = Message::StateGet {
             tenant_id: tenant_id.to_owned(),
@@ -160,6 +316,7 @@ impl Client {
             entity_key: Bytes::copy_from_slice(entity_key),
             key: key.to_owned(),
             request_id,
+            shard,
         };
         match self.group_round_trip(message, request_id).await? {
             Message::StateValue {
@@ -189,6 +346,17 @@ impl Client {
             Err(anyhow::anyhow!(
                 "this broker does not support conditional publishes"
             ))
+        }
+    }
+
+    /// Refused without a round trip against a broker that would ignore
+    /// `shard` and route by the key instead.
+    fn require_explicit_shard(&self) -> Result<()> {
+        if felix_wire::supports_feature(self.server_features_hi, felix_wire::FEATURE_EXPLICIT_SHARD)
+        {
+            Ok(())
+        } else {
+            Err(crate::publish::explicit_shard_unsupported())
         }
     }
 

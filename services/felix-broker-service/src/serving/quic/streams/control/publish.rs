@@ -24,6 +24,7 @@ pub(super) async fn publish(
     stream: String,
     payload: Vec<u8>,
     key: Option<Bytes>,
+    shard: Option<u32>,
     request_id: Option<u64>,
     ack: Option<AckMode>,
 ) -> Result<Step> {
@@ -72,6 +73,7 @@ pub(super) async fn publish(
         stream,
         payload,
         key,
+        shard,
         request_id,
         ack,
         sample,
@@ -94,6 +96,7 @@ pub(super) async fn publish_batch(
     stream: String,
     payloads: Vec<Vec<u8>>,
     key: Option<Bytes>,
+    shard: Option<u32>,
     request_id: Option<u64>,
     ack: Option<AckMode>,
 ) -> Result<Step> {
@@ -145,6 +148,7 @@ pub(super) async fn publish_batch(
         stream,
         payloads.into_iter().map(bytes::Bytes::from).collect(),
         key,
+        shard,
         request_id,
         ack,
         sample,
@@ -168,6 +172,7 @@ pub(super) async fn publish_idempotent(
     stream: String,
     payloads: Vec<Vec<u8>>,
     key: Option<Bytes>,
+    shard: Option<u32>,
     request_id: u64,
     producer_id: u64,
     sequence: u64,
@@ -220,6 +225,7 @@ pub(super) async fn publish_idempotent(
         stream,
         payloads.into_iter().map(bytes::Bytes::from).collect(),
         key,
+        shard,
         Some(request_id),
         // Always acknowledged: a producer that never learns the
         // answer cannot know what to send next.

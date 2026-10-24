@@ -167,6 +167,7 @@ pub(crate) async fn publish(
     quic::write_message(
         &mut send,
         Message::Publish {
+            shard: None,
             tenant_id: "t1".to_string(),
             namespace: "default".to_string(),
             stream: stream.to_string(),

@@ -187,6 +187,7 @@ async fn handle_publish_message_uni_missing_stream_returns_true() {
         "ns".to_string(),
         "stream".to_string(),
         vec![1],
+        None,
         String::new(),
     )
     .await
@@ -224,6 +225,7 @@ async fn handle_publish_message_uni_enqueue_error_returns_false() {
         "ns".to_string(),
         "stream".to_string(),
         vec![1],
+        None,
         String::new(),
     )
     .await
@@ -261,6 +263,7 @@ async fn handle_publish_message_uni_drop_returns_true() {
         "ns".to_string(),
         "stream".to_string(),
         vec![1],
+        None,
         String::new(),
     )
     .await
@@ -283,6 +286,7 @@ async fn handle_publish_batch_message_uni_missing_stream_returns_true() {
         "ns".to_string(),
         "stream".to_string(),
         vec![b"a".to_vec(), b"b".to_vec()],
+        None,
         String::new(),
     )
     .await
@@ -320,6 +324,7 @@ async fn handle_publish_batch_message_uni_enqueue_error_returns_false() {
         "ns".to_string(),
         "stream".to_string(),
         vec![b"a".to_vec(), b"b".to_vec()],
+        None,
         String::new(),
     )
     .await
@@ -357,6 +362,7 @@ async fn handle_publish_batch_message_uni_drop_returns_true() {
         "ns".to_string(),
         "stream".to_string(),
         vec![b"a".to_vec(), b"b".to_vec()],
+        None,
         String::new(),
     )
     .await
