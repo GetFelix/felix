@@ -27,6 +27,7 @@ mod cache;
 mod cache_watch;
 mod cancel;
 mod client;
+mod commit;
 mod completion;
 mod error;
 mod event;
@@ -55,6 +56,13 @@ pub use cancel::{
     FelixCancelToken, felix_cancel_token_cancel, felix_cancel_token_free, felix_cancel_token_new,
 };
 pub use client::{FelixClient, FelixConnectCallback, felix_client_connect, felix_client_free};
+pub use commit::{
+    FELIX_COMMIT_DELETE, FELIX_COMMIT_ENQUEUE, FELIX_COMMIT_PUBLISH, FELIX_COMMIT_PUT,
+    FelixCommitCallback, FelixCommitOp, FelixCommitOpKind, FelixConditionalCallback,
+    FelixStateCallback, FelixStateValue, felix_client_commit, felix_client_commit_if,
+    felix_client_commit_if_on_shard, felix_client_commit_on_shard, felix_client_publish_if,
+    felix_client_publish_if_on_shard, felix_client_state_get, felix_client_state_get_on_shard,
+};
 pub use error::felix_last_error_message;
 pub use event::{
     FelixEvent, felix_event_free, felix_event_offset, felix_event_payload,
@@ -86,7 +94,7 @@ pub use status::{
     FELIX_STATUS_AUTH, FELIX_STATUS_CANCELLED, FELIX_STATUS_CLOSED, FELIX_STATUS_CONNECTION,
     FELIX_STATUS_CURSOR, FELIX_STATUS_ERROR, FELIX_STATUS_INVALID_ARGUMENT, FELIX_STATUS_NOT_FOUND,
     FELIX_STATUS_OK, FELIX_STATUS_OUTCOME_UNKNOWN, FELIX_STATUS_OVERLOADED, FELIX_STATUS_PANIC,
-    FELIX_STATUS_SHARD_UNAVAILABLE, FELIX_STATUS_TIMEOUT, FelixStatus,
+    FELIX_STATUS_SHARD_UNAVAILABLE, FELIX_STATUS_TIMEOUT, FELIX_STATUS_UNSUPPORTED, FelixStatus,
 };
 pub use subscription::{
     FELIX_CLOSE_ENDED, FELIX_CLOSE_OPEN, FELIX_CLOSE_STREAM_DELETED, FELIX_START_EARLIEST,

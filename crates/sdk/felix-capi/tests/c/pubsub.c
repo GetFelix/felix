@@ -7,7 +7,7 @@
  *     are cancelled. Needs no broker.
  *
  *   pubsub fixture ADDRS TENANT NAMESPACE TOKEN CA_FILE STREAM MISSING UNAUTHORIZED_TOKEN GROUP_OPERATOR_TOKEN CACHE SINGLE_SHARD_CACHE
- *     The publish, batch, subscribe, subscription, group and cache scenarios, against `felix-cluster
+ *     The publish, batch, subscribe, subscription, group, cache and commit scenarios, against `felix-cluster
  *     client-fixture`. tests/c/run.sh starts the fixture and passes its
  *     fields in.
  *
@@ -2196,6 +2196,287 @@ static void caches(const struct fixture *f, const char *run) {
   felix_client_free(client);
 }
 
+/* ---- atomic commits, conditional publishes and state reads ------------- */
+
+/* One commit-family call's result; each call fills the fields it reports. */
+struct kres {
+  struct waiter w;
+  uint64_t offset;
+  bool written;
+  bool has_state;
+  bool has_value;
+  char value[64];
+  bool has_version;
+  uint64_t version;
+  bool has_as_of;
+  uint64_t as_of;
+};
+
+static void kres_init(struct kres *r) {
+  memset(r, 0, sizeof *r);
+  waiter_init(&r->w);
+}
+
+static void on_commit_done(void *user_data, FelixStatus status,
+                           const char *message, uint64_t offset) {
+  struct kres *r = user_data;
+  r->offset = offset;
+  finish(&r->w, status, message, NULL);
+}
+
+static void on_conditional_done(void *user_data, FelixStatus status,
+                                const char *message, bool written,
+                                uint64_t offset) {
+  struct kres *r = user_data;
+  r->written = written;
+  r->offset = offset;
+  finish(&r->w, status, message, NULL);
+}
+
+static void on_state_done(void *user_data, FelixStatus status,
+                          const char *message, const FelixStateValue *state) {
+  struct kres *r = user_data;
+  r->has_state = state != NULL;
+  if (state) {
+    r->has_value = state->has_value;
+    copy_bounded(r->value, sizeof r->value, state->value, state->value_len);
+    r->has_version = state->has_version;
+    r->version = state->version;
+    r->has_as_of = state->has_as_of;
+    r->as_of = state->as_of;
+  }
+  finish(&r->w, status, message, NULL);
+}
+
+static FelixStatus kres_wait(struct kres *r, FelixStatus started) {
+  FelixStatus status =
+      started == FELIX_STATUS_OK ? wait_for(&r->w, WAIT_MS) : started;
+  waiter_destroy(&r->w);
+  return status;
+}
+
+struct kctx {
+  FelixClient *client;
+  const struct fixture *f;
+};
+
+/* A commit of one event and one state change: a put of `value`, or a delete
+   when `value` is NULL. `shard` < 0 routes by the entity key. `expected` is
+   used by the conditional forms. */
+static FelixStatus k_commit(const struct kctx *k, int64_t shard,
+                            const char *entity, const char *event,
+                            const char *key, const char *value, bool conditional,
+                            uint64_t expected, struct kres *r) {
+  FelixCommitOp ops[2];
+  memset(ops, 0, sizeof ops);
+  ops[0].kind = FELIX_COMMIT_PUBLISH;
+  ops[0].stream = k->f->stream;
+  ops[0].data = (const uint8_t *)event;
+  ops[0].data_len = strlen(event);
+  ops[1].kind = value ? FELIX_COMMIT_PUT : FELIX_COMMIT_DELETE;
+  ops[1].stream = k->f->stream;
+  ops[1].key = key;
+  ops[1].data = (const uint8_t *)value;
+  ops[1].data_len = value ? strlen(value) : 0;
+  const uint8_t *ek = (const uint8_t *)entity;
+  size_t ek_len = strlen(entity);
+  kres_init(r);
+  FelixStatus started;
+  if (conditional) {
+    started = shard < 0
+                  ? felix_client_commit_if(k->client, k->f->tenant, k->f->ns,
+                                           ek, ek_len, ops, 2, expected, NULL,
+                                           on_conditional_done, r)
+                  : felix_client_commit_if_on_shard(
+                        k->client, k->f->tenant, k->f->ns, (uint32_t)shard, ek,
+                        ek_len, ops, 2, expected, NULL, on_conditional_done, r);
+  } else {
+    started = shard < 0
+                  ? felix_client_commit(k->client, k->f->tenant, k->f->ns, ek,
+                                        ek_len, ops, 2, NULL, on_commit_done, r)
+                  : felix_client_commit_on_shard(
+                        k->client, k->f->tenant, k->f->ns, (uint32_t)shard, ek,
+                        ek_len, ops, 2, NULL, on_commit_done, r);
+  }
+  return kres_wait(r, started);
+}
+
+static FelixStatus k_state(const struct kctx *k, int64_t shard,
+                           const char *entity, const char *key,
+                           struct kres *r) {
+  kres_init(r);
+  FelixStatus started =
+      shard < 0 ? felix_client_state_get(k->client, k->f->tenant, k->f->ns,
+                                         k->f->stream, (const uint8_t *)entity,
+                                         strlen(entity), key, NULL,
+                                         on_state_done, r)
+                : felix_client_state_get_on_shard(
+                      k->client, k->f->tenant, k->f->ns, k->f->stream,
+                      (uint32_t)shard, key, NULL, on_state_done, r);
+  return kres_wait(r, started);
+}
+
+/* A conditional publish of two records. */
+static FelixStatus k_publish_if(const struct kctx *k, int64_t shard,
+                                const char *key, uint64_t expected,
+                                struct kres *r) {
+  const uint8_t data[] = {'p', 'i', '-', '1', 'p', 'i', '-', '2'};
+  const size_t lens[2] = {4, 4};
+  kres_init(r);
+  FelixStatus started =
+      shard < 0
+          ? felix_client_publish_if(k->client, k->f->tenant, k->f->ns,
+                                    k->f->stream, (const uint8_t *)key,
+                                    strlen(key), data, lens, 2, expected, NULL,
+                                    on_conditional_done, r)
+          : felix_client_publish_if_on_shard(
+                k->client, k->f->tenant, k->f->ns, k->f->stream,
+                (uint32_t)shard, data, lens, 2, expected, NULL,
+                on_conditional_done, r);
+  return kres_wait(r, started);
+}
+
+/* A conditional write at a stale offset is refused with the tail; one at the
+   tail is written there. `write` runs the form under test. */
+typedef FelixStatus (*conditional_fn)(const struct kctx *k, int64_t shard,
+                                      const char *tag, uint64_t expected,
+                                      struct kres *r);
+
+static FelixStatus cond_commit(const struct kctx *k, int64_t shard,
+                               const char *tag, uint64_t expected,
+                               struct kres *r) {
+  return k_commit(k, shard, tag, tag, tag, "cond", true, expected, r);
+}
+
+static FelixStatus cond_publish(const struct kctx *k, int64_t shard,
+                                const char *tag, uint64_t expected,
+                                struct kres *r) {
+  return k_publish_if(k, shard, tag, expected, r);
+}
+
+static void check_conditional(const struct kctx *k, const char *what,
+                              conditional_fn write, int64_t shard,
+                              const char *tag) {
+  struct kres r;
+  /* No shard's tail is this large, so the first write is always stale. */
+  FelixStatus status = write(k, shard, tag, UINT64_MAX, &r);
+  CHECK(status == FELIX_STATUS_OK && !r.written,
+        "%s at a stale offset gave %d, written %d", what, (int)status,
+        (int)r.written);
+  uint64_t tail = r.offset;
+  status = write(k, shard, tag, tail, &r);
+  CHECK(status == FELIX_STATUS_OK && r.written && r.offset == tail,
+        "%s at the tail %" PRIu64 " gave %d, written %d at %" PRIu64, what, tail,
+        (int)status, (int)r.written, r.offset);
+  uint64_t landed = r.offset;
+  status = write(k, shard, tag, tail, &r);
+  CHECK(status == FELIX_STATUS_OK && !r.written && r.offset > landed,
+        "%s again at %" PRIu64 " gave %d, written %d, tail %" PRIu64, what, tail,
+        (int)status, (int)r.written, r.offset);
+}
+
+static void commits(const struct fixture *f, const char *run) {
+  FelixClient *client = NULL;
+  REQUIRE_OK(connect_sync(f->addrs, f->tenant, f->token, f->ca_file, &client));
+  struct kctx k = {client, f};
+  struct kres r;
+  char key[160], other[160];
+  snprintf(key, sizeof key, "cm-%s-a", run);
+
+  /* A commit returns its offset, and its state reads back at that version. */
+  FelixStatus status = k_commit(&k, -1, key, "placed", key, "placed", false, 0, &r);
+  CHECK(status == FELIX_STATUS_OK, "commit gave %d", (int)status);
+  uint64_t offset = r.offset;
+  status = k_state(&k, -1, key, key, &r);
+  CHECK(status == FELIX_STATUS_OK && r.has_state && r.has_value &&
+            strcmp(r.value, "placed") == 0 && r.has_version &&
+            r.version == offset && r.has_as_of && r.as_of >= offset,
+        "state gave %d, has_value %d '%s', version %" PRIu64 " (commit at %" PRIu64 ")",
+        (int)status, (int)r.has_value, r.value, r.version, offset);
+
+  /* Deleting the key leaves it absent. */
+  status = k_commit(&k, -1, key, "cancelled", key, NULL, false, 0, &r);
+  CHECK(status == FELIX_STATUS_OK, "delete commit gave %d", (int)status);
+  status = k_state(&k, -1, key, key, &r);
+  CHECK(status == FELIX_STATUS_OK && r.has_state && !r.has_value,
+        "state after the delete gave %d, has_value %d", (int)status,
+        (int)r.has_value);
+
+  /* Conditional commits, routed by the entity key and by shard. */
+  snprintf(other, sizeof other, "cm-%s-if", run);
+  check_conditional(&k, "commit_if", cond_commit, -1, other);
+  snprintf(other, sizeof other, "cm-%s-ifs", run);
+  check_conditional(&k, "commit_if_on_shard", cond_commit, 2, other);
+
+  /* A commit on a named shard reads back from that shard. */
+  snprintf(other, sizeof other, "cm-%s-shard", run);
+  status = k_commit(&k, 2, other, "on-shard", other, "shard-value", false, 0, &r);
+  CHECK(status == FELIX_STATUS_OK, "commit_on_shard gave %d", (int)status);
+  offset = r.offset;
+  status = k_state(&k, 2, other, other, &r);
+  CHECK(status == FELIX_STATUS_OK && r.has_value &&
+            strcmp(r.value, "shard-value") == 0 && r.has_version &&
+            r.version == offset,
+        "state_get_on_shard gave %d, '%s', version %" PRIu64
+        " (commit at %" PRIu64 ")",
+        (int)status, r.value, r.version, offset);
+
+  /* Conditional publishes. */
+  snprintf(other, sizeof other, "cm-%s-pub", run);
+  check_conditional(&k, "publish_if", cond_publish, -1, other);
+  check_conditional(&k, "publish_if_on_shard", cond_publish, 3, other);
+
+  /* Commits the call itself refuses; the callback never runs. */
+  struct kres bad;
+  kres_init(&bad);
+  FelixCommitOp two_events[2];
+  memset(two_events, 0, sizeof two_events);
+  two_events[0].kind = FELIX_COMMIT_PUBLISH;
+  two_events[0].stream = f->stream;
+  two_events[1].kind = FELIX_COMMIT_ENQUEUE;
+  two_events[1].stream = f->stream;
+  status = felix_client_commit(client, f->tenant, f->ns,
+                               (const uint8_t *)key, strlen(key), two_events, 2,
+                               NULL, on_commit_done, &bad);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "two events gave %d",
+        (int)status);
+  FelixCommitOp split[2];
+  memset(split, 0, sizeof split);
+  split[0].kind = FELIX_COMMIT_PUBLISH;
+  split[0].stream = f->stream;
+  split[1].kind = FELIX_COMMIT_PUT;
+  split[1].stream = f->missing;
+  split[1].key = key;
+  status = felix_client_commit(client, f->tenant, f->ns, (const uint8_t *)key,
+                               strlen(key), split, 2, NULL, on_commit_done,
+                               &bad);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "a second stream gave %d",
+        (int)status);
+  const char *message = felix_last_error_message();
+  CHECK(message && strstr(message, f->missing),
+        "the refusal does not name the stream");
+  status = felix_client_commit(client, f->tenant, f->ns, (const uint8_t *)key,
+                               strlen(key), NULL, 0, NULL, on_commit_done,
+                               &bad);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "no operations gave %d",
+        (int)status);
+  two_events[1].kind = 9;
+  status = felix_client_commit(client, f->tenant, f->ns, (const uint8_t *)key,
+                               strlen(key), two_events, 2, NULL, on_commit_done,
+                               &bad);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "an unknown kind gave %d",
+        (int)status);
+  status = felix_client_publish_if(client, f->tenant, f->ns, f->stream, NULL, 0,
+                                   NULL, NULL, 0, 0, NULL, on_conditional_done,
+                                   &bad);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT,
+        "a conditional publish of nothing gave %d", (int)status);
+  pause_ms(100);
+  CHECK(bad.w.calls == 0, "a refused commit call ran its callback");
+  waiter_destroy(&bad.w);
+  felix_client_free(client);
+}
+
 int main(int argc, char **argv) {
   if (argc == 2 && strcmp(argv[1], "offline") == 0) {
     offline();
@@ -2214,6 +2495,7 @@ int main(int argc, char **argv) {
     subscriptions(&f, run);
     groups(&f, run);
     caches(&f, run);
+    commits(&f, run);
   } else {
     fprintf(stderr, "usage: %s offline | fixture ADDRS TENANT NAMESPACE TOKEN "
                     "CA_FILE STREAM MISSING UNAUTHORIZED_TOKEN "

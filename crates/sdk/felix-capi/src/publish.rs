@@ -643,7 +643,7 @@ pub(crate) unsafe fn bytes<'a>(
 /// # Safety
 ///
 /// `key` is null or valid for `len` bytes.
-unsafe fn routing_key(key: *const u8, len: usize) -> Result<Option<Bytes>, Failure> {
+pub(crate) unsafe fn routing_key(key: *const u8, len: usize) -> Result<Option<Bytes>, Failure> {
     if key.is_null() {
         if len != 0 {
             return Err(Failure::invalid("key is null but key_len is not zero"));
@@ -663,7 +663,7 @@ unsafe fn routing_key(key: *const u8, len: usize) -> Result<Option<Bytes>, Failu
 ///
 /// `lens` is null or valid for `count` lengths, and `data` null or valid for
 /// their sum.
-unsafe fn laid_end_to_end(
+pub(crate) unsafe fn laid_end_to_end(
     data: *const u8,
     lens: *const usize,
     count: usize,

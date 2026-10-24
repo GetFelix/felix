@@ -8,7 +8,7 @@
 //! caller does next: retry, give up, or resend only if idempotent.
 
 use felix_client::{
-    BrokerError, NotLeaderError, RetryClass, SubscribeCursorError, SubscriptionLost,
+    BrokerError, CommitError, NotLeaderError, RetryClass, SubscribeCursorError, SubscriptionLost,
 };
 
 /// The result of every fallible call. `FELIX_STATUS_OK` is zero; every other
@@ -52,6 +52,10 @@ pub const FELIX_STATUS_OVERLOADED: FelixStatus = 26;
 /// The write may or may not have been applied. Resend only if it is
 /// idempotent.
 pub const FELIX_STATUS_OUTCOME_UNKNOWN: FelixStatus = 27;
+/// The broker does not serve the call, such as an atomic commit against a
+/// broker that did not advertise commits. Nothing was sent; retrying the same
+/// call will not help.
+pub const FELIX_STATUS_UNSUPPORTED: FelixStatus = 28;
 
 /// The status for an error from the Rust client.
 ///
@@ -60,6 +64,16 @@ pub const FELIX_STATUS_OUTCOME_UNKNOWN: FelixStatus = 27;
 pub(crate) fn classify(err: &anyhow::Error) -> FelixStatus {
     if let Some(broker) = err.chain().find_map(|e| e.downcast_ref::<BrokerError>()) {
         return status_for_code(broker.code.as_str(), broker.retry);
+    }
+    if let Some(refusal) = err.chain().find_map(|e| e.downcast_ref::<CommitError>()) {
+        return match refusal {
+            CommitError::Unsupported => FELIX_STATUS_UNSUPPORTED,
+            // The call checks these before it starts; one that gets here is
+            // still the caller's argument.
+            CommitError::NotOnOwningShard { .. } | CommitError::EventCount(_) => {
+                FELIX_STATUS_INVALID_ARGUMENT
+            }
+        };
     }
     // A redirect the client could not follow says what `not_leader` says.
     if err.chain().any(|e| e.is::<NotLeaderError>()) {

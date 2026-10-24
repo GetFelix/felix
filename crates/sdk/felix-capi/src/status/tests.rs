@@ -34,3 +34,29 @@ fn an_error_without_a_code_is_read_conservatively() {
     assert_eq!(classify_text("connection lost"), FELIX_STATUS_CONNECTION);
     assert_eq!(classify_text("something odd"), FELIX_STATUS_ERROR);
 }
+
+#[test]
+fn commit_refusals_are_classified() {
+    let unsupported = anyhow::Error::from(CommitError::Unsupported).context("commit");
+    assert_eq!(classify(&unsupported), FELIX_STATUS_UNSUPPORTED);
+    for refusal in [
+        CommitError::EventCount(2),
+        CommitError::NotOnOwningShard {
+            index: 1,
+            stream: "a".into(),
+            owner: "b".into(),
+        },
+    ] {
+        assert_eq!(
+            classify(&anyhow::Error::from(refusal)),
+            FELIX_STATUS_INVALID_ARGUMENT
+        );
+    }
+    // Other broker-lacks-it errors keep their old class.
+    assert_eq!(
+        classify(&anyhow::anyhow!(
+            "this broker does not support conditional publishes"
+        )),
+        FELIX_STATUS_ERROR
+    );
+}
