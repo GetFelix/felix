@@ -619,6 +619,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             lag,
             tail,
             copying,
+            again,
             drain_pending,
             behind,
             ..
@@ -657,7 +658,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             behind,
             drain_pending,
         });
-        let mut again = std::mem::take(&mut state.again) || copying;
+        let mut again = std::mem::take(&mut state.again) || copying || again;
         let held = std::mem::take(&mut state.held);
         for answered in held {
             again |= self.merge(answered);

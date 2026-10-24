@@ -200,6 +200,9 @@ pub(super) struct ShardPass<'a> {
     /// A destination still copying was cut off at [`COPY_SLICE`], or another
     /// follower at [`CATCH_UP_SLICE`], with more to send.
     pub(super) copying: bool,
+    /// A busy follower's answer this pass took left work for the next one,
+    /// as [`super::shards`] decides for an answer it merges itself.
+    pub(super) again: bool,
     /// Fenced here and not yet drained: the move is waiting on this broker.
     pub(super) drain_pending: bool,
     /// No follower that could still catch up holds all of the log.
@@ -224,6 +227,7 @@ impl ShardPass<'_> {
             lag: None,
             tail: None,
             copying: false,
+            again: false,
             drain_pending: false,
             behind: false,
         }
@@ -885,6 +889,8 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         .iter()
         .any(|cursor| busy.contains(&cursor.node_id) && counts(&cursor.node_id));
     let mut cut_short = false;
+    let mut absorbed: Vec<String> = Vec::new();
+    let mut absorbed_moved = false;
     while waiting > 0 {
         let arrived = if busy_counts {
             tokio::select! {
@@ -912,6 +918,20 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
             break;
         };
         for (mut shipped, launched_here) in arrived {
+            if !launched_here {
+                // Dropped from the set since that exchange: nothing to count.
+                let Some(held) = positions
+                    .iter()
+                    .find(|held| held.node_id == shipped.cursor.node_id)
+                else {
+                    continue;
+                };
+                // The route may have moved the follower since that exchange.
+                shipped.cursor.addr = held.addr;
+                absorbed_moved |= held.next_offset != shipped.cursor.next_offset
+                    || held.halted != shipped.cursor.halted;
+                absorbed.push(shipped.cursor.node_id.clone());
+            }
             copying |= shipped.cut;
             if counts(&shipped.cursor.node_id) {
                 if launched_here {
@@ -922,14 +942,6 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
             answered.insert(shipped.cursor.node_id.clone());
             if shipped.checked {
                 checked.lock().insert(shipped.cursor.node_id.clone());
-            }
-            if !launched_here
-                && let Some(held) = positions
-                    .iter()
-                    .find(|held| held.node_id == shipped.cursor.node_id)
-            {
-                // The route may have moved the follower since that exchange.
-                shipped.cursor.addr = held.addr;
             }
             settle(&mut positions, shipped.cursor);
             settle_aux(&mut aux, shipped.rode);
@@ -1250,6 +1262,17 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         })
         .collect();
     let lag = lag_records(tail, &entry.followers);
+    // Read after this pass published, so only what it could not count.
+    let mark = marks
+        .offset_at(mark_key, incarnation, route.generation)
+        .unwrap_or(0);
+    let again = absorbed_moved
+        || entry.followers.iter().any(|cursor| {
+            absorbed.contains(&cursor.node_id)
+                && checked.lock().contains(&cursor.node_id)
+                && cursor.halted.is_none()
+                && cursor.confirmed > mark
+        });
 
     ShardPass {
         key: shard_key,
@@ -1264,6 +1287,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         lag,
         tail: Some(tail),
         copying,
+        again,
         drain_pending: route.draining && !drained,
         behind,
     }
