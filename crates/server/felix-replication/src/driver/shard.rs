@@ -367,7 +367,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     // replaced. `Leader` acknowledges before shipping, and a move hands over an
     // exact copy, so both keep the tail.
     let quorum_shard = crate::quorum::acknowledges_at_quorum(broker, key).await;
-    // Retention stops at the commit offset written through below, so nothing
+    // Retention stops at the commit offset raised below, so nothing
     // a publish may still be waiting on is deleted before a majority has it.
     if let Err(err) = log.hold_retention_at_commit(quorum_shard).await {
         tracing::warn!(
@@ -1189,7 +1189,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
             stream = %key.stream,
             shard = key.shard,
             error = %err,
-            "could not write the commit offset through; it holds in memory",
+            "could not record the commit offset; it holds in memory",
         );
     }
 

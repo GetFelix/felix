@@ -590,18 +590,23 @@ impl DiskLog {
 
     /// Record that every record below `offset` is committed.
     ///
-    /// If the write fails the offset still holds in memory and is written
-    /// again every [`COMMIT_PERSIST_INTERVAL`] until it lands, whether or not
-    /// anything calls this again.
-    ///
     /// Takes effect at once for [`AppendOnlyLog::truncate`] and
-    /// [`DiskLog::reset_to`], which refuse to cut below it. Under
-    /// [`FsyncMode::OnCommit`] it is on disk when this returns, so a restart
-    /// reads back every offset acknowledged under it. Otherwise it reaches disk
-    /// at most once per [`COMMIT_PERSIST_INTERVAL`], and always with a raised
-    /// generation and at shutdown; the offset read back after a crash may then
-    /// be behind, which weakens the guard: truncation may cut into records
-    /// committed since, until the leader's next batch carries the offset again.
+    /// [`DiskLog::reset_to`], which refuse to cut below it, and for retention.
+    /// It is written to disk behind the call, so the replication path never
+    /// waits on it: under [`FsyncMode::OnCommit`] a write starts at once and
+    /// one write in flight serves every advance made while it runs; otherwise
+    /// it is written at most once per [`COMMIT_PERSIST_INTERVAL`]. Always with
+    /// a raised generation and at shutdown. A write that fails is retried every
+    /// [`COMMIT_PERSIST_INTERVAL`] until it lands, whether or not anything
+    /// calls this again.
+    ///
+    /// After a crash the offset read back may therefore be behind, never
+    /// ahead. That weakens only the guard: truncation may cut into records
+    /// committed since, until the leader's next batch carries the offset
+    /// again. See `docs/replication-design.md`, "Divergence and truncation".
+    ///
+    /// Fails only on a closed log, or, when not under `OnCommit`, when a write
+    /// due now fails.
     pub async fn advance_commit_offset(&self, offset: Offset) -> Result<()> {
         let previous = self.inner.commit_offset.fetch_max(offset, Ordering::AcqRel);
         // Not `offset <= previous`: a write that failed left memory ahead of
@@ -609,52 +614,24 @@ impl DiskLog {
         if offset.max(previous) <= self.inner.commit_persisted.load(Ordering::Acquire) {
             return Ok(());
         }
-        // Concurrent advances coalesce: whoever takes the writer's lock next
-        // writes the highest offset raised so far, and the rest find it done.
-        let due = matches!(self.inner.config.fsync_mode, FsyncMode::OnCommit) || {
+        if self.inner.closed.load(Ordering::Acquire) {
+            return Err(StorageError::Closed(self.inner.label.clone()));
+        }
+        if matches!(self.inner.config.fsync_mode, FsyncMode::OnCommit) {
+            write_commit_behind(&self.inner);
+            return Ok(());
+        }
+        let due = {
             let persisted = self.inner.replica_persisted.lock();
             persisted
                 .1
                 .is_none_or(|at| at.elapsed() >= COMMIT_PERSIST_INTERVAL)
         };
         if due && let Err(err) = self.persist_replica_state().await {
-            self.retry_replica_state();
+            retry_replica_state(&self.inner);
             return Err(err);
         }
         Ok(())
-    }
-
-    /// Write the replica state again until it reaches disk. On a follower
-    /// only the leader's next batch would call
-    /// [`Self::advance_commit_offset`] again, and an idle shard sends none.
-    fn retry_replica_state(&self) {
-        if self.inner.replica_retry.swap(true, Ordering::AcqRel) {
-            return;
-        }
-        // Weak, so the retry neither keeps a dropped log alive nor outlives it.
-        let weak = Arc::downgrade(&self.inner);
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(COMMIT_PERSIST_INTERVAL).await;
-                let Some(inner) = weak.upgrade() else {
-                    return;
-                };
-                if inner.closed.load(Ordering::Acquire) {
-                    return;
-                }
-                if persist_replica_state(Arc::clone(&inner)).await.is_err() {
-                    continue;
-                }
-                inner.replica_retry.store(false, Ordering::Release);
-                // A write that failed while this one ran found the flag set
-                // and left the retry to this task.
-                let behind = inner.commit_offset.load(Ordering::Acquire)
-                    > inner.commit_persisted.load(Ordering::Acquire);
-                if !behind || inner.replica_retry.swap(true, Ordering::AcqRel) {
-                    return;
-                }
-            }
-        });
     }
 
     /// Keep retention and compaction's head trims below the commit offset.
@@ -873,6 +850,9 @@ impl DiskLog {
             // is held before any replication pass or batch has run.
             hold_at_commit: std::sync::atomic::AtomicBool::new(replica.hold_at_commit),
             replica_retry: std::sync::atomic::AtomicBool::new(false),
+            commit_writer: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            replica_writes: AtomicU64::new(0),
             replica_persisted: Mutex::new((replica, None)),
             batch_open: std::sync::atomic::AtomicBool::new(producer_state.is_open()),
             producers: Mutex::new(producer_state),
@@ -1191,6 +1171,12 @@ struct LogInner {
     /// A task is writing the replica state again after a failed write; see
     /// [`DiskLog::advance_commit_offset`].
     replica_retry: std::sync::atomic::AtomicBool,
+    /// A task is writing the commit offset behind
+    /// [`DiskLog::advance_commit_offset`].
+    commit_writer: std::sync::atomic::AtomicBool,
+    /// Writes `persist_replica_state` made, for tests that count them.
+    #[cfg(test)]
+    replica_writes: AtomicU64,
     /// What `replica_state` last wrote, and when. Held only by the writer.
     replica_persisted: Mutex<(replica_state::ReplicaState, Option<std::time::Instant>)>,
     /// Each idempotent producer's place in the log. Written only under the
@@ -1433,6 +1419,8 @@ async fn persist_replica_state(inner: Arc<LogInner>) -> Result<()> {
             return Err(StorageError::Closed(inner.label.clone()));
         }
         replica_state::store(&inner.dir, &state)?;
+        #[cfg(test)]
+        inner.replica_writes.fetch_add(1, Ordering::Relaxed);
         inner
             .commit_persisted
             .store(state.commit_offset, Ordering::Release);
@@ -1441,6 +1429,72 @@ async fn persist_replica_state(inner: Arc<LogInner>) -> Result<()> {
     })
     .await
     .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
+}
+
+/// Write the commit offset behind the caller. At most one writer runs per
+/// log; it loops until disk has caught up with memory, so an advance made
+/// while a write is in flight is carried by the next one rather than adding
+/// its own.
+fn write_commit_behind(inner: &Arc<LogInner>) {
+    if inner.commit_writer.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    // Weak, so the writer neither keeps a dropped log alive nor outlives it.
+    let weak = Arc::downgrade(inner);
+    tokio::spawn(async move {
+        loop {
+            let Some(inner) = weak.upgrade() else {
+                return;
+            };
+            let written = persist_replica_state(Arc::clone(&inner)).await;
+            inner.commit_writer.store(false, Ordering::Release);
+            if written.is_err() {
+                if !inner.closed.load(Ordering::Acquire) {
+                    retry_replica_state(&inner);
+                }
+                return;
+            }
+            // An advance that found the flag set while this write ran left
+            // its offset to this writer.
+            let behind = inner.commit_offset.load(Ordering::Acquire)
+                > inner.commit_persisted.load(Ordering::Acquire);
+            if !behind || inner.commit_writer.swap(true, Ordering::AcqRel) {
+                return;
+            }
+        }
+    });
+}
+
+/// Write the replica state again until it reaches disk. On a follower only
+/// the leader's next batch would call [`DiskLog::advance_commit_offset`]
+/// again, and an idle shard sends none.
+fn retry_replica_state(inner: &Arc<LogInner>) {
+    if inner.replica_retry.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let weak = Arc::downgrade(inner);
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(COMMIT_PERSIST_INTERVAL).await;
+            let Some(inner) = weak.upgrade() else {
+                return;
+            };
+            if inner.closed.load(Ordering::Acquire) {
+                return;
+            }
+            if persist_replica_state(Arc::clone(&inner)).await.is_err() {
+                continue;
+            }
+            inner.replica_retry.store(false, Ordering::Release);
+            // A write that failed while this one ran found the flag set
+            // and left the retry to this task.
+            let behind = inner.commit_offset.load(Ordering::Acquire)
+                > inner.commit_persisted.load(Ordering::Acquire);
+            if !behind || inner.replica_retry.swap(true, Ordering::AcqRel) {
+                return;
+            }
+        }
+    });
 }
 
 fn now_micros() -> u64 {

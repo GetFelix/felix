@@ -1454,14 +1454,33 @@ and may lag; so each shard log keeps the highest generation it accepted a leader
 at, written and fsynced before the first batch at a new generation is stored or
 acknowledged, and a leader claiming a shard records its own generation the same
 way. The commit offset is kept in the same small file (`replica`, beside the
-segments). Under `FsyncMode::OnCommit` it is on disk before the batch that
-carried it is acknowledged, or, if that write fails, retried once a second until
-it lands. Under `Periodic` and `None` it is written at most once
-a second, and after a crash it may read back behind, which weakens the guard:
-truncation may cut into records committed since, until the next batch carries
-the offset again. Above it, a record is a proposal that the cluster may not
-have adopted, and a new leader reusing the offset is ordinary rather than
-alarming.
+segments). It is written behind the batch that carried it, so it costs the
+acknowledgement nothing: under `FsyncMode::OnCommit` the write starts at once
+and one write in flight carries every advance made while it runs; under
+`Periodic` and `None` it is written at most once a second. A failed write is
+retried once a second until it lands. After a crash it may read back behind,
+never ahead, which weakens the guard: truncation may cut into records committed
+since, until the next batch carries the offset again. Above it, a record is a
+proposal that the cluster may not have adopted, and a new leader reusing the
+offset is ordinary rather than alarming.
+
+**Why a commit offset behind on disk is acceptable.** It never protected every
+acknowledged record. A client is answered once the leader's mark passes its
+record, and a follower learns that mark only from the next batch, so at any
+moment some acknowledged records lie above every follower's commit offset, on
+disk or in memory. Those records are safe because a follower stores and fsyncs
+them before it answers, and a leader at a generation this replica accepted
+holds every committed record, so it never asks to cut one. The guard is the
+second line, for a leader that does not. Writing it behind widens the window
+it already had by one replica-state write (two fsyncs, a rename): a follower
+that crashes in that window comes back guarding the offset of an earlier
+batch, and only a leader that has lost committed records could then cut the
+records between the two. Retention only holds more with a lower offset, and a
+fence answer reporting one makes the new leader compare more of the log, not
+less. Writing it through cost about two extra fsyncs on every `Quorum`
+acknowledgement under `OnCommit`, on each follower and on the leader's pass
+(#1456). The accepted generation is still written through: a fence must be on
+disk before it is answered.
 
 Reconciling that needs the two sides to agree on where their histories diverge,
 which is what the generation of each record establishes; see
@@ -1507,7 +1526,7 @@ leader's base answers as holding everything below its tail, and the mark counts
 it that way. That is only true if every record below the base was already on a
 majority. So on a `Quorum` shard, retention and compaction never delete at or
 above the log's commit offset, on the leader or on a follower. The leader's
-commit offset is the quorum mark written through after each pass, so it never
+commit offset is raised to the quorum mark after each pass, so it never
 runs ahead of the mark. Without the floor, a stream with a small retention
 bound and both followers down lost records: retention deleted what the leader
 alone held, the followers came back below the new base and were rebuilt
