@@ -1,24 +1,23 @@
 {
   "defaults": {
-    "trials": 5
+    "trials": 20
   },
   "workload": {
     "fanout": [
-      1,
       10
     ],
     "batch": [
       64
     ],
     "payload_bytes": [
+      16384,
       1024
     ],
-    "warmup": 500,
-    "total": 5000,
+    "warmup": 2000,
+    "total": 20000,
     "binary": true,
-    "_comment_total": "total is a floor; scaled so payload*total >= min_run_bytes (see presets.yml).",
-    "min_run_bytes": 134217728,
-    "max_total": 200000
+    "min_run_bytes": 268435456,
+    "max_total": 500000
   },
   "profiles": {
     "balanced": {
@@ -41,6 +40,8 @@
         "4",
         "--pub-streams-per-conn",
         "2",
+        "--pub-stream-count",
+        "8",
         "--pub-sharding",
         "hash_stream",
         "--idle-ms",
