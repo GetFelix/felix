@@ -214,7 +214,7 @@ public class GroupFixtureTests
             Assert.Equal(expected.Count, seen.Count);
             Assert.Equal(4, shards.Count);
 
-            var infos = await admin.DescribeStreamGroupAsync(f.Tenant, f.Namespace, f.Stream, name);
+            var infos = await client.DescribeStreamGroupAsync(f.Tenant, f.Namespace, f.Stream, name);
             Assert.Equal(4, infos.Length);
             Assert.All(infos, i => Assert.True(i.Committed <= i.Tail));
         }
