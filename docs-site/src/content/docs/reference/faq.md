@@ -200,9 +200,11 @@ role permissions:
 Rust, Python and TypeScript ship today, the latter two as bindings over the
 Rust client rather than reimplementations. Both pass every required scenario in
 the client conformance catalogue, and CI is gated on it. Go and C# are not
-started; `felix-capi`, the C ABI they will bind to, covers connect, keyed,
-batched and named-shard publishes, subscribes to one shard or every shard, consumer groups, caches, counters and cache watches, atomic commits, conditional publishes and state reads, and idempotent producers so far, all asynchronous
-through callbacks.
+started. `felix-capi`, the [C ABI](/clients/c/) they will bind to, covers connect,
+publishes, subscriptions, consumer groups on a shard, caches, counters and
+watches, atomic commits, conditional publishes and idempotent producers, all
+asynchronous through callbacks. It does not yet have the sharded group or the
+group stream admin calls.
 The wire protocol is language-neutral and documented precisely for this
 reason (see [Wire Protocol](/architecture/wire-protocol/)), and a
 conformance runner exists to check an implementation against it.

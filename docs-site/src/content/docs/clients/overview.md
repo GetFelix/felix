@@ -3,7 +3,7 @@ title: "Choosing a Client"
 description: "Why Felix has one client implementation with bindings over it, what the conformance suite checks, and which client to reach for."
 ---
 
-Felix has three clients today: Rust, Python, and TypeScript. This page covers
+Felix has three clients today: Rust, Python, and TypeScript, and a C ABI over the Rust client that other language SDKs bind to. This page covers
 how they relate to each other, which is worth understanding before you depend
 on one. Each client's own page covers using it.
 
@@ -164,7 +164,7 @@ results file your client produced, and nothing from the kit is linked into what
 you ship. The specification itself is Apache-2.0: the wire protocol in
 `felix-wire`, its byte-level test vectors, and `docs/protocol.md`.
 
-## The three clients
+## The clients
 
 Each has its own page: what to install, the surface, and the failure modes
 worth writing code for.
@@ -174,6 +174,7 @@ worth writing code for.
 | **[Rust](/clients/rust/)** | `felix-client` on crates.io | The reference client, and the one the others are built from. Applications use `ClusterClient`. |
 | **[Python](/clients/python/)** | `felix-client` on PyPI | A PyO3 binding, with a synchronous and an asyncio surface over the same Rust client. |
 | **[TypeScript](/clients/typescript/)** | `felix-client` on npm | A napi-rs addon. One asynchronous surface, because blocking Node's event loop is not something a library may do. |
+| **[C](/clients/c/)** | `libfelix` and `felix.h`, built from the repository | A C ABI over the Rust client, asynchronous through callbacks. The base for the C# SDK; not on a registry. |
 
 ### Which client to use
 
@@ -199,12 +200,13 @@ C# is next, then Go. Each is gated on passing the conformance suite.
 
 The C# SDK will live in this repository and, like Python and TypeScript, wrap
 the Rust client rather than reimplement it: it binds through P/Invoke to
-`crates/sdk/felix-capi`, a C ABI over the client. That crate exists now with connect,
-keyed, batched and named-shard publishes, subscribes to one shard or every shard, consumer groups, caches, counters and cache watches, atomic commits, conditional publishes and state reads, and idempotent producers, asynchronous through callbacks so a `Task` needs no
-waiting thread, a generated header, and a C test that runs
-against the conformance fixture in CI. Its README describes the calling rules.
-It is brought up to the Rust client's full surface before the C# work starts,
-so the SDK is a thin layer over a complete ABI.
+`crates/sdk/felix-capi`, the C ABI described on the [C page](/clients/c/). The
+ABI covers connect, publishes, subscriptions, consumer groups on a shard, caches,
+counters and watches, atomic commits, conditional publishes and idempotent
+producers, asynchronous through callbacks so a `Task` needs no waiting thread.
+The sharded group, the group stream admin calls and the record publisher and
+timestamp fields are not in it yet, and the C test runs against the conformance
+fixture but is not yet a claimed run of the suite.
 
 If you want to write one sooner, the things you need are all public: the
 [wire protocol](/architecture/wire-protocol/) if you are implementing
