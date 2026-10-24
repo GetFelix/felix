@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace Felix.Native;
 
@@ -8,7 +9,7 @@ namespace Felix.Native;
 /// buffer before returning, and never lets an exception escape: an unwinding
 /// exception would end the process, so a failure faults the call's task instead.
 /// </summary>
-internal static unsafe class Callbacks
+internal static unsafe partial class Callbacks
 {
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     internal static void OnConnect(nint userData, int status, byte* message, nint client)
@@ -187,10 +188,10 @@ internal static unsafe class Callbacks
     /// A callback with no pending call means the handle table is corrupt: completing some
     /// other call, or none, would hang or misreport. Ending the process is the honest option.
     /// </summary>
-    private static void Lost() =>
+    internal static void Lost() =>
         Environment.FailFast("felix: a native callback arrived for a call that is no longer pending; the SDK's call table is corrupt");
 
-    private static void TryFree(Action free)
+    internal static void TryFree(Action free)
     {
         try
         {
@@ -218,10 +219,24 @@ internal static unsafe class Callbacks
         ulong skipped;
         Check(NativeMethods.felix_event_skipped_before(ev, &skipped));
 
-        return new FelixEvent(payload, hasOffset != 0 ? unchecked((long)offset) : null, unchecked((long)skipped));
+        byte* who;
+        nuint whoLength;
+        Check(NativeMethods.felix_event_publisher(ev, &who, &whoLength));
+        var publisher = who is null || whoLength == 0 ? null : Encoding.UTF8.GetString(who, checked((int)whoLength));
+
+        ulong micros;
+        byte hasMicros;
+        Check(NativeMethods.felix_event_timestamp(ev, &micros, &hasMicros));
+
+        return new FelixEvent(
+            payload,
+            hasOffset != 0 ? unchecked((long)offset) : null,
+            unchecked((long)skipped),
+            publisher,
+            hasMicros != 0 ? unchecked((long)micros) : null);
     }
 
-    private static void Check(int status)
+    internal static void Check(int status)
     {
         if (status != 0)
         {

@@ -71,6 +71,19 @@ public sealed class FelixClientOptions
 
     /// <summary>A PEM file of CA certificates to trust; the system store when null.</summary>
     public string? CaFile { get; init; }
+
+    /// <summary>
+    /// Ask brokers to say who published each record, for <see cref="FelixEvent.Publisher"/>
+    /// and <see cref="GroupRecord.Publisher"/>. Adds the principal to every event batch.
+    /// A broker that does not record it leaves it null.
+    /// </summary>
+    public bool Publishers { get; init; }
+
+    /// <summary>
+    /// Ask brokers for each record's append time, for <see cref="FelixEvent.Timestamp"/>
+    /// and <see cref="GroupRecord.Timestamp"/>. Adds eight bytes per event.
+    /// </summary>
+    public bool Timestamps { get; init; }
 }
 
 /// <summary>One record delivered to a subscription, copied out of the native event.</summary>
@@ -80,4 +93,36 @@ public sealed class FelixClientOptions
 /// How many offsets just below this one hold no event. A larger jump than this
 /// explains is a drop.
 /// </param>
-public sealed record FelixEvent(ReadOnlyMemory<byte> Payload, long? Offset, long SkippedBefore);
+/// <param name="Publisher">
+/// The principal that published the record. Null unless the client was connected with
+/// <see cref="FelixClientOptions.Publishers"/> and the broker recorded one.
+/// </param>
+/// <param name="TimestampMicros">
+/// When the broker appended the record, in microseconds since the Unix epoch by the clock of
+/// the broker that led the shard. Null unless the client was connected with
+/// <see cref="FelixClientOptions.Timestamps"/> and the broker supplied one.
+/// </param>
+public sealed record FelixEvent(
+    ReadOnlyMemory<byte> Payload,
+    long? Offset,
+    long SkippedBefore,
+    string? Publisher = null,
+    long? TimestampMicros = null)
+{
+    /// <summary><see cref="TimestampMicros"/> as a time; null when it is absent or out of range.</summary>
+    public DateTimeOffset? Timestamp => Time.FromMicros(TimestampMicros);
+}
+
+internal static class Time
+{
+    internal static DateTimeOffset? FromMicros(long? micros)
+    {
+        // DateTimeOffset ends in year 9999; a broker clock that far out is not a time.
+        if (micros is not { } value || value < 0 || value / 1_000_000 > 253_402_300_799)
+        {
+            return null;
+        }
+
+        return DateTimeOffset.UnixEpoch.AddTicks(value * 10);
+    }
+}

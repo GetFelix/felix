@@ -4,7 +4,7 @@ using Xunit;
 namespace Felix.Client.Tests;
 
 /// <summary>Skips with a reason when the broker fixture is not available.</summary>
-public sealed class FixtureFactAttribute : FactAttribute
+public class FixtureFactAttribute : FactAttribute
 {
     public FixtureFactAttribute()
     {
@@ -19,6 +19,18 @@ public sealed class FixtureFactAttribute : FactAttribute
     }
 }
 
+/// <summary>As <see cref="FixtureFactAttribute"/>, and skips when the fixture has no group operator token.</summary>
+public sealed class GroupFixtureFactAttribute : FixtureFactAttribute
+{
+    public GroupFixtureFactAttribute()
+    {
+        if (Skip is null && Fixture.Load().GroupOperatorToken is null)
+        {
+            Skip = "the fixture has no group_operator_token (an older client-fixture)";
+        }
+    }
+}
+
 internal sealed record Fixture(
     string[] Addrs,
     string Tenant,
@@ -27,7 +39,9 @@ internal sealed record Fixture(
     string CaFile,
     string Stream,
     string MissingStream,
-    string UnauthorizedToken)
+    string UnauthorizedToken,
+    string? GroupOperatorToken,
+    bool RecordsPublishers)
 {
     internal static Fixture Load()
     {
@@ -42,12 +56,25 @@ internal sealed record Fixture(
             Text("ca_file"),
             Text("durable_stream"),
             Text("missing_stream"),
-            Text("unauthorized_token"));
+            Text("unauthorized_token"),
+            root.TryGetProperty("group_operator_token", out var op) && op.ValueKind == JsonValueKind.String ? op.GetString() : null,
+            root.TryGetProperty("records_publishers", out var rp) && rp.ValueKind == JsonValueKind.True);
     }
 
     internal Task<FelixClient> ConnectAsync(string? token = null, CancellationToken ct = default) =>
+        ConnectAsync(token, publishers: false, timestamps: false, ct);
+
+    internal Task<FelixClient> ConnectAsync(string? token, bool publishers, bool timestamps, CancellationToken ct = default) =>
         FelixClient.ConnectAsync(
-            new FelixClientOptions { Addrs = Addrs, TenantId = Tenant, Token = token ?? Token, CaFile = CaFile },
+            new FelixClientOptions
+            {
+                Addrs = Addrs,
+                TenantId = Tenant,
+                Token = token ?? Token,
+                CaFile = CaFile,
+                Publishers = publishers,
+                Timestamps = timestamps,
+            },
             ct);
 }
 
@@ -56,6 +83,7 @@ public class FixtureTests
     private static readonly TimeSpan Wait = TimeSpan.FromSeconds(30);
 
     [FixtureFact]
+    [Scenario("pubsub.roundtrip", "ack.carries_the_offset")]
     public async Task PublishedRecordIsDeliveredWithItsOffset()
     {
         var f = Fixture.Load();
@@ -72,6 +100,7 @@ public class FixtureTests
     }
 
     [FixtureFact]
+    [Scenario("pubsub.order")]
     public async Task BatchRecordsArriveInOrder()
     {
         var f = Fixture.Load();
@@ -131,6 +160,7 @@ public class FixtureTests
     }
 
     [FixtureFact]
+    [Scenario("error.unknown_stream_is_typed")]
     public async Task UnknownStreamIsTyped()
     {
         var f = Fixture.Load();
@@ -142,6 +172,7 @@ public class FixtureTests
     }
 
     [FixtureFact]
+    [Scenario("error.unauthorized_is_typed")]
     public async Task UnauthorizedIsTypedAndNotRetryable()
     {
         var f = Fixture.Load();

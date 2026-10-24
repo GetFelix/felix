@@ -9,7 +9,7 @@ namespace Felix;
 /// they are disposed. Calls on a disposed client throw <see cref="ObjectDisposedException"/>; calls
 /// pending when it is disposed fail with <see cref="OperationCanceledException"/>.
 /// </summary>
-public sealed class FelixClient : IAsyncDisposable, IDisposable
+public sealed partial class FelixClient : IAsyncDisposable, IDisposable
 {
     private readonly FelixClientHandle handle;
 
@@ -39,12 +39,20 @@ public sealed class FelixClient : IAsyncDisposable, IDisposable
         try
         {
             var userData = state.Pin();
-            status = NativeMethods.felix_client_connect(
+            // The library reads the struct during the call; its size says which fields we know.
+            NativeConnectOptions native = new()
+            {
+                Size = (nuint)sizeof(NativeConnectOptions),
+                Publishers = options.Publishers ? (byte)1 : (byte)0,
+                Timestamps = options.Timestamps ? (byte)1 : (byte)0,
+            };
+            status = NativeMethods.felix_client_connect_with(
                 string.Join(',', options.Addrs),
                 options.TenantId,
                 options.Token,
                 options.ServerName,
                 options.CaFile,
+                options.Publishers || options.Timestamps ? &native : null,
                 state.Cancel.Pointer,
                 &Callbacks.OnConnect,
                 userData);
@@ -273,9 +281,6 @@ public sealed class FelixClient : IAsyncDisposable, IDisposable
     /// The call returned an error, so its callback never runs. The library's message
     /// is per thread, so the caller reads it right after the call.
     /// </summary>
-    private static Task<T> Refused<T>(CallStateBase state, int status, string? message)
-    {
-        state.Abandon();
-        return Task.FromException<T>(FelixException.FromStatus(status, message));
-    }
+    private static Task<T> Refused<T>(CallStateBase state, int status, string? message) =>
+        NativeCall.Refused<T>(state, status, message);
 }
