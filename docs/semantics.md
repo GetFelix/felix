@@ -121,8 +121,10 @@ connections (`ClientConfig::ack_on_commit`).
 
 A commit-acked publish, which is a durable stream's by default, waits for room
 when the ingress queue is full instead of being refused at once, up to
-`publish_queue_wait_timeout_ms`. The wait is on the connection's control loop,
-so it holds up everything behind it on that stream, including its reads. A
+`publish_queue_wait_timeout_ms`. The publish waits
+off the connection's read loop, so publishes behind it to shards with room go
+on; a stream stops reading only once it has 1024 publishes waiting or its byte
+budget is spent (#1416). A
 stream with more than 1024 answers owed refuses the next acked publish with a
 retryable `overloaded` (`publish queue full`) before queueing it, so a retry
 cannot write it twice.

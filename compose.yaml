@@ -26,7 +26,7 @@ name: felix-dev
 
 services:
   felix-controlplane:
-    image: ghcr.io/getfelix/felix-controlplane:${FELIX_VERSION:-0.6.0-preview.9}
+    image: ghcr.io/getfelix/felix-controlplane:${FELIX_VERSION:-0.6.0}
     environment:
       FELIX_CONTROLPLANE_STORAGE_BACKEND: memory
       # Dev tokens let the bootstrap token mint a token for any principal. The
@@ -53,7 +53,7 @@ services:
   # caches `config` and `stats`, and writes the broker's and felixctl's tokens
   # to the felix-dev volume.
   felix-dev-auth:
-    image: ghcr.io/getfelix/felix-controlplane:${FELIX_VERSION:-0.6.0-preview.9}
+    image: ghcr.io/getfelix/felix-controlplane:${FELIX_VERSION:-0.6.0}
     network_mode: "service:felix-controlplane"
     depends_on:
       felix-controlplane:
@@ -125,7 +125,7 @@ services:
         echo "felix-dev-auth: tenant dev, namespace default, stream orders, caches config and stats; tokens written"
 
   felix-broker:
-    image: ghcr.io/getfelix/felix-broker:${FELIX_VERSION:-0.6.0-preview.9}
+    image: ghcr.io/getfelix/felix-broker:${FELIX_VERSION:-0.6.0}
     depends_on:
       felix-dev-auth:
         condition: service_completed_successfully
@@ -152,7 +152,7 @@ services:
 
   # Prints how to connect once the broker is ready.
   felix-dev-ready:
-    image: ghcr.io/getfelix/felixctl:${FELIX_VERSION:-0.6.0-preview.9}
+    image: ghcr.io/getfelix/felixctl:${FELIX_VERSION:-0.6.0}
     depends_on:
       felix-broker:
         condition: service_healthy
@@ -180,7 +180,7 @@ services:
 
   # `docker compose run --rm felixctl <args>` runs felixctl inside the stack.
   felixctl:
-    image: ghcr.io/getfelix/felixctl:${FELIX_VERSION:-0.6.0-preview.9}
+    image: ghcr.io/getfelix/felixctl:${FELIX_VERSION:-0.6.0}
     profiles: ["cli"]
     depends_on:
       felix-broker:

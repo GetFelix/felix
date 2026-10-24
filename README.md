@@ -103,8 +103,9 @@ ingest, and an opt-in thread-per-core mode (`core_shards`) for stream
 ownership. Measured without loss and with TLS 1.3 always on, it reaches sub-millisecond
 p999 latency at low fanout, millions of deliveries/sec for small payloads,
 and multi-hundred-MB/s sustained for KB-sized payloads at fanout 10. See
-[Benchmarks](https://docs.getfelix.dev/features/benchmarks/) for
-current numbers and methodology, and
+[v0.6.0 Performance](https://docs.getfelix.dev/features/v060-performance/) for
+current numbers measured on Azure, [Benchmarks](https://docs.getfelix.dev/features/benchmarks/)
+for the loopback harness, and
 [Environment Variables](https://docs.getfelix.dev/reference/environment-variables/) /
 [Configuration](https://docs.getfelix.dev/reference/configuration/) for
 the full set of tuning knobs (transport, queue depths/policies, batching,
