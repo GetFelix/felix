@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792876801284,
+  "lastUpdate": 1792879798423,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -35308,6 +35308,58 @@ window.BENCHMARK_DATA = {
             "range": "17838.06",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1250997.17\nmean: 1245615.03\nstdev: 17838.06\ncv: 1.43%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f9812fbe135b4dac48a8ee921b82d7120c453530",
+          "message": "feat(capi): sharded groups, stream-wide group admin, connect options; C page corrections (#1493) (#1517)\n\n* docs(clients): bring the C page up to date with the C ABI (#1493)\n* feat(capi): sharded group, stream-wide group admin, connect options, publisher and timestamp (#1493)\n* fix(capi): review findings on parity (#1493)\n* test(capi): the client fixture records publishers; the C check requires one when it does (#1493)",
+          "timestamp": "2026-10-24T22:05:26Z",
+          "tree_id": "a1069e1f9d1d1db3059c2b3c404802f962aa5a50",
+          "url": "https://github.com/GetFelix/felix/commit/f9812fbe135b4dac48a8ee921b82d7120c453530"
+        },
+        "date": 1792879797890,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 343305.74,
+            "range": "8971.40",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 343305.74\nmean: 344534.22\nstdev: 8971.40\ncv: 2.60%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 343305.74,
+            "range": "8971.40",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 343305.74\nmean: 344534.22\nstdev: 8971.40\ncv: 2.60%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80240.83,
+            "range": "4250.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80240.83\nmean: 78400.97\nstdev: 4250.46\ncv: 5.42%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 802408.25,
+            "range": "42504.63",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 802408.25\nmean: 784009.62\nstdev: 42504.63\ncv: 5.42%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
