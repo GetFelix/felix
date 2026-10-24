@@ -1323,7 +1323,9 @@ jobs:
     if: ${{ always() && !inputs.nightly && !inputs.dry_run && needs.linux-x86_64.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions: {}
+    # Read companions.txt with the job's own token; the dispatches use the App's.
+    permissions:
+      contents: read
     env:
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     steps:
