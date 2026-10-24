@@ -659,7 +659,15 @@ jobs:
       # harness. Whether the header matches the source is the felix-capi
       # `header` test, which `task test` runs.
       - name: C ABI against the fixture
+        env:
+          FELIX_CONFORMANCE_RESULTS: ${{ github.workspace }}/c-conformance.json
         run: crates/sdk/felix-capi/tests/c/run.sh fixture
+
+      # Report-only: the fault and broker-loss scenarios are skipped until the
+      # harness runs a cluster of its own, and verify fails on a skipped required one.
+      - name: C ABI conformance verdict (report-only)
+        continue-on-error: true
+        run: cargo run --locked -q -p felix-conformance -- verify c-conformance.json
 
   # Same reasoning as the Python job above, and the same shape: the binding
   # wraps the Rust client, so a change anywhere under `crates/sdk/felix-client` can
