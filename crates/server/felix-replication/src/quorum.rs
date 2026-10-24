@@ -710,10 +710,12 @@ pub async fn await_quorum<S: ShardServing + ?Sized>(
         waited_at.store(generation.unwrap_or(0), Ordering::Relaxed);
         generation
     };
-    match marks
+    let started = tokio::time::Instant::now();
+    let waited = marks
         .wait_while_leading(shard, leading, last_offset + 1, timeout)
-        .await
-    {
+        .await;
+    crate::metrics::record_quorum_wait(started.elapsed());
+    match waited {
         // A mark the followers decided holds without the lease: any newer
         // leader fenced a majority before it served, and every copy counted
         // either answered for the batch before it took that fence or was

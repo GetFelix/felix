@@ -139,9 +139,7 @@ pub(super) enum Stragglers {
     /// Wait for them until the driver wants the shard's next pass, then hand
     /// back whatever is still under way, so a slow follower does not hold the
     /// next mark.
-    HandOff {
-        next_wanted: Arc<tokio::sync::Notify>,
-    },
+    HandOff { next: Arc<super::shards::NextPass> },
 }
 
 /// One exchange with a follower, as a future the driver can hold across
@@ -868,17 +866,18 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     let voters = positions.iter().filter(|c| counts(&c.node_id)).count();
     let mut voted = 0;
     // A follower still busy with an earlier pass's exchange can be the one
-    // that makes the majority, but its answer goes to the driver, not here.
-    // Waiting only on the followers launched would then hold the mark on
-    // whichever of them is unreachable. So the wait also ends when the next
-    // pass is wanted, which the driver asks for when a busy follower answers.
-    let next_wanted = match &stragglers {
-        Stragglers::HandOff { next_wanted } if !route.draining => Some(Arc::clone(next_wanted)),
+    // that makes the majority. Its answer reaches the driver, which hands it
+    // to this pass to count, and wants the next pass. Waiting only on the
+    // followers launched would hold the mark on whichever of them is
+    // unreachable, so the wait ends then too.
+    let next_pass = match &stragglers {
+        Stragglers::HandOff { next } if !route.draining => Some(Arc::clone(next)),
         _ => None,
     };
+    let wanted_from = next_pass.clone();
     let mut wanted = std::pin::pin!(async move {
-        match next_wanted {
-            Some(next_wanted) => next_wanted.notified().await,
+        match wanted_from {
+            Some(next) => next.wanted.notified().await,
             None => std::future::pending().await,
         }
     });
@@ -887,32 +886,54 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         .any(|cursor| busy.contains(&cursor.node_id) && counts(&cursor.node_id));
     let mut cut_short = false;
     while waiting > 0 {
-        let next = if busy_counts {
+        let arrived = if busy_counts {
             tokio::select! {
                 biased;
-                next = in_flight.next() => next,
+                next = in_flight.next() => next.map(|shipped| vec![(shipped, true)]),
                 () = &mut wanted => {
                     cut_short = true;
-                    break;
+                    // Uncounted, a busy follower's answer that moves no
+                    // cursor starts no pass either, and the mark waits for
+                    // the tick.
+                    let busy_answers = next_pass
+                        .as_ref()
+                        .map(|next| next.take(route.generation, incarnation))
+                        .unwrap_or_default();
+                    if busy_answers.is_empty() {
+                        break;
+                    }
+                    Some(busy_answers.into_iter().map(|shipped| (shipped, false)).collect())
                 }
             }
         } else {
-            in_flight.next().await
+            in_flight.next().await.map(|shipped| vec![(shipped, true)])
         };
-        let Some(shipped) = next else {
+        let Some(arrived) = arrived else {
             break;
         };
-        copying |= shipped.cut;
-        if counts(&shipped.cursor.node_id) {
-            waiting -= 1;
-            voted += 1;
+        for (mut shipped, launched_here) in arrived {
+            copying |= shipped.cut;
+            if counts(&shipped.cursor.node_id) {
+                if launched_here {
+                    waiting -= 1;
+                }
+                voted += 1;
+            }
+            answered.insert(shipped.cursor.node_id.clone());
+            if shipped.checked {
+                checked.lock().insert(shipped.cursor.node_id.clone());
+            }
+            if !launched_here
+                && let Some(held) = positions
+                    .iter()
+                    .find(|held| held.node_id == shipped.cursor.node_id)
+            {
+                // The route may have moved the follower since that exchange.
+                shipped.cursor.addr = held.addr;
+            }
+            settle(&mut positions, shipped.cursor);
+            settle_aux(&mut aux, shipped.rode);
         }
-        answered.insert(shipped.cursor.node_id.clone());
-        if shipped.checked {
-            checked.lock().insert(shipped.cursor.node_id.clone());
-        }
-        settle(&mut positions, shipped.cursor);
-        settle_aux(&mut aux, shipped.rode);
         let tail = log.tail_offset().await.unwrap_or(tail);
         let counted = view(&positions);
         let offset = held_offset(tail, &counted);
@@ -946,6 +967,9 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 counters,
                 groups_of(&aux).await,
             ));
+            break;
+        }
+        if cut_short {
             break;
         }
     }
