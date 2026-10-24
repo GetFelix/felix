@@ -5,6 +5,9 @@ import mermaid from 'astro-mermaid';
 export default defineConfig({
   site: 'https://docs.getfelix.dev',
   base: '/',
+  redirects: {
+    '/features/real-network-performance': '/features/v060-performance/',
+  },
   integrations: [
     mermaid({ autoTheme: true, enableLog: false }),
     starlight({
@@ -156,8 +159,7 @@ export default defineConfig({
             { label: 'Performance Tuning', slug: 'features/performance' },
             { label: 'Performance & Platform Notes', slug: 'features/performance-platform-notes' },
             { label: 'Benchmarks', slug: 'features/benchmarks' },
-            { label: 'Real-Network Performance (Azure)', slug: 'features/real-network-performance' },
-            { label: 'v0.6.0 Performance', slug: 'features/v060-performance' },
+            { label: 'Performance on Azure (v0.6.0)', slug: 'features/v060-performance' },
             { label: 'Case Study: Throughput Ceiling', slug: 'features/performance-case-study' },
             { label: 'Observability', slug: 'features/observability' },
             { label: 'Security', slug: 'features/security' },

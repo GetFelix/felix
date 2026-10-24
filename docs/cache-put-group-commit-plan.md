@@ -19,7 +19,7 @@ with ~8× the per-put latency (~4 ms → ~33 ms p50 at concurrency 8). The durab
 Same disk, same fsync. The difference is entirely in how the two paths commit.
 
 This is the `OnCommit` cache-write counter-example already flagged in
-`docs-site/.../real-network-performance.md` ("the durable *cache write* path
+the earlier Azure performance analysis ("the durable *cache write* path
 serialises on it"). It is a throughput bug, not a durability bug: the writes are
 correct, they just cannot batch.
 
