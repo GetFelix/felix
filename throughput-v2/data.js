@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792851866662,
+  "lastUpdate": 1792852815568,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -34424,6 +34424,58 @@ window.BENCHMARK_DATA = {
             "range": "8093.88",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 816615.90\nmean: 813361.82\nstdev: 8093.88\ncv: 1.00%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "68d4d8a92f5a8e9f8f7be15111ec1dce7add3f0c",
+          "message": "test(cluster): wait on the leader's tail in retention_floor (#1482)\n\n* test(cluster): wait on the leader's tail in retention_floor instead of sleeping\n\nSpec-Unaffected: test-only change.\n\n* test(cluster): pin the retention_floor baseline to the last early offset\n\nSpec-Unaffected: test-only change.",
+          "timestamp": "2026-10-24T14:35:51Z",
+          "tree_id": "626e05c40b062c4e77642a0285cab6c29e230a75",
+          "url": "https://github.com/GetFelix/felix/commit/68d4d8a92f5a8e9f8f7be15111ec1dce7add3f0c"
+        },
+        "date": 1792852814925,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 418378.27,
+            "range": "30355.73",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 418378.27\nmean: 426118.22\nstdev: 30355.73\ncv: 7.12%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 418378.27,
+            "range": "30355.73",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 418378.27\nmean: 426118.22\nstdev: 30355.73\ncv: 7.12%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 95656.23,
+            "range": "556.25",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 95656.23\nmean: 95432.33\nstdev: 556.25\ncv: 0.58%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 956562.26,
+            "range": "5562.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 956562.26\nmean: 954323.26\nstdev: 5562.43\ncv: 0.58%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
