@@ -43,6 +43,7 @@ jobs:
       code: ${{ steps.code.outputs.code }}
       formal: ${{ steps.formal.outputs.code }}
       docs: ${{ steps.docs.outputs.code }}
+      dotnet: ${{ steps.dotnet.outputs.code }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -60,6 +61,13 @@ jobs:
         with:
           ignore: '.*'
           keep: '^docs/formal/|^scripts/check_tla\.sh$|^\.github/workflows/ci\.yml$'
+
+      # The C# SDK binds the C ABI, which wraps the Rust client.
+      - id: dotnet
+        uses: ./.github/actions/code-changed
+        with:
+          ignore: '.*'
+          keep: '^sdks/dotnet/|^crates/sdk/felix-capi/|^crates/sdk/felix-client/|^\.github/workflows/ci\.yml$'
 
       # The docs checks need only Python, so a docs-only change runs them too.
       - id: docs
@@ -732,6 +740,87 @@ jobs:
       - name: Verify against the catalogue
         run: cargo run --locked -q -p felix-conformance -- verify ts-conformance.json
 
+  # The C# SDK: build and unit tests on every platform it supports, with the
+  # native library loaded and called, then the fixture scenarios on Linux where
+  # the broker harness builds. Path-filtered: it binds the C ABI, which wraps
+  # the Rust client, so those crates count too.
+  dotnet:
+    needs: changes
+    if: needs.changes.outputs.dotnet == 'true' && github.event_name != 'workflow_dispatch'
+    name: C# SDK (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      # A library that fails to load here is a failure, not a skip.
+      FELIX_REQUIRE_NATIVE: "1"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.97.1"
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Build the native library
+        run: cargo build --locked --release -p felix-capi
+
+      - name: Build and unit tests
+        run: |
+          case "$RUNNER_OS" in
+            Windows) lib=felix.dll ;;
+            macOS) lib=libfelix.dylib ;;
+            *) lib=libfelix.so ;;
+          esac
+          export FELIX_NATIVE_LIB="$PWD/target/release/$lib"
+          dotnet test sdks/dotnet/Felix.sln -c Release
+
+      # The fixture is a Linux harness build; the scenarios run where it does.
+      - name: Build the broker and cluster harness
+        if: runner.os == 'Linux'
+        run: |
+          cargo build --locked -p felix-broker-service --bin felix-broker
+          cargo build --locked -p felix-cluster --bin felix-cluster
+
+      - name: Scenarios against the fixture
+        if: runner.os == 'Linux'
+        run: |
+          work="$(mktemp -d)"
+          RUST_LOG=warn target/debug/felix-cluster client-fixture \
+            --out "$work/fixture.json" --ca-file "$work/ca.pem" >"$work/fixture.log" 2>&1 &
+          fixture_pid=$!
+          trap 'kill "$fixture_pid" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 600); do
+            if [ -s "$work/fixture.json" ] && [ -s "$work/ca.pem" ] &&
+              python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$work/fixture.json" 2>/dev/null; then
+              break
+            fi
+            if ! kill -0 "$fixture_pid" 2>/dev/null; then cat "$work/fixture.log"; exit 1; fi
+            sleep 0.2
+          done
+          [ -s "$work/fixture.json" ] || { cat "$work/fixture.log"; exit 1; }
+          export FELIX_FIXTURE="$work/fixture.json"
+          export FELIX_NATIVE_LIB="$PWD/target/release/libfelix.so"
+          dotnet test sdks/dotnet/Felix.sln -c Release --no-build
+
   # The formal model of one shard's lease, replication and promotion, checked
   # with TLC. Bounded, so it finishes in minutes; each configuration says
   # whether it must pass or which invariant it must violate, so the trace
@@ -880,7 +969,7 @@ jobs:
   ci-ok:
     name: CI ok
     if: always()
-    needs: [changes, images, compose, test, cluster, checks, docs-evidence, docs-site, chart, python, typescript, spec-pairing, formal, fuzz]
+    needs: [changes, images, compose, test, cluster, checks, docs-evidence, docs-site, chart, python, typescript, dotnet, spec-pairing, formal, fuzz]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
