@@ -1,0 +1,1 @@
+- The release workflow now sends a `felix-release` dispatch to the companion repos listed in `.github/companions.txt`, so each can open a bump PR.
