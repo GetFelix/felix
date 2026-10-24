@@ -16,6 +16,9 @@ set -euo pipefail
 ENGINE=${CONTAINER_ENGINE:-docker}
 cd "$(dirname "$0")/../.."
 compose() { "$ENGINE" compose "$@"; }
+# Under pipefail, `cmd | grep -q` fails when grep exits on its match before
+# cmd finishes writing (SIGPIPE, 141). Reading all of the input avoids that.
+has() { grep -F -- "$1" > /dev/null; }
 
 FELIXCTL_IMAGE=$(compose config --images | grep -m1 /felixctl:)
 MESSAGE="hello from compose $$"
@@ -39,10 +42,10 @@ trap cleanup EXIT
 compose up -d --pull "${COMPOSE_PULL:-missing}"
 
 for _ in $(seq 1 90); do
-  compose logs felix-dev-ready 2> /dev/null | grep -q 'Felix is up' && break
+  compose logs felix-dev-ready 2> /dev/null | has 'Felix is up' && break
   sleep 2
 done
-compose logs --no-color felix-dev-ready | grep -q 'Felix is up' || {
+compose logs --no-color felix-dev-ready | has 'Felix is up' || {
   echo "::error::the stack never printed its connection settings"
   exit 1
 }
@@ -106,7 +109,7 @@ sub_pid=
 cat "$work/watch.out"
 [ "$code" -eq 0 ] && grep -q "checkout.green" "$work/watch.out" \
   || fail "the cache watch missed the update"
-ctl cache get config checkout | grep -q green || fail "cache get did not return the last put"
+ctl cache get config checkout | has green || fail "cache get did not return the last put"
 
 # A prefix watch sees a delete of a key that existed.
 ctl cache put config flag/beta-search on
@@ -150,7 +153,7 @@ grep -Eqi 'auth rejected' "$work/tenant.out" \
 
 # A key written with a TTL is gone once it lapses.
 ctl cache put config lease/job-1 worker-a --ttl-ms 10000
-ctl cache get config lease/job-1 | grep -q worker-a || fail "the leased key was not readable"
+ctl cache get config lease/job-1 | has worker-a || fail "the leased key was not readable"
 sleep 12
 if ctl cache get config lease/job-1 > /dev/null 2>&1; then
   fail "the leased key outlived its TTL"
