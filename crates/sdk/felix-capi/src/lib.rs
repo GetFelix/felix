@@ -28,21 +28,24 @@ mod client;
 mod completion;
 mod error;
 mod event;
+mod publish;
 mod status;
 mod subscription;
 
 pub use cancel::{
     FelixCancelToken, felix_cancel_token_cancel, felix_cancel_token_free, felix_cancel_token_new,
 };
-pub use client::{
-    FELIX_ACK_NONE, FELIX_ACK_PER_BATCH, FELIX_ACK_PER_MESSAGE, FelixAckMode, FelixClient,
-    FelixConnectCallback, FelixPublishCallback, felix_client_connect, felix_client_free,
-    felix_client_publish,
-};
+pub use client::{FelixClient, FelixConnectCallback, felix_client_connect, felix_client_free};
 pub use error::felix_last_error_message;
 pub use event::{
     FelixEvent, felix_event_free, felix_event_offset, felix_event_payload,
     felix_event_skipped_before,
+};
+pub use publish::{
+    FELIX_ACK_NONE, FELIX_ACK_PER_BATCH, FELIX_ACK_PER_MESSAGE, FELIX_DELIVERY_AT_LEAST_ONCE,
+    FELIX_DELIVERY_AT_MOST_ONCE, FelixAckMode, FelixBatchCallback, FelixDelivery,
+    FelixPublishCallback, FelixRecordResult, felix_client_publish, felix_client_publish_batch,
+    felix_client_publish_on_shard, felix_client_publish_records,
 };
 pub use status::{
     FELIX_STATUS_AUTH, FELIX_STATUS_CANCELLED, FELIX_STATUS_CLOSED, FELIX_STATUS_CONNECTION,

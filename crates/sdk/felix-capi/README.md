@@ -29,14 +29,15 @@ static void on_published(void *user_data, FelixStatus status, const char *messag
 
 FelixClient *client = /* from felix_client_connect's callback */;
 felix_client_publish(client, "t1", "default", "events",
-                     (const uint8_t *)"hello", 5, FELIX_ACK_PER_MESSAGE,
-                     NULL, on_published, my_state);
+                     (const uint8_t *)"hello", 5, NULL, 0, FELIX_ACK_PER_MESSAGE,
+                     FELIX_DELIVERY_AT_MOST_ONCE, NULL, on_published, my_state);
 ```
 
-The calls are `felix_client_connect`, `felix_client_publish`,
-`felix_client_subscribe` and `felix_subscription_next`. Each takes a
-callback, a `void *user_data` passed back to it untouched, and an optional
-`FelixCancelToken`.
+The calls are `felix_client_connect`, the publishes (`felix_client_publish`,
+`felix_client_publish_batch`, `felix_client_publish_on_shard` and
+`felix_client_publish_records`), `felix_client_subscribe` and
+`felix_subscription_next`. Each takes a callback, a `void *user_data`
+passed back to it untouched, and an optional `FelixCancelToken`.
 
 The rules are the same for every function:
 
@@ -89,8 +90,44 @@ The rules are the same for every function:
   callbacks in order when each read starts from the previous one's callback
   or after it ran.
 
-For a C# binding: `bool` in a callback is one byte, so declare it `byte` in
-an `[UnmanagedCallersOnly]` signature, and catch every exception inside the
+### Publishing
+
+`felix_client_publish` sends one record. A non-null `key` routes it, so
+records sharing a key share a shard and stay in order; a null key sends it to
+shard 0. `FELIX_DELIVERY_AT_MOST_ONCE` reports a lost connection rather than
+risk writing the record twice; `FELIX_DELIVERY_AT_LEAST_ONCE` reconnects and
+sends it again.
+
+The batch calls take the payloads end to end in one buffer with an array of
+lengths, so a managed caller pins one byte array and one length array instead
+of a pointer per record:
+
+```c
+const uint8_t data[] = "onetwothree";
+const size_t lens[] = {3, 3, 5};
+felix_client_publish_batch(client, "t1", "default", "events", data, lens, 3,
+                           NULL, 0, FELIX_ACK_PER_BATCH, NULL, on_batch, my_state);
+```
+
+`felix_client_publish_batch` sends the batch to one shard, by key or to
+shard 0, and `felix_client_publish_on_shard` to a shard the caller names.
+Either is one frame the broker appends contiguously and accepts or refuses
+whole. `felix_client_publish_records` takes a key per record (laid out the
+same way), splits the records by shard and sends each shard's share to its
+owner; some shards can succeed while others fail, and it is the batch call
+that can resend with `FELIX_DELIVERY_AT_LEAST_ONCE`.
+
+A batch callback gets a `FelixRecordResult` per record, in the order passed:
+its status, its log offset when the broker reported one, and the failure's
+message. The callback's own status is `FELIX_STATUS_OK` only when every
+record was accepted. The results are null when no record has an outcome of
+its own: the batch was empty, or the call was cancelled or panicked.
+
+For a C# binding: `bool` in a callback or in `FelixRecordResult` is one
+byte, so declare it `byte` in an `[UnmanagedCallersOnly]` signature or a
+`[StructLayout(LayoutKind.Sequential)]` struct; `size_t` is `nuint`. A
+`fixed` empty array is a null pointer, which `felix_client_publish` reads as
+no key, so pass the empty key from a non-empty buffer. Catch every exception inside the
 callback, since one that escapes ends the process.
 
 ### Why callbacks, and why pull
@@ -112,8 +149,9 @@ There are no blocking variants. Blocking on a callback is a few lines over a
 mutex and condition variable, as [`tests/c/pubsub.c`](tests/c/pubsub.c)
 shows, and one surface keeps every later operation to one function.
 
-This first cut covers connect, publish and subscribe on shard 0 of a stream.
-Keyed publish, groups, caches and multi-shard subscribe come later.
+This covers connect, every publish the Rust cluster client offers except the
+idempotent and conditional ones, and subscribe on shard 0 of a stream.
+Multi-shard subscribe, groups, caches and commits come later.
 
 ## The header
 
@@ -125,6 +163,6 @@ test fails while the two differ.
 
 `task capi:test` compiles [`tests/c/pubsub.c`](tests/c/pubsub.c) against the
 header, links it against both the shared and the static library, and runs the
-checks that need no broker. `task capi:test -- fixture` also runs the publish
-and subscribe scenarios against `felix-cluster client-fixture`, which CI does
+checks that need no broker. `task capi:test -- fixture` also runs the publish,
+batch and subscribe scenarios against `felix-cluster client-fixture`, which CI does
 on every pull request.

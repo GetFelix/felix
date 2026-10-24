@@ -7,7 +7,7 @@
  *     are cancelled. Needs no broker.
  *
  *   pubsub fixture ADDRS TENANT NAMESPACE TOKEN CA_FILE STREAM MISSING UNAUTHORIZED_TOKEN
- *     The publish and subscribe scenarios, against `felix-cluster
+ *     The publish, batch and subscribe scenarios, against `felix-cluster
  *     client-fixture`. tests/c/run.sh starts the fixture and passes its
  *     fields in.
  *
@@ -99,6 +99,29 @@ static void on_publish(void *user_data, FelixStatus status,
   finish(w, status, message, NULL);
 }
 
+/* Up to MAX_RECORDS per batch are kept; the scenarios send fewer. */
+#define MAX_RECORDS 8
+
+struct batch_waiter {
+  struct waiter w;
+  bool has_results;
+  size_t count;
+  FelixRecordResult results[MAX_RECORDS];
+};
+
+static void on_batch(void *user_data, FelixStatus status, const char *message,
+                     const FelixRecordResult *results, size_t count) {
+  struct batch_waiter *b = user_data;
+  b->has_results = results != NULL;
+  b->count = count;
+  for (size_t i = 0; i < count && i < MAX_RECORDS; i++) {
+    b->results[i] = results[i];
+    /* Only valid while the callback runs. */
+    b->results[i].message = NULL;
+  }
+  finish(&b->w, status, message, NULL);
+}
+
 static void on_subscribe(void *user_data, FelixStatus status,
                          const char *message, FelixSubscription *sub) {
   finish(user_data, status, message, sub);
@@ -139,6 +162,29 @@ static FelixStatus wait_for(struct waiter *w, int ms) {
 static void pause_ms(long ms) {
   struct timespec t = {ms / 1000, (ms % 1000) * 1000000L};
   nanosleep(&t, NULL);
+}
+
+static void batch_init(struct batch_waiter *b) {
+  memset(b, 0, sizeof *b);
+  waiter_init(&b->w);
+}
+
+/* The callback's status, or the call's when it was refused. */
+static FelixStatus batch_wait(struct batch_waiter *b, FelixStatus started) {
+  return started == FELIX_STATUS_OK ? wait_for(&b->w, WAIT_MS) : started;
+}
+
+/* Whether every record of a batch of `count` was accepted with an offset. */
+static bool all_accepted(const struct batch_waiter *b, size_t count) {
+  if (!b->has_results || b->count != count) {
+    return false;
+  }
+  for (size_t i = 0; i < count; i++) {
+    if (b->results[i].status != FELIX_STATUS_OK || !b->results[i].has_offset) {
+      return false;
+    }
+  }
+  return true;
 }
 
 static FelixStatus connect_sync(const char *addrs, const char *tenant,
@@ -191,8 +237,18 @@ static void offline(void) {
   CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "missing ca_file gave %d",
         (int)status);
 
-  status = felix_client_publish(NULL, "t", "n", "s", NULL, 0,
-                                FELIX_ACK_PER_MESSAGE, NULL, on_publish, &w);
+  status = felix_client_publish(NULL, "t", "n", "s", NULL, 0, NULL, 0,
+                                FELIX_ACK_PER_MESSAGE,
+                                FELIX_DELIVERY_AT_MOST_ONCE, NULL, on_publish,
+                                &w);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "null client gave %d",
+        (int)status);
+
+  struct batch_waiter b;
+  batch_init(&b);
+  status = felix_client_publish_batch(NULL, "t", "n", "s", NULL, NULL, 0, NULL,
+                                      0, FELIX_ACK_PER_BATCH, NULL, on_batch,
+                                      &b);
   CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "null client gave %d",
         (int)status);
 
@@ -202,7 +258,10 @@ static void offline(void) {
 
   pause_ms(100);
   CHECK(w.calls == 0, "a refused call ran its callback %d time(s)", w.calls);
+  CHECK(b.w.calls == 0, "a refused batch ran its callback %d time(s)",
+        b.w.calls);
   waiter_destroy(&w);
+  waiter_destroy(&b.w);
 
   /* Every free takes null, and so does cancel. */
   felix_client_free(NULL);
@@ -261,7 +320,8 @@ static FelixStatus publish(FelixClient *client, const struct fixture *f,
   waiter_init(&w);
   FelixStatus status = felix_client_publish(
       client, f->tenant, f->ns, stream, (const uint8_t *)payload,
-      strlen(payload), FELIX_ACK_PER_MESSAGE, NULL, on_publish, &w);
+      strlen(payload), NULL, 0, FELIX_ACK_PER_MESSAGE,
+      FELIX_DELIVERY_AT_MOST_ONCE, NULL, on_publish, &w);
   if (status == FELIX_STATUS_OK) {
     status = wait_for(&w, WAIT_MS);
     if (offset) {
@@ -487,6 +547,191 @@ static void pubsub(const struct fixture *f, const char *run) {
   felix_client_free(restricted);
 }
 
+/* publish.batch, publish.on_shard, publish.keyed: every record of a batch has
+   its own result, and records sent together have contiguous offsets. */
+static void batches(const struct fixture *f, const char *run) {
+  FelixClient *client = NULL;
+  REQUIRE_OK(connect_sync(f->addrs, f->tenant, f->token, f->ca_file, &client));
+  FelixSubscription *sub = NULL;
+  FelixStatus status = subscribe(client, f, FELIX_START_LATEST, 0, &sub);
+  if (status != FELIX_STATUS_OK) {
+    CHECK(0, "subscribe gave %d", (int)status);
+    felix_client_free(client);
+    return;
+  }
+
+  enum { N = 3 };
+  char payloads[2 * N][64];
+  const char *expected[2 * N];
+  uint8_t data[2 * N * 64];
+  size_t lens[2 * N];
+  size_t used = 0;
+  for (int i = 0; i < 2 * N; i++) {
+    snprintf(payloads[i], sizeof payloads[i], "c-%s-batch-%d", run, i);
+    expected[i] = payloads[i];
+    lens[i] = strlen(payloads[i]);
+    memcpy(data + used, payloads[i], lens[i]);
+    used += lens[i];
+  }
+  size_t first_half = lens[0] + lens[1] + lens[2];
+
+  /* An unkeyed batch goes to shard 0, which the subscription reads, and so
+     does one named for shard 0. */
+  uint64_t sent[2 * N] = {0};
+  struct batch_waiter b;
+  batch_init(&b);
+  status = batch_wait(
+      &b, felix_client_publish_batch(client, f->tenant, f->ns, f->stream, data,
+                                     lens, N, NULL, 0, FELIX_ACK_PER_BATCH,
+                                     NULL, on_batch, &b));
+  CHECK(status == FELIX_STATUS_OK && all_accepted(&b, N),
+        "an unkeyed batch gave %d (%s)", (int)status, b.w.message);
+  for (int i = 0; i < N; i++) {
+    sent[i] = b.results[i].offset;
+  }
+  waiter_destroy(&b.w);
+
+  batch_init(&b);
+  status = batch_wait(
+      &b, felix_client_publish_on_shard(
+              client, f->tenant, f->ns, f->stream, 0, data + first_half,
+              lens + N, N, FELIX_ACK_PER_BATCH, NULL, on_batch, &b));
+  CHECK(status == FELIX_STATUS_OK && all_accepted(&b, N),
+        "a batch on shard 0 gave %d (%s)", (int)status, b.w.message);
+  for (int i = 0; i < N; i++) {
+    sent[N + i] = b.results[i].offset;
+  }
+  waiter_destroy(&b.w);
+
+  uint64_t read[2 * N] = {0};
+  if (read_expected(sub, expected, 2 * N, read)) {
+    for (int i = 0; i < 2 * N; i++) {
+      CHECK(read[i] == sent[i],
+            "record %d was read at %" PRIu64 " but reported at %" PRIu64, i,
+            read[i], sent[i]);
+    }
+  }
+  felix_subscription_free(sub);
+
+  /* A shard the stream does not have writes nothing and fails every record. */
+  batch_init(&b);
+  status = batch_wait(
+      &b, felix_client_publish_on_shard(client, f->tenant, f->ns, f->stream,
+                                        1000, data, lens, 2,
+                                        FELIX_ACK_PER_BATCH, NULL, on_batch,
+                                        &b));
+  CHECK(status != FELIX_STATUS_OK && status != FELIX_STATUS_PANIC,
+        "a missing shard gave %d", (int)status);
+  CHECK(b.has_results && b.count == 2 && b.results[0].status == status &&
+            b.results[1].status == status,
+        "a refused batch did not fail every record");
+  waiter_destroy(&b.w);
+
+  /* Records sharing a key share a shard and go together. Whether "a" and "b"
+     share one is up to the hash, so either layout of offsets is right. */
+  const uint8_t keys[] = "abab";
+  const size_t key_lens[] = {1, 1, 1, 1};
+  const FelixDelivery deliveries[] = {FELIX_DELIVERY_AT_MOST_ONCE,
+                                      FELIX_DELIVERY_AT_LEAST_ONCE};
+  for (int d = 0; d < 2; d++) {
+    batch_init(&b);
+    status = batch_wait(
+        &b, felix_client_publish_records(client, f->tenant, f->ns, f->stream,
+                                         data, lens, keys, key_lens, 4,
+                                         FELIX_ACK_PER_BATCH, deliveries[d],
+                                         NULL, on_batch, &b));
+    CHECK(status == FELIX_STATUS_OK && all_accepted(&b, 4),
+          "keyed records (delivery %d) gave %d (%s)", (int)deliveries[d],
+          (int)status, b.w.message);
+    uint64_t o[4];
+    for (int i = 0; i < 4; i++) {
+      o[i] = b.results[i].offset;
+    }
+    bool split = o[2] == o[0] + 1 && o[3] == o[1] + 1;
+    bool together = o[1] == o[0] + 1 && o[2] == o[0] + 2 && o[3] == o[0] + 3;
+    CHECK(status != FELIX_STATUS_OK || split || together,
+          "keyed offsets %" PRIu64 " %" PRIu64 " %" PRIu64 " %" PRIu64, o[0],
+          o[1], o[2], o[3]);
+    waiter_destroy(&b.w);
+
+    /* One keyed record. */
+    struct waiter w;
+    waiter_init(&w);
+    status = felix_client_publish(client, f->tenant, f->ns, f->stream, data,
+                                  lens[0], keys, 1, FELIX_ACK_PER_MESSAGE,
+                                  deliveries[d], NULL, on_publish, &w);
+    if (status == FELIX_STATUS_OK) {
+      status = wait_for(&w, WAIT_MS);
+    }
+    CHECK(status == FELIX_STATUS_OK && w.has_offset,
+          "a keyed publish (delivery %d) gave %d (%s)", (int)deliveries[d],
+          (int)status, w.message);
+    waiter_destroy(&w);
+  }
+
+  /* A keyed batch is one shard's, so all of it is contiguous. */
+  batch_init(&b);
+  status = batch_wait(
+      &b, felix_client_publish_batch(client, f->tenant, f->ns, f->stream, data,
+                                     lens, N, keys, 1, FELIX_ACK_PER_BATCH,
+                                     NULL, on_batch, &b));
+  CHECK(status == FELIX_STATUS_OK && all_accepted(&b, N),
+        "a keyed batch gave %d (%s)", (int)status, b.w.message);
+  CHECK(b.results[1].offset == b.results[0].offset + 1 &&
+            b.results[2].offset == b.results[0].offset + 2,
+        "a keyed batch was not contiguous");
+  waiter_destroy(&b.w);
+
+  /* An empty batch completes with no results. */
+  batch_init(&b);
+  status = batch_wait(
+      &b, felix_client_publish_batch(client, f->tenant, f->ns, f->stream, NULL,
+                                     NULL, 0, NULL, 0, FELIX_ACK_PER_BATCH,
+                                     NULL, on_batch, &b));
+  CHECK(status == FELIX_STATUS_OK && !b.has_results && b.count == 0,
+        "an empty batch gave %d", (int)status);
+  waiter_destroy(&b.w);
+
+  /* Bad layouts are refused before anything is sent. */
+  batch_init(&b);
+  status = felix_client_publish_batch(client, f->tenant, f->ns, f->stream,
+                                      NULL, lens, 2, NULL, 0,
+                                      FELIX_ACK_PER_BATCH, NULL, on_batch, &b);
+  const char *message = felix_last_error_message();
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT && message &&
+            strstr(message, "data"),
+        "lengths without data gave %d", (int)status);
+  status = felix_client_publish_records(
+      client, f->tenant, f->ns, f->stream, data, lens, NULL, key_lens, 4,
+      FELIX_ACK_PER_BATCH, FELIX_DELIVERY_AT_MOST_ONCE, NULL, on_batch, &b);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT,
+        "key lengths without keys gave %d", (int)status);
+  status = felix_client_publish_records(client, f->tenant, f->ns, f->stream,
+                                        data, lens, keys, key_lens, 4,
+                                        FELIX_ACK_PER_BATCH, 7, NULL, on_batch,
+                                        &b);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "delivery 7 gave %d",
+        (int)status);
+  pause_ms(100);
+  CHECK(b.w.calls == 0, "a refused batch ran its callback");
+  waiter_destroy(&b.w);
+
+  /* A batch cancelled before it starts says so, with no results. */
+  batch_init(&b);
+  FelixCancelToken *cancel = felix_cancel_token_new();
+  felix_cancel_token_cancel(cancel);
+  status = batch_wait(
+      &b, felix_client_publish_batch(client, f->tenant, f->ns, f->stream, data,
+                                     lens, N, NULL, 0, FELIX_ACK_PER_BATCH,
+                                     cancel, on_batch, &b));
+  felix_cancel_token_free(cancel);
+  CHECK(status == FELIX_STATUS_CANCELLED && !b.has_results,
+        "a cancelled batch gave %d", (int)status);
+  waiter_destroy(&b.w);
+
+  felix_client_free(client);
+}
+
 int main(int argc, char **argv) {
   if (argc == 2 && strcmp(argv[1], "offline") == 0) {
     offline();
@@ -496,6 +741,7 @@ int main(int argc, char **argv) {
     char run[32];
     snprintf(run, sizeof run, "%ld", (long)time(NULL));
     pubsub(&f, run);
+    batches(&f, run);
   } else {
     fprintf(stderr, "usage: %s offline | fixture ADDRS TENANT NAMESPACE TOKEN "
                     "CA_FILE STREAM MISSING UNAUTHORIZED_TOKEN\n",
