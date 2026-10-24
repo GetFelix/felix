@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792872143494,
+  "lastUpdate": 1792874657941,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -35204,6 +35204,58 @@ window.BENCHMARK_DATA = {
             "range": "7162.97",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 798262.12\nmean: 799602.09\nstdev: 7162.97\ncv: 0.90%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "151bbaedd49d2f03d9c8c9f2b2a11c6869c21e5d",
+          "message": "test(capi): C conformance harness reports to felix-conformance (#1493) (#1514)\n\n* test(capi): C conformance harness reports scenario outcomes to felix-conformance (#1493)\n* test(capi): review fixes for the C conformance harness",
+          "timestamp": "2026-10-24T20:40:20Z",
+          "tree_id": "d049369d7f47a16f391181244a8c632d818b9fda",
+          "url": "https://github.com/GetFelix/felix/commit/151bbaedd49d2f03d9c8c9f2b2a11c6869c21e5d"
+        },
+        "date": 1792874657110,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 527142.93,
+            "range": "41405.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 527142.93\nmean: 516926.83\nstdev: 41405.26\ncv: 8.01%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 527142.93,
+            "range": "41405.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 527142.93\nmean: 516926.83\nstdev: 41405.26\ncv: 8.01%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 123713.73,
+            "range": "1094.11",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 123713.73\nmean: 123417.85\nstdev: 1094.11\ncv: 0.89%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1237137.29,
+            "range": "10941.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1237137.29\nmean: 1234178.54\nstdev: 10941.05\ncv: 0.89%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
