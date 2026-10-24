@@ -85,10 +85,13 @@ use crate::config::BrokerConfig;
 
 pub(crate) const ACK_QUEUE_DEPTH: usize = 2048;
 pub(crate) const ACK_WAITERS_MAX: usize = 1024;
-/// Publishes one control stream may have parked waiting for queue room
+/// Acked publishes one control stream may have parked waiting for queue room
 /// before its read loop waits too. Byte budgets bound their memory; this
 /// bounds the tasks.
 pub(crate) const PARKED_PUBLISHES_MAX: usize = ACK_WAITERS_MAX;
+/// The same for unacked publishes, kept small so that parked ones cannot use
+/// up the broker's byte budget (see `handlers/publish/parked.rs`).
+pub(crate) const PARKED_UNACKED_MAX: usize = 16;
 pub(crate) const ACK_HI_WATER: usize = ACK_QUEUE_DEPTH * 3 / 4;
 pub(crate) const ACK_LO_WATER: usize = ACK_QUEUE_DEPTH / 2;
 pub(crate) const ACK_ENQUEUE_TIMEOUT: Duration = Duration::from_millis(100);

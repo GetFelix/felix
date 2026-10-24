@@ -150,7 +150,7 @@ async fn context(broker: &Arc<Broker>) -> (PublishContext, Arc<PublishScheduler>
     // until the test takes it.
     let scheduler = Arc::new(PublishScheduler::new(2, 1, 1));
     publish_ctx.scheduler = Arc::clone(&scheduler);
-    publish_ctx.parked = Some(ParkedPublishes::new(8));
+    publish_ctx.parked = Some(ParkedPublishes::new(8, 8));
     (publish_ctx, scheduler)
 }
 
@@ -552,7 +552,7 @@ async fn a_closing_queue_answers_a_parked_publish() -> Result<()> {
 async fn same_key_publishes_keep_send_order_through_parking() -> Result<()> {
     const COUNT: u32 = 60;
     let (broker, stuck, stuck_partition, mut publish_ctx, scheduler) = stuck_stream().await?;
-    publish_ctx.parked = Some(ParkedPublishes::new(4));
+    publish_ctx.parked = Some(ParkedPublishes::new(4, 4));
     let auth = auth_fixture("t1", default_perms());
     let mut frames = vec![frame_from_message(auth_message(&auth))];
     frames.extend((0..COUNT).map(|i| {
@@ -594,5 +594,58 @@ async fn same_key_publishes_keep_send_order_through_parking() -> Result<()> {
         "a shard was reordered"
     );
     assert!(timeout(Duration::from_secs(5), control).await???);
+    Ok(())
+}
+
+/// **A stream parks only a few unacked publishes.** Nothing on the client
+/// bounds fire-and-forget publishes, so with the acked cap a busy broker's
+/// streams parked until the shared byte budget ran out and every publish then
+/// waited on it. Past the small unacked cap the stream waits inline, and
+/// everything it sent is still admitted in order.
+#[tokio::test]
+async fn unacked_publishes_park_up_to_their_own_cap() -> Result<()> {
+    use crate::serving::quic::{PARKED_PUBLISHES_MAX, PARKED_UNACKED_MAX};
+    assert!(PARKED_UNACKED_MAX < PARKED_PUBLISHES_MAX);
+    let sent = PARKED_UNACKED_MAX + 8;
+    let (broker, stuck, stuck_partition, mut publish_ctx, scheduler) = stuck_stream().await?;
+    let parked = ParkedPublishes::new(PARKED_PUBLISHES_MAX, PARKED_UNACKED_MAX);
+    publish_ctx.parked = Some(Arc::clone(&parked));
+    let auth = auth_fixture("t1", default_perms());
+    let mut frames = vec![frame_from_message(auth_message(&auth))];
+    frames.extend((0..sent as u32).map(|i| publish(&stuck, &i.to_be_bytes(), None)));
+    let (control, _out, _cancel) =
+        spawn_stream(&broker, &auth, publish_ctx, BrokerConfig::default(), frames).await?;
+
+    until("the stream to fill its unacked cap", || {
+        parked.len() == PARKED_UNACKED_MAX
+    })
+    .await?;
+    // The next publish waits in the read loop, so no more park.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        parked.len(),
+        PARKED_UNACKED_MAX,
+        "parked past the unacked cap"
+    );
+
+    let partition = Arc::clone(&scheduler.partitions()[stuck_partition]);
+    let mut landed = Vec::new();
+    timeout(Duration::from_secs(10), async {
+        while landed.len() < sent + 1 {
+            match partition.try_take() {
+                Some(job) => landed.push(job.payloads[0].clone()),
+                None => tokio::task::yield_now().await,
+            }
+        }
+    })
+    .await
+    .context("publishes went missing")?;
+    let order: Vec<u32> = landed[1..]
+        .iter()
+        .map(|payload| u32::from_be_bytes(payload[..4].try_into().expect("4 bytes")))
+        .collect();
+    assert_eq!(order, (0..sent as u32).collect::<Vec<_>>());
+    assert!(timeout(Duration::from_secs(5), control).await???);
+    timeout(Duration::from_secs(5), parked.drain()).await?;
     Ok(())
 }

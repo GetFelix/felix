@@ -273,7 +273,7 @@ async fn enqueue(
     };
     if movable
         && let Some(parked) = publish_ctx.parked.as_ref()
-        && let Some(slot) = parked.try_slot()
+        && let Some(slot) = parked.try_slot(policy == EnqueuePolicy::Wait)
     {
         t_counter!("felix_broker_ingress_parked_total").increment(1);
         let identity = Arc::clone(&publish_ctx.identity);
