@@ -338,6 +338,63 @@ async fn advances_coalesce_into_few_replica_state_writes() {
     );
 }
 
+/// **An advance made as the writer finishes is not left behind.** The writer
+/// clears its flag and then checks memory; an advance that found the flag
+/// still set relies on that check. A race, so this cannot fail on demand; it
+/// advances right as each write lands to give it the most chances.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_advance_as_the_writer_finishes_still_reaches_disk() {
+    let dir = tempdir().expect("tempdir");
+    let log = open(&dir, FsyncMode::OnCommit);
+    let rounds = 100u64;
+    let payloads: Vec<String> = (0..rounds * 2).map(|n| n.to_string()).collect();
+    let payloads: Vec<&str> = payloads.iter().map(String::as_str).collect();
+    log.append(&records(&payloads)).await.expect("append");
+    for round in 1..=rounds {
+        log.advance_commit_offset(round * 2 - 1)
+            .await
+            .expect("commit");
+        while log.inner.commit_persisted.load(Ordering::Acquire) < round * 2 - 1 {
+            std::hint::spin_loop();
+        }
+        log.advance_commit_offset(round * 2).await.expect("commit");
+        on_disk(&dir, round * 2).await;
+    }
+}
+
+/// **`close` waits out a replica-state write that found the log open**, so
+/// nothing is written into a directory another log may own once it returns.
+// The held locks stand in for a writer partway through its write.
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn close_waits_for_a_replica_state_write_in_flight() {
+    let dir = tempdir().expect("tempdir");
+    let log = open(&dir, FsyncMode::OnCommit);
+    log.append(&records(&["a", "b"])).await.expect("append");
+
+    // Holding the flush lock stops `close` after its last write and before
+    // it marks the log closed, where a writer could still find it open.
+    let flushes = log.inner.durability.lock_flushes().await;
+    let closing = tokio::spawn({
+        let log = log.clone();
+        async move { log.close().await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(!closing.is_finished(), "close did not reach the flush lock");
+
+    // A writer that has seen the log open and holds the writer's lock.
+    let writer = log.inner.replica_persisted.lock();
+    assert!(!log.inner.closed.load(Ordering::Acquire));
+    drop(flushes);
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        !closing.is_finished(),
+        "close returned while a replica-state write was in flight"
+    );
+    drop(writer);
+    closing.await.expect("join").expect("close");
+}
+
 /// **A raised generation is still on disk before it is answered**, with a
 /// commit-offset write behind in flight.
 #[tokio::test]

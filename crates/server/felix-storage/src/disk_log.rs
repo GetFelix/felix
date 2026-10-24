@@ -702,9 +702,17 @@ impl DiskLog {
         // Last, and under the flush lock, so no flush through a stale handle
         // can move the mark after the one above.
         let _flushes = self.inner.durability.lock_flushes().await;
-        self.inner
-            .closed
-            .store(true, std::sync::atomic::Ordering::Release);
+        // And under the replica-state writer's lock, so a write behind that
+        // found the log open lands before this returns.
+        let inner = Arc::clone(&self.inner);
+        tokio::task::spawn_blocking(move || {
+            let _persisted = inner.replica_persisted.lock();
+            inner
+                .closed
+                .store(true, std::sync::atomic::Ordering::Release);
+        })
+        .await
+        .map_err(|err| StorageError::Io(std::io::Error::other(err)))?;
         flushed.and(marked)
     }
 
@@ -1411,10 +1419,9 @@ async fn persist_replica_state(inner: Arc<LogInner>) -> Result<()> {
         if state == persisted.0 {
             return Ok(());
         }
-        // `close` makes its own last write under this lock before it sets
-        // `closed`, and returns only after. A write that sees `closed` unset
-        // here therefore lands before `close` returns, while the directory
-        // is still this log's.
+        // `close` sets `closed` under this lock and returns only after. A
+        // write that sees it unset here therefore lands before `close`
+        // returns, while the directory is still this log's.
         if inner.closed.load(Ordering::Acquire) {
             return Err(StorageError::Closed(inner.label.clone()));
         }
@@ -1447,7 +1454,10 @@ fn write_commit_behind(inner: &Arc<LogInner>) {
                 return;
             };
             let written = persist_replica_state(Arc::clone(&inner)).await;
-            inner.commit_writer.store(false, Ordering::Release);
+            // A swap, not a store: as a read-modify-write it reads an
+            // advance's `swap(true)` that came first, so the load below sees
+            // that advance's offset. A store then a load could miss both.
+            inner.commit_writer.swap(false, Ordering::AcqRel);
             if written.is_err() {
                 if !inner.closed.load(Ordering::Acquire) {
                     retry_replica_state(&inner);
@@ -1485,7 +1495,8 @@ fn retry_replica_state(inner: &Arc<LogInner>) {
             if persist_replica_state(Arc::clone(&inner)).await.is_err() {
                 continue;
             }
-            inner.replica_retry.store(false, Ordering::Release);
+            // A swap for the same reason as the writer's.
+            inner.replica_retry.swap(false, Ordering::AcqRel);
             // A write that failed while this one ran found the flag set
             // and left the retry to this task.
             let behind = inner.commit_offset.load(Ordering::Acquire)
