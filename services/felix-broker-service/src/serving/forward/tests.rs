@@ -21,6 +21,8 @@ struct ScriptedOwner {
     incarnations: Mutex<Vec<Option<u64>>>,
     /// What the owner offered in its handshake.
     offered: Option<PeerCapabilities>,
+    /// Whether a handshake to learn its capabilities fails.
+    unreachable: bool,
 }
 
 impl ScriptedOwner {
@@ -33,6 +35,7 @@ impl ScriptedOwner {
             kinds: Mutex::new(Vec::new()),
             incarnations: Mutex::new(Vec::new()),
             offered: Some(PeerCapabilities::FORWARD_OFFSETS),
+            unreachable: false,
         }
     }
 
@@ -89,6 +92,20 @@ impl PeerRequester for ScriptedOwner {
 
     fn recorded_capabilities(&self, _node_id: &str) -> Option<PeerCapabilities> {
         self.offered
+    }
+
+    async fn capabilities(
+        &self,
+        node_id: &str,
+        _addr: SocketAddr,
+    ) -> std::result::Result<PeerCapabilities, PeerError> {
+        if self.unreachable {
+            return Err(PeerError::Handshake {
+                node_id: node_id.to_string(),
+                detail: "refused".to_string(),
+            });
+        }
+        Ok(PeerCapabilities::NONE)
     }
 }
 
@@ -590,4 +607,42 @@ async fn a_forward_names_its_incarnation_only_to_an_owner_that_reads_it() {
             "incarnation {incarnation}, owner offered {offered:?}",
         );
     }
+}
+
+/// **An owner whose capabilities cannot be learned is never sent a plain
+/// forward for an incarnated stream or cache.** It may be the restarted owner
+/// of another incarnation, which generation alone would not refuse. The
+/// attempt fails before anything is sent, and is retried as one.
+#[tokio::test]
+async fn a_failed_capability_lookup_never_sends_a_plain_forward() {
+    let target = ForwardTarget {
+        incarnation: 9,
+        ..target()
+    };
+    let owner = ScriptedOwner {
+        offered: None,
+        unreachable: true,
+        ..ScriptedOwner::new([Ok(accepted(0, 0))])
+    };
+    let err = forward_publish(
+        &owner,
+        &target,
+        &key(),
+        AckMode::OnCommit,
+        "token",
+        vec![Bytes::from_static(b"an order")],
+        Duration::from_secs(30),
+    )
+    .await
+    .expect_err("never learned what the owner reads");
+    assert!(matches!(err, ForwardError::Refused { .. }), "{err}");
+    let err = forward_cache_op(&owner, &target, &key(), "k", "token", &CacheRequest::Get)
+        .await
+        .expect_err("never learned what the owner reads");
+    assert!(matches!(err, ForwardError::Refused { .. }), "{err}");
+    assert_eq!(
+        owner.attempts(),
+        0,
+        "a forward went out without its incarnation"
+    );
 }

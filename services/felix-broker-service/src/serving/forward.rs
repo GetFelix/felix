@@ -50,10 +50,6 @@ use felix_replication::peer::pool::PeerError;
 /// chasing it.
 const MAX_ATTEMPTS: u32 = 3;
 
-/// Bound on learning a cache owner's capabilities before the first forward
-/// to it; the request that follows has its own timeout.
-const CACHE_CAPABILITY_WAIT: Duration = Duration::from_secs(1);
-
 /// Where a publish is being sent, as this broker currently resolves it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForwardTarget {
@@ -144,7 +140,32 @@ pub async fn forward_publish(
                 detail: budget_spent(&target.node_id, budget, attempt, &last),
             });
         };
-        let incarnation = named_incarnation(pool, &target, remaining).await;
+        let incarnation =
+            match tokio::time::timeout(remaining, named_incarnation(pool, &target)).await {
+                Ok(Ok(incarnation)) => incarnation,
+                // Nothing was sent, so the attempt is retried like any other
+                // pre-write failure, never sent without the incarnation.
+                Ok(Err(err)) => {
+                    last = err.to_string();
+                    last_code = None;
+                    sleep_within(retry_delay(attempt), deadline).await;
+                    continue;
+                }
+                Err(_) => {
+                    last = format!("no handshake with {} within the budget", target.node_id);
+                    last_code = None;
+                    continue;
+                }
+            };
+        // The lookup may have dialled the owner; the request gets what is left.
+        let Some(remaining) = self::remaining(deadline) else {
+            metrics::record_forward(metrics::OUTCOME_EXHAUSTED);
+            return Err(ForwardError::Refused {
+                stream: key.stream.clone(),
+                code: last_code,
+                detail: budget_spent(&target.node_id, budget, attempt, &last),
+            });
+        };
         let request = InternalMessage::ForwardPublish(ForwardPublish {
             // The pool assigns the real id; it owns the connection this lands on.
             correlation_id: 0,
@@ -305,28 +326,31 @@ pub async fn forward_publish(
 /// offered to read it. A broker that predates the envelope around a forward
 /// refuses the frame, so it is sent the plain kind and checks generation
 /// alone, as it always did.
+///
+/// An owner whose capabilities cannot be learned is an error, not a plain
+/// forward: sending one would skip the check for exactly the owner that may
+/// hold another incarnation. Nothing has been sent when this fails.
 async fn named_incarnation(
     pool: &impl PeerRequester,
     target: &ForwardTarget,
-    wait: Duration,
-) -> Option<u64> {
+) -> Result<Option<u64>, PeerError> {
     if target.incarnation == 0 {
-        return None;
+        return Ok(None);
     }
     let offered = match pool.recorded_capabilities(&target.node_id) {
         Some(offered) => offered,
-        // No handshake with it yet: the request would dial it anyway.
-        None => tokio::time::timeout(
-            wait,
-            PeerRequester::capabilities(pool, &target.node_id, target.advertise_addr),
-        )
-        .await
-        .ok()?
-        .ok()?,
+        // No handshake with it yet. The request would dial it anyway, and
+        // reuses the connection this makes.
+        None => PeerRequester::capabilities(pool, &target.node_id, target.advertise_addr)
+            .await
+            .map_err(|err| PeerError::Unavailable {
+                node_id: target.node_id.clone(),
+                detail: format!("could not learn what it reads: {err}"),
+            })?,
     };
-    offered
+    Ok(offered
         .contains(PeerCapabilities::FORWARD_INCARNATION)
-        .then_some(target.incarnation)
+        .then_some(target.incarnation))
 }
 
 /// What a cache operation asks the owner to do.
@@ -459,7 +483,18 @@ pub async fn forward_cache_request(
         if attempt > 0 {
             metrics::record_forward_retry();
         }
-        let incarnation = named_incarnation(pool, &target, CACHE_CAPABILITY_WAIT).await;
+        // Bounded by the pool's handshake timeout, as the request's own dial
+        // would be.
+        let incarnation = match named_incarnation(pool, &target).await {
+            Ok(incarnation) => incarnation,
+            // Nothing was sent: retried like any other pre-write failure.
+            Err(err) => {
+                last = err.to_string();
+                last_code = None;
+                tokio::time::sleep(retry_delay(attempt)).await;
+                continue;
+            }
+        };
         let message = InternalMessage::ForwardCacheOp(ForwardCacheOp {
             correlation_id: 0,
             shard: ShardRef {

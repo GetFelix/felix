@@ -789,6 +789,13 @@ forward, which it refuses as malformed. To an owner without the bit, and for a
 stream or cache from before incarnations, the forward is its own kind byte for
 byte and is checked by generation alone.
 
+If the ingress broker cannot learn what the owner reads, the attempt fails
+before anything is sent and is retried. It is never sent without the
+incarnation. If the owner restarts onto an older build between the handshake
+and the send, its decoder rejects the envelope and its listener ends the request
+stream. Every forward in flight on that stream is then reported indeterminate,
+but none was applied.
+
 The owner compares the named incarnation with the one its own routes give the
 shard, before the generation. If its routes are behind, it waits for them as it
 does for a newer generation. Any mismatch is answered `StaleRoute` and nothing
