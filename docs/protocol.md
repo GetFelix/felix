@@ -262,12 +262,22 @@ which is the first message on the unidirectional stream the broker opens back,
 and is how a client matches an event stream to the subscription that asked for
 it.
 
-`start_offset` is the first offset the subscription delivers. `live_offset` is
-the stream's tail when the subscriber was registered: anything below it was
-already in the stream, anything from it on was written after, and nothing falls
-between. It leaves out generation-start records the log ends with (they hold an
-offset but never an event, so a reader waiting for the raw tail would wait
-forever), but is never below `start_offset`. For `latest` the two are equal. Both are sent on a durable stream to a client
+`start_offset` is where the subscription starts: no event below it is
+delivered. `live_offset` is the stream's tail when the subscriber was
+registered: anything below it was already in the stream, anything from it on
+was written after, and nothing falls between. It leaves out generation-start
+records the log ends with (they hold an offset but never an event, so a reader
+waiting for the raw tail would wait forever), but is never below
+`start_offset`.
+
+For `latest` the two are equal, and both stop short of those trailing records:
+on a log that holds events `0` and `1` and then two generation starts, `latest`
+answers `start_offset: 2, live_offset: 2`, not `4`. So a client that joins at
+`latest` and reads history up to `live_offset - 1` is caught up once it has
+offset `1`, and the first live event, at `4` with `skipped_before: 2`, counts
+no drop against `start_offset - 1`. A log of nothing but a generation start
+answers `0, 0`: there is nothing to catch up on. Brokers before 0.6.1 answered
+`latest` with the raw tail, which counts those records. Both are sent on a durable stream to a client
 that negotiated `FLAG_EVENT_BATCH_OFFSETS`, and from such a client a subscribe
 with no `start` is `latest`, so it reports them too. To any other client the
 frame is unchanged.

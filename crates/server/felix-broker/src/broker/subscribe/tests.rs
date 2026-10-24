@@ -159,9 +159,11 @@ async fn live_offset_stops_short_of_trailing_generation_starts() {
     };
     let earliest = join(StartPosition::Earliest).await;
     assert_eq!((earliest.start_offset, earliest.live_offset), (0, 2));
-    // Never below where the subscription starts.
+    // `Latest` joins just past the last event, so a client reading history
+    // up to it is caught up at offset 1 instead of waiting for offset 3.
     let latest = join(StartPosition::Latest).await;
-    assert_eq!((latest.start_offset, latest.live_offset), (4, 4));
+    assert_eq!((latest.start_offset, latest.live_offset), (2, 2));
+    // Never below where the subscription starts.
     let mid = join(StartPosition::Offset(3)).await;
     assert_eq!((mid.start_offset, mid.live_offset), (3, 3));
 
@@ -172,4 +174,110 @@ async fn live_offset_stops_short_of_trailing_generation_starts() {
         .expect("publish");
     let after = join(StartPosition::Earliest).await;
     assert_eq!(after.live_offset, 5);
+}
+
+/// A log whose only record is a generation start, as a new Quorum shard's is
+/// before its first write: `Latest` reports nothing to catch up on.
+#[tokio::test]
+async fn latest_on_a_log_of_only_generation_starts_has_nothing_to_catch_up() {
+    let (_dir, broker) = durable_broker().await;
+    broker
+        .append_generation_start("t1", "ns", "orders", 0, 2)
+        .await
+        .expect("generation start");
+    let join = broker
+        .subscribe_from("t1", "ns", "orders", 0, StartPosition::Latest)
+        .await
+        .expect("subscribe")
+        .join
+        .expect("durable join");
+    assert_eq!((join.start_offset, join.live_offset), (0, 0));
+}
+
+/// Joined at `Latest` before trailing generation starts, the first event's
+/// `skipped_before` accounts exactly for them, and a real drop after it is
+/// still counted exactly: `offset - previous - 1 - skipped_before`.
+#[tokio::test]
+async fn latest_past_generation_starts_keeps_drops_exact() {
+    let (_dir, broker) = durable_broker().await;
+    for value in ["a", "b"] {
+        broker
+            .publish("t1", "ns", "orders", Bytes::from(value))
+            .await
+            .expect("publish");
+    }
+    for generation in [3, 4] {
+        broker
+            .append_generation_start("t1", "ns", "orders", 0, generation)
+            .await
+            .expect("generation start");
+    }
+    // Room for one batch, so the default `DropNew` drops the next two.
+    let mut resumed = broker
+        .subscribe_from_sized("t1", "ns", "orders", 0, StartPosition::Latest, Some(1))
+        .await
+        .expect("subscribe");
+    let join = resumed.join.expect("durable join");
+    assert_eq!((join.start_offset, join.live_offset), (2, 2));
+    for value in ["c", "d", "e"] {
+        broker
+            .publish("t1", "ns", "orders", Bytes::from(value))
+            .await
+            .expect("publish");
+    }
+    let first = resumed.subscription.drain_ready();
+    assert_eq!(first.len(), 1, "the queue held one batch");
+    broker
+        .publish("t1", "ns", "orders", Bytes::from("f"))
+        .await
+        .expect("publish");
+    let second = resumed.subscription.drain_ready();
+    assert_eq!(second.len(), 1);
+
+    let dropped = |previous: u64, envelope: &crate::DeliveryEnvelope| {
+        let offset = envelope.base_offset().expect("durable offset");
+        offset - previous - 1 - envelope.skipped_before()
+    };
+    assert_eq!(first[0].base_offset(), Some(4));
+    assert_eq!(first[0].skipped_before(), 2);
+    assert_eq!(
+        dropped(join.start_offset - 1, &first[0]),
+        0,
+        "no drop at join"
+    );
+    assert_eq!(second[0].base_offset(), Some(7));
+    assert_eq!(dropped(4, &second[0]), 2, "d and e were dropped");
+}
+
+async fn durable_broker() -> (tempfile::TempDir, Broker) {
+    let dir = tempfile::tempdir().expect("dir");
+    let storage = DurableStorage::open(
+        dir.path(),
+        LogConfig {
+            fsync_mode: FsyncMode::None,
+            preallocate_segments: false,
+            ..LogConfig::default()
+        },
+    )
+    .expect("storage");
+    let broker = Broker::new(EphemeralCache::new().into()).with_durable_storage(storage);
+    broker.register_tenant("t1").await.expect("tenant");
+    broker
+        .register_namespace("t1", "ns")
+        .await
+        .expect("namespace");
+    broker
+        .register_stream(
+            "t1",
+            "ns",
+            "orders",
+            StreamMetadata {
+                durable: true,
+                shards: 1,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("stream");
+    (dir, broker)
 }

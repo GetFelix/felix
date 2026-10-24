@@ -331,8 +331,10 @@ silent restart at the tail.
 { "type": "subscribed", "subscription_id": 7, "start_offset": 1200, "live_offset": 1350 }
 ```
 
-`start_offset` is the first offset delivered and `live_offset` is the stream's
-tail when the subscriber was registered. Both are sent only for a subscribe with
+`start_offset` is where the subscription starts and `live_offset` is the
+stream's tail when the subscriber was registered. Both leave out
+generation-start records the log ends with, since those are never delivered,
+and for `latest` they are equal. Both are sent only for a subscribe with
 a `start`, on a durable stream, to a client that negotiated
 `FLAG_EVENT_BATCH_OFFSETS`.
 

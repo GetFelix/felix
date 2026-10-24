@@ -70,10 +70,13 @@ impl Subscription {
         self.queue_capacity
     }
 
-    /// The first offset this subscription delivers.
+    /// Where this subscription starts: no event below it is delivered.
     ///
     /// `None` for an in-memory stream, or from a broker older than event
-    /// offsets. A plain tail subscribe reports the tail, as `Latest` does.
+    /// offsets. A plain tail subscribe reports the tail, as `Latest` does,
+    /// stopping short of generation-start records the log ends with, so the
+    /// first event's [`Event::skipped_before`] counts no drop against
+    /// `start_offset - 1`.
     pub fn start_offset(&self) -> Option<u64> {
         self.start_offset
     }
@@ -84,7 +87,8 @@ impl Subscription {
     /// written after, and none are skipped in between. Generation-start
     /// records at the end of the log are left out, since they never arrive as
     /// events, so a reader that reaches it has caught up. From `Latest` this
-    /// equals [`Self::start_offset`].
+    /// equals [`Self::start_offset`]; a broker before 0.6.1 reported both at
+    /// the raw tail there.
     pub fn live_offset(&self) -> Option<u64> {
         self.live_offset
     }
