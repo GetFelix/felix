@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792853581872,
+  "lastUpdate": 1792853843248,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -43824,6 +43824,72 @@ window.BENCHMARK_DATA = {
             "range": "138.99",
             "unit": "us",
             "extra": "trials: 5\nmedian: 422.00\nmean: 440.80\nstdev: 138.99\ncv: 31.53%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8dd4f2855f3530b984e4968463ee294ba52e75a6",
+          "message": "perf(storage): write the commit offset behind the ack path (#1483)\n\n* perf(storage): write the commit offset behind the ack path\n\nUnder fsync_mode = on_commit every advance of a replicated log's commit\noffset wrote the replica state through (create, fsync, rename, directory\nfsync) before returning. A follower advances on almost every batch, and\nthe leader at the end of every pass, so a durable Quorum ack cost about\nthree fsyncs per replica instead of one.\n\nThe commit offset is now raised in memory and written behind in every\nmode. Under on_commit one writer per log starts at once and loops until\ndisk has caught up, so a write in flight carries every advance made while\nit runs. The accepted generation, the retention hold, restore_to,\nshutdown and close still write synchronously.\n\nFixes #1456\n\nSpec-Unaffected: FelixShard models the high-water mark as kept across a crash in every fsync mode and does not model when the replica file is written; Periodic already wrote it behind, and on_commit now does the same.\n\n* fix(storage): no lost wakeup in the commit writer, no write after close\n\nThe writer and the retry task cleared their flag with a store and then\nloaded the commit offset. A store followed by a load is not ordered by\nrelease/acquire, so an advance that found the flag still set could be\nmissed by both. Clear it with a swap instead, which reads the advance's\nown swap.\n\nclose set `closed` without the replica-state writer's lock, so a write\nthat had found the log open could land after close returned. Set it\nunder that lock.\n\nSpec-Unaffected: memory ordering and close sequencing inside the replica-state writer; the model does not describe either.",
+          "timestamp": "2026-10-24T14:51:31Z",
+          "tree_id": "c26a25247ac9b553dc4e01c23e9081f5385767c8",
+          "url": "https://github.com/GetFelix/felix/commit/8dd4f2855f3530b984e4968463ee294ba52e75a6"
+        },
+        "date": 1792853837847,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 112,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 112.00\nmean: 112.20\nstdev: 0.84\ncv: 0.75%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 150,
+            "range": "2.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 150.00\nmean: 150.00\nstdev: 2.45\ncv: 1.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 203,
+            "range": "3.21",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 203.00\nmean: 202.60\nstdev: 3.21\ncv: 1.58%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 145,
+            "range": "2.79",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 145.00\nmean: 146.40\nstdev: 2.79\ncv: 1.91%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 294,
+            "range": "33.21",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 294.00\nmean: 305.40\nstdev: 33.21\ncv: 10.87%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 376,
+            "range": "657.76",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 376.00\nmean: 830.00\nstdev: 657.76\ncv: 79.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
