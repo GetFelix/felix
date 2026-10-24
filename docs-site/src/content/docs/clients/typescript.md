@@ -625,12 +625,27 @@ values are plain `number`s, exact up to `Number.MAX_SAFE_INTEGER`.
 
 ## What is not wrapped
 
-- **Idempotent producers.** The Rust client's `IdempotentProducer` turns an
-  ambiguous publish into one the broker recognises as a re-send and refuses to
-  append twice. This binding does not wrap it yet.
+These are in the [Rust client](/clients/rust/) and not in this binding yet:
 
-It is marked in the conformance catalogue, so the binding reports it as
-unclaimed.
+- **Conditional writes.** `cache_put_if`, `cache_delete_if` and
+  `cache_get_versioned` (compare-and-set on a cache key), and the conditional
+  `publish_if` and `commit_if`. Without them a lease or lock cannot be built
+  from TypeScript.
+- **Atomic commits on a named shard** (`commit_on_shard`). `commit` routes by
+  key only.
+- **Merged prefix watches** (`watch_cache_sharded`). A prefix on a
+  multi-shard cache needs one `watchCache` per shard.
+- **Idempotent producers.** At-least-once without the duplicate; see
+  [the Rust page](/clients/rust/#idempotent-producers).
+- **`at_least_once` with a routing key.** The re-send path does not carry one,
+  and the client refuses the combination rather than silently dropping the key.
+- **Group lease extension and administration.** `group_extend`, `group_seek`,
+  and creating, describing or deleting a group. Groups are created with
+  `felixctl`.
+- **Starting from a time** (`offset_for_time`).
+
+The ones the conformance catalogue covers are marked there, so the binding
+reports them as unclaimed.
 
 ## Conformance
 

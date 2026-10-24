@@ -153,10 +153,18 @@ reworded.
 
 ## What is not wrapped
 
-- **Idempotent producers** (`producer_init` / `publish_idempotent`). They turn
-  an ambiguous publish into one the broker can recognise as a re-send and
-  refuse to append twice — at-least-once without the duplication. Surface over
-  a primitive that already exists, not protocol work.
+The Rust client has these and this binding does not yet. The client page lists
+them with what each is for.
+
+- Conditional writes: `cache_put_if`, `cache_delete_if`, `cache_get_versioned`,
+  `publish_if`, `commit_if`.
+- Atomic commits on a named shard (`commit_on_shard`).
+- Merged prefix watches across shards (`watch_cache_sharded`).
+- Idempotent producers (`producer_init` / `publish_idempotent`).
+- `at_least_once` with a routing key.
+- Group lease extension and administration (`group_extend`, `group_seek`,
+  create, describe, delete).
+- Starting from a time (`offset_for_time`).
 
 ## Conformance
 
