@@ -123,6 +123,7 @@ export default defineConfig({
             { label: 'Python', slug: 'clients/python' },
             { label: 'TypeScript', slug: 'clients/typescript' },
             { label: 'C', slug: 'clients/c' },
+            { label: 'C#', slug: 'clients/csharp' },
             { label: 'Browsers (felix-gateway)', slug: 'clients/browsers' },
           ],
         },
