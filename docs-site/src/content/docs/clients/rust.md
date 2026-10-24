@@ -107,9 +107,9 @@ special cases. It talks to one broker. In a cluster, a publish that reaches a
 broker that does not lead the shard is forwarded to the one that does, and
 that hop is expensive. In the v0.6.0 three-node, three-replica run, sending
 through `Client` instead of straight to the owner cut in-memory throughput
-(256 B records, batches of 64) 2.4×, from 2,096 to 890 MB/s of client ingress
-with 40% more broker CPU, and durable quorum-acked throughput 4.4×, from 490 to
-111 MB/s. See [v0.6.0 performance](/features/v060-performance/).
+(256 B records, batches of 64) 2.4×, from 2,034 to 864 MB/s of payload with
+34% more broker CPU, and durable quorum-acked throughput 4.4×, from 475 to 107
+MB/s. See [v0.6.0 performance](/features/v060-performance/).
 
 ## Client Configuration
 

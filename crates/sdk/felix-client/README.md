@@ -39,7 +39,7 @@ Use `ClusterClient` whether you run one broker or a cluster: it sends each
 record straight to its shard's leader and handles failover and reconnects.
 `Client` is the single-connection building block underneath it, for tools and
 special cases; in a cluster its publishes are forwarded to the shard's leader,
-which costs 2.4× to 4.4× throughput
+which cost 1.3× to 4.4× throughput under load
 ([v0.6.0 performance](https://docs.getfelix.dev/features/v060-performance/)).
 
 ## What it handles for you

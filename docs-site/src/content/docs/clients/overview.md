@@ -182,9 +182,9 @@ straight to the broker that leads its shard and handles failover and
 reconnects. `Client` is the single-connection building block underneath it,
 for tools and special cases; in a cluster its publishes to shards the broker
 does not lead are forwarded. In the v0.6.0 three-node, three-replica run that
-hop cut in-memory throughput 2.4× (256 B records, batches of 64: 2,096 to 890
-MB/s, broker CPU up 40%) and durable quorum-acked throughput 4.4× (490 to 111
-MB/s). See [v0.6.0 performance](/features/v060-performance/). The Python and
+hop cut in-memory throughput 2.4× (256 B records, batches of 64: 2,034 to 864
+MB/s of payload, broker CPU up 34%) and durable quorum-acked throughput 4.4×
+(475 to 107 MB/s of payload). See [v0.6.0 performance](/features/v060-performance/). The Python and
 TypeScript clients are built on `ClusterClient` and have no other kind.
 
 Python and TypeScript both pass every required scenario in the catalogue, and

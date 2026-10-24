@@ -28,10 +28,10 @@ three-replica run, compared with sending straight to the owner:
 
 | Workload (256 B records, batches of 64) | Owner-direct (`ClusterClient`) | Forwarded (`Client`) |
 | --- | --- | --- |
-| In-memory | 2,096 MB/s | 890 MB/s (2.4× lower, broker CPU up 40%) |
-| Durable, `Quorum` acks | 490 MB/s | 111 MB/s (4.4× lower) |
+| In-memory | 2,034 MB/s | 864 MB/s (2.4× lower, broker CPU up 34%) |
+| Durable, `Quorum` acks | 475 MB/s | 107 MB/s (4.4× lower) |
 
-Figures are client ingress. See
+Figures are payload accepted by the brokers. See
 [v0.6.0 performance](https://docs.getfelix.dev/features/v060-performance/).
 
 The options below apply to both clients except where a section says otherwise.
