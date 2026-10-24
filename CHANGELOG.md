@@ -41,7 +41,7 @@ from reading.
 
 - With `pub_ingress_wait` on, fire-and-forget batches of 256 B messages run about
   13% slower than on the build the performance runs measured (#1469). Larger
-  messages, acked publishes and the shipped defaults are unaffected.
+  messages and acked publishes measured the same as that build.
 
 ### Security
 - Updated `rustls-webpki` to 0.103.16 and `webpki-roots` and `webpki-root-certs` to 1.0.10 for RUSTSEC-2026-0382 and
