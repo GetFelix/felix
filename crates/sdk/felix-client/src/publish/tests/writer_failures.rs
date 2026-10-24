@@ -52,6 +52,7 @@ async fn run_publisher_writer_error_drains_queue() -> Result<()> {
     let (resp_tx2, resp_rx2) = oneshot::channel();
     tx.send(PublishRequest::Message {
         message: Message::Publish {
+            shard: None,
             tenant_id: "t1".to_string(),
             namespace: "ns".to_string(),
             stream: "s".to_string(),
@@ -69,6 +70,7 @@ async fn run_publisher_writer_error_drains_queue() -> Result<()> {
     .context("send request1")?;
     tx.send(PublishRequest::Message {
         message: Message::Publish {
+            shard: None,
             tenant_id: "t1".to_string(),
             namespace: "ns".to_string(),
             stream: "s".to_string(),
@@ -146,6 +148,7 @@ async fn run_publisher_writer_ack_mismatch_drains_queue() -> Result<()> {
     let (resp_tx2, resp_rx2) = oneshot::channel();
     tx.send(PublishRequest::Message {
         message: Message::Publish {
+            shard: None,
             tenant_id: "t1".to_string(),
             namespace: "ns".to_string(),
             stream: "s".to_string(),
@@ -163,6 +166,7 @@ async fn run_publisher_writer_ack_mismatch_drains_queue() -> Result<()> {
     .context("send request1")?;
     tx.send(PublishRequest::Message {
         message: Message::Publish {
+            shard: None,
             tenant_id: "t1".to_string(),
             namespace: "ns".to_string(),
             stream: "s".to_string(),
@@ -280,6 +284,7 @@ async fn run_publisher_writer_send_closed_drains_queue() -> Result<()> {
     let (resp_tx2, resp_rx2) = oneshot::channel();
     tx.send(PublishRequest::Message {
         message: Message::Publish {
+            shard: None,
             tenant_id: "t1".to_string(),
             namespace: "ns".to_string(),
             stream: "s".to_string(),
@@ -344,6 +349,7 @@ async fn run_publisher_writer_publish_batch_error_drains_queue() -> Result<()> {
     let (resp_tx2, resp_rx2) = oneshot::channel();
     tx.send(PublishRequest::Message {
         message: Message::PublishBatch {
+            shard: None,
             tenant_id: "t1".to_string(),
             namespace: "ns".to_string(),
             stream: "s".to_string(),
@@ -361,6 +367,7 @@ async fn run_publisher_writer_publish_batch_error_drains_queue() -> Result<()> {
     .context("send request1")?;
     tx.send(PublishRequest::Message {
         message: Message::Publish {
+            shard: None,
             tenant_id: "t1".to_string(),
             namespace: "ns".to_string(),
             stream: "s".to_string(),
@@ -447,6 +454,7 @@ async fn a_refused_publish_leaves_the_stream_serving_later_ones() -> Result<()> 
             let (response, answer) = oneshot::channel();
             let request = PublishRequest::Message {
                 message: Message::Publish {
+                    shard: None,
                     tenant_id: "t1".to_string(),
                     namespace: "ns".to_string(),
                     stream: stream.to_string(),

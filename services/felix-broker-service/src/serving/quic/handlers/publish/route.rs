@@ -225,6 +225,75 @@ pub(crate) fn resolve_shard(
     })
 }
 
+/// The shard a publish names, or the one its key routes to when it names none.
+///
+/// A named shard is used as given, never hashed, so it must be one the stream
+/// has: anything else is refused rather than wrapped onto some other shard.
+pub(crate) fn resolve_publish_shard(
+    publish_ctx: &PublishContext,
+    tenant_id: &str,
+    namespace: &str,
+    stream: &str,
+    key: Option<&[u8]>,
+    named: Option<u32>,
+) -> Result<u32, ClientError> {
+    match named {
+        Some(shard) => named_shard(publish_ctx, tenant_id, namespace, stream, shard),
+        None => Ok(resolve_shard(
+            publish_ctx,
+            tenant_id,
+            namespace,
+            stream,
+            key,
+        )),
+    }
+}
+
+/// `shard`, if the stream has it here.
+///
+/// The width is the router's, the same one a key is hashed against. A broker
+/// with no cluster serves one shard per stream. A cluster member whose routing
+/// snapshot does not know the stream yet, as just after it is created, answers
+/// a shard past 0 with a retryable `shard_unavailable` rather than
+/// `invalid_request`: it cannot tell a shard out of range from one it has not
+/// heard of.
+pub(crate) fn named_shard(
+    publish_ctx: &PublishContext,
+    tenant_id: &str,
+    namespace: &str,
+    stream: &str,
+    shard: u32,
+) -> Result<u32, ClientError> {
+    let shards = match publish_ctx.ingress.as_ref() {
+        None => 1,
+        Some(ingress) => match ingress.placement_for(
+            crate::shards::ShardKind::Stream,
+            tenant_id,
+            namespace,
+            stream,
+        ) {
+            Some(placement) => placement.shards,
+            None if shard == 0 => return Ok(0),
+            None => {
+                count_publish("unroutable");
+                let reason = crate::shards::routing::Reason::NotAssigned;
+                return Err(ClientError::unavailable(
+                    &reason,
+                    format!("shard {shard} of {stream} is not routed here yet"),
+                ));
+            }
+        },
+    };
+    if shard < shards {
+        return Ok(shard);
+    }
+    count_publish("shard_out_of_range");
+    Err(ClientError::invalid(format!(
+        "shard {shard} is out of range: {stream} has {shards} shard{} here",
+        if shards == 1 { "" } else { "s" }
+    )))
+}
+
 /// The width a client routed one stream's keyed publishes by, from its last
 /// `publish_width` on this control stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -244,6 +313,9 @@ pub(crate) struct DeclaredWidth {
 /// on two writers and reach the shard out of order, so nothing routed by a
 /// stale width is let through. Publishes to a stream the client declared
 /// nothing for, or one the routing snapshot does not know, are not checked.
+///
+/// Nor is one that names its shard: no width chose it, and a shard the stream
+/// no longer has is refused by [`named_shard`].
 pub(crate) fn resolve_declared_shard(
     publish_ctx: &PublishContext,
     declared: Option<&DeclaredWidth>,
@@ -251,7 +323,11 @@ pub(crate) fn resolve_declared_shard(
     namespace: &str,
     stream: &str,
     key: Option<&[u8]>,
+    named: Option<u32>,
 ) -> Result<u32, ClientError> {
+    if let Some(shard) = named {
+        return named_shard(publish_ctx, tenant_id, namespace, stream, shard);
+    }
     let Some(declared) = declared.filter(|declared| {
         key.is_some()
             && declared.stream == stream

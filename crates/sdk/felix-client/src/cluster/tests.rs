@@ -4,6 +4,7 @@ mod cancelled_producer;
 mod connections;
 mod decisions;
 mod error_codes;
+mod explicit_shard;
 mod identity;
 mod keyed_producer;
 mod offsets;

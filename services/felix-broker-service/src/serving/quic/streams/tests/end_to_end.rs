@@ -143,6 +143,7 @@ async fn publish_rejects_unknown_stream() -> Result<()> {
     crate::serving::quic::write_message(
         &mut send,
         Message::Publish {
+            shard: None,
             tenant_id: "t1".to_string(),
             namespace: "default".to_string(),
             stream: "missing".to_string(),
@@ -176,6 +177,7 @@ async fn publish_rejects_unknown_stream() -> Result<()> {
     crate::serving::quic::write_message(
         &mut send,
         Message::Publish {
+            shard: None,
             tenant_id: "t1".to_string(),
             namespace: "default".to_string(),
             stream: "missing".to_string(),
@@ -245,6 +247,7 @@ async fn publish_ack_on_commit_smoke() -> Result<()> {
     crate::serving::quic::write_message(
         &mut send,
         Message::Publish {
+            shard: None,
             tenant_id: "t1".to_string(),
             namespace: "default".to_string(),
             stream: "updates".to_string(),
@@ -755,6 +758,7 @@ async fn handle_uni_stream_smoke() -> Result<()> {
     let mut send = connection.open_uni().await?;
     crate::serving::quic::write_message(&mut send, auth_message(&auth)).await?;
     let frame = Message::Publish {
+        shard: None,
         tenant_id: "t1".to_string(),
         namespace: "default".to_string(),
         stream: "updates".to_string(),
@@ -858,6 +862,7 @@ async fn handle_stream_drain_timeout_sleep_branch() -> Result<()> {
     crate::serving::quic::write_message(
         &mut send,
         Message::Publish {
+            shard: None,
             tenant_id: "t1".to_string(),
             namespace: "default".to_string(),
             stream: "updates".to_string(),

@@ -163,6 +163,7 @@ Single-message publish.
   "stream": "string",
   "payload": "base64",
   "key": "base64 | absent",
+  "shard": "number | absent",
   "request_id": "number | absent",
   "ack": "none | per_message | per_batch | absent"
 }
@@ -172,6 +173,10 @@ Single-message publish.
 - `tenant_id`, `namespace`, `stream`: the stream to publish to
 - `payload`: the message bytes
 - `key`: routing key that picks the shard. Absent means shard 0
+- `shard`: the shard to write to, used instead of hashing `key`. Sent only to a
+  broker that advertised `FEATURE_EXPLICIT_SHARD`; one the stream does not have
+  is refused with `invalid_request`. `publish_if`, `commit` and `state_get` take
+  it too. See [Named shards](https://github.com/GetFelix/felix/blob/main/docs/protocol.md#named-shards)
 - `request_id`: u64 correlation id, required whenever `ack` is not `none`
 - `ack`: absent or `none` is fire-and-forget
 
@@ -181,7 +186,8 @@ Single-message publish.
 - Answers can arrive out of order unless the connection negotiated
   [pipelined publishes](#pipelined-publishes)
 - Current clients send publishes as [binary frames](#binary-publish-batch-encoding)
-  and use this JSON form only as a fallback
+  and use this JSON form only as a fallback, and for a publish that names its
+  shard, which the binary frames have no room for
 
 #### PublishBatch
 
@@ -195,6 +201,7 @@ Batch publish. Same fields as `publish`, with `payloads` in place of `payload`.
   "stream": "string",
   "payloads": ["base64", "base64"],
   "key": "base64 | absent",
+  "shard": "number | absent",
   "request_id": "number | absent",
   "ack": "none | per_message | per_batch | absent"
 }

@@ -504,6 +504,7 @@ async fn quic_publish_missing_request_id_returns_error() -> Result<()> {
     felix_broker_service::serving::quic::write_message(
         &mut send,
         Message::Publish {
+            shard: None,
             tenant_id: "t1".to_string(),
             namespace: "default".to_string(),
             stream: "orders".to_string(),
@@ -1173,6 +1174,7 @@ async fn reuse_a_sequence_over_json(
         other => anyhow::bail!("expected ProducerInitOk, got {other:?}"),
     };
     let publish = |request_id: u64, payload: &[u8]| Message::PublishIdempotent {
+        shard: None,
         tenant_id: "t1".to_string(),
         namespace: "default".to_string(),
         stream: "orders".to_string(),
@@ -1261,3 +1263,6 @@ mod ack_offsets;
 
 #[path = "quic_publish/shard_streams.rs"]
 mod shard_streams;
+
+#[path = "quic_publish/explicit_shard.rs"]
+mod explicit_shard;

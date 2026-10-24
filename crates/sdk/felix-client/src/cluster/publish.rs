@@ -51,7 +51,7 @@ impl ClusterClient {
             stream.to_string(),
             0,
         );
-        self.publish_to_shard(shard, vec![payload], None, ack, None)
+        self.publish_to_shard(shard, vec![payload], Routing::Unkeyed, ack, None)
             .await
     }
 
@@ -89,10 +89,56 @@ impl ClusterClient {
             shard,
         );
         let outcome = self
-            .publish_to_shard(shard, vec![payload], Some(key), ack, Some(width))
+            .publish_to_shard(shard, vec![payload], Routing::Keyed(key), ack, Some(width))
             .await;
         self.forget_width_if_stale(tenant_id, namespace, stream, &outcome);
         outcome
+    }
+
+    /// Publish to `shard` of the stream, rather than the shard a key would
+    /// hash to, owner-direct. See [`Self::publish_batch_on_shard`].
+    pub async fn publish_on_shard(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        payload: Vec<u8>,
+        ack: AckMode,
+    ) -> Result<Option<u64>> {
+        self.publish_batch_on_shard(tenant_id, namespace, stream, shard, vec![payload], ack)
+            .await
+    }
+
+    /// Publish a batch to `shard` of the stream, rather than the shard a key
+    /// would hash to.
+    ///
+    /// The named shard picks the owner the way a key's shard does for
+    /// [`Self::publish_keyed`], so the batch goes straight to the broker that
+    /// owns it, with the same retries. A shard the stream does not have is
+    /// refused with `invalid_request`. Fails without sending anything against
+    /// a broker that did not advertise [`felix_wire::FEATURE_EXPLICIT_SHARD`].
+    /// See [`crate::Publisher::publish_batch_on_shard`].
+    pub async fn publish_batch_on_shard(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        payloads: Vec<Vec<u8>>,
+        ack: AckMode,
+    ) -> Result<Option<u64>> {
+        if payloads.is_empty() {
+            return Ok(None);
+        }
+        let shard: ShardKey = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            stream.to_string(),
+            shard,
+        );
+        self.publish_to_shard(shard, payloads, Routing::Named, ack, None)
+            .await
     }
 
     /// Publish, reconnecting *and sending the record again* if the broker in
@@ -231,7 +277,7 @@ impl ClusterClient {
         &self,
         shard: ShardKey,
         payload: Vec<Vec<u8>>,
-        key: Option<bytes::Bytes>,
+        routing: Routing,
         ack: AckMode,
         width: Option<Arc<Width>>,
     ) -> Result<Option<u64>> {
@@ -290,18 +336,24 @@ impl ClusterClient {
             Some((owner, node_id)) => {
                 // Kept only so a refusal that applied nothing can be sent on.
                 let retained = payload.clone();
-                let err =
-                    match publish_once_to(&owner, &shard, payload, key.clone(), ack, width.clone())
-                        .await
-                    {
-                        Ok(acked) => {
-                            if let Some(owner) = acked.forwarded_to {
-                                self.remember_owner(shard, owner, learned).await;
-                            }
-                            return Ok(acked.offset);
+                let err = match publish_once_to(
+                    &owner,
+                    &shard,
+                    payload,
+                    routing.clone(),
+                    ack,
+                    width.clone(),
+                )
+                .await
+                {
+                    Ok(acked) => {
+                        if let Some(owner) = acked.forwarded_to {
+                            self.remember_owner(shard, owner, learned).await;
                         }
-                        Err(err) => err,
-                    };
+                        return Ok(acked.offset);
+                    }
+                    Err(err) => err,
+                };
                 let attempt = Attempt {
                     routed: true,
                     ..Attempt::default()
@@ -320,7 +372,7 @@ impl ClusterClient {
         };
 
         let client = self.client().await;
-        match publish_once_to(&client, &shard, payload, key, ack, width).await {
+        match publish_once_to(&client, &shard, payload, routing, ack, width).await {
             Ok(acked) => {
                 if let Some(owner) = acked.forwarded_to {
                     self.remember_owner(shard, owner, learned).await;
@@ -362,14 +414,19 @@ async fn publish_once_to(
     client: &Client,
     shard: &ShardKey,
     payload: Vec<Vec<u8>>,
-    key: Option<bytes::Bytes>,
+    routing: Routing,
     ack: AckMode,
     width: Option<Arc<Width>>,
 ) -> AckOutcome {
     let (tenant_id, namespace, stream, shard) = (&shard.0, &shard.1, &shard.2, shard.3);
     let publisher = client.publisher_handle();
-    match key {
-        Some(key) => {
+    match routing {
+        Routing::Named => {
+            publisher
+                .publish_on_shard_reporting_owner(tenant_id, namespace, stream, shard, payload, ack)
+                .await
+        }
+        Routing::Keyed(key) => {
             publisher
                 .publish_keyed_batch_reporting_owner(
                     tenant_id, namespace, stream, key, shard, width, payload, ack,
@@ -377,10 +434,21 @@ async fn publish_once_to(
                 .await
         }
         // Unkeyed is shard 0, which is what the publisher assumes.
-        None => {
+        Routing::Unkeyed => {
             publisher
                 .publish_batch_reporting_owner(tenant_id, namespace, stream, payload, ack)
                 .await
         }
     }
+}
+
+/// How a batch to one shard says which shard it is for.
+#[derive(Clone)]
+pub(super) enum Routing {
+    /// No key: shard 0.
+    Unkeyed,
+    /// A key, which the broker hashes to the shard.
+    Keyed(bytes::Bytes),
+    /// The shard itself, sent as `shard`.
+    Named,
 }

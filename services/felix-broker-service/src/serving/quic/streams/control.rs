@@ -356,6 +356,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 stream,
                 payload,
                 key,
+                shard,
                 request_id,
                 ack,
             } => {
@@ -367,6 +368,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                     stream,
                     payload,
                     key,
+                    shard,
                     request_id,
                     ack,
                 )
@@ -378,6 +380,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 stream,
                 payloads,
                 key,
+                shard,
                 request_id,
                 ack,
             } => {
@@ -389,6 +392,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                     stream,
                     payloads,
                     key,
+                    shard,
                     request_id,
                     ack,
                 )
@@ -400,6 +404,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 stream,
                 payloads,
                 key,
+                shard,
                 request_id,
                 producer_id,
                 sequence,
@@ -412,6 +417,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                     stream,
                     payloads,
                     key,
+                    shard,
                     request_id,
                     producer_id,
                     sequence,
@@ -994,6 +1000,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 changes,
                 request_id,
                 expected_offset,
+                shard,
             } => {
                 commit::commit(
                     &cx,
@@ -1003,6 +1010,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                         namespace,
                         stream,
                         entity_key: Some(entity_key),
+                        shard,
                     },
                     event,
                     changes,
@@ -1017,6 +1025,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 stream,
                 payloads,
                 key,
+                shard,
                 expected_offset,
                 request_id,
             } => {
@@ -1028,6 +1037,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                         namespace,
                         stream,
                         entity_key: key,
+                        shard,
                     },
                     payloads,
                     expected_offset,
@@ -1042,6 +1052,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 entity_key,
                 key,
                 request_id,
+                shard,
             } => {
                 commit::state_get(
                     &cx,
@@ -1051,6 +1062,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                         namespace,
                         stream,
                         entity_key: Some(entity_key),
+                        shard,
                     },
                     key,
                     request_id,

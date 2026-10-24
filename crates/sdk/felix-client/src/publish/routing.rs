@@ -198,6 +198,31 @@ impl Publisher {
         })
     }
 
+    /// The writer for a publish to a shard the caller named: the shard's own
+    /// stream, as a keyed publish to that shard would take, so the two stay
+    /// in order with each other. Else the pool.
+    pub(super) async fn route_to_shard(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+    ) -> Result<Routed<'_>> {
+        if self.inner.sharding == PublishSharding::HashStream
+            && let Some(streams) = &self.inner.shard_streams
+            && let Some(worker) = streams.worker(tenant_id, namespace, stream, shard).await?
+        {
+            return Ok(Routed {
+                worker: Selected::Shard(worker),
+                declaration: None,
+            });
+        }
+        Ok(Routed {
+            worker: Selected::Pooled(self.select_worker(tenant_id, namespace, stream)?),
+            declaration: None,
+        })
+    }
+
     /// The shard whose writer a publish goes to: 0 without a key, else the
     /// one the key maps to under the width this client keeps for the stream,
     /// with that width.

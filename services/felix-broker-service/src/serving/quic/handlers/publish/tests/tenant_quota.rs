@@ -202,6 +202,7 @@ async fn publish_if(
         "ns",
         "match",
         None,
+        None,
         vec![Bytes::from_static(b"tick")],
         expected,
         None,

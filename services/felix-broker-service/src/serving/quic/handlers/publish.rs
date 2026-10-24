@@ -71,7 +71,7 @@ pub(crate) use control::{
 pub(crate) use ingress::{PublishTarget, admit_unqueued, decrement_depth, reset_local_depth_only};
 pub(crate) use order::AckOrder;
 pub(crate) use parked::ParkedPublishes;
-pub(crate) use route::{DeclaredWidth, resolve_shard};
+pub(crate) use route::{DeclaredWidth, resolve_publish_shard};
 #[cfg(test)]
 pub(crate) use scheduler::{PublishScheduler, test_channel};
 pub(crate) use stream_cache::StreamHandleCache;

@@ -483,11 +483,23 @@ fn stream_deleted_is_the_second_extended_bit() {
 fn publish_width_is_the_third_extended_bit() {
     assert_eq!(crate::FEATURE_PUBLISH_WIDTH, 0x0000_0004);
     assert_eq!(
-        crate::KNOWN_FEATURES_HI,
+        crate::KNOWN_FEATURES_HI & !crate::FEATURE_EXPLICIT_SHARD,
         crate::FEATURE_INSPECT | crate::FEATURE_STREAM_DELETED | crate::FEATURE_PUBLISH_WIDTH
     );
     assert_eq!(
         crate::answer_features(crate::KNOWN_FEATURES, crate::FEATURE_PUBLISH_WIDTH, 0),
+        (crate::KNOWN_FEATURES, None)
+    );
+}
+
+/// An explicit shard is the fourth extended bit, advertised only in the
+/// second word, so a client that offered none is never told about it.
+#[test]
+fn explicit_shard_is_the_fourth_extended_bit() {
+    assert_eq!(crate::FEATURE_EXPLICIT_SHARD, 0x0000_0008);
+    assert_ne!(crate::KNOWN_FEATURES_HI & crate::FEATURE_EXPLICIT_SHARD, 0);
+    assert_eq!(
+        crate::answer_features(crate::KNOWN_FEATURES, crate::FEATURE_EXPLICIT_SHARD, 0),
         (crate::KNOWN_FEATURES, None)
     );
 }

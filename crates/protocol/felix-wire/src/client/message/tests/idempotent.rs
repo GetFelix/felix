@@ -19,6 +19,7 @@ fn producer_init_round_trips() {
 #[test]
 fn publish_idempotent_round_trips_and_names_its_producer() {
     let message = Message::PublishIdempotent {
+        shard: None,
         tenant_id: "t1".to_string(),
         namespace: "ns".to_string(),
         stream: "orders".to_string(),
@@ -47,6 +48,7 @@ fn publish_idempotent_round_trips_and_names_its_producer() {
 #[test]
 fn publish_idempotent_omits_an_absent_key() {
     let message = Message::PublishIdempotent {
+        shard: None,
         tenant_id: "t1".to_string(),
         namespace: "ns".to_string(),
         stream: "orders".to_string(),

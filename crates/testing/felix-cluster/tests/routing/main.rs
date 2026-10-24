@@ -7,6 +7,7 @@
 
 mod cluster_batches;
 mod cross_broker;
+mod explicit_shard;
 mod forwarded_quorum;
 mod generation_start;
 mod jump_hash;

@@ -96,6 +96,7 @@ async fn control_loop_rejects_publish_batch_forbidden() -> Result<()> {
     let frames = vec![
         Ok(Some(frame_from_message(auth_message(&auth)))),
         Ok(Some(frame_from_message(Message::PublishBatch {
+            shard: None,
             tenant_id: "t1".to_string(),
             namespace: "default".to_string(),
             stream: "updates".to_string(),
@@ -125,6 +126,7 @@ async fn control_loop_publish_without_auth_sends_error() -> Result<()> {
     let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
     let auth = auth_fixture("t1", default_perms());
     let frames = vec![Ok(Some(frame_from_message(Message::Publish {
+        shard: None,
         tenant_id: "t1".to_string(),
         namespace: "default".to_string(),
         stream: "updates".to_string(),
@@ -155,6 +157,7 @@ async fn control_loop_publish_forbidden_without_request_id_sends_error() -> Resu
     let frames = vec![
         Ok(Some(frame_from_message(auth_message(&auth)))),
         Ok(Some(frame_from_message(Message::Publish {
+            shard: None,
             tenant_id: "t1".to_string(),
             namespace: "default".to_string(),
             stream: "updates".to_string(),
@@ -186,6 +189,7 @@ async fn control_loop_publish_tenant_mismatch_sends_error() -> Result<()> {
     let frames = vec![
         Ok(Some(frame_from_message(auth_message(&auth)))),
         Ok(Some(frame_from_message(Message::Publish {
+            shard: None,
             tenant_id: "t2".to_string(),
             namespace: "default".to_string(),
             stream: "updates".to_string(),

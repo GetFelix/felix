@@ -3,8 +3,8 @@
 //!
 //! It advertises every frame flag and only `FEATURE_ERROR_CODES`,
 //! `FEATURE_IDEMPOTENT_PRODUCER`, `FEATURE_STREAM_SHARDS` (every stream has
-//! [`STREAM_SHARDS`]) and `FEATURE_SHARD_OWNERS` (answered for caches from
-//! [`StubBroker::set_cache_owners`]), so a
+//! [`STREAM_SHARDS`]), `FEATURE_ATOMIC_COMMIT` and `FEATURE_SHARD_OWNERS`
+//! (answered from [`StubBroker::set_cache_owners`]), so a
 //! [`ClusterClient`](crate::ClusterClient) skips discovery and sends its
 //! publishes as acked binary batches, answered here with coded binary acks.
 //! A subscribe the script answers with `Subscribed` gets an event stream,
@@ -40,6 +40,9 @@ pub(super) type Sequenced = (Option<bytes::Bytes>, u64);
 
 /// An acked batch as the broker received it: its routing key and payloads.
 pub(super) type Received = (Option<bytes::Bytes>, Vec<bytes::Bytes>);
+
+/// A JSON publish or commit naming its shard, as the broker received it.
+pub(super) type Named = (&'static str, Option<u32>, Vec<Vec<u8>>);
 
 /// How many shards every stream has here, by modulo.
 pub(super) const STREAM_SHARDS: u32 = 4;
@@ -126,6 +129,18 @@ impl StubBroker {
     /// Every acked batch it was sent, refused or not, in arrival order.
     pub(super) fn batches(&self) -> Vec<Received> {
         self.seen.batches.lock().unwrap().clone()
+    }
+
+    /// Every JSON `publish_batch` and `commit` it was sent, with the shard
+    /// each named, in arrival order.
+    pub(super) fn named(&self) -> Vec<Named> {
+        self.seen.named.lock().unwrap().clone()
+    }
+
+    /// Advertise `FEATURE_EXPLICIT_SHARD` to streams authenticated from now
+    /// on.
+    pub(super) fn honour_named_shards(&self) {
+        self.seen.explicit_shard.store(true, Ordering::SeqCst);
     }
 
     pub(super) fn publishes(&self) -> usize {
@@ -298,6 +313,9 @@ struct Seen {
     producers: Arc<Mutex<Vec<(u64, u64)>>>,
     /// The routing key and payloads of each acked batch it received.
     batches: Arc<Mutex<Vec<Received>>>,
+    /// Advertise `FEATURE_EXPLICIT_SHARD`.
+    explicit_shard: Arc<AtomicBool>,
+    named: Arc<Mutex<Vec<Named>>>,
 }
 
 impl Default for Seen {
@@ -322,6 +340,8 @@ impl Default for Seen {
             next_producer: Arc::new(AtomicU64::new(1)),
             producers: Arc::default(),
             batches: Arc::default(),
+            explicit_shard: Arc::default(),
+            named: Arc::default(),
         }
     }
 }
@@ -402,7 +422,16 @@ async fn serve_stream(
             Message::Auth { token, .. } => {
                 seen.tokens.lock().unwrap().push(token);
                 checks_width = seen.checks_width.load(Ordering::SeqCst);
-                let extended = if checks_width {
+                let features_hi = if checks_width {
+                    felix_wire::FEATURE_PUBLISH_WIDTH
+                } else {
+                    0
+                } | if seen.explicit_shard.load(Ordering::SeqCst) {
+                    felix_wire::FEATURE_EXPLICIT_SHARD
+                } else {
+                    0
+                };
+                let extended = if features_hi != 0 {
                     felix_wire::FEATURE_EXTENDED
                 } else {
                     0
@@ -415,9 +444,10 @@ async fn serve_stream(
                             | felix_wire::FEATURE_STREAM_SHARDS
                             | felix_wire::FEATURE_SHARD_OWNERS
                             | felix_wire::FEATURE_RECORD_TIMESTAMPS
+                            | felix_wire::FEATURE_ATOMIC_COMMIT
                             | extended,
                     ),
-                    server_features_hi: checks_width.then_some(felix_wire::FEATURE_PUBLISH_WIDTH),
+                    server_features_hi: (features_hi != 0).then_some(features_hi),
                     listener_ports: None,
                     publish_window: None,
                 };
@@ -427,6 +457,50 @@ async fn serve_stream(
                 let answer = Message::ProducerInitOk {
                     request_id,
                     producer_id: seen.next_producer.fetch_add(1, Ordering::SeqCst),
+                };
+                write_message(&mut *send.lock().await, answer).await?;
+            }
+            // The script's error is the answer; anything else is success.
+            Message::PublishBatch {
+                payloads,
+                shard,
+                request_id,
+                ..
+            } => {
+                seen.publishes.fetch_add(1, Ordering::SeqCst);
+                seen.named
+                    .lock()
+                    .unwrap()
+                    .push(("publish_batch", shard, payloads));
+                if let Some(request_id) = request_id {
+                    let answer = match script(request_id) {
+                        error @ Message::PublishError { .. } => error,
+                        _ => Message::PublishOk {
+                            request_id,
+                            offset: None,
+                        },
+                    };
+                    write_message(&mut *send.lock().await, answer).await?;
+                }
+            }
+            // The script's `not_leader` or error is the answer; anything else
+            // commits at offset 7.
+            Message::Commit {
+                event,
+                shard,
+                request_id,
+                ..
+            } => {
+                seen.named
+                    .lock()
+                    .unwrap()
+                    .push(("commit", shard, vec![event.to_vec()]));
+                let answer = match script(request_id) {
+                    refusal @ (Message::NotLeader { .. } | Message::Error { .. }) => refusal,
+                    _ => Message::CommitOk {
+                        request_id,
+                        offset: 7,
+                    },
                 };
                 write_message(&mut *send.lock().await, answer).await?;
             }

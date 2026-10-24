@@ -63,6 +63,7 @@ async fn filler(broker: &Broker, stream: &str) -> Result<PublishJob> {
 
 fn publish(stream: &str, payload: &[u8], request_id: Option<u64>) -> Frame {
     frame_from_message(Message::Publish {
+        shard: None,
         tenant_id: "t1".to_string(),
         namespace: "default".to_string(),
         stream: stream.to_string(),
@@ -556,6 +557,7 @@ async fn same_key_publishes_keep_send_order_through_parking() -> Result<()> {
     let mut frames = vec![frame_from_message(auth_message(&auth))];
     frames.extend((0..COUNT).map(|i| {
         frame_from_message(Message::Publish {
+            shard: None,
             tenant_id: "t1".to_string(),
             namespace: "default".to_string(),
             stream: stuck.clone(),

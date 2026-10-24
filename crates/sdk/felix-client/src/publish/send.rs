@@ -243,6 +243,7 @@ impl Publisher {
             stream: stream.to_string(),
             payload,
             key,
+            shard: None,
             request_id,
             ack: Some(ack),
         };
@@ -306,12 +307,49 @@ impl Publisher {
             stream: stream.to_string(),
             payloads,
             key,
+            shard: None,
             request_id,
             ack: Some(ack),
         };
         self.send_message(&worker, message, ack, request_id)
             .await
             .map(|acked| acked.offset)
+    }
+
+    /// A batch to the shard the caller named, on that shard's writer. JSON,
+    /// because the binary publish frames have no room for a shard.
+    pub(super) async fn publish_batch_json_on_shard(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        payloads: Vec<Vec<u8>>,
+        ack: AckMode,
+    ) -> AckOutcome {
+        let worker = self
+            .route_to_shard(tenant_id, namespace, stream, shard)
+            .await?;
+        if !worker.takes_shard {
+            return Err(super::explicit_shard_unsupported());
+        }
+        let payloads = maybe_append_publish_ts_batch(payloads, self.inner.bench_embed_ts);
+        let request_id = if ack == AckMode::None {
+            None
+        } else {
+            Some(worker.request_counter.fetch_add(1, Ordering::Relaxed))
+        };
+        let message = Message::PublishBatch {
+            tenant_id: tenant_id.to_string(),
+            namespace: namespace.to_string(),
+            stream: stream.to_string(),
+            payloads,
+            key: None,
+            shard: Some(shard),
+            request_id,
+            ack: Some(ack),
+        };
+        self.send_message(&worker, message, ack, request_id).await
     }
 
     /// Queue a JSON publish on `worker` and wait for its answer.

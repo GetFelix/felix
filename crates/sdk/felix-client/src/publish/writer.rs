@@ -38,6 +38,9 @@ pub(crate) struct PublishWorker {
     /// per stream: one that did not would take `publish_width` as a frame it
     /// cannot decode and close the stream.
     pub(crate) takes_width: bool,
+    /// The broker on this stream advertised `FEATURE_EXPLICIT_SHARD`. One
+    /// that did not would ignore `shard` and route by the key.
+    pub(crate) takes_shard: bool,
 }
 
 pub(crate) enum PublishRequest {
@@ -256,6 +259,7 @@ pub(crate) async fn run_publisher_writer_with_limit(
                     stream,
                     payloads,
                     key,
+                    shard,
                     request_id: msg_request_id,
                     ack: msg_ack,
                 } => {
@@ -271,6 +275,7 @@ pub(crate) async fn run_publisher_writer_with_limit(
                         &stream,
                         &payloads,
                         key.as_deref(),
+                        shard,
                         msg_request_id,
                         msg_ack,
                     )?;
@@ -286,6 +291,7 @@ pub(crate) async fn run_publisher_writer_with_limit(
                         &stream,
                         &payloads,
                         key.as_deref(),
+                        shard,
                         msg_request_id,
                         msg_ack,
                     )?;

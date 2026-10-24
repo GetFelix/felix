@@ -123,6 +123,47 @@ version; see below. `ClusterClient::commit_if` follows the leader the way
 the client refuses to send the request otherwise. See
 [Conditional writes](semantics.md#conditional-writes).
 
+## A commit to a named shard
+
+A writer that owns its partitioning can name the shard instead of letting
+`entity_key` hash to one. `commit_on_shard(tenant, namespace, shard,
+entity_key, ops)` and `commit_if_on_shard(..., expected_offset)` commit to
+`shard`; `state_get_on_shard(tenant, namespace, stream, shard, key)` reads
+what they wrote. `entity_key` still travels but does not pick the shard, so
+a keyed `state_get(entity_key)` reads the key's hashed shard and does not find
+state committed to a different named shard: use `state_get_on_shard`. A
+subscriber that picks its shard by hashing a key and filters by key misses
+those records the same way.
+
+```rust
+// One district per shard, each committing at its own offsets.
+match client
+    .commit_if_on_shard(
+        "acme",
+        "city",
+        district,
+        b"district",
+        vec![
+            CommitOp::publish("city-ticks", tick),
+            CommitOp::put("city-ticks", "district", state),
+        ],
+        next[district as usize],
+    )
+    .await?
+{
+    ConditionalWrite::Written { offset } => next[district as usize] = offset + 1,
+    ConditionalWrite::Refused { tail } => { /* another writer took the shard */ }
+}
+```
+
+A shard the stream does not have is refused with `invalid_request` and nothing
+is written. Everything else is the same as for a hashed shard: the leader takes
+the write, `ClusterClient` follows its redirect, and the fleet must have
+finalized `atomic_commit`. The broker must advertise `FEATURE_EXPLICIT_SHARD`;
+the client refuses to send otherwise, because an older broker would ignore the
+shard and commit wherever the key hashes. Rust only for now. See
+[Named shards](protocol.md#named-shards).
+
 ## What atomic covers
 
 A commit is one record. That one fact carries most of the guarantee, because

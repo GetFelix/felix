@@ -99,6 +99,9 @@ pub(crate) async fn handle_binary_publish_batch_control(
         &batch.namespace,
         &batch.stream,
         batch.key.as_deref(),
+        // The binary frames have no room for a shard; a named shard goes as
+        // JSON.
+        None,
     ) else {
         return Ok(());
     };
@@ -320,6 +323,7 @@ pub(crate) async fn handle_acked_binary_publish_batch_control(
         batch.stream,
         batch.payloads,
         batch.key,
+        None,
         Some(request_id),
         // Always per batch for a producer: the sequence names the batch.
         Some(if producer.is_some() {

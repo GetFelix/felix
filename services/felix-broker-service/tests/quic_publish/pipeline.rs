@@ -234,6 +234,7 @@ async fn a_pipelining_stream_is_answered_in_request_order() -> Result<()> {
         "not granted a window: {answer:?}"
     );
     let publish = |stream: &str, request_id: u64| Message::PublishBatch {
+        shard: None,
         tenant_id: "t1".to_string(),
         namespace: "default".to_string(),
         stream: stream.to_string(),

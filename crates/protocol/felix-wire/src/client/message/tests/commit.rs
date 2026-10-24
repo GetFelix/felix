@@ -6,6 +6,7 @@ use crate::{Message, StateChange};
 fn commit_messages_round_trip() {
     for message in [
         Message::Commit {
+            shard: None,
             tenant_id: "t1".to_string(),
             namespace: "ns".to_string(),
             stream: "orders".to_string(),
@@ -28,6 +29,7 @@ fn commit_messages_round_trip() {
             offset: 42,
         },
         Message::StateGet {
+            shard: None,
             tenant_id: "t1".to_string(),
             namespace: "ns".to_string(),
             stream: "orders".to_string(),
@@ -70,6 +72,7 @@ fn a_state_change_names_its_operation() {
 fn conditional_writes_round_trip() {
     for message in [
         Message::PublishIf {
+            shard: None,
             tenant_id: "t1".to_string(),
             namespace: "ns".to_string(),
             stream: "match".to_string(),
@@ -79,6 +82,7 @@ fn conditional_writes_round_trip() {
             request_id: 3,
         },
         Message::PublishIf {
+            shard: None,
             tenant_id: "t1".to_string(),
             namespace: "ns".to_string(),
             stream: "match".to_string(),
@@ -88,6 +92,7 @@ fn conditional_writes_round_trip() {
             request_id: 4,
         },
         Message::Commit {
+            shard: None,
             tenant_id: "t1".to_string(),
             namespace: "ns".to_string(),
             stream: "orders".to_string(),
@@ -113,6 +118,7 @@ fn conditional_writes_round_trip() {
 #[test]
 fn a_commit_without_an_expected_offset_is_unchanged() {
     let message = Message::Commit {
+        shard: None,
         tenant_id: "t1".to_string(),
         namespace: "ns".to_string(),
         stream: "orders".to_string(),

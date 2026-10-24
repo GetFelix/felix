@@ -244,6 +244,50 @@ impl Publisher {
         .map(|acked| acked.offset)
     }
 
+    /// Publish one payload to `shard` of the stream, rather than the shard a
+    /// key would hash to. See [`Self::publish_batch_on_shard`].
+    pub async fn publish_on_shard(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        payload: Vec<u8>,
+        ack: AckMode,
+    ) -> Result<Option<u64>> {
+        self.publish_batch_on_shard(tenant_id, namespace, stream, shard, vec![payload], ack)
+            .await
+    }
+
+    /// Publish a batch to `shard` of the stream, rather than the shard a key
+    /// would hash to.
+    ///
+    /// For a producer that owns its partitioning, one shard per partition. The
+    /// batch goes on the same writer as keyed publishes that hash to `shard`,
+    /// so the two stay in order. A shard the stream does not have is refused
+    /// with `invalid_request`, and nothing is written.
+    ///
+    /// Sent as JSON, since the binary frames have no room for a shard. Fails
+    /// without sending anything against a broker that did not advertise
+    /// [`felix_wire::FEATURE_EXPLICIT_SHARD`]: an older broker would ignore
+    /// the shard and write to shard 0.
+    ///
+    /// Returns the batch's first log offset, when there is one; see
+    /// [`Self::publish_batch`].
+    pub async fn publish_batch_on_shard(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        payloads: Vec<Vec<u8>>,
+        ack: AckMode,
+    ) -> Result<Option<u64>> {
+        self.publish_batch_json_on_shard(tenant_id, namespace, stream, shard, payloads, ack)
+            .await
+            .map(|acked| acked.offset)
+    }
+
     /// Publish a batch as one binary frame, without asking for an ack.
     pub async fn publish_batch_binary(
         &self,
@@ -440,6 +484,7 @@ impl Publisher {
                 stream: stream.to_string(),
                 payloads,
                 key: key.cloned(),
+                shard: None,
                 request_id,
                 producer_id,
                 sequence,
@@ -798,6 +843,21 @@ impl Publisher {
         .await
     }
 
+    /// [`Self::publish_batch_on_shard`] for a `ClusterClient`, which already
+    /// picked the broker by `shard`.
+    pub(crate) async fn publish_on_shard_reporting_owner(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        payloads: Vec<Vec<u8>>,
+        ack: AckMode,
+    ) -> AckOutcome {
+        self.publish_batch_json_on_shard(tenant_id, namespace, stream, shard, payloads, ack)
+            .await
+    }
+
     /// Publish one payload using the JSON compatibility encoding.
     #[deprecated(
         since = "0.5.0",
@@ -976,6 +1036,15 @@ pub(crate) struct Acked {
 
 /// What a publish learns from its answer: failure, or an [`Acked`].
 pub(crate) type AckOutcome = Result<Acked>;
+
+/// The refusal a write naming its shard gets from a broker that cannot honour
+/// the name, before anything is sent.
+pub(crate) fn explicit_shard_unsupported() -> anyhow::Error {
+    anyhow::anyhow!(
+        "this broker does not support writing to a named shard \
+         (it did not advertise FEATURE_EXPLICIT_SHARD); nothing was sent"
+    )
+}
 
 #[cfg(test)]
 mod tests;

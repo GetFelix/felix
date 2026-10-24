@@ -39,6 +39,7 @@ fn message_event_variants() {
 fn message_publish_with_ack_modes() {
     // Test Publish with AckMode::None
     let message = Message::Publish {
+        shard: None,
         tenant_id: "t1".to_string(),
         namespace: "ns".to_string(),
         stream: "stream1".to_string(),
@@ -53,6 +54,7 @@ fn message_publish_with_ack_modes() {
 
     // Test Publish with AckMode::PerMessage
     let message = Message::Publish {
+        shard: None,
         tenant_id: "t1".to_string(),
         namespace: "ns".to_string(),
         stream: "stream1".to_string(),
@@ -67,6 +69,7 @@ fn message_publish_with_ack_modes() {
 
     // Test PublishBatch with AckMode::PerBatch
     let message = Message::PublishBatch {
+        shard: None,
         tenant_id: "t1".to_string(),
         namespace: "ns".to_string(),
         stream: "stream1".to_string(),

@@ -10,17 +10,18 @@ use super::authz::authorize_stream;
 use super::{Ctx, Session, Step};
 use crate::serving::commit_ops::NotWritten;
 use crate::serving::quic::handlers::cache_watch::WatchResponder;
-use crate::serving::quic::handlers::publish::{PublishContext, resolve_shard};
+use crate::serving::quic::handlers::publish::{PublishContext, resolve_publish_shard};
 use crate::shards::routing::{Dispatch, dispatch};
 use crate::shards::{ShardKey, ShardKind};
 
 /// The shard a request names: a stream and the key that picks the shard,
-/// shard 0 without one.
+/// shard 0 without one, or the shard named outright.
 pub(super) struct Target {
     pub(super) tenant_id: String,
     pub(super) namespace: String,
     pub(super) stream: String,
     pub(super) entity_key: Option<Bytes>,
+    pub(super) shard: Option<u32>,
 }
 
 // One parameter per field of the message it answers.
@@ -56,6 +57,7 @@ pub(super) async fn commit(
             &target.namespace,
             &target.stream,
             target.entity_key.as_deref().unwrap_or_default(),
+            target.shard,
             event,
             changes,
             expected_offset,
@@ -107,6 +109,7 @@ pub(super) async fn publish_if(
             &target.namespace,
             &target.stream,
             target.entity_key.as_deref(),
+            target.shard,
             payloads.into_iter().map(Bytes::from).collect(),
             expected_offset,
             session
@@ -169,6 +172,7 @@ pub(super) async fn state_get(
             &target.namespace,
             &target.stream,
             target.entity_key.as_deref().unwrap_or_default(),
+            target.shard,
             &key,
         )
         .await
@@ -202,17 +206,22 @@ fn redirect(publish_ctx: &PublishContext, peer_features: u32, target: &Target) -
     if !felix_wire::supports_feature(peer_features, felix_wire::FEATURE_REDIRECT) {
         return None;
     }
+    // A shard out of range is not redirected anywhere; the request itself
+    // answers that.
+    let shard = resolve_publish_shard(
+        publish_ctx,
+        &target.tenant_id,
+        &target.namespace,
+        &target.stream,
+        target.entity_key.as_deref(),
+        target.shard,
+    )
+    .ok()?;
     let key = ShardKey {
         tenant_id: target.tenant_id.clone(),
         namespace: target.namespace.clone(),
         stream: target.stream.clone(),
-        shard: resolve_shard(
-            publish_ctx,
-            &target.tenant_id,
-            &target.namespace,
-            &target.stream,
-            target.entity_key.as_deref(),
-        ),
+        shard,
         kind: ShardKind::Stream,
     };
     let dispatched = dispatch(publish_ctx.ingress.as_deref(), &key);

@@ -18,6 +18,7 @@ fn auth_offering(fixture: &AuthFixture, features: Option<u32>) -> Message {
 
 fn publish(request_id: u64) -> Message {
     Message::Publish {
+        shard: None,
         tenant_id: "t1".to_string(),
         namespace: "default".to_string(),
         stream: "updates".to_string(),
@@ -129,6 +130,7 @@ async fn a_declared_batch_to_an_unknown_stream_is_not_found() -> Result<()> {
             routing: None,
         }))),
         Ok(Some(frame_from_message(Message::PublishBatch {
+            shard: None,
             tenant_id: "t1".to_string(),
             namespace: "default".to_string(),
             stream: "updates".to_string(),

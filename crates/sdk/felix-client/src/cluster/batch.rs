@@ -36,6 +36,7 @@ use anyhow::Result;
 use bytes::Bytes;
 use felix_wire::AckMode;
 
+use super::publish::Routing;
 use super::{Attempt, ClusterClient, Next, Retrying, ShardKey};
 
 /// How one shard's piece of a batch fared.
@@ -132,7 +133,7 @@ impl ClusterClient {
             stream.to_string(),
             0,
         );
-        self.publish_to_shard(shard, payloads, None, ack, None)
+        self.publish_to_shard(shard, payloads, Routing::Unkeyed, ack, None)
             .await
     }
 
@@ -164,7 +165,7 @@ impl ClusterClient {
             shard,
         );
         let outcome = self
-            .publish_to_shard(shard, payloads, Some(key), ack, Some(width))
+            .publish_to_shard(shard, payloads, Routing::Keyed(key), ack, Some(width))
             .await;
         self.forget_width_if_stale(tenant_id, namespace, stream, &outcome);
         outcome
@@ -332,7 +333,7 @@ impl ClusterClient {
                     shard,
                 );
                 let outcome = self
-                    .publish_to_shard(target, payloads, Some(key), ack, Some(width))
+                    .publish_to_shard(target, payloads, Routing::Keyed(key), ack, Some(width))
                     .await;
                 self.forget_width_if_stale(tenant_id, namespace, stream, &outcome);
                 ShardPublish {

@@ -390,9 +390,20 @@ pub const FEATURE_STREAM_DELETED: u32 = 0x0000_0002;
 /// `stale_width`.
 pub const FEATURE_PUBLISH_WIDTH: u32 = 0x0000_0004;
 
+/// The broker honours `shard` on `publish`, `publish_batch`,
+/// `publish_idempotent`, `publish_if`, `commit` and `state_get`: the record
+/// goes to the shard named instead of the one its key hashes to.
+///
+/// An extended bit, in `server_features_hi`. Advertised by a *broker*: an
+/// older broker ignores the unknown field and routes by the key, so the
+/// record lands on some other shard and nothing says so. A client checks the
+/// bit before sending the field.
+pub const FEATURE_EXPLICIT_SHARD: u32 = 0x0000_0008;
+
 /// Every extended feature bit this version implements: bits that travel in
 /// `client_features_hi` / `server_features_hi` rather than the first word.
-pub const KNOWN_FEATURES_HI: u32 = FEATURE_INSPECT | FEATURE_STREAM_DELETED | FEATURE_PUBLISH_WIDTH;
+pub const KNOWN_FEATURES_HI: u32 =
+    FEATURE_INSPECT | FEATURE_STREAM_DELETED | FEATURE_PUBLISH_WIDTH | FEATURE_EXPLICIT_SHARD;
 
 /// The peer reads the other side's extended feature word.
 ///

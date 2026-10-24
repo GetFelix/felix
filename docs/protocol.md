@@ -106,8 +106,8 @@ fields such as `payload` are base64 strings.
 
 ### Publish / PublishBatch (compatibility only)
 ```
-{ "type": "publish", "tenant_id": "<string>", "namespace": "<string>", "stream": "<string>", "payload": "<base64>", "ack": "<none|per_message>" }
-{ "type": "publish_batch", "tenant_id": "<string>", "namespace": "<string>", "stream": "<string>", "payloads": ["<base64>", ...], "ack": "<none|per_batch>" }
+{ "type": "publish", "tenant_id": "<string>", "namespace": "<string>", "stream": "<string>", "payload": "<base64>", "key": "<base64, optional>", "shard": <u32, optional>, "ack": "<none|per_message>" }
+{ "type": "publish_batch", "tenant_id": "<string>", "namespace": "<string>", "stream": "<string>", "payloads": ["<base64>", ...], "key": "<base64, optional>", "shard": <u32, optional>, "ack": "<none|per_batch>" }
 ```
 
 **These are not the data path.** A publish travels as a binary frame (see
@@ -129,6 +129,10 @@ the evidence a deployment would need before this arm could ever be dropped.
 that did not advertise `0x0100`, which carries the producer id and sequence in a
 binary frame (see [Binary idempotent PublishBatch](#binary-idempotent-publishbatch)).
 
+The one publish a current client sends as JSON on purpose is one that names its
+shard, because the binary frames have no room for one. See
+[Named shards](#named-shards).
+
 ### ProducerInit
 ```
 { "type": "producer_init", "request_id": <u64> }
@@ -143,18 +147,20 @@ Asks the broker for a producer id. Only sent to a broker that advertised
 
 ### PublishIdempotent
 ```
-{ "type": "publish_idempotent", "tenant_id": "<string>", "namespace": "<string>", "stream": "<string>", "payloads": ["<base64>", ...], "key": "<base64, optional>", "request_id": <u64>, "producer_id": <u64>, "sequence": <u64> }
+{ "type": "publish_idempotent", "tenant_id": "<string>", "namespace": "<string>", "stream": "<string>", "payloads": ["<base64>", ...], "key": "<base64, optional>", "shard": <u32, optional>, "request_id": <u64>, "producer_id": <u64>, "sequence": <u64> }
 ```
 A batch the broker appends once however many times it arrives. Always
 acknowledged, with `publish_ok` or `publish_refused`. `sequence` counts this
 producer's batches on the shard from zero, one per batch whatever its size.
+With `shard`, that is the named shard's count.
 
 ### PublishIf
 ```
-{ "type": "publish_if", "tenant_id": "<string>", "namespace": "<string>", "stream": "<string>", "payloads": ["<base64>", ...], "key": "<base64, optional>", "expected_offset": <u64>, "request_id": <u64> }
+{ "type": "publish_if", "tenant_id": "<string>", "namespace": "<string>", "stream": "<string>", "payloads": ["<base64>", ...], "key": "<base64, optional>", "shard": <u32, optional>, "expected_offset": <u64>, "request_id": <u64> }
 ```
 A batch appended only if it would start at exactly `expected_offset`, the next
-offset of the shard `key` routes to (shard 0 without a key). The check is made
+offset of the shard `key` routes to (shard 0 without a key), or of `shard` when
+it names one. The check is made
 where the broker assigns offsets, under the same lock, so of two `publish_if`
 expecting the same offset exactly one is written. Answered with `publish_ok`
 carrying the batch's first offset once it is durable (on a majority for a
@@ -822,11 +828,12 @@ empty value.
   "stream": "<string>", "entity_key": "<base64>", "event": "<base64>",
   "changes": [ { "op": "put", "key": "<string>", "value": "<base64>" },
                { "op": "delete", "key": "<string>" } ],
-  "request_id": <u64>, "expected_offset": <u64, optional> }
+  "request_id": <u64>, "expected_offset": <u64, optional>,
+  "shard": <u32, optional> }
 ```
 
 Appends `event` and applies `changes` to the shard of `stream` that
-`entity_key` routes to, as one record. Every reader sees all of it or none of
+`entity_key` routes to, or to `shard` when it names one, as one record. Every reader sees all of it or none of
 it. Answered with `commit_ok`, or with `error`; a broker that does not lead
 the shard answers `not_leader` to a client that offered `FEATURE_REDIRECT`,
 and never forwards a commit. A cluster member refuses one until the fleet has
@@ -854,11 +861,48 @@ its event is read and the version of every key it wrote.
 ```
 { "type": "state_get", "tenant_id": "<string>", "namespace": "<string>",
   "stream": "<string>", "entity_key": "<base64>", "key": "<string>",
-  "request_id": <u64> }
+  "request_id": <u64>, "shard": <u32, optional> }
 ```
 
-Reads `key` in the state of the shard `entity_key` routes to. Answered with
-`state_value`. Sent only to a broker that advertised `FEATURE_ATOMIC_COMMIT`.
+Reads `key` in the state of the shard `entity_key` routes to, or of `shard`
+when it names one. Answered with `state_value`. Sent only to a broker that
+advertised `FEATURE_ATOMIC_COMMIT`.
+
+### Named shards
+
+`publish`, `publish_batch`, `publish_idempotent`, `publish_if`, `commit` and
+`state_get` take an optional `shard`. When it is present the broker uses it as
+the shard and does not hash `key` or `entity_key`; they still travel, and
+mean what they did to anything else that reads them. It is for a writer that
+owns its partitioning, one shard per partition, which otherwise has to search
+for keys that happen to hash where it wants them.
+
+- A shard at or past the stream's shard count is refused with `error` or
+  `publish_error` (`invalid_request`), and nothing is written. It is never
+  wrapped onto another shard. The count is the one a key is hashed against:
+  the routing snapshot's on a cluster member, 1 on a single broker. A cluster
+  member whose snapshot does not know the stream yet answers a shard past 0
+  with a retryable `shard_unavailable` (`not_assigned`) instead.
+- Reads that hash a key do not follow a named shard. A `state_get` by
+  `entity_key` reads the key's hashed shard, not state a commit wrote to
+  another named shard; read it with `shard`. Likewise a reader that picks the
+  shard to subscribe to by hashing a key, and filters by key, does not see a
+  record named to another shard.
+- A named shard is not checked against a `publish_width` declaration, since no
+  width chose it.
+- Ownership, forwarding, fences, quorum waits and per-shard producer sequences
+  apply to the named shard exactly as to a hashed one. A forwarded publish
+  already carries its shard, so the owner writes the shard that was named.
+- Only stream writes take it. Cache and counter requests have no `shard`: a
+  cache value is found by hashing its key on every get, watch and delete, so a
+  value written elsewhere could not be found. A queue is a stream read through a
+  consumer group, which already reads one named shard at a time.
+
+Sent only to a broker that advertised `FEATURE_EXPLICIT_SHARD`. An older broker
+ignores the unknown field and routes by the key, so the record lands on some
+other shard and nothing says so. Absent, every frame is byte-identical to the
+one sent before the field existed. The binary publish frames carry no shard, so
+a named-shard publish is JSON.
 
 ### StateValue (server -> client)
 ```
@@ -1874,6 +1918,7 @@ Bits in the extended word (see [Extended feature word](#extended-feature-word)):
 | `0x1` | `FEATURE_INSPECT` | The broker answers `shard_inspect` with `shard_inspect_info` and `subscriptions_list` with `subscriptions_list_info`, for a token holding `node.view:cluster:*`. See [ShardInspect](#shardinspect) and [SubscriptionsList](#subscriptionslist) |
 | `0x2` | `FEATURE_STREAM_DELETED` | The client reads `stream_deleted` at the end of an event stream. See [StreamDeleted](#streamdeleted-server---client) |
 | `0x4` | `FEATURE_PUBLISH_WIDTH` | The broker takes `publish_width` and refuses a keyed batch routed by a width the stream does not have with `stale_width`. See [PublishWidth](#publishwidth) |
+| `0x8` | `FEATURE_EXPLICIT_SHARD` | The broker honours `shard` on `publish`, `publish_batch`, `publish_idempotent`, `publish_if`, `commit` and `state_get`. See [Named shards](#named-shards) |
 
 Features are advertised in **both** directions. A client offers its own in the
 `auth` it already sends:
@@ -1961,7 +2006,8 @@ know the broker's age until the answer comes back. An unknown field it simply
 ignores.
 
 `FEATURE_INSPECT` is the first feature in the second word,
-`FEATURE_STREAM_DELETED` the second and `FEATURE_PUBLISH_WIDTH` the third. The Rust constants are
+`FEATURE_STREAM_DELETED` the second, `FEATURE_PUBLISH_WIDTH` the third and
+`FEATURE_EXPLICIT_SHARD` the fourth. The Rust constants are
 `FEATURE_EXTENDED` and `KNOWN_FEATURES_HI` in `felix-wire`, with
 `offer_features`, `answer_features` and `peer_features_hi` applying the rules
 above.

@@ -61,6 +61,8 @@ pub(crate) async fn handle_publish_batch_message(
     stream: String,
     payloads: Vec<Bytes>,
     key: Option<bytes::Bytes>,
+    // Used instead of hashing `key` when the client named a shard.
+    shard: Option<u32>,
     request_id: Option<u64>,
     ack: Option<felix_wire::AckMode>,
     sample: bool,
@@ -184,6 +186,7 @@ pub(crate) async fn handle_publish_batch_message(
             &namespace,
             &stream,
             key.as_deref(),
+            shard,
         ) {
             Ok(shard) => (
                 shard,

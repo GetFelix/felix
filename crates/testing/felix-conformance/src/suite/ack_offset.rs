@@ -365,6 +365,7 @@ impl Stream {
     ) -> Result<Option<u64>> {
         let request_id = self.next_request_id();
         self.write(Message::PublishIdempotent {
+            shard: None,
             tenant_id: self.tenant.clone(),
             namespace: "default".to_string(),
             stream: COMMIT_STREAM.to_string(),
@@ -425,6 +426,7 @@ impl Stream {
     async fn acked_json_frame(&mut self, payload: Vec<u8>) -> Result<(u64, Frame)> {
         let request_id = self.next_request_id();
         self.write(Message::Publish {
+            shard: None,
             tenant_id: self.tenant.clone(),
             namespace: "default".to_string(),
             stream: COMMIT_STREAM.to_string(),

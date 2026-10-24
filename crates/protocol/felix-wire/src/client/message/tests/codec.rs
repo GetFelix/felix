@@ -3,6 +3,7 @@ use crate::{AckMode, Message};
 #[test]
 fn message_round_trip() {
     let message = Message::Publish {
+        shard: None,
         tenant_id: "t1".to_string(),
         namespace: "default".to_string(),
         stream: "topic".to_string(),
@@ -90,6 +91,7 @@ fn ack_mode_serialization() {
 
     // Just ensure they can be used in messages
     let msg = Message::Publish {
+        shard: None,
         tenant_id: "t".to_string(),
         namespace: "n".to_string(),
         stream: "s".to_string(),
@@ -101,6 +103,7 @@ fn ack_mode_serialization() {
     assert!(msg.encode().is_ok());
 
     let msg2 = Message::Publish {
+        shard: None,
         tenant_id: "t".to_string(),
         namespace: "n".to_string(),
         stream: "s".to_string(),
@@ -112,6 +115,7 @@ fn ack_mode_serialization() {
     assert!(msg2.encode().is_ok());
 
     let msg3 = Message::PublishBatch {
+        shard: None,
         tenant_id: "t".to_string(),
         namespace: "n".to_string(),
         stream: "s".to_string(),

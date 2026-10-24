@@ -5,6 +5,7 @@ mod auth;
 mod cache;
 mod codec;
 mod commit;
+mod explicit_shard;
 mod idempotent;
 mod inspect;
 mod stream;
