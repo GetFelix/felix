@@ -634,10 +634,16 @@ async fn a_moved_subscription_ends_with_shard_moved_only_when_offered() -> Resul
     Ok(())
 }
 
-/// Resume a durable stream from offset 0 over QUIC with `peer_flags`, across a
-/// generation start in its history and another one while live, and return
-/// every event frame up to the end of the stream.
-async fn frames_across_generation_starts(peer_flags: u16) -> Result<Vec<bytes::Bytes>> {
+/// Subscribe to a durable stream from `start` over QUIC with `peer_flags`,
+/// across a generation start in its history and another one while live, and
+/// return the reported `start_offset` and every event frame up to the end of
+/// the stream. With `trailing`, the log also ends in two generation starts
+/// when the subscriber joins.
+async fn frames_across_generation_starts(
+    peer_flags: u16,
+    start: felix_wire::StartPosition,
+    trailing: bool,
+) -> Result<(Option<u64>, Vec<bytes::Bytes>)> {
     let dir = tempfile::tempdir()?;
     let storage = felix_broker::DurableStorage::open(
         dir.path(),
@@ -672,6 +678,13 @@ async fn frames_across_generation_starts(peer_flags: u16) -> Result<Vec<bytes::B
     broker
         .publish("t1", "default", "orders", Bytes::from_static(b"c"))
         .await?;
+    if trailing {
+        for generation in [3, 4] {
+            broker
+                .append_generation_start("t1", "default", "orders", 0, generation)
+                .await?;
+        }
+    }
 
     let (server_config, cert) = make_server_config()?;
     let transport = TransportConfig::default();
@@ -706,7 +719,7 @@ async fn frames_across_generation_starts(peer_flags: u16) -> Result<Vec<bytes::B
             "default".to_string(),
             "orders".to_string(),
             Some(7),
-            Some(felix_wire::StartPosition::Offset(0)),
+            Some(start),
             None,
             None,
             peer_flags,
@@ -720,10 +733,14 @@ async fn frames_across_generation_starts(peer_flags: u16) -> Result<Vec<bytes::B
     let client = QuicClient::bind("0.0.0.0:0".parse()?, make_client_config(cert)?, transport)?;
     let connection = client.connect(addr, "localhost").await?;
     let _held = server_task.await.context("server join")??;
-    tokio::time::timeout(Duration::from_secs(1), out_ack_rx.recv())
+    let start_offset = match tokio::time::timeout(Duration::from_secs(1), out_ack_rx.recv())
         .await
         .context("ack timeout")?
-        .context("ack missing")?;
+        .context("ack missing")?
+    {
+        Outgoing::Message(Message::Subscribed { start_offset, .. }) => start_offset,
+        _ => panic!("unexpected ack"),
+    };
     let mut event_recv = tokio::time::timeout(Duration::from_secs(1), connection.accept_uni())
         .await
         .context("accept uni timeout")??;
@@ -734,7 +751,7 @@ async fn frames_across_generation_starts(peer_flags: u16) -> Result<Vec<bytes::B
 
     // Live: the leader changes again with the subscription open.
     broker
-        .append_generation_start("t1", "default", "orders", 0, 3)
+        .append_generation_start("t1", "default", "orders", 0, 5)
         .await?;
     broker
         .publish("t1", "default", "orders", Bytes::from_static(b"d"))
@@ -760,7 +777,7 @@ async fn frames_across_generation_starts(peer_flags: u16) -> Result<Vec<bytes::B
         frames.push(frame.encode());
     }
     let _ = felix_broker::timings::take_samples();
-    Ok(frames)
+    Ok((start_offset, frames))
 }
 
 /// `(offset, skipped_before, payload)` for every event in `frames`.
@@ -793,8 +810,15 @@ fn events_of(frames: &[bytes::Bytes]) -> Result<Vec<(u64, u64, Bytes)>> {
 async fn generation_starts_are_reported_only_to_a_client_that_offered_the_bit() -> Result<()> {
     let offsets = felix_wire::ORIGINAL_V1_FLAGS | felix_wire::FLAG_EVENT_BATCH_OFFSETS;
 
+    let from_zero = felix_wire::StartPosition::Offset(0);
     let with = events_of(
-        &frames_across_generation_starts(offsets | felix_wire::FLAG_EVENT_BATCH_SKIPPED).await?,
+        &frames_across_generation_starts(
+            offsets | felix_wire::FLAG_EVENT_BATCH_SKIPPED,
+            from_zero,
+            false,
+        )
+        .await?
+        .1,
     )?;
     assert_eq!(
         with,
@@ -806,7 +830,7 @@ async fn generation_starts_are_reported_only_to_a_client_that_offered_the_bit() 
         ]
     );
 
-    let frames = frames_across_generation_starts(offsets).await?;
+    let (_, frames) = frames_across_generation_starts(offsets, from_zero, false).await?;
     assert!(frames.iter().all(|frame| {
         felix_wire::Frame::decode(frame.clone())
             .is_ok_and(|frame| frame.header.flags & felix_wire::FLAG_EVENT_BATCH_SKIPPED == 0)
@@ -1030,5 +1054,38 @@ async fn a_subscribe_with_the_lease_held_is_served() -> Result<()> {
         matches!(answer, Message::Subscribed { .. }),
         "expected Subscribed, got {answer:?}"
     );
+    Ok(())
+}
+
+/// Joined at `latest` on a log ending in two generation starts, with a third
+/// written while live. A client that offered `EVENT_BATCH_SKIPPED` counts no
+/// drop from `start_offset`; one that did not reads one false drop per
+/// generation start, at the join as mid-stream (see docs/protocol.md).
+#[tokio::test]
+async fn a_latest_join_counts_generation_starts_as_drops_only_without_the_skip_bit() -> Result<()> {
+    let offsets = felix_wire::ORIGINAL_V1_FLAGS | felix_wire::FLAG_EVENT_BATCH_OFFSETS;
+    let latest = felix_wire::StartPosition::Latest;
+    let dropped = |start: u64, events: &[(u64, u64, Bytes)]| {
+        let (offset, skipped, _) = &events[0];
+        offset - start - skipped
+    };
+
+    let (start, frames) = frames_across_generation_starts(
+        offsets | felix_wire::FLAG_EVENT_BATCH_SKIPPED,
+        latest,
+        true,
+    )
+    .await?;
+    let with = events_of(&frames)?;
+    // a, b, a generation start, c, then two more: `latest` joins at 4.
+    assert_eq!(start, Some(4));
+    assert_eq!(with, vec![(7, 3, Bytes::from_static(b"d"))]);
+    assert_eq!(dropped(4, &with), 0);
+
+    let (start, frames) = frames_across_generation_starts(offsets, latest, true).await?;
+    let without = events_of(&frames)?;
+    assert_eq!(start, Some(4));
+    assert_eq!(without, vec![(7, 0, Bytes::from_static(b"d"))]);
+    assert_eq!(dropped(4, &without), 3, "one per generation start");
     Ok(())
 }

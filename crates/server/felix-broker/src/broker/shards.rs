@@ -319,6 +319,8 @@ impl Broker {
         // commit offset may be a dead generation's that a new leader replaces.
         // A ring stopping at the commit offset would leave a hole before the
         // tail, so it starts empty and readers are served from disk.
+        // `generation_start_run` stays unset here; the promotion's own
+        // generation-start record sets it before this broker serves.
         if state.consistency() == ConsistencyLevel::Quorum && log.commit_offset() < tail {
             state.hydrate(Vec::new(), tail, capacity);
             return Ok(());

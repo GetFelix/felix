@@ -274,10 +274,13 @@ For `latest` the two are equal, and both stop short of those trailing records:
 on a log that holds events `0` and `1` and then two generation starts, `latest`
 answers `start_offset: 2, live_offset: 2`, not `4`. So a client that joins at
 `latest` and reads history up to `live_offset - 1` is caught up once it has
-offset `1`, and the first live event, at `4` with `skipped_before: 2`, counts
-no drop against `start_offset - 1`. A log of nothing but a generation start
-answers `0, 0`: there is nothing to catch up on. Brokers before 0.6.1 answered
-`latest` with the raw tail, which counts those records. Both are sent on a durable stream to a client
+offset `1`. The first live event, at `4` with `skipped_before: 2`, counts no
+drop for a client that negotiated `FLAG_EVENT_BATCH_SKIPPED`. A client without
+it reads the two generation starts as two dropped events, at the join as it
+does mid-stream (see [Offsets that hold no event](#offsets-that-hold-no-event)).
+A log of nothing but a generation start answers `0, 0`: there is nothing to
+catch up on. Brokers before 0.6.1 answered `latest` with the raw tail, which
+counts those records. Both are sent on a durable stream to a client
 that negotiated `FLAG_EVENT_BATCH_OFFSETS`, and from such a client a subscribe
 with no `start` is `latest`, so it reports them too. To any other client the
 frame is unchanged.
@@ -2291,7 +2294,10 @@ Two uses:
   them it is a discontinuity the client can see and act on. Not every offset
   holds an event, though (below), so the number of events dropped between an
   event at `previous` and the next at `offset` is
-  `offset - previous - 1 - skipped_before`.
+  `offset - previous - 1 - skipped_before`. Before the first event there is no
+  `previous`; count from the subscription's `start_offset` instead, as
+  `offset - start_offset - skipped_before`. Writing it as `start_offset - 1`
+  underflows an unsigned offset when `start_offset` is 0.
 
 ### Offsets that hold no event
 
