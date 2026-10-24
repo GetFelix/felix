@@ -906,7 +906,7 @@ pub_conn_recv_window: 16777216
 ```
 
 **Tuning**:
-- When ingress is full and `pub_ingress_wait` is on, a publish waits in line for room while its stream keeps reading. Once a stream has 1024 publishes waiting, or the byte budget is spent, the broker stops reading it. The client can then park up to this many more bytes in the broker's receive buffers before QUIC flow control stops it, so a connection holds at most `pub_conn_inflight_bytes` plus this window.
+- When ingress is full and `pub_ingress_wait` is on, a publish waits in line for room while its stream keeps reading. Once a stream has 1024 acked or 16 unacked publishes waiting, or the byte budget is spent, the broker stops reading it. The client can then park up to this many more bytes in the broker's receive buffers before QUIC flow control stops it, so a connection holds at most `pub_conn_inflight_bytes` plus this window.
 - A bigger window costs broker memory and delays the moment a publisher feels backpressure. A smaller one can cap a connection's throughput on a path with a large bandwidth-delay product: 16 MiB covers 10 Gbit/s up to about 13 ms of round trip.
 - Must be at least `max_frame_bytes` and at least `pub_stream_recv_window`. Startup refuses anything else.
 
