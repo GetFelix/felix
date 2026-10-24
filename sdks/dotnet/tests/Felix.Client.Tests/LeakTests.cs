@@ -88,3 +88,72 @@ public class CancelRaceTests
         state.Abandon();
     }
 }
+
+public class HandleOwnershipTests
+{
+    // Freeing a GCHandle slot twice frees whichever call was given it since. That call's
+    // callback then finds no state, and the NullReferenceException escaped it.
+    [Fact]
+    public void AbandoningTwiceDoesNotFreeANewCallsHandle()
+    {
+        for (var i = 0; i < 100; i++)
+        {
+            var first = new CallState<long?>(default);
+            first.Pin();
+            first.Abandon();
+            first.Abandon();
+            AssertTwoLiveCallsKeepTheirOwnHandles();
+        }
+    }
+
+    [Fact]
+    public void AbandoningAfterTheCallbackTookTheHandleDoesNotFreeItAgain()
+    {
+        for (var i = 0; i < 100; i++)
+        {
+            var first = new CallState<long?>(default);
+            var firstData = first.Pin();
+            Assert.Same(first, CallState<long?>.Take(firstData));
+            first.Abandon();
+            AssertTwoLiveCallsKeepTheirOwnHandles();
+        }
+    }
+
+    // A slot freed twice is handed to the next two calls, so one callback finds the
+    // other's state, or nothing.
+    private static void AssertTwoLiveCallsKeepTheirOwnHandles()
+    {
+        var a = new CallState<long?>(default);
+        var b = new CallState<long?>(default);
+        var aData = a.Pin();
+        var bData = b.Pin();
+        Assert.NotEqual(aData, bData);
+        Assert.Same(a, CallState<long?>.Take(aData));
+        Assert.Same(b, CallState<long?>.Take(bData));
+    }
+
+    // The callback frees the handle through the state, so a later Abandon, or a second
+    // callback path, cannot free the same slot again.
+    [Fact]
+    public void TheHandleIsFreedExactlyOnceWhoeverGetsThereFirst()
+    {
+        var state = new CallState<long?>(default);
+        var userData = state.Pin();
+        var before = CallStateBase.HandlesFreed;
+
+        Assert.Same(state, CallState<long?>.Take(userData));
+        Assert.Equal(before + 1, CallStateBase.HandlesFreed);
+        state.Abandon();
+        state.Abandon();
+        Assert.Equal(before + 1, CallStateBase.HandlesFreed);
+    }
+
+    [Fact]
+    public void TakingAnUnknownHandleReturnsNullInsteadOfThrowing()
+    {
+        var state = new CallState<long?>(default);
+        var userData = state.Pin();
+        Assert.Same(state, CallState<long?>.Take(userData));
+        Assert.Null(CallState<long?>.Take(0));
+    }
+}

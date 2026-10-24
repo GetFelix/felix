@@ -10,6 +10,7 @@ namespace Felix.Native;
 internal abstract class CallStateBase
 {
     private GCHandle self;
+    private int allocated;
     private int finished;
 
     protected CallStateBase(CancellationToken token)
@@ -20,6 +21,10 @@ internal abstract class CallStateBase
     }
 
     private static int live;
+    private static int handlesFreed;
+
+    /// <summary>GCHandles freed so far; a test hook for double frees.</summary>
+    internal static int HandlesFreed => Volatile.Read(ref handlesFreed);
 
     /// <summary>Calls whose cancel token has not been released yet; a test hook for leaks.</summary>
     internal static int Live => Volatile.Read(ref live);
@@ -32,18 +37,28 @@ internal abstract class CallStateBase
     internal nint Pin()
     {
         self = GCHandle.Alloc(this);
+        Volatile.Write(ref allocated, 1);
         return GCHandle.ToIntPtr(self);
     }
 
     /// <summary>The call was refused, so its callback will never run.</summary>
     internal void Abandon()
     {
-        if (self.IsAllocated)
+        FreeHandle();
+        Finish();
+    }
+
+    /// <summary>
+    /// Frees the GCHandle once, whoever gets here first: freeing a slot twice would free
+    /// whatever call has been given it since, and that call's callback would find nothing.
+    /// </summary>
+    private void FreeHandle()
+    {
+        if (Interlocked.Exchange(ref allocated, 0) == 1)
         {
             self.Free();
+            Interlocked.Increment(ref handlesFreed);
         }
-
-        Finish();
     }
 
     /// <summary>Releases the cancel token and its registration, once.</summary>
@@ -60,9 +75,8 @@ internal abstract class CallStateBase
     protected static T Release<T>(nint userData)
         where T : CallStateBase
     {
-        var handle = GCHandle.FromIntPtr(userData);
-        var state = (T)handle.Target!;
-        handle.Free();
+        var state = (T)GCHandle.FromIntPtr(userData).Target!;
+        state.FreeHandle();
         return state;
     }
 }
@@ -79,9 +93,32 @@ internal sealed class CallState<T> : CallStateBase
     internal Task<T> Task => source.Task;
 
     /// <summary>Called by the callback, once: recovers the state and frees its handle.</summary>
-    internal static CallState<T> Take(nint userData)
+    internal static CallState<T>? Take(nint userData)
     {
-        return Release<CallState<T>>(userData);
+        // Never throws: it runs inside a native callback, where an exception ends the process.
+        try
+        {
+            return Release<CallState<T>>(userData);
+        }
+        catch (Exception e)
+        {
+            // No state to fail, so say so: this call's task can no longer be completed.
+            Console.Error.WriteLine($"felix: a native callback arrived for a call that is no longer pending ({e.GetType().Name})");
+            return null;
+        }
+    }
+
+    /// <summary>Faults the task from a callback's catch block, without throwing.</summary>
+    internal static void TryFail(CallState<T>? state, Exception error)
+    {
+        try
+        {
+            state?.Fail(error);
+        }
+        catch
+        {
+            // Nothing more can be done, and nothing may escape.
+        }
     }
 
     internal void Succeed(T value) => source.TrySetResult(value);

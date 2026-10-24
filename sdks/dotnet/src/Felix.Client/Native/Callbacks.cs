@@ -14,12 +14,22 @@ internal static unsafe class Callbacks
     internal static void OnConnect(nint userData, int status, byte* message, nint client)
     {
         var state = CallState<FelixClientHandle>.Take(userData);
+        if (state is null)
+        {
+            if (status == 0)
+            {
+                TryFree(() => NativeMethods.felix_client_free(client));
+            }
+
+            return;
+        }
+
         try
         {
             if (status == 0 && state.Token.IsCancellationRequested)
             {
                 // The call finished as the caller cancelled: hand out nothing.
-                NativeMethods.felix_client_free(client);
+                TryFree(() => NativeMethods.felix_client_free(client));
                 state.Fail(new OperationCanceledException(state.Token));
             }
             else if (status == 0)
@@ -35,10 +45,10 @@ internal static unsafe class Callbacks
         {
             if (status == 0)
             {
-                NativeMethods.felix_client_free(client);
+                TryFree(() => NativeMethods.felix_client_free(client));
             }
 
-            state.Fail(e);
+            CallState<FelixClientHandle>.TryFail(state, e);
         }
     }
 
@@ -46,6 +56,11 @@ internal static unsafe class Callbacks
     internal static void OnPublish(nint userData, int status, byte* message, byte hasOffset, ulong offset)
     {
         var state = CallState<long?>.Take(userData);
+        if (state is null)
+        {
+            return;
+        }
+
         try
         {
             if (status == 0)
@@ -59,7 +74,7 @@ internal static unsafe class Callbacks
         }
         catch (Exception e)
         {
-            state.Fail(e);
+            CallState<long?>.TryFail(state, e);
         }
     }
 
@@ -67,6 +82,11 @@ internal static unsafe class Callbacks
     internal static void OnBatch(nint userData, int status, byte* message, NativeRecordResult* results, nuint count)
     {
         var state = CallState<long?[]>.Take(userData);
+        if (state is null)
+        {
+            return;
+        }
+
         try
         {
             if (status != 0)
@@ -92,7 +112,7 @@ internal static unsafe class Callbacks
         }
         catch (Exception e)
         {
-            state.Fail(e);
+            CallState<long?[]>.TryFail(state, e);
         }
     }
 
@@ -100,12 +120,22 @@ internal static unsafe class Callbacks
     internal static void OnSubscribe(nint userData, int status, byte* message, nint subscription)
     {
         var state = CallState<FelixSubscriptionHandle>.Take(userData);
+        if (state is null)
+        {
+            if (status == 0)
+            {
+            TryFree(() => NativeMethods.felix_subscription_free(subscription));
+            }
+
+            return;
+        }
+
         try
         {
             if (status == 0 && state.Token.IsCancellationRequested)
             {
                 // The call finished as the caller cancelled: hand out nothing.
-                NativeMethods.felix_subscription_free(subscription);
+                TryFree(() => NativeMethods.felix_subscription_free(subscription));
                 state.Fail(new OperationCanceledException(state.Token));
             }
             else if (status == 0)
@@ -121,10 +151,10 @@ internal static unsafe class Callbacks
         {
             if (status == 0)
             {
-                NativeMethods.felix_subscription_free(subscription);
+                TryFree(() => NativeMethods.felix_subscription_free(subscription));
             }
 
-            state.Fail(e);
+            CallState<FelixSubscriptionHandle>.TryFail(state, e);
         }
     }
 
@@ -132,6 +162,16 @@ internal static unsafe class Callbacks
     internal static void OnEvent(nint userData, int status, byte* message, nint ev)
     {
         var state = CallState<FelixEvent?>.Take(userData);
+        if (state is null)
+        {
+            if (status == 0)
+            {
+                TryFree(() => NativeMethods.felix_event_free(ev));
+            }
+
+            return;
+        }
+
         try
         {
             if (status == 0)
@@ -149,7 +189,19 @@ internal static unsafe class Callbacks
         }
         catch (Exception e)
         {
-            state.Fail(e);
+            CallState<FelixEvent?>.TryFail(state, e);
+        }
+    }
+
+    private static void TryFree(Action free)
+    {
+        try
+        {
+            free();
+        }
+        catch
+        {
+            // A callback must not throw.
         }
     }
 
