@@ -42,7 +42,7 @@ fn a_publisher_and_time_reach_c_when_the_broker_sent_them() {
 #[test]
 fn an_absent_publisher_and_time_read_as_absent() {
     let ev = event(None, None);
-    let (mut data, mut len) = (1 as *const u8, 9usize);
+    let (mut data, mut len) = (std::ptr::dangling::<u8>(), 9usize);
     // SAFETY: a live event and writable out-pointers.
     let status = unsafe { felix_event_publisher(&ev, &mut data, &mut len) };
     assert_eq!(status, FELIX_STATUS_OK);

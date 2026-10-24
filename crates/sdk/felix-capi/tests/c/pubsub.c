@@ -567,7 +567,7 @@ static bool addr_at(const char *addrs, size_t index, char *out, size_t cap) {
 
 /* ---- sharded groups, stream-wide group admin, connect options ---------- */
 
-#define MAX_SHARDS 8
+#define PARITY_SHARDS 8
 
 struct srec {
   uint32_t shard;
@@ -582,10 +582,10 @@ struct srec {
 /* One call's result; each callback fills the fields it reports. */
 struct pres {
   struct waiter w;
-  struct srec records[MAX_SHARDS * 2];
+  struct srec records[PARITY_SHARDS * 2];
   size_t count;
-  FelixGroupPosition positions[MAX_SHARDS];
-  FelixGroupInfo infos[MAX_SHARDS];
+  FelixGroupPosition positions[PARITY_SHARDS];
+  FelixGroupInfo infos[PARITY_SHARDS];
   bool existed;
 };
 
@@ -605,7 +605,7 @@ static void on_sharded_poll(void *user_data, FelixStatus status,
                             size_t count) {
   struct pres *r = user_data;
   r->count = count;
-  for (size_t i = 0; i < count && i < MAX_SHARDS * 2; i++) {
+  for (size_t i = 0; i < count && i < PARITY_SHARDS * 2; i++) {
     struct srec *out = &r->records[i];
     const FelixGroupRecord *in = &records[i].record;
     out->shard = records[i].shard;
@@ -631,7 +631,7 @@ static void on_positions(void *user_data, FelixStatus status,
                          const FelixGroupPosition *positions, size_t count) {
   struct pres *r = user_data;
   r->count = count;
-  for (size_t i = 0; i < count && i < MAX_SHARDS; i++) {
+  for (size_t i = 0; i < count && i < PARITY_SHARDS; i++) {
     r->positions[i] = positions[i];
   }
   finish(&r->w, status, message, NULL);
@@ -641,9 +641,15 @@ static void on_infos(void *user_data, FelixStatus status, const char *message,
                      const FelixGroupInfo *infos, size_t count) {
   struct pres *r = user_data;
   r->count = count;
-  for (size_t i = 0; i < count && i < MAX_SHARDS; i++) {
+  for (size_t i = 0; i < count && i < PARITY_SHARDS; i++) {
     r->infos[i] = infos[i];
   }
+  finish(&r->w, status, message, NULL);
+}
+
+static void on_pres_done(void *user_data, FelixStatus status,
+                         const char *message) {
+  struct pres *r = user_data;
   finish(&r->w, status, message, NULL);
 }
 
@@ -2193,6 +2199,330 @@ static void groups(const struct fixture *f, const char *run) {
         (int)status);
   pause_ms(100);
   CHECK(r.w.calls == 0, "a refused group call ran its callback");
+  waiter_destroy(&r.w);
+
+  felix_client_free(admin);
+  felix_client_free(client);
+}
+
+
+static FelixStatus connect_with_sync(const struct fixture *f,
+                                     const FelixConnectOptions *options,
+                                     FelixClient **out) {
+  struct waiter w;
+  waiter_init(&w);
+  FelixStatus status = felix_client_connect_with(
+      f->addrs, f->tenant, f->token, NULL, f->ca_file, options, NULL,
+      on_connect, &w);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&w, WAIT_MS);
+    *out = w.handle;
+  }
+  waiter_destroy(&w);
+  return status;
+}
+
+/* Publishes one record to `shard` of the fixture's stream. */
+static void publish_one_on_shard(FelixClient *client, const struct fixture *f,
+                                 uint32_t shard, const char *payload) {
+  const uint8_t *data = (const uint8_t *)payload;
+  size_t len = strlen(payload);
+  struct batch_waiter b;
+  batch_init(&b);
+  FelixStatus status = batch_wait(
+      &b, felix_client_publish_on_shard(client, f->tenant, f->ns, f->stream,
+                                        shard, data, &len, 1,
+                                        FELIX_ACK_PER_BATCH, NULL, on_batch,
+                                        &b));
+  CHECK(status == FELIX_STATUS_OK, "publish_on_shard gave %d (%s)", (int)status,
+        b.w.message);
+  waiter_destroy(&b.w);
+}
+
+struct event_meta {
+  bool found;
+  bool has_timestamp;
+  uint64_t timestamp_micros;
+  bool has_publisher;
+};
+
+/* Reads shard events until `payload` arrives and records its metadata. */
+static void read_event_meta(FelixSubscription *sub, const char *payload,
+                            struct event_meta *out) {
+  memset(out, 0, sizeof *out);
+  for (int i = 0; i < 200 && !out->found; i++) {
+    struct waiter w;
+    waiter_init(&w);
+    FelixStatus status = felix_subscription_next(sub, WAIT_MS, NULL, on_event, &w);
+    if (status == FELIX_STATUS_OK) {
+      status = wait_for(&w, WAIT_MS * 2);
+    }
+    FelixEvent *event = status == FELIX_STATUS_OK ? w.handle : NULL;
+    waiter_destroy(&w);
+    if (!event) {
+      return;
+    }
+    const uint8_t *data = NULL;
+    size_t len = 0;
+    felix_event_payload(event, &data, &len);
+    if (len == strlen(payload) && memcmp(data, payload, len) == 0) {
+      const uint8_t *who = (const uint8_t *)1;
+      size_t who_len = 99;
+      CHECK(felix_event_publisher(event, &who, &who_len) == FELIX_STATUS_OK,
+            "event_publisher failed");
+      CHECK((who == NULL) == (who_len == 0),
+            "publisher pointer and length disagree");
+      out->has_publisher = who_len > 0;
+      CHECK(felix_event_timestamp(event, &out->timestamp_micros,
+                                  &out->has_timestamp) == FELIX_STATUS_OK,
+            "event_timestamp failed");
+      out->found = true;
+    }
+    felix_event_free(event);
+  }
+}
+
+static uint64_t now_micros(void) {
+  struct timespec ts;
+  timespec_get(&ts, TIME_UTC);
+  return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
+}
+
+/* Publisher and timestamp fields: absent by default, present when connected
+   asking for them. */
+static void connect_options(const struct fixture *f, const char *run) {
+  FelixClient *plain = NULL, *asking = NULL, *older = NULL;
+  FelixConnectOptions both = {
+      .size = sizeof(FelixConnectOptions), .publishers = true, .timestamps = true};
+  /* A struct from before the flags existed: only its size field. */
+  FelixConnectOptions size_only = {.size = sizeof(size_t),
+                                   .publishers = true,
+                                   .timestamps = true};
+  REQUIRE_OK(connect_sync(f->addrs, f->tenant, f->token, f->ca_file, &plain));
+  REQUIRE_OK(connect_with_sync(f, &both, &asking));
+  REQUIRE_OK(connect_with_sync(f, &size_only, &older));
+
+  FelixSubscription *subs[3] = {NULL, NULL, NULL};
+  FelixClient *clients[3] = {plain, asking, older};
+  for (int i = 0; i < 3; i++) {
+    FelixStatus status =
+        subscribe_shard(clients[i], f, 1, FELIX_START_LATEST, 0, &subs[i]);
+    CHECK(status == FELIX_STATUS_OK, "subscribe gave %d", (int)status);
+  }
+  char payload[96];
+  snprintf(payload, sizeof payload, "c-%s-meta", run);
+  if (subs[0] && subs[1] && subs[2]) {
+    uint64_t before = now_micros();
+    publish_one_on_shard(plain, f, 1, payload);
+    struct event_meta m[3];
+    for (int i = 0; i < 3; i++) {
+      read_event_meta(subs[i], payload, &m[i]);
+      CHECK(m[i].found, "client %d never saw the record", i);
+    }
+    CHECK(!m[0].has_timestamp && !m[0].has_publisher,
+          "a default client was told a time or publisher");
+    CHECK(!m[2].has_timestamp && !m[2].has_publisher,
+          "options smaller than the flags enabled them");
+    CHECK(m[1].has_timestamp, "no timestamp for a client that asked");
+    CHECK(m[1].has_publisher, "no publisher for a client that asked");
+    CHECK(m[1].timestamp_micros + 3600u * 1000000u >= before &&
+              m[1].timestamp_micros <= now_micros() + 3600u * 1000000u,
+          "timestamp %" PRIu64 " is not near now", m[1].timestamp_micros);
+  }
+  for (int i = 0; i < 3; i++) {
+    felix_subscription_free(subs[i]);
+  }
+  felix_client_free(older);
+  felix_client_free(asking);
+  felix_client_free(plain);
+}
+
+/* The sharded group and the stream-wide admin calls. */
+static void sharded_groups(const struct fixture *f, const char *run) {
+  FelixClient *client = NULL, *admin = NULL;
+  FelixConnectOptions asking = {.size = sizeof(FelixConnectOptions),
+                                .timestamps = true};
+  REQUIRE_OK(connect_with_sync(f, &asking, &client));
+  if (connect_sync(f->addrs, f->tenant, f->group_operator_token, f->ca_file,
+                   &admin) != FELIX_STATUS_OK) {
+    CHECK(0, "the group operator could not connect");
+    felix_client_free(client);
+    return;
+  }
+  char group[128];
+  snprintf(group, sizeof group, "sg-%s", run);
+  const char *t = f->tenant, *n = f->ns, *s = f->stream;
+  struct pres r;
+
+  /* An offset means something different on each shard, so it is refused. */
+  pres_init(&r);
+  FelixStatus status = felix_client_group_create_stream(
+      admin, t, n, s, group, FELIX_START_OFFSET, 5, NULL, on_positions, &r);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&r.w, WAIT_MS);
+  }
+  CHECK(status != FELIX_STATUS_OK, "an offset start on four shards was accepted");
+  waiter_destroy(&r.w);
+
+  pres_init(&r);
+  status = felix_client_group_create_stream(admin, t, n, s, group,
+                                            FELIX_START_LATEST, 0, NULL,
+                                            on_positions, &r);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&r.w, WAIT_MS);
+  }
+  CHECK(status == FELIX_STATUS_OK && r.count == 4, "create_stream gave %d, %zu shards",
+        (int)status, r.count);
+  for (size_t i = 0; status == FELIX_STATUS_OK && i < r.count && i < PARITY_SHARDS; i++) {
+    CHECK(r.positions[i].moved, "shard %zu was not created", i);
+  }
+  waiter_destroy(&r.w);
+
+  /* Creating again leaves every shard alone. */
+  pres_init(&r);
+  status = felix_client_group_create_stream(admin, t, n, s, group,
+                                            FELIX_START_LATEST, 0, NULL,
+                                            on_positions, &r);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&r.w, WAIT_MS);
+  }
+  CHECK(status == FELIX_STATUS_OK && r.count == 4, "a second create_stream gave %d, %zu",
+        (int)status, r.count);
+  for (size_t i = 0; status == FELIX_STATUS_OK && i < r.count && i < PARITY_SHARDS; i++) {
+    CHECK(!r.positions[i].moved, "shard %zu moved on a second create", i);
+  }
+  waiter_destroy(&r.w);
+
+  struct waiter gw;
+  waiter_init(&gw);
+  status = felix_client_group_sharded(client, t, n, s, group, NULL,
+                                      on_sharded_group, &gw);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&gw, WAIT_MS);
+  }
+  FelixShardedGroup *sg = gw.handle;
+  waiter_destroy(&gw);
+  if (status != FELIX_STATUS_OK || !sg) {
+    CHECK(0, "group_sharded gave %d", (int)status);
+    felix_client_free(admin);
+    felix_client_free(client);
+    return;
+  }
+  uint32_t shards = 0;
+  CHECK(felix_sharded_group_shards(sg, &shards) == FELIX_STATUS_OK && shards == 4,
+        "the sharded group spans %u shards", (unsigned)shards);
+
+  /* One record on each shard; the poll finds them by visiting every shard. */
+  char payloads[4][96];
+  for (uint32_t shard = 0; shard < 4; shard++) {
+    snprintf(payloads[shard], sizeof payloads[shard], "sg-%s-s%u", run,
+             (unsigned)shard);
+    publish_one_on_shard(client, f, shard, payloads[shard]);
+  }
+  bool seen[4] = {false, false, false, false};
+  size_t settled = 0;
+  for (int attempt = 0; attempt < 20 && settled < 4; attempt++) {
+    pres_init(&r);
+    status = felix_sharded_group_poll(sg, 8, NULL, on_sharded_poll, &r);
+    if (status == FELIX_STATUS_OK) {
+      status = wait_for(&r.w, WAIT_MS);
+    }
+    CHECK(status == FELIX_STATUS_OK, "sharded poll gave %d (%s)", (int)status,
+          r.w.message);
+    for (size_t i = 0; status == FELIX_STATUS_OK && i < r.count && i < PARITY_SHARDS * 2; i++) {
+      const struct srec *rec = &r.records[i];
+      for (uint32_t shard = 0; shard < 4; shard++) {
+        if (strcmp(rec->payload, payloads[shard]) != 0) {
+          continue;
+        }
+        CHECK(rec->shard == shard, "record for shard %u came from shard %u",
+              (unsigned)shard, (unsigned)rec->shard);
+        CHECK(rec->has_timestamp, "no timestamp on a group record");
+        /* The settle names the shard the record came from. */
+        struct pres ack;
+        pres_init(&ack);
+        FelixStatus acked = felix_client_group_ack(
+            client, t, n, s, rec->shard, group, rec->offset, NULL, on_pres_done, &ack);
+        if (acked == FELIX_STATUS_OK) {
+          acked = wait_for(&ack.w, WAIT_MS);
+        }
+        CHECK(acked == FELIX_STATUS_OK, "ack on shard %u gave %d",
+              (unsigned)rec->shard, (int)acked);
+        waiter_destroy(&ack.w);
+        if (!seen[shard]) {
+          seen[shard] = true;
+          settled++;
+        }
+      }
+    }
+    waiter_destroy(&r.w);
+    if (status != FELIX_STATUS_OK) {
+      break;
+    }
+  }
+  CHECK(settled == 4, "the sharded group delivered %zu of 4 shards' records", settled);
+
+  pres_init(&r);
+  status = felix_client_group_describe_stream(client, t, n, s, group, NULL,
+                                              on_infos, &r);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&r.w, WAIT_MS);
+  }
+  CHECK(status == FELIX_STATUS_OK && r.count == 4, "describe_stream gave %d, %zu",
+        (int)status, r.count);
+  for (size_t i = 0; status == FELIX_STATUS_OK && i < r.count && i < PARITY_SHARDS; i++) {
+    CHECK(r.infos[i].dead_letters == 0, "shard %zu has dead letters", i);
+  }
+  waiter_destroy(&r.w);
+
+  pres_init(&r);
+  status = felix_client_group_seek_stream(admin, t, n, s, group,
+                                          FELIX_START_LATEST, 0, NULL,
+                                          on_positions, &r);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&r.w, WAIT_MS);
+  }
+  CHECK(status == FELIX_STATUS_OK && r.count == 4, "seek_stream gave %d, %zu",
+        (int)status, r.count);
+  waiter_destroy(&r.w);
+
+  /* A token that is already cancelled cancels the poll. */
+  FelixCancelToken *cancel = felix_cancel_token_new();
+  felix_cancel_token_cancel(cancel);
+  pres_init(&r);
+  status = felix_sharded_group_poll(sg, 1, cancel, on_sharded_poll, &r);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&r.w, WAIT_MS);
+  }
+  CHECK(status == FELIX_STATUS_CANCELLED, "a cancelled sharded poll gave %d",
+        (int)status);
+  waiter_destroy(&r.w);
+  felix_cancel_token_free(cancel);
+
+  pres_init(&r);
+  status = felix_sharded_group_poll(sg, 0, NULL, on_sharded_poll, &r);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "max_records 0 gave %d",
+        (int)status);
+  waiter_destroy(&r.w);
+  felix_sharded_group_free(sg);
+
+  pres_init(&r);
+  status = felix_client_group_delete_stream(admin, t, n, s, group, NULL,
+                                            on_stream_deleted, &r);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&r.w, WAIT_MS);
+  }
+  CHECK(status == FELIX_STATUS_OK && r.existed, "delete_stream gave %d, existed %d",
+        (int)status, (int)r.existed);
+  waiter_destroy(&r.w);
+  pres_init(&r);
+  status = felix_client_group_delete_stream(admin, t, n, s, group, NULL,
+                                            on_stream_deleted, &r);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&r.w, WAIT_MS);
+  }
+  CHECK(status == FELIX_STATUS_OK && !r.existed,
+        "a second delete_stream gave %d, existed %d", (int)status, (int)r.existed);
   waiter_destroy(&r.w);
 
   felix_client_free(admin);
@@ -4571,6 +4901,8 @@ int main(int argc, char **argv) {
     batches(&f, run);
     subscriptions(&f, run);
     groups(&f, run);
+    connect_options(&f, run);
+    sharded_groups(&f, run);
     caches(&f, run);
     commits(&f, run);
     producers(&f, run);

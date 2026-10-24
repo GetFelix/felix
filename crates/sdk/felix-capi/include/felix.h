@@ -1611,9 +1611,8 @@ FelixStatus felix_client_stream_shards(const struct FelixClient *client,
                                        void *user_data);
 
 // Open a consumer group across every shard of a stream. The shard count is
-// asked of the broker, so an unknown stream fails here. The group itself is
-// created on each shard by `felix_client_group_create_stream` (or on first
-// poll, by the broker's own rules); this call creates nothing.
+// asked of the broker, so an unknown stream fails here. This creates no
+// group: use `felix_client_group_create_stream` for that.
 //
 // A read: cancelled, it completes with `FELIX_STATUS_CANCELLED`.
 //

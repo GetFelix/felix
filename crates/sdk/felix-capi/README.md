@@ -33,7 +33,7 @@ felix_client_publish(client, "t1", "default", "events",
                      FELIX_DELIVERY_AT_MOST_ONCE, NULL, on_published, my_state);
 ```
 
-The calls are `felix_client_connect` and `felix_client_endpoints` (the brokers a client would try), the publishes (`felix_client_publish`,
+The calls are `felix_client_connect` (and `felix_client_connect_with`, which takes options) and `felix_client_endpoints` (the brokers a client would try), the publishes (`felix_client_publish`,
 `felix_client_publish_batch`, `felix_client_publish_on_shard` and
 `felix_client_publish_records`), the subscribes (`felix_client_subscribe` for one
 shard and `felix_client_subscribe_sharded` for all of them),
@@ -172,9 +172,7 @@ For a C# binding, the item callback's `FelixEvent *` is null unless the kind is
 
 Every group call names one shard and goes to the broker that leads it,
 following a move. `felix_client_stream_shards` gives the shard count, so a
-caller runs one group per shard; composing a group over all shards
-(`ShardedGroup`) and the `*_stream` admin calls are later work, as are the
-record publisher and timestamp fields, which need connect flags.
+caller runs one group per shard, or a `FelixShardedGroup` covers them all.
 
 - `felix_client_group_create` and `felix_client_group_seek` take a
   `FELIX_START_*` position and report where the group resumes. Create leaves
@@ -195,6 +193,31 @@ record publisher and timestamp fields, which need connect flags.
   `felix_client_stream_shards`) report `FELIX_STATUS_CANCELLED`.
 - `felix_client_group_describe` fills a `FelixGroupInfo`, and
   `felix_client_group_delete` says whether the group existed.
+- `felix_client_group_sharded` opens a `FelixShardedGroup` over every shard of
+  a stream (`felix_sharded_group_shards`, `felix_sharded_group_free`).
+  `felix_sharded_group_poll` visits the shards in turn and returns the first
+  non-empty batch as `FelixShardedGroupRecord` values: a `shard` and a borrowed
+  `FelixGroupRecord`. Order holds within a shard only, and a shard that cannot
+  be polled fails the poll. Settle a record with the per-shard calls above,
+  passing its `shard`. The poll is a read: cancelled, or with the group freed,
+  it completes with `FELIX_STATUS_CANCELLED`, and what it claimed comes back
+  after the visibility timeout.
+- `felix_client_group_create_stream`, `_seek_stream`, `_describe_stream` and
+  `_delete_stream` run the admin call on every shard, in shard order, and report
+  one `FelixGroupPosition` or `FelixGroupInfo` per shard. It is one request per
+  shard, so a failure partway leaves the earlier shards changed; each call is
+  safe to repeat. An offset start is refused for a stream with more than one
+  shard. The first two and the delete are writes, the describe a read.
+
+### Publisher and timestamp
+
+`felix_client_connect_with` takes a `FelixConnectOptions` (`size` set to
+`sizeof`, then `publishers` and `timestamps`); a field is read only when `size`
+covers it, so a caller built against an older header keeps working. With the
+flags set, `felix_event_publisher` and `felix_event_timestamp` read an event's
+principal and append time, and a `FelixGroupRecord` carries `publisher`,
+`publisher_len`, `has_timestamp` and `timestamp_micros`. A broker that does not
+negotiate them leaves them absent, never an error.
 
 A broker without claim control refuses a delayed nack, an extend and a
 visibility override with the same error the Rust client raises. The status is
@@ -350,8 +373,8 @@ shows, and one surface keeps every later operation to one function.
 This covers connect, every publish the Rust cluster client offers, idempotent
 producers, subscribing to one shard or to all of them, groups on a shard,
 caches, counters and cache watches, and atomic commits with conditional
-publishes. Event publisher and timestamp fields, the group `*_stream` admin
-calls and the sharded group are not covered yet.
+publishes, the sharded group, the group `*_stream` admin calls, and the event
+publisher and timestamp fields.
 
 ## The header
 

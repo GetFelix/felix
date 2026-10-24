@@ -328,8 +328,8 @@ the rest start at `start` (a shard listed twice is
 ## Consumer groups
 
 Every group call names one shard and goes to the broker that leads it, following
-a move. `felix_client_stream_shards` gives the shard count, so a caller runs one
-group per shard.
+a move. `felix_client_stream_shards` gives the shard count, so a caller can run one
+group per shard, or open a sharded group over all of them (below).
 
 ```c
 felix_client_group_poll(client, "t1", "default", "orders", shard, "billing",
@@ -374,6 +374,57 @@ letter, need the `group.manage` permission. Polling, settling, extending, listin
 dead letters and describing need only consumer access. A broker without claim
 control refuses a delayed nack, an extend and a visibility override with the
 same error the Rust client raises.
+
+### All shards
+
+`felix_client_group_sharded` opens a `FelixShardedGroup` over every shard of a
+stream; it creates nothing, so create the group first. `felix_sharded_group_shards`
+gives the count and `felix_sharded_group_free` frees it. `felix_sharded_group_poll`
+takes up to `max_records` (at least one), visiting the shards in turn from where
+the last poll left off and returning the first non-empty batch as
+`FelixShardedGroupRecord` values: a `shard` and a borrowed `FelixGroupRecord`,
+valid only during the callback. Order holds within a shard only, and a shard that
+cannot be polled fails the whole poll. Settle a record with the per-shard calls
+(`felix_client_group_ack`, `_nack`, `_extend`, `_dead_letter`), passing its
+`shard`: an offset means nothing without it. The poll is a read, so a cancel, or
+freeing the group, completes it with `FELIX_STATUS_CANCELLED`, and what it
+claimed comes back after the visibility timeout.
+
+`felix_client_group_create_stream`, `_seek_stream`, `_describe_stream` and
+`_delete_stream` run the admin call on every shard in shard order. Create and
+seek report a `FelixGroupPosition` (`offset`, `moved`) per shard and describe a
+`FelixGroupInfo` per shard, both indexed by shard and valid during the callback;
+delete says whether any shard had the group. It is one request per shard, so a
+failure partway leaves the earlier shards changed; every call is safe to repeat.
+An offset start is refused for a stream with more than one shard, since an offset
+means something different on each; use `FELIX_START_EARLIEST` or
+`FELIX_START_LATEST`. Create, seek and delete are writes
+(`FELIX_STATUS_OUTCOME_UNKNOWN` on a late cancel); describe is a read.
+
+## Publisher and timestamp
+
+`felix_client_connect_with` takes a `FelixConnectOptions`. Set `size` to
+`sizeof(FelixConnectOptions)`; a field is read only when `size` covers it, so a
+caller built against an older header keeps working and a field it does not know
+is off. A null `options` is the defaults, which is what `felix_client_connect`
+uses.
+
+```c
+FelixConnectOptions options = {
+    .size = sizeof options, .publishers = true, .timestamps = true};
+felix_client_connect_with("127.0.0.1:5000", "t1", "my-token", "localhost", NULL,
+                          &options, NULL, on_connect, state);
+```
+
+`publishers` asks brokers to say who published each event, which adds the
+principal to every event batch; `timestamps` asks for each record's append time,
+which adds eight bytes per event. With them set, `felix_event_publisher` writes a
+pointer and length (UTF-8, not NUL-terminated, valid until the event is freed)
+and `felix_event_timestamp` writes microseconds since the Unix epoch by the clock
+of the broker that led the shard. A `FelixGroupRecord` carries `publisher` and
+`publisher_len` (borrowed, null when absent) and `has_timestamp` with
+`timestamp_micros`. A broker that does not negotiate them, or an in-memory stream
+that stores no time, leaves them absent; that is never an error.
 
 ## Caches, counters and watches
 
@@ -565,12 +616,6 @@ These rules hold for any managed binding, C# included.
   thread or under a lock. The order is the order the C calls return, so calls
   racing across threads have no order of their own. Retry a failed publish with
   the same buffers.
-
-## Not covered
-
-The sharded group (a group composed over every shard), the group `*_stream`
-admin calls, and the record publisher and timestamp fields are not in the ABI.
-Use one group per shard with `felix_client_stream_shards`.
 
 ## Conformance
 
