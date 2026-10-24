@@ -11,11 +11,8 @@ compare Felix against other pub/sub systems fairly.
 :::note[These are loopback numbers; real-network results are on a separate page]
 The results here are measured over loopback (an in-process or same-host
 broker), which is the right setup for catching regressions in Felix's own
-code. For numbers taken on real hardware over a real network with a real IdP
-(1.63 GB/s aggregate ingest, ~181 µs acked-publish latency, and the finding
-that durability costs no throughput), see [Real-Network Performance
-(Azure)](/features/real-network-performance/), which reads the loopback
-figures below as its baseline.
+code. The current numbers on real hardware over a real network are on [v0.6.0
+Performance](/features/v060-performance/).
 :::
 
 ## Running the benchmark

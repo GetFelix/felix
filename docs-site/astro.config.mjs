@@ -157,6 +157,7 @@ export default defineConfig({
             { label: 'Performance & Platform Notes', slug: 'features/performance-platform-notes' },
             { label: 'Benchmarks', slug: 'features/benchmarks' },
             { label: 'Real-Network Performance (Azure)', slug: 'features/real-network-performance' },
+            { label: 'v0.6.0 Performance', slug: 'features/v060-performance' },
             { label: 'Case Study: Throughput Ceiling', slug: 'features/performance-case-study' },
             { label: 'Observability', slug: 'features/observability' },
             { label: 'Security', slug: 'features/security' },
