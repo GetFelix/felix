@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792857582601,
+  "lastUpdate": 1792859429250,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -44022,6 +44022,72 @@ window.BENCHMARK_DATA = {
             "range": "354.63",
             "unit": "us",
             "extra": "trials: 5\nmedian: 787.00\nmean: 900.00\nstdev: 354.63\ncv: 39.40%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "58cdd72dafce4d8d09f3169785c499fee13cb9d6",
+          "message": "fix(ci): compose smoke reads all of a pipe before matching (#1498)\n\nThe readiness check ran `compose logs ... | grep -q 'Felix is up'` under\npipefail. grep -q exits on its match, compose logs can then die of SIGPIPE\n(141), and the pipeline fails although the line is there: the job reported\nthat the stack never printed its connection settings, beside a log that\nshows it did (main 181d3c50, PR #1483). Match through a helper that reads\nall of its input.\n\nSpec-Unaffected: CI script only.",
+          "timestamp": "2026-10-24T16:27:10Z",
+          "tree_id": "752b8de98c9595ac7aa452dff41f002bdf9d4e60",
+          "url": "https://github.com/GetFelix/felix/commit/58cdd72dafce4d8d09f3169785c499fee13cb9d6"
+        },
+        "date": 1792859425485,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 70,
+            "range": "1.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 70.00\nmean: 70.20\nstdev: 1.10\ncv: 1.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 92,
+            "range": "1.73",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 92.00\nmean: 93.00\nstdev: 1.73\ncv: 1.86%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 126,
+            "range": "6.06",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 126.00\nmean: 125.20\nstdev: 6.06\ncv: 4.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 86,
+            "range": "1.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 86.00\nmean: 86.20\nstdev: 1.64\ncv: 1.91%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 209,
+            "range": "43.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 209.00\nmean: 222.60\nstdev: 43.30\ncv: 19.45%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 355,
+            "range": "356.49",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 355.00\nmean: 582.00\nstdev: 356.49\ncv: 61.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
