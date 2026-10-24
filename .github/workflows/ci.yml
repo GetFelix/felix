@@ -826,7 +826,11 @@ jobs:
           [ -s "$work/fixture.json" ] || { cat "$work/fixture.log"; exit 1; }
           export FELIX_FIXTURE="$work/fixture.json"
           export FELIX_NATIVE_LIB="$PWD/target/release/libfelix.so"
-          dotnet test sdks/dotnet/Felix.sln -c Release --no-build
+          # One framework at a time: dotnet test runs each in its own process, and both
+          # publishing to the shared fixture breaks the other's read assertions.
+          for tfm in net8.0 net10.0; do
+            dotnet test sdks/dotnet/Felix.sln -c Release --no-build --framework "$tfm"
+          done
 
   # The formal model of one shard's lease, replication and promotion, checked
   # with TLC. Bounded, so it finishes in minutes; each configuration says
