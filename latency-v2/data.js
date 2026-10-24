@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792824562263,
+  "lastUpdate": 1792827496666,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -43560,6 +43560,72 @@ window.BENCHMARK_DATA = {
             "range": "386.70",
             "unit": "us",
             "extra": "trials: 5\nmedian: 891.00\nmean: 728.40\nstdev: 386.70\ncv: 53.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c5c2ad9be35938434cb1cc694f7af01a03218deb",
+          "message": "fix(broker): park only a few unacked publishes per stream (#1469) (#1477)\n\n* fix(broker): park only a few unacked publishes per stream (#1469)\n\nA fire-and-forget publisher has no publish window, so with the acked cap\nof 1024 a busy broker's control streams parked unacked publishes until the\nprocess-wide byte budget ran out. Every publish then waited on that shared\nbudget, and 256 B batch-64 fire-and-forget lost 13% against 88a91681.\nUnacked parks now get their own cap of 16 per stream; past it the read\nloop waits inline as before.\n\n* docs: the unacked park cap (#1469)\n\n* test: drop a constant assertion clippy rejects\n\n* test, docs: acked parks keep their cap; state the isolation trade-off (#1469)\n\n* chore: declare the unacked park cap spec-unaffected\n\nSpec-Unaffected: the change splits the per-stream park cap into one for acked\nand one for unacked publishes and waits inline past the unacked cap. Admission\norder, the queue, and the quorum mark, report, promotion and handoff logic the\nmodel describes are unchanged.",
+          "timestamp": "2026-10-24T07:33:45Z",
+          "tree_id": "e6906532147d4718f0e3e01c6b63df979428b6b5",
+          "url": "https://github.com/GetFelix/felix/commit/c5c2ad9be35938434cb1cc694f7af01a03218deb"
+        },
+        "date": 1792827492058,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 181,
+            "range": "1.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 181.00\nmean: 180.80\nstdev: 1.64\ncv: 0.91%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 243,
+            "range": "4.90",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 243.00\nmean: 241.00\nstdev: 4.90\ncv: 2.03%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 310,
+            "range": "18.93",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 310.00\nmean: 300.00\nstdev: 18.93\ncv: 6.31%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 218,
+            "range": "5.32",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 218.00\nmean: 219.60\nstdev: 5.32\ncv: 2.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 462,
+            "range": "42.88",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 462.00\nmean: 471.60\nstdev: 42.88\ncv: 9.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1038,
+            "range": "493.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1038.00\nmean: 1108.00\nstdev: 493.92\ncv: 44.58%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
