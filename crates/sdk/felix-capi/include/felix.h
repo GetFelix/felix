@@ -158,6 +158,68 @@ typedef void (*FelixConnectCallback)(void *user_data,
                                      const char *message,
                                      struct FelixClient *client);
 
+// What one operation of a commit does.
+typedef int32_t FelixCommitOpKind;
+
+// One operation of an atomic commit. Fields an operation does not read are
+// ignored and may be null. `data` may be null when `data_len` is zero.
+typedef struct FelixCommitOp {
+  // A `FELIX_COMMIT_*` value.
+  FelixCommitOpKind kind;
+  // The stream (or queue) the operation is on, NUL-terminated.
+  const char *stream;
+  // The state key, NUL-terminated.
+  const char *key;
+  // The event payload, or the state value.
+  const uint8_t *data;
+  size_t data_len;
+} FelixCommitOp;
+
+// Called once when `felix_client_commit` or `felix_client_commit_on_shard`
+// finishes. `offset` is where the commit's event is read and the version of
+// every key it wrote; it is zero unless the status is `FELIX_STATUS_OK`.
+typedef void (*FelixCommitCallback)(void *user_data,
+                                    FelixStatus status,
+                                    const char *message,
+                                    uint64_t offset);
+
+// Called once when a conditional commit or publish finishes. A write the
+// shard refused because its next offset was not the expected one is
+// `FELIX_STATUS_OK` with `written` false, and `offset` is that next offset
+// (the tail): nothing was written. When `written` is true, `offset` is where
+// the write landed.
+typedef void (*FelixConditionalCallback)(void *user_data,
+                                         FelixStatus status,
+                                         const char *message,
+                                         bool written,
+                                         uint64_t offset);
+
+// A key in a stream shard's state.
+typedef struct FelixStateValue {
+  // False when the key was never written or was deleted.
+  bool has_value;
+  // `value_len` bytes, null when empty.
+  const uint8_t *value;
+  size_t value_len;
+  // Whether `version` is set: the offset of the commit that wrote the
+  // value.
+  bool has_version;
+  uint64_t version;
+  // Whether `as_of` is set: the offset of the last commit the answer
+  // reflects.
+  bool has_as_of;
+  uint64_t as_of;
+} FelixStateValue;
+
+// Called once when `felix_client_state_get` or
+// `felix_client_state_get_on_shard` finishes. `state` and the bytes it points
+// to are valid only while the callback runs, and `state` is null unless the
+// status is `FELIX_STATUS_OK`.
+typedef void (*FelixStateCallback)(void *user_data,
+                                   FelixStatus status,
+                                   const char *message,
+                                   const struct FelixStateValue *state);
+
 // One record handed to a consumer by `felix_client_group_poll`.
 typedef struct FelixGroupRecord {
   // The offset to pass to ack, nack, extend and the other settles.
@@ -385,6 +447,20 @@ typedef void (*FelixOffsetCallback)(void *user_data,
 // One shard's feed has ended and delivers no more. Other shards go on.
 #define FELIX_WATCH_SHARD_CLOSED 5
 
+// The commit's event, delivered to the stream's subscribers. Reads `stream`
+// and `data`.
+#define FELIX_COMMIT_PUBLISH 0
+
+// The commit's event, for the stream's consumer groups. `stream` is the
+// queue. Reads `stream` and `data`.
+#define FELIX_COMMIT_ENQUEUE 1
+
+// Set a key in the stream's state. Reads `stream`, `key` and `data`.
+#define FELIX_COMMIT_PUT 2
+
+// Remove a key from the stream's state. Reads `stream` and `key`.
+#define FELIX_COMMIT_DELETE 3
+
 // Fire and forget: complete once the record is sent.
 #define FELIX_ACK_NONE 0
 
@@ -476,6 +552,11 @@ typedef void (*FelixOffsetCallback)(void *user_data,
 // The write may or may not have been applied. Resend only if it is
 // idempotent.
 #define FELIX_STATUS_OUTCOME_UNKNOWN 27
+
+// The broker does not advertise atomic commits, so a commit was not sent;
+// retrying the same call will not help. Other missing broker features are
+// still reported as `FELIX_STATUS_ERROR`.
+#define FELIX_STATUS_UNSUPPORTED 28
 
 // Only records published after the subscription is made.
 #define FELIX_START_LATEST 0
@@ -837,6 +918,192 @@ FelixStatus felix_client_connect(const char *addrs,
 // `client` is null or a pointer from a connect callback that has not been
 // freed, and no other thread is using it.
 void felix_client_free(struct FelixClient *client);
+
+// Commit `ops` on the shard `entity_key` routes to, as one record: every
+// reader sees all of it or none of it.
+//
+// `ops` must hold exactly one event (`FELIX_COMMIT_PUBLISH` or
+// `FELIX_COMMIT_ENQUEUE`) and every operation must name that event's stream;
+// anything else is `FELIX_STATUS_INVALID_ARGUMENT` at the call, and the
+// callback never runs. Everything is copied before this returns. A broker
+// that does not serve commits completes the call with
+// `FELIX_STATUS_UNSUPPORTED`.
+//
+// A write: cancelled after it may have been sent, it completes with
+// `FELIX_STATUS_OUTCOME_UNKNOWN`. A commit that may have been applied is not
+// sent again.
+//
+// # Safety
+//
+// `client` is a live client, the strings are NUL-terminated, `entity_key` is
+// null or valid for `entity_key_len` bytes, `ops` is null or valid for
+// `count` operations whose pointers are valid for the call, `cancel` is
+// null or a live token, and `callback` is safe to call with `user_data` from
+// any thread.
+FelixStatus felix_client_commit(const struct FelixClient *client,
+                                const char *tenant_id,
+                                const char *ns,
+                                const uint8_t *entity_key,
+                                size_t entity_key_len,
+                                const struct FelixCommitOp *ops,
+                                size_t count,
+                                const struct FelixCancelToken *cancel,
+                                FelixCommitCallback callback,
+                                void *user_data);
+
+// `felix_client_commit` to `shard` of the stream, rather than the shard
+// `entity_key` hashes to, for a writer that owns its partitioning.
+//
+// `entity_key` still travels with the commit but does not choose the shard.
+// A shard the stream does not have is refused by the broker and nothing is
+// written. A broker too old to take a shard number completes the call with
+// an error without sending anything. Read the state back with
+// `felix_client_state_get_on_shard`.
+//
+// # Safety
+//
+// As for `felix_client_commit`.
+FelixStatus felix_client_commit_on_shard(const struct FelixClient *client,
+                                         const char *tenant_id,
+                                         const char *ns,
+                                         uint32_t shard,
+                                         const uint8_t *entity_key,
+                                         size_t entity_key_len,
+                                         const struct FelixCommitOp *ops,
+                                         size_t count,
+                                         const struct FelixCancelToken *cancel,
+                                         FelixCommitCallback callback,
+                                         void *user_data);
+
+// `felix_client_commit`, only if the commit would land at exactly
+// `expected_offset`, the shard's next offset: nothing has been appended
+// since the caller saw the tail. A compare-and-set on the whole shard.
+//
+// A refusal is an answer, not an error: the callback gets
+// `FELIX_STATUS_OK`, `written` false and the shard's tail, and nothing was
+// written. A broker that does not support conditional writes completes the
+// call with an error without sending anything.
+//
+// # Safety
+//
+// As for `felix_client_commit`.
+FelixStatus felix_client_commit_if(const struct FelixClient *client,
+                                   const char *tenant_id,
+                                   const char *ns,
+                                   const uint8_t *entity_key,
+                                   size_t entity_key_len,
+                                   const struct FelixCommitOp *ops,
+                                   size_t count,
+                                   uint64_t expected_offset,
+                                   const struct FelixCancelToken *cancel,
+                                   FelixConditionalCallback callback,
+                                   void *user_data);
+
+// `felix_client_commit_if` to `shard`; see `felix_client_commit_on_shard`.
+// `expected_offset` is that shard's next offset.
+//
+// # Safety
+//
+// As for `felix_client_commit`.
+FelixStatus felix_client_commit_if_on_shard(const struct FelixClient *client,
+                                            const char *tenant_id,
+                                            const char *ns,
+                                            uint32_t shard,
+                                            const uint8_t *entity_key,
+                                            size_t entity_key_len,
+                                            const struct FelixCommitOp *ops,
+                                            size_t count,
+                                            uint64_t expected_offset,
+                                            const struct FelixCancelToken *cancel,
+                                            FelixConditionalCallback callback,
+                                            void *user_data);
+
+// Publish a batch to one shard, only if it would land at exactly
+// `expected_offset`, the shard's next offset.
+//
+// The `count` payloads lie end to end in `data`, the i-th `lens[i]` bytes
+// long, as for `felix_client_publish_batch`; `count` must not be zero. `key`
+// routes the batch: null is shard 0, otherwise the key's shard. The batch is
+// written whole or not at all. Answers as `felix_client_commit_if` does: a
+// refusal is `FELIX_STATUS_OK` with `written` false and the shard's tail.
+//
+// A write: cancelled after it may have been sent, it completes with
+// `FELIX_STATUS_OUTCOME_UNKNOWN`.
+//
+// # Safety
+//
+// As for `felix_client_publish_batch`, with `stream` a NUL-terminated string.
+FelixStatus felix_client_publish_if(const struct FelixClient *client,
+                                    const char *tenant_id,
+                                    const char *ns,
+                                    const char *stream,
+                                    const uint8_t *key,
+                                    size_t key_len,
+                                    const uint8_t *data,
+                                    const size_t *lens,
+                                    size_t count,
+                                    uint64_t expected_offset,
+                                    const struct FelixCancelToken *cancel,
+                                    FelixConditionalCallback callback,
+                                    void *user_data);
+
+// `felix_client_publish_if` to `shard`, rather than the shard a key would
+// hash to. `expected_offset` is that shard's next offset.
+//
+// # Safety
+//
+// As for `felix_client_publish_if`.
+FelixStatus felix_client_publish_if_on_shard(const struct FelixClient *client,
+                                             const char *tenant_id,
+                                             const char *ns,
+                                             const char *stream,
+                                             uint32_t shard,
+                                             const uint8_t *data,
+                                             const size_t *lens,
+                                             size_t count,
+                                             uint64_t expected_offset,
+                                             const struct FelixCancelToken *cancel,
+                                             FelixConditionalCallback callback,
+                                             void *user_data);
+
+// Read the state under `key` on the shard `entity_key` routes to.
+//
+// `entity_key` is what the commits that wrote the key were routed by. A key
+// that was never written, or was deleted, is `FELIX_STATUS_OK` with
+// `has_value` false. `version` is the offset of the commit that wrote the
+// value; `as_of` is the offset of the last commit the answer reflects.
+//
+// # Safety
+//
+// `client` is a live client, the strings are NUL-terminated, `entity_key` is
+// null or valid for `entity_key_len` bytes, `cancel` is null or a live
+// token, and `callback` is safe to call with `user_data` from any thread.
+FelixStatus felix_client_state_get(const struct FelixClient *client,
+                                   const char *tenant_id,
+                                   const char *ns,
+                                   const char *stream,
+                                   const uint8_t *entity_key,
+                                   size_t entity_key_len,
+                                   const char *key,
+                                   const struct FelixCancelToken *cancel,
+                                   FelixStateCallback callback,
+                                   void *user_data);
+
+// `felix_client_state_get` on `shard`, for state written with
+// `felix_client_commit_on_shard`.
+//
+// # Safety
+//
+// As for `felix_client_state_get`, without an entity key.
+FelixStatus felix_client_state_get_on_shard(const struct FelixClient *client,
+                                            const char *tenant_id,
+                                            const char *ns,
+                                            const char *stream,
+                                            uint32_t shard,
+                                            const char *key,
+                                            const struct FelixCancelToken *cancel,
+                                            FelixStateCallback callback,
+                                            void *user_data);
 
 // The message for the last call on this thread that did not return
 // `FELIX_STATUS_OK`, or null if that call succeeded.

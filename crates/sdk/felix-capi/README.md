@@ -40,7 +40,8 @@ shard and `felix_client_subscribe_sharded` for all of them),
 `felix_subscription_next`, `felix_sharded_next` and
 `felix_client_offset_for_time`, the group calls (`felix_client_group_*` and
 `felix_client_stream_shards`), and the cache calls (`felix_client_cache_*`,
-`felix_client_counter_*`, `felix_client_watch_cache*` and `felix_cache_watch_*`). Each takes a callback, a `void *user_data`
+`felix_client_counter_*`, `felix_client_watch_cache*` and `felix_cache_watch_*`), and the commit calls (`felix_client_commit*`,
+`felix_client_publish_if*` and `felix_client_state_get*`). Each takes a callback, a `void *user_data`
 passed back to it untouched, and an optional `FelixCancelToken`.
 
 The rules are the same for every function:
@@ -257,6 +258,37 @@ binding. After `FELIX_WATCH_LAGGED` on a sharded watch the other shards keep
 delivering; to get the lagged shard back, reopen with the offsets from
 `felix_cache_watch_resume_offsets`, which already account for the lag.
 
+### Atomic commits
+
+A commit is an array of `FelixCommitOp` (`FELIX_COMMIT_PUBLISH`,
+`FELIX_COMMIT_ENQUEUE`, `FELIX_COMMIT_PUT`, `FELIX_COMMIT_DELETE`) written as one
+record on the shard that owns an entity: every reader sees the event at the
+commit's offset and the state it wrote at the same version. It must hold exactly
+one event and every operation must name that event's stream. Anything else is
+`FELIX_STATUS_INVALID_ARGUMENT` at the call, with the callback never run. An
+operation's `key` is read only for a put or delete, and its `data` only for a
+publish, enqueue or put. Everything is copied before the call returns.
+
+- `felix_client_commit` routes by `entity_key`; `felix_client_commit_on_shard`
+  names the shard. The callback gets the commit's `offset`.
+- `felix_client_commit_if`, `_commit_if_on_shard`, `felix_client_publish_if` and
+  `_publish_if_on_shard` write only if the shard's next offset is
+  `expected_offset`. A refusal is an answer: `FELIX_STATUS_OK`, `written` false,
+  and the shard's tail in `offset`. A conditional publish takes the payload
+  arrays of `felix_client_publish_batch` and at least one record.
+- `felix_client_state_get` and `_state_get_on_shard` fill a borrowed
+  `FelixStateValue`: `has_value` is false for a key never written or deleted,
+  `version` is the offset of the commit that wrote it, and `as_of` the last
+  commit the answer reflects. `felix_client_state_get` takes the `entity_key`
+  the commits were routed by.
+- Commits are writes: `FELIX_STATUS_OUTCOME_UNKNOWN` on a late cancel, and not
+  sent again. `FELIX_STATUS_UNSUPPORTED` means the broker does not advertise
+  commits; nothing was sent.
+
+For a C# binding, build the `FelixCommitOp` array in pinned memory for the call
+only, since the library copies it, and copy the state's value inside the
+callback.
+
 ### Why callbacks, and why pull
 
 A pollable completion handle would still need a notification to complete a
@@ -277,9 +309,10 @@ mutex and condition variable, as [`tests/c/pubsub.c`](tests/c/pubsub.c)
 shows, and one surface keeps every later operation to one function.
 
 This covers connect, every publish the Rust cluster client offers except the
-idempotent and conditional ones, subscribing to one shard or to all of them,
-groups on a shard, and caches, counters and cache watches. Event publisher and
-timestamp fields, commits and the sharded group come later.
+idempotent ones, subscribing to one shard or to all of them,
+groups on a shard, caches, counters and cache watches, and atomic commits with
+conditional publishes. Event publisher and timestamp fields, idempotent producers
+and the sharded group come later.
 
 ## The header
 
@@ -292,5 +325,5 @@ test fails while the two differ.
 `task capi:test` compiles [`tests/c/pubsub.c`](tests/c/pubsub.c) against the
 header, links it against both the shared and the static library, and runs the
 checks that need no broker. `task capi:test -- fixture` also runs the publish,
-batch, subscribe, group and cache scenarios against `felix-cluster client-fixture`, which CI does
+batch, subscribe, group, cache and commit scenarios against `felix-cluster client-fixture`, which CI does
 on every pull request.
