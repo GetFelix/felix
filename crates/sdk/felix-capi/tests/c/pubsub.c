@@ -565,6 +565,95 @@ static bool addr_at(const char *addrs, size_t index, char *out, size_t cap) {
   return true;
 }
 
+/* ---- sharded groups, stream-wide group admin, connect options ---------- */
+
+#define MAX_SHARDS 8
+
+struct srec {
+  uint32_t shard;
+  uint64_t offset;
+  uint32_t attempts;
+  char payload[96];
+  bool has_timestamp;
+  uint64_t timestamp_micros;
+  size_t publisher_len;
+};
+
+/* One call's result; each callback fills the fields it reports. */
+struct pres {
+  struct waiter w;
+  struct srec records[MAX_SHARDS * 2];
+  size_t count;
+  FelixGroupPosition positions[MAX_SHARDS];
+  FelixGroupInfo infos[MAX_SHARDS];
+  bool existed;
+};
+
+static void pres_init(struct pres *r) {
+  memset(r, 0, sizeof *r);
+  waiter_init(&r->w);
+}
+
+static void on_sharded_group(void *user_data, FelixStatus status,
+                             const char *message, FelixShardedGroup *group) {
+  finish(user_data, status, message, group);
+}
+
+static void on_sharded_poll(void *user_data, FelixStatus status,
+                            const char *message,
+                            const FelixShardedGroupRecord *records,
+                            size_t count) {
+  struct pres *r = user_data;
+  r->count = count;
+  for (size_t i = 0; i < count && i < MAX_SHARDS * 2; i++) {
+    struct srec *out = &r->records[i];
+    const FelixGroupRecord *in = &records[i].record;
+    out->shard = records[i].shard;
+    out->offset = in->offset;
+    out->attempts = in->attempts;
+    size_t len = in->payload_len;
+    if (len >= sizeof out->payload) {
+      len = sizeof out->payload - 1;
+    }
+    if (len) {
+      memcpy(out->payload, in->payload, len);
+    }
+    out->payload[len] = '\0';
+    out->has_timestamp = in->has_timestamp;
+    out->timestamp_micros = in->timestamp_micros;
+    out->publisher_len = in->publisher_len;
+  }
+  finish(&r->w, status, message, NULL);
+}
+
+static void on_positions(void *user_data, FelixStatus status,
+                         const char *message,
+                         const FelixGroupPosition *positions, size_t count) {
+  struct pres *r = user_data;
+  r->count = count;
+  for (size_t i = 0; i < count && i < MAX_SHARDS; i++) {
+    r->positions[i] = positions[i];
+  }
+  finish(&r->w, status, message, NULL);
+}
+
+static void on_infos(void *user_data, FelixStatus status, const char *message,
+                     const FelixGroupInfo *infos, size_t count) {
+  struct pres *r = user_data;
+  r->count = count;
+  for (size_t i = 0; i < count && i < MAX_SHARDS; i++) {
+    r->infos[i] = infos[i];
+  }
+  finish(&r->w, status, message, NULL);
+}
+
+static void on_stream_deleted(void *user_data, FelixStatus status,
+                              const char *message, bool existed) {
+  struct pres *r = user_data;
+  r->existed = existed;
+  finish(&r->w, status, message, NULL);
+}
+
 static void offline(void) {
   struct waiter w;
   waiter_init(&w);
@@ -661,6 +750,57 @@ static void offline(void) {
   status = felix_producer_close(NULL, -1, NULL, on_producer_done, &w);
   CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "null producer close gave %d",
         (int)status);
+  status = felix_client_connect_with(NULL, "t1", "token", NULL, NULL, NULL,
+                                     NULL, on_connect, &w);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "null addrs to connect_with gave %d",
+        (int)status);
+  {
+    FelixConnectOptions bad = {.size = 0};
+    status = felix_client_connect_with("127.0.0.1:1", "t1", "token", NULL, NULL,
+                                       &bad, NULL, on_connect, &w);
+    CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "options of size 0 gave %d",
+          (int)status);
+  }
+  status = felix_client_group_sharded(NULL, "t", "n", "s", "g", NULL,
+                                      on_sharded_group, &w);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "null sharded group client gave %d",
+        (int)status);
+  status = felix_sharded_group_poll(NULL, 1, NULL, on_sharded_poll, &w);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "null sharded group gave %d",
+        (int)status);
+  status = felix_sharded_group_shards(NULL, NULL);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "null sharded group shards gave %d",
+        (int)status);
+  status = felix_client_group_create_stream(NULL, "t", "n", "s", "g",
+                                            FELIX_START_LATEST, 0, NULL,
+                                            on_positions, &w);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "null create_stream client gave %d",
+        (int)status);
+  status = felix_client_group_seek_stream(NULL, "t", "n", "s", "g",
+                                          FELIX_START_LATEST, 0, NULL,
+                                          on_positions, &w);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "null seek_stream client gave %d",
+        (int)status);
+  status = felix_client_group_describe_stream(NULL, "t", "n", "s", "g", NULL,
+                                              on_infos, &w);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "null describe_stream client gave %d",
+        (int)status);
+  status = felix_client_group_delete_stream(NULL, "t", "n", "s", "g", NULL,
+                                            on_stream_deleted, &w);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "null delete_stream client gave %d",
+        (int)status);
+  {
+    const uint8_t *data = NULL;
+    size_t len = 0;
+    status = felix_event_publisher(NULL, &data, &len);
+    CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "null event publisher gave %d",
+          (int)status);
+    bool has = false;
+    uint64_t micros = 0;
+    status = felix_event_timestamp(NULL, &micros, &has);
+    CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "null event timestamp gave %d",
+          (int)status);
+  }
   uint64_t producer_id = 0;
   status = felix_producer_id(NULL, &producer_id);
   CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "null producer id gave %d",
@@ -681,6 +821,7 @@ static void offline(void) {
   felix_client_free(NULL);
   felix_subscription_free(NULL);
   felix_sharded_subscription_free(NULL);
+  felix_sharded_group_free(NULL);
   felix_event_free(NULL);
   felix_cancel_token_cancel(NULL);
   felix_cancel_token_free(NULL);
