@@ -79,6 +79,12 @@ let cfg = ClientConfig::from_env_or_yaml(quinn, Some("client.yml"))?;
   - An acked publish holds its budget until the broker's ack arrives (acked
     publishes are pipelined on the stream), so the budget also caps acked
     data in flight as well as data queued for writing.
+  - Sizing it: once the broker is busy, more data in flight adds no
+    throughput, only waiting. By Little's law the wait is bytes in flight ÷
+    throughput, so halving the budget past that point halves ack latency at the
+    same throughput. Raise it only while throughput still rises with it. The
+    [v0.6.0 performance write-up](../docs-site/src/content/docs/features/v060-performance.md)
+    works the numbers.
 - `publish_sharding` (env: `FELIX_PUB_SHARDING`)
   - Sharding mode across publish streams.
   - Values: `rr` or `hash_stream`.
