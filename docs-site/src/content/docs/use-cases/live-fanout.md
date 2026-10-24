@@ -38,7 +38,7 @@ Each subscription has its own bounded queue and its own QUIC stream with its own
 
 On a durable stream the subscriber can tell. Every event carries its log offset, and a queue overflow ends the subscription with `subscription_lagged` and the offset where the drop began. `ClusterClient` resubscribes there and replays the gap from the log. NATS core and Redis pub/sub close the connection and leave the page to refetch everything.
 
-The push path reaches many readers of the same data without a per-reader fetch. A publish is encoded once and every subscriber shares that one encoded frame, and each subscriber has its own bounded queue, so adding readers does not add encoding work and a slow reader never blocks the publisher. The rate Felix delivers grows with the number of subscribers, while the rate publishers send stays the same.
+The push path reaches many readers of the same data without a per-reader fetch. A publish is encoded once and every subscriber shares that one encoded frame, and each subscriber has its own bounded queue, so adding readers does not add encoding work and a slow reader never blocks the publisher. Delivered throughput counts every copy handed to a subscriber, so it is the publish rate times the number of readers, and the publishers' own rate does not change as readers join.
 
 Kafka's answer to the same load is a relay tier that reads the log once and pushes to clients. Here the broker is that tier for QUIC clients, and [the gateway](/use-cases/browser-realtime/) is the WebSocket edge for browsers.
 
