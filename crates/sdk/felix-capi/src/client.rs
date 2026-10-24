@@ -199,30 +199,66 @@ impl Drop for Shared {
         let Some(runtime) = self.runtime.take() else {
             return;
         };
-        let client = self.client.take();
-        let cancel = self.cancel.clone();
-        let tracker = self.tracker.clone();
-        let teardown = move || {
-            // Cancel first and let the tasks see it, so every pending call
-            // reports through its own cancel path rather than being dropped.
-            cancel.cancel();
-            tracker.close();
-            runtime.block_on(async {
-                let _ = tokio::time::timeout(SHUTDOWN_GRACE, tracker.wait()).await;
-                // The client's connections close through the runtime.
-                drop(client);
-            });
-            runtime.shutdown_timeout(SHUTDOWN_GRACE);
+        let teardown = Teardown {
+            runtime: Some(runtime),
+            client: self.client.take(),
+            cancel: self.cancel.clone(),
+            tracker: self.tracker.clone(),
         };
         // The last handle can be freed from a callback, on one of this
         // runtime's own threads, or from inside some other runtime. Blocking
         // on a runtime there panics, so the teardown moves to its own thread.
+        // If that thread cannot start, dropping `Teardown` still cancels.
         if Handle::try_current().is_ok() {
             let _ = std::thread::Builder::new()
                 .name("felix-capi-shutdown".to_string())
-                .spawn(teardown);
+                .spawn(move || teardown.run());
         } else {
-            teardown();
+            teardown.run();
+        }
+    }
+}
+
+/// Stopping a runtime once its last handle is gone.
+struct Teardown {
+    runtime: Option<Runtime>,
+    client: Option<Arc<ClusterClient>>,
+    cancel: CancellationToken,
+    tracker: TaskTracker,
+}
+
+impl Teardown {
+    /// Must not run inside a runtime: it blocks on this one.
+    fn run(mut self) {
+        let Some(runtime) = self.runtime.take() else {
+            return;
+        };
+        // Cancel first and let the tasks see it, so every pending call
+        // reports through its own cancel path rather than being dropped.
+        self.cancel.cancel();
+        self.tracker.close();
+        let client = self.client.take();
+        let tracker = self.tracker.clone();
+        runtime.block_on(async {
+            let _ = tokio::time::timeout(SHUTDOWN_GRACE, tracker.wait()).await;
+            // The client's connections close through the runtime.
+            drop(client);
+        });
+        runtime.shutdown_timeout(SHUTDOWN_GRACE);
+    }
+}
+
+impl Drop for Teardown {
+    /// Reached only when `run` never did. Nothing here blocks, so it is safe
+    /// inside a runtime; tasks dropped by the shutdown still call back.
+    fn drop(&mut self) {
+        if let Some(runtime) = self.runtime.take() {
+            self.cancel.cancel();
+            {
+                let _enter = runtime.enter();
+                drop(self.client.take());
+            }
+            runtime.shutdown_background();
         }
     }
 }
@@ -268,6 +304,10 @@ pub unsafe extern "C" fn felix_client_connect(
                 optional_str(ca_file, "ca_file")?,
             )
         };
+        // Checked again by `Completion::new`; here it saves starting a runtime.
+        if callback.is_none() {
+            return Err(Failure::invalid("callback is null"));
+        }
         let seeds = parse_addrs(addrs)?;
         let server_name = server_name.to_string();
 
@@ -331,8 +371,10 @@ pub unsafe extern "C" fn felix_client_connect(
 /// Its pending calls complete with `FELIX_STATUS_CANCELLED` (a publish that
 /// may have been sent, with `FELIX_STATUS_OUTCOME_UNKNOWN`), possibly after
 /// this returns. When it is the last handle on its runtime, this waits up to
-/// a few seconds for those calls to report and the runtime to stop.
-/// Subscriptions made from it keep working until they are freed.
+/// a few seconds for those calls to report and the runtime to stop, unless
+/// it is called from a callback or another async runtime: then it returns at
+/// once and a library thread finishes the teardown. Subscriptions made from
+/// it keep working until they are freed.
 ///
 /// # Safety
 ///

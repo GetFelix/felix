@@ -91,8 +91,9 @@ typedef void (*FelixEventCallback)(void *user_data,
 // The broker ended the subscription. No more events will arrive on it.
 #define FELIX_STATUS_CLOSED 2
 
-// The call was cancelled, through its token or by freeing its handle,
-// before it did anything. A publish cancelled after it may have been sent
+// The call was cancelled, through its token or by freeing its handle, and
+// left nothing behind: a connection or subscription made as it was
+// cancelled is closed. A publish cancelled after it may have been sent
 // reports `FELIX_STATUS_OUTCOME_UNKNOWN` instead.
 #define FELIX_STATUS_CANCELLED 3
 
@@ -197,8 +198,10 @@ FelixStatus felix_client_connect(const char *addrs,
 // Its pending calls complete with `FELIX_STATUS_CANCELLED` (a publish that
 // may have been sent, with `FELIX_STATUS_OUTCOME_UNKNOWN`), possibly after
 // this returns. When it is the last handle on its runtime, this waits up to
-// a few seconds for those calls to report and the runtime to stop.
-// Subscriptions made from it keep working until they are freed.
+// a few seconds for those calls to report and the runtime to stop, unless
+// it is called from a callback or another async runtime: then it returns at
+// once and a library thread finishes the teardown. Subscriptions made from
+// it keep working until they are freed.
 //
 // # Safety
 //

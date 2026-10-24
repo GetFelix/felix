@@ -21,8 +21,9 @@ pub const FELIX_STATUS_OK: FelixStatus = 0;
 pub const FELIX_STATUS_TIMEOUT: FelixStatus = 1;
 /// The broker ended the subscription. No more events will arrive on it.
 pub const FELIX_STATUS_CLOSED: FelixStatus = 2;
-/// The call was cancelled, through its token or by freeing its handle,
-/// before it did anything. A publish cancelled after it may have been sent
+/// The call was cancelled, through its token or by freeing its handle, and
+/// left nothing behind: a connection or subscription made as it was
+/// cancelled is closed. A publish cancelled after it may have been sent
 /// reports `FELIX_STATUS_OUTCOME_UNKNOWN` instead.
 pub const FELIX_STATUS_CANCELLED: FelixStatus = 3;
 /// A required pointer was null, a string was not UTF-8, or a value was out

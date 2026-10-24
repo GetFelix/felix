@@ -97,6 +97,23 @@ fn a_panic_in_the_task_reports_a_panic() {
     assert!(calls[0].message.is_some());
 }
 
+/// The same, through a real task: tokio catches the panic and drops the
+/// future while unwinding.
+#[tokio::test]
+async fn a_panicking_task_reports_a_panic_once() {
+    let calls: &'static Mutex<Vec<Seen>> = Box::leak(Box::new(Mutex::new(Vec::new())));
+    let done = completion(calls);
+    let joined = tokio::spawn(async move {
+        let _done = done;
+        panic!("boom");
+    })
+    .await;
+    assert!(joined.unwrap_err().is_panic());
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].status, FELIX_STATUS_PANIC);
+}
+
 #[test]
 fn a_null_callback_is_refused_and_never_called() {
     let failure = Completion::<Published>::new(None, std::ptr::null_mut())

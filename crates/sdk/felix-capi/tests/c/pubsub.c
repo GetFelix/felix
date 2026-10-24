@@ -51,9 +51,6 @@ static int failures = 0;
     }                                                                          \
   } while (0)
 
-/* Not a FelixStatus: the callback did not run in time. */
-#define WAIT_TIMED_OUT (-1)
-
 struct waiter {
   pthread_mutex_t mu;
   pthread_cond_t cv;
@@ -112,7 +109,7 @@ static void on_event(void *user_data, FelixStatus status, const char *message,
   finish(user_data, status, message, event);
 }
 
-/* The callback's status, or WAIT_TIMED_OUT. */
+/* The callback's status. Exits the test if it does not arrive in time. */
 static FelixStatus wait_for(struct waiter *w, int ms) {
   struct timespec deadline;
   clock_gettime(CLOCK_REALTIME, &deadline);
@@ -127,8 +124,15 @@ static FelixStatus wait_for(struct waiter *w, int ms) {
   while (w->calls == 0 && rc != ETIMEDOUT) {
     rc = pthread_cond_timedwait(&w->cv, &w->mu, &deadline);
   }
-  FelixStatus status = w->calls ? w->status : WAIT_TIMED_OUT;
+  int calls = w->calls;
+  FelixStatus status = w->status;
   pthread_mutex_unlock(&w->mu);
+  if (!calls) {
+    /* The call is still pending and would call back into this waiter, which
+       lives on the caller's stack. Stop here rather than let it. */
+    fprintf(stderr, "FAIL: no callback within %d ms\n", ms);
+    exit(1);
+  }
   return status;
 }
 
@@ -228,8 +232,7 @@ static void offline(void) {
                                 on_connect, &w);
   CHECK(status == FELIX_STATUS_OK, "connect was refused: %d", (int)status);
   status = wait_for(&w, WAIT_MS);
-  CHECK(status != FELIX_STATUS_OK && status != FELIX_STATUS_PANIC &&
-            status != WAIT_TIMED_OUT,
+  CHECK(status != FELIX_STATUS_OK && status != FELIX_STATUS_PANIC,
         "connecting to a closed port gave %d", (int)status);
   CHECK(w.message[0] != '\0', "no message for a failed connect");
   waiter_destroy(&w);
@@ -364,32 +367,49 @@ static void pubsub(const struct fixture *f, const char *run) {
     return;
   }
 
-  /* Nothing has been published since the subscription started. A second
-     read while one is pending is refused; cancelling the first loses
-     nothing and leaves the subscription readable. */
+  /* Nothing has been published since the subscription started. */
   struct waiter w;
   waiter_init(&w);
-  FelixCancelToken *cancel = felix_cancel_token_new();
-  status = felix_subscription_next(sub, -1, cancel, on_event, &w);
-  CHECK(status == FELIX_STATUS_OK, "an idle read was refused: %d", (int)status);
-  status = felix_subscription_next(sub, 0, NULL, on_event, &w);
-  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "a second read gave %d",
-        (int)status);
-  felix_cancel_token_cancel(cancel);
-  felix_cancel_token_free(cancel);
-  status = wait_for(&w, WAIT_MS);
-  CHECK(status == FELIX_STATUS_CANCELLED && w.handle == NULL,
-        "a cancelled read gave %d", (int)status);
-  waiter_destroy(&w);
-
-  waiter_init(&w);
   status = felix_subscription_next(sub, 200, NULL, on_event, &w);
-  CHECK(status == FELIX_STATUS_OK, "a read after cancel was refused: %d",
-        (int)status);
+  CHECK(status == FELIX_STATUS_OK, "an idle read was refused: %d", (int)status);
   status = wait_for(&w, WAIT_MS);
   CHECK(status == FELIX_STATUS_TIMEOUT && w.handle == NULL,
         "an idle read gave %d", (int)status);
   waiter_destroy(&w);
+
+  /* A second read while one is pending is refused. A record published while
+     a read is pending, which is then cancelled, is not lost: either that read
+     got it, or the next one does. */
+  char racing[64];
+  snprintf(racing, sizeof racing, "c-%s-racing", run);
+  waiter_init(&w);
+  FelixCancelToken *cancel = felix_cancel_token_new();
+  status = felix_subscription_next(sub, -1, cancel, on_event, &w);
+  CHECK(status == FELIX_STATUS_OK, "a read was refused: %d", (int)status);
+  status = felix_subscription_next(sub, 0, NULL, on_event, &w);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "a second read gave %d",
+        (int)status);
+  status = publish(client, f, f->stream, racing, NULL, NULL, 0);
+  CHECK(status == FELIX_STATUS_OK, "the racing publish gave %d", (int)status);
+  felix_cancel_token_cancel(cancel);
+  felix_cancel_token_free(cancel);
+  status = wait_for(&w, WAIT_MS);
+  CHECK(status == FELIX_STATUS_OK || status == FELIX_STATUS_CANCELLED,
+        "a cancelled read gave %d", (int)status);
+  bool got = false;
+  if (status == FELIX_STATUS_OK) {
+    const uint8_t *data = NULL;
+    size_t len = 0;
+    felix_event_payload(w.handle, &data, &len);
+    got = len == strlen(racing) && memcmp(data, racing, len) == 0;
+    felix_event_free(w.handle);
+  }
+  waiter_destroy(&w);
+  if (!got) {
+    const char *one[1] = {racing};
+    uint64_t offset[1] = {0};
+    read_expected(sub, one, 1, offset);
+  }
 
   enum { COUNT = 10 };
   char payloads[COUNT][64];

@@ -72,8 +72,11 @@ The rules are the same for every function:
   `FELIX_STATUS_OUTCOME_UNKNOWN`. A token can be freed while calls hold it.
 - Callbacks for calls cancelled by a free may run after the free returns, so
   `user_data` must stay valid until they do. Freeing the last handle on a
-  client's runtime waits up to a few seconds for them. A process that exits
-  with handles still live gets no callbacks for their pending calls.
+  client's runtime waits up to a few seconds for them, except from a callback
+  or another async runtime, where a library thread finishes the teardown
+  after the free returns; do not unload the library before those callbacks
+  arrive. A process that exits with handles still live gets no callbacks for
+  their pending calls.
 - A panic inside the library becomes `FELIX_STATUS_PANIC`, from the call or
   through the callback.
 - Each client owns a small Tokio runtime, so the caller needs no async
@@ -82,7 +85,9 @@ The rules are the same for every function:
   which takes a timeout in milliseconds (negative waits indefinitely) and
   completes with an event, `FELIX_STATUS_TIMEOUT`, or `FELIX_STATUS_CLOSED`
   once the broker ends the stream. One read may be pending; a second is
-  refused. A timed-out or cancelled read loses no event.
+  refused. A timed-out or cancelled read loses no event. Events reach
+  callbacks in order when each read starts from the previous one's callback
+  or after it ran.
 
 For a C# binding: `bool` in a callback is one byte, so declare it `byte` in
 an `[UnmanagedCallersOnly]` signature, and catch every exception inside the
