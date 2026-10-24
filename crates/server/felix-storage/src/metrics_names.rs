@@ -33,13 +33,6 @@ pub const SYNC_DURATION_SECONDS: &str = "felix_storage_sync_duration_seconds";
 /// batch of N records counts N, whether one client sent it or the broker
 /// merged N publishes into one append.
 pub const SYNC_BATCH_APPENDS: &str = "felix_storage_sync_batch_appends";
-/// Replica-state files written: a raised accepted generation, a commit offset
-/// or a retention hold. Under `OnCommit` a follower writes one per batch that
-/// carries a new commit offset.
-pub const REPLICA_STATE_WRITES_TOTAL: &str = "felix_storage_replica_state_writes_total";
-/// Time to write one, including its two flushes and the rename.
-pub const REPLICA_STATE_WRITE_DURATION_SECONDS: &str =
-    "felix_storage_replica_state_write_duration_seconds";
 /// Flushes that failed. Any non-zero value means acknowledged durability is in
 /// doubt.
 pub const SYNC_FAILURES_TOTAL: &str = "felix_storage_sync_failures_total";

@@ -117,47 +117,6 @@ pub(super) struct Answered {
     /// Boxed: three more cursors make every event as large as this one.
     rode: Box<RideAlong>,
     cut: bool,
-    /// Every answer came from the copy the cursor describes.
-    checked: bool,
-}
-
-/// What the driver hands a shard's pass under way: that the next pass is
-/// wanted, and the answers of exchanges an earlier pass left behind.
-#[derive(Default)]
-pub(super) struct NextPass {
-    pub(super) wanted: tokio::sync::Notify,
-    answered: parking_lot::Mutex<Vec<Answered>>,
-}
-
-impl std::fmt::Debug for NextPass {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("NextPass")
-            .field("answered", &self.answered.lock().len())
-            .finish_non_exhaustive()
-    }
-}
-
-impl NextPass {
-    /// The answers measured at `generation` and `incarnation`, for the pass
-    /// to count. Any others stay for the driver to merge.
-    pub(super) fn take(&self, generation: u64, incarnation: u64) -> Vec<Shipped> {
-        let mut answered = self.answered.lock();
-        let (taken, kept) = std::mem::take(&mut *answered)
-            .into_iter()
-            .partition(|answer| {
-                answer.generation == generation && answer.incarnation == incarnation
-            });
-        *answered = kept;
-        taken
-            .into_iter()
-            .map(|answer: Answered| Shipped {
-                cursor: answer.cursor,
-                rode: *answer.rode,
-                cut: answer.cut,
-                checked: answer.checked,
-            })
-            .collect()
-    }
 }
 
 /// The driver's view of one shard it leads.
@@ -165,7 +124,7 @@ impl NextPass {
 struct ShardState {
     /// A pass is under way, holding the shard's cursors; told when the next
     /// one is wanted, so it stops waiting on followers that have not answered.
-    running: Option<Arc<NextPass>>,
+    running: Option<Arc<tokio::sync::Notify>>,
     /// Asked for a pass while one was under way, or while too many were.
     again: bool,
     /// Exchanges that ended while a pass held the cursors.
@@ -382,9 +341,9 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             return;
         };
         let state = self.states.entry(key.clone()).or_default();
-        if let Some(next) = &state.running {
+        if let Some(next_wanted) = &state.running {
             state.again = true;
-            next.wanted.notify_one();
+            next_wanted.notify_one();
             return;
         }
         if self.passes.len() + self.fences.len() >= SHARD_CONCURRENCY {
@@ -402,7 +361,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             {
                 return;
             }
-            state.running = Some(Arc::default());
+            state.running = Some(Arc::new(tokio::sync::Notify::new()));
             let cx = self.cx;
             let (key, route) = (key.clone(), route.clone());
             let local = cx.router.local_node_id();
@@ -458,16 +417,16 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             return;
         };
         self.alone.remove(key);
-        let next = Arc::new(NextPass::default());
+        let next_wanted = Arc::new(tokio::sync::Notify::new());
         let state = self.states.entry(key.clone()).or_default();
-        state.running = Some(Arc::clone(&next));
+        state.running = Some(Arc::clone(&next_wanted));
         let busy: HashSet<String> = self
             .busy
             .get(key)
             .map(|nodes| nodes.keys().cloned().collect())
             .unwrap_or_default();
         self.passes
-            .push(self.pass(key.clone(), route.clone(), entry, aux, busy, next));
+            .push(self.pass(key.clone(), route.clone(), entry, aux, busy, next_wanted));
     }
 
     /// Report a shard led here alone at a new generation, and again each tick
@@ -565,7 +524,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         entry: ShardCursors,
         aux: AuxCursors,
         busy: HashSet<String>,
-        next: Arc<NextPass>,
+        next_wanted: Arc<tokio::sync::Notify>,
     ) -> PassFuture<'a> {
         let cx = self.cx;
         let scan = self.scan;
@@ -583,7 +542,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                 entry,
                 aux,
                 &busy,
-                Stragglers::HandOff { next },
+                Stragglers::HandOff { next_wanted },
             )
             .await;
             (scan, pass)
@@ -619,7 +578,6 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             lag,
             tail,
             copying,
-            again,
             drain_pending,
             behind,
             ..
@@ -648,9 +606,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         self.dead_letters.insert(key.clone(), aux.dead_letters);
         self.counters.insert(key.clone(), aux.counters);
         let state = self.states.get_mut(&key).expect("checked above");
-        if let Some(next) = state.running.take() {
-            state.held.append(&mut next.answered.lock());
-        }
+        state.running = None;
         state.last = Some(LastPass {
             scan,
             halted,
@@ -658,7 +614,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             behind,
             drain_pending,
         });
-        let mut again = std::mem::take(&mut state.again) || copying || again;
+        let mut again = std::mem::take(&mut state.again) || copying;
         let held = std::mem::take(&mut state.held);
         for answered in held {
             again |= self.merge(answered);
@@ -705,9 +661,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         let Some(state) = self.states.get_mut(&key) else {
             return;
         };
-        if let Some(next) = state.running.take() {
-            state.held.append(&mut next.answered.lock());
-        }
+        state.running = None;
         state.fence_pending = !opened;
         let failures = match state.fence_failures {
             _ if opened => 0,
@@ -761,11 +715,11 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         let Some(state) = self.states.get_mut(&key) else {
             return;
         };
-        if let Some(next) = &state.running {
+        if let Some(next_wanted) = &state.running {
             // The pass under way may be waiting for a majority this answer
-            // completes, and counts it; see the wait in `replicate_shard`.
-            next.answered.lock().push(answered);
-            next.wanted.notify_one();
+            // completes; see the wait in `replicate_shard`.
+            next_wanted.notify_one();
+            state.held.push(answered);
             return;
         }
         if self.merge(answered) {
@@ -774,15 +728,10 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
     }
 
     /// Put an ended exchange's cursor where its stale copy is. True when the
-    /// follower moved, a copy was cut at its slice, or the follower answered
-    /// for more than the mark counts: each is a pass's worth of work to do now
-    /// rather than at the next wake. A follower that did not answer is left
-    /// for the next wake, or a peer that fails fast would be dialled in a loop.
-    ///
-    /// The last case is a level follower asked again for an answer the mark
-    /// can count, which moves no cursor. Only a pass counts an answer, and
-    /// with every publisher waiting on the mark no append is coming to start
-    /// one.
+    /// follower moved, or a copy was cut at its slice: either way there is a
+    /// pass's worth of work to do now rather than at the next wake. A
+    /// follower that did not answer is left for the next wake, or a peer that
+    /// fails fast would be dialled in a loop.
     fn merge(&mut self, answered: Answered) -> bool {
         let Answered {
             key,
@@ -791,16 +740,9 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             cursor,
             rode,
             cut,
-            checked,
         } = answered;
-        let mark = self
-            .cx
-            .marks
-            .offset_at(&watch_key(&key), incarnation, generation)
-            .unwrap_or(0);
-        let counts_for_more = checked && cursor.halted.is_none() && cursor.confirmed > mark;
         let at = (generation, incarnation);
-        let mut moved = put_back(self.streams.get_mut(&key), at, cursor) || counts_for_more;
+        let mut moved = put_back(self.streams.get_mut(&key), at, cursor);
         for (entries, cursor) in [
             (&mut self.group, rode.group),
             (&mut self.dead_letters, rode.dead_letters),
@@ -865,10 +807,7 @@ async fn answered(
     exchange: Exchange<'_>,
 ) -> Answered {
     let Shipped {
-        cursor,
-        rode,
-        cut,
-        checked,
+        cursor, rode, cut, ..
     } = exchange.await;
     Answered {
         key,
@@ -877,6 +816,5 @@ async fn answered(
         cursor,
         rode: Box::new(rode),
         cut,
-        checked,
     }
 }
