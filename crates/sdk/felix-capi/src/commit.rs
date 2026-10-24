@@ -281,28 +281,36 @@ unsafe fn read_ops(ops: *const FelixCommitOp, count: usize) -> Result<Vec<Commit
 /// As for [`read_ops`], for one operation.
 unsafe fn read_op(index: usize, op: &FelixCommitOp) -> Result<CommitOp, Failure> {
     let name = |field: &str| format!("ops[{index}].{field}");
-    // SAFETY: the pointers are the caller's, per the contract.
-    let (stream, payload) = unsafe {
+    // The kind decides which fields the caller filled in, so it is checked
+    // first and nothing it says to ignore is dereferenced.
+    if !matches!(
+        op.kind,
+        FELIX_COMMIT_PUBLISH | FELIX_COMMIT_ENQUEUE | FELIX_COMMIT_PUT | FELIX_COMMIT_DELETE
+    ) {
+        return Err(Failure::invalid(format!(
+            "ops[{index}].kind {} is not a FELIX_COMMIT_* value",
+            op.kind
+        )));
+    }
+    // SAFETY: the pointers the kind uses are the caller's, per the contract.
+    unsafe {
         let stream = required_str(op.stream, &name("stream"))?.to_string();
-        let payload = bytes(op.data, op.data_len, &name("data"))?;
-        (stream, Bytes::copy_from_slice(payload))
-    };
-    match op.kind {
-        FELIX_COMMIT_PUBLISH => Ok(CommitOp::publish(stream, payload)),
-        FELIX_COMMIT_ENQUEUE => Ok(CommitOp::enqueue(stream, payload)),
-        FELIX_COMMIT_PUT => {
-            // SAFETY: as above.
-            let key = unsafe { required_str(op.key, &name("key"))? };
-            Ok(CommitOp::put(stream, key, payload))
-        }
-        FELIX_COMMIT_DELETE => {
-            // SAFETY: as above.
-            let key = unsafe { required_str(op.key, &name("key"))? };
-            Ok(CommitOp::delete(stream, key))
-        }
-        other => Err(Failure::invalid(format!(
-            "ops[{index}].kind {other} is not a FELIX_COMMIT_* value"
-        ))),
+        let payload = || -> Result<Bytes, Failure> {
+            Ok(Bytes::copy_from_slice(bytes(
+                op.data,
+                op.data_len,
+                &name("data"),
+            )?))
+        };
+        Ok(match op.kind {
+            FELIX_COMMIT_PUBLISH => CommitOp::publish(stream, payload()?),
+            FELIX_COMMIT_ENQUEUE => CommitOp::enqueue(stream, payload()?),
+            FELIX_COMMIT_PUT => {
+                let key = required_str(op.key, &name("key"))?;
+                CommitOp::put(stream, key, payload()?)
+            }
+            _ => CommitOp::delete(stream, required_str(op.key, &name("key"))?),
+        })
     }
 }
 

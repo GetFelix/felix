@@ -109,6 +109,25 @@ fn bad_operations_are_named() {
 }
 
 #[test]
+fn fields_a_kind_ignores_are_not_read() {
+    // Null with a length would be refused if it were read.
+    let garbage = |kind| FelixCommitOp {
+        data: ptr::null(),
+        data_len: 7,
+        ..op(kind, c"s", Some(c"k"), b"")
+    };
+    let parsed = read(&[
+        op(FELIX_COMMIT_PUBLISH, c"s", None, b"a"),
+        garbage(FELIX_COMMIT_DELETE),
+    ])
+    .expect("a delete's data is ignored");
+    assert_eq!(parsed[1], CommitOp::delete("s", "k"));
+
+    let message = refused(&[garbage(9)]);
+    assert!(message.contains("ops[0].kind"), "{message}");
+}
+
+#[test]
 fn a_null_array_with_a_count_is_refused() {
     // SAFETY: a null array is rejected before it is read.
     let failure = unsafe { read_ops(ptr::null(), 2) }.unwrap_err();

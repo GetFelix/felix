@@ -553,9 +553,9 @@ typedef void (*FelixOffsetCallback)(void *user_data,
 // idempotent.
 #define FELIX_STATUS_OUTCOME_UNKNOWN 27
 
-// The broker does not serve the call, such as an atomic commit against a
-// broker that did not advertise commits. Nothing was sent; retrying the same
-// call will not help.
+// The broker does not advertise atomic commits, so a commit was not sent;
+// retrying the same call will not help. Other missing broker features are
+// still reported as `FELIX_STATUS_ERROR`.
 #define FELIX_STATUS_UNSUPPORTED 28
 
 // Only records published after the subscription is made.

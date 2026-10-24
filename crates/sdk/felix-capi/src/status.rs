@@ -52,9 +52,9 @@ pub const FELIX_STATUS_OVERLOADED: FelixStatus = 26;
 /// The write may or may not have been applied. Resend only if it is
 /// idempotent.
 pub const FELIX_STATUS_OUTCOME_UNKNOWN: FelixStatus = 27;
-/// The broker does not serve the call, such as an atomic commit against a
-/// broker that did not advertise commits. Nothing was sent; retrying the same
-/// call will not help.
+/// The broker does not advertise atomic commits, so a commit was not sent;
+/// retrying the same call will not help. Other missing broker features are
+/// still reported as `FELIX_STATUS_ERROR`.
 pub const FELIX_STATUS_UNSUPPORTED: FelixStatus = 28;
 
 /// The status for an error from the Rust client.
