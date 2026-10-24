@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792864869718,
+  "lastUpdate": 1792865903444,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -34892,6 +34892,58 @@ window.BENCHMARK_DATA = {
             "range": "5617.57",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 816930.53\nmean: 816011.40\nstdev: 5617.57\ncv: 0.69%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3ea6f51b85fd784801c232078b90e3efecb386b1",
+          "message": "feat(capi): sharded and per-shard subscribe, offset_for_time, close reasons (#1493) (#1503)\n\n* feat(capi): sharded and per-shard subscribe, offset_for_time, close reasons (#1493)\n* test(capi): drain replay before the pending-read check; doc fixes\n* test(capi): size payload buffers for gcc's format-truncation check",
+          "timestamp": "2026-10-24T18:14:32Z",
+          "tree_id": "8f742fe89e8cc0002cfcc05a5c5d75512307594a",
+          "url": "https://github.com/GetFelix/felix/commit/3ea6f51b85fd784801c232078b90e3efecb386b1"
+        },
+        "date": 1792865902611,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 510933.74,
+            "range": "34784.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 510933.74\nmean: 519908.34\nstdev: 34784.46\ncv: 6.69%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 510933.74,
+            "range": "34784.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 510933.74\nmean: 519908.34\nstdev: 34784.46\ncv: 6.69%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 122966.89,
+            "range": "2613.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 122966.89\nmean: 121997.79\nstdev: 2613.81\ncv: 2.14%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1229668.89,
+            "range": "26138.08",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1229668.89\nmean: 1219977.92\nstdev: 26138.08\ncv: 2.14%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
