@@ -52,7 +52,13 @@ batch-1 rows moved between -5.4% and +4.5%, on one trial each
   In-memory publishes take 160 to 180 µs.
 - **Felix has higher throughput than NATS JetStream in every acked and durable
   pair**, from 1.2 times for in-memory single messages to 14.8 times for durable
-  batches of small messages. **Core NATS has about 1.35 times Felix's
+  batches of small messages. The two largest ratios, 14.8 and 9.5 times, are
+  partly the publishers' windows rather than the servers: Felix kept more
+  requests in flight than `nats bench` did in those pairs, and how much of each
+  ratio that accounts for has not been measured (see
+  [How each pair is matched](#how-each-pair-is-matched-and-where-it-still-differs)).
+  A rerun with matched windows is tracked in #1507.
+  **Core NATS has about 1.35 times Felix's
   throughput for fire-and-forget.** With one publish in flight, NATS answers
   sooner in every pair, by 13 to 80 µs at p50. Both ran on the same VMs,
   interleaved.
@@ -733,7 +739,9 @@ What the pairs show:
   window rather than the server. In the 4 KiB batch pair Felix runs at the
   disk's rate on under 4 cores.
 - **Periodic fsync narrows the gap at 4 KiB** to 1.25×, as neither side waits
-  on the disk. At 256 B Felix still leads by 9.5×.
+  on the disk. At 256 B Felix leads by 9.5×, but Felix kept 4,096 messages
+  outstanding per client against NATS's 1,024, so part of that gap is the
+  publisher's window.
 - **In memory is close**, 1.2× at either payload, and Felix uses more CPU to
   get there: 7.4 cores against 5.3 to 6.0.
 - **Core NATS wins fire-and-forget by 1.34 to 1.39×.** With no subscriber,
