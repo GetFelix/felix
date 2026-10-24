@@ -2552,10 +2552,23 @@ follower is behind it:
   from that copy until a newer leader has shipped to it, since counted in the
   successor's majority its short log could stand in for the follower that
   holds the lost records. It refuses with `Unavailable`, which the successor
-  retries. Not in a set of two: there the other copy holds every record the
-  two acknowledged, and refusing would leave no majority at all. Any other
-  size is refused, since the set that acknowledged may not be the one the
-  routes show now, as during a replacement.
+  retries. The one exception is a copy whose losses a set of two
+  acknowledged, since the other copy then holds every one of them and
+  refusing would leave no majority at all. That is read from what
+  acknowledged, not from the routes now: placement shrinks a set from three
+  to two at a new generation under the same leader, as when an RF 2 drain
+  seats its newcomer or a short set's joining copy is dropped, and a record
+  the three acknowledged may be on neither of the two
+  ([#1336](https://github.com/GetFelix/felix/issues/1336)). So the copy's
+  last record must be from the generation it accepted, which puts everything
+  it lost there (its generation-start record survived), the route must be
+  the failover written straight after that generation, and the set that
+  failover's `fence_storage_ids` names, taken from the assignment before it,
+  must be the same two the route shows, the fencing leader one of them
+  (`acknowledged_by_two` in `replica.rs`). Any other copy is refused. A
+  failover from a control plane that names no identities, or after another
+  assignment came between, keeps the shard closed until the operator acts,
+  as below.
 
 Which of the two happens does not depend on whether placement sees the new
 identity or the probe's report first. A follower the report from before the

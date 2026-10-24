@@ -886,17 +886,127 @@ async fn a_crashed_leaders_copy_takes_no_fence_until_a_newer_leader_ships() {
     taken(&handler.fence(SENDER, fence(7)).await);
 }
 
-/// In a set of two the other copy holds every record a majority
-/// acknowledged, so the crashed leader still takes its fence: refusing would
-/// leave the shard with no majority at all.
+/// [`led_before_a_crash`], with the generation-start record it wrote at 5
+/// still on disk: whatever the crash cost it was written at 5.
+async fn led_with_its_start_record(dir: &std::path::Path) {
+    led_before_a_crash(dir).await;
+    let broker = broker_on(dir);
+    let log = broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    let tail = log.tail_offset().await.expect("tail");
+    log.record_generation(5, tail).expect("record generation");
+    log.append_generation_start(5).await.expect("start record");
+}
+
+/// broker-a promoted at `generation` over `members`, by a failover whose
+/// assignment named `acknowledged` as the set before it.
+fn failover_router(members: &[&str], generation: u64, acknowledged: &[&str]) -> Arc<ShardRouter> {
+    let router = Arc::new(ShardRouter::new(
+        LOCAL,
+        "us-west-2",
+        RegionRouter::new("us-west-2".to_string()),
+    ));
+    let nodes: HashMap<String, NodeRef> = ["broker-a", LOCAL, "broker-c", "broker-d"]
+        .into_iter()
+        .zip(7001..)
+        .map(|(id, port)| (id.to_string(), node(id, port)))
+        .collect();
+    let table = RoutingTable::build_with(
+        [felix_router::Placed {
+            key: key(),
+            leader: "broker-a".to_string(),
+            replicas: members.iter().map(|r| r.to_string()).collect(),
+            generation,
+            draining: false,
+            successor: None,
+            routing: felix_wire::routing::ShardRouting::Modulo,
+            incarnation: 0,
+            fence_storage_ids: acknowledged
+                .iter()
+                .map(|id| (id.to_string(), format!("storage-{id}")))
+                .collect(),
+        }],
+        &nodes,
+    );
+    router.publish(table, &nodes);
+    router
+}
+
+/// In a set of two the other copy holds every record the two acknowledged,
+/// so the crashed leader still takes its fence: refusing would leave the
+/// shard with no majority at all.
 #[tokio::test]
 async fn a_crashed_leader_of_two_copies_takes_the_fence() {
     let dir = tempfile::tempdir().expect("tempdir");
+    led_with_its_start_record(dir.path()).await;
+    let broker = broker_on(dir.path());
+    let handler = ReplicaHandler::new(
+        Arc::clone(&broker),
+        failover_router(&[LOCAL], 6, &["broker-a", LOCAL]),
+    )
+    .with_unclean_start(unclean());
+    taken(&handler.fence(SENDER, fence(6)).await);
+}
+
+/// **A set that shrank to two after acknowledging is refused (#1336).** The
+/// generation this broker led had three copies, so a record it lost may be
+/// on broker-c alone, which the set of two the routes show now leaves out.
+#[tokio::test]
+async fn a_crashed_leader_of_a_set_that_shrank_to_two_refuses_the_fence() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    led_with_its_start_record(dir.path()).await;
+    let broker = broker_on(dir.path());
+    let handler = ReplicaHandler::new(
+        Arc::clone(&broker),
+        failover_router(&[LOCAL], 6, &["broker-a", LOCAL, "broker-c"]),
+    )
+    .with_unclean_start(unclean());
+    assert_eq!(
+        refusal(&handler.fence(SENDER, fence(6)).await).code,
+        ErrorCode::Unavailable
+    );
+}
+
+/// Without the start record of the generation it led, the crash may have
+/// cost this broker records of an earlier generation, whose set nothing
+/// here names: refused even with two copies now.
+#[tokio::test]
+async fn a_crashed_leader_that_lost_its_start_record_refuses_the_fence() {
+    let dir = tempfile::tempdir().expect("tempdir");
     led_before_a_crash(dir.path()).await;
     let broker = broker_on(dir.path());
-    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 6))
-        .with_unclean_start(unclean());
-    taken(&handler.fence(SENDER, fence(6)).await);
+    let handler = ReplicaHandler::new(
+        Arc::clone(&broker),
+        failover_router(&[LOCAL], 6, &["broker-a", LOCAL]),
+    )
+    .with_unclean_start(unclean());
+    assert_eq!(
+        refusal(&handler.fence(SENDER, fence(6)).await).code,
+        ErrorCode::Unavailable
+    );
+}
+
+/// A set of two that is not the failover from the generation this broker
+/// led says nothing of the set that led to it: placement wrote another
+/// assignment in between, or this broker never took the last one. Refused.
+#[tokio::test]
+async fn a_crashed_leader_of_two_copies_refuses_a_later_assignment() {
+    for (router, generation) in [
+        (failover_router(&[LOCAL], 7, &["broker-a", LOCAL]), 7),
+        (router_with(&[LOCAL], 6), 6),
+    ] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        led_with_its_start_record(dir.path()).await;
+        let broker = broker_on(dir.path());
+        let handler =
+            ReplicaHandler::new(Arc::clone(&broker), router).with_unclean_start(unclean());
+        assert_eq!(
+            refusal(&handler.fence(SENDER, fence(generation)).await).code,
+            ErrorCode::Unavailable
+        );
+    }
 }
 
 /// A copy this broker only followed before the crash is answered for as
