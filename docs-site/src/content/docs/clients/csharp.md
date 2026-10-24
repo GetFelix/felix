@@ -21,8 +21,11 @@ steps, and it is not on NuGet yet.
 | Windows | x64, arm64 |
 
 It targets net8.0 and net10.0. CI builds it and runs the unit tests, including a load
-of the native library and a call into it, on Linux, macOS and Windows. The scenarios
-against a broker run on Linux.
+of the native library and a call into it, natively on each row above. The scenarios
+against a broker run on Linux x64 only.
+
+The native libraries will ship inside the NuGet package in a later release. Until then,
+build `felix-capi` yourself and set `FELIX_NATIVE_LIB`, as below.
 
 ## Building
 
@@ -89,13 +92,13 @@ it is idempotent. Cancellation is an `OperationCanceledException`, not a
 ## Cancellation
 
 Each call takes a `CancellationToken`, which cancels the native call. A cancelled
-connect or subscribe hands out nothing. A publish cancelled after it may have been
+connect or subscribe hands out nothing, even if the native call finished as you cancelled. A publish cancelled after it may have been
 sent fails with `OutcomeUnknown`, because it may have landed.
 
 ## Threading
 
 A client is safe to use from several threads. Publishes in flight together may reach the
 broker in any order; to keep records in order, await each one before the next.
-Disposing the client cancels its pending calls, and `DisposeAsync` frees it off the
+Calls on a disposed client throw `ObjectDisposedException`. Disposing the client cancels its pending calls, which fail with `OperationCanceledException`, and `DisposeAsync` frees it off the
 calling thread because the last handle can wait a few seconds for them. Subscriptions
 made from a client keep working until they are disposed.

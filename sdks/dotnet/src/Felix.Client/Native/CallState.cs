@@ -10,12 +10,19 @@ namespace Felix.Native;
 internal abstract class CallStateBase
 {
     private GCHandle self;
+    private int finished;
 
     protected CallStateBase(CancellationToken token)
     {
         Token = token;
         Cancel = new NativeCancel(token);
+        Interlocked.Increment(ref live);
     }
+
+    private static int live;
+
+    /// <summary>Calls whose cancel token has not been released yet; a test hook for leaks.</summary>
+    internal static int Live => Volatile.Read(ref live);
 
     internal CancellationToken Token { get; }
 
@@ -36,7 +43,17 @@ internal abstract class CallStateBase
             self.Free();
         }
 
-        Cancel.Dispose();
+        Finish();
+    }
+
+    /// <summary>Releases the cancel token and its registration, once.</summary>
+    protected void Finish()
+    {
+        if (Interlocked.Exchange(ref finished, 1) == 0)
+        {
+            Cancel.Dispose();
+            Interlocked.Decrement(ref live);
+        }
     }
 
     /// <summary>Frees the handle: the callback is running, once.</summary>
@@ -83,7 +100,7 @@ internal sealed class CallState<T> : CallStateBase
         }
         finally
         {
-            Cancel.Dispose();
+            Finish();
         }
     }
 }

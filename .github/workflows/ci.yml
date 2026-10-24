@@ -62,12 +62,13 @@ jobs:
           ignore: '.*'
           keep: '^docs/formal/|^scripts/check_tla\.sh$|^\.github/workflows/ci\.yml$'
 
-      # The C# SDK binds the C ABI, which wraps the Rust client.
+      # The C# SDK binds the C ABI, which wraps the Rust client: the paths are felix-capi
+      # and its workspace dependencies (from `cargo metadata`), plus what pins the build.
       - id: dotnet
         uses: ./.github/actions/code-changed
         with:
           ignore: '.*'
-          keep: '^sdks/dotnet/|^crates/sdk/felix-capi/|^crates/sdk/felix-client/|^\.github/workflows/ci\.yml$'
+          keep: '^sdks/dotnet/|^crates/(sdk/felix-capi|sdk/felix-client|protocol/felix-transport|protocol/felix-wire)/|^Cargo\.(toml|lock)$|^rust-toolchain(\.toml)?$|^\.github/workflows/ci\.yml$'
 
       # The docs checks need only Python, so a docs-only change runs them too.
       - id: docs
@@ -753,7 +754,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # Every platform the docs claim, native: x64 and arm64 on each OS.
+        os:
+          - ubuntu-latest
+          - ubuntu-24.04-arm
+          - macos-latest
+          - macos-15-intel
+          - windows-latest
+          - windows-11-arm
     env:
       # A library that fails to load here is a failure, not a skip.
       FELIX_REQUIRE_NATIVE: "1"
@@ -793,15 +801,15 @@ jobs:
           export FELIX_NATIVE_LIB="$PWD/target/release/$lib"
           dotnet test sdks/dotnet/Felix.sln -c Release
 
-      # The fixture is a Linux harness build; the scenarios run where it does.
+      # The fixture runs on Linux x64 only.
       - name: Build the broker and cluster harness
-        if: runner.os == 'Linux'
+        if: matrix.os == 'ubuntu-latest'
         run: |
           cargo build --locked -p felix-broker-service --bin felix-broker
           cargo build --locked -p felix-cluster --bin felix-cluster
 
       - name: Scenarios against the fixture
-        if: runner.os == 'Linux'
+        if: matrix.os == 'ubuntu-latest'
         run: |
           work="$(mktemp -d)"
           RUST_LOG=warn target/debug/felix-cluster client-fixture \

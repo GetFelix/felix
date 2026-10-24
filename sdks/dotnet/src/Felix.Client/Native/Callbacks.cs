@@ -16,7 +16,13 @@ internal static unsafe class Callbacks
         var state = CallState<FelixClientHandle>.Take(userData);
         try
         {
-            if (status == 0)
+            if (status == 0 && state.Token.IsCancellationRequested)
+            {
+                // The call finished as the caller cancelled: hand out nothing.
+                NativeMethods.felix_client_free(client);
+                state.Fail(new OperationCanceledException(state.Token));
+            }
+            else if (status == 0)
             {
                 state.Succeed(new FelixClientHandle(client));
             }
@@ -96,7 +102,13 @@ internal static unsafe class Callbacks
         var state = CallState<FelixSubscriptionHandle>.Take(userData);
         try
         {
-            if (status == 0)
+            if (status == 0 && state.Token.IsCancellationRequested)
+            {
+                // The call finished as the caller cancelled: hand out nothing.
+                NativeMethods.felix_subscription_free(subscription);
+                state.Fail(new OperationCanceledException(state.Token));
+            }
+            else if (status == 0)
             {
                 state.Succeed(new FelixSubscriptionHandle(subscription));
             }

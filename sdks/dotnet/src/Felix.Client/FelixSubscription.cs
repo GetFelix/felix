@@ -133,12 +133,13 @@ public sealed class FelixSubscription : IAsyncEnumerable<FelixEvent>, IAsyncDisp
 
     private unsafe Task<FelixEvent?> StartRead(long timeoutMs, CancellationToken cancellationToken)
     {
+        using var call = new HandleLease(handle);
         var state = new CallState<FelixEvent?>(cancellationToken);
-        var userData = state.Pin();
         int status;
         string? error;
-        using (var call = new HandleLease(handle))
+        try
         {
+            var userData = state.Pin();
             status = NativeMethods.felix_subscription_next(
                 call.Pointer,
                 timeoutMs,
@@ -146,6 +147,11 @@ public sealed class FelixSubscription : IAsyncEnumerable<FelixEvent>, IAsyncDisp
                 &Callbacks.OnEvent,
                 userData);
             error = status != 0 ? NativeMethods.LastError() : null;
+        }
+        catch
+        {
+            state.Abandon();
+            throw;
         }
 
         if (status != 0)

@@ -6,20 +6,21 @@ namespace Felix;
 /// <summary>
 /// A connection to a Felix cluster. Safe to use from several threads; disposing it
 /// cancels its pending calls, and subscriptions made from it keep working until
-/// they are disposed.
+/// they are disposed. Calls on a disposed client throw <see cref="ObjectDisposedException"/>; calls
+/// pending when it is disposed fail with <see cref="OperationCanceledException"/>.
 /// </summary>
 public sealed class FelixClient : IAsyncDisposable, IDisposable
 {
     private readonly FelixClientHandle handle;
 
-    private FelixClient(FelixClientHandle handle)
+    internal FelixClient(FelixClientHandle handle)
     {
         this.handle = handle;
     }
 
     /// <summary>Connects to a cluster.</summary>
     /// <exception cref="FelixException">The connect failed.</exception>
-    /// <exception cref="OperationCanceledException">The token was cancelled.</exception>
+    /// <exception cref="OperationCanceledException">The token was cancelled; no client is handed out.</exception>
     public unsafe static Task<FelixClient> ConnectAsync(FelixClientOptions options, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(options);
@@ -33,17 +34,28 @@ public sealed class FelixClient : IAsyncDisposable, IDisposable
 
         cancellationToken.ThrowIfCancellationRequested();
         var state = new CallState<FelixClientHandle>(cancellationToken);
-        var userData = state.Pin();
-        var status = NativeMethods.felix_client_connect(
-            string.Join(',', options.Addrs),
-            options.TenantId,
-            options.Token,
-            options.ServerName,
-            options.CaFile,
-            state.Cancel.Pointer,
-            &Callbacks.OnConnect,
-            userData);
-        var error = status != 0 ? NativeMethods.LastError() : null;
+        int status;
+        string? error;
+        try
+        {
+            var userData = state.Pin();
+            status = NativeMethods.felix_client_connect(
+                string.Join(',', options.Addrs),
+                options.TenantId,
+                options.Token,
+                options.ServerName,
+                options.CaFile,
+                state.Cancel.Pointer,
+                &Callbacks.OnConnect,
+                userData);
+            error = status != 0 ? NativeMethods.LastError() : null;
+        }
+        catch
+        {
+            state.Abandon();
+            throw;
+        }
+
         if (status != 0)
         {
             return Refused<FelixClient>(state, status, error);
@@ -72,8 +84,7 @@ public sealed class FelixClient : IAsyncDisposable, IDisposable
         ArgumentNullException.ThrowIfNull(stream);
         cancellationToken.ThrowIfCancellationRequested();
 
-        var state = new CallState<long?>(cancellationToken);
-        var userData = state.Pin();
+        CallState<long?> state;
         int status;
         string? error;
         // The library copies the payload and key before the call returns.
@@ -83,21 +94,31 @@ public sealed class FelixClient : IAsyncDisposable, IDisposable
         {
             byte empty = 0;
             var keyPointer = key is null ? null : key.Value.IsEmpty ? &empty : (byte*)pinnedKey.Pointer;
-            status = NativeMethods.felix_client_publish(
-                call.Pointer,
-                tenant,
-                ns,
-                stream,
-                (byte*)pinnedPayload.Pointer,
-                (nuint)payload.Length,
-                keyPointer,
-                key is null ? 0 : (nuint)key.Value.Length,
-                (int)ack,
-                (int)delivery,
-                state.Cancel.Pointer,
-                &Callbacks.OnPublish,
-                userData);
-            error = status != 0 ? NativeMethods.LastError() : null;
+            state = new CallState<long?>(cancellationToken);
+            try
+            {
+                var userData = state.Pin();
+                status = NativeMethods.felix_client_publish(
+                    call.Pointer,
+                    tenant,
+                    ns,
+                    stream,
+                    (byte*)pinnedPayload.Pointer,
+                    (nuint)payload.Length,
+                    keyPointer,
+                    key is null ? 0 : (nuint)key.Value.Length,
+                    (int)ack,
+                    (int)delivery,
+                    state.Cancel.Pointer,
+                    &Callbacks.OnPublish,
+                    userData);
+                error = status != 0 ? NativeMethods.LastError() : null;
+            }
+            catch
+            {
+                state.Abandon();
+                throw;
+            }
         }
 
         return status != 0 ? Refused<long?>(state, status, error) : state.WaitAsync();
@@ -144,8 +165,7 @@ public sealed class FelixClient : IAsyncDisposable, IDisposable
             at += payload.Length;
         }
 
-        var state = new CallState<long?[]>(cancellationToken);
-        var userData = state.Pin();
+        CallState<long?[]> state;
         int status;
         string? error;
         using (var pinnedKey = (key ?? default).Pin())
@@ -155,21 +175,31 @@ public sealed class FelixClient : IAsyncDisposable, IDisposable
         {
             byte empty = 0;
             var keyPointer = key is null ? null : key.Value.IsEmpty ? &empty : (byte*)pinnedKey.Pointer;
-            status = NativeMethods.felix_client_publish_batch(
-                call.Pointer,
-                tenant,
-                ns,
-                stream,
-                dataPointer,
-                lengthPointer,
-                (nuint)lengths.Length,
-                keyPointer,
-                key is null ? 0 : (nuint)key.Value.Length,
-                (int)ack,
-                state.Cancel.Pointer,
-                &Callbacks.OnBatch,
-                userData);
-            error = status != 0 ? NativeMethods.LastError() : null;
+            state = new CallState<long?[]>(cancellationToken);
+            try
+            {
+                var userData = state.Pin();
+                status = NativeMethods.felix_client_publish_batch(
+                    call.Pointer,
+                    tenant,
+                    ns,
+                    stream,
+                    dataPointer,
+                    lengthPointer,
+                    (nuint)lengths.Length,
+                    keyPointer,
+                    key is null ? 0 : (nuint)key.Value.Length,
+                    (int)ack,
+                    state.Cancel.Pointer,
+                    &Callbacks.OnBatch,
+                    userData);
+                error = status != 0 ? NativeMethods.LastError() : null;
+            }
+            catch
+            {
+                state.Abandon();
+                throw;
+            }
         }
 
         return status != 0 ? Refused<long?[]>(state, status, error) : state.WaitAsync();
@@ -192,24 +222,33 @@ public sealed class FelixClient : IAsyncDisposable, IDisposable
         ArgumentNullException.ThrowIfNull(stream);
         cancellationToken.ThrowIfCancellationRequested();
 
-        var state = new CallState<FelixSubscriptionHandle>(cancellationToken);
-        var userData = state.Pin();
+        CallState<FelixSubscriptionHandle> state;
         int status;
         string? error;
         using (var call = new HandleLease(handle))
         {
-            status = NativeMethods.felix_client_subscribe(
-                call.Pointer,
-                tenant,
-                ns,
-                stream,
-                shard,
-                start.Kind,
-                start.Offset,
-                state.Cancel.Pointer,
-                &Callbacks.OnSubscribe,
-                userData);
-            error = status != 0 ? NativeMethods.LastError() : null;
+            state = new CallState<FelixSubscriptionHandle>(cancellationToken);
+            try
+            {
+                var userData = state.Pin();
+                status = NativeMethods.felix_client_subscribe(
+                    call.Pointer,
+                    tenant,
+                    ns,
+                    stream,
+                    shard,
+                    start.Kind,
+                    start.Offset,
+                    state.Cancel.Pointer,
+                    &Callbacks.OnSubscribe,
+                    userData);
+                error = status != 0 ? NativeMethods.LastError() : null;
+            }
+            catch
+            {
+                state.Abandon();
+                throw;
+            }
         }
 
         return status != 0 ? Refused<FelixSubscription>(state, status, error) : SubscribedAsync(state);
