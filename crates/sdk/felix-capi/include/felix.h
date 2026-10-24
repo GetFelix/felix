@@ -7,6 +7,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
+// A live cache watch, single or sharded.
+//
+// One read may be pending at a time. It must not be freed while another
+// thread is calling it.
+typedef struct FelixCacheWatch FelixCacheWatch;
+
 // A token a caller cancels to stop the calls it was passed to.
 //
 // One token may be passed to any number of calls. It can be freed while
@@ -44,6 +50,107 @@ typedef struct FelixSubscription FelixSubscription;
 // value says why the call did not do what it was asked.
 typedef int32_t FelixStatus;
 
+// Called once when a group call that returns nothing finishes.
+typedef void (*FelixDoneCallback)(void *user_data, FelixStatus status, const char *message);
+
+// Called once when `felix_client_cache_get` or `felix_client_cache_delete`
+// finishes. On `FELIX_STATUS_OK`, `found` says whether there was a value
+// (for a delete, the one that was removed), and `value` holds `len` bytes of
+// it. `value` is valid only while the callback runs, and may be null when
+// `len` is zero.
+typedef void (*FelixValueCallback)(void *user_data,
+                                   FelixStatus status,
+                                   const char *message,
+                                   bool found,
+                                   const uint8_t *value,
+                                   size_t len);
+
+// Called once when `felix_client_cache_get_versioned` finishes. As
+// `FelixValueCallback`, with the entry's `version`, which a conditional
+// write can name.
+typedef void (*FelixVersionedCallback)(void *user_data,
+                                       FelixStatus status,
+                                       const char *message,
+                                       bool found,
+                                       const uint8_t *value,
+                                       size_t len,
+                                       uint64_t version);
+
+// What a conditional write requires of the key.
+typedef int32_t FelixCacheCondition;
+
+// Called once when `felix_client_cache_put_if` or
+// `felix_client_cache_delete_if` finishes. A condition that did not hold is
+// `FELIX_STATUS_OK` with `applied` false. `has_version` says whether the
+// broker reported the key's version: the new one when applied, and the
+// current one when not.
+typedef void (*FelixConditionCallback)(void *user_data,
+                                       FelixStatus status,
+                                       const char *message,
+                                       bool applied,
+                                       bool has_version,
+                                       uint64_t version);
+
+// Called once when `felix_client_counter_add` or `felix_client_counter_get`
+// finishes. `has_value` is false for a counter that does not exist, which
+// only a get can report; an add always has the new value.
+typedef void (*FelixCounterCallback)(void *user_data,
+                                     FelixStatus status,
+                                     const char *message,
+                                     bool has_value,
+                                     int64_t value);
+
+// What a single watch matches.
+typedef int32_t FelixWatchFilter;
+
+// Called once when a watch opens. On `FELIX_STATUS_OK`, `watch` is a new
+// watch the callee owns; otherwise it is null.
+typedef void (*FelixCacheWatchCallback)(void *user_data,
+                                        FelixStatus status,
+                                        const char *message,
+                                        struct FelixCacheWatch *watch);
+
+// What a watch read delivered.
+typedef int32_t FelixWatchItemKind;
+
+// One item of a watch.
+//
+// Everything in it is valid only while the callback runs. `key` is
+// `key_len` bytes of UTF-8, not NUL-terminated, and null when `key_len` is
+// zero.
+typedef struct FelixWatchItem {
+  // One of the `FELIX_WATCH_*` item kinds.
+  FelixWatchItemKind kind;
+  // Whether `shard` names a shard. False on a single watch, and for
+  // `FELIX_WATCH_STATE_COMPLETE`.
+  bool has_shard;
+  uint32_t shard;
+  // The changed key, for `FELIX_WATCH_CHANGE`.
+  const char *key;
+  size_t key_len;
+  // False when the change deleted the key; `value` is then null.
+  bool has_value;
+  // The new value, `value_len` bytes; null when the length is zero.
+  const uint8_t *value;
+  size_t value_len;
+  // The change's offset in the cache's log. A single watch's offsets are
+  // sparse, because other keys' changes consume them, so a gap is not a
+  // drop; `FELIX_WATCH_LAGGED` is.
+  uint64_t offset;
+  // Unix milliseconds the value expires at; zero is never.
+  uint64_t expires_at_millis;
+  // Whether `resume_from` holds an offset.
+  bool has_resume_from;
+  uint64_t resume_from;
+} FelixWatchItem;
+
+// Called once when `felix_cache_watch_next` finishes. On `FELIX_STATUS_OK`,
+// `item` is valid only while the callback runs; otherwise it is null.
+typedef void (*FelixWatchItemCallback)(void *user_data,
+                                       FelixStatus status,
+                                       const char *message,
+                                       const struct FelixWatchItem *item);
+
 // Called once when `felix_client_connect` finishes. On `FELIX_STATUS_OK`,
 // `client` is a new client the callee owns; otherwise it is null.
 typedef void (*FelixConnectCallback)(void *user_data,
@@ -77,9 +184,6 @@ typedef void (*FelixGroupPollCallback)(void *user_data,
                                        const char *message,
                                        const struct FelixGroupRecord *records,
                                        size_t count);
-
-// Called once when a group call that returns nothing finishes.
-typedef void (*FelixDoneCallback)(void *user_data, FelixStatus status, const char *message);
 
 // Called once when `felix_client_group_extend` finishes. On
 // `FELIX_STATUS_OK`, `visible_ms` is how long the claim now stands, from the
@@ -248,6 +352,39 @@ typedef void (*FelixOffsetCallback)(void *user_data,
                                     bool has_offset,
                                     uint64_t offset);
 
+// The key has no live entry: never written, deleted, or expired.
+#define FELIX_IF_ABSENT 0
+
+// The key's live entry has exactly the given version.
+#define FELIX_IF_VERSION 1
+
+// Changes to exactly one key.
+#define FELIX_WATCH_KEY 0
+
+// Changes to every key that starts with the filter. A single watch reads one
+// shard, so on a cache with several shards use `felix_client_watch_cache_sharded`.
+#define FELIX_WATCH_PREFIX 1
+
+// A key took a new value or was deleted.
+#define FELIX_WATCH_CHANGE 1
+
+// The watch fell behind and the broker ended it. `resume_from` is where a
+// new watch picks up without a gap. On a single watch the next read is
+// `FELIX_STATUS_CLOSED`; on a sharded watch only `shard` has ended, the
+// others carry on, and `felix_cache_watch_resume_offsets` accounts for it.
+#define FELIX_WATCH_LAGGED 2
+
+// The shard moved to another broker. The watch follows it by itself;
+// `resume_from` is set when the old owner knew where it stopped.
+#define FELIX_WATCH_SHARD_MOVED 3
+
+// Every shard's retained state has been delivered, and what follows is live
+// changes. Only a sharded retained watch reports it.
+#define FELIX_WATCH_STATE_COMPLETE 4
+
+// One shard's feed has ended and delivers no more. Other shards go on.
+#define FELIX_WATCH_SHARD_CLOSED 5
+
 // Fire and forget: complete once the record is sent.
 #define FELIX_ACK_NONE 0
 
@@ -363,6 +500,281 @@ typedef void (*FelixOffsetCallback)(void *user_data,
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
+
+// Store `value` under `key`. `ttl_ms` is how long it lives; zero is for
+// ever.
+//
+// A write: cancelled after it may have been sent, it completes with
+// `FELIX_STATUS_OUTCOME_UNKNOWN`, and a put that may have been applied is
+// not sent again. A put is safe to repeat.
+//
+// # Safety
+//
+// `client` is a live client, the strings are NUL-terminated, `value` is null
+// or valid for `len` bytes, `cancel` is null or a live token, and `callback`
+// is safe to call with `user_data` from any thread.
+FelixStatus felix_client_cache_put(const struct FelixClient *client,
+                                   const char *tenant_id,
+                                   const char *ns,
+                                   const char *cache,
+                                   const char *key,
+                                   const uint8_t *value,
+                                   size_t len,
+                                   uint64_t ttl_ms,
+                                   const struct FelixCancelToken *cancel,
+                                   FelixDoneCallback callback,
+                                   void *user_data);
+
+// Read the value under `key`. A missing or expired key is
+// `FELIX_STATUS_OK` with `found` false.
+//
+// # Safety
+//
+// As for `felix_client_cache_put`, without a value.
+FelixStatus felix_client_cache_get(const struct FelixClient *client,
+                                   const char *tenant_id,
+                                   const char *ns,
+                                   const char *cache,
+                                   const char *key,
+                                   const struct FelixCancelToken *cancel,
+                                   FelixValueCallback callback,
+                                   void *user_data);
+
+// Remove `key`. On `FELIX_STATUS_OK`, `found` is whether there was a value
+// to remove, and `value` is that value.
+//
+// A write; see `felix_client_cache_put` for cancellation.
+//
+// # Safety
+//
+// As for `felix_client_cache_get`.
+FelixStatus felix_client_cache_delete(const struct FelixClient *client,
+                                      const char *tenant_id,
+                                      const char *ns,
+                                      const char *cache,
+                                      const char *key,
+                                      const struct FelixCancelToken *cancel,
+                                      FelixValueCallback callback,
+                                      void *user_data);
+
+// Read the value under `key` with the version a conditional write can name.
+//
+// # Safety
+//
+// As for `felix_client_cache_get`.
+FelixStatus felix_client_cache_get_versioned(const struct FelixClient *client,
+                                             const char *tenant_id,
+                                             const char *ns,
+                                             const char *cache,
+                                             const char *key,
+                                             const struct FelixCancelToken *cancel,
+                                             FelixVersionedCallback callback,
+                                             void *user_data);
+
+// Store `value` under `key` only if `kind` holds: `FELIX_IF_ABSENT`, or
+// `FELIX_IF_VERSION` with the entry's `version`. `version` is read only for
+// `FELIX_IF_VERSION`; any other kind is `FELIX_STATUS_INVALID_ARGUMENT`.
+//
+// A write that was refused because the condition did not hold is not an
+// error; see `FelixConditionCallback`. Cancellation as for
+// `felix_client_cache_put`.
+//
+// # Safety
+//
+// As for `felix_client_cache_put`.
+FelixStatus felix_client_cache_put_if(const struct FelixClient *client,
+                                      const char *tenant_id,
+                                      const char *ns,
+                                      const char *cache,
+                                      const char *key,
+                                      const uint8_t *value,
+                                      size_t len,
+                                      uint64_t ttl_ms,
+                                      FelixCacheCondition kind,
+                                      uint64_t version,
+                                      const struct FelixCancelToken *cancel,
+                                      FelixConditionCallback callback,
+                                      void *user_data);
+
+// Remove `key` only if its entry has exactly `version`.
+//
+// A write; see `felix_client_cache_put_if`.
+//
+// # Safety
+//
+// As for `felix_client_cache_get`.
+FelixStatus felix_client_cache_delete_if(const struct FelixClient *client,
+                                         const char *tenant_id,
+                                         const char *ns,
+                                         const char *cache,
+                                         const char *key,
+                                         uint64_t version,
+                                         const struct FelixCancelToken *cancel,
+                                         FelixConditionCallback callback,
+                                         void *user_data);
+
+// Add `delta` to the counter under `key`, creating it at zero, and report
+// the new value.
+//
+// A write that is not idempotent: cancelled after it may have been sent it
+// completes with `FELIX_STATUS_OUTCOME_UNKNOWN`, and the add may or may not
+// have counted. Read the counter before repeating it.
+//
+// # Safety
+//
+// As for `felix_client_cache_get`.
+FelixStatus felix_client_counter_add(const struct FelixClient *client,
+                                     const char *tenant_id,
+                                     const char *ns,
+                                     const char *cache,
+                                     const char *key,
+                                     int64_t delta,
+                                     const struct FelixCancelToken *cancel,
+                                     FelixCounterCallback callback,
+                                     void *user_data);
+
+// Read the counter under `key`. A counter that does not exist is
+// `FELIX_STATUS_OK` with `has_value` false.
+//
+// # Safety
+//
+// As for `felix_client_cache_get`.
+FelixStatus felix_client_counter_get(const struct FelixClient *client,
+                                     const char *tenant_id,
+                                     const char *ns,
+                                     const char *cache,
+                                     const char *key,
+                                     const struct FelixCancelToken *cancel,
+                                     FelixCounterCallback callback,
+                                     void *user_data);
+
+// Watch one key or prefix on one shard.
+//
+// `retained` first delivers the entries already stored (as changes), then
+// `FELIX_WATCH_CHANGE` items for later ones; it cannot be combined with
+// `has_from_offset`. `from_offset` resumes a watch from a change's offset
+// plus one. `kind` is `FELIX_WATCH_KEY` or `FELIX_WATCH_PREFIX`; any other
+// is `FELIX_STATUS_INVALID_ARGUMENT`. A key is routed to its own shard; a
+// prefix watch reads one shard, so use `felix_client_watch_cache_sharded`
+// when the cache has several.
+//
+// `callback` runs once, unless this returns something other than
+// `FELIX_STATUS_OK`. A cancelled open never hands out a watch.
+//
+// # Safety
+//
+// `client` is a live client, the strings are NUL-terminated, `cancel` is
+// null or a live token, and `callback` is safe to call with `user_data` from
+// any thread.
+FelixStatus felix_client_watch_cache(const struct FelixClient *client,
+                                     const char *tenant_id,
+                                     const char *ns,
+                                     const char *cache,
+                                     FelixWatchFilter kind,
+                                     const char *filter,
+                                     bool retained,
+                                     bool has_from_offset,
+                                     uint64_t from_offset,
+                                     const struct FelixCancelToken *cancel,
+                                     FelixCacheWatchCallback callback,
+                                     void *user_data);
+
+// Watch every shard of a cache for keys that start with `prefix`.
+//
+// Fails, and hands out no watch, if any shard cannot be opened, so a watch
+// never quietly covers fewer shards than the cache has. `count` entries of
+// `shards` and `offsets` resume each listed shard at its offset, as
+// `felix_cache_watch_resume_offsets` writes them; zero starts from now. A
+// shard listed twice is `FELIX_STATUS_INVALID_ARGUMENT`. `retained` first
+// delivers each shard's stored entries, then `FELIX_WATCH_STATE_COMPLETE`;
+// it cannot be combined with resume offsets.
+//
+// # Safety
+//
+// As for `felix_client_watch_cache`, and `shards` and `offsets` are each
+// null or point to `count` readable values (null only when `count` is
+// zero).
+FelixStatus felix_client_watch_cache_sharded(const struct FelixClient *client,
+                                             const char *tenant_id,
+                                             const char *ns,
+                                             const char *cache,
+                                             const char *prefix,
+                                             bool retained,
+                                             const uint32_t *shards,
+                                             const uint64_t *offsets,
+                                             size_t count,
+                                             const struct FelixCancelToken *cancel,
+                                             FelixCacheWatchCallback callback,
+                                             void *user_data);
+
+// Read the next item.
+//
+// `callback` runs once: with `FELIX_STATUS_OK` and an item;
+// `FELIX_STATUS_TIMEOUT` when `timeout_ms` passed with nothing (the watch
+// stays usable); `FELIX_STATUS_CLOSED` once the feed has ended, as after
+// `FELIX_WATCH_LAGGED` on a single watch or once every shard of a sharded
+// watch has ended; or `FELIX_STATUS_CANCELLED`. A cancelled or
+// timed-out read loses nothing; the next read gets the item.
+//
+// A negative `timeout_ms` waits indefinitely; zero only takes an item that
+// is already waiting. Only one read may be pending: a second returns
+// `FELIX_STATUS_INVALID_ARGUMENT`. The callback may start the next read.
+//
+// # Safety
+//
+// `watch` is a live watch, `cancel` is null or a live token, and `callback`
+// is safe to call with `user_data` from any thread.
+FelixStatus felix_cache_watch_next(const struct FelixCacheWatch *watch,
+                                   int64_t timeout_ms,
+                                   const struct FelixCancelToken *cancel,
+                                   FelixWatchItemCallback callback,
+                                   void *user_data);
+
+// How many entries a retained watch started from, for sizing a cache that is
+// loaded from its watch.
+//
+// Writes `*out_has` false for a watch that is not retained. Either out
+// pointer may be null.
+//
+// # Safety
+//
+// `watch` is a live watch, and `out` and `out_has` are each null or
+// writable.
+FelixStatus felix_cache_watch_retained_count(const struct FelixCacheWatch *watch,
+                                             uint64_t *out,
+                                             bool *out_has);
+
+// Where each shard has reached, for `felix_client_watch_cache_sharded`.
+//
+// Only a sharded watch has these; a single watch is
+// `FELIX_STATUS_INVALID_ARGUMENT`. Every shard appears, with the offset to
+// resume from, never ahead of what reads have handed out. `*out_count` is the
+// total number of entries; at most `cap` are written to `shards` and
+// `offsets`, in ascending shard order, so a caller whose buffers were too
+// small calls again with a larger one. It may be called while a read is
+// pending.
+//
+// # Safety
+//
+// `watch` is a live watch. `shards` and `offsets` are each null or writable
+// for `cap` values (null only when `cap` is zero), and `out_count` is null
+// or writable.
+FelixStatus felix_cache_watch_resume_offsets(const struct FelixCacheWatch *watch,
+                                             uint32_t *shards,
+                                             uint64_t *offsets,
+                                             size_t cap,
+                                             size_t *out_count);
+
+// Free a watch, which stops every shard. Null is ignored.
+//
+// A pending read completes with `FELIX_STATUS_CANCELLED`, possibly after
+// this returns.
+//
+// # Safety
+//
+// `watch` is null or a pointer from a watch callback that has not been
+// freed, and no other thread is using it.
+void felix_cache_watch_free(struct FelixCacheWatch *watch);
 
 // A new, uncancelled token. Free it with `felix_cancel_token_free`.
 struct FelixCancelToken *felix_cancel_token_new(void);

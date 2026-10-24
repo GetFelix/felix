@@ -617,7 +617,11 @@ pub(crate) fn spawn_publish<V, T, F>(
 /// # Safety
 ///
 /// `ptr` is null or valid for `len` bytes that outlive `'a`.
-unsafe fn bytes<'a>(ptr: *const u8, len: usize, name: &str) -> Result<&'a [u8], Failure> {
+pub(crate) unsafe fn bytes<'a>(
+    ptr: *const u8,
+    len: usize,
+    name: &str,
+) -> Result<&'a [u8], Failure> {
     if len == 0 {
         return Ok(&[]);
     }

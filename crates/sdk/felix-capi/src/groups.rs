@@ -1056,7 +1056,7 @@ unsafe fn position(
 /// Run a read on the client's runtime and report its value through `wrap`.
 /// A read leaves nothing behind when cancelled, so any cancel, before or
 /// during the call, reports `FELIX_STATUS_CANCELLED`.
-fn spawn_read<V, T, F>(
+pub(crate) fn spawn_read<V, T, F>(
     client: &FelixClient,
     user: Option<CancellationToken>,
     done: Completion<V>,

@@ -23,6 +23,8 @@
 //! `task capi:header` regenerates it.
 
 mod boundary;
+mod cache;
+mod cache_watch;
 mod cancel;
 mod client;
 mod completion;
@@ -34,6 +36,21 @@ mod sharded;
 mod status;
 mod subscription;
 
+pub use cache::{
+    FELIX_IF_ABSENT, FELIX_IF_VERSION, FelixCacheCondition, FelixConditionCallback,
+    FelixCounterCallback, FelixValueCallback, FelixVersionedCallback, felix_client_cache_delete,
+    felix_client_cache_delete_if, felix_client_cache_get, felix_client_cache_get_versioned,
+    felix_client_cache_put, felix_client_cache_put_if, felix_client_counter_add,
+    felix_client_counter_get,
+};
+pub use cache_watch::{
+    FELIX_WATCH_CHANGE, FELIX_WATCH_KEY, FELIX_WATCH_LAGGED, FELIX_WATCH_PREFIX,
+    FELIX_WATCH_SHARD_CLOSED, FELIX_WATCH_SHARD_MOVED, FELIX_WATCH_STATE_COMPLETE, FelixCacheWatch,
+    FelixCacheWatchCallback, FelixWatchFilter, FelixWatchItem, FelixWatchItemCallback,
+    FelixWatchItemKind, felix_cache_watch_free, felix_cache_watch_next,
+    felix_cache_watch_resume_offsets, felix_cache_watch_retained_count, felix_client_watch_cache,
+    felix_client_watch_cache_sharded,
+};
 pub use cancel::{
     FelixCancelToken, felix_cancel_token_cancel, felix_cancel_token_free, felix_cancel_token_new,
 };

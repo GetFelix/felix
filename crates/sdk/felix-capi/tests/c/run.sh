@@ -72,7 +72,8 @@ import json, sys
 f = json.load(open(sys.argv[1]))
 for value in (",".join(f["addrs"]), f["tenant_id"], f["namespace"], f["token"],
               f["ca_file"], f["durable_stream"], f["missing_stream"],
-              f["unauthorized_token"], f["group_operator_token"]):
+              f["unauthorized_token"], f["group_operator_token"], f["cache"],
+              f["single_shard_cache"]):
     print(value)
 PY
 )
