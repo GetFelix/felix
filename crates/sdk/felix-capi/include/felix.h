@@ -38,6 +38,13 @@ typedef struct FelixEvent FelixEvent;
 // must not be freed while another thread is calling it.
 typedef struct FelixProducer FelixProducer;
 
+// A consumer group over every shard of a stream, from
+// `felix_client_group_sharded`.
+//
+// Safe to use from several threads at once, but not while another thread
+// frees it. Freeing it cancels a poll still pending on it.
+typedef struct FelixShardedGroup FelixShardedGroup;
+
 // A live subscription to every shard of a stream, merged into one feed.
 //
 // Order holds within a shard and nowhere across shards. Losing a shard is
@@ -159,7 +166,25 @@ typedef void (*FelixWatchItemCallback)(void *user_data,
                                        const char *message,
                                        const struct FelixWatchItem *item);
 
-// Called once when `felix_client_connect` finishes. On `FELIX_STATUS_OK`,
+// What a client asks of the cluster beyond the defaults.
+//
+// Set `size` to `sizeof(FelixConnectOptions)`; a field is read only when
+// `size` covers it, so a caller built against an older header keeps working
+// when fields are added, and a field it does not know is off.
+typedef struct FelixConnectOptions {
+  // `sizeof(FelixConnectOptions)` as the caller compiled it.
+  size_t size;
+  // Ask brokers to say who published each event, for
+  // `felix_event_publisher` and a group record's `publisher`. Adds the
+  // principal to every event batch.
+  bool publishers;
+  // Ask brokers for each record's append time, for `felix_event_timestamp`
+  // and a group record's `timestamp_micros`. Adds eight bytes per event.
+  bool timestamps;
+} FelixConnectOptions;
+
+// Called once when `felix_client_connect` or `felix_client_connect_with`
+// finishes. On `FELIX_STATUS_OK`,
 // `client` is a new client the callee owns; otherwise it is null.
 typedef void (*FelixConnectCallback)(void *user_data,
                                      FelixStatus status,
@@ -251,6 +276,19 @@ typedef struct FelixGroupRecord {
   // callback runs; may be null when the length is zero.
   const uint8_t *payload;
   size_t payload_len;
+  // The principal that published the record, `publisher_len` bytes of
+  // UTF-8 that are not NUL terminated; valid only while the callback runs.
+  // Null unless the client was connected with
+  // `FelixConnectOptions.publishers` and the broker recorded one.
+  const char *publisher;
+  size_t publisher_len;
+  // Whether `timestamp_micros` holds a time. False unless the client was
+  // connected with `FelixConnectOptions.timestamps` and the broker
+  // supplied one.
+  bool has_timestamp;
+  // When the broker appended the record, in microseconds since the Unix
+  // epoch, by the clock of the broker that led the shard.
+  uint64_t timestamp_micros;
 } FelixGroupRecord;
 
 // Called once when `felix_client_group_poll` finishes.
@@ -333,6 +371,64 @@ typedef void (*FelixShardsCallback)(void *user_data,
                                     FelixStatus status,
                                     const char *message,
                                     uint32_t shards);
+
+// Called once when `felix_client_group_sharded` finishes. On
+// `FELIX_STATUS_OK`, `group` is a new group the callee owns; otherwise it is
+// null.
+typedef void (*FelixShardedGroupCallback)(void *user_data,
+                                          FelixStatus status,
+                                          const char *message,
+                                          struct FelixShardedGroup *group);
+
+// One record from a sharded group, with the shard it was claimed from.
+//
+// Settle it with `felix_client_group_ack`, `_nack`, `_extend` or
+// `_dead_letter`, passing `shard` and the record's `offset` and `attempts`:
+// an offset means nothing without its shard.
+typedef struct FelixShardedGroupRecord {
+  uint32_t shard;
+  // Borrowed, as in `FelixGroupPollCallback`.
+  struct FelixGroupRecord record;
+} FelixShardedGroupRecord;
+
+// Called once when `felix_sharded_group_poll` finishes.
+//
+// `records` holds `count` entries and is valid, with every payload in it,
+// only while the callback runs; copy what you keep. An empty poll is
+// `FELIX_STATUS_OK` with a count of zero. `records` is null on failure.
+typedef void (*FelixShardedGroupPollCallback)(void *user_data,
+                                              FelixStatus status,
+                                              const char *message,
+                                              const struct FelixShardedGroupRecord *records,
+                                              size_t count);
+
+// Where a group resumes on one shard.
+typedef struct FelixGroupPosition {
+  // The offset the group resumes from.
+  uint64_t offset;
+  // False when `felix_client_group_create_stream` found the group already
+  // on this shard and left it alone.
+  bool moved;
+} FelixGroupPosition;
+
+// Called once when `felix_client_group_create_stream` or
+// `felix_client_group_seek_stream` finishes. On `FELIX_STATUS_OK`,
+// `positions` holds `count` entries indexed by shard. The array is valid
+// only while the callback runs, and null on failure.
+typedef void (*FelixGroupPositionsCallback)(void *user_data,
+                                            FelixStatus status,
+                                            const char *message,
+                                            const struct FelixGroupPosition *positions,
+                                            size_t count);
+
+// Called once when `felix_client_group_describe_stream` finishes. On
+// `FELIX_STATUS_OK`, `infos` holds `count` entries indexed by shard. The
+// array is valid only while the callback runs, and null on failure.
+typedef void (*FelixGroupInfosCallback)(void *user_data,
+                                        FelixStatus status,
+                                        const char *message,
+                                        const struct FelixGroupInfo *infos,
+                                        size_t count);
 
 // Called once when `felix_client_idempotent_producer` finishes. On
 // `FELIX_STATUS_OK`, `producer` is a new producer the callee owns and frees
@@ -901,7 +997,8 @@ void felix_cancel_token_cancel(const struct FelixCancelToken *token);
 // been freed, and no other thread is using it.
 void felix_cancel_token_free(struct FelixCancelToken *token);
 
-// Connect to a Felix cluster.
+// Connect to a Felix cluster. `felix_client_connect` is this with default
+// options.
 //
 // `addrs` is one `host:port`, or several separated by commas; any reachable
 // one is enough and the rest are discovered. A name is resolved again whenever
@@ -911,14 +1008,35 @@ void felix_cancel_token_free(struct FelixCancelToken *token);
 // `"localhost"` when null. `ca_file` is a PEM file of CA certificates to
 // trust; when null the operating system's trust store is used.
 //
+// `options` is null for the defaults, or a `FelixConnectOptions` with its
+// `size` set. A broker that does not negotiate an option leaves it absent on
+// the records, never an error.
+//
 // `cancel` is null or a token that stops the connect. `callback` runs once
 // with the new client, unless this returns something other than
 // `FELIX_STATUS_OK`.
 //
 // # Safety
 //
-// Every string is null or NUL-terminated, `cancel` is null or a live token,
-// and `callback` is safe to call with `user_data` from any thread.
+// Every string is null or NUL-terminated, `options` is null or readable up
+// to its `size`, `cancel` is null or a live token, and `callback` is safe to
+// call with `user_data` from any thread.
+FelixStatus felix_client_connect_with(const char *addrs,
+                                      const char *tenant_id,
+                                      const char *token,
+                                      const char *server_name,
+                                      const char *ca_file,
+                                      const struct FelixConnectOptions *options,
+                                      const struct FelixCancelToken *cancel,
+                                      FelixConnectCallback callback,
+                                      void *user_data);
+
+// Connect to a Felix cluster with the default options: the same as
+// `felix_client_connect_with` with null `options`.
+//
+// # Safety
+//
+// As for `felix_client_connect_with`, without `options`.
 FelixStatus felix_client_connect(const char *addrs,
                                  const char *tenant_id,
                                  const char *token,
@@ -1186,6 +1304,35 @@ FelixStatus felix_event_offset(const struct FelixEvent *event,
 //
 // `event` is a live event, and `out_skipped` is writable.
 FelixStatus felix_event_skipped_before(const struct FelixEvent *event, uint64_t *out_skipped);
+
+// The principal that published the record, as UTF-8 bytes that are not NUL
+// terminated.
+//
+// Absent (`*out_data` null, `*out_len` zero) unless the client was connected
+// with `FelixConnectOptions.publishers` and the broker recorded one. A broker
+// that does not negotiate it is not an error. `*out_data` stays valid until
+// the event is freed.
+//
+// # Safety
+//
+// `event` is a live event, and both out-pointers are writable.
+FelixStatus felix_event_publisher(const struct FelixEvent *event,
+                                  const uint8_t **out_data,
+                                  size_t *out_len);
+
+// When the broker appended the record, in microseconds since the Unix epoch
+// by the clock of the broker that led the shard.
+//
+// `*out_has` is false unless the client was connected with
+// `FelixConnectOptions.timestamps` and the broker supplied one (an in-memory
+// stream stores no time). Either out-pointer may be null.
+//
+// # Safety
+//
+// `event` is a live event, and the out-pointers are null or writable.
+FelixStatus felix_event_timestamp(const struct FelixEvent *event,
+                                  uint64_t *out_micros,
+                                  bool *out_has);
 
 // Free an event and its payload. Null is ignored.
 //
@@ -1462,6 +1609,148 @@ FelixStatus felix_client_stream_shards(const struct FelixClient *client,
                                        const struct FelixCancelToken *cancel,
                                        FelixShardsCallback callback,
                                        void *user_data);
+
+// Open a consumer group across every shard of a stream. The shard count is
+// asked of the broker, so an unknown stream fails here. The group itself is
+// created on each shard by `felix_client_group_create_stream` (or on first
+// poll, by the broker's own rules); this call creates nothing.
+//
+// A read: cancelled, it completes with `FELIX_STATUS_CANCELLED`.
+//
+// # Safety
+//
+// `client` is a live client, the strings are null or NUL-terminated,
+// `cancel` is null or a live token, and `callback` is safe to call with
+// `user_data` from any thread.
+FelixStatus felix_client_group_sharded(const struct FelixClient *client,
+                                       const char *tenant_id,
+                                       const char *ns,
+                                       const char *stream,
+                                       const char *group,
+                                       const struct FelixCancelToken *cancel,
+                                       FelixShardedGroupCallback callback,
+                                       void *user_data);
+
+// How many shards the group spans.
+//
+// # Safety
+//
+// `group` is a live sharded group and `out` is writable.
+FelixStatus felix_sharded_group_shards(const struct FelixShardedGroup *group, uint32_t *out);
+
+// Take up to `max_records` (at least one) from the group's shards, visiting
+// them in turn from where the last poll left off, and returning the first
+// non-empty batch. An empty answer means no shard had anything.
+//
+// Order holds within a shard and nowhere across shards. A shard that cannot
+// be polled fails the whole poll, since skipping it would look exactly like
+// a shard with nothing to deliver. Settle each record on its own `shard`
+// with the per-shard group calls.
+//
+// A read: cancelled, or with the group freed, it completes with
+// `FELIX_STATUS_CANCELLED`, and anything it claimed in the meantime comes
+// back after the visibility timeout.
+//
+// # Safety
+//
+// `group` is a live sharded group, `cancel` is null or a live token, and
+// `callback` is safe to call with `user_data` from any thread.
+FelixStatus felix_sharded_group_poll(const struct FelixShardedGroup *group,
+                                     uint32_t max_records,
+                                     const struct FelixCancelToken *cancel,
+                                     FelixShardedGroupPollCallback callback,
+                                     void *user_data);
+
+// Free a sharded group. Null is ignored.
+//
+// A poll still pending on it completes with `FELIX_STATUS_CANCELLED`,
+// possibly after this returns.
+//
+// # Safety
+//
+// `group` is null or a pointer from a `felix_client_group_sharded` callback
+// that has not been freed, and no other thread is using it.
+void felix_sharded_group_free(struct FelixShardedGroup *group);
+
+// Create a group on every shard of a stream at `start`, leaving a shard
+// where it already exists alone (its `moved` is then false).
+//
+// `start_offset` is refused for a stream with more than one shard, since an
+// offset means something different on each; use `FELIX_START_EARLIEST` or
+// `FELIX_START_LATEST` there. This is one request per shard, so a failure
+// partway leaves the earlier shards created; the call is safe to repeat.
+//
+// A write: cancelled after it may have been sent it completes with
+// `FELIX_STATUS_OUTCOME_UNKNOWN`.
+//
+// # Safety
+//
+// `client` is a live client, the strings are null or NUL-terminated,
+// `cancel` is null or a live token, and `callback` is safe to call with
+// `user_data` from any thread.
+FelixStatus felix_client_group_create_stream(const struct FelixClient *client,
+                                             const char *tenant_id,
+                                             const char *ns,
+                                             const char *stream,
+                                             const char *group,
+                                             FelixStartKind start,
+                                             uint64_t start_offset,
+                                             const struct FelixCancelToken *cancel,
+                                             FelixGroupPositionsCallback callback,
+                                             void *user_data);
+
+// Move a group's cursor on every shard of a stream, as
+// `felix_client_group_create_stream` does for creation. `FELIX_START_LATEST`
+// is each shard's tail when its own request lands, not one cut across them.
+//
+// A write; see `felix_client_group_create_stream`. Safe to repeat.
+//
+// # Safety
+//
+// As for `felix_client_group_create_stream`.
+FelixStatus felix_client_group_seek_stream(const struct FelixClient *client,
+                                           const char *tenant_id,
+                                           const char *ns,
+                                           const char *stream,
+                                           const char *group,
+                                           FelixStartKind start,
+                                           uint64_t start_offset,
+                                           const struct FelixCancelToken *cancel,
+                                           FelixGroupPositionsCallback callback,
+                                           void *user_data);
+
+// Where a group stands on every shard of a stream, indexed by shard. A read:
+// cancelled, it completes with `FELIX_STATUS_CANCELLED`.
+//
+// # Safety
+//
+// As for `felix_client_group_create_stream`, with a `FelixGroupInfosCallback`.
+FelixStatus felix_client_group_describe_stream(const struct FelixClient *client,
+                                               const char *tenant_id,
+                                               const char *ns,
+                                               const char *stream,
+                                               const char *group,
+                                               const struct FelixCancelToken *cancel,
+                                               FelixGroupInfosCallback callback,
+                                               void *user_data);
+
+// Delete a group, with its cursor and dead letters, on every shard of a
+// stream. The callback says whether any shard had it.
+//
+// A write; see `felix_client_group_create_stream`. A failure partway leaves
+// the earlier shards deleted; the call is safe to repeat.
+//
+// # Safety
+//
+// As for `felix_client_group_create_stream`, with a `FelixDeletedCallback`.
+FelixStatus felix_client_group_delete_stream(const struct FelixClient *client,
+                                             const char *tenant_id,
+                                             const char *ns,
+                                             const char *stream,
+                                             const char *group,
+                                             const struct FelixCancelToken *cancel,
+                                             FelixDeletedCallback callback,
+                                             void *user_data);
 
 // Ask the broker for a producer id and make a producer under it.
 //

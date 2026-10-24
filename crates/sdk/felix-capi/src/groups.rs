@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::boundary::{Failure, guard, optional_str, required_str};
 use crate::cancel::{FelixCancelToken, user_token};
-use crate::client::FelixClient;
+use crate::client::{FelixClient, Shared};
 use crate::completion::{Completion, Deliver, cancelled, is_cancelled};
 use crate::publish::spawn_publish;
 use crate::status::{FELIX_STATUS_CANCELLED, FELIX_STATUS_OK, FelixStatus};
@@ -52,6 +52,19 @@ pub struct FelixGroupRecord {
     /// callback runs; may be null when the length is zero.
     pub payload: *const u8,
     pub payload_len: usize,
+    /// The principal that published the record, `publisher_len` bytes of
+    /// UTF-8 that are not NUL terminated; valid only while the callback runs.
+    /// Null unless the client was connected with
+    /// `FelixConnectOptions.publishers` and the broker recorded one.
+    pub publisher: *const c_char,
+    pub publisher_len: usize,
+    /// Whether `timestamp_micros` holds a time. False unless the client was
+    /// connected with `FelixConnectOptions.timestamps` and the broker
+    /// supplied one.
+    pub has_timestamp: bool,
+    /// When the broker appended the record, in microseconds since the Unix
+    /// epoch, by the clock of the broker that led the shard.
+    pub timestamp_micros: u64,
 }
 
 /// Called once when `felix_client_group_poll` finishes.
@@ -217,7 +230,7 @@ impl Deliver for Polled {
     }
 }
 
-fn record_row(record: &GroupRecord) -> FelixGroupRecord {
+pub(crate) fn record_row(record: &GroupRecord) -> FelixGroupRecord {
     FelixGroupRecord {
         offset: record.offset,
         attempts: record.attempts,
@@ -228,6 +241,13 @@ fn record_row(record: &GroupRecord) -> FelixGroupRecord {
             record.payload.as_ptr()
         },
         payload_len: record.payload.len(),
+        publisher: record
+            .publisher
+            .as_deref()
+            .map_or(ptr::null(), |p| p.as_ptr().cast()),
+        publisher_len: record.publisher.as_deref().map_or(0, str::len),
+        has_timestamp: record.timestamp_micros.is_some(),
+        timestamp_micros: record.timestamp_micros.unwrap_or(0),
     }
 }
 
@@ -312,15 +332,18 @@ pub(crate) struct Described(GroupInfo);
 
 impl Described {
     fn row(&self) -> FelixGroupInfo {
-        let info = &self.0;
-        FelixGroupInfo {
-            has_committed: info.committed.is_some(),
-            committed: info.committed.unwrap_or(0),
-            tail: info.tail,
-            in_flight: info.in_flight,
-            owed: info.owed,
-            dead_letters: info.dead_letters,
-        }
+        info_row(&self.0)
+    }
+}
+
+pub(crate) fn info_row(info: &GroupInfo) -> FelixGroupInfo {
+    FelixGroupInfo {
+        has_committed: info.committed.is_some(),
+        committed: info.committed.unwrap_or(0),
+        tail: info.tail,
+        in_flight: info.in_flight,
+        owed: info.owed,
+        dead_letters: info.dead_letters,
     }
 }
 
@@ -348,7 +371,7 @@ impl Deliver for Described {
     }
 }
 
-pub(crate) struct Deleted(bool);
+pub(crate) struct Deleted(pub(crate) bool);
 
 impl Deliver for Deleted {
     type Callback = FelixDeletedCallback;
@@ -1067,8 +1090,24 @@ pub(crate) fn spawn_read<V, T, F>(
     T: Send + 'static,
     F: Future<Output = anyhow::Result<T>> + Send + 'static,
 {
-    let handle = client.cancel.clone();
-    client.shared.spawn(done, move |done| async move {
+    spawn_read_on(&client.shared, client.cancel.clone(), user, done, ask, wrap);
+}
+
+/// [`spawn_read`] for a handle other than the client, which brings its own
+/// cancel token.
+pub(crate) fn spawn_read_on<V, T, F>(
+    shared: &Shared,
+    handle: CancellationToken,
+    user: Option<CancellationToken>,
+    done: Completion<V>,
+    ask: F,
+    wrap: impl FnOnce(T) -> V + Send + 'static,
+) where
+    V: Deliver,
+    T: Send + 'static,
+    F: Future<Output = anyhow::Result<T>> + Send + 'static,
+{
+    shared.spawn(done, move |done| async move {
         let outcome = tokio::select! {
             biased;
             () = cancelled(&handle, user.as_ref()) => None,
@@ -1127,6 +1166,20 @@ fn claim(offset: u64, attempts: u32) -> GroupRecord {
 fn millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
+
+mod sharded;
+mod stream;
+
+pub use sharded::{
+    FelixShardedGroup, FelixShardedGroupCallback, FelixShardedGroupPollCallback,
+    FelixShardedGroupRecord, felix_client_group_sharded, felix_sharded_group_free,
+    felix_sharded_group_poll, felix_sharded_group_shards,
+};
+pub use stream::{
+    FelixGroupInfosCallback, FelixGroupPosition, FelixGroupPositionsCallback,
+    felix_client_group_create_stream, felix_client_group_delete_stream,
+    felix_client_group_describe_stream, felix_client_group_seek_stream,
+};
 
 #[cfg(test)]
 mod tests;

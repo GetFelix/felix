@@ -27,7 +27,8 @@ const RUNTIME_WORKERS: usize = 2;
 /// and then for the runtime to stop.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 
-/// Called once when `felix_client_connect` finishes. On `FELIX_STATUS_OK`,
+/// Called once when `felix_client_connect` or `felix_client_connect_with`
+/// finishes. On `FELIX_STATUS_OK`,
 /// `client` is a new client the callee owns; otherwise it is null.
 pub type FelixConnectCallback = Option<
     unsafe extern "C" fn(
@@ -220,7 +221,60 @@ impl Drop for Teardown {
     }
 }
 
-/// Connect to a Felix cluster.
+/// What a client asks of the cluster beyond the defaults.
+///
+/// Set `size` to `sizeof(FelixConnectOptions)`; a field is read only when
+/// `size` covers it, so a caller built against an older header keeps working
+/// when fields are added, and a field it does not know is off.
+#[repr(C)]
+pub struct FelixConnectOptions {
+    /// `sizeof(FelixConnectOptions)` as the caller compiled it.
+    pub size: usize,
+    /// Ask brokers to say who published each event, for
+    /// `felix_event_publisher` and a group record's `publisher`. Adds the
+    /// principal to every event batch.
+    pub publishers: bool,
+    /// Ask brokers for each record's append time, for `felix_event_timestamp`
+    /// and a group record's `timestamp_micros`. Adds eight bytes per event.
+    pub timestamps: bool,
+}
+
+/// The options a connect applies, read out of [`FelixConnectOptions`].
+#[derive(Clone, Copy, Debug, Default)]
+struct ConnectOptions {
+    publishers: bool,
+    timestamps: bool,
+}
+
+impl ConnectOptions {
+    /// # Safety
+    ///
+    /// `options` is null or points to at least `options.size` readable bytes.
+    unsafe fn read(options: *const FelixConnectOptions) -> Result<Self, Failure> {
+        if options.is_null() {
+            return Ok(Self::default());
+        }
+        // SAFETY: readable up to its own `size`, which starts with `size`.
+        let size = unsafe { ptr::addr_of!((*options).size).read() };
+        if size < size_of::<usize>() {
+            return Err(Failure::invalid(
+                "options.size is smaller than the size field itself",
+            ));
+        }
+        let flag = |offset: usize| {
+            // SAFETY: `size` covers the byte. It is read as a byte, since C
+            // may hold any value there.
+            size > offset && unsafe { options.cast::<u8>().add(offset).read() } != 0
+        };
+        Ok(Self {
+            publishers: flag(std::mem::offset_of!(FelixConnectOptions, publishers)),
+            timestamps: flag(std::mem::offset_of!(FelixConnectOptions, timestamps)),
+        })
+    }
+}
+
+/// Connect to a Felix cluster. `felix_client_connect` is this with default
+/// options.
 ///
 /// `addrs` is one `host:port`, or several separated by commas; any reachable
 /// one is enough and the rest are discovered. A name is resolved again whenever
@@ -230,21 +284,27 @@ impl Drop for Teardown {
 /// `"localhost"` when null. `ca_file` is a PEM file of CA certificates to
 /// trust; when null the operating system's trust store is used.
 ///
+/// `options` is null for the defaults, or a `FelixConnectOptions` with its
+/// `size` set. A broker that does not negotiate an option leaves it absent on
+/// the records, never an error.
+///
 /// `cancel` is null or a token that stops the connect. `callback` runs once
 /// with the new client, unless this returns something other than
 /// `FELIX_STATUS_OK`.
 ///
 /// # Safety
 ///
-/// Every string is null or NUL-terminated, `cancel` is null or a live token,
-/// and `callback` is safe to call with `user_data` from any thread.
+/// Every string is null or NUL-terminated, `options` is null or readable up
+/// to its `size`, `cancel` is null or a live token, and `callback` is safe to
+/// call with `user_data` from any thread.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn felix_client_connect(
+pub unsafe extern "C" fn felix_client_connect_with(
     addrs: *const c_char,
     tenant_id: *const c_char,
     token: *const c_char,
     server_name: *const c_char,
     ca_file: *const c_char,
+    options: *const FelixConnectOptions,
     cancel: *const FelixCancelToken,
     callback: FelixConnectCallback,
     user_data: *mut c_void,
@@ -265,6 +325,8 @@ pub unsafe extern "C" fn felix_client_connect(
         if callback.is_none() {
             return Err(Failure::invalid("callback is null"));
         }
+        // SAFETY: null or readable up to its size, per the contract above.
+        let options = unsafe { ConnectOptions::read(options) }?;
         let seeds = parse_addrs(addrs)?;
         let server_name = server_name.to_string();
 
@@ -278,6 +340,8 @@ pub unsafe extern "C" fn felix_client_connect(
         let mut config = ClientConfig::optimized_defaults(quinn);
         config.auth_tenant_id = Some(tenant_id.to_string());
         config.auth_token = Some(token.to_string());
+        config.publishers = options.publishers;
+        config.timestamps = options.timestamps;
         // SAFETY: null or a live token, per the contract above.
         let user = unsafe { user_token(cancel) };
 
@@ -321,6 +385,39 @@ pub unsafe extern "C" fn felix_client_connect(
         });
         Ok(FELIX_STATUS_OK)
     })
+}
+
+/// Connect to a Felix cluster with the default options: the same as
+/// `felix_client_connect_with` with null `options`.
+///
+/// # Safety
+///
+/// As for `felix_client_connect_with`, without `options`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn felix_client_connect(
+    addrs: *const c_char,
+    tenant_id: *const c_char,
+    token: *const c_char,
+    server_name: *const c_char,
+    ca_file: *const c_char,
+    cancel: *const FelixCancelToken,
+    callback: FelixConnectCallback,
+    user_data: *mut c_void,
+) -> FelixStatus {
+    // SAFETY: the caller's contract, passed through.
+    unsafe {
+        felix_client_connect_with(
+            addrs,
+            tenant_id,
+            token,
+            server_name,
+            ca_file,
+            ptr::null(),
+            cancel,
+            callback,
+            user_data,
+        )
+    }
 }
 
 /// Free a client. Null is ignored.
