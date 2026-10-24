@@ -134,6 +134,7 @@ async fn a_forwarded_publish_is_stamped_with_the_shard_it_was_routed_for() {
         node_id: "broker-b".to_string(),
         advertise_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 7001)),
         generation: 4,
+        incarnation: 0,
     };
     let routed = publish_target(
         PublishRoute::Forward(target),

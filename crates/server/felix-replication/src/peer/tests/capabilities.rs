@@ -155,6 +155,7 @@ async fn two_current_brokers_learn_each_others_capabilities() {
         .union(PeerCapabilities::TAIL_FETCH)
         .union(PeerCapabilities::GENERATION_LABELS)
         .union(PeerCapabilities::FORWARD_OFFSETS)
+        .union(PeerCapabilities::FORWARD_INCARNATION)
         .union(PeerCapabilities::CACHE_FENCE)
         .union(PeerCapabilities::GROUP_FENCE)
         .union(PeerCapabilities::RECORD_TIMES)
@@ -492,6 +493,7 @@ async fn a_broker_with_the_fence_off_neither_offers_nor_answers_it() {
             .expect("handshake"),
         PeerCapabilities::GENERATION_LABELS
             .union(PeerCapabilities::FORWARD_OFFSETS)
+            .union(PeerCapabilities::FORWARD_INCARNATION)
             .union(PeerCapabilities::RECORD_TIMES)
             .union(PeerCapabilities::PING)
     );

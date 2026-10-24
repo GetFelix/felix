@@ -77,6 +77,7 @@ pub(crate) async fn resolve_cache_route(
             node_id,
             advertise_addr,
             generation,
+            incarnation,
         } => CacheRoute::Forward {
             key: ForwardKey {
                 tenant_id: shard_key.tenant_id,
@@ -88,6 +89,7 @@ pub(crate) async fn resolve_cache_route(
                 node_id,
                 advertise_addr,
                 generation,
+                incarnation,
             },
         },
         Dispatch::Unavailable(reason) => CacheRoute::Refused(reason),

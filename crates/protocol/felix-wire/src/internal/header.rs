@@ -158,10 +158,14 @@ pub enum Kind {
     /// The answer to `Ping`, given by the broker's serving runtime.
     Pong = 39,
     /// A replication request (records, bootstrap, rebuild, fence or fetch)
-    /// with the stream incarnation the sender's log belongs to: the
-    /// correlation id, the incarnation, the inner kind and the inner body.
-    /// Sent only once the fleet finalized `stream_incarnations`, so every
-    /// peer reads it.
+    /// or a forwarded publish or cache op, with the stream or cache
+    /// incarnation it is for: the correlation id, the incarnation, the inner
+    /// kind and the inner body. A replication request is wrapped only once
+    /// the fleet finalized incarnations, so every peer reads it; a forward
+    /// only to a peer that offered [`PeerCapabilities::FORWARD_INCARNATION`],
+    /// since a broker that predates it refuses the envelope around a forward.
+    ///
+    /// [`PeerCapabilities::FORWARD_INCARNATION`]: super::PeerCapabilities::FORWARD_INCARNATION
     Incarnated = 40,
 }
 

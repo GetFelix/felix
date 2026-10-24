@@ -276,6 +276,7 @@ fn target(addr: SocketAddr, generation: u64) -> ForwardTarget {
         node_id: OWNER.to_string(),
         advertise_addr: addr,
         generation,
+        incarnation: 0,
     }
 }
 

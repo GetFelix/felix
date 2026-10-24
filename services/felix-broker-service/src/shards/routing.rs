@@ -57,6 +57,10 @@ pub enum Dispatch {
         /// either direction is a typed answer and never a successful ownership
         /// claim — see `docs/internal-protocol.md`.
         generation: u64,
+        /// The stream or cache incarnation the route is for, 0 for one from
+        /// before incarnations. Carried to an owner that reads it, which
+        /// refuses a forward routed by another incarnation's assignment.
+        incarnation: u64,
     },
     /// Nobody can serve it right now, and this says why.
     Unavailable(Reason),
@@ -404,15 +408,19 @@ impl IngressRouter {
     }
 
     /// Wait until `key` is not moving, this broker's routes have reached
-    /// `generation`, and a shard this broker has just taken is serving, or
-    /// the hold gives up.
+    /// `generation` (and `incarnation`, when the requester named one), and a
+    /// shard this broker has just taken is serving, or the hold gives up.
+    ///
+    /// Routes for a newer incarnation than the requester named are settled
+    /// at any generation: the ownership check refuses the forward, and no
+    /// wait would change that.
     ///
     /// For a write forwarded here: the requester may have seen a cut-over this
     /// broker has not, may have sent it here in the gap before one, or may
     /// have sent it the moment the routes named this broker, while it still
     /// fences the replicas. Each settles in milliseconds, and the answer after
     /// waiting is a definite one, and usually a success.
-    pub(crate) async fn settle(&self, key: &ShardKey, generation: u64) {
+    pub(crate) async fn settle(&self, key: &ShardKey, generation: u64, incarnation: Option<u64>) {
         let mut held = None;
         loop {
             let changed = self.changed.notified();
@@ -420,8 +428,14 @@ impl IngressRouter {
             changed.as_mut().enable();
             let view = self.view.load();
             let unsettled = match view.routes.table().get(&to_router_key(key)) {
-                Some(route) => route.draining || route.generation < generation,
-                None => generation > 0,
+                Some(route) => {
+                    route.draining
+                        || match incarnation {
+                            Some(sent) if sent != route.incarnation => route.incarnation < sent,
+                            _ => route.generation < generation,
+                        }
+                }
+                None => generation > 0 || incarnation.is_some(),
             } || (self.dispatch_in(&view, key)
                 == Dispatch::Unavailable(Reason::NotReady)
                 && self.taking_over(key));
@@ -481,10 +495,12 @@ impl IngressRouter {
                 node_id,
                 advertise_addr,
                 generation,
+                incarnation,
             } => Dispatch::Forward {
                 node_id,
                 advertise_addr,
                 generation,
+                incarnation,
             },
             Resolution::Stale { have, wanted } => {
                 Dispatch::Unavailable(Reason::Stale { have, wanted })

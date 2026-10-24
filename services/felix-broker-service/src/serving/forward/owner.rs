@@ -12,6 +12,10 @@
 //!   it at a newer generation. `NotLeader`, naming the current owner.
 //! - **The requester is ahead** — this broker's watch has not caught up.
 //!   `StaleRoute`. It must not accept: it may already have lost the shard.
+//! - **The requester named another incarnation** — its route was for a
+//!   stream or cache deleted and created again under the same name, which
+//!   can start at the generation the deleted one had. `StaleRoute`, in either
+//!   direction: generations of two incarnations say nothing about each other.
 //!
 //! Ownership says this broker *may* write the shard; it says nothing about
 //! whether the client behind the forward may. That is the second check: the
@@ -31,7 +35,7 @@ use felix_router::{Resolution, ShardRouter};
 use felix_wire::internal::{
     CacheOpKind, ErrorCode, ForwardCacheCondition, ForwardCacheError, ForwardCacheOk,
     ForwardCacheOp, ForwardCacheOutcome, ForwardPublish, ForwardPublishError, ForwardPublishOk,
-    InternalMessage, NotLeader,
+    InternalMessage, NotLeader, ShardRef,
 };
 
 use crate::serving::auth::BrokerAuth;
@@ -98,8 +102,10 @@ impl ForwardingHandler {
         // A forward can reach this broker between a move's fence and its
         // cut-over, or ahead of this broker's own routes. Either settles in
         // milliseconds, so it waits here rather than bouncing the requester.
-        self.ingress.settle(&key, publish.shard.generation).await;
-        if let Some(denial) = self.check_ownership(correlation_id, &key, publish.shard.generation) {
+        self.ingress
+            .settle(&key, publish.shard.generation, publish.shard.incarnation)
+            .await;
+        if let Some(denial) = self.check_ownership(correlation_id, &key, &publish.shard) {
             return denial.into_publish_answer(correlation_id);
         }
 
@@ -143,7 +149,7 @@ impl ForwardingHandler {
             Ok(fenced) => fenced,
             Err(refused) => {
                 return self
-                    .fenced(correlation_id, &key, publish.shard.generation, refused)
+                    .fenced(correlation_id, &key, &publish.shard, refused)
                     .await
                     .into_publish_answer(correlation_id);
             }
@@ -205,8 +211,10 @@ impl ForwardingHandler {
         };
 
         // The same wait a forwarded publish makes, for the same reason.
-        self.ingress.settle(&key, op.shard.generation).await;
-        if let Some(denial) = self.check_ownership(correlation_id, &key, op.shard.generation) {
+        self.ingress
+            .settle(&key, op.shard.generation, op.shard.incarnation)
+            .await;
+        if let Some(denial) = self.check_ownership(correlation_id, &key, &op.shard) {
             return denial.into_cache_answer(correlation_id);
         }
 
@@ -271,12 +279,7 @@ impl ForwardingHandler {
                 crate::cluster::lease::metrics::BOUNDARY_READ,
             );
             return self
-                .fenced(
-                    correlation_id,
-                    &key,
-                    op.shard.generation,
-                    Fenced::LeaseLapsed,
-                )
+                .fenced(correlation_id, &key, &op.shard, Fenced::LeaseLapsed)
                 .await
                 .into_cache_answer(correlation_id);
         }
@@ -288,7 +291,7 @@ impl ForwardingHandler {
                 Ok(fenced) => Some(fenced),
                 Err(refused) => {
                     return self
-                        .fenced(correlation_id, &key, op.shard.generation, refused)
+                        .fenced(correlation_id, &key, &op.shard, refused)
                         .await
                         .into_cache_answer(correlation_id);
                 }
@@ -501,20 +504,23 @@ impl ForwardingHandler {
     /// generation match — and two copies of them would eventually disagree
     /// about which writes a broker may accept.
     ///
-    /// `None` means this broker owns `key` at exactly `claimed_generation`.
-    /// `Some` is why it does not, for the caller to answer in its own shape.
+    /// `None` means this broker owns `key` at exactly the claimed generation,
+    /// and at the claimed incarnation when the requester named one. `Some` is
+    /// why it does not, for the caller to answer in its own shape.
     fn check_ownership(
         &self,
         correlation_id: u64,
         key: &ShardKey,
-        claimed_generation: u64,
+        claimed: &ShardRef,
     ) -> Option<Denial> {
+        let claimed_generation = claimed.generation;
         match self.ingress.dispatch(key) {
             Dispatch::Local { .. } => {}
             Dispatch::Forward {
                 node_id,
                 advertise_addr,
                 generation,
+                ..
             } => {
                 // The shard moved on. Answering `NotLeader` rather than
                 // forwarding again is deliberate: a chain of brokers each
@@ -539,11 +545,10 @@ impl ForwardingHandler {
 
         // Local, but at which generation? `dispatch` already required local
         // readiness to match the router, so this reads the same number it
-        // agreed on.
-        let ours = match self
-            .router
-            .resolve(&crate::shards::routing::to_router_key(key))
-        {
+        // agreed on. The incarnation comes from the same snapshot.
+        let router_key = crate::shards::routing::to_router_key(key);
+        let routes = self.router.routes();
+        let ours = match self.router.resolve_with(&routes, &router_key) {
             Resolution::Local { generation } => generation,
             // Between the dispatch above and here the view changed. Refusing is
             // the only safe answer; the requester retries and gets a definite
@@ -556,6 +561,29 @@ impl ForwardingHandler {
                 });
             }
         };
+
+        // Checked before the generation: two incarnations' generations are
+        // unrelated numbers. A requester that named none predates the check,
+        // or routes a stream from before incarnations.
+        if let Some(sent) = claimed.incarnation {
+            let held = routes
+                .table()
+                .get(&router_key)
+                .map_or(0, |route| route.incarnation);
+            if sent != held {
+                metrics::record_served(metrics::OUTCOME_REFUSED);
+                let what = match key.kind {
+                    ShardKind::Stream => "stream",
+                    ShardKind::Cache => "cache",
+                };
+                return Some(Denial::Refused {
+                    code: ErrorCode::StaleRoute,
+                    detail: format!(
+                        "this broker routes incarnation {held} of the {what}, the requester {sent}"
+                    ),
+                });
+            }
+        }
 
         if claimed_generation != ours {
             metrics::record_served(metrics::OUTCOME_REFUSED);
@@ -590,7 +618,7 @@ impl ForwardingHandler {
         &self,
         correlation_id: u64,
         key: &ShardKey,
-        generation: u64,
+        claimed: &ShardRef,
         refused: Fenced,
     ) -> Denial {
         // A lapsed lease is not a move: no newer route is coming to wait for,
@@ -602,8 +630,14 @@ impl ForwardingHandler {
                 detail: refused.to_string(),
             };
         }
-        self.ingress.settle(key, generation.saturating_add(1)).await;
-        if let Some(denial) = self.check_ownership(correlation_id, key, generation) {
+        self.ingress
+            .settle(
+                key,
+                claimed.generation.saturating_add(1),
+                claimed.incarnation,
+            )
+            .await;
+        if let Some(denial) = self.check_ownership(correlation_id, key, claimed) {
             return denial;
         }
         metrics::record_served(metrics::OUTCOME_REFUSED);
@@ -643,7 +677,7 @@ impl ForwardingHandler {
                     Ok(fenced) => fenced,
                     Err(refused) => {
                         return self
-                            .fenced(correlation_id, key, op.shard.generation, refused)
+                            .fenced(correlation_id, key, &op.shard, refused)
                             .await
                             .into_cache_answer(correlation_id);
                     }

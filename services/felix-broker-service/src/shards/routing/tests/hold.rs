@@ -76,6 +76,7 @@ fn forward_to_b(generation: u64) -> Dispatch {
         node_id: "broker-b".to_string(),
         advertise_addr: SocketAddr::from(([10, 0, 0, 4], 7002)),
         generation,
+        incarnation: 0,
     }
 }
 
@@ -255,7 +256,7 @@ async fn settling_waits_for_routes_to_reach_the_requested_generation() {
     b.apply(draining(0, "broker-a", 2, "broker-b"));
 
     let ingress = Arc::clone(&b.ingress);
-    let settle = tokio::spawn(async move { ingress.settle(&key(0), 3).await });
+    let settle = tokio::spawn(async move { ingress.settle(&key(0), 3, None).await });
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(!settle.is_finished(), "behind the requester, so it waits");
 
@@ -287,7 +288,7 @@ async fn settling_waits_for_a_shard_still_fencing() {
     );
 
     let ingress = Arc::clone(&b.ingress);
-    let settle = tokio::spawn(async move { ingress.settle(&key(0), 3).await });
+    let settle = tokio::spawn(async move { ingress.settle(&key(0), 3, None).await });
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(!settle.is_finished(), "still fencing, so it waits");
 
@@ -313,7 +314,7 @@ async fn a_shard_that_is_not_moving_is_dispatched_at_once() {
     let (dispatch, fenced) = a.ingress.dispatch_write(&key(0)).await;
     assert_eq!(dispatch, Dispatch::Local { generation: 1 });
     assert!(fenced.is_some());
-    a.ingress.settle(&key(0), 1).await;
+    a.ingress.settle(&key(0), 1, None).await;
     assert!(started.elapsed() < Duration::from_millis(100));
 }
 
@@ -378,4 +379,35 @@ async fn a_write_to_a_shard_still_opening_waits_for_the_open() {
     let (dispatch, fenced) = write.await.expect("dispatch");
     assert_eq!(dispatch, Dispatch::Local { generation: 1 });
     assert!(fenced, "a local write enters the fence");
+}
+
+/// A forward that names an incarnation settles on it: routes behind it are
+/// waited for, and routes for a newer one settle at once at any generation,
+/// for the ownership check to refuse.
+#[tokio::test]
+async fn settling_follows_the_incarnation_a_forward_names() {
+    let at = |generation, incarnation| ShardAssignment {
+        incarnation,
+        ..assignment(0, "broker-b", generation)
+    };
+    let mut b = Broker::new("broker-b", hold(5_000, 16));
+    b.apply(at(3, 5));
+
+    let started = Instant::now();
+    b.ingress.settle(&key(0), 9, Some(4)).await;
+    assert!(
+        started.elapsed() < Duration::from_millis(100),
+        "the deleted incarnation's generation was waited for",
+    );
+
+    let ingress = Arc::clone(&b.ingress);
+    let settle = tokio::spawn(async move { ingress.settle(&key(0), 1, Some(6)).await });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!settle.is_finished(), "behind the requester's incarnation");
+
+    b.apply(at(1, 6));
+    tokio::time::timeout(Duration::from_secs(1), settle)
+        .await
+        .expect("settles once the routes reach the incarnation")
+        .expect("settle");
 }

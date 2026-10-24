@@ -167,7 +167,9 @@ were created with.
 The `generation` the ingress broker resolved against travels with the request.
 The owner compares it against its own and answers a mismatch explicitly in either
 direction, so a stale view is a typed answer rather than a write to a shard
-somebody has already been given.
+somebody has already been given. Once streams and caches have incarnations, the
+request also names the incarnation its route was for, and the owner refuses one
+routed by a deleted stream's assignment even at the same generation.
 
 ## Storage Architecture
 

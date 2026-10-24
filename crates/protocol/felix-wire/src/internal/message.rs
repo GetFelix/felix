@@ -135,10 +135,12 @@ impl InternalMessage {
     /// Every message has one, which is what makes the request lifecycle
     /// unambiguous: a response can always be matched or discarded, never left
     /// pending.
-    /// The shard a replication request is about: the requests an
-    /// [`Kind::Incarnated`] frame may carry.
-    pub fn replication_shard(&self) -> Option<&ShardRef> {
+    /// The shard a replication or forwarded request is about: the requests
+    /// an [`Kind::Incarnated`] frame may carry.
+    pub fn incarnated_shard(&self) -> Option<&ShardRef> {
         match self {
+            Self::ForwardPublish(m) => Some(&m.shard),
+            Self::ForwardCacheOp(m) => Some(&m.shard),
             Self::ReplicateRecords(m)
             | Self::ReplicateCacheRecords(m)
             | Self::ReplicateGroupRecords(m)
@@ -157,8 +159,10 @@ impl InternalMessage {
         }
     }
 
-    pub(super) fn replication_shard_mut(&mut self) -> Option<&mut ShardRef> {
+    pub(super) fn incarnated_shard_mut(&mut self) -> Option<&mut ShardRef> {
         match self {
+            Self::ForwardPublish(m) => Some(&mut m.shard),
+            Self::ForwardCacheOp(m) => Some(&mut m.shard),
             Self::ReplicateRecords(m)
             | Self::ReplicateCacheRecords(m)
             | Self::ReplicateGroupRecords(m)
@@ -223,8 +227,10 @@ pub struct ShardRef {
     /// The owner compares this with its own. Equal proceeds; either mismatch is
     /// an explicit typed answer, and never a successful ownership claim.
     pub generation: u64,
-    /// The stream incarnation the sender's log belongs to, on a replication
-    /// request. `Some` travels as [`Kind::Incarnated`] around the request's
-    /// own kind; `None` is the request's kind byte for byte.
+    /// The stream or cache incarnation the request is for: the one the
+    /// sender's log belongs to on a replication request, or the one the
+    /// requester's route named on a forward. `Some` travels as
+    /// [`Kind::Incarnated`] around the request's own kind; `None` is the
+    /// request's kind byte for byte.
     pub incarnation: Option<u64>,
 }

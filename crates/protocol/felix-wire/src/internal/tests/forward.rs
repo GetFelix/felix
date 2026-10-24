@@ -194,3 +194,107 @@ fn a_conditional_cache_op_round_trips_as_its_own_kind() {
     });
     assert_eq!(plain.kind(), Kind::ForwardCacheOk);
 }
+
+fn incarnated(mut message: InternalMessage, incarnation: Option<u64>) -> InternalMessage {
+    match &mut message {
+        InternalMessage::ForwardPublish(m) => m.shard.incarnation = incarnation,
+        InternalMessage::ForwardCacheOp(m) => m.shard.incarnation = incarnation,
+        other => panic!("not a forward: {:?}", other.kind()),
+    }
+    message
+}
+
+fn every_forward() -> Vec<InternalMessage> {
+    let cache_op = |credential: &str, condition| {
+        InternalMessage::ForwardCacheOp(ForwardCacheOp {
+            correlation_id: 42,
+            shard: shard(),
+            op: CacheOpKind::Put,
+            key: "session:abc".to_string(),
+            value: Bytes::from_static(b"payload"),
+            ttl_ms: 30_000,
+            credential: credential.to_string(),
+            condition,
+        })
+    };
+    vec![
+        forward(),
+        authorized_forward(),
+        cache_op("", None),
+        cache_op("eyJ.token.sig", None),
+        cache_op("eyJ.token.sig", Some(ForwardCacheCondition::Version(7))),
+    ]
+}
+
+/// **A forward names the incarnation its route was for in an `Incarnated`
+/// envelope**, and one without an incarnation is its own kind, byte for byte,
+/// so a broker that predates the envelope around a forward never sees it
+/// unless it offered to read it.
+#[test]
+fn a_forward_carries_its_incarnation_in_an_envelope() {
+    for message in every_forward() {
+        let plain = message.encode().expect("encode");
+        assert_eq!(
+            InternalHeader::decode(&plain).expect("header").kind,
+            message.kind(),
+        );
+
+        let carried = incarnated(message.clone(), Some(77));
+        let encoded = carried.encode().expect("encode");
+        assert_eq!(
+            InternalHeader::decode(&encoded).expect("header").kind,
+            Kind::Incarnated,
+        );
+        let mut expected = BytesMut::new();
+        expected.put_u64(42);
+        expected.put_u64(77);
+        expected.put_u16(message.kind() as u16);
+        expected.extend_from_slice(&plain[InternalHeader::LEN..]);
+        assert_eq!(&encoded[InternalHeader::LEN..], &expected[..]);
+        assert_eq!(InternalMessage::decode(encoded).expect("decode"), carried);
+    }
+}
+
+/// Only a request is ever wrapped: an envelope around an answer to a forward
+/// is refused, never read with the incarnation dropped.
+#[test]
+fn an_envelope_around_a_forward_answer_is_refused() {
+    let answers = [
+        InternalMessage::ForwardPublishOk(ForwardPublishOk {
+            correlation_id: 42,
+            first_offset: 1,
+            last_offset: 2,
+        }),
+        InternalMessage::NotLeader(NotLeader {
+            correlation_id: 42,
+            node_id: "broker-b".to_string(),
+            advertise_addr: "10.0.0.5:7000".to_string(),
+            generation: 9,
+        }),
+        InternalMessage::ForwardCacheOk(ForwardCacheOk {
+            correlation_id: 42,
+            value: None,
+            outcome: None,
+        }),
+    ];
+    for answer in answers {
+        let plain = answer.encode().expect("encode");
+        let mut body = BytesMut::new();
+        body.put_u64(42);
+        body.put_u64(77);
+        body.put_u16(answer.kind() as u16);
+        body.extend_from_slice(&plain[InternalHeader::LEN..]);
+        let mut frame = BytesMut::new();
+        InternalHeader {
+            kind: Kind::Incarnated,
+            length: body.len() as u32,
+        }
+        .encode(&mut frame);
+        frame.extend_from_slice(&body);
+        assert!(
+            InternalMessage::decode(frame.freeze()).is_err(),
+            "{:?} was read in an envelope",
+            answer.kind(),
+        );
+    }
+}

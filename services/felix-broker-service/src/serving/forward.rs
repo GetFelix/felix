@@ -56,6 +56,9 @@ pub struct ForwardTarget {
     pub node_id: String,
     pub advertise_addr: SocketAddr,
     pub generation: u64,
+    /// The stream or cache incarnation the route was for, 0 for one from
+    /// before incarnations.
+    pub incarnation: u64,
 }
 
 /// Which shard the batch belongs to.
@@ -137,6 +140,32 @@ pub async fn forward_publish(
                 detail: budget_spent(&target.node_id, budget, attempt, &last),
             });
         };
+        let incarnation =
+            match tokio::time::timeout(remaining, named_incarnation(pool, &target)).await {
+                Ok(Ok(incarnation)) => incarnation,
+                // Nothing was sent, so the attempt is retried like any other
+                // pre-write failure, never sent without the incarnation.
+                Ok(Err(err)) => {
+                    last = err.to_string();
+                    last_code = None;
+                    sleep_within(retry_delay(attempt), deadline).await;
+                    continue;
+                }
+                Err(_) => {
+                    last = format!("no handshake with {} within the budget", target.node_id);
+                    last_code = None;
+                    continue;
+                }
+            };
+        // The lookup may have dialled the owner; the request gets what is left.
+        let Some(remaining) = self::remaining(deadline) else {
+            metrics::record_forward(metrics::OUTCOME_EXHAUSTED);
+            return Err(ForwardError::Refused {
+                stream: key.stream.clone(),
+                code: last_code,
+                detail: budget_spent(&target.node_id, budget, attempt, &last),
+            });
+        };
         let request = InternalMessage::ForwardPublish(ForwardPublish {
             // The pool assigns the real id; it owns the connection this lands on.
             correlation_id: 0,
@@ -146,7 +175,7 @@ pub async fn forward_publish(
                 stream: key.stream.clone(),
                 shard: key.shard,
                 generation: target.generation,
-                incarnation: None,
+                incarnation,
             },
             ack,
             payloads: payloads.clone(),
@@ -222,6 +251,9 @@ pub async fn forward_publish(
                     node_id: moved.node_id,
                     advertise_addr,
                     generation: moved.generation,
+                    // A redirect is for the same stream; the owner it names
+                    // checks the incarnation again.
+                    incarnation: target.incarnation,
                 };
             }
             Ok(InternalMessage::ForwardPublishError(err))
@@ -287,6 +319,38 @@ pub async fn forward_publish(
         code: last_code,
         detail: format!("gave up after {MAX_ATTEMPTS} attempts: {last}"),
     })
+}
+
+/// The incarnation a forward to `target` names: the route's, once there is
+/// one (incarnations exist only once the fleet finalized them) and the owner
+/// offered to read it. A broker that predates the envelope around a forward
+/// refuses the frame, so it is sent the plain kind and checks generation
+/// alone, as it always did.
+///
+/// An owner whose capabilities cannot be learned is an error, not a plain
+/// forward: sending one would skip the check for exactly the owner that may
+/// hold another incarnation. Nothing has been sent when this fails.
+async fn named_incarnation(
+    pool: &impl PeerRequester,
+    target: &ForwardTarget,
+) -> Result<Option<u64>, PeerError> {
+    if target.incarnation == 0 {
+        return Ok(None);
+    }
+    let offered = match pool.recorded_capabilities(&target.node_id) {
+        Some(offered) => offered,
+        // No handshake with it yet. The request would dial it anyway, and
+        // reuses the connection this makes.
+        None => PeerRequester::capabilities(pool, &target.node_id, target.advertise_addr)
+            .await
+            .map_err(|err| PeerError::Unavailable {
+                node_id: target.node_id.clone(),
+                detail: format!("could not learn what it reads: {err}"),
+            })?,
+    };
+    Ok(offered
+        .contains(PeerCapabilities::FORWARD_INCARNATION)
+        .then_some(target.incarnation))
 }
 
 /// What a cache operation asks the owner to do.
@@ -419,6 +483,18 @@ pub async fn forward_cache_request(
         if attempt > 0 {
             metrics::record_forward_retry();
         }
+        // Bounded by the pool's handshake timeout, as the request's own dial
+        // would be.
+        let incarnation = match named_incarnation(pool, &target).await {
+            Ok(incarnation) => incarnation,
+            // Nothing was sent: retried like any other pre-write failure.
+            Err(err) => {
+                last = err.to_string();
+                last_code = None;
+                tokio::time::sleep(retry_delay(attempt)).await;
+                continue;
+            }
+        };
         let message = InternalMessage::ForwardCacheOp(ForwardCacheOp {
             correlation_id: 0,
             shard: ShardRef {
@@ -427,7 +503,7 @@ pub async fn forward_cache_request(
                 stream: key.stream.clone(),
                 shard: key.shard,
                 generation: target.generation,
-                incarnation: None,
+                incarnation,
             },
             op,
             key: cache_key.to_string(),
@@ -481,6 +557,7 @@ pub async fn forward_cache_request(
                     node_id: moved.node_id,
                     advertise_addr,
                     generation: moved.generation,
+                    incarnation: target.incarnation,
                 };
             }
             Ok(InternalMessage::ForwardPublishError(err))
