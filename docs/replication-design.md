@@ -2718,20 +2718,12 @@ busy follower may be the one a majority needs: with three replicas, one
 follower still answering an earlier pass and the other unreachable, the pass
 has shipped to nobody who can answer. So a pass with a busy follower that
 counts also stops waiting for a majority once the next pass is wanted, and an
-exchange that ends while a pass runs is handed to that pass, which counts the
+exchange that ends while a pass runs asks for the next one, which counts the
 busy follower's answer instead of waiting out the unreachable one (#1080).
-Counting it there matters: a pass that only gave up on the answer would ask
-the follower again, and two followers each answering one pass behind would cut
-every pass short that way, with the mark never moving (#1479).
 Its auxiliary logs wait too, so they do not
-dial the same slow peer again. When the exchange ends with no pass running, the
-cursor goes back and the shard passes again if the follower moved, or if it
-answered for more than the mark counts. The second case is a level follower
-asked again for an answer the mark can count, which moves no cursor; only a
-pass counts an answer, and with every publisher waiting on the mark no append
-comes to start one, so before #1479 the mark waited for the replication tick.
-One that failed waits for the next wake, so a peer that fails fast is not
-redialled in a loop. The report
+dial the same slow peer again. When the exchange ends, the cursor goes back and
+the shard passes again if the follower moved; one that failed waits for the
+next wake, so a peer that fails fast is not redialled in a loop. The report
 still lands before the mark moves, and a shard promoted here still ships
 nothing and moves no mark until a majority has taken its fence, so nothing here
 changes what an acknowledgement rests on.
