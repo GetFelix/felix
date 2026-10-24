@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792853843248,
+  "lastUpdate": 1792855273415,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -43890,6 +43890,72 @@ window.BENCHMARK_DATA = {
             "range": "657.76",
             "unit": "us",
             "extra": "trials: 5\nmedian: 376.00\nmean: 830.00\nstdev: 657.76\ncv: 79.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5e2b0f9ef6cd139d8cd4e6b199a1fc400f1cb490",
+          "message": "fix(forward): refuse a forward routed by another stream incarnation (#1324) (#1488)\n\n* fix(forward): refuse a forward routed by another stream incarnation (#1324)\n\nA forwarded publish or cache op was checked by generation alone. After a\ncontrol-plane restore rewinds the change sequence, a recreated stream can\nstart at the deleted one's generation, so a forward routed by the deleted\nstream's assignment was accepted and landed in the new stream.\n\nThe Incarnated envelope now also wraps ForwardPublish and ForwardCacheOp.\nThe ingress broker names its route's incarnation when it is not 0 and the\nowner offered the new FORWARD_INCARNATION peer capability; the owner checks\nit before the generation and answers any mismatch StaleRoute, and settle\nwaits for routes that are behind the named incarnation.\n\nSpec-Unaffected: the TLA specs model neither forwarding nor stream incarnations.\n\n* fix(forward): keep the incarnation check within the budget and never skip it\n\nA forward's capability lookup now comes out of the publish deadline instead\nof adding to it, and a lookup that fails fails the attempt before anything is\nsent rather than sending the forward without its incarnation.\n\nSpec-Unaffected: the TLA specs model neither forwarding nor stream incarnations.",
+          "timestamp": "2026-10-24T15:16:51Z",
+          "tree_id": "77c48ab239744bb730b678d9294f5a75792dcb4f",
+          "url": "https://github.com/GetFelix/felix/commit/5e2b0f9ef6cd139d8cd4e6b199a1fc400f1cb490"
+        },
+        "date": 1792855268755,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 182,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 182.00\nmean: 181.20\nstdev: 1.30\ncv: 0.72%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 245,
+            "range": "27.77",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 245.00\nmean: 255.80\nstdev: 27.77\ncv: 10.86%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 309,
+            "range": "457.87",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 309.00\nmean: 560.20\nstdev: 457.87\ncv: 81.73%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 219,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 219.00\nmean: 219.20\nstdev: 1.30\ncv: 0.59%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 446,
+            "range": "8.20",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 446.00\nmean: 441.40\nstdev: 8.20\ncv: 1.86%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 755,
+            "range": "233.40",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 755.00\nmean: 781.60\nstdev: 233.40\ncv: 29.86%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
