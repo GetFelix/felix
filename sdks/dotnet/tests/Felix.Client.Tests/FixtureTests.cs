@@ -41,7 +41,9 @@ internal sealed record Fixture(
     string MissingStream,
     string UnauthorizedToken,
     string? GroupOperatorToken,
-    bool RecordsPublishers)
+    bool RecordsPublishers,
+    string Cache,
+    string SingleShardCache)
 {
     internal static Fixture Load()
     {
@@ -58,7 +60,9 @@ internal sealed record Fixture(
             Text("missing_stream"),
             Text("unauthorized_token"),
             root.TryGetProperty("group_operator_token", out var op) && op.ValueKind == JsonValueKind.String ? op.GetString() : null,
-            root.TryGetProperty("records_publishers", out var rp) && rp.ValueKind == JsonValueKind.True);
+            root.TryGetProperty("records_publishers", out var rp) && rp.ValueKind == JsonValueKind.True,
+            Text("cache"),
+            Text("single_shard_cache"));
     }
 
     internal Task<FelixClient> ConnectAsync(string? token = null, CancellationToken ct = default) =>

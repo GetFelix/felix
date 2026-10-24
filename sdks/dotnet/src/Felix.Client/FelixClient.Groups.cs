@@ -110,6 +110,12 @@ public sealed partial class FelixClient
                 client, tenant, ns, stream, group, cancel, &Callbacks.OnDeleted, userData));
     }
 
+    /// <summary>
+    /// A cache of a tenant's namespace. Nothing is sent: the cache is made by the control plane, and
+    /// a cache that does not exist fails its first call with <see cref="FelixStatus.NotFound"/>.
+    /// </summary>
+    public FelixCache Cache(string tenant, string ns, string cache) => new(this, tenant, ns, cache);
+
     internal Task<T> Call<T>(CancellationToken cancellationToken, Func<nint, nint, nint, int> begin) =>
         NativeCall.Start<T>(handle, cancellationToken, begin);
 }

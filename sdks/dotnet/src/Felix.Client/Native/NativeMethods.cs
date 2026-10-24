@@ -64,6 +64,24 @@ internal struct NativeGroupPosition
     public byte Moved;
 }
 
+/// <summary><c>FelixWatchItem</c>, borrowed for the length of a callback.</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal unsafe struct NativeWatchItem
+{
+    public int Kind;
+    public byte HasShard;
+    public uint Shard;
+    public byte* Key;
+    public nuint KeyLen;
+    public byte HasValue;
+    public byte* Value;
+    public nuint ValueLen;
+    public ulong Offset;
+    public ulong ExpiresAtMillis;
+    public byte HasResumeFrom;
+    public ulong ResumeFrom;
+}
+
 /// <summary>The C ABI of <c>felix.h</c>. Callbacks are unmanaged function pointers.</summary>
 internal static unsafe partial class NativeMethods
 {
@@ -434,6 +452,151 @@ internal static unsafe partial class NativeMethods
 
     [LibraryImport(Lib)]
     internal static partial void felix_sharded_group_free(nint group);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial int felix_client_cache_put(
+        nint client,
+        string tenantId,
+        string ns,
+        string cache,
+        string key,
+        byte* value,
+        nuint len,
+        ulong ttlMs,
+        nint cancel,
+        delegate* unmanaged[Cdecl]<nint, int, byte*, void> callback,
+        nint userData);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial int felix_client_cache_get(
+        nint client,
+        string tenantId,
+        string ns,
+        string cache,
+        string key,
+        nint cancel,
+        delegate* unmanaged[Cdecl]<nint, int, byte*, byte, byte*, nuint, void> callback,
+        nint userData);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial int felix_client_cache_delete(
+        nint client,
+        string tenantId,
+        string ns,
+        string cache,
+        string key,
+        nint cancel,
+        delegate* unmanaged[Cdecl]<nint, int, byte*, byte, byte*, nuint, void> callback,
+        nint userData);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial int felix_client_cache_get_versioned(
+        nint client,
+        string tenantId,
+        string ns,
+        string cache,
+        string key,
+        nint cancel,
+        delegate* unmanaged[Cdecl]<nint, int, byte*, byte, byte*, nuint, ulong, void> callback,
+        nint userData);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial int felix_client_cache_put_if(
+        nint client,
+        string tenantId,
+        string ns,
+        string cache,
+        string key,
+        byte* value,
+        nuint len,
+        ulong ttlMs,
+        int kind,
+        ulong version,
+        nint cancel,
+        delegate* unmanaged[Cdecl]<nint, int, byte*, byte, byte, ulong, void> callback,
+        nint userData);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial int felix_client_cache_delete_if(
+        nint client,
+        string tenantId,
+        string ns,
+        string cache,
+        string key,
+        ulong version,
+        nint cancel,
+        delegate* unmanaged[Cdecl]<nint, int, byte*, byte, byte, ulong, void> callback,
+        nint userData);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial int felix_client_counter_add(
+        nint client,
+        string tenantId,
+        string ns,
+        string cache,
+        string key,
+        long delta,
+        nint cancel,
+        delegate* unmanaged[Cdecl]<nint, int, byte*, byte, long, void> callback,
+        nint userData);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial int felix_client_counter_get(
+        nint client,
+        string tenantId,
+        string ns,
+        string cache,
+        string key,
+        nint cancel,
+        delegate* unmanaged[Cdecl]<nint, int, byte*, byte, long, void> callback,
+        nint userData);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial int felix_client_watch_cache(
+        nint client,
+        string tenantId,
+        string ns,
+        string cache,
+        int kind,
+        string filter,
+        byte retained,
+        byte hasFromOffset,
+        ulong fromOffset,
+        nint cancel,
+        delegate* unmanaged[Cdecl]<nint, int, byte*, nint, void> callback,
+        nint userData);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial int felix_client_watch_cache_sharded(
+        nint client,
+        string tenantId,
+        string ns,
+        string cache,
+        string prefix,
+        byte retained,
+        uint* shards,
+        ulong* offsets,
+        nuint count,
+        nint cancel,
+        delegate* unmanaged[Cdecl]<nint, int, byte*, nint, void> callback,
+        nint userData);
+
+    [LibraryImport(Lib)]
+    internal static partial int felix_cache_watch_next(
+        nint watch,
+        long timeoutMs,
+        nint cancel,
+        delegate* unmanaged[Cdecl]<nint, int, byte*, NativeWatchItem*, void> callback,
+        nint userData);
+
+    [LibraryImport(Lib)]
+    internal static partial int felix_cache_watch_retained_count(nint watch, ulong* count, byte* has);
+
+    [LibraryImport(Lib)]
+    internal static partial int felix_cache_watch_resume_offsets(nint watch, uint* shards, ulong* offsets, nuint cap, nuint* count);
+
+    [LibraryImport(Lib)]
+    internal static partial void felix_cache_watch_free(nint watch);
 
     /// <summary>The library's message for the last failed call on this thread, copied.</summary>
     internal static string? LastError()

@@ -6,8 +6,9 @@ net10.0 on Linux, macOS and Windows, each on x64 and arm64; CI tests every one o
 (the broker scenarios on Linux x64 only). The native libraries will ship inside the NuGet package in a later release. Until then, build `felix-capi` and set `FELIX_NATIVE_LIB`.
 
 It covers connect, publish (single and batch), subscribe to one shard, consumer groups (on a
-shard and across every shard, with the stream-wide admin calls) and the publisher and timestamp
-metadata. Caches, commits, producers and multi-shard subscribe follow. Not packaged or released yet. See [the C# page](../../docs-site/src/content/docs/clients/csharp.md).
+shard and across every shard, with the stream-wide admin calls), caches, counters and cache watches
+(single and sharded, retained, resumable), and the publisher and timestamp metadata. Commits,
+producers and multi-shard subscribe follow. Not packaged or released yet. See [the C# page](../../docs-site/src/content/docs/clients/csharp.md).
 
 ```csharp
 await using var client = await FelixClient.ConnectAsync(new FelixClientOptions
