@@ -1,15 +1,20 @@
-//! Subscribing, and polling a subscription for its next event.
+//! Subscribing, and reading a subscription one event at a time.
 
-use std::ffi::c_char;
-use std::sync::{Arc, Mutex};
+use std::ffi::{c_char, c_void};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use felix_client::{ClusterSubscription, StartPosition};
+use tokio_util::sync::CancellationToken;
 
 use crate::boundary::{Failure, guard, guard_void, required_str};
+use crate::cancel::{FelixCancelToken, user_token};
 use crate::client::{FelixClient, Shared};
+use crate::completion::{Completion, Deliver, cancelled, is_cancelled};
 use crate::event::FelixEvent;
-use crate::status::{FELIX_STATUS_CLOSED, FELIX_STATUS_OK, FELIX_STATUS_TIMEOUT, FelixStatus};
+use crate::status::{
+    FELIX_STATUS_CANCELLED, FELIX_STATUS_CLOSED, FELIX_STATUS_OK, FELIX_STATUS_TIMEOUT, FelixStatus,
+};
 
 /// Where a subscription starts reading.
 pub type FelixStartKind = i32;
@@ -22,39 +27,133 @@ pub const FELIX_START_EARLIEST: FelixStartKind = 1;
 /// resuming caller passes the offset it last handled plus one.
 pub const FELIX_START_OFFSET: FelixStartKind = 2;
 
+/// Called once when `felix_client_subscribe` finishes. On `FELIX_STATUS_OK`,
+/// `subscription` is a new subscription the callee owns; otherwise it is
+/// null.
+pub type FelixSubscribeCallback = Option<
+    unsafe extern "C" fn(
+        user_data: *mut c_void,
+        status: FelixStatus,
+        message: *const c_char,
+        subscription: *mut FelixSubscription,
+    ),
+>;
+
+/// Called once when `felix_subscription_next` finishes. On
+/// `FELIX_STATUS_OK`, `event` is an event the callee owns; otherwise it is
+/// null.
+pub type FelixEventCallback = Option<
+    unsafe extern "C" fn(
+        user_data: *mut c_void,
+        status: FelixStatus,
+        message: *const c_char,
+        event: *mut FelixEvent,
+    ),
+>;
+
 /// A live subscription to one shard of a stream.
 ///
 /// It follows the shard to whichever broker owns it, as the Rust client
-/// does. Poll it from one thread at a time; concurrent polls take turns.
+/// does. One read may be pending at a time. It must not be freed while
+/// another thread is calling it.
 pub struct FelixSubscription {
-    /// `None` once the broker has ended the stream.
-    inner: Mutex<Option<ClusterSubscription>>,
+    slot: Arc<Mutex<Slot>>,
+    /// Cancelled when this handle is freed, which ends a pending read.
+    cancel: CancellationToken,
     shared: Arc<Shared>,
+}
+
+enum Slot {
+    Idle(Box<ClusterSubscription>),
+    /// A read has the subscription.
+    Reading,
+    /// The broker ended the stream.
+    Closed,
 }
 
 impl Drop for FelixSubscription {
     fn drop(&mut self) {
+        self.cancel.cancel();
         // Its background tasks belong to the client's runtime, so it is
-        // dropped inside that runtime.
-        let _guard = self.shared.runtime().enter();
-        let inner = match self.inner.get_mut() {
-            Ok(inner) => inner,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        inner.take();
+        // dropped inside that runtime. A pending read drops it on its own.
+        let _guard = self.shared.handle().enter();
+        let idle = std::mem::replace(&mut *lock(&self.slot), Slot::Closed);
+        drop(idle);
+    }
+}
+
+/// A read's hold on the subscription. Dropping it puts the subscription
+/// back, so a read that panics or is cancelled leaves it readable.
+struct Lease {
+    slot: Arc<Mutex<Slot>>,
+    /// `None` once the broker ended the stream.
+    subscription: Option<Box<ClusterSubscription>>,
+}
+
+impl Drop for Lease {
+    fn drop(&mut self) {
+        let next = self.subscription.take().map_or(Slot::Closed, Slot::Idle);
+        *lock(&self.slot) = next;
+    }
+}
+
+impl Deliver for Box<FelixSubscription> {
+    type Callback = FelixSubscribeCallback;
+
+    fn is_null(callback: Self::Callback) -> bool {
+        callback.is_none()
+    }
+
+    unsafe fn deliver(
+        callback: Self::Callback,
+        user_data: *mut c_void,
+        status: FelixStatus,
+        message: *const c_char,
+        value: Option<Self>,
+    ) {
+        if let Some(callback) = callback {
+            let subscription = value.map_or(std::ptr::null_mut(), Box::into_raw);
+            // SAFETY: the callback's contract is the header's; the arguments
+            // match it.
+            unsafe { callback(user_data, status, message, subscription) };
+        }
+    }
+}
+
+impl Deliver for Box<FelixEvent> {
+    type Callback = FelixEventCallback;
+
+    fn is_null(callback: Self::Callback) -> bool {
+        callback.is_none()
+    }
+
+    unsafe fn deliver(
+        callback: Self::Callback,
+        user_data: *mut c_void,
+        status: FelixStatus,
+        message: *const c_char,
+        value: Option<Self>,
+    ) {
+        if let Some(callback) = callback {
+            let event = value.map_or(std::ptr::null_mut(), Box::into_raw);
+            // SAFETY: as above.
+            unsafe { callback(user_data, status, message, event) };
+        }
     }
 }
 
 /// Subscribe to shard 0 of a stream.
 ///
 /// `start` is one of the `FELIX_START_*` values; `start_offset` is read only
-/// for `FELIX_START_OFFSET`. On success `*out_subscription` holds a
-/// subscription to free with `felix_subscription_free`.
+/// for `FELIX_START_OFFSET`. `callback` runs once with the new subscription,
+/// unless this returns something other than `FELIX_STATUS_OK`. A cancelled
+/// subscribe never hands one out.
 ///
 /// # Safety
 ///
-/// `client` is a live client, the strings are null or NUL-terminated, and
-/// `out_subscription` points to writable storage for one pointer.
+/// `client` is a live client, the strings are null or NUL-terminated,
+/// `cancel` is null or a live token, and `callback` is safe to call with
+/// `user_data` from any thread.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn felix_client_subscribe(
     client: *const FelixClient,
@@ -63,21 +162,20 @@ pub unsafe extern "C" fn felix_client_subscribe(
     stream: *const c_char,
     start: FelixStartKind,
     start_offset: u64,
-    out_subscription: *mut *mut FelixSubscription,
+    cancel: *const FelixCancelToken,
+    callback: FelixSubscribeCallback,
+    user_data: *mut c_void,
 ) -> FelixStatus {
     guard(|| {
-        if out_subscription.is_null() {
-            return Err(Failure::invalid("out_subscription is null"));
-        }
         // SAFETY: null or a live client, per the contract above.
         let client =
             unsafe { client.as_ref() }.ok_or_else(|| Failure::invalid("client is null"))?;
         // SAFETY: each is null or a NUL-terminated string.
         let (tenant_id, ns, stream) = unsafe {
             (
-                required_str(tenant_id, "tenant_id")?,
-                required_str(ns, "ns")?,
-                required_str(stream, "stream")?,
+                required_str(tenant_id, "tenant_id")?.to_string(),
+                required_str(ns, "ns")?.to_string(),
+                required_str(stream, "stream")?.to_string(),
             )
         };
         let start = match start {
@@ -90,98 +188,170 @@ pub unsafe extern "C" fn felix_client_subscribe(
                 )));
             }
         };
+        // SAFETY: null or a live token, per the contract above.
+        let user = unsafe { user_token(cancel) };
 
+        // The new subscription keeps the runtime alive, so this task holds
+        // the shared state rather than only the client.
         let shared = Arc::clone(&client.shared);
-        let subscription = shared.runtime().block_on(shared.client().subscribe_from(
-            tenant_id,
-            ns,
-            stream,
-            Some(start),
-        ))?;
-        let handle = Box::new(FelixSubscription {
-            inner: Mutex::new(Some(subscription)),
-            shared,
+        let handle = client.cancel.clone();
+        let done = Completion::<Box<FelixSubscription>>::new(callback, user_data)?;
+        client.shared.spawn(done, move |done| async move {
+            let subscribe = shared
+                .client()
+                .subscribe_from(&tenant_id, &ns, &stream, Some(start));
+            let outcome = tokio::select! {
+                biased;
+                () = cancelled(&handle, user.as_ref()) => None,
+                outcome = subscribe => Some(outcome),
+            };
+            // Dropped here, inside the runtime, when the caller cancelled
+            // as it arrived.
+            match outcome {
+                Some(Ok(subscription)) if !is_cancelled(&handle, user.as_ref()) => {
+                    let cancel = shared.cancel_token();
+                    done.ok(Box::new(FelixSubscription {
+                        slot: Arc::new(Mutex::new(Slot::Idle(Box::new(subscription)))),
+                        cancel,
+                        shared,
+                    }));
+                }
+                Some(Err(err)) if !is_cancelled(&handle, user.as_ref()) => {
+                    done.fail(err.into());
+                }
+                _ => done.status(FELIX_STATUS_CANCELLED),
+            }
         });
-        // SAFETY: checked non-null above, and the caller promises it is
-        // writable.
-        unsafe { out_subscription.write(Box::into_raw(handle)) };
         Ok(FELIX_STATUS_OK)
     })
 }
 
-/// Wait for the next event.
+/// Read the next event.
 ///
-/// Returns `FELIX_STATUS_OK` with `*out_event` set to an event to free with
+/// `callback` runs once: with `FELIX_STATUS_OK` and an event to free with
 /// `felix_event_free`; `FELIX_STATUS_TIMEOUT` when `timeout_ms` passed with
-/// nothing (the subscription stays usable); or `FELIX_STATUS_CLOSED` once the
-/// broker has ended the stream. `*out_event` is null for anything but OK.
+/// nothing (the subscription stays usable); `FELIX_STATUS_CLOSED` once the
+/// broker has ended the stream; or `FELIX_STATUS_CANCELLED`. A cancelled or
+/// timed-out read loses nothing; the next read gets the event.
 ///
 /// A negative `timeout_ms` waits indefinitely; zero only takes an event that
-/// is already waiting.
+/// is already waiting. Only one read may be pending: a second returns
+/// `FELIX_STATUS_INVALID_ARGUMENT`. The callback may start the next read.
 ///
 /// # Safety
 ///
-/// `subscription` is a live subscription, and `out_event` points to writable
-/// storage for one pointer.
+/// `subscription` is a live subscription, `cancel` is null or a live token,
+/// and `callback` is safe to call with `user_data` from any thread.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn felix_subscription_next_event(
+pub unsafe extern "C" fn felix_subscription_next(
     subscription: *const FelixSubscription,
     timeout_ms: i64,
-    out_event: *mut *mut FelixEvent,
+    cancel: *const FelixCancelToken,
+    callback: FelixEventCallback,
+    user_data: *mut c_void,
 ) -> FelixStatus {
     guard(|| {
-        if out_event.is_null() {
-            return Err(Failure::invalid("out_event is null"));
-        }
-        // SAFETY: checked non-null; the caller promises it is writable.
-        unsafe { out_event.write(std::ptr::null_mut()) };
         // SAFETY: null or a live subscription, per the contract above.
         let subscription = unsafe { subscription.as_ref() }
             .ok_or_else(|| Failure::invalid("subscription is null"))?;
+        // SAFETY: null or a live token, per the contract above.
+        let user = unsafe { user_token(cancel) };
+        let wait = u64::try_from(timeout_ms).ok().map(Duration::from_millis);
+        let handle = subscription.cancel.clone();
 
-        // A poisoned lock means an earlier poll panicked mid-read. The
-        // subscription itself is still whole, so carry on with it.
-        let mut slot = match subscription.inner.lock() {
-            Ok(slot) => slot,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        let Some(inner) = slot.as_mut() else {
-            return Ok(FELIX_STATUS_CLOSED);
-        };
-        let runtime = subscription.shared.runtime();
-        let next = if timeout_ms < 0 {
-            runtime.block_on(inner.next_event())?
-        } else {
-            let wait = Duration::from_millis(timeout_ms.unsigned_abs());
-            match runtime.block_on(async { tokio::time::timeout(wait, inner.next_event()).await }) {
-                Ok(next) => next?,
-                Err(_elapsed) => return Ok(FELIX_STATUS_TIMEOUT),
+        let mut slot = lock(&subscription.slot);
+        let lease = match std::mem::replace(&mut *slot, Slot::Reading) {
+            Slot::Idle(inner) => Some(Lease {
+                slot: Arc::clone(&subscription.slot),
+                subscription: Some(inner),
+            }),
+            Slot::Reading => {
+                return Err(Failure::invalid(
+                    "a read is already pending on this subscription",
+                ));
+            }
+            Slot::Closed => {
+                *slot = Slot::Closed;
+                None
             }
         };
-        let Some(event) = next else {
-            slot.take();
-            return Ok(FELIX_STATUS_CLOSED);
+        drop(slot);
+        let done = match Completion::<Box<FelixEvent>>::new(callback, user_data) {
+            Ok(done) => done,
+            Err(failure) => {
+                // Hand the subscription back before refusing.
+                drop(lease);
+                return Err(failure);
+            }
         };
-        let event = Box::new(FelixEvent::from(event));
-        // SAFETY: checked non-null and writable above.
-        unsafe { out_event.write(Box::into_raw(event)) };
+        subscription.shared.spawn(done, move |done| async move {
+            let Some(mut lease) = lease else {
+                return done.status(FELIX_STATUS_CLOSED);
+            };
+            let inner = lease
+                .subscription
+                .as_mut()
+                .expect("a lease holds the subscription");
+            let timeout = async {
+                match wait {
+                    Some(wait) => tokio::time::sleep(wait).await,
+                    None => std::future::pending().await,
+                }
+            };
+            // `next_event` is cancel-safe, so losing either race loses no event.
+            let next = tokio::select! {
+                biased;
+                () = cancelled(&handle, user.as_ref()) => Err(FELIX_STATUS_CANCELLED),
+                next = inner.next_event() => Ok(next),
+                () = timeout => Err(FELIX_STATUS_TIMEOUT),
+            };
+            let outcome = match next {
+                Ok(Ok(Some(event))) => Ok(Box::new(FelixEvent::from(event))),
+                Ok(Ok(None)) => {
+                    lease.subscription = None;
+                    Err(Ok(FELIX_STATUS_CLOSED))
+                }
+                Ok(Err(err)) => Err(Err(Failure::from(err))),
+                Err(status) => Err(Ok(status)),
+            };
+            // Give the subscription back before calling out, so the callback
+            // can start the next read.
+            drop(lease);
+            match outcome {
+                Ok(event) => done.ok(event),
+                Err(Ok(status)) => done.status(status),
+                Err(Err(failure)) => done.fail(failure),
+            }
+        });
         Ok(FELIX_STATUS_OK)
     })
 }
 
 /// Free a subscription, which stops it. Null is ignored.
 ///
+/// A pending read completes with `FELIX_STATUS_CANCELLED`, possibly after
+/// this returns.
+///
 /// # Safety
 ///
-/// `subscription` is null or a pointer from `felix_client_subscribe` that
-/// has not been freed, and no other thread is using it.
+/// `subscription` is null or a pointer from a subscribe callback that has not
+/// been freed, and no other thread is using it.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn felix_subscription_free(subscription: *mut FelixSubscription) {
     guard_void(|| {
         if !subscription.is_null() {
-            // SAFETY: the pointer came from `Box::into_raw` in
-            // `felix_client_subscribe` and is freed exactly once.
+            // SAFETY: the pointer came from `Box::into_raw` in the subscribe
+            // callback and is freed exactly once.
             drop(unsafe { Box::from_raw(subscription) });
         }
     });
+}
+
+/// A poisoned lock means a panic while the slot was held. The slot is still
+/// whole, so carry on with it.
+fn lock(slot: &Mutex<Slot>) -> MutexGuard<'_, Slot> {
+    match slot.lock() {
+        Ok(slot) => slot,
+        Err(poisoned) => poisoned.into_inner(),
+    }
 }

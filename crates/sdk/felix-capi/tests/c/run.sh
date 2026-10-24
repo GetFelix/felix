@@ -30,7 +30,7 @@ if [ -z "$native" ]; then
   exit 1
 fi
 
-cflags=(-std=c11 -Wall -Wextra -Werror -I "$crate/include")
+cflags=(-std=c11 -pthread -Wall -Wextra -Werror -I "$crate/include")
 case "$(uname -s)" in
   Darwin) shared="$target/libfelix.dylib" ;;
   *) shared="$target/libfelix.so" ;;

@@ -1152,6 +1152,7 @@ dependencies = [
  "cbindgen",
  "felix-client",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]

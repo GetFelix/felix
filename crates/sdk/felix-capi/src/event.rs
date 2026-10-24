@@ -108,14 +108,14 @@ pub unsafe extern "C" fn felix_event_skipped_before(
 ///
 /// # Safety
 ///
-/// `event` is null or a pointer from `felix_subscription_next_event` that has
+/// `event` is null or a pointer from `felix_subscription_next` that has
 /// not been freed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn felix_event_free(event: *mut FelixEvent) {
     guard_void(|| {
         if !event.is_null() {
             // SAFETY: the pointer came from `Box::into_raw` in
-            // `felix_subscription_next_event` and is freed exactly once.
+            // `felix_subscription_next` and is freed exactly once.
             drop(unsafe { Box::from_raw(event) });
         }
     });
