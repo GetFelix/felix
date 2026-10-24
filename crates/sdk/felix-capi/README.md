@@ -366,3 +366,20 @@ header, links it against both the shared and the static library, and runs the
 checks that need no broker. `task capi:test -- fixture` also runs the publish,
 batch, subscribe, group, cache and commit scenarios against `felix-cluster client-fixture`, which CI does
 on every pull request.
+
+The fixture run is also the C conformance harness. `pubsub.c` tags each
+catalogue scenario in `felix-conformance` with `SCENARIO_BEGIN` and
+`SCENARIO_END` (a scenario passes when no check inside it failed) and records
+`SKIP` with a reason for the ones it does not run yet. `run.sh` merges the
+shared and static builds, the worst outcome winning, and writes the results
+document to `$FELIX_CONFORMANCE_RESULTS` when that is set:
+
+```bash
+FELIX_CONFORMANCE_RESULTS=c-conformance.json crates/sdk/felix-capi/tests/c/run.sh fixture
+cargo run -p felix-conformance -- verify c-conformance.json
+```
+
+The scenarios that break a cluster (connection faults, losing a broker or a
+shard) are skipped until the harness can start a cluster of its own. The
+shard-move and lost-quorum scenarios use the fixture's `/fence`, `/partition`
+and `/heal` endpoint, so they need `curl`.
