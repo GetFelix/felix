@@ -111,6 +111,14 @@ ms, and the measured p50 is 767 ms. Nothing in either cell is slow: the same
 broker answers a lone publish in under 400 µs. The ack time in a saturated
 cell measures how much the load generator chose to keep in flight.
 
+The same law tells a client how much to keep in flight. Data in flight beyond
+what keeps the broker busy adds no throughput, only waiting: a request waits
+for everything queued ahead of it, so the wait is bytes outstanding ÷
+throughput. Past that point, halving what a client keeps in flight halves its
+latency at the same throughput. The client's `publish_inflight_bytes` budget,
+4 MiB by default, is the knob; see
+[client configuration](https://github.com/GetFelix/felix/blob/main/docs/client-config.md).
+
 ![Ack latency p50 against the number of publishes outstanding, log-log, for in-memory and durable streams at 256 B and 4 KiB. Every line rises from 160 to 380 µs with one publish outstanding to 10 to 49 ms with 4,096, and each loaded point sits close to Little's law's prediction.](/charts/v060/latency-regimes.svg)
 
 The chart shows both regimes in one picture. With one publish outstanding, the
