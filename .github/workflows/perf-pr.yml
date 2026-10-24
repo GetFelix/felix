@@ -61,7 +61,7 @@ env:
 jobs:
   perf-compare:
     # Both sides run in this one job, so the runner never skews the comparison.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 240
     steps:
       - name: Checkout PR head
