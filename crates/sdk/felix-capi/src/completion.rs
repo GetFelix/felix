@@ -77,6 +77,12 @@ impl<V: Deliver> Completion<V> {
         self.finish(failure.status, Some(failure.message), None);
     }
 
+    /// A value that carries its own outcome, such as a batch in which some
+    /// records failed.
+    pub(crate) fn with_status(self, status: FelixStatus, message: Option<String>, value: V) {
+        self.finish(status, message, Some(value));
+    }
+
     pub(crate) fn result(self, result: Result<V, Failure>) {
         match result {
             Ok(value) => self.ok(value),
@@ -116,12 +122,17 @@ fn call<V: Deliver>(
     message: Option<String>,
     value: Option<V>,
 ) {
-    // An interior NUL would truncate the message; replace it instead.
-    let message = message.map(|m| CString::new(m.replace('\0', "\u{FFFD}")).unwrap_or_default());
+    let message = message.map(c_message);
     let message_ptr = message.as_ref().map_or(ptr::null(), |m| m.as_ptr());
     // SAFETY: `new` refused a null callback, and the message lives until the
     // callback returns.
     unsafe { V::deliver(callback, user_data.0, status, message_ptr, value) };
+}
+
+/// A message as a C string. An interior NUL would truncate it, so it is
+/// replaced instead.
+pub(crate) fn c_message(message: String) -> CString {
+    CString::new(message.replace('\0', "\u{FFFD}")).unwrap_or_default()
 }
 
 /// Resolves once `handle` or the caller's own token is cancelled.

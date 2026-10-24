@@ -2,7 +2,7 @@ use std::ffi::{CStr, c_char, c_void};
 use std::sync::Mutex;
 
 use super::*;
-use crate::client::{FelixPublishCallback, Published};
+use crate::publish::{FelixPublishCallback, Published};
 use crate::status::{FELIX_STATUS_INVALID_ARGUMENT, FELIX_STATUS_NOT_FOUND};
 
 /// What one callback saw.

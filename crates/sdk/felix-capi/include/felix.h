@@ -45,6 +45,10 @@ typedef void (*FelixConnectCallback)(void *user_data,
 // What the broker must have done before a publish completes.
 typedef int32_t FelixAckMode;
 
+// What a publish does when the connection is lost after the record may have
+// been written.
+typedef int32_t FelixDelivery;
+
 // Called once when `felix_client_publish` finishes. On `FELIX_STATUS_OK`,
 // `has_offset` says whether the broker reported the record's log offset,
 // and `offset` holds it when it did.
@@ -53,6 +57,35 @@ typedef void (*FelixPublishCallback)(void *user_data,
                                      const char *message,
                                      bool has_offset,
                                      uint64_t offset);
+
+// How one record of a batch fared.
+typedef struct FelixRecordResult {
+  // `FELIX_STATUS_OK` when the record was accepted.
+  FelixStatus status;
+  // Whether `offset` holds the record's log offset.
+  bool has_offset;
+  // The record's log offset, when `has_offset` is set.
+  uint64_t offset;
+  // Why the record failed, or null. Records that failed together share
+  // one message. Valid only while the callback runs.
+  const char *message;
+} FelixRecordResult;
+
+// Called once when a batch publish finishes.
+//
+// `results` holds `count` entries, one per record in the order they were
+// passed, and is valid only while the callback runs. `status` is
+// `FELIX_STATUS_OK` when every record was accepted, else the status of the
+// first record that failed, with its message.
+//
+// `results` is null, and `count` zero, when no record has an outcome of its
+// own: the batch was empty, or the call was cancelled or panicked, which
+// `status` says.
+typedef void (*FelixBatchCallback)(void *user_data,
+                                   FelixStatus status,
+                                   const char *message,
+                                   const struct FelixRecordResult *results,
+                                   size_t count);
 
 // Where a subscription starts reading.
 typedef int32_t FelixStartKind;
@@ -81,6 +114,15 @@ typedef void (*FelixEventCallback)(void *user_data,
 
 // Wait for the broker to acknowledge the batch the record went out in.
 #define FELIX_ACK_PER_BATCH 2
+
+// Report the failure and do not send the record again, so it is never
+// written twice. A record a broker refused without applying it is still
+// sent once more, to the shard's current owner.
+#define FELIX_DELIVERY_AT_MOST_ONCE 0
+
+// Reconnect and send it again, until it is acknowledged or the client's
+// reconnect policy gives up. A record can be written twice.
+#define FELIX_DELIVERY_AT_LEAST_ONCE 1
 
 // The call did what it was asked.
 #define FELIX_STATUS_OK 0
@@ -209,38 +251,6 @@ FelixStatus felix_client_connect(const char *addrs,
 // freed, and no other thread is using it.
 void felix_client_free(struct FelixClient *client);
 
-// Publish one record to shard 0 of a stream.
-//
-// `payload` may be null when `payload_len` is zero; it is copied before
-// this returns. `ack` is one of the `FELIX_ACK_*` values. There is no
-// offset when `ack` is `FELIX_ACK_NONE`, the stream has no log, or the
-// broker acknowledged before writing.
-//
-// Publishes in flight at the same time may reach the broker in any order.
-// To keep records in order, start each one from the previous one's
-// callback.
-//
-// A publish cancelled before it starts completes with
-// `FELIX_STATUS_CANCELLED`; after it may have been sent, with
-// `FELIX_STATUS_OUTCOME_UNKNOWN`.
-//
-// # Safety
-//
-// `client` is a live client. The strings are null or NUL-terminated.
-// `payload` is null or valid for `payload_len` bytes. `cancel` is null or a
-// live token, and `callback` is safe to call with `user_data` from any
-// thread.
-FelixStatus felix_client_publish(const struct FelixClient *client,
-                                 const char *tenant_id,
-                                 const char *ns,
-                                 const char *stream,
-                                 const uint8_t *payload,
-                                 size_t payload_len,
-                                 FelixAckMode ack,
-                                 const struct FelixCancelToken *cancel,
-                                 FelixPublishCallback callback,
-                                 void *user_data);
-
 // The message for the last call on this thread that did not return
 // `FELIX_STATUS_OK`, or null if that call succeeded.
 //
@@ -288,6 +298,138 @@ FelixStatus felix_event_skipped_before(const struct FelixEvent *event, uint64_t 
 // `event` is null or a pointer from `felix_subscription_next` that has
 // not been freed.
 void felix_event_free(struct FelixEvent *event);
+
+// Publish one record.
+//
+// `payload` may be null when `payload_len` is zero; it is copied before this
+// returns, as is the key. `key` routes the record: records sharing a key
+// share a shard and stay in order. Null means no key, and the record goes to
+// shard 0; a non-null `key` with `key_len` zero is the empty key, which is a
+// key like any other.
+//
+// `ack` is one of the `FELIX_ACK_*` values, `delivery` one of the
+// `FELIX_DELIVERY_*` values. There is no offset when `ack` is
+// `FELIX_ACK_NONE`, the stream has no log, or the broker acknowledged before
+// writing.
+//
+// Publishes in flight at the same time may reach the broker in any order.
+// To keep records in order, start each one from the previous one's
+// callback.
+//
+// A publish cancelled before it starts completes with
+// `FELIX_STATUS_CANCELLED`; after it may have been sent, with
+// `FELIX_STATUS_OUTCOME_UNKNOWN`.
+//
+// # Safety
+//
+// `client` is a live client. The strings are null or NUL-terminated.
+// `payload` is null or valid for `payload_len` bytes, and `key` for
+// `key_len`. `cancel` is null or a live token, and `callback` is safe to
+// call with `user_data` from any thread.
+FelixStatus felix_client_publish(const struct FelixClient *client,
+                                 const char *tenant_id,
+                                 const char *ns,
+                                 const char *stream,
+                                 const uint8_t *payload,
+                                 size_t payload_len,
+                                 const uint8_t *key,
+                                 size_t key_len,
+                                 FelixAckMode ack,
+                                 FelixDelivery delivery,
+                                 const struct FelixCancelToken *cancel,
+                                 FelixPublishCallback callback,
+                                 void *user_data);
+
+// Publish a batch to one shard, as one frame that the broker appends
+// contiguously and accepts or refuses as a unit.
+//
+// The `count` payloads lie end to end in `data`, the i-th `lens[i]` bytes
+// long; both are copied before this returns. `key` routes the batch as it
+// does a single record for `felix_client_publish`: null is shard 0, and
+// otherwise every record goes to the key's shard. A batch the broker may
+// have written is not sent again; for that, use
+// `felix_client_publish_records` with `FELIX_DELIVERY_AT_LEAST_ONCE`.
+//
+// Every record gets the batch's outcome in `callback`, and on success its
+// own offset, when the broker reported one.
+//
+// # Safety
+//
+// As for `felix_client_publish`. `lens` is null or valid for `count`
+// lengths, and `data` is null or valid for their sum. Either may be null
+// when the sum is zero.
+FelixStatus felix_client_publish_batch(const struct FelixClient *client,
+                                       const char *tenant_id,
+                                       const char *ns,
+                                       const char *stream,
+                                       const uint8_t *data,
+                                       const size_t *lens,
+                                       size_t count,
+                                       const uint8_t *key,
+                                       size_t key_len,
+                                       FelixAckMode ack,
+                                       const struct FelixCancelToken *cancel,
+                                       FelixBatchCallback callback,
+                                       void *user_data);
+
+// Publish a batch to `shard` of a stream, rather than the shard a key would
+// hash to, for a producer that does its own partitioning.
+//
+// Laid out, sent and reported as for `felix_client_publish_batch`. A shard
+// the stream does not have is refused by the broker and nothing is written.
+// Fails without sending anything against a broker too old to take a shard
+// number, which would otherwise write to shard 0.
+//
+// # Safety
+//
+// As for `felix_client_publish_batch`.
+FelixStatus felix_client_publish_on_shard(const struct FelixClient *client,
+                                          const char *tenant_id,
+                                          const char *ns,
+                                          const char *stream,
+                                          uint32_t shard,
+                                          const uint8_t *data,
+                                          const size_t *lens,
+                                          size_t count,
+                                          FelixAckMode ack,
+                                          const struct FelixCancelToken *cancel,
+                                          FelixBatchCallback callback,
+                                          void *user_data);
+
+// Publish records that each carry their own routing key.
+//
+// The records are split by shard, and each shard's records go to its owner
+// as one batch, in the order given; there is no order between shards. A
+// shard's batch is accepted or refused as a unit and does not stop the
+// others, so `callback` can report some records accepted and others failed.
+//
+// The payloads lie end to end in `data` as for `felix_client_publish_batch`,
+// and the keys the same way in `keys`, the i-th `key_lens[i]` bytes long.
+// Every record has a key; a zero length is the empty key.
+//
+// With `FELIX_DELIVERY_AT_LEAST_ONCE` a shard's batch whose outcome is in
+// doubt is sent again, which can write it twice, and a resent batch lands
+// after records sent later. Under `FELIX_ACK_NONE` a record counts as
+// accepted once queued.
+//
+// # Safety
+//
+// As for `felix_client_publish_batch`, and `key_lens` and `keys` as `lens`
+// and `data`.
+FelixStatus felix_client_publish_records(const struct FelixClient *client,
+                                         const char *tenant_id,
+                                         const char *ns,
+                                         const char *stream,
+                                         const uint8_t *data,
+                                         const size_t *lens,
+                                         const uint8_t *keys,
+                                         const size_t *key_lens,
+                                         size_t count,
+                                         FelixAckMode ack,
+                                         FelixDelivery delivery,
+                                         const struct FelixCancelToken *cancel,
+                                         FelixBatchCallback callback,
+                                         void *user_data);
 
 // Subscribe to shard 0 of a stream.
 //

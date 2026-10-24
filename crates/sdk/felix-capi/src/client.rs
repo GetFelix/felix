@@ -1,4 +1,4 @@
-//! Connecting, publishing, and the runtime a client owns.
+//! Connecting, and the runtime a client owns.
 
 use std::ffi::{c_char, c_void};
 use std::future::Future;
@@ -6,17 +6,15 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use anyhow::Context;
-use felix_client::{AckMode, ClientConfig, ClusterClient, ReconnectPolicy, Seed};
+use felix_client::{ClientConfig, ClusterClient, ReconnectPolicy, Seed};
 use tokio::runtime::{Handle, Runtime};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
 use crate::boundary::{Failure, guard, guard_void, optional_str, required_str};
 use crate::cancel::{FelixCancelToken, user_token};
-use crate::completion::{Completion, Deliver, cancelled, is_cancelled, user_cancelled};
-use crate::status::{
-    FELIX_STATUS_CANCELLED, FELIX_STATUS_OK, FELIX_STATUS_OUTCOME_UNKNOWN, FelixStatus,
-};
+use crate::completion::{Completion, Deliver, user_cancelled};
+use crate::status::{FELIX_STATUS_CANCELLED, FELIX_STATUS_OK, FelixStatus};
 
 /// Two workers are plenty for one client's connections and background tasks,
 /// and keep a process with several clients from spawning a thread per core
@@ -27,16 +25,6 @@ const RUNTIME_WORKERS: usize = 2;
 /// and then for the runtime to stop.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 
-/// What the broker must have done before a publish completes.
-pub type FelixAckMode = i32;
-
-/// Fire and forget: complete once the record is sent.
-pub const FELIX_ACK_NONE: FelixAckMode = 0;
-/// Wait for the broker to acknowledge this record.
-pub const FELIX_ACK_PER_MESSAGE: FelixAckMode = 1;
-/// Wait for the broker to acknowledge the batch the record went out in.
-pub const FELIX_ACK_PER_BATCH: FelixAckMode = 2;
-
 /// Called once when `felix_client_connect` finishes. On `FELIX_STATUS_OK`,
 /// `client` is a new client the callee owns; otherwise it is null.
 pub type FelixConnectCallback = Option<
@@ -45,19 +33,6 @@ pub type FelixConnectCallback = Option<
         status: FelixStatus,
         message: *const c_char,
         client: *mut FelixClient,
-    ),
->;
-
-/// Called once when `felix_client_publish` finishes. On `FELIX_STATUS_OK`,
-/// `has_offset` says whether the broker reported the record's log offset,
-/// and `offset` holds it when it did.
-pub type FelixPublishCallback = Option<
-    unsafe extern "C" fn(
-        user_data: *mut c_void,
-        status: FelixStatus,
-        message: *const c_char,
-        has_offset: bool,
-        offset: u64,
     ),
 >;
 
@@ -104,39 +79,6 @@ impl Deliver for Box<FelixClient> {
             // SAFETY: the callback's contract is the header's; the arguments
             // match it.
             unsafe { callback(user_data, status, message, client) };
-        }
-    }
-}
-
-/// A publish's result: the record's offset, when the broker reported one.
-pub(crate) struct Published(pub(crate) Option<u64>);
-
-impl Deliver for Published {
-    type Callback = FelixPublishCallback;
-
-    fn is_null(callback: Self::Callback) -> bool {
-        callback.is_none()
-    }
-
-    unsafe fn deliver(
-        callback: Self::Callback,
-        user_data: *mut c_void,
-        status: FelixStatus,
-        message: *const c_char,
-        value: Option<Self>,
-    ) {
-        if let Some(callback) = callback {
-            let offset = value.and_then(|published| published.0);
-            // SAFETY: as for the connect callback.
-            unsafe {
-                callback(
-                    user_data,
-                    status,
-                    message,
-                    offset.is_some(),
-                    offset.unwrap_or(0),
-                )
-            };
         }
     }
 }
@@ -389,100 +331,6 @@ pub unsafe extern "C" fn felix_client_free(client: *mut FelixClient) {
             drop(unsafe { Box::from_raw(client) });
         }
     });
-}
-
-/// Publish one record to shard 0 of a stream.
-///
-/// `payload` may be null when `payload_len` is zero; it is copied before
-/// this returns. `ack` is one of the `FELIX_ACK_*` values. There is no
-/// offset when `ack` is `FELIX_ACK_NONE`, the stream has no log, or the
-/// broker acknowledged before writing.
-///
-/// Publishes in flight at the same time may reach the broker in any order.
-/// To keep records in order, start each one from the previous one's
-/// callback.
-///
-/// A publish cancelled before it starts completes with
-/// `FELIX_STATUS_CANCELLED`; after it may have been sent, with
-/// `FELIX_STATUS_OUTCOME_UNKNOWN`.
-///
-/// # Safety
-///
-/// `client` is a live client. The strings are null or NUL-terminated.
-/// `payload` is null or valid for `payload_len` bytes. `cancel` is null or a
-/// live token, and `callback` is safe to call with `user_data` from any
-/// thread.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn felix_client_publish(
-    client: *const FelixClient,
-    tenant_id: *const c_char,
-    ns: *const c_char,
-    stream: *const c_char,
-    payload: *const u8,
-    payload_len: usize,
-    ack: FelixAckMode,
-    cancel: *const FelixCancelToken,
-    callback: FelixPublishCallback,
-    user_data: *mut c_void,
-) -> FelixStatus {
-    guard(|| {
-        // SAFETY: null or a live client, per the contract above.
-        let client =
-            unsafe { client.as_ref() }.ok_or_else(|| Failure::invalid("client is null"))?;
-        // SAFETY: each is null or a NUL-terminated string.
-        let (tenant_id, ns, stream) = unsafe {
-            (
-                required_str(tenant_id, "tenant_id")?.to_string(),
-                required_str(ns, "ns")?.to_string(),
-                required_str(stream, "stream")?.to_string(),
-            )
-        };
-        let payload = if payload_len == 0 {
-            Vec::new()
-        } else if payload.is_null() {
-            return Err(Failure::invalid(
-                "payload is null but payload_len is not zero",
-            ));
-        } else {
-            // SAFETY: non-null, and the caller promises `payload_len` readable
-            // bytes. Copied, because the client owns what it sends.
-            unsafe { std::slice::from_raw_parts(payload, payload_len) }.to_vec()
-        };
-        let ack = match ack {
-            FELIX_ACK_NONE => AckMode::None,
-            FELIX_ACK_PER_MESSAGE => AckMode::PerMessage,
-            FELIX_ACK_PER_BATCH => AckMode::PerBatch,
-            other => {
-                return Err(Failure::invalid(format!(
-                    "ack {other} is not a FELIX_ACK_* value"
-                )));
-            }
-        };
-        // SAFETY: null or a live token, per the contract above.
-        let user = unsafe { user_token(cancel) };
-
-        let inner = Arc::clone(client.shared.client());
-        let handle = client.cancel.clone();
-        let done = Completion::<Published>::new(callback, user_data)?;
-        client.shared.spawn(done, move |done| async move {
-            if is_cancelled(&handle, user.as_ref()) {
-                return done.status(FELIX_STATUS_CANCELLED);
-            }
-            tokio::select! {
-                biased;
-                // `publish` is not cancel-safe: once started, the record
-                // may land anyway.
-                () = cancelled(&handle, user.as_ref()) => done.fail(Failure {
-                    status: FELIX_STATUS_OUTCOME_UNKNOWN,
-                    message: "the publish was cancelled after it may have been sent".to_string(),
-                }),
-                published = inner.publish(&tenant_id, &ns, &stream, payload, ack) => {
-                    done.result(published.map(Published).map_err(Failure::from));
-                }
-            }
-        });
-        Ok(FELIX_STATUS_OK)
-    })
 }
 
 /// Each comma-separated `host:port`. Names are kept for the client to resolve,
