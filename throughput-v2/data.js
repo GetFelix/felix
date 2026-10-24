@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792855276711,
+  "lastUpdate": 1792857585758,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -34632,6 +34632,58 @@ window.BENCHMARK_DATA = {
             "range": "5328.33",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 822727.83\nmean: 822409.18\nstdev: 5328.33\ncv: 0.65%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "181d3c50f87d1734e7e65e984038f22049b76385",
+          "message": "test(cluster): regression test for the quorum mark stall (#1479) (#1489)\n\n* test(cluster): a busy follower's answer moves the quorum mark without the tick (#1479)\n\nSpec-Unaffected: test only, no broker or replication change.\n\n* test(cluster): finalize the fleet features explicitly; the harness is never a new cluster\n\nSpec-Unaffected: test only.\n\n* test(cluster): count stalls and retry other errors instead of panicking; settle after finalize\n\nSpec-Unaffected: test only.",
+          "timestamp": "2026-10-24T08:55:03-07:00",
+          "tree_id": "d8a03ca9dbcda84b37ca3e653974ad2e04ce62c3",
+          "url": "https://github.com/GetFelix/felix/commit/181d3c50f87d1734e7e65e984038f22049b76385"
+        },
+        "date": 1792857584853,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 342937.21,
+            "range": "13937.95",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 342937.21\nmean: 348150.56\nstdev: 13937.95\ncv: 4.00%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 342937.21,
+            "range": "13937.95",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 342937.21\nmean: 348150.56\nstdev: 13937.95\ncv: 4.00%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 78629.15,
+            "range": "1046.69",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 78629.15\nmean: 79167.20\nstdev: 1046.69\ncv: 1.32%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 786291.48,
+            "range": "10466.95",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 786291.48\nmean: 791671.94\nstdev: 10466.95\ncv: 1.32%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
