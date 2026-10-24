@@ -409,6 +409,10 @@ struct fixture {
       *unauthorized_token, *group_operator_token, *cache, *single_shard_cache;
   /* Empty when the fixture has no control endpoint. */
   const char *movable_stream, *quorum_stream, *control_url;
+  /* "true" when the fixture's brokers store each record's publisher. That
+     needs the fleet to finalize publisher_principal, which is opt-in and which
+     the fixture does not do, so a client that asks is told nothing. */
+  const char *records_publishers;
   /* The link interposer: a broker address that faults can be injected on, and
      the single-shard stream behind it. Empty when the fixture has none. */
   const char *link_addr, *link_stream;
@@ -463,6 +467,7 @@ static bool load_fixture(const char *path, struct fixture *f) {
       {&f->movable_stream, "movable_stream", false},
       {&f->quorum_stream, "quorum_stream", false},
       {&f->control_url, "control_url", false},
+      {&f->records_publishers, "records_publishers", false},
       {&f->link_addr, "link_addr", false},
       {&f->link_stream, "link_stream", false},
       {&f->kill_helper, "kill_helper", false},
@@ -2324,7 +2329,11 @@ static void connect_options(const struct fixture *f, const char *run) {
     CHECK(!m[2].has_timestamp && !m[2].has_publisher,
           "options smaller than the flags enabled them");
     CHECK(m[1].has_timestamp, "no timestamp for a client that asked");
-    CHECK(m[1].has_publisher, "no publisher for a client that asked");
+    /* A broker tells a client that asked only what it recorded, so a publisher
+       is required only where the fixture says brokers record one. */
+    if (strcmp(f->records_publishers, "true") == 0) {
+      CHECK(m[1].has_publisher, "no publisher for a client that asked");
+    }
     /* The broker is on this machine, so its clock agrees to well under this. */
     CHECK(m[1].timestamp_micros + 5u * 1000000u >= before &&
               m[1].timestamp_micros <= now_micros() + 5u * 1000000u,
