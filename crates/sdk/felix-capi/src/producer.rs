@@ -477,9 +477,12 @@ pub unsafe extern "C" fn felix_producer_id_for(
 /// The producer leaves the handle as soon as this returns `FELIX_STATUS_OK`:
 /// later calls on the handle complete, or return, `FELIX_STATUS_CLOSED`. A
 /// negative `timeout_ms` waits as long as it takes. Otherwise, when it has
-/// not finished by then, the wait ends with a failure status and the handle
-/// stays closed. Batches already handed to the producer may still be sent or
-/// re-sent after that, and one already sent may or may not land.
+/// not finished by then, the call fails and the handle stays closed. If the
+/// time ran out waiting for calls still being handed over
+/// (`FELIX_STATUS_TIMEOUT`), batches already handed to the producer may still
+/// be sent or re-sent. If it ran out waiting for the producer's task to
+/// finish, the task is stopped and nothing more is sent; a batch already sent
+/// may or may not land.
 ///
 /// A cancelled close completes with `FELIX_STATUS_CANCELLED`. The producer
 /// is closed all the same and its task finishes on its own. The handle is
@@ -635,8 +638,32 @@ fn spawn<V, T, H, HF, A, AF>(
     AF: Future<Output = Result<T, Failure>> + Send + 'static,
 {
     let lease = producer.slot.lease();
+    let queued = queue(lease, &producer.forward, hand);
+    let handle = producer.cancel.clone();
+    producer.shared.spawn(done, move |done| {
+        run_call(done, queued, handle, user, answer, report)
+    });
+}
+
+/// A call's place in the forwarder's queue.
+struct Queued<H> {
+    state: Arc<AtomicU8>,
+    handed: oneshot::Receiver<Result<H, Failure>>,
+}
+
+/// Queue `hand` behind the calls before it.
+fn queue<T, H, HF>(
+    lease: Result<Lease<T>, Failure>,
+    forward: &mpsc::UnboundedSender<Job>,
+    hand: impl FnOnce(Lease<T>) -> HF + Send + 'static,
+) -> Queued<H>
+where
+    T: Send + Sync + 'static,
+    H: Send + 'static,
+    HF: Future<Output = anyhow::Result<H>> + Send + 'static,
+{
     let state = Arc::new(AtomicU8::new(WAITING));
-    let (handed, handed_rx) = oneshot::channel::<Result<Handed, Failure>>();
+    let (handed, received) = oneshot::channel();
     let job = {
         let state = Arc::clone(&state);
         async move {
@@ -659,37 +686,54 @@ fn spawn<V, T, H, HF, A, AF>(
         }
     };
     // A send fails only once the forwarder is gone, which drops the job and
-    // so `handed`; the call then reports cancelled below.
-    let _ = producer.forward.send(Box::pin(job));
+    // so `handed`; the call then reports cancelled.
+    let _ = forward.send(Box::pin(job));
+    Queued {
+        state,
+        handed: received,
+    }
+}
 
-    let handle = producer.cancel.clone();
-    producer.shared.spawn(done, move |done| async move {
-        let aborted = |done: Completion<V>| {
-            if state
+/// Wait for the hand-off and then the answer, and report.
+async fn run_call<V, T, H, A, AF>(
+    done: Completion<V>,
+    queued: Queued<H>,
+    handle: CancellationToken,
+    user: Option<CancellationToken>,
+    answer: A,
+    report: impl FnOnce(Completion<V>, Result<T, Failure>),
+) where
+    V: Deliver,
+    A: FnOnce(H) -> AF,
+    AF: Future<Output = Result<T, Failure>>,
+{
+    let Queued { state, handed } = queued;
+    let handed = tokio::select! {
+        biased;
+        () = cancelled(&handle, user.as_ref()) => {
+            // Before the hand-off starts this stops it; after, the batch is
+            // sent regardless.
+            let stopped = state
                 .compare_exchange(WAITING, ABORTED, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-            {
-                done.status(FELIX_STATUS_CANCELLED);
+                .is_ok();
+            return if stopped {
+                done.status(FELIX_STATUS_CANCELLED)
             } else {
-                done.fail(unknown());
-            }
-        };
-        let handed = tokio::select! {
-            biased;
-            () = cancelled(&handle, user.as_ref()) => return aborted(done),
-            handed = handed_rx => handed,
-        };
-        let handed = match handed {
-            Ok(Ok(handed)) => handed,
-            Ok(Err(failure)) => return done.fail(failure),
-            Err(_) => return done.status(FELIX_STATUS_CANCELLED),
-        };
-        tokio::select! {
-            biased;
-            () = cancelled(&handle, user.as_ref()) => done.fail(unknown()),
-            outcome = answer(handed) => report(done, outcome),
+                done.fail(unknown())
+            };
         }
-    });
+        handed = handed => handed,
+    };
+    let handed = match handed {
+        Ok(Ok(handed)) => handed,
+        Ok(Err(failure)) => return done.fail(failure),
+        Err(_) => return done.status(FELIX_STATUS_CANCELLED),
+    };
+    tokio::select! {
+        biased;
+        () = cancelled(&handle, user.as_ref()) => done.fail(unknown()),
+        outcome = answer(handed) => report(done, outcome),
+    }
 }
 
 fn unknown() -> Failure {

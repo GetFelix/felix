@@ -1589,9 +1589,12 @@ FelixStatus felix_producer_id_for(const struct FelixProducer *producer,
 // The producer leaves the handle as soon as this returns `FELIX_STATUS_OK`:
 // later calls on the handle complete, or return, `FELIX_STATUS_CLOSED`. A
 // negative `timeout_ms` waits as long as it takes. Otherwise, when it has
-// not finished by then, the wait ends with a failure status and the handle
-// stays closed. Batches already handed to the producer may still be sent or
-// re-sent after that, and one already sent may or may not land.
+// not finished by then, the call fails and the handle stays closed. If the
+// time ran out waiting for calls still being handed over
+// (`FELIX_STATUS_TIMEOUT`), batches already handed to the producer may still
+// be sent or re-sent. If it ran out waiting for the producer's task to
+// finish, the task is stopped and nothing more is sent; a batch already sent
+// may or may not land.
 //
 // A cancelled close completes with `FELIX_STATUS_CANCELLED`. The producer
 // is closed all the same and its task finishes on its own. The handle is

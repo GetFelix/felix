@@ -1,7 +1,7 @@
 use std::ptr;
 
 use super::*;
-use crate::status::FELIX_STATUS_INVALID_ARGUMENT;
+use crate::status::{FELIX_STATUS_CANCELLED, FELIX_STATUS_INVALID_ARGUMENT};
 
 #[test]
 fn a_taken_slot_leases_nothing() {
@@ -139,4 +139,122 @@ async fn hand_offs_run_in_the_order_they_were_queued() {
     drop(forward);
     forward_in_order(jobs).await;
     assert_eq!(*ran.lock().expect("ran"), (0..20).collect::<Vec<_>>());
+}
+
+/// What a call's callback saw.
+#[derive(Default)]
+struct Recorder(Mutex<Vec<FelixStatus>>);
+
+unsafe extern "C" fn record(user_data: *mut c_void, status: FelixStatus, _message: *const c_char) {
+    // SAFETY: `user_data` is a `Recorder` the test keeps alive.
+    let recorder = unsafe { &*(user_data as *const Recorder) };
+    recorder.0.lock().expect("recorder").push(status);
+}
+
+impl Recorder {
+    fn seen(&self) -> Vec<FelixStatus> {
+        self.0.lock().expect("recorder").clone()
+    }
+
+    async fn called(&self) {
+        for _ in 0..500 {
+            if !self.seen().is_empty() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("no callback");
+    }
+}
+
+/// A forwarder held up by a job that waits for `release`.
+fn blocked() -> (mpsc::UnboundedSender<Job>, oneshot::Sender<()>) {
+    let (forward, jobs) = mpsc::unbounded_channel::<Job>();
+    let (release, released) = oneshot::channel::<()>();
+    let _ = forward.send(Box::pin(async move {
+        let _ = released.await;
+    }));
+    tokio::spawn(forward_in_order(jobs));
+    (forward, release)
+}
+
+/// Queue a call that records `id` when handed off, and run it.
+fn call(
+    slot: &Arc<Slot<u64>>,
+    forward: &mpsc::UnboundedSender<Job>,
+    handed: &Arc<Mutex<Vec<u8>>>,
+    id: u8,
+    handle: CancellationToken,
+    user: Option<CancellationToken>,
+    recorder: &Arc<Recorder>,
+) {
+    let handed = Arc::clone(handed);
+    let queued = queue(slot.lease(), forward, move |_lease| async move {
+        handed.lock().expect("handed").push(id);
+        Ok::<u8, anyhow::Error>(id)
+    });
+    let done = Completion::<Done>::new(Some(record), Arc::as_ptr(recorder) as *mut c_void)
+        .expect("callback");
+    tokio::spawn(run_call(
+        done,
+        queued,
+        handle,
+        user,
+        |id| async move { Ok::<u8, Failure>(id) },
+        |done, outcome| done.result(outcome.map(|_| Done)),
+    ));
+}
+
+#[tokio::test]
+async fn a_cancel_before_the_hand_off_stops_it() {
+    let slot = Slot::new(0u64);
+    let (forward, release) = blocked();
+    let handed = Arc::new(Mutex::new(Vec::new()));
+    let (first, second) = (Arc::new(Recorder::default()), Arc::new(Recorder::default()));
+    let token = CancellationToken::new();
+    let handle = CancellationToken::new();
+    call(
+        &slot,
+        &forward,
+        &handed,
+        1,
+        handle.clone(),
+        Some(token.clone()),
+        &first,
+    );
+    call(&slot, &forward, &handed, 2, handle, None, &second);
+
+    token.cancel();
+    first.called().await;
+    release.send(()).expect("forwarder is waiting");
+    second.called().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    assert_eq!(first.seen(), [FELIX_STATUS_CANCELLED]);
+    assert_eq!(second.seen(), [FELIX_STATUS_OK]);
+    assert_eq!(*handed.lock().expect("handed"), [2]);
+}
+
+#[tokio::test]
+async fn every_queued_call_reports_once_when_the_handle_goes() {
+    let slot = Slot::new(0u64);
+    let (forward, release) = blocked();
+    let handed = Arc::new(Mutex::new(Vec::new()));
+    let handle = CancellationToken::new();
+    let recorders: Vec<_> = (0..3).map(|_| Arc::new(Recorder::default())).collect();
+    for (id, recorder) in (1..).zip(&recorders) {
+        call(&slot, &forward, &handed, id, handle.clone(), None, recorder);
+    }
+
+    handle.cancel();
+    for recorder in &recorders {
+        recorder.called().await;
+    }
+    release.send(()).expect("forwarder is waiting");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    for recorder in &recorders {
+        assert_eq!(recorder.seen(), [FELIX_STATUS_CANCELLED]);
+    }
+    assert!(handed.lock().expect("handed").is_empty());
 }
