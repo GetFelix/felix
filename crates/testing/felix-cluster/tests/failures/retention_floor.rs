@@ -51,22 +51,25 @@ async fn retention_waits_for_the_followers_of_a_quorum_stream() {
     // The harness publishes a probe of its own first, so the log's start is
     // read from offsets rather than payloads.
     let mut early = None;
+    let mut last_early = 0;
     for i in 0..5 {
         let offset = cluster
             .publish_via_at(&leader, STREAM, format!("early-{i}").into_bytes())
             .await
             .expect("publish while whole");
         early = early.or(offset);
+        last_early = offset.unwrap_or(last_early);
     }
     let early = early.expect("a durable publish reports its offset");
-    // The leader's tail once both followers hold everything, so the first
-    // waiting record can be told apart by the tail moving past it.
+    // The leader's tail once both followers hold every early record. A report
+    // can lag the last ack, so the tail must also be past the last early
+    // offset, or the first waiting record could not be told apart.
     let settled_tail = felix_cluster::wait::until_some(
         Duration::from_secs(20),
         "both followers at the leader's tail",
         || async {
             let report = cluster.replica_report(STREAM, 0).await.ok().flatten()?;
-            let tail = report.leader_offset?;
+            let tail = report.leader_offset.filter(|tail| *tail > last_early)?;
             followers
                 .iter()
                 .all(|f| report.offsets.get(f) == Some(&tail))
