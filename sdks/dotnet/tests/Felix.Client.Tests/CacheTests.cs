@@ -164,6 +164,15 @@ public class CacheMarshalTests
     }
 
     [Fact]
+    public async Task AChangeWithAnEmptyKeyHasAnEmptyKeyAndOtherKindsHaveNone()
+    {
+        var change = (await Deliver(new NativeWatchItem { Kind = 1 }))!;
+        Assert.Equal(string.Empty, change.Key);
+        var complete = (await Deliver(new NativeWatchItem { Kind = 4 }, "ignored"u8.ToArray()))!;
+        Assert.Null(complete.Key);
+    }
+
+    [Fact]
     public async Task ALagCarriesWhereToResume()
     {
         var got = (await Deliver(new NativeWatchItem { Kind = 2, HasShard = 1, Shard = 1, HasResumeFrom = 1, ResumeFrom = 40 }))!;
@@ -231,6 +240,32 @@ public class CacheCallTests
         await Assert.ThrowsAsync<ObjectDisposedException>(() => cache.WatchShardedAsync("p", resume: [new ShardOffset(0, 1)], cancellationToken: cts.Token));
 
         Assert.Equal(before, CallStateBase.Live);
+    }
+
+    [Fact]
+    public async Task AStringWithAnEmbeddedNulIsRefusedNotTruncated()
+    {
+        var client = DisposedClient();
+        var cache = client.Cache("t", "n", "c");
+        await Assert.ThrowsAsync<ArgumentException>(() => cache.PutAsync("a\0b", new byte[] { 1 }));
+        await Assert.ThrowsAsync<ArgumentException>(() => cache.GetAsync("a\0"));
+        await Assert.ThrowsAsync<ArgumentException>(() => cache.WatchPrefixAsync("\0"));
+        await Assert.ThrowsAsync<ArgumentException>(() => client.GetShardCountAsync("t", "n\0", "s"));
+        await Assert.ThrowsAsync<ArgumentException>(() => client.PublishAsync("t\0", "n", "s", new byte[] { 1 }));
+        await Assert.ThrowsAsync<ArgumentException>(() => client.SubscribeAsync("t", "n", "s\0", 0, StartPosition.Latest));
+        Assert.Throws<ArgumentException>(() => client.Cache("t", "n", "c\0"));
+        Assert.Throws<ArgumentException>(() => client.JoinGroup("t", "n", "s", 0, "g", "con\0sumer"));
+        await Assert.ThrowsAsync<ArgumentException>(() => FelixClient.ConnectAsync(
+            new FelixClientOptions { Addrs = ["127.0.0.1:1"], TenantId = "t", Token = "to\0ken" }));
+        await Assert.ThrowsAsync<ArgumentException>(() => FelixClient.ConnectAsync(
+            new FelixClientOptions { Addrs = ["127.0.0.1:1\0"], TenantId = "t", Token = "x" }));
+    }
+
+    [Fact]
+    public async Task ANegativeResumeOffsetIsRefused()
+    {
+        var cache = DisposedClient().Cache("t", "n", "c");
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => cache.WatchShardedAsync("p", resume: [new ShardOffset(0, -1)]));
     }
 
     [Fact]

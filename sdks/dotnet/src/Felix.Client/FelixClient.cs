@@ -25,8 +25,15 @@ public sealed partial class FelixClient : IAsyncDisposable, IDisposable
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(options.Addrs);
-        ArgumentNullException.ThrowIfNull(options.TenantId);
-        ArgumentNullException.ThrowIfNull(options.Token);
+        Arg.Text(options.TenantId, nameof(options.TenantId));
+        Arg.Text(options.Token, nameof(options.Token));
+        Arg.OptionalText(options.ServerName, nameof(options.ServerName));
+        Arg.OptionalText(options.CaFile, nameof(options.CaFile));
+        foreach (var addr in options.Addrs)
+        {
+            Arg.Text(addr, nameof(options.Addrs));
+        }
+
         if (options.Addrs.Count == 0)
         {
             throw new ArgumentException("at least one broker address is required", nameof(options));
@@ -87,9 +94,9 @@ public sealed partial class FelixClient : IAsyncDisposable, IDisposable
         Delivery delivery = Delivery.AtMostOnce,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(tenant);
-        ArgumentNullException.ThrowIfNull(ns);
-        ArgumentNullException.ThrowIfNull(stream);
+        Arg.Text(tenant);
+        Arg.Text(ns);
+        Arg.Text(stream);
         cancellationToken.ThrowIfCancellationRequested();
 
         CallState<long?> state;
@@ -146,9 +153,9 @@ public sealed partial class FelixClient : IAsyncDisposable, IDisposable
         AckMode ack = AckMode.PerBatch,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(tenant);
-        ArgumentNullException.ThrowIfNull(ns);
-        ArgumentNullException.ThrowIfNull(stream);
+        Arg.Text(tenant);
+        Arg.Text(ns);
+        Arg.Text(stream);
         ArgumentNullException.ThrowIfNull(payloads);
         if (payloads.Count == 0)
         {
@@ -225,9 +232,9 @@ public sealed partial class FelixClient : IAsyncDisposable, IDisposable
         StartPosition start,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(tenant);
-        ArgumentNullException.ThrowIfNull(ns);
-        ArgumentNullException.ThrowIfNull(stream);
+        Arg.Text(tenant);
+        Arg.Text(ns);
+        Arg.Text(stream);
         cancellationToken.ThrowIfCancellationRequested();
 
         CallState<FelixSubscriptionHandle> state;

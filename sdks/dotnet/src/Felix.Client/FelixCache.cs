@@ -15,9 +15,9 @@ public sealed class FelixCache
 
     internal FelixCache(FelixClient client, string tenant, string ns, string cache)
     {
-        ArgumentNullException.ThrowIfNull(tenant);
-        ArgumentNullException.ThrowIfNull(ns);
-        ArgumentNullException.ThrowIfNull(cache);
+        Arg.Text(tenant);
+        Arg.Text(ns);
+        Arg.Text(cache);
         this.client = client;
         Tenant = tenant;
         Namespace = ns;
@@ -53,7 +53,7 @@ public sealed class FelixCache
     /// <param name="ttl">How long it lives; null is for ever.</param>
     public unsafe Task PutAsync(string key, ReadOnlyMemory<byte> value, TimeSpan? ttl = null, CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(key);
+        Arg.Text(key);
         var ttlMs = TtlMillis(ttl);
         return client.Call<bool>(cancellationToken, (handle, cancel, userData) =>
         {
@@ -69,7 +69,7 @@ public sealed class FelixCache
     /// <summary>Reads the value under <paramref name="key"/>. A missing or expired key is null, not an error.</summary>
     public unsafe Task<ReadOnlyMemory<byte>?> GetAsync(string key, CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(key);
+        Arg.Text(key);
         return client.Call<ReadOnlyMemory<byte>?>(cancellationToken, (handle, cancel, userData) =>
             NativeMethods.felix_client_cache_get(handle, Tenant, Namespace, Name, key, cancel, &Callbacks.OnValue, userData));
     }
@@ -77,7 +77,7 @@ public sealed class FelixCache
     /// <summary>Reads the value under <paramref name="key"/> with the version a conditional write can name. Null when there is none.</summary>
     public unsafe Task<VersionedValue?> GetVersionedAsync(string key, CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(key);
+        Arg.Text(key);
         return client.Call<VersionedValue?>(cancellationToken, (handle, cancel, userData) =>
             NativeMethods.felix_client_cache_get_versioned(handle, Tenant, Namespace, Name, key, cancel, &Callbacks.OnVersioned, userData));
     }
@@ -85,7 +85,7 @@ public sealed class FelixCache
     /// <summary>Removes <paramref name="key"/>. Returns the value it held, or null if there was none (an answer, not an error).</summary>
     public unsafe Task<ReadOnlyMemory<byte>?> DeleteAsync(string key, CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(key);
+        Arg.Text(key);
         return client.Call<ReadOnlyMemory<byte>?>(cancellationToken, (handle, cancel, userData) =>
             NativeMethods.felix_client_cache_delete(handle, Tenant, Namespace, Name, key, cancel, &Callbacks.OnValue, userData));
     }
@@ -106,7 +106,7 @@ public sealed class FelixCache
 
     private unsafe Task<ConditionalResult> PutIf(string key, ReadOnlyMemory<byte> value, TimeSpan? ttl, int kind, long version, CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(key);
+        Arg.Text(key);
         var ttlMs = TtlMillis(ttl);
         return client.Call<ConditionalResult>(cancellationToken, (handle, cancel, userData) =>
         {
@@ -122,7 +122,7 @@ public sealed class FelixCache
     /// <summary>Removes <paramref name="key"/> only if its entry has exactly <paramref name="version"/>.</summary>
     public unsafe Task<ConditionalResult> DeleteIfVersionAsync(string key, long version, CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(key);
+        Arg.Text(key);
         return client.Call<ConditionalResult>(cancellationToken, (handle, cancel, userData) =>
             NativeMethods.felix_client_cache_delete_if(
                 handle, Tenant, Namespace, Name, key, unchecked((ulong)version), cancel, &Callbacks.OnCondition, userData));
@@ -130,7 +130,8 @@ public sealed class FelixCache
 
     /// <summary>
     /// Adds <paramref name="delta"/> to the counter under <paramref name="key"/>, creating it at zero,
-    /// and returns the new value. Not idempotent: an add cancelled after it may have been sent fails with
+    /// and returns the new value. The counter saturates at <see cref="long.MaxValue"/> and <see cref="long.MinValue"/>
+    /// instead of wrapping. Not idempotent: an add cancelled after it may have been sent fails with
     /// <see cref="FelixStatus.OutcomeUnknown"/> and may or may not have counted, so read the counter before repeating it.
     /// </summary>
     public async Task<long> CounterAddAsync(string key, long delta, CancellationToken cancellationToken = default) =>
@@ -139,7 +140,7 @@ public sealed class FelixCache
 
     private unsafe Task<long?> StartCounterAdd(string key, long delta, CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(key);
+        Arg.Text(key);
         return client.Call<long?>(cancellationToken, (handle, cancel, userData) =>
             NativeMethods.felix_client_counter_add(handle, Tenant, Namespace, Name, key, delta, cancel, &Callbacks.OnCounter, userData));
     }
@@ -147,7 +148,7 @@ public sealed class FelixCache
     /// <summary>Reads the counter under <paramref name="key"/>. A counter never written is null, which is not zero.</summary>
     public unsafe Task<long?> CounterGetAsync(string key, CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(key);
+        Arg.Text(key);
         return client.Call<long?>(cancellationToken, (handle, cancel, userData) =>
             NativeMethods.felix_client_counter_get(handle, Tenant, Namespace, Name, key, cancel, &Callbacks.OnCounter, userData));
     }
@@ -174,7 +175,7 @@ public sealed class FelixCache
 
     private async Task<FelixCacheWatch> Watch(int kind, string filter, bool retained, long? fromOffset, CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(filter);
+        Arg.Text(filter);
         if (fromOffset < 0)
         {
             throw new ArgumentOutOfRangeException(nameof(fromOffset));
@@ -207,13 +208,18 @@ public sealed class FelixCache
         IReadOnlyList<ShardOffset>? resume = null,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(prefix);
+        Arg.Text(prefix);
         var shards = new uint[resume?.Count ?? 0];
         var offsets = new ulong[shards.Length];
         for (var i = 0; i < shards.Length; i++)
         {
-            shards[i] = resume![i].Shard;
-            offsets[i] = unchecked((ulong)resume[i].Offset);
+            if (resume![i].Offset < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(resume), "an offset cannot be negative");
+            }
+
+            shards[i] = resume[i].Shard;
+            offsets[i] = (ulong)resume[i].Offset;
         }
 
         var native = await OpenShardedWatch(prefix, retained, shards, offsets, cancellationToken).ConfigureAwait(false);

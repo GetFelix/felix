@@ -107,11 +107,22 @@ internal static unsafe partial class Callbacks
         return CopyBytes(data, length);
     }
 
+    // Only a change names a key, and an empty key is "" there (the library passes null for length zero).
+    private static string? CopyKey(NativeWatchItem* item)
+    {
+        if (item->Kind != (int)WatchItemKind.Change)
+        {
+            return null;
+        }
+
+        return item->Key is null || item->KeyLen == 0 ? string.Empty : Encoding.UTF8.GetString(item->Key, checked((int)item->KeyLen));
+    }
+
     internal static WatchItem CopyWatchItem(NativeWatchItem* item) =>
         new(
             (WatchItemKind)item->Kind,
             item->HasShard != 0 ? item->Shard : null,
-            item->Key is null || item->KeyLen == 0 ? null : Encoding.UTF8.GetString(item->Key, checked((int)item->KeyLen)),
+            CopyKey(item),
             CopyOptional(item->HasValue != 0, item->Value, item->ValueLen),
             unchecked((long)item->Offset),
             item->ExpiresAtMillis != 0 ? unchecked((long)item->ExpiresAtMillis) : null,

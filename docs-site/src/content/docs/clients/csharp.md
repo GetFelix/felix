@@ -165,6 +165,10 @@ long? now = await cache.CounterGetAsync("hits");                   // null if ne
   it, not an exception.
 - Puts are safe to repeat. A write cancelled after it may have been sent fails with `OutcomeUnknown`.
   A counter add is not idempotent, so after `OutcomeUnknown` read the counter before adding again.
+  A counter saturates at `long.MaxValue` and `long.MinValue` instead of wrapping.
+- Strings handed to the library (tenant, namespace, stream, group, cache, key, prefix, token,
+  addresses) must not contain a NUL character: C would end the string there, so every call throws an
+  `ArgumentException` rather than act on a shorter name.
 
 ### Watches
 
