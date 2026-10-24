@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792853846664,
+  "lastUpdate": 1792855276711,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -34580,6 +34580,58 @@ window.BENCHMARK_DATA = {
             "range": "20538.63",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1208044.03\nmean: 1210645.01\nstdev: 20538.63\ncv: 1.70%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5e2b0f9ef6cd139d8cd4e6b199a1fc400f1cb490",
+          "message": "fix(forward): refuse a forward routed by another stream incarnation (#1324) (#1488)\n\n* fix(forward): refuse a forward routed by another stream incarnation (#1324)\n\nA forwarded publish or cache op was checked by generation alone. After a\ncontrol-plane restore rewinds the change sequence, a recreated stream can\nstart at the deleted one's generation, so a forward routed by the deleted\nstream's assignment was accepted and landed in the new stream.\n\nThe Incarnated envelope now also wraps ForwardPublish and ForwardCacheOp.\nThe ingress broker names its route's incarnation when it is not 0 and the\nowner offered the new FORWARD_INCARNATION peer capability; the owner checks\nit before the generation and answers any mismatch StaleRoute, and settle\nwaits for routes that are behind the named incarnation.\n\nSpec-Unaffected: the TLA specs model neither forwarding nor stream incarnations.\n\n* fix(forward): keep the incarnation check within the budget and never skip it\n\nA forward's capability lookup now comes out of the publish deadline instead\nof adding to it, and a lookup that fails fails the attempt before anything is\nsent rather than sending the forward without its incarnation.\n\nSpec-Unaffected: the TLA specs model neither forwarding nor stream incarnations.",
+          "timestamp": "2026-10-24T15:16:51Z",
+          "tree_id": "77c48ab239744bb730b678d9294f5a75792dcb4f",
+          "url": "https://github.com/GetFelix/felix/commit/5e2b0f9ef6cd139d8cd4e6b199a1fc400f1cb490"
+        },
+        "date": 1792855276172,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 349698.45,
+            "range": "13278.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 349698.45\nmean: 348154.48\nstdev: 13278.75\ncv: 3.81%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 349698.45,
+            "range": "13278.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 349698.45\nmean: 348154.48\nstdev: 13278.75\ncv: 3.81%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82272.78,
+            "range": "532.83",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82272.78\nmean: 82240.92\nstdev: 532.83\ncv: 0.65%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 822727.83,
+            "range": "5328.33",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 822727.83\nmean: 822409.18\nstdev: 5328.33\ncv: 0.65%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
