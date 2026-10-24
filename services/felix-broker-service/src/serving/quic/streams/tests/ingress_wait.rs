@@ -98,7 +98,7 @@ async fn spawn_stream(
     let (ack_throttle_tx, ack_throttle_rx) = watch::channel(false);
     let (cancel_tx, cancel_rx) = watch::channel(false);
     let held = cancel_tx.clone();
-    let commit_acks = CommitAcks::for_test(&out_ack_tx, Arc::new(Semaphore::new(16)));
+    let commit_acks = CommitAcks::for_test(&out_ack_tx, Arc::new(Semaphore::new(64)));
     let ack_timeout_state = Arc::new(parking_lot::Mutex::new(AckTimeoutState::new(
         std::time::Instant::now(),
     )));
@@ -646,5 +646,31 @@ async fn unacked_publishes_park_up_to_their_own_cap() -> Result<()> {
     assert_eq!(order, (0..sent as u32).collect::<Vec<_>>());
     assert!(timeout(Duration::from_secs(5), control).await???);
     timeout(Duration::from_secs(5), parked.drain()).await?;
+    Ok(())
+}
+
+/// **Acked publishes keep the large cap.** An acked publisher is bounded by
+/// its publish window, so its stream still parks past the unacked cap.
+#[tokio::test]
+async fn acked_publishes_park_past_the_unacked_cap() -> Result<()> {
+    use crate::serving::quic::{PARKED_PUBLISHES_MAX, PARKED_UNACKED_MAX};
+    let sent = PARKED_UNACKED_MAX + 8;
+    let (broker, stuck, _, mut publish_ctx, _scheduler) = stuck_stream().await?;
+    let parked = ParkedPublishes::new(PARKED_PUBLISHES_MAX, PARKED_UNACKED_MAX);
+    publish_ctx.parked = Some(Arc::clone(&parked));
+    let auth = auth_fixture("t1", default_perms());
+    let mut frames = vec![frame_from_message(auth_message(&auth))];
+    frames.extend((0..sent as u64).map(|i| publish(&stuck, &i.to_be_bytes(), Some(i + 1))));
+    let config = BrokerConfig {
+        ack_on_commit: true,
+        ..BrokerConfig::default()
+    };
+    let (control, _out, cancel) = spawn_stream(&broker, &auth, publish_ctx, config, frames).await?;
+
+    until("every acked publish to park", || parked.len() == sent).await?;
+
+    cancel.send(true)?;
+    timeout(Duration::from_secs(5), parked.drain()).await?;
+    let _ = timeout(Duration::from_secs(5), control).await?;
     Ok(())
 }

@@ -179,7 +179,16 @@ do not mean more concurrent callers contending on shared stream state.
    unacked cap is small because no publish window holds a fire-and-forget
    client back: with a deep one, a busy broker's streams park until the
    shared byte budget is spent, and then every publish waits on that budget,
-   which is slower than waiting on the queue. Parked publishes are counted in
+   which is slower than waiting on the queue.
+
+   The trade-off is isolation. A stream whose fire-and-forget publishes hit
+   one full shard stops reading after 16 frames, and since
+   `pub_stream_recv_window` defaults to the connection window, its unread
+   bytes can take the whole connection's flow-control credit and stall the
+   connection's other streams. A larger cap reaches the same state once the
+   byte budget runs out; the small cap reaches it sooner. On a stream that
+   carries both kinds, acked frames behind the 17th unacked publish wait
+   with it. Parked publishes are counted in
    `felix_broker_ingress_parked_total`.
 
 3. **Lanes and the fair queue** (`handlers/publish/scheduler.rs`). Every job

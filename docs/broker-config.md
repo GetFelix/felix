@@ -307,8 +307,12 @@ FELIX_TENANT_PUBLISH_QUOTAS=acme:209715200:20000,batch:0:0
   `pub_conn_inflight_bytes`, raised to `max_frame_bytes` if that is larger. A publish that
   finds the queue full under `pub_ingress_wait` (or an acked one under `ack_on_commit`) waits
   in line without stopping its stream: the stream keeps reading, up to 1024 waiting acked
-  publishes or 16 unacked ones, or the byte budget. Past that the broker stops reading that stream, and the window is how
-  much more a client can park in the broker before QUIC flow control holds it back. Bigger windows
+  publishes or 16 unacked ones, or the byte budget. Past that the broker stops reading that
+  stream, and the window is how much more a client can park in the broker before QUIC flow
+  control holds it back. Because the stream window defaults to the connection window, a
+  stopped stream can hold the whole connection's credit and stall its other streams. A stream
+  of fire-and-forget publishes to one full shard gets there after 16 frames; a stream mixing
+  acked and unacked publishes stalls its acked ones behind the 17th unacked one. Bigger windows
   cost broker memory and delay backpressure; smaller ones can cap throughput on a path with a
   large bandwidth-delay product. Startup refuses a window below `max_frame_bytes` or a stream
   window above the connection window.
