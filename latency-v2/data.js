@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792819486935,
+  "lastUpdate": 1792822729877,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -43428,6 +43428,72 @@ window.BENCHMARK_DATA = {
             "range": "459.69",
             "unit": "us",
             "extra": "trials: 5\nmedian: 847.00\nmean: 987.80\nstdev: 459.69\ncv: 46.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "eb3ee288f40e16839048533c5ea1750aa32c398f",
+          "message": "feat: let a write name its shard instead of hashing a key (#1465) (#1466)\n\n* feat: let a write name its shard instead of hashing a key (#1465)\n\npublish, publish_batch, publish_idempotent, publish_if, commit and\nstate_get take an optional `shard`, used instead of hashing the routing\nor entity key. A shard the stream does not have is refused with\ninvalid_request. Negotiated as FEATURE_EXPLICIT_SHARD in the extended\nfeature word; unset, every frame is byte-identical to before.\n\nThe broker validates the range against the router's width (1 on a\nsingle node), skips the publish_width check for a named shard, and\ncarries the shard through forwarding, fences, quorum waits and\nper-shard producer sequences. The Rust client adds *_on_shard methods\non Publisher, Client and ClusterClient; ClusterClient routes them to\nthe named shard's owner or leader, and every client refuses to send a\nnamed shard to a broker that did not advertise the bit.\n\n* fix: retry a named shard the entry broker has not routed yet (#1465)\n\nA cluster member whose routing snapshot does not know the stream yet\nanswers a named shard past 0 with a retryable shard_unavailable\n(not_assigned) instead of invalid_request, which a client treats as\nfatal. invalid_request stays for a known stream and a shard out of\nrange. Docs say that a keyed state_get or key-filtered subscription\ndoes not follow a named shard. Cluster tests cover a named-shard\npublish forwarded by a non-owner and ClusterClient sending it to the\nowner directly.\n\nSpec-Unaffected: the models in docs/formal cover the per-shard protocol (lease, quorum, handoff), not how a key picks a shard; an explicit shard only changes which shard a record is routed to.",
+          "timestamp": "2026-10-24T06:15:34Z",
+          "tree_id": "847bf96c0bf8bd0fa4580b8448b621f803be0498",
+          "url": "https://github.com/GetFelix/felix/commit/eb3ee288f40e16839048533c5ea1750aa32c398f"
+        },
+        "date": 1792822726130,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 73,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 73.00\nmean: 72.60\nstdev: 1.14\ncv: 1.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 96,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 96.00\nmean: 96.00\nstdev: 0.71\ncv: 0.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 121,
+            "range": "10.16",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 121.00\nmean: 125.20\nstdev: 10.16\ncv: 8.11%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 91,
+            "range": "2.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 91.00\nmean: 91.40\nstdev: 2.07\ncv: 2.27%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 203,
+            "range": "50.90",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 203.00\nmean: 226.40\nstdev: 50.90\ncv: 22.48%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 322,
+            "range": "460.96",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 322.00\nmean: 520.60\nstdev: 460.96\ncv: 88.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
