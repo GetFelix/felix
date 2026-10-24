@@ -18,6 +18,8 @@ trials and whiskers span min to max where there are two or more.
                defaults-mem-p4096-b64-ff) on the release build.
 --rf3-release  the RF=3 campaign on a new cluster with every feature finalized,
                same cell names as --rf3.
+--site         write latency in milliseconds only, for getfelix.dev. The default
+               follows the write-up: microseconds below 1 ms, milliseconds above.
 
 A chart whose data is missing is skipped with a note on stderr, so re-running
 the script once a pending run lands fills it in. Needs matplotlib
@@ -42,14 +44,17 @@ from v060_tables import latencies, shed_pct  # noqa: E402
 
 TRIAL = re.compile(r"^(?P<group>.+)-t(?P<t>\d+)$")
 
-# Felix is the brand cyan-teal; NATS and "before" are a neutral grey. Text is a
-# mid-tone on a transparent background so one SVG reads on both site themes.
-FELIX = "#22a3c3"
-FELIX_DARK = "#14708a"
-DURABLE = "#8a6fd1"
-NEUTRAL = "#9aa0a6"
-PENDING = "#c9cdd2"
-TEXT = "#7d8590"
+# Felix is the brand cyan-teal; NATS and "before" are a neutral grey. The
+# background is transparent and every colour is a mid-tone chosen to keep at
+# least 3:1 (marks) and 4:1 (text) against both white and the dark themes'
+# near-black, so one SVG reads in either theme.
+FELIX = "#0f92b3"
+FELIX_DARK = "#0b748e"
+DURABLE = "#8f71d6"
+DURABLE_LIGHT = "#a085e0"
+DURABLE_DARK = "#8164c4"
+NEUTRAL = "#8a9099"
+TEXT = "#767e89"
 
 plt.rcParams.update({
     "font.family": "sans-serif",
@@ -129,7 +134,30 @@ def err(stats):
 
 
 def mbs(x, _pos=None):
+    if x == 0:
+        return "0"
     return f"{x / 1000:g} GB/s" if x >= 1000 else f"{x:g} MB/s"
+
+
+def rate(x):
+    """A bar label: MB/s below 1 GB/s, else GB/s to one decimal, as in the prose."""
+    return f"{x / 1000:.1f} GB/s" if x >= 1000 else f"{x:.0f} MB/s"
+
+
+def times(r):
+    return f"{r:.1f}\u00d7" if r >= 10 else f"{r:.2f}\u00d7"
+
+
+SITE = False
+
+
+def lat(ms, _pos=None):
+    """A latency given in ms: the site uses ms throughout, the write-up uses µs below 1 ms."""
+    if ms == 0:
+        return "0"
+    if SITE or ms >= 1:
+        return f"{ms:.3g} ms"
+    return f"{ms * 1000:.3g} \u00b5s"
 
 
 PREVIEW = None
@@ -141,6 +169,7 @@ def save(fig, out, name, done):
     fig.savefig(path, metadata={"Date": None})
     if PREVIEW:
         fig.savefig(PREVIEW / f"{name}.png", dpi=110, facecolor="white")
+        fig.savefig(PREVIEW / f"{name}-dark.png", dpi=110, facecolor="#0d1218")
     plt.close(fig)
     done.append(path)
 
@@ -193,8 +222,8 @@ def chart_throughput(g, out, done):
     series = [
         ("mem", 1, "In-memory, batch 1", FELIX, None),
         ("mem", 64, "In-memory, batch 64", FELIX_DARK, None),
-        ("dur", 1, "Durable, batch 1", DURABLE, "//"),
-        ("dur", 64, "Durable, batch 64", "#5b45a0", "//"),
+        ("dur", 1, "Durable, batch 1", DURABLE_LIGHT, "//"),
+        ("dur", 64, "Durable, batch 64", DURABLE_DARK, "//"),
     ]
     fig, ax = plt.subplots(figsize=(9, 4.4))
     width = 0.2
@@ -218,12 +247,12 @@ def chart_throughput(g, out, done):
                edgecolor="white" if hatch else None, linewidth=0,
                yerr=err(ss), error_kw={"ecolor": TEXT, "capsize": 2, "lw": 1})
         for x, s in zip(xs, ss):
-            ax.text(x, s[0] * 1.08, f"{s[0]:.0f}", ha="center", fontsize=8)
+            ax.text(x, s[2] * 1.08, rate(s[0]), ha="center", fontsize=7.5)
     if not any_bar:
         plt.close(fig)
         return skip("throughput", "no m-* cells")
-    ax.axhline(1414, color=TEXT, lw=1, ls=":")
-    ax.text(-0.48, 1414 * 1.08, "disk with an fsync per write (fio)", ha="left", va="bottom", fontsize=8)
+    # In the legend rather than on the line, where any label would cross a bar.
+    disk = ax.axhline(1414, color=TEXT, lw=1, ls=":", label="Disk, fsync per write (fio)")
     ax.set_yscale("log")
     ax.set_ylim(30, 60000)
     ax.yaxis.set_major_formatter(FuncFormatter(mbs))
@@ -231,8 +260,11 @@ def chart_throughput(g, out, done):
     ax.set_xlabel("Payload per message. Acked, 64 requests in flight per publisher, 64 publishers")
     ax.set_ylabel("Payload accepted (log scale)")
     ax.grid(axis="x", visible=False)
-    ax.legend(ncol=4, loc="upper center", fontsize=8.5)
-    ax.set_title("Batching lifts 256 B throughput 9 to 22x; durable batches run at the disk's rate")
+    handles, labels = ax.get_legend_handles_labels()
+    order = [i for i, h in enumerate(handles) if h is not disk] + [handles.index(disk)]
+    ax.legend([handles[i] for i in order], [labels[i] for i in order], ncol=5, loc="upper center",
+              fontsize=8, handlelength=1.6, columnspacing=1.2)
+    ax.set_title("Batching lifts 256 B throughput 9 to 22\u00d7; durable batches run at the disk's rate")
     save(fig, out, "throughput", done)
 
 
@@ -251,7 +283,7 @@ def chart_lossless(g, rel, out, done):
         n = len(vals(g, group, "payload"))
         note = f"{n} trials"
         if group.startswith("defaults") and shed:
-            note += f"\nshed {min(vals(g, group, 'shed')):.1f}-{max(vals(g, group, 'shed')):.1f}%"
+            note += f"\nshed {min(vals(g, group, 'shed')):.1f}\u2013{max(vals(g, group, 'shed')):.1f}%"
         else:
             note += "\nnothing shed"
         labels.append(label)
@@ -272,13 +304,13 @@ def chart_lossless(g, rel, out, done):
                yerr=[[s[0] - s[1]], [s[2] - s[0]]], error_kw={"ecolor": TEXT, "capsize": 3, "lw": 1},
                label=None)
     for xi, s, note in zip(x, stats, notes):
-        ax.text(xi + off, s[2] + 80, f"{s[0] / 1000:.2f} GB/s\n{note}", ha="center", va="bottom", fontsize=8)
+        ax.text(xi + off, s[2] + 80, f"{rate(s[0])}\n{note}", ha="center", va="bottom", fontsize=8)
     if have_rel:
         for xi, r in zip(x, rels):
             if r:
                 ax.bar(xi + w / 2, r[0], w, color="none", edgecolor=FELIX, linewidth=1.5,
                        yerr=[[r[0] - r[1]], [r[2] - r[0]]], error_kw={"ecolor": TEXT, "capsize": 3})
-                ax.text(xi + w / 2, r[2] + 80, f"{r[0] / 1000:.2f} GB/s\nrelease", ha="center",
+                ax.text(xi + w / 2, r[2] + 80, f"{rate(r[0])}\nrelease", ha="center",
                         va="bottom", fontsize=8)
     ax.set_xticks(x, labels)
     ax.set_ylim(0, max(s[2] for s in stats) * 1.35)
@@ -295,8 +327,8 @@ def chart_regimes(g, out, done):
     lines = [
         ("In-memory 4 KiB", "l1-inmem-p4096", "mem", 4096, FELIX, "-"),
         ("In-memory 256 B", "l1-inmem-p256", "mem", 256, FELIX, "--"),
-        ("Durable on_commit 4 KiB", "l1-oncommit-p4096", "dur", 4096, DURABLE, "-"),
-        ("Durable on_commit 256 B", "l1-oncommit-p256", "dur", 256, DURABLE, "--"),
+        ("Durable 4 KiB, fsync before ack", "l1-oncommit-p4096", "dur", 4096, DURABLE, "-"),
+        ("Durable 256 B, fsync before ack", "l1-oncommit-p256", "dur", 256, DURABLE, "--"),
     ]
     fig, ax = plt.subplots(figsize=(9, 4.8))
     plotted = False
@@ -330,17 +362,18 @@ def chart_regimes(g, out, done):
     ax.scatter([], [], marker="x", color=TEXT, label="Little's law: outstanding / completions per s")
     ax.set_xscale("log")
     ax.set_yscale("log")
-    ax.set_xticks([1, 64, 1024, 4096], ["1\none publisher,\none in flight", "64\n64 publishers x 1",
-                                        "1024\n64 x 16", "4096\n64 x 64"])
-    ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _p: f"{v:g} ms"))
+    ax.set_xticks([1, 64, 1024, 4096], ["1\none publisher,\none in flight", "64\n64 publishers \u00d7 1",
+                                        "1,024\n64 \u00d7 16", "4,096\n64 \u00d7 64"])
+    ax.set_ylim(0.1, 100)
+    ax.yaxis.set_major_formatter(FuncFormatter(lat))
     ax.axvspan(0.7, 1.6, color=FELIX, alpha=0.08, lw=0)
     ax.text(0.75, 60, "service\ntime", fontsize=9, va="top")
     ax.text(5000, 0.25, "queueing:\nthe wait is set by\nhow much is in flight", fontsize=9, ha="right")
     ax.set_xlim(0.7, 7000)
-    ax.set_xlabel("Acked publishes outstanding at once, batch 1 (log scale; the 4-in-flight arm was trimmed)")
+    ax.set_xlabel("Acked publishes outstanding at once, batch 1 (log scale)")
     ax.set_ylabel("Ack latency, p50 (log scale)")
-    ax.legend(fontsize=8, loc="upper left", bbox_to_anchor=(0.02, 0.88))
-    ax.set_title("Unloaded, a publish takes under 0.4 ms; under load, it waits in line")
+    ax.legend(fontsize=8, loc="upper left", bbox_to_anchor=(0.14, 1.0))
+    ax.set_title(f"Unloaded, a publish takes under {lat(0.4)}; under load, it waits in line")
     save(fig, out, "latency-regimes", done)
 
 
@@ -358,21 +391,24 @@ def chart_percentiles(g, out, done):
         return skip("percentiles", "no l1 cells")
     fig, ax = plt.subplots(figsize=(9, 4))
     w = 0.26
-    for i, (pct, color) in enumerate((("p50", FELIX), ("p99", FELIX_DARK), ("p999", "#0b4252"))):
+    # A darker teal for p999 would vanish on a dark page, so p999 is hatched instead.
+    for i, (pct, color, hatch) in enumerate((("p50", FELIX, None), ("p99", FELIX_DARK, None),
+                                             ("p999", FELIX_DARK, "////"))):
         ss = [stat([v / 1000 for v in vals(g, r[0], "ack", pct)]) for r in rows]
         xs = [j + (i - 1) * w for j in range(len(rows))]
-        ax.bar(xs, [s[0] for s in ss], w, color=color, label=pct, yerr=err(ss),
+        ax.bar(xs, [s[0] for s in ss], w, color=color, label=pct, yerr=err(ss), hatch=hatch,
+               edgecolor="white" if hatch else None, linewidth=0,
                error_kw={"ecolor": TEXT, "capsize": 2, "lw": 1})
         if pct == "p50":
             for x, s in zip(xs, ss):
                 ax.text(x, s[2] + 0.01, f"{s[0] * 1000:.0f}", ha="center", fontsize=7)
     n = len(vals(g, rows[0][0], "ack", "p50"))
     ax.set_xticks(range(len(rows)), [r[1] for r in rows], fontsize=8.5)
-    ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _p: f"{v:g} ms"))
+    ax.yaxis.set_major_formatter(FuncFormatter(lat))
     ax.set_ylabel(f"Ack latency, one publish in flight\n({n} trials, whiskers min to max)")
     ax.grid(axis="x", visible=False)
     ax.legend(ncol=3, fontsize=9, loc="upper right")
-    ax.set_title("An fsynced publish takes about 0.3 ms, and the p999 stays within 1.5x of p50")
+    ax.set_title(f"An fsynced publish takes about {lat(0.31)}, and p999 stays within 1.5\u00d7 of p50")
     save(fig, out, "latency-percentiles", done)
 
 
@@ -412,7 +448,7 @@ def chart_nats(g, out, done):
         color = FELIX if r >= 1 else NEUTRAL
         ax.barh(yi, (r - 1) if r >= 1 else (1 - r), left=1 if r >= 1 else r, height=0.62, color=color)
         ax.plot([lo, hi], [yi, yi], color=TEXT, lw=1)
-        txt = f"Felix {r:.2f}x" if r >= 1 else f"NATS {1 / r:.2f}x"
+        txt = f"Felix {times(r)}" if r >= 1 else f"NATS {times(1 / r)}"
         edge = max(r, hi) if r >= 1 else min(r, lo)
         ax.text(edge * 1.05 if r >= 1 else edge / 1.05, yi, txt, va="center",
                 ha="left" if r >= 1 else "right", fontsize=8.5)
@@ -420,10 +456,10 @@ def chart_nats(g, out, done):
     ax.axvline(1, color=TEXT, lw=1)
     ax.set_xscale("log")
     ax.set_xlim(0.4, 30)
-    ax.set_xticks([0.5, 1, 2, 5, 10, 20], ["0.5x", "1x", "2x", "5x", "10x", "20x"])
+    ax.set_xticks([0.5, 1, 2, 5, 10, 20], ["0.5\u00d7", "1\u00d7", "2\u00d7", "5\u00d7", "10\u00d7", "20\u00d7"])
     ax.tick_params(axis="y", length=0)
     ax.grid(axis="y", visible=False)
-    ax.text(1.04, len(rows) - 0.45, "Felix faster \u2192", fontsize=9, color=FELIX_DARK)
+    ax.text(1.04, len(rows) - 0.45, "Felix faster \u2192", fontsize=9)
     ax.text(0.96, len(rows) - 0.45, "\u2190 NATS faster", fontsize=9, ha="right")
     ax.set_ylim(-0.6, len(rows) - 0.1)
     ax.set_xlabel("Felix rate / NATS rate, payload at the server, same VMs\n(log scale; bar: mean of the trials, line: min to max)")
@@ -455,7 +491,7 @@ def chart_nats_latency(g, out, done):
             xerr=[[r[2][0] - r[2][1] for r in rows], [r[2][2] - r[2][0] for r in rows]],
             error_kw={"ecolor": TEXT, "capsize": 2})
     ax.set_yticks(y, [r[0] for r in rows], fontsize=8.5)
-    ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _p: f"{v:g} ms"))
+    ax.xaxis.set_major_formatter(FuncFormatter(lat))
     ax.set_xlabel("p50 latency, one publish in flight (whiskers min to max over trials)")
     ax.legend(fontsize=9)
     ax.grid(axis="y", visible=False)
@@ -485,7 +521,7 @@ def chart_rf3_throughput(g, rf3, rel, out, done):
         ax.bar(xs, [s[0] for s in ss], w, color=color, label=label, yerr=err(ss),
                error_kw={"ecolor": TEXT, "capsize": 2, "lw": 1})
         for x, s in zip(xs, ss):
-            ax.text(x, s[2] + 20, f"{s[0]:.0f}", ha="center", fontsize=8)
+            ax.text(x, s[2] + 20, rate(s[0]), ha="center", fontsize=8)
     ax.set_xticks(range(len(shapes)), [s[2] for s in shapes])
     ax.yaxis.set_major_formatter(FuncFormatter(mbs))
     ax.set_ylabel("Durable payload, acked after fsync\n(2 trials, whiskers min to max)")
@@ -515,11 +551,11 @@ def chart_rf3_latency(g, rf3, rel, out, done):
         ax.bar(xs, [s[0] for s in ss], w, color=color, label=label, yerr=err(ss),
                error_kw={"ecolor": TEXT, "capsize": 2})
         for x, s, n in zip(xs, ss, ns):
-            ax.text(x, s[2] + 0.05, f"{s[0]:.2f} ms\n{n} trial{'s' if n > 1 else ''}", ha="center",
+            ax.text(x, s[2] + 0.05, f"{lat(s[0])}\n{n} trial{'s' if n > 1 else ''}", ha="center",
                     fontsize=8)
     ax.set_xticks([0, 1], ["256 B", "4 KiB"])
     ax.set_ylim(0, 5.6)
-    ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _p: f"{v:g} ms"))
+    ax.yaxis.set_major_formatter(FuncFormatter(lat))
     ax.set_ylabel("Durable ack p50,\none publish in flight")
     ax.grid(axis="x", visible=False)
     ax.legend(fontsize=8.5, loc="upper left")
@@ -534,9 +570,11 @@ def main():
     ap.add_argument("--release")
     ap.add_argument("--rf3-release")
     ap.add_argument("--out", default="docs-site/public/charts/v060")
-    ap.add_argument("--preview", help="also write PNGs on white here, for review")
+    ap.add_argument("--preview", help="also write PNGs on white and on near-black here, for review")
+    ap.add_argument("--site", action="store_true", help="latency in ms only, for getfelix.dev")
     a = ap.parse_args()
-    global PREVIEW
+    global PREVIEW, SITE
+    SITE = a.site
     PREVIEW = Path(a.preview) if a.preview else None
     if PREVIEW:
         PREVIEW.mkdir(parents=True, exist_ok=True)

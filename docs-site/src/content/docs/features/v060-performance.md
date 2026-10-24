@@ -44,11 +44,11 @@ four load generators:
 - **1.40 to 1.48 GB/s durable, fsynced before the ack**, at 4 KiB and 64 KiB
   in batches of 64. That is the disk's own rate: the same volume writes 1414
   to 1426 MB/s in `fio` with an fsync after each write.
-- **About 0.3 ms for one durable publish, fsynced, when nothing else is
-  running**: 312 µs at p50 and 437 µs at p999 for 256 B. In-memory publishes
-  take 160 to 180 µs.
+- **About a third of a millisecond for one durable publish, fsynced, when
+  nothing else is running**: 312 µs at p50 and 437 µs at p999 for 256 B.
+  In-memory publishes take 160 to 180 µs.
 - **Felix is faster than NATS JetStream in every acked and durable pair**, from
-  1.2 times for in-memory single messages to 14.7 times for durable batches of
+  1.2 times for in-memory single messages to 14.8 times for durable batches of
   small messages. **Core NATS is about 1.35 times faster than Felix for
   fire-and-forget.** Both ran on the same VMs, interleaved.
 - **This build is as fast as or faster than v0.6.0-preview.9** on every shape
@@ -103,18 +103,18 @@ law says what the wait must be: the time a request spends in the system equals
 the number outstanding divided by the number completed per second. It does not
 depend on how fast any single request is served.
 
-Take in-memory 4 KiB batches of 64, acked. Outstanding are 64 publishers x 64
-requests x 64 records x 4096 bytes = 1.07 GB. The broker accepts 4.40 GB/s.
+Take in-memory 4 KiB batches of 64, acked. Outstanding are 64 publishers × 64
+requests × 64 records × 4096 bytes = 1.07 GB. The broker accepts 4.40 GB/s.
 Little's law predicts 1.07 / 4.40 = 244 ms, and the measured p50 is 229 ms. The
 durable cell of the same shape completes 1.40 GB/s, so the prediction is 767
 ms, and the measured p50 is 767 ms. Nothing in either cell is slow: the same
-broker answers a lone publish in 0.2 to 0.4 ms. The ack time in a saturated
+broker answers a lone publish in under 400 µs. The ack time in a saturated
 cell measures how much the load generator chose to keep in flight.
 
-![Ack latency p50 against the number of publishes outstanding, log-log, for in-memory and durable streams at 256 B and 4 KiB. Every line rises from 0.16 to 0.38 ms with one publish outstanding to 10 to 48 ms with 4,096, and each loaded point sits close to Little's law's prediction.](/charts/v060/latency-regimes.svg)
+![Ack latency p50 against the number of publishes outstanding, log-log, for in-memory and durable streams at 256 B and 4 KiB. Every line rises from 160 to 380 µs with one publish outstanding to 10 to 49 ms with 4,096, and each loaded point sits close to Little's law's prediction.](/charts/v060/latency-regimes.svg)
 
 The chart shows both regimes in one picture. With one publish outstanding, the
-latency is service time: 0.16 to 0.38 ms. Every point to the right is
+latency is service time: 160 to 380 µs. Every point to the right is
 queueing, and each sits close to the cross that Little's law predicts from the
 throughput alone. The data is from [Unloaded latency](#unloaded-latency) and
 [Latency against offered load](#latency-against-offered-load).
@@ -136,10 +136,10 @@ cluster's conditions are in [its own section](#cluster-conditions).
 | Part | Setting |
 |---|---|
 | Region | Azure westus3, one resource group, one virtual network |
-| Broker | 1 x `Standard_L8as_v4`, 8 vCPU, 64 GiB, kernel 7.0.0-1017-azure |
+| Broker | 1 × `Standard_L8as_v4`, 8 vCPU, 64 GiB, kernel 7.0.0-1017-azure |
 | Broker storage | The VM's local NVMe drives as one md RAID0, ext4 mounted `noatime` |
-| Load generators | 4 x `Standard_D4as_v5`, 4 vCPU, 16 GiB |
-| Control plane | 1 x `Standard_D2as_v5` |
+| Load generators | 4 × `Standard_D4as_v5`, 4 vCPU, 16 GiB |
+| Control plane | 1 × `Standard_D2as_v5` |
 | NIC | `hv_netvsc` driver, MTU 3900 on every VM |
 | Transport | QUIC over UDP with TLS, as in production. Every byte is encrypted. |
 | UDP buffers | `net.core.rmem_max` and `wmem_max` 26214400, `rmem_default` and `wmem_default` 8388608 |
@@ -348,7 +348,7 @@ column is append against the 1414 MB/s one-job `fio` baseline:
 | 64 KiB | 64 | acked | 1482 (1476-1488) | 1482 (1477-1487) | 22.6 k | 3.4 | 105% |
 | 64 KiB | 64 | fire-and-forget | 1518 (1508-1527) | 1519 (1510-1528) | 23.2 k | 4.2 | 107% |
 
-![Acked payload throughput on a log scale for in-memory and durable streams, batch 1 and 64, at 256 B, 4 KiB and 64 KiB, with the disk's fsync rate marked. Batch 64 lifts 256 B in-memory from 102 to 2248 MB/s and durable from 53 to 482 MB/s; durable 4 KiB and 64 KiB batches sit on the disk line.](/charts/v060/throughput.svg)
+![Acked payload throughput on a log scale for in-memory and durable streams: batch 1 and 64 at 256 B and 4 KiB, batch 64 at 64 KiB, with the disk's fsync rate as a dotted line. Batch 64 lifts 256 B in-memory from 102 MB/s to 2.2 GB/s and durable from 53 to 482 MB/s; durable 4 KiB and 64 KiB batches sit on the disk line at 1.4 and 1.5 GB/s.](/charts/v060/throughput.svg)
 
 Batching is what pays for small messages: 64 records per request lift 256 B
 throughput 22 times in memory and 9 times durable. Large durable batches stop
@@ -370,8 +370,8 @@ What the two tables show:
   the CPU nor the disk is the limit in that cell, and the fire-and-forget cell
   of the same shape reaches the disk. We have not yet found what limits the
   acked one.
-- **Fire-and-forget is slower than acked for 4 KiB batches in memory**: 3.62
-  against 4.40 GB/s. The next section explains the likely cause.
+- **Fire-and-forget is slower than acked for 4 KiB batches in memory**: 3.6
+  against 4.4 GB/s. The next section explains the likely cause.
 
 ### Lossless throughput, and why fire-and-forget trailed acked
 
@@ -382,7 +382,7 @@ For in-memory 4 KiB batches of 64, these are the lossless rates on this build:
 | Fire-and-forget, waiting for room (`FELIX_PUB_INGRESS_WAIT=1`) | 3624 | 0.0% | 866 (859-961) |
 | Acked, 64 requests in flight per publisher | 4403 (4387-4418) | 0.0% | 961 (954-967) |
 
-![Payload throughput for in-memory 4 KiB batches of 64: fire-and-forget waiting for room 3.62 GB/s, acked with 64 in flight 4.40 GB/s, both with nothing shed, and the shipped defaults 4.17 GB/s with 1.2 to 2.2% shed.](/charts/v060/lossless.svg)
+![Payload throughput for in-memory 4 KiB batches of 64: fire-and-forget waiting for room 3.6 GB/s, acked with 64 in flight 4.4 GB/s, both with nothing shed, and the shipped defaults 4.2 GB/s with 1.2 to 2.2% shed.](/charts/v060/lossless.svg)
 
 On this build, acked publishing is the fastest way to lose nothing. The
 defaults go faster than fire-and-forget with waiting only by dropping
@@ -405,9 +405,7 @@ publish that finds the queue full parks on its own, and the loop keeps reading
 the publishes behind it. It is in the release build, and we expect
 fire-and-forget with ingress wait to at least match acked publishing there.
 
-#### After the fix
-
-<!-- TODO(data): release A/B. In-memory 4 KiB batch 64, fire-and-forget with
+<!-- TODO(data): release A/B, under a "#### After the fix" heading. In-memory 4 KiB batch 64, fire-and-forget with
 FELIX_PUB_INGRESS_WAIT=1 and acked with 64 in flight, on 88a91681 against the
 release build (with #1443 and #1460), interleaved on the same VMs. Report
 payload, shed and UDP drops/s for every arm, and say whether fire-and-forget
@@ -429,7 +427,7 @@ on the same stream. Three trials each; each number is the median of the trials.
 | In-memory | 256 B | 163 / 202 / 237 | 155 / 197 / 229 |
 | In-memory | 4 KiB | 183 / 219 / 249 | 181 / 222 / 251 |
 
-![Ack latency p50, p99 and p999 with one publish in flight for durable on_commit, durable periodic and in-memory streams at 256 B and 4 KiB. Every bar is under 0.5 ms.](/charts/v060/latency-percentiles.svg)
+![Ack latency p50, p99 and p999 with one publish in flight for durable on_commit, durable periodic and in-memory streams at 256 B and 4 KiB. Every bar is under 500 µs, and the p50 runs from 163 µs in memory to 375 µs durable on_commit.](/charts/v060/latency-percentiles.svg)
 
 The fsync costs about 130 µs at 256 B and 180 µs at 4 KiB, the difference
 between the `on_commit` and `periodic` rows. The tail is tight: the p999 is
@@ -443,14 +441,23 @@ back. That is why durable delivery tracks the ack rather than coming before it.
 
 The same 64 publishers as the throughput cells, batch 1, acked, with 1 or 16
 requests in flight per publisher instead of 64. The 64 column repeats the
-throughput matrix. Each entry is ack p50 / p99 in µs, then payload MB/s:
+throughput matrix. Ack p50 / p99:
 
 | Stream | Payload | 1 in flight | 16 in flight | 64 in flight |
 |---|---|---|---|---|
-| In-memory | 256 B | 328 / 651, 48 MB/s | 2737 / 6594, 89 MB/s | 10452 / 17484, 102 MB/s |
-| In-memory | 4 KiB | 403 / 775, 625 MB/s | 3348 / 11901, 1043 MB/s | 14334 / 31417, 1118 MB/s |
-| Durable, `on_commit` | 256 B | 1333 / 3096, 12 MB/s | 8718 / 18356, 29 MB/s | 18134 / 37810, 53 MB/s |
-| Durable, `on_commit` | 4 KiB | 2004 / 4221, 124 MB/s | 14710 / 27620, 276 MB/s | 48540 / 79709, 327 MB/s |
+| In-memory | 256 B | 328 / 651 µs | 2.74 / 6.59 ms | 10.5 / 17.5 ms |
+| In-memory | 4 KiB | 403 / 775 µs | 3.35 / 11.9 ms | 14.3 / 31.4 ms |
+| Durable, `on_commit` | 256 B | 1.33 / 3.10 ms | 8.72 / 18.4 ms | 18.1 / 37.8 ms |
+| Durable, `on_commit` | 4 KiB | 2.00 / 4.22 ms | 14.7 / 27.6 ms | 48.5 / 79.7 ms |
+
+Payload at the same depths:
+
+| Stream | Payload | 1 in flight MB/s | 16 in flight MB/s | 64 in flight MB/s |
+|---|---|---|---|---|
+| In-memory | 256 B | 48 | 89 | 102 |
+| In-memory | 4 KiB | 625 | 1043 | 1118 |
+| Durable, `on_commit` | 256 B | 12 | 29 | 53 |
+| Durable, `on_commit` | 4 KiB | 124 | 276 | 327 |
 
 Every cell follows Little's law. At one in flight there are 64 requests
 outstanding. In-memory 256 B completes 188 thousand a second, which gives 341
@@ -633,18 +640,18 @@ and the server's CPU in cores:
 
 | Pair | Payload | Felix MB/s | Felix cores | NATS MB/s | NATS cores | Faster |
 |---|---|---|---|---|---|---|
-| Durable, one at a time | 256 B | 52.5 | 6.7 | 16.1 | 3.3 | Felix, 3.27x |
-| Durable, one at a time | 4 KiB | 367 | 4.5 | 204 | 4.1 | Felix, 1.79x |
-| Durable, 64 per request | 256 B | 543 | 3.3 | 36.9 | 3.4 | Felix, 14.7x |
-| Durable, 64 per request | 4 KiB | 1430 | 3.8 | 408 | 4.0 | Felix, 3.51x |
-| Periodic fsync, 64 per request | 256 B | 1118 | 5.7 | 118 | 3.0 | Felix, 9.48x |
-| Periodic fsync, 64 per request | 4 KiB | 1432 | 3.8 | 1148 | 5.0 | Felix, 1.25x |
-| In memory | 256 B | 102 | 7.4 | 85.5 | 5.3 | Felix, 1.19x |
-| In memory | 4 KiB | 1130 | 7.4 | 923 | 6.0 | Felix, 1.22x |
-| Fire and forget | 256 B | 2046 | 7.4 | 2736 | 7.4 | NATS, 1.34x |
-| Fire and forget | 4 KiB | 3621 | 7.7 | 5033 | 6.7 | NATS, 1.39x |
+| Durable, one at a time | 256 B | 52.5 | 6.7 | 16.1 | 3.3 | Felix, 3.27× |
+| Durable, one at a time | 4 KiB | 367 | 4.5 | 204 | 4.1 | Felix, 1.79× |
+| Durable, 64 per request | 256 B | 543 | 3.3 | 36.9 | 3.4 | Felix, 14.8× |
+| Durable, 64 per request | 4 KiB | 1430 | 3.8 | 408 | 4.0 | Felix, 3.50× |
+| Periodic fsync, 64 per request | 256 B | 1118 | 5.7 | 118 | 3.0 | Felix, 9.48× |
+| Periodic fsync, 64 per request | 4 KiB | 1432 | 3.8 | 1148 | 5.0 | Felix, 1.25× |
+| In memory | 256 B | 102 | 7.4 | 85.5 | 5.3 | Felix, 1.19× |
+| In memory | 4 KiB | 1130 | 7.4 | 923 | 6.0 | Felix, 1.22× |
+| Fire and forget | 256 B | 2046 | 7.4 | 2736 | 7.4 | NATS, 1.34× |
+| Fire and forget | 4 KiB | 3621 | 7.7 | 5033 | 6.7 | NATS, 1.39× |
 
-![Felix's payload rate divided by NATS JetStream's for ten pairs on a log scale centred on 1x. Felix is faster in every acked and durable pair, from 1.19x to 14.7x; core NATS is faster for fire-and-forget, by 1.34x and 1.39x. Each bar names the pair's main caveat.](/charts/v060/nats.svg)
+![Felix's payload rate divided by NATS JetStream's for ten pairs on a log scale centred on 1×. Felix is faster in every acked and durable pair, from 1.19× to 14.8×; core NATS is faster for fire-and-forget, by 1.34× and 1.39×. Each bar names the pair's main caveat.](/charts/v060/nats.svg)
 
 Each bar is labelled with the difference that matters most for reading it.
 The full list of what still differs is in [How each pair is
@@ -655,14 +662,14 @@ What the pairs show:
 - **Durable writes are where Felix leads most.** With an fsync before every
   ack, group commit lets Felix's outstanding requests share fsyncs. In the
   batch pair, Felix also keeps 64 batches in flight where `nats bench` sends
-  one atomic batch at a time, so part of the 14.7x comes from the publisher's
+  one atomic batch at a time, so part of the 14.8× comes from the publisher's
   window rather than the server. In the 4 KiB batch pair Felix runs at the
   disk's rate on under 4 cores.
-- **Periodic fsync narrows the gap at 4 KiB** to 1.25x, as neither side waits
-  on the disk. At 256 B Felix still leads by 9.5x.
-- **In memory is close**, 1.2x at either payload, and Felix uses more CPU to
+- **Periodic fsync narrows the gap at 4 KiB** to 1.25×, as neither side waits
+  on the disk. At 256 B Felix still leads by 9.5×.
+- **In memory is close**, 1.2× at either payload, and Felix uses more CPU to
   get there: 7.4 cores against 5.3 to 6.0.
-- **Core NATS wins fire-and-forget by 1.34 to 1.39x.** With no subscriber,
+- **Core NATS wins fire-and-forget by 1.34 to 1.39×.** With no subscriber,
   core NATS checks for interest and discards, while Felix routes each record to
   its shard and keeps it in the ring. The Felix arm also ran on the build with
   the read-loop stall (#1416) that held back its fire-and-forget cells.
@@ -671,9 +678,8 @@ One Felix fire-and-forget 256 B trial had a shorter steady window, 46 seconds
 instead of 72, because its generators finished unevenly. It measured 2041 MB/s
 against 2051 for the other trial, and both are in the mean.
 
-#### Latency pairs
-
-<!-- TODO(data): NATS latency run (nats/nats-latency.sh). One publish in
+<!-- TODO(data): NATS latency run (nats/nats-latency.sh), under a "#### Latency
+pairs" heading. One publish in
 flight, 256 B and 4 KiB: Felix on_commit against JetStream sync always, Felix
 periodic against JetStream default sync, Felix in-memory against a JetStream
 memory stream, Felix in-memory fire-and-forget delivery against core NATS. Ack
@@ -698,10 +704,10 @@ v0.6.0 cluster finalizes them at its first broker registration (#1457).
 | Part | Setting |
 |---|---|
 | Region | Azure centralus |
-| Brokers | 3 x `Standard_L4as_v4`, 4 vCPU, 32 GiB, one in each availability zone (1, 2, 3) |
+| Brokers | 3 × `Standard_L4as_v4`, 4 vCPU, 32 GiB, one in each availability zone (1, 2, 3) |
 | Broker storage | Local NVMe as one md RAID0 on each broker. `fio` sequential 256 KiB with an fsync after each write, one job: 718 to 734 MB/s |
-| Load generators | 4 x `Standard_D4as_v5`, in zone 1 |
-| Control plane | 1 x `Standard_D2as_v5`, in zone 1 |
+| Load generators | 4 × `Standard_D4as_v5`, in zone 1 |
+| Control plane | 1 × `Standard_D2as_v5`, in zone 1 |
 | NIC and transport | MTU 3900, QUIC with TLS, as for the single broker |
 
 Broker settings are the single broker's, except `FELIX_QUIC_LISTENERS=2`, which
@@ -734,7 +740,7 @@ about three times payload plus framing:
 | 4 KiB | 1 | 459 (455-463) | 1386 (1371-1400) | 112 k | 8.9 |
 | 4 KiB | 64 | 602 | 1820 | 147 k | 8.1 |
 
-![Durable payload acked after fsync, single broker with one copy against the three-broker cluster with three copies, before finalizing: 53 against 66, 482 against 465, 327 against 459, and 1399 against 602 MB/s.](/charts/v060/rf3-throughput.svg)
+![Durable payload acked after fsync, single broker with one copy against the three-broker cluster with three copies, before finalizing: 53 against 66 MB/s, 482 against 465 MB/s, 327 against 459 MB/s, and 1.4 GB/s against 602 MB/s.](/charts/v060/rf3-throughput.svg)
 
 Three copies on three smaller brokers keep pace with one 8-core broker for
 every shape but the one that is bound by the disk, where the cluster's disks
@@ -760,8 +766,8 @@ What the tables show:
 - **Durable small messages gain from the cluster.** 256 B batch 1 runs at 66
   MB/s of payload, above the single 8-core broker's 53, on three 4-core brokers
   that each also store the other two's records.
-- **In memory, three 4-core brokers beat one 8-core broker**: 4.64 GB/s
-  against 4.40 at 4 KiB batch 64, and 1.39 against 1.12 GB/s at 4 KiB batch 1,
+- **In memory, three 4-core brokers beat one 8-core broker**: 4.6 GB/s
+  against 4.4 at 4 KiB batch 64, and 1.4 against 1.1 GB/s at 4 KiB batch 1,
   with one copy of each record in both.
 
 ### Cluster latency
@@ -770,14 +776,14 @@ One publisher, one publish in flight, batch 1, one subscriber, the cluster
 client publishing to the shard's owner. Two trials, except durable 256 B, whose
 second trial did not finish:
 
-| Stream | Payload | Ack p50 / p99 / p999 µs | Delivery p50 / p99 / p999 µs |
+| Stream | Payload | Ack p50 / p99 / p999 | Delivery p50 / p99 / p999 |
 |---|---|---|---|
-| Durable `Quorum`, RF=3 | 256 B | 3462 / 3990 / 5138 | 3491 / 4044 / 5219 |
-| Durable `Quorum`, RF=3 | 4 KiB | 3474 / 4158 / 5390 | 3495 / 4191 / 5386 |
-| In-memory | 256 B | 428 / 502 / 750 | 394 / 480 / 694 |
-| In-memory | 4 KiB | 472 / 538 / 700 | 505 / 576 / 749 |
+| Durable `Quorum`, RF=3 | 256 B | 3.46 / 3.99 / 5.14 ms | 3.49 / 4.04 / 5.22 ms |
+| Durable `Quorum`, RF=3 | 4 KiB | 3.47 / 4.16 / 5.39 ms | 3.50 / 4.19 / 5.39 ms |
+| In-memory | 256 B | 428 / 502 / 750 µs | 394 / 480 / 694 µs |
+| In-memory | 4 KiB | 472 / 538 / 700 µs | 505 / 576 / 749 µs |
 
-![Durable ack p50 with one publish in flight: 0.31 and 0.38 ms on the single broker against 3.46 and 3.47 ms on the RF=3 cluster before finalizing.](/charts/v060/rf3-latency.svg)
+![Durable ack p50 with one publish in flight: 312 and 375 µs on the single broker against 3.46 and 3.47 ms on the RF=3 cluster before finalizing.](/charts/v060/rf3-latency.svg)
 
 The durable ack takes about 3.5 ms at either payload, so it is set by neither
 the disk nor the bytes on the network. Without `majority_ack` and
@@ -787,7 +793,7 @@ With the features finalized, the followers' acknowledgements move the mark
 directly. #1457 finalizes them on every new cluster. An upgraded cluster gets
 the same by finalizing them (`POST /v1/fleet/features/<feature>/finalize`).
 
-The in-memory figures are 0.26 to 0.29 ms above the single broker's. The
+The in-memory figures are 260 to 290 µs above the single broker's. The
 generators are all in zone 1, so two thirds of the shards' owners are in
 another zone.
 
@@ -795,12 +801,12 @@ another zone.
 
 A publish can enter any broker. If that broker does not own the shard, it
 forwards the publish to the owner. One publish in flight, 256 B, one trial
-each, ack p50 / p99 / p999 µs:
+each:
 
-| Stream | Straight to the owner | Through another broker |
+| Stream | Straight to the owner, ack p50 / p99 / p999 | Through another broker, ack p50 / p99 / p999 |
 |---|---|---|
-| In-memory | 473 / 538 / 829 | 584 / 698 / 1437 |
-| Durable `Quorum` | 3251 / 3992 / 52111 | 3425 / 4489 / 5444 |
+| In-memory | 473 / 538 / 829 µs | 584 µs / 698 µs / 1.44 ms |
+| Durable `Quorum` | 3.25 / 3.99 / 52.1 ms | 3.43 / 4.49 / 5.44 ms |
 
 Forwarding adds about 110 µs at p50 to an in-memory publish and 170 µs to a
 durable one. Under load, with 64 publishers sending 256 B batches of 64 to the
@@ -809,9 +815,8 @@ stream ran at 881 MB/s against 1948 straight to the owner. The durable cells of
 that step did not complete: they found the peer-lane deadlock in #1458, fixed
 by #1459.
 
-### After finalizing the features
-
-<!-- TODO(data): RF=3 release run: a new cluster on the release build that
+<!-- TODO(data): RF=3 release run, under a "### After finalizing the features"
+heading: a new cluster on the release build that
 finalizes every fleet feature at setup (#1457), same conditions as above.
 Fill (1) the throughput tables, durable and in-memory, 256 B and 4 KiB, batch
 1 and 64; (2) the one-in-flight latency table, against the 3.5 ms above; (3)
