@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792799835131,
+  "lastUpdate": 1792800272484,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -34008,6 +34008,58 @@ window.BENCHMARK_DATA = {
             "range": "3813.54",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 836576.71\nmean: 836904.43\nstdev: 3813.54\ncv: 0.46%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4de57386025e263f87849e33b4532b3f1e4e890e",
+          "message": "perf(azure): release A/B step for the final campaign (#1461)\n\nWith RELEASE_SHA set, a rab step runs that build against BUILD_SHA,\ninterleaved, both arms on the release loadgen so only the broker differs:\nfire-and-forget at 256 B, 4 KiB and 64 KiB, acked and durable 64-batch\ncells, one-in-flight latency, and the shipped-defaults durable cells.",
+          "timestamp": "2026-10-24T00:00:00Z",
+          "tree_id": "d03c475911f92f00ad04d6b925bfd85295a5031c",
+          "url": "https://github.com/GetFelix/felix/commit/4de57386025e263f87849e33b4532b3f1e4e890e"
+        },
+        "date": 1792800271655,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 359632.19,
+            "range": "7772.72",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 359632.19\nmean: 358130.11\nstdev: 7772.72\ncv: 2.17%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 359632.19,
+            "range": "7772.72",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 359632.19\nmean: 358130.11\nstdev: 7772.72\ncv: 2.17%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82810.29,
+            "range": "574.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82810.29\nmean: 82664.56\nstdev: 574.59\ncv: 0.70%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 828102.94,
+            "range": "5745.86",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 828102.94\nmean: 826645.65\nstdev: 5745.86\ncv: 0.70%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
