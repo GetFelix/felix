@@ -173,9 +173,22 @@ do not mean more concurrent callers contending on shared stream state.
    later publish on the same stream never overtakes a parked one. A parked
    acked publish keeps its byte budget, arms its ack timeout only once it is
    admitted, and is answered `publish_queue_full` if its wait runs out. A
-   stream may have 1024 publishes parked; past that, or with the byte budget
-   spent, it waits inline and stops reading, which leaves the backpressure
-   to QUIC stream flow control. Parked publishes are counted in
+   stream may have 1024 acked publishes parked but only 16 unacked ones;
+   past that, or with the byte budget spent, it waits inline and stops
+   reading, which leaves the backpressure to QUIC stream flow control. The
+   unacked cap is small because no publish window holds a fire-and-forget
+   client back: with a deep one, a busy broker's streams park until the
+   shared byte budget is spent, and then every publish waits on that budget,
+   which is slower than waiting on the queue.
+
+   The trade-off is isolation. A stream whose fire-and-forget publishes hit
+   one full shard stops reading after 16 frames, and since
+   `pub_stream_recv_window` defaults to the connection window, its unread
+   bytes can take the whole connection's flow-control credit and stall the
+   connection's other streams. A larger cap reaches the same state once the
+   byte budget runs out; the small cap reaches it sooner. On a stream that
+   carries both kinds, acked frames behind the 17th unacked publish wait
+   with it. Parked publishes are counted in
    `felix_broker_ingress_parked_total`.
 
 3. **Lanes and the fair queue** (`handlers/publish/scheduler.rs`). Every job

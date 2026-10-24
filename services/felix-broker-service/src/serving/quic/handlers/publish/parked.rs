@@ -8,6 +8,13 @@
 //! room. The parked count per stream is capped; past the cap the loop waits
 //! inline, which stops its reads and leaves the backpressure to QUIC stream
 //! flow control.
+//!
+//! Unacked publishes get a much smaller cap than acked ones. An acked
+//! publisher is held back by its publish window, but nothing holds back a
+//! fire-and-forget one, so a large cap lets a busy broker's streams park
+//! until the shared byte budget runs out. Every publish then waits on that
+//! budget instead of the queue, which cost small batches about an eighth of
+//! their throughput.
 
 use std::future::Future;
 use std::sync::Arc;
@@ -17,22 +24,26 @@ use tokio_util::task::TaskTracker;
 
 /// One control stream's parked publishes.
 pub(crate) struct ParkedPublishes {
-    slots: Arc<Semaphore>,
+    acked: Arc<Semaphore>,
+    unacked: Arc<Semaphore>,
     tasks: TaskTracker,
 }
 
 impl ParkedPublishes {
-    /// Room for `limit` parked publishes at once.
-    pub(crate) fn new(limit: usize) -> Arc<Self> {
+    /// Room for `acked` parked acked publishes and `unacked` unacked ones at
+    /// once.
+    pub(crate) fn new(acked: usize, unacked: usize) -> Arc<Self> {
         Arc::new(Self {
-            slots: Arc::new(Semaphore::new(limit)),
+            acked: Arc::new(Semaphore::new(acked)),
+            unacked: Arc::new(Semaphore::new(unacked)),
             tasks: TaskTracker::new(),
         })
     }
 
-    /// A slot for one more parked publish, or `None` at the cap.
-    pub(crate) fn try_slot(&self) -> Option<OwnedSemaphorePermit> {
-        Arc::clone(&self.slots).try_acquire_owned().ok()
+    /// A slot for one more parked publish, or `None` at its kind's cap.
+    pub(crate) fn try_slot(&self, acked: bool) -> Option<OwnedSemaphorePermit> {
+        let slots = if acked { &self.acked } else { &self.unacked };
+        Arc::clone(slots).try_acquire_owned().ok()
     }
 
     /// Run a parked publish's wait.

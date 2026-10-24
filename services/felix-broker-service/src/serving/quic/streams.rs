@@ -39,7 +39,7 @@ use crate::serving::quic::telemetry::t_counter;
 #[cfg(feature = "telemetry")]
 use crate::serving::quic::telemetry::t_histogram;
 use crate::serving::quic::{
-    ACK_QUEUE_DEPTH, ACK_WAITERS_MAX, GLOBAL_ACK_DEPTH, PARKED_PUBLISHES_MAX,
+    ACK_QUEUE_DEPTH, ACK_WAITERS_MAX, GLOBAL_ACK_DEPTH, PARKED_PUBLISHES_MAX, PARKED_UNACKED_MAX,
 };
 use control::run_control_loop;
 #[cfg(test)]
@@ -77,7 +77,7 @@ pub(crate) async fn handle_stream(
     let (cancel_tx, cancel_rx) = watch::channel(false);
 
     // Publishes waiting for queue room wait here, not in the read loop.
-    let parked = ParkedPublishes::new(PARKED_PUBLISHES_MAX);
+    let parked = ParkedPublishes::new(PARKED_PUBLISHES_MAX, PARKED_UNACKED_MAX);
     publish_ctx.parked = Some(Arc::clone(&parked));
 
     // Bounds in-flight ack-on-commit waiters so a stalled commit path cannot
