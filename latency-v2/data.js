@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792852811998,
+  "lastUpdate": 1792853581872,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -43758,6 +43758,72 @@ window.BENCHMARK_DATA = {
             "range": "361.12",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1043.00\nmean: 855.00\nstdev: 361.12\ncv: 42.24%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3018d1b6b276bf9b645efee1e911ef0da432dd14",
+          "message": "fix(replication): key the short-copy exemption on the set that acknowledged (#1484)\n\nrefuse_short_copy let a crashed leader answer its successor's fence whenever\nthe current route showed two copies. Placement shrinks a set from three to\ntwo at a new generation under the same leader (an RF 2 drain's seat, a short\nset's joining copy dropped), and a record the three acknowledged may be on\nneither copy. The exemption now needs the copy's last record to be from the\ngeneration it accepted, the route to be the failover straight after it, and\nthat failover's fence_storage_ids to name the same two members the route\nshows, the fencer among them.\n\nFixes #1336\n\nSpec-Unaffected: the TLA+ model has no refuse_short_copy; this narrows a broker-side refusal the model leaves out",
+          "timestamp": "2026-10-24T14:49:32Z",
+          "tree_id": "07f9481848c947adc87a47eb65abb91c5cfecb2c",
+          "url": "https://github.com/GetFelix/felix/commit/3018d1b6b276bf9b645efee1e911ef0da432dd14"
+        },
+        "date": 1792853577826,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 74,
+            "range": "1.79",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 74.00\nmean: 73.20\nstdev: 1.79\ncv: 2.44%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 100,
+            "range": "3.32",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 100.00\nmean: 99.00\nstdev: 3.32\ncv: 3.35%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 163,
+            "range": "37.22",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 163.00\nmean: 164.20\nstdev: 37.22\ncv: 22.67%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 92,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 92.00\nmean: 92.40\nstdev: 0.55\ncv: 0.59%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 220,
+            "range": "11.39",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 220.00\nmean: 217.80\nstdev: 11.39\ncv: 5.23%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 422,
+            "range": "138.99",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 422.00\nmean: 440.80\nstdev: 138.99\ncv: 31.53%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
