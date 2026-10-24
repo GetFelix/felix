@@ -168,3 +168,40 @@ fn info_rows_say_whether_there_is_a_cursor() {
         (7, 10, 2, 1, 4)
     );
 }
+
+#[test]
+fn a_record_row_carries_the_publisher_and_time_when_present() {
+    let record = GroupRecord {
+        publisher: Some("alice".to_string()),
+        timestamp_micros: Some(1_700_000_000_000_001),
+        ..claim(1, 1)
+    };
+    let row = record_row(&record);
+    assert!(!row.publisher.is_null());
+    // SAFETY: `publisher_len` bytes, valid while `record` lives.
+    let bytes =
+        unsafe { std::slice::from_raw_parts(row.publisher.cast::<u8>(), row.publisher_len) };
+    assert_eq!(bytes, b"alice");
+    assert!(row.has_timestamp);
+    assert_eq!(row.timestamp_micros, 1_700_000_000_000_001);
+}
+
+/// A broker that sent neither is not an error.
+#[test]
+fn a_record_row_without_them_reads_as_absent() {
+    let row = record_row(&claim(1, 1));
+    assert!(row.publisher.is_null());
+    assert_eq!(row.publisher_len, 0);
+    assert!(!row.has_timestamp);
+    assert_eq!(row.timestamp_micros, 0);
+}
+
+#[test]
+fn an_empty_publisher_in_a_record_row_is_absent() {
+    let row = record_row(&GroupRecord {
+        publisher: Some(String::new()),
+        ..claim(1, 1)
+    });
+    assert!(row.publisher.is_null());
+    assert_eq!(row.publisher_len, 0);
+}
