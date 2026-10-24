@@ -313,6 +313,66 @@ impl IdempotentProducer {
         routing_key: Option<Bytes>,
         batches: Vec<Vec<Vec<u8>>>,
     ) -> Result<Vec<Option<u64>>> {
+        self.hand_off(tenant_id, namespace, stream, routing_key, batches, false)
+            .await?
+            .answer()
+            .await
+    }
+
+    /// [`Self::publish_batch`] up to the hand-off: returns once the batch is
+    /// queued for the producer's task, without waiting for the leader.
+    ///
+    /// For a caller that must keep calls in order but not wait for each
+    /// answer: calls handed off one after another are sent in that order,
+    /// which concurrent `publish_batch` futures do not promise. The answer
+    /// is [`Handed::offset`]. As with `publish_batch`, the batch is sent
+    /// whether or not the answer is awaited.
+    pub async fn hand_off_batch(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        key: Option<Bytes>,
+        payloads: Vec<Vec<u8>>,
+    ) -> Result<Handed> {
+        self.hand_off(tenant_id, namespace, stream, key, vec![payloads], false)
+            .await
+    }
+
+    /// [`Self::publish_batches`] up to the hand-off; see
+    /// [`Self::hand_off_batch`]. The answer is [`Handed::done`].
+    pub async fn hand_off_batches(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        batches: Vec<Vec<Vec<u8>>>,
+    ) -> Result<Handed> {
+        self.hand_off(tenant_id, namespace, stream, None, batches, false)
+            .await
+    }
+
+    /// [`Self::abandon_in_doubt`] up to the hand-off; see
+    /// [`Self::hand_off_batch`]. The answer is [`Handed::done`].
+    pub async fn hand_off_abandon(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+    ) -> Result<Handed> {
+        self.hand_off(tenant_id, namespace, stream, None, Vec::new(), true)
+            .await
+    }
+
+    async fn hand_off(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        routing_key: Option<Bytes>,
+        batches: Vec<Vec<Vec<u8>>>,
+        abandon: bool,
+    ) -> Result<Handed> {
         let (answer, answered) = oneshot::channel();
         let request = Request {
             tenant_id: tenant_id.to_string(),
@@ -320,19 +380,43 @@ impl IdempotentProducer {
             stream: stream.to_string(),
             routing_key,
             batches,
-            abandon: false,
+            abandon,
             answer,
         };
         self.requests
             .send(request)
             .await
             .map_err(|_| anyhow::anyhow!("this producer's task has stopped; nothing was sent"))?;
-        answered.await.map_err(|_| {
+        Ok(Handed { answered })
+    }
+}
+
+/// A call the producer's task has been handed, not yet answered. Dropping it
+/// does not stop the call.
+pub struct Handed {
+    answered: oneshot::Receiver<Result<Vec<Option<u64>>>>,
+}
+
+impl Handed {
+    /// The offsets of the batches the call sent, in order.
+    async fn answer(self) -> Result<Vec<Option<u64>>> {
+        self.answered.await.map_err(|_| {
             anyhow::anyhow!(
                 "this producer's task stopped before the batch was answered, so it may or may \
                  not have been appended; call producer_init for a fresh producer"
             )
         })?
+    }
+
+    /// The log offset of a single batch's first record, as
+    /// [`IdempotentProducer::publish_batch`] returns it.
+    pub async fn offset(self) -> Result<Option<u64>> {
+        Ok(self.answer().await?.first().copied().flatten())
+    }
+
+    /// Whether the call succeeded.
+    pub async fn done(self) -> Result<()> {
+        self.answer().await.map(|_| ())
     }
 }
 
@@ -1094,3 +1178,6 @@ fn refused_unapplied(err: anyhow::Error, only_attempt_answered: bool) -> anyhow:
         err
     }
 }
+
+#[cfg(test)]
+mod tests;

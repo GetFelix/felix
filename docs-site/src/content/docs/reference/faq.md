@@ -201,7 +201,7 @@ Rust, Python and TypeScript ship today, the latter two as bindings over the
 Rust client rather than reimplementations. Both pass every required scenario in
 the client conformance catalogue, and CI is gated on it. Go and C# are not
 started; `felix-capi`, the C ABI they will bind to, covers connect, keyed,
-batched and named-shard publishes, subscribes to one shard or every shard, consumer groups, caches, counters and cache watches, and atomic commits, conditional publishes and state reads so far, all asynchronous
+batched and named-shard publishes, subscribes to one shard or every shard, consumer groups, caches, counters and cache watches, atomic commits, conditional publishes and state reads, and idempotent producers so far, all asynchronous
 through callbacks.
 The wire protocol is language-neutral and documented precisely for this
 reason (see [Wire Protocol](/architecture/wire-protocol/)), and a

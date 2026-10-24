@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::boundary::{Failure, guard, required_str};
 use crate::cancel::{FelixCancelToken, user_token};
-use crate::client::FelixClient;
+use crate::client::{FelixClient, Shared};
 use crate::completion::{Completion, Deliver, c_message, cancelled, is_cancelled};
 use crate::status::{
     FELIX_STATUS_CANCELLED, FELIX_STATUS_ERROR, FELIX_STATUS_OK, FELIX_STATUS_OUTCOME_UNKNOWN,
@@ -596,8 +596,31 @@ pub(crate) fn spawn_publish<V, T, F>(
     T: Send + 'static,
     F: Future<Output = T> + Send + 'static,
 {
-    let handle = client.cancel.clone();
-    client.shared.spawn(done, move |done| async move {
+    spawn_write(
+        &client.shared,
+        client.cancel.clone(),
+        user,
+        done,
+        publish,
+        report,
+    );
+}
+
+/// [`spawn_publish`] for a handle other than the client, which brings its own
+/// cancel token.
+pub(crate) fn spawn_write<V, T, F>(
+    shared: &Shared,
+    handle: CancellationToken,
+    user: Option<CancellationToken>,
+    done: Completion<V>,
+    write: F,
+    report: impl FnOnce(Completion<V>, T) + Send + 'static,
+) where
+    V: Deliver,
+    T: Send + 'static,
+    F: Future<Output = T> + Send + 'static,
+{
+    shared.spawn(done, move |done| async move {
         if is_cancelled(&handle, user.as_ref()) {
             return done.status(FELIX_STATUS_CANCELLED);
         }
@@ -607,7 +630,7 @@ pub(crate) fn spawn_publish<V, T, F>(
                 status: FELIX_STATUS_OUTCOME_UNKNOWN,
                 message: "the write was cancelled after it may have been sent".to_string(),
             }),
-            outcome = publish => report(done, outcome),
+            outcome = write => report(done, outcome),
         }
     });
 }
