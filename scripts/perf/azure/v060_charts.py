@@ -467,11 +467,11 @@ def chart_nats(g, out, done):
     ax.set_xticks([0.5, 1, 2, 5, 10, 20], ["0.5\u00d7", "1\u00d7", "2\u00d7", "5\u00d7", "10\u00d7", "20\u00d7"])
     ax.tick_params(axis="y", length=0)
     ax.grid(axis="y", visible=False)
-    ax.text(1.04, len(rows) - 0.45, "Felix faster \u2192", fontsize=9)
-    ax.text(0.96, len(rows) - 0.45, "\u2190 NATS faster", fontsize=9, ha="right")
+    ax.text(1.04, len(rows) - 0.45, "Felix higher \u2192", fontsize=9)
+    ax.text(0.96, len(rows) - 0.45, "\u2190 NATS higher", fontsize=9, ha="right")
     ax.set_ylim(-0.6, len(rows) - 0.1)
     ax.set_xlabel("Felix rate / NATS rate, payload at the server, same VMs\n(log scale; bar: mean of the trials, line: min to max)")
-    ax.set_title("Felix leads every acked and durable pair; core NATS leads fire-and-forget")
+    ax.set_title("Felix has the higher throughput in every acked and durable pair")
     save(fig, out, "nats", done)
 
 

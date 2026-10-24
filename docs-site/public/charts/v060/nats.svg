@@ -476,13 +476,13 @@ L 637.2 318.594531
     <text style="font-size: 8.5px; font-family: 'Inter', 'DejaVu Sans', sans-serif; text-anchor: end; fill: #767e89" x="220.338739" y="304.056463" transform="rotate(-0 220.338739 304.056463)">NATS 1.39×</text>
    </g>
    <g id="text_28">
-    <text style="font-size: 9px; font-family: 'Inter', 'DejaVu Sans', sans-serif; text-anchor: start; fill: #767e89" x="267.19369" y="35.306747" transform="rotate(-0 267.19369 35.306747)">Felix faster →</text>
+    <text style="font-size: 9px; font-family: 'Inter', 'DejaVu Sans', sans-serif; text-anchor: start; fill: #767e89" x="267.19369" y="35.306747" transform="rotate(-0 267.19369 35.306747)">Felix higher →</text>
    </g>
    <g id="text_29">
-    <text style="font-size: 9px; font-family: 'Inter', 'DejaVu Sans', sans-serif; text-anchor: end; fill: #767e89" x="258.384495" y="35.306747" transform="rotate(-0 258.384495 35.306747)">← NATS faster</text>
+    <text style="font-size: 9px; font-family: 'Inter', 'DejaVu Sans', sans-serif; text-anchor: end; fill: #767e89" x="258.384495" y="35.306747" transform="rotate(-0 258.384495 35.306747)">← NATS higher</text>
    </g>
    <g id="text_30">
-    <text style="font-weight: 700; font-size: 11.5px; font-family: 'Inter', 'DejaVu Sans', sans-serif; text-anchor: start; fill: #767e89" x="162.03375" y="19.538203" transform="rotate(-0 162.03375 19.538203)">Felix leads every acked and durable pair; core NATS leads fire-and-forget</text>
+    <text style="font-weight: 700; font-size: 11.5px; font-family: 'Inter', 'DejaVu Sans', sans-serif; text-anchor: start; fill: #767e89" x="162.03375" y="19.538203" transform="rotate(-0 162.03375 19.538203)">Felix has the higher throughput in every acked and durable pair</text>
    </g>
   </g>
  </g>

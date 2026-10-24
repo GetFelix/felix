@@ -3,11 +3,6 @@ title: "v0.6.0 Performance"
 description: "What Felix v0.6.0 does on real Azure hardware: one broker and a three-broker RF=3 cluster, the exact conditions, how to read the numbers, throughput and latency for each publish shape, a NATS JetStream comparison on the same VMs, and the defects the campaign found and fixed."
 ---
 
-<!-- Placeholders are marked TODO(data) and name the run that fills them. Each
-one sits in its own subsection so that deleting it leaves the rest of the page
-complete and true. Do not publish with any TODO(data) left: fill it or delete
-the subsection. -->
-
 This page reports what Felix v0.6.0 does on real Azure hardware. It covers a
 single broker in detail, compares it with NATS JetStream on the same machines,
 and reports a three-broker cluster that keeps three copies of every durable
@@ -33,12 +28,19 @@ The page is in this order:
 ## Summary
 
 On one 8 vCPU broker with local NVMe, over QUIC with TLS, with 64 publishers on
-four load generators:
+four load generators. These single-broker figures were measured on the
+campaign build (`88a91681`). The release build (`6ec23a8f`) was compared with
+it on ten shapes: batched throughput matched within about 1% except 256 B
+fire-and-forget, which is 13% slower on the release (#1469). The latency and
+batch-1 rows moved between -5.4% and +4.5%, on one trial each
+([details](#the-release-build-against-this-build)).
 
 - **3.6 GB/s of 4 KiB messages fire-and-forget, losing nothing**, and **4.4
   GB/s acked with 64 requests in flight**. Both are in-memory, in batches of 64,
-  with publishers waiting for room when the broker is full
-  (`FELIX_PUB_INGRESS_WAIT=1`). The broker shed nothing in either.
+  with publishers waiting for room when the broker is full: fire-and-forget
+  through `FELIX_PUB_INGRESS_WAIT=1`, acked because acks after the write
+  (`FELIX_ACK_ON_COMMIT=1`) make a full broker hold an acked publish instead of
+  refusing it. The broker shed nothing in either.
 - **4.2 GB/s on the shipped defaults, at most once.** With the defaults the
   broker drops a fire-and-forget publish that arrives while it is full. It
   dropped 1.2 to 2.2% of what was sent. The publisher is not told.
@@ -48,10 +50,12 @@ four load generators:
 - **About a third of a millisecond for one durable publish, fsynced, when
   nothing else is running**: 312 µs at p50 and 437 µs at p999 for 256 B.
   In-memory publishes take 160 to 180 µs.
-- **Felix is faster than NATS JetStream in every acked and durable pair**, from
-  1.2 times for in-memory single messages to 14.8 times for durable batches of
-  small messages. **Core NATS is about 1.35 times faster than Felix for
-  fire-and-forget.** Both ran on the same VMs, interleaved.
+- **Felix has higher throughput than NATS JetStream in every acked and durable
+  pair**, from 1.2 times for in-memory single messages to 14.8 times for durable
+  batches of small messages. **Core NATS has about 1.35 times Felix's
+  throughput for fire-and-forget.** With one publish in flight, NATS answers
+  sooner in every pair, by 13 to 80 µs at p50. Both ran on the same VMs,
+  interleaved.
 - **This build is as fast as or faster than v0.6.0-preview.9** on every shape
   in the gate, from +0.3% for durable to +32% for small acked messages.
 
@@ -222,8 +226,12 @@ What the durability settings promise:
 - `FELIX_ACK_ON_COMMIT=1`: an acked publish is answered after the write rather
   than when the broker accepts it. With `on_commit` fsync the answer means "on
   disk". With `periodic` fsync it means "written, fsync within one interval".
+  It also changes what a full broker does with an acked publish: it holds it
+  for up to `FELIX_PUBLISH_QUEUE_WAIT_MS` (2000 ms by default) waiting for room,
+  instead of refusing it at once.
 - `FELIX_PUB_INGRESS_WAIT=1`: a fire-and-forget publish waits for ingress room
-  instead of being shed when the queue or byte budget is full. That is why the
+  instead of being shed when the queue or byte budget is full. It does not
+  affect acked publishes. That is why the
   fire-and-forget numbers below are what the broker sustained, not what was
   offered. With the default, overload is shed and counted.
 
@@ -350,7 +358,11 @@ dropped almost no UDP datagrams in that cell (1 a second against 68). The 256 B
 `on_commit` ack is 15 µs slower at p50 and 53 µs at p999. That is within the
 spread between single trials of this cell (the campaign's three trials of this
 build ran 312 µs at p50, this session's 333 µs), so it is not a finding on one
-trial, and #1469 tracks it as a watch item.
+trial. It is a separate watch item from #1469.
+
+The A/B did not repeat every shape. In particular it did not repeat in-memory
+256 B batches of 64 acked, the 8.78 M messages a second row below, so that
+figure has no release-build measurement.
 
 The headline figures on this page come from the campaign session, not this
 one, because this session's VMs ran 0 to 4% faster for the same build: acked
@@ -526,7 +538,7 @@ Two trials each.
 | Durable 4 KiB, batch 64, acked | 1411 MB/s append | no result: publishes refused (below) |
 | Durable 256 B, batch 1, acked | 59 MB/s append, ack p50 18.1 ms | 74 (73-74) MB/s append, ack p50 4.1 ms, p99 99 ms |
 | Durable 256 B, one publish in flight | ack 312 / 393 / 437 µs, delivery 313 / 392 / 434 µs | ack 160 / 200 / 217 µs, delivery 294 / 376 / 419 µs |
-| Durable 256 B, one publish in flight, release build | | ack 173 / 215 / 236 µs, delivery 303 / 379 / 424 µs (one trial) |
+| Durable 256 B, one publish in flight, release build with ack on accept forced (`FELIX_ACK_ON_COMMIT=0`), not its default | | ack 173 / 215 / 236 µs, delivery 303 / 379 / 424 µs (one trial) |
 
 **Fire-and-forget under overload.** With the defaults, the broker drops a
 fire-and-forget publish that arrives while its ingress queue or byte budget is
@@ -544,17 +556,24 @@ finds the byte budget full is refused with an error: "publish ingress byte
 budget exhausted". The application gets the error and decides whether to send
 again. Felix does not retry it for you. The load generator treats any refused
 publish as fatal, so both trials of the durable 4 KiB cell stopped within
-seconds, as soon as the disk fell behind. With `FELIX_PUB_INGRESS_WAIT=1` the
-same load is paced to the disk and runs at 1.41 GB/s. If you publish durable
-data faster than your disk writes it, either turn on ingress wait or handle the
-refusal.
+seconds, as soon as the disk fell behind. `FELIX_PUB_INGRESS_WAIT` plays no
+part here: it applies only to fire-and-forget. What paced the durability
+profile's run to the disk, at 1.41 GB/s, is ack after the write
+(`FELIX_ACK_ON_COMMIT=1`): an acked publish that finds the broker full then
+waits for room, up to `FELIX_PUBLISH_QUEUE_WAIT_MS` (2000 ms by default),
+before it is refused. v0.6.0 acks durable publishes after the write by
+default, so a durable acked publish gets that wait without any setting; an
+in-memory acked publish is still refused at once unless
+`FELIX_ACK_ON_COMMIT=1` is set. If you publish faster than the broker can
+take, handle the refusal.
 
 **What an ack means in these cells.** With ack on accept, the 160 µs ack says
 the broker has the message, not that it is on disk. The delivery time of 294 µs
 is later in the path: the broker hands a durable record to subscribers only
 once it is durable, which with `on_commit` means fsynced. The release row runs
 the same settings on the release build: it sets ack on accept explicitly, so
-it shows the release's cost for the same work, not the release's defaults.
+it shows the release's cost for the same work, not the release's defaults, and
+its 173 µs is not the release's default latency.
 v0.6.0 acks a durable publish after the write by default (#1421, #1422), and
 its default fsync is `periodic`. A durable stream with no settings therefore
 acks once the record is written to the log and fsyncs on the 250 ms timer,
@@ -699,7 +718,7 @@ and the server's CPU in cores:
 | Fire and forget | 256 B | 2046 | 7.4 | 2736 | 7.4 | NATS, 1.34× |
 | Fire and forget | 4 KiB | 3621 | 7.7 | 5033 | 6.7 | NATS, 1.39× |
 
-![Felix's payload rate divided by NATS JetStream's for ten pairs on a log scale centred on 1×. Felix is faster in every acked and durable pair, from 1.19× to 14.8×; core NATS is faster for fire-and-forget, by 1.34× and 1.39×. Each bar names the pair's main caveat.](/charts/v060/nats.svg)
+![Felix's payload rate divided by NATS JetStream's for ten pairs on a log scale centred on 1×. Felix has the higher throughput in every acked and durable pair, from 1.19× to 14.8×; core NATS has the higher throughput for fire-and-forget, by 1.34× and 1.39×. Each bar names the pair's main caveat.](/charts/v060/nats.svg)
 
 Each bar is labelled with the difference that matters most for reading it.
 The full list of what still differs is in [How each pair is
@@ -848,11 +867,7 @@ What the tables show:
   4.4 at 4 KiB batch 64, and 1.4 against 1.1 GB/s at 4 KiB batch 1. This is a
   sharding result: each record is held once, on its shard's leader.
 
-<!-- TODO(data): RF=3 pass after finalizing the fleet features: rf3-lf-q-mem-p256-b1-ack,
-rf3-lf-q-dur-p256-b1-ack, rf3-lf-q-mem-p4096-b64-ack, rf3-lf-q-dur-p4096-b64-ack
-in the release RF=3 results. Add an "After finalizing" column to both tables
-(payload MB/s), expected within noise of the unfinalized numbers. If the pass
-does not complete, delete this comment; the tables stand. -->
+<!-- cluster results after finalizing: pending -->
 
 ### Cluster latency
 
@@ -877,13 +892,6 @@ move the mark directly, and the control plane is off the path. A new cluster
 finalizes them by itself (#1457). An upgraded cluster gets the same by
 finalizing them (`POST /v1/fleet/features/<feature>/finalize`).
 
-<!-- TODO(data): RF=3 pass after finalizing: one-in-flight durable ack latency
-(rf3-lf-lat-dur-p256, rf3-lf-lat-dur-p4096; trimmed from this run's plan, so
-they need a re-run) and the Quorum cache put at one worker (rf3-lf-qcache-c1).
-Add an "after finalizing" row per stream and say how far below 3.5 ms it is.
-Re-run v060_charts.py --rf3-release <dir> to fill the chart's "after" bars. If
-this never runs, delete this comment; the paragraph above stands. -->
-
 The in-memory figures are about 300 µs above the single broker's. The
 generators are all in zone 1, so two thirds of the shards' owners are in
 another zone.
@@ -907,11 +915,6 @@ Puts scale with workers. Gets stop near 3,000 a second between 8 and 32
 workers, and we have not yet found why. They show what one operation costs,
 not what the cache can sustain; a dedicated cache campaign will measure that
 (#1473).
-
-<!-- TODO(data): Quorum cache after finalizing at 1 and 8 workers
-(rf3-lf-qcache-c1, rf3-lf-qcache-c8), in the release RF=3 results. Add the
-rows; the put p50 after finalizing is the number to compare with 3.80 ms. If
-they never arrive, delete this comment. -->
 
 ### Forwarding
 
@@ -969,11 +972,30 @@ This test is also what found the deadlock between forwards and replication on
 the brokers' peer lanes (#1458). It is fixed (#1459), and the durable
 forwarding cells now complete.
 
-<!-- TODO(data): failover under acked durable load (rf3-fail-*) in the release
-RF=3 results: kill -9 one broker 40 s into a 150 s cell, hold it down 45 s,
-restart it. Report time until acks resume, the throughput dip, time for the
-restarted broker to rejoin, and acked records lost (expected zero), under a
-"### Failover" heading here. If this never runs, delete this comment. -->
+### Failover
+
+One trial, before finalizing the fleet features. 64 publishers on four
+generators sent durable 4 KiB batches of 64, 64 in flight each, through the
+cluster client to a 12-shard `Quorum` stream. 40 seconds into a 150-second
+run, one broker was killed with `kill -9`, held down for 45 seconds and
+restarted. Cluster append is the bytes written to the log on all three brokers
+together:
+
+| Measure | Result |
+|---|---|
+| Cluster append before the kill | 1963 MB/s |
+| While the broker was down (45 s) | 18% of that on average; under 10% for 20 of the 45 seconds |
+| After the restart | about 1.45 GB/s, three quarters of the pre-kill rate, from 18 s after the restart to the end of the run; it never returned to 90% |
+| Records acked | 14,796,608 |
+| Records whose send failed with an error | 264,256, 1.8% of those sent |
+| Client retries and reconnects | 2,823 retries, no reconnects |
+| Batch ack p50 / max over the whole run | 1.8 to 2.0 s / 48.6 to 50.6 s, across the four generators |
+| Every shard back to three copies | 65 s after the run ended |
+
+This trial does not show whether any acknowledged record was lost. The check
+compares each shard's stored record count, before and after the run, with the
+records acked to it, and neither inspection snapshot completed, so the check
+has no result.
 
 ## What limits each shape
 
@@ -1033,8 +1055,10 @@ the number of broker core shards no longer changed throughput in these cells.
 ## Known issues
 
 - **256 B fire-and-forget is 13% slower on the release** than on the campaign
-  build, with the 4 KiB and 64 KiB rows unchanged (#1469). The 4.5% on the 256
-  B `on_commit` p50 is tracked there too, as a watch item.
+  build, with the 4 KiB and 64 KiB rows unchanged (#1469).
+- **Watch item: the 256 B `on_commit` p50 was 4.5% slower on the release** in a
+  single trial, within the spread between trials of that cell. It is not part
+  of #1469.
 - **Fire-and-forget trails acked publishing.** Lossless, in memory, 4 KiB
   batches of 64: 3.6 GB/s fire-and-forget against 4.4 GB/s acked. The cause is
   not yet found. The release comparison ruled out the connection stall (#1416).
@@ -1061,7 +1085,7 @@ test suites had not. Each one below is fixed on main.
 | #1433 | The cluster client could wait forever: finishing a publisher and reconnecting had no timeout. | Load generators hung for over 90 minutes when a leadership move stalled. | #1441 bounds finish and broker connects. |
 | #1434 | A fenced shard move had no timeout if its leader never reported drained. | A move frozen by a placement pause left a durable shard unable to commit for an hour. | #1440 pins that a pause never holds a started move, and #1444 gives a stuck fence back to its leader after a timeout. |
 | #1458 | Forwarded durable `Quorum` publishes and replication shared the same peer lanes, and the owner held a lane for the whole quorum wait. | When two brokers forwarded to each other, neither's replication could move. No publish succeeded for 30 seconds, and the cluster recovered by itself 5 minutes after the load stopped. Clients sending straight to the owner were not affected. | #1459 keeps replication off peer streams that forwards hold. |
-| #1457 | A new cluster finalized only the incarnation features, leaving `majority_ack` and `generation_start` off. | Durable `Quorum` acks on a new cluster took about 3.5 ms instead of well under a millisecond. | #1457 finalizes every feature its brokers report on a new cluster. |
+| #1457 | A new cluster finalized only the incarnation features, leaving `majority_ack` and `generation_start` off. | Durable `Quorum` acks on a new cluster waited for a control-plane round: about 3.5 ms with one publish in flight. | #1457 finalizes every feature its brokers report on a new cluster, except `publisher_principal`. |
 
 ## How we got here
 
@@ -1119,8 +1143,8 @@ its stream, which stalled every stream on that connection (#1416, fixed by
 the full gain: 256 B batch 1 acked went from 95 MB/s at depth 64 to 163 MB/s at
 512, with p50 dropping from 12.6 ms to about 7.5 ms, and 1024 gave the same
 throughput. Throughput at 4 KiB batch 64 stayed flat at 4.69 to 4.72 GB/s at
-every depth, while the 4 KiB p99 fell from 458 to 597 ms at depth 64 to 358 to
-384 ms at 512. We did not derive the capacity from the byte budget. A queued
+every depth, while the 4 KiB p99 fell from a range of 458-597 ms at depth 64
+to 358-384 ms at 512. We did not derive the capacity from the byte budget. A queued
 job costs 2 KB or more with spread keys against a 512 B charge, the per-tenant
 fairness reserve cannot be reached under a byte-derived capacity, and overload
 becomes invisible because shedding starts about 500 times later.
