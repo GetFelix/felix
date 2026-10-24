@@ -1,0 +1,1 @@
+- The v0.6.0 performance page now says that the two largest Felix-vs-NATS ratios (14.8x and 9.5x) come mostly from publisher window differences, and points at the matched-window rerun (#1507).
