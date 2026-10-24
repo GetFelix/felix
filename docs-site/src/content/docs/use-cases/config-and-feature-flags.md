@@ -38,7 +38,7 @@ A retained watch delivers a key's current value and then every change after it. 
 
 A consumer that falls behind is told. The watch ends with `Lagged { resume_from }`, and re-watching from that offset is gapless. After a reconnect, `offset + 1` replays exactly what was missed, or the current value of each key if the cache has compacted past it. The staleness check is part of the API, not a timer you write.
 
-Each watcher has its own bounded queue, so thousands of watchers do not each need a stream into a consensus store, and you do not build a watch cache in front of one. Measured on a three-broker Azure cluster: 500 watchers on one key received every put at 4.6 ms p50, and a late joiner to a 10,000-key prefix held the full state in 38 ms ([conditions](/features/real-network-performance/#cache-counter-watch-and-queue)).
+Each watcher has its own bounded queue, so thousands of watchers do not each need a stream into a consensus store, and you do not build a watch cache in front of one. A watcher that joins late gets the current state of the keys it watches, then the changes that follow.
 
 Writers use `cache_put_if`, whose check and write are one step on the key's owner, so two operators editing the same table cannot overwrite each other. With `Quorum` consistency a write is acknowledged once a majority of replicas hold it.
 

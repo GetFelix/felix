@@ -38,7 +38,7 @@ Each subscription has its own bounded queue and its own QUIC stream with its own
 
 On a durable stream the subscriber can tell. Every event carries its log offset, and a queue overflow ends the subscription with `subscription_lagged` and the offset where the drop began. `ClusterClient` resubscribes there and replays the gap from the log. NATS core and Redis pub/sub close the connection and leave the page to refetch everything.
 
-The push path reaches many readers of the same data without a per-reader fetch. On a real Azure cluster Felix delivered 1.0 million messages a second to 500 subscribers from one broker with zero loss, with the publisher's ack latency flat at about 206 microseconds (256 B payloads, one stream on one shard, paced publisher, batch 1, per-message ack; [conditions](/features/real-network-performance/#fanout)). That is delivered throughput, not the publish rate.
+The push path reaches many readers of the same data without a per-reader fetch. A publish is encoded once and every subscriber shares that one encoded frame, and each subscriber has its own bounded queue, so adding readers does not add encoding work and a slow reader never blocks the publisher. The rate Felix delivers grows with the number of subscribers, while the rate publishers send stays the same.
 
 Kafka's answer to the same load is a relay tier that reads the log once and pushes to clients. Here the broker is that tier for QUIC clients, and [the gateway](/use-cases/browser-realtime/) is the WebSocket edge for browsers.
 
@@ -216,5 +216,5 @@ Browsers cannot connect directly, since Felix clients speak QUIC. See
 
 - [Publish/subscribe](/features/pubsub/) for batching, queue sizing and the byte bounds
 - [Demo: Slow-consumer Isolation](/demos/slow-consumer-isolation/) and [Demo: Local State Divergence](/demos/state-divergence/)
-- [Benchmarks](/features/benchmarks/) and [Real-network performance](/features/real-network-performance/)
+- [Benchmarks](/features/benchmarks/) and [v0.6.0 performance](/features/v060-performance/)
 - [Config and feature flags](/use-cases/config-and-feature-flags/) for state that must converge rather than just arrive

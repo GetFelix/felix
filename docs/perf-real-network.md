@@ -20,13 +20,10 @@ This document is the design for closing that gap. The budget is an Azure
 subscription's $200/month of Azure credit, which shapes several decisions
 below: this suite provisions, runs, and **tears down**; nothing idles.
 
-> **The first results are published.** The T1 session's analysis
-> covers ~1.09 GB/s / 3.68 M msg/s aggregate ingest (73% of raw line rate), ~181 µs
-> acknowledged-publish latency, durability free for throughput, and every
-> semantic measured against the real Entra IdP. It is the "Real-Network
-> Performance (Azure)" page on the docs site
-> (`docs-site/src/content/docs/features/real-network-performance.md`). Raw data
-> lives under `scripts/perf/azure/sessions/`.
+> **Results are published.** The "Performance on Azure (v0.6.0)" page on the docs
+> site (`docs-site/src/content/docs/features/v060-performance.md`) carries the
+> current numbers with every condition stated. Raw data lives under
+> `scripts/perf/azure/sessions/`.
 
 **The deliverable is a comprehensive performance-analysis page on the docs
 site**, of publication quality: every scenario's aggregates *and* spread,
