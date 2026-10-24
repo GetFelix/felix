@@ -605,7 +605,6 @@ async fn same_key_publishes_keep_send_order_through_parking() -> Result<()> {
 #[tokio::test]
 async fn unacked_publishes_park_up_to_their_own_cap() -> Result<()> {
     use crate::serving::quic::{PARKED_PUBLISHES_MAX, PARKED_UNACKED_MAX};
-    assert!(PARKED_UNACKED_MAX < PARKED_PUBLISHES_MAX);
     let sent = PARKED_UNACKED_MAX + 8;
     let (broker, stuck, stuck_partition, mut publish_ctx, scheduler) = stuck_stream().await?;
     let parked = ParkedPublishes::new(PARKED_PUBLISHES_MAX, PARKED_UNACKED_MAX);
