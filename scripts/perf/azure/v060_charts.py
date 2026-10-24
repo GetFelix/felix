@@ -11,13 +11,16 @@ trials and whiskers span min to max where there are two or more.
 --single       the single-broker campaign (campaign-final.sh), including the NATS
                pairs (ab-*) and, once run, the NATS latency pairs
                (felix-lat-* / nats-lat-*).
---rf3          the RF=3 campaign before the fleet features were finalized
-               (campaign-rf3.sh: rf3-q-*, rf3-lat-*).
+--rf3          an earlier RF=3 campaign (campaign-rf3.sh), used only when
+               --rf3-release is not given.
 --release      the release A/B: a results directory whose cells use the main
                campaign's names (m-mem-p4096-b64-ff-spread, m-mem-p4096-b64-ack-spread,
                defaults-mem-p4096-b64-ff) on the release build.
---rf3-release  the RF=3 campaign on a new cluster with every feature finalized,
-               same cell names as --rf3.
+--rf3-release  the RF=3 campaign on the release build: the owner-direct matrix
+               (rf3-q-*), one-in-flight latency (rf3-lat-*), forwarding
+               (rf3-fwdq-*), the Quorum cache (rf3-qcache-*), and the pass after
+               finalizing the fleet features (rf3-lf-*), which fills the
+               "after" bars once it has run.
 --site         write latency in milliseconds only, for getfelix.dev. The default
                follows the write-up: microseconds below 1 ms, milliseconds above.
 
@@ -27,6 +30,7 @@ the script once a pending run lands fills it in. Needs matplotlib
 """
 
 import argparse
+import json
 import re
 import statistics as st
 import sys
@@ -80,6 +84,8 @@ plt.rcParams.update({
     "savefig.facecolor": "none",
     "savefig.transparent": True,
     "svg.fonttype": "none",
+    # Fixed clip-path ids, so a re-run on unchanged data leaves the SVGs unchanged.
+    "svg.hashsalt": "felix-v060",
 })
 
 
@@ -106,6 +112,7 @@ def load(root):
             "shed": shed_pct(d),
             "ack": ack,
             "del": dl,
+            "cache": cache_lat(d),
         })
     return groups
 
@@ -499,24 +506,38 @@ def chart_nats_latency(g, out, done):
     save(fig, out, "nats-latency", done)
 
 
-def chart_rf3_throughput(g, rf3, rel, out, done):
+def cache_lat(cdir):
+    """{"put": {...}, "get": {...}} latency percentiles from a cache cell, median over generators."""
+    out = {}
+    for run in Path(cdir).glob("*.run.txt"):
+        for line in run.read_text(errors="replace").splitlines():
+            if not line.startswith("LOADGEN_JSON"):
+                continue
+            try:
+                j = json.loads(line.split(" ", 1)[1])
+            except (IndexError, ValueError):
+                continue
+            for op in ("put", "get"):
+                if isinstance(j.get(op), dict) and j[op].get("latency_us"):
+                    out.setdefault(op, []).append(j[op]["latency_us"])
+    return {op: {k: st.median(r[k] for r in rs) for k in ("p50", "p99", "p999")} for op, rs in out.items()}
+
+
+def chart_rf3_throughput(g, rf3, out, done):
     shapes = [(256, 1, "256 B, batch 1"), (256, 64, "256 B, batch 64"),
               (4096, 1, "4 KiB, batch 1"), (4096, 64, "4 KiB, batch 64")]
-    arms = [("Single broker, 8 vCPU, 1 copy", g, "m-dur-p{p}-b{b}-ack-spread", NEUTRAL, None),
-            ("3 brokers, 4 vCPU each, 3 copies, before finalizing", rf3, "rf3-q-dur-p{p}-b{b}-ack",
-             FELIX, None),
-            ("3 brokers, release, features finalized", rel, "rf3-q-dur-p{p}-b{b}-ack", FELIX_DARK, None)]
-    arms = [a for a in arms if any(vals(a[1], a[2].format(p=p, b=b), "payload") for p, b, _ in shapes)]
-    if len(arms) < 2:
+    arms = [("Single broker, 8 vCPU, 1 copy", g, "m-dur-p{p}-b{b}-ack-spread", NEUTRAL),
+            ("3 brokers, 4 vCPU each, 3 copies", rf3, "rf3-q-dur-p{p}-b{b}-ack", FELIX)]
+    if not any(vals(rf3, f"rf3-q-dur-p{p}-b{b}-ack", "payload") for p, b, _ in shapes):
         return skip("rf3-throughput", "no RF=3 cells")
     fig, ax = plt.subplots(figsize=(9, 4))
-    w = 0.8 / len(arms)
-    for i, (label, src, pat, color, _h) in enumerate(arms):
+    w = 0.4
+    for i, (label, src, pat, color) in enumerate(arms):
         xs, ss = [], []
         for j, (p, b, _) in enumerate(shapes):
             s = stat(vals(src, pat.format(p=p, b=b), "payload"))
             if s:
-                xs.append(j + (i - (len(arms) - 1) / 2) * w)
+                xs.append(j + (i - 0.5) * w)
                 ss.append(s)
         ax.bar(xs, [s[0] for s in ss], w, color=color, label=label, yerr=err(ss),
                error_kw={"ecolor": TEXT, "capsize": 2, "lw": 1})
@@ -524,42 +545,92 @@ def chart_rf3_throughput(g, rf3, rel, out, done):
             ax.text(x, s[2] + 20, rate(s[0]), ha="center", fontsize=8)
     ax.set_xticks(range(len(shapes)), [s[2] for s in shapes])
     ax.yaxis.set_major_formatter(FuncFormatter(mbs))
-    ax.set_ylabel("Durable payload, acked after fsync\n(2 trials, whiskers min to max)")
+    ax.set_ylabel("Durable payload, acked after fsync\n(1 or 2 trials, whiskers min to max)")
     ax.grid(axis="x", visible=False)
     ax.legend(fontsize=8.5, loc="upper left")
     ax.set_title("Three copies on smaller brokers keep pace until their disks are the limit")
     save(fig, out, "rf3-throughput", done)
 
 
-def chart_rf3_latency(g, rf3, rel, out, done):
-    arms = [("Single broker, on_commit", g, "l1-oncommit-p{p}", NEUTRAL),
-            ("RF=3 Quorum, before finalizing", rf3, "rf3-lat-dur-p{p}", FELIX),
-            ("RF=3 Quorum, release, finalized", rel, "rf3-lat-dur-p{p}", FELIX_DARK)]
-    arms = [a for a in arms if any(vals(a[1], a[2].format(p=p), "ack", "p50") for p in (256, 4096))]
-    if len(arms) < 2:
+def chart_rf3_forwarding(rf3, out, done):
+    shapes = [("mem", 256, "In-memory\n256 B"), ("mem", 4096, "In-memory\n4 KiB"),
+              ("dur", 256, "Durable\n256 B"), ("dur", 4096, "Durable\n4 KiB")]
+    rows = []
+    for m, p, label in shapes:
+        own = stat(vals(rf3, f"rf3-q-{m}-p{p}-b64-ack", "payload"))
+        fwd = stat(vals(rf3, f"rf3-fwdq-{m}-p{p}-b64-ack", "payload"))
+        if own and fwd:
+            rows.append((label, own, fwd))
+    if not rows:
+        return skip("rf3-forwarding", "no rf3-fwdq cells")
+    fig, ax = plt.subplots(figsize=(9, 4))
+    w = 0.38
+    x = list(range(len(rows)))
+    for i, (label, idx, color) in enumerate((("Straight to the owner (cluster client)", 1, FELIX),
+                                             ("Through any broker, 2 of 3 forwarded", 2, NEUTRAL))):
+        ss = [r[idx] for r in rows]
+        xs = [xi + (i - 0.5) * w for xi in x]
+        ax.bar(xs, [s[0] for s in ss], w, color=color, label=label, yerr=err(ss),
+               error_kw={"ecolor": TEXT, "capsize": 2, "lw": 1})
+        for xx, s in zip(xs, ss):
+            ax.text(xx, s[2] + 40, rate(s[0]), ha="center", fontsize=8)
+    for xi, r in zip(x, rows):
+        top = max(r[1][2], r[2][2])
+        ax.text(xi, top + 520, f"{r[1][0] / r[2][0]:.1f}x slower\nforwarded", ha="center",
+                fontsize=8.5, fontweight="bold")
+    ax.set_xticks(x, [r[0] for r in rows])
+    ax.set_ylim(0, max(max(r[1][2], r[2][2]) for r in rows) * 1.35)
+    ax.yaxis.set_major_formatter(FuncFormatter(mbs))
+    ax.set_ylabel("Payload, batch 64, 64 in flight\nper publisher, acked")
+    ax.grid(axis="x", visible=False)
+    ax.legend(fontsize=8.5, loc="upper right")
+    ax.set_title("Publishing straight to each shard's owner is 1.3 to 4.4x faster than forwarding")
+    save(fig, out, "rf3-forwarding", done)
+
+
+def chart_rf3_latency(g, rf3, out, done):
+    """p50 of the replicated commit path with one operation in flight, before and after finalizing."""
+    groups = [("Durable publish\n256 B", "rf3-lat-dur-p256", "rf3-lf-lat-dur-p256", "ack"),
+              ("Durable publish\n4 KiB", "rf3-lat-dur-p4096", "rf3-lf-lat-dur-p4096", "ack"),
+              ("Quorum cache put\n256 B, 1 worker", "rf3-qcache-c1", "rf3-lf-qcache-c1", "put")]
+
+    def p50s(group, key):
+        if key == "ack":
+            return [v / 1000 for v in vals(rf3, group, "ack", "p50")]
+        return [t["cache"]["put"]["p50"] / 1000 for t in rf3.get(group, [])
+                if t.get("cache", {}).get("put")]
+
+    rows = [(label, p50s(b, k), p50s(a, k)) for label, b, a, k in groups]
+    rows = [r for r in rows if r[1]]
+    if not rows:
         return skip("rf3-latency", "no RF=3 latency cells")
-    fig, ax = plt.subplots(figsize=(9, 3.6))
-    w = 0.8 / len(arms)
-    for i, (label, src, pat, color) in enumerate(arms):
+    after = any(r[2] for r in rows)
+    fig, ax = plt.subplots(figsize=(9, 3.8))
+    w = 0.38
+    for i, (label, idx, color) in enumerate((("Before finalizing the fleet features", 1, FELIX),
+                                             ("After finalizing", 2, FELIX_DARK))):
         xs, ss, ns = [], [], []
-        for j, p in enumerate((256, 4096)):
-            vs = [v / 1000 for v in vals(src, pat.format(p=p), "ack", "p50")]
-            if vs:
-                xs.append(j + (i - (len(arms) - 1) / 2) * w)
-                ss.append(stat(vs))
-                ns.append(len(vs))
+        for j, r in enumerate(rows):
+            if r[idx]:
+                xs.append(j + (i - 0.5) * w)
+                ss.append(stat(r[idx]))
+                ns.append(len(r[idx]))
+        if not ss:
+            continue
         ax.bar(xs, [s[0] for s in ss], w, color=color, label=label, yerr=err(ss),
                error_kw={"ecolor": TEXT, "capsize": 2})
         for x, s, n in zip(xs, ss, ns):
-            ax.text(x, s[2] + 0.05, f"{lat(s[0])}\n{n} trial{'s' if n > 1 else ''}", ha="center",
+            ax.text(x, s[2] + 0.08, f"{lat(s[0])}\n{n} trial{'s' if n > 1 else ''}", ha="center",
                     fontsize=8)
-    ax.set_xticks([0, 1], ["256 B", "4 KiB"])
+    ax.set_xticks(range(len(rows)), [r[0] for r in rows])
+    ax.set_xlim(-0.6, len(rows) - 0.4)
     ax.set_ylim(0, 5.6)
     ax.yaxis.set_major_formatter(FuncFormatter(lat))
-    ax.set_ylabel("Durable ack p50,\none publish in flight")
+    ax.set_ylabel("p50, one operation in flight")
     ax.grid(axis="x", visible=False)
-    ax.legend(fontsize=8.5, loc="upper left")
-    ax.set_title("Before finalizing, a replicated ack waits about 3.5 ms")
+    ax.legend(fontsize=8.5, loc="upper right")
+    ax.set_title("Finalizing the features takes the control plane out of every replicated ack" if after
+                 else "Before finalizing, every replicated ack waits about 3.5 ms")
     save(fig, out, "rf3-latency", done)
 
 
@@ -590,8 +661,12 @@ def main():
     chart_percentiles(g, out, done)
     chart_nats(g, out, done)
     chart_nats_latency(g, out, done)
-    chart_rf3_throughput(g, rf3, rf3_rel, out, done)
-    chart_rf3_latency(g, rf3, rf3_rel, out, done)
+    # The release run supersedes the earlier one; its own rf3-lf-* cells are the
+    # pass after finalizing.
+    cluster = rf3_rel or rf3
+    chart_rf3_throughput(g, cluster, out, done)
+    chart_rf3_forwarding(cluster, out, done)
+    chart_rf3_latency(g, cluster, out, done)
     for p in done:
         print(p)
 

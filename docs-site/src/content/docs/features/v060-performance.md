@@ -10,8 +10,8 @@ the subsection. -->
 
 This page reports what Felix v0.6.0 does on real Azure hardware. It covers a
 single broker in detail, compares it with NATS JetStream on the same machines,
-and reports a first set of measurements on a three-broker cluster that keeps
-three copies of every durable record. Every condition is stated so the numbers
+and reports a three-broker cluster that keeps three copies of every durable
+record. Every condition is stated so the numbers
 can be reproduced, and every number comes from the cell data recorded in the
 repository.
 
@@ -54,12 +54,13 @@ four load generators:
 - **This build is as fast as or faster than v0.6.0-preview.9** on every shape
   in the gate, from +0.3% for durable to +32% for small acked messages.
 
-On a three-broker cluster with three copies of every durable record, measured
-before the cluster's features were finalized, durable 4 KiB batches ran at 602
-MB/s of payload, which is 1.82 GB/s written across the three brokers' disks.
-Acks waited about 3.5 ms in that state. [Three-broker
-cluster](#three-broker-cluster) explains why, and what finalizing the features
-changes.
+On three 4-core brokers with three fsynced copies of every durable record,
+durable 4 KiB batches ran at 656 MB/s of payload, which is about 2 GB/s written
+across the three brokers' disks, and in-memory 4 KiB batches at 4.6 GB/s.
+Publishing straight to each shard's owner was 1.3 to 4.4 times faster than
+publishing through any broker. On a cluster whose fleet features are not yet
+finalized, a durable ack waits about 3.5 ms; [Three-broker
+cluster](#three-broker-cluster) explains why.
 
 ## How to read the numbers
 
@@ -294,7 +295,7 @@ dropped.
 `scripts/perf/azure/v060_tables.py <results-dir>` prints the tables on this
 page from the cell directories: median of the finished trials, the min to max
 spread, and how many trials finished. `scripts/perf/azure/v060_charts.py
---single <results-dir> --rf3 <rf3-results-dir>` draws the charts from the same
+--single <results-dir> --rf3-release <rf3-results-dir>` draws the charts from the same
 cells into `docs-site/public/charts/v060/`. Bars are medians, and whiskers span
 the trials' minimum to maximum.
 
@@ -698,14 +699,22 @@ it here. -->
 
 ## Three-broker cluster
 
-This section reports a cluster of three brokers with a replication factor of 3,
-measured on build `3ede0136665fc3e91b0197e9f256931e201cbc56` of main, which
-contains #1421 and #1443. It is the cluster before its fleet features were
-finalized. The cluster had been set up on an earlier build, so `majority_ack`
-and `generation_start` were off. That is the state of a cluster upgraded from
-an older release until its operator finalizes those features, and the
-measurements below show what an upgraded cluster does in the meantime. A new
-v0.6.0 cluster finalizes them at its first broker registration (#1457).
+This chapter reports three brokers with a replication factor of 3, on the
+release build (`6ec23a8f71c90e8aa688415e58adc92647be8b67` of main). A durable
+`Quorum` stream keeps three copies of every record, each fsynced on its broker.
+An in-memory stream keeps one: it is not replicated, and each shard lives on
+its leader only.
+
+The main measurements ran with the fleet features `majority_ack`,
+`generation_start` and `lease_free_reads` not yet finalized. The perf harness
+reseeds the cluster before it measures, which restarts the brokers, so the
+cluster no longer reads as new and the automatic finalize that a new cluster
+performs at its first registration (#1457) does not run. A real new v0.6.0
+cluster finalizes them by itself, and the cluster test suite asserts that it
+does. The numbers below are therefore those of an unfinalized cluster, which
+is also what a cluster upgraded from an older release runs until its operator
+finalizes the features. Finalizing changes commit latency most, and [Cluster
+latency](#cluster-latency) explains why.
 
 ### Cluster conditions
 
@@ -713,128 +722,187 @@ v0.6.0 cluster finalizes them at its first broker registration (#1457).
 |---|---|
 | Region | Azure centralus |
 | Brokers | 3 × `Standard_L4as_v4`, 4 vCPU, 32 GiB, one in each availability zone (1, 2, 3) |
-| Broker storage | Local NVMe as one md RAID0 on each broker. `fio` sequential 256 KiB with an fsync after each write, one job: 718 to 734 MB/s |
+| Broker storage | Local NVMe as one md RAID0 on each broker. `fio` sequential 256 KiB with an fsync after each write, one job: 730 to 735 MB/s |
 | Load generators | 4 × `Standard_D4as_v5`, in zone 1 |
 | Control plane | 1 × `Standard_D2as_v5`, in zone 1 |
 | NIC and transport | MTU 3900, QUIC with TLS, as for the single broker |
 
 Broker settings are the single broker's, except `FELIX_QUIC_LISTENERS=2`, which
 is what an unset value derives on 4 cores. The streams have 12 shards each,
-RF=3 and `Quorum` consistency, and keys spread over every shard. Publishers use
-the cluster client, which sends each publish straight to its shard's owner.
-Each cell waits until no shard is under-replicated and the stream's leaders are
-spread evenly. Durable cells run on freshly recreated streams. Two trials each,
-with the same 90-second cells and steady window as above.
+RF=3 and `Quorum` consistency, and keys spread over every shard. Unless a
+section says otherwise, publishers use the cluster client, which sends each
+publish straight to its shard's owner. Each cell waits until no shard is
+under-replicated and the stream's leaders are spread evenly, and durable cells
+run on freshly recreated streams. The cells are the same 90-second cells with
+the same steady window as above. The headline shapes (batch 1 at 256 B, batch
+64 at 4 KiB, and the latency cells) ran two trials; the run was trimmed to fit
+its time limit, so the other shapes and the forwarding and cache cells ran one.
 
 An acked durable `Quorum` publish is answered once a majority of the three
 brokers, including the leader, has durably stored it. With `on_commit` on every
 broker, that means fsynced on at least two of them. The third copy follows.
 
-An in-memory stream is not replicated: it has no log to replicate. Each shard
-lives on its leader only, so an in-memory stream on this cluster is three
-brokers each serving a third of the shards, with one copy of each record. Its
-numbers are a sharding result.
-
 ### Cluster throughput
 
-Durable, three copies of every record. Payload is what the publishers sent.
-Cluster append is the bytes written to the log on all three brokers together,
-about three times payload plus framing:
+Durable, three fsynced copies of every record. Payload is what the publishers
+sent. Cluster append is the bytes written to the log on all three brokers
+together, about three times payload plus framing:
 
-| Payload | Batch | Payload MB/s | Cluster append MB/s | Messages/s | Cores, all brokers |
-|---|---|---|---|---|---|
-| 256 B | 1 | 66 | 220 (219-220) | 258 k | 8.8 |
-| 256 B | 64 | 465 (463-466) | 1548 | 1.82 M | 9.1 |
-| 4 KiB | 1 | 459 (455-463) | 1386 (1371-1400) | 112 k | 8.9 |
-| 4 KiB | 64 | 602 | 1820 | 147 k | 8.1 |
+| Payload | Batch | Payload MB/s | Cluster append MB/s | Messages/s | Cores, all brokers | Trials |
+|---|---|---|---|---|---|---|
+| 256 B | 1 | 65 (64-67) | 218 (214-222) | 254 k | 8.7 | 2 |
+| 256 B | 64 | 475 | 1588 | 1.86 M | 9.3 | 1 |
+| 4 KiB | 1 | 467 | 1413 | 114 k | 9.1 | 1 |
+| 4 KiB | 64 | 656 (654-658) | 1983 (1976-1990) | 160 k | 8.7 | 2 |
 
-![Durable payload acked after fsync, single broker with one copy against the three-broker cluster with three copies, before finalizing: 53 against 66 MB/s, 482 against 465 MB/s, 327 against 459 MB/s, and 1.4 GB/s against 602 MB/s.](/charts/v060/rf3-throughput.svg)
+![Durable payload acked after fsync, single broker with one copy against the three-broker cluster with three copies: 53 against 65 MB/s, 482 against 475 MB/s, 327 against 467 MB/s, and 1.4 GB/s against 656 MB/s.](/charts/v060/rf3-throughput.svg)
 
 Three copies on three smaller brokers keep pace with one 8-core broker for
 every shape but the one that is bound by the disk, where the cluster's disks
 are half as fast.
 
-In-memory, one copy, spread over the three brokers:
+In-memory, one copy of each record, the shards spread over the three brokers:
 
-| Payload | Batch | Payload MB/s | Messages/s | Cores, all brokers |
-|---|---|---|---|---|
-| 256 B | 1 | 118 | 461 k | 10.2 |
-| 256 B | 64 | 1948 (1931-1965) | 7.61 M | 7.7 |
-| 4 KiB | 1 | 1389 (1379-1399) | 339 k | 10.3 |
-| 4 KiB | 64 | 4643 | 1.13 M | 7.3 |
+| Payload | Batch | Payload MB/s | Messages/s | Cores, all brokers | Trials |
+|---|---|---|---|---|---|
+| 256 B | 1 | 117 | 457 k | 10.2 | 2 |
+| 256 B | 64 | 2034 | 7.95 M | 7.9 | 1 |
+| 4 KiB | 1 | 1395 | 341 k | 10.4 | 1 |
+| 4 KiB | 64 | 4621 (4585-4657) | 1.13 M | 7.3 | 2 |
 
 What the tables show:
 
 - **Large durable batches run at each broker's disk.** With three copies on
-  three brokers, every broker writes every record. 1820 MB/s across the
-  cluster is about 607 MB/s per broker, 83% of what one of these disks writes
+  three brokers, every broker writes every record. 1983 MB/s across the
+  cluster is about 660 MB/s per broker, 90% of what one of these disks writes
   in `fio` with an fsync after each write. These disks write about half as
-  fast as the single broker's, which is why the cluster's durable payload is
-  below the single broker's.
-- **Durable small messages gain from the cluster.** 256 B batch 1 runs at 66
-  MB/s of payload, above the single 8-core broker's 53, on three 4-core brokers
-  that each also store the other two's records.
-- **In memory, three 4-core brokers beat one 8-core broker**: 4.6 GB/s
-  against 4.4 at 4 KiB batch 64, and 1.4 against 1.1 GB/s at 4 KiB batch 1,
-  with one copy of each record in both.
+  fast as the single broker's, which is why the cluster's durable payload at 4
+  KiB batch 64 is below the single broker's.
+- **Durable small messages and single 4 KiB messages gain from the cluster.**
+  256 B batch 1 runs at 65 MB/s of payload against the single 8-core broker's
+  53, and 4 KiB batch 1 at 467 against 327, on three 4-core brokers that each
+  also store the other two's records.
+- **In memory, three 4-core brokers beat one 8-core broker**: 4.6 GB/s against
+  4.4 at 4 KiB batch 64, and 1.4 against 1.1 GB/s at 4 KiB batch 1. This is a
+  sharding result: each record is held once, on its shard's leader.
+
+<!-- TODO(data): RF=3 pass after finalizing the fleet features: rf3-lf-q-mem-p256-b1-ack,
+rf3-lf-q-dur-p256-b1-ack, rf3-lf-q-mem-p4096-b64-ack, rf3-lf-q-dur-p4096-b64-ack
+in the release RF=3 results. Add an "After finalizing" column to both tables
+(payload MB/s), expected within noise of the unfinalized numbers. If the pass
+does not complete, delete this comment; the tables stand. -->
 
 ### Cluster latency
 
 One publisher, one publish in flight, batch 1, one subscriber, the cluster
-client publishing to the shard's owner. Two trials, except durable 256 B, whose
-second trial did not finish:
+client publishing to the shard's owner. Two trials each:
 
 | Stream | Payload | Ack p50 / p99 / p999 | Delivery p50 / p99 / p999 |
 |---|---|---|---|
-| Durable `Quorum`, RF=3 | 256 B | 3.46 / 3.99 / 5.14 ms | 3.49 / 4.04 / 5.22 ms |
-| Durable `Quorum`, RF=3 | 4 KiB | 3.47 / 4.16 / 5.39 ms | 3.50 / 4.19 / 5.39 ms |
-| In-memory | 256 B | 428 / 502 / 750 µs | 394 / 480 / 694 µs |
-| In-memory | 4 KiB | 472 / 538 / 700 µs | 505 / 576 / 749 µs |
+| Durable `Quorum`, three copies | 256 B | 3.48 / 4.21 / 5.49 ms | 3.46 / 4.19 / 5.49 ms |
+| Durable `Quorum`, three copies | 4 KiB | 3.68 / 4.41 / 5.56 ms | 3.71 / 4.47 / 5.59 ms |
+| In-memory, one copy | 256 B | 461 / 520 / 560 µs | 450 / 516 / 553 µs |
+| In-memory, one copy | 4 KiB | 504 / 560 / 604 µs | 498 / 561 / 601 µs |
 
-![Durable ack p50 with one publish in flight: 312 and 375 µs on the single broker against 3.46 and 3.47 ms on the RF=3 cluster before finalizing.](/charts/v060/rf3-latency.svg)
+![p50 with one operation in flight before finalizing the fleet features: 3.48 ms for a durable 256 B publish, 3.68 ms for 4 KiB, and 3.76 ms for a Quorum cache put.](/charts/v060/rf3-latency.svg)
 
-The durable ack takes about 3.5 ms at either payload, so it is set by neither
-the disk nor the bytes on the network. Without `majority_ack` and
-`generation_start`, a `Quorum` leader's commit mark waits for its followers'
-replica report to reach the control plane, and that round dominates the ack.
-With the features finalized, the followers' acknowledgements move the mark
-directly. #1457 finalizes them on every new cluster. An upgraded cluster gets
-the same by finalizing them (`POST /v1/fleet/features/<feature>/finalize`).
+A durable ack takes about 3.5 ms at either payload, so it is set by neither the
+disk nor the bytes on the network. Without `majority_ack` and
+`generation_start`, a `Quorum` leader's commit mark moves only when its
+followers' replica report has reached the control plane, so every ack waits
+for that round. With the features finalized, the followers' acknowledgements
+move the mark directly, and the control plane is off the path. A new cluster
+finalizes them by itself (#1457). An upgraded cluster gets the same by
+finalizing them (`POST /v1/fleet/features/<feature>/finalize`).
 
-The in-memory figures are 260 to 290 µs above the single broker's. The
+<!-- TODO(data): RF=3 pass after finalizing: one-in-flight durable ack latency
+(rf3-lf-lat-dur-p256, rf3-lf-lat-dur-p4096; trimmed from this run's plan, so
+they need a re-run) and the Quorum cache put at one worker (rf3-lf-qcache-c1).
+Add an "after finalizing" row per stream and say how far below 3.5 ms it is.
+Re-run v060_charts.py --rf3-release <dir> to fill the chart's "after" bars. If
+this never runs, delete this comment; the paragraph above stands. -->
+
+The in-memory figures are about 300 µs above the single broker's. The
 generators are all in zone 1, so two thirds of the shards' owners are in
 another zone.
+
+### Quorum cache
+
+A `Quorum` cache with RF=3, 256 B values, one trial each. A put is answered
+once a majority holds it, so before finalizing it pays the same control-plane
+round as a durable publish:
+
+| Workers | Put ops/s | Put p50 / p99 / p999 | Get ops/s | Get p50 / p99 / p999 |
+|---|---|---|---|---|
+| 1 | 265 | 3.76 / 5.19 / 5.49 ms | 1077 | 982 µs / 1.32 ms / 1.54 ms |
+| 8 | 1522 | 4.80 / 12.2 / 19.9 ms | 2901 | 2.25 / 8.54 / 12.5 ms |
+
+<!-- TODO(data): Quorum cache at 32 workers (rf3-qcache-c32) and after
+finalizing at 1 and 8 workers (rf3-lf-qcache-c1, rf3-lf-qcache-c8), in the
+release RF=3 results. Add the rows; the put p50 after finalizing is the number
+to compare with 3.76 ms. If they never arrive, delete this comment. -->
 
 ### Forwarding
 
 A publish can enter any broker. If that broker does not own the shard, it
-forwards the publish to the owner. One publish in flight, 256 B, one trial
-each:
+forwards the publish to the owner over the brokers' peer connections. The
+cluster client avoids this by sending each publish straight to the owner. A
+plain client connected to one broker, or spread over brokers in turn, does
+not, and two thirds of its publishes take the extra hop.
+
+One publish in flight, 256 B, one trial each:
 
 | Stream | Straight to the owner, ack p50 / p99 / p999 | Through another broker, ack p50 / p99 / p999 |
 |---|---|---|
-| In-memory | 473 / 538 / 829 µs | 584 µs / 698 µs / 1.44 ms |
-| Durable `Quorum` | 3.25 / 3.99 / 52.1 ms | 3.43 / 4.49 / 5.44 ms |
+| In-memory | 448 / 532 / 881 µs | 831 / 903 µs / 1.16 ms |
+| Durable `Quorum` | 3.42 / 3.97 / 5.10 ms | 3.69 / 5.02 / 6.16 ms |
 
-Forwarding adds about 110 µs at p50 to an in-memory publish and 170 µs to a
-durable one. Under load, with 64 publishers sending 256 B batches of 64 to the
-brokers in turn so that two thirds of publishes were forwarded, the in-memory
-stream ran at 881 MB/s against 1948 straight to the owner. The durable cells of
-that step did not complete: they found the peer-lane deadlock in #1458, fixed
-by #1459.
+Under load, with 64 publishers sending batches of 64, 64 in flight each, either
+straight to the owner or to the brokers in turn so that two thirds of publishes
+are forwarded. Payload MB/s, one trial for the forwarded cells:
 
-<!-- TODO(data): RF=3 release run, under a "### After finalizing the features"
-heading: a new cluster on the release build that
-finalizes every fleet feature at setup (#1457), same conditions as above.
-Fill (1) the throughput tables, durable and in-memory, 256 B and 4 KiB, batch
-1 and 64; (2) the one-in-flight latency table, against the 3.5 ms above; (3)
-forwarding under load, including the durable cells that hit #1458 here; (4)
-Quorum cache put and get latency and throughput at 1, 8 and 32 workers; (5)
-failover: kill -9 one broker under acked durable load, time to recovery,
-throughput dip, acked records lost. If this run does not complete, delete this
-subsection; the section intro's pointer to #1457 stays true. Re-run
-v060_charts.py with --rf3-release <dir> to add the release bars to
-rf3-throughput.svg and rf3-latency.svg. -->
+| Stream | Payload | Straight to the owner | Through any broker | Slower by | Cores, all brokers, owner / any |
+|---|---|---|---|---|---|
+| In-memory | 256 B | 2034 | 864 | 2.4× | 7.9 / 10.6 |
+| In-memory | 4 KiB | 4621 | 2897 | 1.6× | 7.3 / 10.6 |
+| Durable `Quorum` | 256 B | 475 | 107 | 4.4× | 9.3 / 8.6 |
+| Durable `Quorum` | 4 KiB | 656 | 512 | 1.3× | 8.7 / 9.1 |
+
+![Payload with batch 64, straight to the owner against through any broker: in-memory 256 B 2.0 GB/s against 864 MB/s, in-memory 4 KiB 4.6 against 2.9 GB/s, durable 256 B 475 against 107 MB/s, durable 4 KiB 656 against 512 MB/s.](/charts/v060/rf3-forwarding.svg)
+
+Two costs make forwarding slower.
+
+**Every hop is decrypted, re-encrypted and copied.** The entry broker decrypts
+the client's QUIC packets, encrypts the publish again for the peer connection,
+and the owner decrypts it once more. In memory that CPU is the limit: with
+forwarding the brokers used 34 to 44% more CPU (10.6 of 12 cores against 7.3
+to 7.9) and moved 1.6 to 2.4 times less payload, so each byte cost 2.3 to 3.2
+times as much CPU. A lone forwarded in-memory publish takes 383 µs longer.
+
+**A forward holds its shard for the quorum wait.** To keep each shard's
+records in order, the entry broker sends a shard's next forward only after the
+owner has answered the last, and the owner answers a durable publish once it
+has committed. So each shard has at most one forward outstanding from each of
+the other two brokers: 24 for 12 shards. By Little's law, 24 forwards held for
+a commit of at least 3.5 ms cap forwarded traffic at about 6,900 batches a
+second, while publishers sent straight to the owner keep 64 batches each in
+flight. The 256 B cell forwarded about 4,400 batches a second, under that cap,
+and ran 4.4 times slower than going straight to the owner. At 4 KiB the disk is
+already close to its limit, so the cap matters less and the gap is 1.3 times.
+
+Use the cluster client. It learns each shard's owner and publishes there, so
+it pays neither cost. See [Which client to
+use](/clients/rust/#which-client-to-use).
+
+This test is also what found the deadlock between forwards and replication on
+the brokers' peer lanes (#1458). It is fixed (#1459), and the durable
+forwarding cells now complete.
+
+<!-- TODO(data): failover under acked durable load (rf3-fail-*) in the release
+RF=3 results: kill -9 one broker 40 s into a 150 s cell, hold it down 45 s,
+restart it. Report time until acks resume, the throughput dip, time for the
+restarted broker to rejoin, and acked records lost (expected zero), under a
+"### Failover" heading here. If this never runs, delete this comment. -->
 
 ## What limits each shape
 
