@@ -129,7 +129,11 @@ A writer that owns its partitioning can name the shard instead of letting
 `entity_key` hash to one. `commit_on_shard(tenant, namespace, shard,
 entity_key, ops)` and `commit_if_on_shard(..., expected_offset)` commit to
 `shard`; `state_get_on_shard(tenant, namespace, stream, shard, key)` reads
-what they wrote. `entity_key` still travels but does not pick the shard.
+what they wrote. `entity_key` still travels but does not pick the shard, so
+a keyed `state_get(entity_key)` reads the key's hashed shard and does not find
+state committed to a different named shard: use `state_get_on_shard`. A
+subscriber that picks its shard by hashing a key and filters by key misses
+those records the same way.
 
 ```rust
 // One district per shard, each committing at its own offsets.

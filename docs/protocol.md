@@ -880,7 +880,14 @@ for keys that happen to hash where it wants them.
 - A shard at or past the stream's shard count is refused with `error` or
   `publish_error` (`invalid_request`), and nothing is written. It is never
   wrapped onto another shard. The count is the one a key is hashed against:
-  the routing snapshot's on a cluster member, 1 on a single broker.
+  the routing snapshot's on a cluster member, 1 on a single broker. A cluster
+  member whose snapshot does not know the stream yet answers a shard past 0
+  with a retryable `shard_unavailable` (`not_assigned`) instead.
+- Reads that hash a key do not follow a named shard. A `state_get` by
+  `entity_key` reads the key's hashed shard, not state a commit wrote to
+  another named shard; read it with `shard`. Likewise a reader that picks the
+  shard to subscribe to by hashing a key, and filters by key, does not see a
+  record named to another shard.
 - A named shard is not checked against a `publish_width` declaration, since no
   width chose it.
 - Ownership, forwarding, fences, quorum waits and per-shard producer sequences

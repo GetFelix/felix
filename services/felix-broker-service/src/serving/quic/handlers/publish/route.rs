@@ -252,8 +252,11 @@ pub(crate) fn resolve_publish_shard(
 /// `shard`, if the stream has it here.
 ///
 /// The width is the router's, the same one a key is hashed against. A broker
-/// with no cluster serves one shard per stream, and a stream the router does
-/// not know resolves to shard 0 alone, as a keyed publish to it would.
+/// with no cluster serves one shard per stream. A cluster member whose routing
+/// snapshot does not know the stream yet, as just after it is created, answers
+/// a shard past 0 with a retryable `shard_unavailable` rather than
+/// `invalid_request`: it cannot tell a shard out of range from one it has not
+/// heard of.
 pub(crate) fn named_shard(
     publish_ctx: &PublishContext,
     tenant_id: &str,
@@ -261,18 +264,26 @@ pub(crate) fn named_shard(
     stream: &str,
     shard: u32,
 ) -> Result<u32, ClientError> {
-    let shards = publish_ctx
-        .ingress
-        .as_ref()
-        .and_then(|ingress| {
-            ingress.placement_for(
-                crate::shards::ShardKind::Stream,
-                tenant_id,
-                namespace,
-                stream,
-            )
-        })
-        .map_or(1, |placement| placement.shards);
+    let shards = match publish_ctx.ingress.as_ref() {
+        None => 1,
+        Some(ingress) => match ingress.placement_for(
+            crate::shards::ShardKind::Stream,
+            tenant_id,
+            namespace,
+            stream,
+        ) {
+            Some(placement) => placement.shards,
+            None if shard == 0 => return Ok(0),
+            None => {
+                count_publish("unroutable");
+                let reason = crate::shards::routing::Reason::NotAssigned;
+                return Err(ClientError::unavailable(
+                    &reason,
+                    format!("shard {shard} of {stream} is not routed here yet"),
+                ));
+            }
+        },
+    };
     if shard < shards {
         return Ok(shard);
     }

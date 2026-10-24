@@ -1596,6 +1596,11 @@ let written = cluster
 let state = cluster.state_get_on_shard("acme", "city", "ticks", district, "district").await?;
 ```
 
+A keyed `state_get(entity_key)` reads the shard the key hashes to, so it does
+not find state committed to another named shard; read it with
+`state_get_on_shard`. A subscriber that picks its shard by hashing a key and
+filters by key misses those records the same way: subscribe to the named shard.
+
 What atomic does and does not cover is in
 [`docs/atomic-commit.md`](https://github.com/GetFelix/felix/blob/main/docs/atomic-commit.md).
 

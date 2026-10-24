@@ -135,3 +135,19 @@ async fn an_acked_publish_out_of_range_is_answered_and_not_written() {
     }
     assert!(rx.try_recv().is_err(), "a refused publish was queued");
 }
+
+/// A stream the routing snapshot does not know yet, as on an entry broker
+/// just after the stream is created, is not refused as out of range: the
+/// shard may well exist, so the answer is retryable.
+#[tokio::test]
+async fn a_stream_not_routed_yet_is_retryable_not_out_of_range() {
+    let (mut context, _rx, _tx) = make_publish_context(1);
+    context.ingress = Some(Arc::new(ingress_with_routing(4, ShardRouting::Modulo)));
+    let refusal = named_shard(&context, "t1", "ns", "just-created", 3).expect_err("unrouted");
+    assert_eq!(*refusal.code(), felix_wire::ErrorCode::ShardUnavailable);
+    assert_ne!(refusal.retry(), felix_wire::RetryClass::Fatal);
+    assert_eq!(
+        named_shard(&context, "t1", "ns", "just-created", 0).expect("shard 0"),
+        0
+    );
+}
