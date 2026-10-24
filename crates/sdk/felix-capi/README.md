@@ -114,8 +114,9 @@ shard 0, and `felix_client_publish_on_shard` to a shard the caller names.
 Either is one frame the broker appends contiguously and accepts or refuses
 whole. `felix_client_publish_records` takes a key per record (laid out the
 same way), splits the records by shard and sends each shard's share to its
-owner; some shards can succeed while others fail, and it is the batch call
-that can resend with `FELIX_DELIVERY_AT_LEAST_ONCE`.
+owner; some shards can succeed while others fail. It can resend with
+`FELIX_DELIVERY_AT_LEAST_ONCE`; the two single-shard batch calls never
+resend a batch that may have been written.
 
 A batch callback gets a `FelixRecordResult` per record, in the order passed:
 its status, its log offset when the broker reported one, and the failure's

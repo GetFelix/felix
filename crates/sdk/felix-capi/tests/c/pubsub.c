@@ -174,13 +174,25 @@ static FelixStatus batch_wait(struct batch_waiter *b, FelixStatus started) {
   return started == FELIX_STATUS_OK ? wait_for(&b->w, WAIT_MS) : started;
 }
 
-/* Whether every record of a batch of `count` was accepted with an offset. */
+/* Whether every record of a batch of `count` was accepted. */
 static bool all_accepted(const struct batch_waiter *b, size_t count) {
   if (!b->has_results || b->count != count) {
     return false;
   }
   for (size_t i = 0; i < count; i++) {
-    if (b->results[i].status != FELIX_STATUS_OK || !b->results[i].has_offset) {
+    if (b->results[i].status != FELIX_STATUS_OK) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/* Whether the first `count` records all carry offsets. A publish forwarded
+   by a broker that does not own the shard can be acknowledged without one,
+   so offsets are compared only when the broker reported them. */
+static bool all_offsets(const struct batch_waiter *b, size_t count) {
+  for (size_t i = 0; i < count; i++) {
+    if (!b->results[i].has_offset) {
       return false;
     }
   }
@@ -578,6 +590,7 @@ static void batches(const struct fixture *f, const char *run) {
   /* An unkeyed batch goes to shard 0, which the subscription reads, and so
      does one named for shard 0. */
   uint64_t sent[2 * N] = {0};
+  bool sent_has[2 * N] = {false};
   struct batch_waiter b;
   batch_init(&b);
   status = batch_wait(
@@ -588,6 +601,7 @@ static void batches(const struct fixture *f, const char *run) {
         "an unkeyed batch gave %d (%s)", (int)status, b.w.message);
   for (int i = 0; i < N; i++) {
     sent[i] = b.results[i].offset;
+    sent_has[i] = b.results[i].has_offset;
   }
   waiter_destroy(&b.w);
 
@@ -600,13 +614,14 @@ static void batches(const struct fixture *f, const char *run) {
         "a batch on shard 0 gave %d (%s)", (int)status, b.w.message);
   for (int i = 0; i < N; i++) {
     sent[N + i] = b.results[i].offset;
+    sent_has[N + i] = b.results[i].has_offset;
   }
   waiter_destroy(&b.w);
 
   uint64_t read[2 * N] = {0};
   if (read_expected(sub, expected, 2 * N, read)) {
     for (int i = 0; i < 2 * N; i++) {
-      CHECK(read[i] == sent[i],
+      CHECK(!sent_has[i] || read[i] == sent[i],
             "record %d was read at %" PRIu64 " but reported at %" PRIu64, i,
             read[i], sent[i]);
     }
@@ -649,7 +664,8 @@ static void batches(const struct fixture *f, const char *run) {
     }
     bool split = o[2] == o[0] + 1 && o[3] == o[1] + 1;
     bool together = o[1] == o[0] + 1 && o[2] == o[0] + 2 && o[3] == o[0] + 3;
-    CHECK(status != FELIX_STATUS_OK || split || together,
+    CHECK(status != FELIX_STATUS_OK || !all_offsets(&b, 4) || split ||
+              together,
           "keyed offsets %" PRIu64 " %" PRIu64 " %" PRIu64 " %" PRIu64, o[0],
           o[1], o[2], o[3]);
     waiter_destroy(&b.w);
@@ -663,7 +679,7 @@ static void batches(const struct fixture *f, const char *run) {
     if (status == FELIX_STATUS_OK) {
       status = wait_for(&w, WAIT_MS);
     }
-    CHECK(status == FELIX_STATUS_OK && w.has_offset,
+    CHECK(status == FELIX_STATUS_OK,
           "a keyed publish (delivery %d) gave %d (%s)", (int)deliveries[d],
           (int)status, w.message);
     waiter_destroy(&w);
@@ -677,8 +693,9 @@ static void batches(const struct fixture *f, const char *run) {
                                      NULL, on_batch, &b));
   CHECK(status == FELIX_STATUS_OK && all_accepted(&b, N),
         "a keyed batch gave %d (%s)", (int)status, b.w.message);
-  CHECK(b.results[1].offset == b.results[0].offset + 1 &&
-            b.results[2].offset == b.results[0].offset + 2,
+  CHECK(!all_offsets(&b, N) ||
+            (b.results[1].offset == b.results[0].offset + 1 &&
+             b.results[2].offset == b.results[0].offset + 2),
         "a keyed batch was not contiguous");
   waiter_destroy(&b.w);
 
