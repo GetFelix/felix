@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792852815568,
+  "lastUpdate": 1792853584324,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -34476,6 +34476,58 @@ window.BENCHMARK_DATA = {
             "range": "5562.43",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 956562.26\nmean: 954323.26\nstdev: 5562.43\ncv: 0.58%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3018d1b6b276bf9b645efee1e911ef0da432dd14",
+          "message": "fix(replication): key the short-copy exemption on the set that acknowledged (#1484)\n\nrefuse_short_copy let a crashed leader answer its successor's fence whenever\nthe current route showed two copies. Placement shrinks a set from three to\ntwo at a new generation under the same leader (an RF 2 drain's seat, a short\nset's joining copy dropped), and a record the three acknowledged may be on\nneither copy. The exemption now needs the copy's last record to be from the\ngeneration it accepted, the route to be the failover straight after it, and\nthat failover's fence_storage_ids to name the same two members the route\nshows, the fencer among them.\n\nFixes #1336\n\nSpec-Unaffected: the TLA+ model has no refuse_short_copy; this narrows a broker-side refusal the model leaves out",
+          "timestamp": "2026-10-24T14:49:32Z",
+          "tree_id": "07f9481848c947adc87a47eb65abb91c5cfecb2c",
+          "url": "https://github.com/GetFelix/felix/commit/3018d1b6b276bf9b645efee1e911ef0da432dd14"
+        },
+        "date": 1792853583630,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 598516.48,
+            "range": "47584.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 598516.48\nmean: 621321.74\nstdev: 47584.81\ncv: 7.66%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 598516.48,
+            "range": "47584.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 598516.48\nmean: 621321.74\nstdev: 47584.81\ncv: 7.66%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 157515.16,
+            "range": "6470.74",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 157515.16\nmean: 155653.57\nstdev: 6470.74\ncv: 4.16%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1575151.62,
+            "range": "64707.42",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1575151.62\nmean: 1556535.71\nstdev: 64707.42\ncv: 4.16%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
