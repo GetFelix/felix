@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792822732286,
+  "lastUpdate": 1792824565650,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -34268,6 +34268,58 @@ window.BENCHMARK_DATA = {
             "range": "46869.85",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1645607.60\nmean: 1615138.85\nstdev: 46869.85\ncv: 2.90%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e9a62cefb342576be73ba68d5c2ffd03de5590d1",
+          "message": "fix(subscribe): join latest before trailing generation-start records (#1476)\n\n* fix(subscribe): join latest before trailing generation-start records (#1475)\n\nA subscribe from latest on a log that ends in generation-start records\nreported start_offset and live_offset at the raw tail. Those records are\nnever delivered, so a client reading history up to live_offset - 1 waited\nforever. Latest now reports both just past the last event, which also makes\nthe first event's skipped_before count no drop against start_offset - 1.\nRegistration and delivery are unchanged.\n\n* fix(subscribe): document drops at a latest join for clients without the skip bit\n\nA client that negotiated offsets but not FLAG_EVENT_BATCH_SKIPPED now reads\none false drop per trailing generation start at a latest join, as it already\ndid mid-stream. Count drops before the first event from start_offset, which\ncan be 0, without subtracting 1. Adds a test for both kinds of client.",
+          "timestamp": "2026-10-24T06:46:02Z",
+          "tree_id": "67026a22eebc435f95729d5fbe824d9c47aec36c",
+          "url": "https://github.com/GetFelix/felix/commit/e9a62cefb342576be73ba68d5c2ffd03de5590d1"
+        },
+        "date": 1792824565015,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 640447.62,
+            "range": "39804.06",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 640447.62\nmean: 632194.59\nstdev: 39804.06\ncv: 6.30%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 640447.62,
+            "range": "39804.06",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 640447.62\nmean: 632194.59\nstdev: 39804.06\ncv: 6.30%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 165203.46,
+            "range": "1743.37",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 165203.46\nmean: 164884.92\nstdev: 1743.37\ncv: 1.06%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1652034.57,
+            "range": "17433.67",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1652034.57\nmean: 1648849.23\nstdev: 17433.67\ncv: 1.06%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
