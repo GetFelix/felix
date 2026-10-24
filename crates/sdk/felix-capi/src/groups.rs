@@ -231,6 +231,8 @@ impl Deliver for Polled {
 }
 
 pub(crate) fn record_row(record: &GroupRecord) -> FelixGroupRecord {
+    // An empty publisher is absent, so null means no publisher.
+    let publisher = record.publisher.as_deref().filter(|p| !p.is_empty());
     FelixGroupRecord {
         offset: record.offset,
         attempts: record.attempts,
@@ -241,11 +243,8 @@ pub(crate) fn record_row(record: &GroupRecord) -> FelixGroupRecord {
             record.payload.as_ptr()
         },
         payload_len: record.payload.len(),
-        publisher: record
-            .publisher
-            .as_deref()
-            .map_or(ptr::null(), |p| p.as_ptr().cast()),
-        publisher_len: record.publisher.as_deref().map_or(0, str::len),
+        publisher: publisher.map_or(ptr::null(), |p| p.as_ptr().cast()),
+        publisher_len: publisher.map_or(0, str::len),
         has_timestamp: record.timestamp_micros.is_some(),
         timestamp_micros: record.timestamp_micros.unwrap_or(0),
     }

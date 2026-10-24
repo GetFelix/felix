@@ -2325,8 +2325,9 @@ static void connect_options(const struct fixture *f, const char *run) {
           "options smaller than the flags enabled them");
     CHECK(m[1].has_timestamp, "no timestamp for a client that asked");
     CHECK(m[1].has_publisher, "no publisher for a client that asked");
-    CHECK(m[1].timestamp_micros + 3600u * 1000000u >= before &&
-              m[1].timestamp_micros <= now_micros() + 3600u * 1000000u,
+    /* The broker is on this machine, so its clock agrees to well under this. */
+    CHECK(m[1].timestamp_micros + 5u * 1000000u >= before &&
+              m[1].timestamp_micros <= now_micros() + 5u * 1000000u,
           "timestamp %" PRIu64 " is not near now", m[1].timestamp_micros);
   }
   for (int i = 0; i < 3; i++) {

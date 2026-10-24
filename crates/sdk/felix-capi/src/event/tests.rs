@@ -68,3 +68,15 @@ fn accessors_refuse_null_arguments() {
     let status = unsafe { felix_event_timestamp(ptr::null(), ptr::null_mut(), ptr::null_mut()) };
     assert_eq!(status, FELIX_STATUS_INVALID_ARGUMENT);
 }
+
+/// Null means absent, so an empty principal must read as absent too.
+#[test]
+fn an_empty_publisher_reads_as_absent() {
+    let ev = event(Some(""), None);
+    let (mut data, mut len) = (std::ptr::dangling::<u8>(), 9usize);
+    // SAFETY: a live event and writable out-pointers.
+    let status = unsafe { felix_event_publisher(&ev, &mut data, &mut len) };
+    assert_eq!(status, FELIX_STATUS_OK);
+    assert!(data.is_null());
+    assert_eq!(len, 0);
+}

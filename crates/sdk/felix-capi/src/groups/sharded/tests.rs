@@ -1,9 +1,10 @@
 use std::ffi::{CStr, c_char, c_void};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 
 use super::*;
+use crate::client::Shared;
 use crate::groups::claim;
 use crate::status::FELIX_STATUS_AUTH;
 
@@ -103,4 +104,45 @@ fn a_null_group_and_a_zero_max_are_refused() {
     let status = unsafe { felix_sharded_group_shards(std::ptr::null(), std::ptr::null_mut()) };
     assert_eq!(status, crate::status::FELIX_STATUS_INVALID_ARGUMENT);
     assert!(calls.into_inner().unwrap().is_empty());
+}
+
+/// Freeing the group ends a poll still pending on it, once, as cancelled.
+#[test]
+fn freeing_the_group_cancels_a_pending_poll() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    let shared = Arc::new(Shared::new(runtime));
+    let handle = FelixShardedGroup {
+        group: None,
+        shards: 1,
+        cancel: shared.cancel_token(),
+        shared: Arc::clone(&shared),
+    };
+    let calls = Mutex::new(Vec::<Seen>::new());
+    let data = (&raw const calls).cast_mut().cast::<c_void>();
+    let done = Completion::<ShardedPolled>::new(Some(polled), data).unwrap();
+    spawn_read_on(
+        &handle.shared,
+        handle.cancel.clone(),
+        None,
+        done,
+        std::future::pending::<anyhow::Result<Vec<ShardedGroupRecord>>>(),
+        ShardedPolled,
+    );
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert!(calls.lock().unwrap().is_empty(), "the poll ended early");
+
+    drop(handle);
+    for _ in 0..200 {
+        if !calls.lock().unwrap().is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0, crate::status::FELIX_STATUS_CANCELLED);
 }

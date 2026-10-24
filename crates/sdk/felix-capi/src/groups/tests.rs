@@ -195,3 +195,13 @@ fn a_record_row_without_them_reads_as_absent() {
     assert!(!row.has_timestamp);
     assert_eq!(row.timestamp_micros, 0);
 }
+
+#[test]
+fn an_empty_publisher_in_a_record_row_is_absent() {
+    let row = record_row(&GroupRecord {
+        publisher: Some(String::new()),
+        ..claim(1, 1)
+    });
+    assert!(row.publisher.is_null());
+    assert_eq!(row.publisher_len, 0);
+}

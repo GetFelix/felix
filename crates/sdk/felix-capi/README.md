@@ -370,7 +370,7 @@ There are no blocking variants. Blocking on a callback is a few lines over a
 mutex and condition variable, as [`tests/c/pubsub.c`](tests/c/pubsub.c)
 shows, and one surface keeps every later operation to one function.
 
-This covers connect, every publish the Rust cluster client offers, idempotent
+This binds connect, keyed, batched and named-shard publishes, idempotent
 producers, subscribing to one shard or to all of them, groups on a shard,
 caches, counters and cache watches, and atomic commits with conditional
 publishes, the sharded group, the group `*_stream` admin calls, and the event

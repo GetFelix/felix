@@ -113,7 +113,7 @@ pub(crate) struct Shared {
 }
 
 impl Shared {
-    fn new(runtime: Runtime) -> Self {
+    pub(crate) fn new(runtime: Runtime) -> Self {
         Self {
             client: OnceLock::new(),
             runtime: Some(runtime),

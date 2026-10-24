@@ -136,6 +136,7 @@ pub unsafe extern "C" fn felix_event_publisher(
         let (data, len) = event
             .publisher
             .as_deref()
+            .filter(|p| !p.is_empty())
             .map_or((std::ptr::null(), 0), |p| (p.as_ptr(), p.len()));
         // SAFETY: both checked non-null; the caller promises they are
         // writable.

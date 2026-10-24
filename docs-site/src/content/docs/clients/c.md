@@ -106,12 +106,13 @@ freed while calls still hold it.
 ### Freeing handles
 
 Handles (`FelixClient`, `FelixSubscription`, `FelixShardedSubscription`,
-`FelixCacheWatch`, `FelixProducer`, `FelixEvent`, `FelixCancelToken`) are opaque.
+`FelixShardedGroup`, `FelixCacheWatch`, `FelixProducer`, `FelixEvent`,
+`FelixCancelToken`) are opaque.
 Everything the library hands out has a `*_free` function, which accepts null. A
 handle may be used from several threads, but never freed while another thread is
 using it, a callback included.
 
-A subscription, watch, producer or event keeps the client's runtime alive, so
+A subscription, sharded group, watch, producer or event keeps the client's runtime alive, so
 the runtime stops when the last of them is freed, not when the client is.
 Callbacks for calls cancelled by a free may run after the free returns, so
 `user_data` must stay valid until they do. Freeing the last handle on a client's
@@ -602,9 +603,15 @@ These rules hold for any managed binding, C# included.
   ends the process.
 - Keep `user_data` alive until the callback runs, including for calls cancelled
   by a free. Pin or allocate it so it does not move.
-- `bool` in a callback or in `FelixRecordResult` is one byte (`byte` in an
+- Every `bool` that crosses the ABI is one byte (`byte` in an
   `[UnmanagedCallersOnly]` signature or a sequential struct in C#), and `size_t`
-  is `nuint`.
+  is `nuint`. That covers callback parameters (`found`, `applied`, `has_offset`,
+  `existed`, `written`, `moved`), out-pointers (`out_has`, `out_has_offset`),
+  call arguments (`reclaim`, `retained`, `has_from_offset`), and struct fields:
+  `FelixRecordResult`, `FelixConnectOptions.publishers` and `.timestamps`,
+  `FelixGroupPosition.moved`, `FelixGroupRecord.has_timestamp`,
+  `FelixGroupInfo.has_committed`, `FelixWatchItem` (`has_shard`, `has_value`,
+  `has_resume_from`) and `FelixStateValue`.
 - An empty `fixed` array is a null pointer, which `felix_client_publish` reads as
   no key, so pass an empty key from a non-empty buffer.
 - Build a `FelixCommitOp` array in pinned memory for the call only, since the
