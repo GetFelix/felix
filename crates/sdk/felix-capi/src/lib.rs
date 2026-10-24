@@ -8,26 +8,36 @@
 //!
 //! - Handles are opaque pointers. Each one the library returns has a matching
 //!   `*_free` function, and nothing else frees it.
-//! - Every fallible function returns a [`FelixStatus`]. On a failure,
-//!   [`felix_last_error_message`] describes it, for the calling thread.
+//! - Calls that talk to the broker return at once and report their result to
+//!   a callback, exactly once. The returned [`FelixStatus`] only says whether
+//!   the call was accepted; when it was not, [`felix_last_error_message`]
+//!   describes why, for the calling thread.
 //! - No Rust panic crosses the boundary. A panic becomes
 //!   [`FELIX_STATUS_PANIC`].
 //! - Each client owns its Tokio runtime, so a caller needs no async runtime
-//!   of its own. Calls block the calling thread.
+//!   of its own. Callbacks run on its threads.
+//!
+//! The crate README explains the model and why it was chosen.
 //!
 //! `include/felix.h` is generated from this crate by cbindgen and checked in;
 //! `task capi:header` regenerates it.
 
 mod boundary;
+mod cancel;
 mod client;
+mod completion;
 mod error;
 mod event;
 mod status;
 mod subscription;
 
+pub use cancel::{
+    FelixCancelToken, felix_cancel_token_cancel, felix_cancel_token_free, felix_cancel_token_new,
+};
 pub use client::{
     FELIX_ACK_NONE, FELIX_ACK_PER_BATCH, FELIX_ACK_PER_MESSAGE, FelixAckMode, FelixClient,
-    felix_client_connect, felix_client_free, felix_client_publish,
+    FelixConnectCallback, FelixPublishCallback, felix_client_connect, felix_client_free,
+    felix_client_publish,
 };
 pub use error::felix_last_error_message;
 pub use event::{
@@ -35,13 +45,13 @@ pub use event::{
     felix_event_skipped_before,
 };
 pub use status::{
-    FELIX_STATUS_AUTH, FELIX_STATUS_CLOSED, FELIX_STATUS_CONNECTION, FELIX_STATUS_CURSOR,
-    FELIX_STATUS_ERROR, FELIX_STATUS_INVALID_ARGUMENT, FELIX_STATUS_NOT_FOUND, FELIX_STATUS_OK,
-    FELIX_STATUS_OUTCOME_UNKNOWN, FELIX_STATUS_OVERLOADED, FELIX_STATUS_PANIC,
+    FELIX_STATUS_AUTH, FELIX_STATUS_CANCELLED, FELIX_STATUS_CLOSED, FELIX_STATUS_CONNECTION,
+    FELIX_STATUS_CURSOR, FELIX_STATUS_ERROR, FELIX_STATUS_INVALID_ARGUMENT, FELIX_STATUS_NOT_FOUND,
+    FELIX_STATUS_OK, FELIX_STATUS_OUTCOME_UNKNOWN, FELIX_STATUS_OVERLOADED, FELIX_STATUS_PANIC,
     FELIX_STATUS_SHARD_UNAVAILABLE, FELIX_STATUS_TIMEOUT, FelixStatus,
 };
 pub use subscription::{
-    FELIX_START_EARLIEST, FELIX_START_LATEST, FELIX_START_OFFSET, FelixStartKind,
-    FelixSubscription, felix_client_subscribe, felix_subscription_free,
-    felix_subscription_next_event,
+    FELIX_START_EARLIEST, FELIX_START_LATEST, FELIX_START_OFFSET, FelixEventCallback,
+    FelixStartKind, FelixSubscribeCallback, FelixSubscription, felix_client_subscribe,
+    felix_subscription_free, felix_subscription_next,
 };

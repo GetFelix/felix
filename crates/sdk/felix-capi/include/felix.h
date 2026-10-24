@@ -7,11 +7,17 @@
 #include <stddef.h>
 #include <stdint.h>
 
+// A token a caller cancels to stop the calls it was passed to.
+//
+// One token may be passed to any number of calls. It can be freed while
+// calls still hold it; they keep their own reference.
+typedef struct FelixCancelToken FelixCancelToken;
+
 // A connection to a Felix cluster, with the runtime that drives it.
 //
-// Safe to use from several threads at once. Free it with
-// `felix_client_free` after every subscription made from it is freed or
-// abandoned; a subscription keeps the runtime alive on its own.
+// Safe to use from several threads at once, but not while another thread
+// frees it. Freeing it cancels its pending calls; subscriptions made from
+// it keep working until they are freed.
 typedef struct FelixClient FelixClient;
 
 // One record delivered to a subscription. Owns its payload until freed with
@@ -21,20 +27,53 @@ typedef struct FelixEvent FelixEvent;
 // A live subscription to one shard of a stream.
 //
 // It follows the shard to whichever broker owns it, as the Rust client
-// does. Poll it from one thread at a time; concurrent polls take turns.
+// does. One read may be pending at a time. It must not be freed while
+// another thread is calling it.
 typedef struct FelixSubscription FelixSubscription;
 
 // The result of every fallible call. `FELIX_STATUS_OK` is zero; every other
 // value says why the call did not do what it was asked.
 typedef int32_t FelixStatus;
 
-// What the broker must have done before a publish returns.
+// Called once when `felix_client_connect` finishes. On `FELIX_STATUS_OK`,
+// `client` is a new client the callee owns; otherwise it is null.
+typedef void (*FelixConnectCallback)(void *user_data,
+                                     FelixStatus status,
+                                     const char *message,
+                                     struct FelixClient *client);
+
+// What the broker must have done before a publish completes.
 typedef int32_t FelixAckMode;
+
+// Called once when `felix_client_publish` finishes. On `FELIX_STATUS_OK`,
+// `has_offset` says whether the broker reported the record's log offset,
+// and `offset` holds it when it did.
+typedef void (*FelixPublishCallback)(void *user_data,
+                                     FelixStatus status,
+                                     const char *message,
+                                     bool has_offset,
+                                     uint64_t offset);
 
 // Where a subscription starts reading.
 typedef int32_t FelixStartKind;
 
-// Fire and forget: return once the record is sent.
+// Called once when `felix_client_subscribe` finishes. On `FELIX_STATUS_OK`,
+// `subscription` is a new subscription the callee owns; otherwise it is
+// null.
+typedef void (*FelixSubscribeCallback)(void *user_data,
+                                       FelixStatus status,
+                                       const char *message,
+                                       struct FelixSubscription *subscription);
+
+// Called once when `felix_subscription_next` finishes. On
+// `FELIX_STATUS_OK`, `event` is an event the callee owns; otherwise it is
+// null.
+typedef void (*FelixEventCallback)(void *user_data,
+                                   FelixStatus status,
+                                   const char *message,
+                                   struct FelixEvent *event);
+
+// Fire and forget: complete once the record is sent.
 #define FELIX_ACK_NONE 0
 
 // Wait for the broker to acknowledge this record.
@@ -51,6 +90,12 @@ typedef int32_t FelixStartKind;
 
 // The broker ended the subscription. No more events will arrive on it.
 #define FELIX_STATUS_CLOSED 2
+
+// The call was cancelled, through its token or by freeing its handle, and
+// left nothing behind: a connection or subscription made as it was
+// cancelled is closed. A publish cancelled after it may have been sent
+// reports `FELIX_STATUS_OUTCOME_UNKNOWN` instead.
+#define FELIX_STATUS_CANCELLED 3
 
 // A required pointer was null, a string was not UTF-8, or a value was out
 // of range. Nothing was sent.
@@ -102,55 +147,89 @@ typedef int32_t FelixStartKind;
 extern "C" {
 #endif // __cplusplus
 
+// A new, uncancelled token. Free it with `felix_cancel_token_free`.
+struct FelixCancelToken *felix_cancel_token_new(void);
+
+// Cancel every call holding this token, and any later call passed it.
+// Null is ignored.
+//
+// # Safety
+//
+// `token` is null or a live token.
+void felix_cancel_token_cancel(const struct FelixCancelToken *token);
+
+// Free a token. Null is ignored. Calls holding it are not cancelled.
+//
+// # Safety
+//
+// `token` is null or a pointer from `felix_cancel_token_new` that has not
+// been freed, and no other thread is using it.
+void felix_cancel_token_free(struct FelixCancelToken *token);
+
 // Connect to a Felix cluster.
 //
 // `addrs` is one `host:port`, or several separated by commas; any reachable
 // one is enough and the rest are discovered. A name is resolved again whenever
-// no broker the client knows answers; one that does not resolve now is
-// `FELIX_STATUS_INVALID_ARGUMENT`. `tenant_id` and `token` are the
+// no broker the client knows answers; one that does not resolve now completes
+// with `FELIX_STATUS_INVALID_ARGUMENT`. `tenant_id` and `token` are the
 // credentials. `server_name` is the name the broker certificate must carry,
 // `"localhost"` when null. `ca_file` is a PEM file of CA certificates to
 // trust; when null the operating system's trust store is used.
 //
-// On success `*out_client` holds a client to free with `felix_client_free`.
+// `cancel` is null or a token that stops the connect. `callback` runs once
+// with the new client, unless this returns something other than
+// `FELIX_STATUS_OK`.
 //
 // # Safety
 //
-// Every string is null or NUL-terminated, and `out_client` points to
-// writable storage for one pointer.
+// Every string is null or NUL-terminated, `cancel` is null or a live token,
+// and `callback` is safe to call with `user_data` from any thread.
 FelixStatus felix_client_connect(const char *addrs,
                                  const char *tenant_id,
                                  const char *token,
                                  const char *server_name,
                                  const char *ca_file,
-                                 struct FelixClient **out_client);
+                                 const struct FelixCancelToken *cancel,
+                                 FelixConnectCallback callback,
+                                 void *user_data);
 
 // Free a client. Null is ignored.
 //
-// Waits briefly for the client's background tasks to stop. Subscriptions
-// made from it keep working until they are freed.
+// Its pending calls complete with `FELIX_STATUS_CANCELLED` (a publish that
+// may have been sent, with `FELIX_STATUS_OUTCOME_UNKNOWN`), possibly after
+// this returns. When it is the last handle on its runtime, this waits up to
+// a few seconds for those calls to report and the runtime to stop, unless
+// it is called from a callback or another async runtime: then it returns at
+// once and a library thread finishes the teardown. Subscriptions made from
+// it keep working until they are freed.
 //
 // # Safety
 //
-// `client` is null or a pointer from `felix_client_connect` that has not
-// been freed, and no other thread is using it.
+// `client` is null or a pointer from a connect callback that has not been
+// freed, and no other thread is using it.
 void felix_client_free(struct FelixClient *client);
 
 // Publish one record to shard 0 of a stream.
 //
-// `payload` may be null when `payload_len` is zero. `ack` is one of the
-// `FELIX_ACK_*` values.
-//
-// On success, `*out_has_offset` says whether the broker reported the
-// record's log offset, and `*out_offset` holds it when it did. There is no
+// `payload` may be null when `payload_len` is zero; it is copied before
+// this returns. `ack` is one of the `FELIX_ACK_*` values. There is no
 // offset when `ack` is `FELIX_ACK_NONE`, the stream has no log, or the
-// broker acknowledged before writing. Either out-pointer may be null.
+// broker acknowledged before writing.
+//
+// Publishes in flight at the same time may reach the broker in any order.
+// To keep records in order, start each one from the previous one's
+// callback.
+//
+// A publish cancelled before it starts completes with
+// `FELIX_STATUS_CANCELLED`; after it may have been sent, with
+// `FELIX_STATUS_OUTCOME_UNKNOWN`.
 //
 // # Safety
 //
 // `client` is a live client. The strings are null or NUL-terminated.
-// `payload` is null or valid for `payload_len` bytes. The out-pointers are
-// null or writable.
+// `payload` is null or valid for `payload_len` bytes. `cancel` is null or a
+// live token, and `callback` is safe to call with `user_data` from any
+// thread.
 FelixStatus felix_client_publish(const struct FelixClient *client,
                                  const char *tenant_id,
                                  const char *ns,
@@ -158,8 +237,9 @@ FelixStatus felix_client_publish(const struct FelixClient *client,
                                  const uint8_t *payload,
                                  size_t payload_len,
                                  FelixAckMode ack,
-                                 uint64_t *out_offset,
-                                 bool *out_has_offset);
+                                 const struct FelixCancelToken *cancel,
+                                 FelixPublishCallback callback,
+                                 void *user_data);
 
 // The message for the last call on this thread that did not return
 // `FELIX_STATUS_OK`, or null if that call succeeded.
@@ -205,52 +285,63 @@ FelixStatus felix_event_skipped_before(const struct FelixEvent *event, uint64_t 
 //
 // # Safety
 //
-// `event` is null or a pointer from `felix_subscription_next_event` that has
+// `event` is null or a pointer from `felix_subscription_next` that has
 // not been freed.
 void felix_event_free(struct FelixEvent *event);
 
 // Subscribe to shard 0 of a stream.
 //
 // `start` is one of the `FELIX_START_*` values; `start_offset` is read only
-// for `FELIX_START_OFFSET`. On success `*out_subscription` holds a
-// subscription to free with `felix_subscription_free`.
+// for `FELIX_START_OFFSET`. `callback` runs once with the new subscription,
+// unless this returns something other than `FELIX_STATUS_OK`. A cancelled
+// subscribe never hands one out.
 //
 // # Safety
 //
-// `client` is a live client, the strings are null or NUL-terminated, and
-// `out_subscription` points to writable storage for one pointer.
+// `client` is a live client, the strings are null or NUL-terminated,
+// `cancel` is null or a live token, and `callback` is safe to call with
+// `user_data` from any thread.
 FelixStatus felix_client_subscribe(const struct FelixClient *client,
                                    const char *tenant_id,
                                    const char *ns,
                                    const char *stream,
                                    FelixStartKind start,
                                    uint64_t start_offset,
-                                   struct FelixSubscription **out_subscription);
+                                   const struct FelixCancelToken *cancel,
+                                   FelixSubscribeCallback callback,
+                                   void *user_data);
 
-// Wait for the next event.
+// Read the next event.
 //
-// Returns `FELIX_STATUS_OK` with `*out_event` set to an event to free with
+// `callback` runs once: with `FELIX_STATUS_OK` and an event to free with
 // `felix_event_free`; `FELIX_STATUS_TIMEOUT` when `timeout_ms` passed with
-// nothing (the subscription stays usable); or `FELIX_STATUS_CLOSED` once the
-// broker has ended the stream. `*out_event` is null for anything but OK.
+// nothing (the subscription stays usable); `FELIX_STATUS_CLOSED` once the
+// broker has ended the stream; or `FELIX_STATUS_CANCELLED`. A cancelled or
+// timed-out read loses nothing; the next read gets the event.
 //
 // A negative `timeout_ms` waits indefinitely; zero only takes an event that
-// is already waiting.
+// is already waiting. Only one read may be pending: a second returns
+// `FELIX_STATUS_INVALID_ARGUMENT`. The callback may start the next read.
 //
 // # Safety
 //
-// `subscription` is a live subscription, and `out_event` points to writable
-// storage for one pointer.
-FelixStatus felix_subscription_next_event(const struct FelixSubscription *subscription,
-                                          int64_t timeout_ms,
-                                          struct FelixEvent **out_event);
+// `subscription` is a live subscription, `cancel` is null or a live token,
+// and `callback` is safe to call with `user_data` from any thread.
+FelixStatus felix_subscription_next(const struct FelixSubscription *subscription,
+                                    int64_t timeout_ms,
+                                    const struct FelixCancelToken *cancel,
+                                    FelixEventCallback callback,
+                                    void *user_data);
 
 // Free a subscription, which stops it. Null is ignored.
 //
+// A pending read completes with `FELIX_STATUS_CANCELLED`, possibly after
+// this returns.
+//
 // # Safety
 //
-// `subscription` is null or a pointer from `felix_client_subscribe` that
-// has not been freed, and no other thread is using it.
+// `subscription` is null or a pointer from a subscribe callback that has not
+// been freed, and no other thread is using it.
 void felix_subscription_free(struct FelixSubscription *subscription);
 
 #ifdef __cplusplus
