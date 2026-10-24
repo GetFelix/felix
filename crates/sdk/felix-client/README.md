@@ -14,18 +14,19 @@ felix-client = "0.4"
 ```
 
 ```rust
-use felix_client::{AckMode, Client, ClientConfig};
+use felix_client::{AckMode, ClientConfig, ClusterClient};
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 let quinn = quinn::ClientConfig::with_platform_verifier();
 let config = ClientConfig::optimized_defaults(quinn);
-let addr: SocketAddr = "127.0.0.1:5000".parse()?;
+// One broker is enough; the rest of a cluster is discovered.
+let seeds: Vec<SocketAddr> = vec!["127.0.0.1:5000".parse()?];
 
-let client = Client::connect(addr, "localhost", config).await?;
-let publisher = client.publisher().await?;
+let client = Arc::new(ClusterClient::connect(&seeds, "localhost", config).await?);
 
-publisher
-    .publish("acme", "prod", "events", b"hello".to_vec(), AckMode::None)
+client
+    .publish("acme", "prod", "events", b"hello".to_vec(), AckMode::PerMessage)
     .await?;
 
 let mut events = client.subscribe("acme", "prod", "events").await?;
@@ -33,6 +34,13 @@ while let Some(event) = events.next_event().await? {
     println!("{:?}", event.payload);
 }
 ```
+
+Use `ClusterClient` whether you run one broker or a cluster: it sends each
+record straight to its shard's leader and handles failover and reconnects.
+`Client` is the single-connection building block underneath it, for tools and
+special cases; in a cluster its publishes are forwarded to the shard's leader,
+which cost 1.3× to 4.4× throughput under load
+([v0.6.0 performance](https://docs.getfelix.dev/features/v060-performance/)).
 
 ## What it handles for you
 

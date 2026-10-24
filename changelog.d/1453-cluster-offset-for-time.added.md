@@ -1,1 +1,0 @@
-- `ClusterClient::offset_for_time` looks up the offset for a time on one shard of a durable stream, asking whichever broker leads the shard and following `NotLeader` redirects, as `ClusterClient::read` does.

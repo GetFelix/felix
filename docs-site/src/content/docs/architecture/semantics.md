@@ -269,11 +269,10 @@ graph LR
 ```rust
 // Publish to two streams
 use felix_client::AckMode;
-let publisher = client.publisher().await?;
-publisher
+client
     .publish("acme", "prod", "user-login", login_event, AckMode::None)
     .await?;
-publisher
+client
     .publish("acme", "prod", "audit-log", audit_event, AckMode::None)
     .await?;
 
@@ -285,9 +284,8 @@ publisher
 ```rust
 // Batch publish preserves order within the batch
 use felix_client::AckMode;
-let publisher = client.publisher().await?;
 let messages = vec![msg1, msg2, msg3];
-publisher
+client
     .publish_batch("acme", "prod", "orders", messages, AckMode::PerBatch)
     .await?;
 
@@ -399,9 +397,10 @@ share first. When there is no room for a tenant:
 - An enqueue-acked publish is answered at once with `overloaded`
   (`detail.reason = "publish_queue_full"`), which is retryable: nothing was queued
 - A commit-acked publish, which is a durable stream's by default, waits up to
-  `publish_queue_wait_timeout_ms`, then is answered the same way. The wait is on
-  the connection's control loop, so it holds up everything behind it on that
-  stream, reads included
+  `publish_queue_wait_timeout_ms`, then is answered the same way. The publish
+  waits off the connection's read loop, so publishes behind it to shards with
+  room go on; a stream stops reading only once it has 1024 publishes waiting
+  or its byte budget is spent
 - A stream with more than 1024 answers owed refuses the next acked publish with
   the same retryable `overloaded` before queueing it, so a retry cannot write it
   twice
@@ -796,8 +795,7 @@ Applications can test semantic guarantees:
 // Publish ordered batch
 let messages = vec!["msg1", "msg2", "msg3"];
 use felix_client::AckMode;
-let publisher = client.publisher().await?;
-publisher
+client
     .publish_batch("test", "default", "orders", messages, AckMode::PerBatch)
     .await?;
 

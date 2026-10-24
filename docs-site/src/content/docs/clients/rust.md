@@ -30,28 +30,29 @@ cargo add felix-client --features telemetry
 ### Basic Publish/Subscribe
 
 ```rust
-use felix_client::{Client, ClientConfig};
 use std::net::SocketAddr;
+use std::sync::Arc;
+
 use anyhow::Result;
+use felix_client::{AckMode, ClientConfig, ClusterClient};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Connect to broker
     let quinn = quinn::ClientConfig::with_platform_verifier();
     let config = ClientConfig::optimized_defaults(quinn);
-    let addr: SocketAddr = "127.0.0.1:5000".parse()?;
-    let client = Client::connect(addr, "localhost", config).await?;
-    let publisher = client.publisher().await?;
+
+    // One broker is enough. The rest of a cluster is discovered from it.
+    let seeds: Vec<SocketAddr> = vec!["127.0.0.1:5000".parse()?];
+    let client = Arc::new(ClusterClient::connect(&seeds, "localhost", config).await?);
 
     // Publish a message
-    use felix_client::AckMode;
-    publisher
+    client
         .publish(
             "acme",           // tenant_id
             "prod",           // namespace
             "events",         // stream
             b"Hello Felix".to_vec(), // payload
-            AckMode::None,
+            AckMode::PerMessage,
         )
         .await?;
 
@@ -93,12 +94,29 @@ match client.cache_get("acme", "prod", "sessions", "user-123").await? {
 }
 ```
 
+### Which client to use
+
+Use `ClusterClient`, whether you run one broker or a cluster. It sends each
+record straight to the broker that leads its shard, reconnects when a broker
+goes away, and follows shards that move. A single broker needs no cluster
+mode for it, and the client asks nothing of the control plane: discovery finds
+nothing to add, and that broker owns every shard.
+
+`Client` is the single-connection building block underneath it, for tools and
+special cases. It talks to one broker. In a cluster, a publish that reaches a
+broker that does not lead the shard is forwarded to the one that does, and
+that hop is expensive. In the v0.6.0 three-node, three-replica run, sending
+through `Client` instead of straight to the owner cut in-memory throughput
+(256 B records, batches of 64) 2.4×, from 2,034 to 864 MB/s of payload with
+34% more broker CPU, and durable quorum-acked throughput 4.4×, from 475 to 107
+MB/s. See [v0.6.0 performance](/features/v060-performance/).
+
 ## Client Configuration
 
 ### ClientConfig
 
 ```rust
-use felix_client::{ClientConfig, PublishSharding};
+use felix_client::{ClientConfig, ClusterClient, PublishSharding};
 use std::net::SocketAddr;
 
 let quinn = quinn::ClientConfig::with_platform_verifier();
@@ -125,8 +143,8 @@ let config = ClientConfig {
     ..ClientConfig::optimized_defaults(quinn)
 };
 
-let addr: SocketAddr = "127.0.0.1:5000".parse()?;
-let client = Client::connect(addr, "localhost", config).await?;
+let seeds: Vec<SocketAddr> = vec!["127.0.0.1:5000".parse()?];
+let client = ClusterClient::connect(&seeds, "localhost", config).await?;
 ```
 
 ### Acting for many users
@@ -265,15 +283,14 @@ let config = ClientConfig {
 ### Single Message Publish
 
 ```rust
-// Fire-and-forget (no ack)
+// Fire-and-forget (no ack). Call `client.finish()` before exiting.
 use felix_client::AckMode;
-let publisher = client.publisher().await?;
-publisher
+client
     .publish("acme", "prod", "events", b"message".to_vec(), AckMode::None)
     .await?;
 
 // With acknowledgement
-let offset = publisher
+let offset = client
     .publish("acme", "prod", "events", b"important".to_vec(), AckMode::PerMessage)
     .await?;
 ```
@@ -354,7 +371,7 @@ let messages = vec![
     b"message 3".to_vec(),
 ];
 
-publisher.publish_batch(
+client.publish_batch(
     "acme",
     "prod",
     "events",
@@ -421,7 +438,9 @@ others.
 
 ### Publisher API
 
-For high-throughput publishing, use the `Publisher` API:
+`Publisher` belongs to the single-connection `Client`, which applications
+should not need; `ClusterClient` publishes through the same workers per broker.
+For a tool that holds a `Client`:
 
 ```rust
 use felix_client::Publisher;
@@ -772,7 +791,7 @@ since it adds the principal to every batch.
 ```rust
 let mut config = ClientConfig::from_env_or_yaml(quinn, None)?;
 config.publishers = true;
-let client = Client::connect(addr, "localhost", config).await?;
+let client = Arc::new(ClusterClient::connect(&seeds, "localhost", config).await?);
 let mut inputs = client.subscribe("arena", "match-7", "inputs").await?;
 while let Some(event) = inputs.next_event().await? {
     let Some(player) = event.publisher.as_deref() else {
@@ -1539,9 +1558,11 @@ the shard at the expected offset instead. What atomic does and does not cover is
 
 ## Clusters
 
-`Client` talks to one broker. `ClusterClient` follows the cluster: it takes
-several addresses, learns the rest, reconnects when the broker it is using goes
-away, and follows a redirect to whichever broker owns a shard.
+`ClusterClient` follows the cluster: it takes one or more addresses, learns the
+rest, reconnects when the broker it is using goes away, and follows a redirect
+to whichever broker owns a shard. `Client` talks to one broker; it is the
+single-connection building block, and applications should use `ClusterClient`
+(see [Which client to use](#which-client-to-use)).
 
 It holds one connection per broker, shared by every role that broker plays
 (entry, shard owner, redirect target, producer leader), with every stream
@@ -1619,10 +1640,10 @@ owner left off. Needs `FEATURE_CACHE_SHARDS`.
 
 ## Connection Management
 
-`Client` does not reconnect. When its connection drops, calls fail and the
-application decides what to do. Use `ClusterClient` if you want reconnection
-handled for you: it retries on another broker with the backoff in
-`ReconnectPolicy`, which `connect_with_policy` lets you tune.
+`ClusterClient` handles reconnection: it retries on another broker with the backoff in
+`ReconnectPolicy`, which `connect_with_policy` lets you tune. `Client` does
+not reconnect: when its connection drops, calls fail and the application
+decides what to do.
 
 ```rust
 use felix_client::{ClusterClient, ReconnectPolicy};
@@ -1709,36 +1730,41 @@ runtime: the client's tasks live on the runtime that created it, so a client
 built on a throwaway runtime dies with that runtime.
 
 ```rust
-use felix_client::AckMode;
 use std::net::SocketAddr;
+use std::sync::Arc;
+
+use felix_client::{AckMode, ClientConfig, ClusterClient};
 use tokio::sync::OnceCell;
 
-static FELIX_CLIENT: OnceCell<Client> = OnceCell::const_new();
+static FELIX_CLIENT: OnceCell<Arc<ClusterClient>> = OnceCell::const_new();
 
-async fn felix() -> Result<&'static Client> {
+async fn felix() -> Result<&'static Arc<ClusterClient>> {
     FELIX_CLIENT
         .get_or_try_init(|| async {
             let quinn = quinn::ClientConfig::with_platform_verifier();
             let config = ClientConfig::optimized_defaults(quinn);
-            let addr: SocketAddr = "127.0.0.1:5000".parse()?;
-            Client::connect(addr, "localhost", config).await
+            let seeds: Vec<SocketAddr> = vec!["127.0.0.1:5000".parse()?];
+            Ok(Arc::new(ClusterClient::connect(&seeds, "localhost", config).await?))
         })
         .await
 }
 
-let publisher = felix().await?.publisher().await?;
-publisher
+felix()
+    .await?
     .publish("acme", "prod", "events", data.to_vec(), AckMode::None)
     .await?;
+
+// Before exiting: wait for everything queued with `AckMode::None`.
+felix().await?.finish().await?;
 ```
 
 ### Error Recovery
 
 ```rust
-use felix_client::{BrokerError, RetryClass};
+use felix_client::{BrokerError, ClusterClient, RetryClass};
 
 async fn publish_with_retry(
-    client: &Client,
+    client: &ClusterClient,
     tenant: &str,
     namespace: &str,
     stream: &str,
@@ -1746,13 +1772,12 @@ async fn publish_with_retry(
     max_retries: u32
 ) -> Result<()> {
     use felix_client::AckMode;
-    let publisher = client.publisher().await?;
     for attempt in 0..max_retries {
-        match publisher
+        match client
             .publish(tenant, namespace, stream, data.to_vec(), AckMode::PerMessage)
             .await
         {
-            Ok(()) => return Ok(()),
+            Ok(_) => return Ok(()),
             Err(e) if safe_to_resend(&e) && attempt < max_retries - 1 => {
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
@@ -1790,8 +1815,7 @@ fn safe_to_resend(error: &anyhow::Error) -> bool {
 use felix_client::AckMode;
 use tokio::time::{interval, Duration};
 
-async fn batching_publisher(client: &Client) -> Result<()> {
-    let publisher = client.publisher().await?;
+async fn batching_publisher(client: &ClusterClient) -> Result<()> {
     let mut batch = Vec::new();
     let mut ticker = interval(Duration::from_millis(10));
     
@@ -1799,7 +1823,7 @@ async fn batching_publisher(client: &Client) -> Result<()> {
         select! {
             _ = ticker.tick() => {
                 if !batch.is_empty() {
-                    publisher
+                    client
                         .publish_batch("acme", "prod", "events", batch.clone(), AckMode::PerBatch)
                         .await?;
                     batch.clear();
@@ -1808,7 +1832,7 @@ async fn batching_publisher(client: &Client) -> Result<()> {
             msg = receive_message() => {
                 batch.push(msg);
                 if batch.len() >= 64 {
-                    publisher
+                    client
                         .publish_batch("acme", "prod", "events", batch.clone(), AckMode::PerBatch)
                         .await?;
                     batch.clear();
@@ -1830,8 +1854,8 @@ async fn test_cache_ttl() {
 
     let quinn = quinn::ClientConfig::with_platform_verifier();
     let config = ClientConfig::optimized_defaults(quinn);
-    let addr: SocketAddr = "127.0.0.1:5000".parse().unwrap();
-    let client = Client::connect(addr, "localhost", config).await.unwrap();
+    let seeds: Vec<SocketAddr> = vec!["127.0.0.1:5000".parse().unwrap()];
+    let client = ClusterClient::connect(&seeds, "localhost", config).await.unwrap();
     
     // Store with 100ms TTL
     use bytes::Bytes;
@@ -1875,9 +1899,9 @@ anything else from a measurement; see
 
 | Operation | Method | Use Case |
 |-----------|--------|----------|
-| Publisher | `Client::publisher()` | Streaming publish |
-| Single publish | `Publisher::publish()` | Low-rate events |
-| Batch publish | `Publisher::publish_batch()` | High-throughput |
+| Connect | `ClusterClient::connect()` | Any deployment: one broker or a cluster |
+| Single publish | `ClusterClient::publish()` | Low-rate events |
+| Batch publish | `ClusterClient::publish_batch()` | High-throughput |
 | Idempotent publish | `idempotent_producer()` | Safe resend after `OutcomeUnknown` |
 | Subscribe | `subscribe()` | Event consumption |
 | Cache put / get / delete | `cache_put()`, `cache_get()`, `cache_delete()` | Key-value with TTL |
@@ -1885,7 +1909,7 @@ anything else from a measurement; see
 | Cache watch | `watch_cache()`, `watch_cache_retained()` | Follow changes to a key or prefix |
 | Counters | `counter_add()`, `counter_get()` | Durable counters |
 | Consumer groups | `group_poll()`, `group_ack()`, `group_nack()` | Work queues |
-| Cluster | `ClusterClient::connect()` | Multi-broker, reconnects and follows redirects |
+| Single connection | `Client::connect()`, `Client::publisher()` | Tools and special cases; one broker, no reconnect |
 | One shard | `ClusterClient::subscribe_shard()` | Follow a chosen shard through moves |
 | Flush | `ClusterClient::finish()`, `Publisher::finish()` | Before exit, after `AckMode::None` |
 | Shard owners | `Client::shard_owners()` | Which broker owns each shard |

@@ -73,7 +73,8 @@ felix.Client(
 One reachable address is enough. The client discovers the rest of the cluster
 and will use brokers it was never told about. Passing several only helps the
 *first* connection, for the case where the one you named is the one that is
-down.
+down. It is built on the Rust `ClusterClient`, so each record goes straight to the
+broker that leads its shard, and it works the same against a single broker.
 
 Give a name rather than an IP where you can. The client resolves a name again
 whenever no broker it knows answers, which is how it gets back in after a
