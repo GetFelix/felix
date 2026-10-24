@@ -38,14 +38,15 @@ The calls are `felix_client_connect`, the publishes (`felix_client_publish`,
 `felix_client_publish_records`), the subscribes (`felix_client_subscribe` for one
 shard and `felix_client_subscribe_sharded` for all of them),
 `felix_subscription_next`, `felix_sharded_next` and
-`felix_client_offset_for_time`, and the group calls (`felix_client_group_*` and
-`felix_client_stream_shards`). Each takes a callback, a `void *user_data`
+`felix_client_offset_for_time`, the group calls (`felix_client_group_*` and
+`felix_client_stream_shards`), and the cache calls (`felix_client_cache_*`,
+`felix_client_counter_*`, `felix_client_watch_cache*` and `felix_cache_watch_*`). Each takes a callback, a `void *user_data`
 passed back to it untouched, and an optional `FelixCancelToken`.
 
 The rules are the same for every function:
 
 - Handles (`FelixClient`, `FelixSubscription`,
-  `FelixShardedSubscription`, `FelixEvent`, `FelixCancelToken`) are opaque. Everything the library hands out has a
+  `FelixShardedSubscription`, `FelixCacheWatch`, `FelixEvent`, `FelixCancelToken`) are opaque. Everything the library hands out has a
   `*_free` function, which accepts null. A handle may be used from several
   threads, but never freed while another thread is using it, a callback
   included.
@@ -206,6 +207,55 @@ uses a second client with the fixture's group operator token for the former.
 For a C# binding, copy the poll's records inside the callback and keep
 `(offset, attempts)` as a plain struct to settle with.
 
+### Caches, counters and watches
+
+Keys and filters are UTF-8 C strings; values are a pointer and a length, copied
+before the call returns (null with length zero is the empty value). Values
+handed to a callback are valid only while it runs. Any broker serves a cache
+request, forwarding it to the key's owner, so there is no shard to name.
+
+- `felix_client_cache_put` takes a `ttl_ms` (zero is no expiry).
+  `felix_client_cache_get` and `_delete` report `found` and the value (for a
+  delete, the one removed); `felix_client_cache_get_versioned` adds the entry's
+  version.
+- `felix_client_cache_put_if` takes `FELIX_IF_ABSENT`, or `FELIX_IF_VERSION`
+  with a version from a versioned get; `felix_client_cache_delete_if` takes a
+  version. A condition that does not hold is `FELIX_STATUS_OK` with `applied`
+  false, not an error.
+- `felix_client_counter_add` returns the new value; `felix_client_counter_get`
+  reports `has_value` false for a counter that does not exist. An add that is
+  cancelled after it may have been sent is `FELIX_STATUS_OUTCOME_UNKNOWN`:
+  read the counter before repeating it.
+- Puts, deletes and adds are writes (`FELIX_STATUS_OUTCOME_UNKNOWN` on a late
+  cancel); gets report `FELIX_STATUS_CANCELLED`.
+
+A watch is one handle, `FelixCacheWatch`, read with `felix_cache_watch_next`
+like a subscription: one read pending at a time, a timeout that leaves it
+usable, a cancelled read that loses nothing, and a free that cancels a pending
+read. `felix_client_watch_cache` watches a key or prefix on one shard (a key is
+routed to its own shard, a prefix reads one, so use it on a single-shard cache).
+`felix_client_watch_cache_sharded` watches a prefix on every shard and fails
+rather than cover fewer shards than the cache has. Both take `retained` to
+deliver the stored entries first; it cannot be combined with an offset to
+resume from.
+
+A `FelixWatchItem` is borrowed for the callback and its `kind` says what it is:
+`FELIX_WATCH_CHANGE` (a deleted key has `has_value` false; `expires_at_millis`
+is zero for never), `FELIX_WATCH_LAGGED` (the broker ended the watch;
+`resume_from` is where a new one continues, and the next read is
+`FELIX_STATUS_CLOSED`), `FELIX_WATCH_SHARD_MOVED` (followed automatically),
+`FELIX_WATCH_STATE_COMPLETE` (every shard's stored state delivered, sharded
+retained only) and `FELIX_WATCH_SHARD_CLOSED`. Keys are not NUL-terminated;
+use `key_len`. `felix_cache_watch_resume_offsets` writes each shard's offset for
+a sharded watch, never ahead of what reads have handed out, and
+`felix_cache_watch_retained_count` reports how many entries a retained watch
+started from.
+
+For a C# binding, copy the key and value inside the item callback, and treat an
+unknown `kind` as skip-and-read-again so a newer library does not break an older
+binding. To resume after `FELIX_WATCH_LAGGED` on a sharded watch, reopen with the
+offsets from `felix_cache_watch_resume_offsets` taken before the lag.
+
 ### Why callbacks, and why pull
 
 A pollable completion handle would still need a notification to complete a
@@ -226,9 +276,9 @@ mutex and condition variable, as [`tests/c/pubsub.c`](tests/c/pubsub.c)
 shows, and one surface keeps every later operation to one function.
 
 This covers connect, every publish the Rust cluster client offers except the
-idempotent and conditional ones, and subscribing to one shard or to all of
-them. Event publisher and timestamp fields, groups, caches and commits come
-later.
+idempotent and conditional ones, subscribing to one shard or to all of them,
+groups on a shard, and caches, counters and cache watches. Event publisher and
+timestamp fields, commits and the sharded group come later.
 
 ## The header
 
@@ -241,5 +291,5 @@ test fails while the two differ.
 `task capi:test` compiles [`tests/c/pubsub.c`](tests/c/pubsub.c) against the
 header, links it against both the shared and the static library, and runs the
 checks that need no broker. `task capi:test -- fixture` also runs the publish,
-batch, subscribe and group scenarios against `felix-cluster client-fixture`, which CI does
+batch, subscribe, group and cache scenarios against `felix-cluster client-fixture`, which CI does
 on every pull request.

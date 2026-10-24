@@ -6,8 +6,8 @@
  *     Argument checking, the last-error channel, and connects that fail or
  *     are cancelled. Needs no broker.
  *
- *   pubsub fixture ADDRS TENANT NAMESPACE TOKEN CA_FILE STREAM MISSING UNAUTHORIZED_TOKEN GROUP_OPERATOR_TOKEN
- *     The publish, batch, subscribe, subscription and group scenarios, against `felix-cluster
+ *   pubsub fixture ADDRS TENANT NAMESPACE TOKEN CA_FILE STREAM MISSING UNAUTHORIZED_TOKEN GROUP_OPERATOR_TOKEN CACHE SINGLE_SHARD_CACHE
+ *     The publish, batch, subscribe, subscription, group and cache scenarios, against `felix-cluster
  *     client-fixture`. tests/c/run.sh starts the fixture and passes its
  *     fields in.
  *
@@ -262,7 +262,7 @@ static FelixStatus connect_sync(const char *addrs, const char *tenant,
 
 struct fixture {
   const char *addrs, *tenant, *ns, *token, *ca_file, *stream, *missing,
-      *unauthorized_token, *group_operator_token;
+      *unauthorized_token, *group_operator_token, *cache, *single_shard_cache;
 };
 
 static void offline(void) {
@@ -1609,12 +1609,600 @@ static void groups(const struct fixture *f, const char *run) {
   felix_client_free(client);
 }
 
+/* ---- caches, counters and watches --------------------------------------- */
+
+/* Copies `len` bytes of a callback's borrowed data into a NUL-terminated
+   buffer, truncating. The data is gone once the callback returns. */
+static void copy_bounded(char *dst, size_t cap, const void *src, size_t len) {
+  if (len >= cap) {
+    len = cap - 1;
+  }
+  if (len) {
+    memcpy(dst, src, len);
+  }
+  dst[len] = '\0';
+}
+
+/* One cache call's result; each call fills the fields it reports. */
+struct cres {
+  struct waiter w;
+  bool found;
+  char value[96];
+  size_t len;
+  uint64_t version;
+  bool applied;
+  bool has_version;
+  bool has_counter;
+  int64_t counter;
+};
+
+static void cres_init(struct cres *r) {
+  memset(r, 0, sizeof *r);
+  waiter_init(&r->w);
+}
+
+static void on_cache_done(void *user_data, FelixStatus status,
+                          const char *message) {
+  struct cres *r = user_data;
+  finish(&r->w, status, message, NULL);
+}
+
+static void on_cache_value(void *user_data, FelixStatus status,
+                           const char *message, bool found, const uint8_t *value,
+                           size_t len) {
+  struct cres *r = user_data;
+  r->found = found;
+  r->len = len;
+  copy_bounded(r->value, sizeof r->value, value, len);
+  finish(&r->w, status, message, NULL);
+}
+
+static void on_cache_versioned(void *user_data, FelixStatus status,
+                               const char *message, bool found,
+                               const uint8_t *value, size_t len,
+                               uint64_t version) {
+  struct cres *r = user_data;
+  r->version = version;
+  on_cache_value(user_data, status, message, found, value, len);
+}
+
+static void on_cache_condition(void *user_data, FelixStatus status,
+                               const char *message, bool applied,
+                               bool has_version, uint64_t version) {
+  struct cres *r = user_data;
+  r->applied = applied;
+  r->has_version = has_version;
+  r->version = version;
+  finish(&r->w, status, message, NULL);
+}
+
+static void on_cache_counter(void *user_data, FelixStatus status,
+                             const char *message, bool has_value,
+                             int64_t value) {
+  struct cres *r = user_data;
+  r->has_counter = has_value;
+  r->counter = value;
+  finish(&r->w, status, message, NULL);
+}
+
+/* The callback's status, or the call's when it was refused. Leaves `r` for
+   the caller to read; destroy it after. */
+static FelixStatus cres_wait(struct cres *r, FelixStatus started) {
+  return started == FELIX_STATUS_OK ? wait_for(&r->w, WAIT_MS) : started;
+}
+
+struct cctx {
+  FelixClient *client;
+  const struct fixture *f;
+  const char *cache;
+};
+
+static FelixStatus c_put(const struct cctx *c, const char *key,
+                         const char *value, uint64_t ttl_ms) {
+  struct cres r;
+  cres_init(&r);
+  FelixStatus status = cres_wait(
+      &r, felix_client_cache_put(c->client, c->f->tenant, c->f->ns, c->cache,
+                                 key, (const uint8_t *)value, strlen(value),
+                                 ttl_ms, NULL, on_cache_done, &r));
+  waiter_destroy(&r.w);
+  return status;
+}
+
+static FelixStatus c_get(const struct cctx *c, const char *key, bool versioned,
+                         struct cres *out) {
+  cres_init(out);
+  FelixStatus started =
+      versioned ? felix_client_cache_get_versioned(
+                      c->client, c->f->tenant, c->f->ns, c->cache, key, NULL,
+                      on_cache_versioned, out)
+                : felix_client_cache_get(c->client, c->f->tenant, c->f->ns,
+                                         c->cache, key, NULL, on_cache_value,
+                                         out);
+  FelixStatus status = cres_wait(out, started);
+  waiter_destroy(&out->w);
+  return status;
+}
+
+static FelixStatus c_delete(const struct cctx *c, const char *key,
+                            struct cres *out) {
+  cres_init(out);
+  FelixStatus status = cres_wait(
+      out, felix_client_cache_delete(c->client, c->f->tenant, c->f->ns,
+                                     c->cache, key, NULL, on_cache_value, out));
+  waiter_destroy(&out->w);
+  return status;
+}
+
+static FelixStatus c_put_if(const struct cctx *c, const char *key,
+                            const char *value, FelixCacheCondition kind,
+                            uint64_t version, struct cres *out) {
+  cres_init(out);
+  FelixStatus status = cres_wait(
+      out, felix_client_cache_put_if(
+               c->client, c->f->tenant, c->f->ns, c->cache, key,
+               (const uint8_t *)value, strlen(value), 0, kind, version, NULL,
+               on_cache_condition, out));
+  waiter_destroy(&out->w);
+  return status;
+}
+
+static FelixStatus c_delete_if(const struct cctx *c, const char *key,
+                               uint64_t version, struct cres *out) {
+  cres_init(out);
+  FelixStatus status = cres_wait(
+      out, felix_client_cache_delete_if(c->client, c->f->tenant, c->f->ns,
+                                        c->cache, key, version, NULL,
+                                        on_cache_condition, out));
+  waiter_destroy(&out->w);
+  return status;
+}
+
+static FelixStatus c_add(const struct cctx *c, const char *key, int64_t delta,
+                         struct cres *out) {
+  cres_init(out);
+  FelixStatus status = cres_wait(
+      out, felix_client_counter_add(c->client, c->f->tenant, c->f->ns, c->cache,
+                                    key, delta, NULL, on_cache_counter, out));
+  waiter_destroy(&out->w);
+  return status;
+}
+
+static FelixStatus c_counter(const struct cctx *c, const char *key,
+                             struct cres *out) {
+  cres_init(out);
+  FelixStatus status = cres_wait(
+      out, felix_client_counter_get(c->client, c->f->tenant, c->f->ns, c->cache,
+                                    key, NULL, on_cache_counter, out));
+  waiter_destroy(&out->w);
+  return status;
+}
+
+/* One watch read, copied out of the callback. */
+struct witem {
+  struct waiter w;
+  bool has_item;
+  FelixWatchItemKind kind;
+  bool has_shard;
+  uint32_t shard;
+  char key[160];
+  bool has_value;
+  char value[96];
+  uint64_t offset;
+  uint64_t expires_at_millis;
+  bool has_resume_from;
+  uint64_t resume_from;
+};
+
+static void on_watch_open(void *user_data, FelixStatus status,
+                          const char *message, FelixCacheWatch *watch) {
+  finish(user_data, status, message, watch);
+}
+
+static void on_watch_item(void *user_data, FelixStatus status,
+                          const char *message, const FelixWatchItem *item) {
+  struct witem *it = user_data;
+  it->has_item = item != NULL;
+  if (item) {
+    it->kind = item->kind;
+    it->has_shard = item->has_shard;
+    it->shard = item->shard;
+    copy_bounded(it->key, sizeof it->key, item->key, item->key_len);
+    it->has_value = item->has_value;
+    copy_bounded(it->value, sizeof it->value, item->value, item->value_len);
+    it->offset = item->offset;
+    it->expires_at_millis = item->expires_at_millis;
+    it->has_resume_from = item->has_resume_from;
+    it->resume_from = item->resume_from;
+  }
+  finish(&it->w, status, message, NULL);
+}
+
+static void witem_init(struct witem *it) {
+  memset(it, 0, sizeof *it);
+  waiter_init(&it->w);
+}
+
+/* Reads one item, waiting up to `timeout_ms` (negative waits for ever). */
+static FelixStatus w_next(FelixCacheWatch *watch, int64_t timeout_ms,
+                          struct witem *out) {
+  witem_init(out);
+  FelixStatus status = felix_cache_watch_next(watch, timeout_ms, NULL,
+                                              on_watch_item, out);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&out->w, WAIT_MS);
+  }
+  waiter_destroy(&out->w);
+  return status;
+}
+
+static FelixCacheWatch *w_open(const struct cctx *c, FelixWatchFilter kind,
+                               const char *filter, bool retained) {
+  struct waiter w;
+  waiter_init(&w);
+  FelixStatus status = felix_client_watch_cache(
+      c->client, c->f->tenant, c->f->ns, c->cache, kind, filter, retained,
+      false, 0, NULL, on_watch_open, &w);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&w, WAIT_MS);
+  }
+  CHECK(status == FELIX_STATUS_OK, "watch_cache gave %d", (int)status);
+  FelixCacheWatch *watch = status == FELIX_STATUS_OK ? w.handle : NULL;
+  waiter_destroy(&w);
+  return watch;
+}
+
+#define MAX_SHARDS 16
+
+struct resume {
+  uint32_t shards[MAX_SHARDS];
+  uint64_t offsets[MAX_SHARDS];
+  size_t count;
+};
+
+static FelixCacheWatch *w_open_sharded(const struct cctx *c, const char *prefix,
+                                       bool retained, const struct resume *at) {
+  struct waiter w;
+  waiter_init(&w);
+  FelixStatus status = felix_client_watch_cache_sharded(
+      c->client, c->f->tenant, c->f->ns, c->cache, prefix, retained,
+      at ? at->shards : NULL, at ? at->offsets : NULL, at ? at->count : 0, NULL,
+      on_watch_open, &w);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&w, WAIT_MS);
+  }
+  CHECK(status == FELIX_STATUS_OK, "watch_cache_sharded gave %d", (int)status);
+  FelixCacheWatch *watch = status == FELIX_STATUS_OK ? w.handle : NULL;
+  waiter_destroy(&w);
+  return watch;
+}
+
+static void caches(const struct fixture *f, const char *run) {
+  FelixClient *client = NULL;
+  REQUIRE_OK(connect_sync(f->addrs, f->tenant, f->token, f->ca_file, &client));
+  struct cctx sharded = {client, f, f->cache};
+  struct cctx single = {client, f, f->single_shard_cache};
+  struct cres r;
+  struct witem it;
+  char key[160], key2[160], pfx[96];
+  snprintf(pfx, sizeof pfx, "cc-%s-", run);
+
+  /* Put, get and versioned get. */
+  snprintf(key, sizeof key, "%sa", pfx);
+  FelixStatus status = c_put(&sharded, key, "hello", 0);
+  CHECK(status == FELIX_STATUS_OK, "put gave %d", (int)status);
+  status = c_get(&sharded, key, false, &r);
+  CHECK(status == FELIX_STATUS_OK && r.found && strcmp(r.value, "hello") == 0,
+        "get gave %d, found %d, '%s'", (int)status, (int)r.found, r.value);
+  status = c_get(&sharded, key, true, &r);
+  CHECK(status == FELIX_STATUS_OK && r.found && strcmp(r.value, "hello") == 0,
+        "versioned get gave %d, found %d, '%s'", (int)status, (int)r.found,
+        r.value);
+  uint64_t v1 = r.version;
+  snprintf(key2, sizeof key2, "%smissing", pfx);
+  status = c_get(&sharded, key2, false, &r);
+  CHECK(status == FELIX_STATUS_OK && !r.found, "a missing key gave %d, found %d",
+        (int)status, (int)r.found);
+
+  /* Conditional writes: a failed condition is OK with applied false. */
+  status = c_put_if(&sharded, key, "again", FELIX_IF_ABSENT, 0, &r);
+  CHECK(status == FELIX_STATUS_OK && !r.applied,
+        "put_if absent on a live key gave %d, applied %d", (int)status,
+        (int)r.applied);
+  snprintf(key2, sizeof key2, "%sb", pfx);
+  status = c_put_if(&sharded, key2, "new", FELIX_IF_ABSENT, 0, &r);
+  CHECK(status == FELIX_STATUS_OK && r.applied,
+        "put_if absent on a free key gave %d, applied %d", (int)status,
+        (int)r.applied);
+  status = c_put_if(&sharded, key, "hello2", FELIX_IF_VERSION, v1, &r);
+  CHECK(status == FELIX_STATUS_OK && r.applied,
+        "put_if at the current version gave %d, applied %d", (int)status,
+        (int)r.applied);
+  status = c_put_if(&sharded, key, "hello3", FELIX_IF_VERSION, v1, &r);
+  CHECK(status == FELIX_STATUS_OK && !r.applied,
+        "put_if at a stale version gave %d, applied %d", (int)status,
+        (int)r.applied);
+  status = c_delete_if(&sharded, key, v1, &r);
+  CHECK(status == FELIX_STATUS_OK && !r.applied,
+        "delete_if at a stale version gave %d, applied %d", (int)status,
+        (int)r.applied);
+  status = c_get(&sharded, key, true, &r);
+  CHECK(status == FELIX_STATUS_OK && r.found && strcmp(r.value, "hello2") == 0 &&
+            r.version != v1,
+        "the value after the conditions was '%s' at %" PRIu64, r.value,
+        r.version);
+  status = c_delete_if(&sharded, key, r.version, &r);
+  CHECK(status == FELIX_STATUS_OK && r.applied,
+        "delete_if at the current version gave %d, applied %d", (int)status,
+        (int)r.applied);
+  status = c_get(&sharded, key, false, &r);
+  CHECK(status == FELIX_STATUS_OK && !r.found, "a deleted key was found");
+
+  /* Delete returns the value it removed. */
+  status = c_delete(&sharded, key2, &r);
+  CHECK(status == FELIX_STATUS_OK && r.found && strcmp(r.value, "new") == 0,
+        "delete gave %d, found %d, '%s'", (int)status, (int)r.found, r.value);
+  status = c_delete(&sharded, key2, &r);
+  CHECK(status == FELIX_STATUS_OK && !r.found,
+        "a second delete gave %d, found %d", (int)status, (int)r.found);
+
+  /* Counters: missing, then added to. */
+  snprintf(key, sizeof key, "%scount", pfx);
+  status = c_counter(&sharded, key, &r);
+  CHECK(status == FELIX_STATUS_OK && !r.has_counter,
+        "a missing counter gave %d, has %d", (int)status, (int)r.has_counter);
+  status = c_add(&sharded, key, 5, &r);
+  CHECK(status == FELIX_STATUS_OK && r.has_counter && r.counter == 5,
+        "first add gave %d, %" PRId64, (int)status, r.counter);
+  status = c_add(&sharded, key, -2, &r);
+  CHECK(status == FELIX_STATUS_OK && r.has_counter && r.counter == 3,
+        "second add gave %d, %" PRId64, (int)status, r.counter);
+  status = c_counter(&sharded, key, &r);
+  CHECK(status == FELIX_STATUS_OK && r.has_counter && r.counter == 3,
+        "counter get gave %d, %" PRId64, (int)status, r.counter);
+
+  /* A key watch sees a put with its expiry, then the delete. */
+  snprintf(key, sizeof key, "%swatched", pfx);
+  FelixCacheWatch *watch = w_open(&sharded, FELIX_WATCH_KEY, key, false);
+  if (watch) {
+    CHECK(c_put(&sharded, key, "w1", 60000) == FELIX_STATUS_OK, "watched put");
+    status = w_next(watch, 10000, &it);
+    CHECK(status == FELIX_STATUS_OK && it.has_item &&
+              it.kind == FELIX_WATCH_CHANGE && strcmp(it.key, key) == 0 &&
+              it.has_value && strcmp(it.value, "w1") == 0 &&
+              it.expires_at_millis > 0 && !it.has_shard,
+          "the put arrived as status %d kind %d key '%s' value '%s' expiry %" PRIu64,
+          (int)status, (int)it.kind, it.key, it.value, it.expires_at_millis);
+    CHECK(c_delete(&sharded, key, &r) == FELIX_STATUS_OK, "watched delete");
+    status = w_next(watch, 10000, &it);
+    CHECK(status == FELIX_STATUS_OK && it.has_item &&
+              it.kind == FELIX_WATCH_CHANGE && strcmp(it.key, key) == 0 &&
+              !it.has_value,
+          "the delete arrived as status %d kind %d has_value %d", (int)status,
+          (int)it.kind, (int)it.has_value);
+    /* Nothing more is waiting. */
+    status = w_next(watch, 150, &it);
+    CHECK(status == FELIX_STATUS_TIMEOUT, "an idle watch gave %d", (int)status);
+    status = felix_cache_watch_resume_offsets(watch, NULL, NULL, 0, NULL);
+    CHECK(status == FELIX_STATUS_INVALID_ARGUMENT,
+          "resume offsets of a single watch gave %d", (int)status);
+    felix_cache_watch_free(watch);
+  }
+
+  /* A retained prefix watch delivers what is stored, then live changes. */
+  for (int i = 1; i <= 2; i++) {
+    snprintf(key, sizeof key, "%sk%d", pfx, i);
+    CHECK(c_put(&single, key, "stored", 0) == FELIX_STATUS_OK, "stored put %d",
+          i);
+  }
+  watch = w_open(&single, FELIX_WATCH_PREFIX, pfx, true);
+  if (watch) {
+    uint64_t retained = 0;
+    bool has_retained = false;
+    status = felix_cache_watch_retained_count(watch, &retained, &has_retained);
+    CHECK(status == FELIX_STATUS_OK && has_retained && retained >= 2,
+          "retained count gave %d, has %d, %" PRIu64, (int)status,
+          (int)has_retained, retained);
+    int seen = 0;
+    for (int i = 0; i < 2; i++) {
+      status = w_next(watch, 10000, &it);
+      CHECK(status == FELIX_STATUS_OK && it.has_item &&
+                it.kind == FELIX_WATCH_CHANGE && it.has_value &&
+                strncmp(it.key, pfx, strlen(pfx)) == 0,
+            "retained item %d gave %d kind %d key '%s'", i, (int)status,
+            (int)it.kind, it.key);
+      seen += it.key[strlen(pfx) + 1] - '0';
+    }
+    CHECK(seen == 3, "the retained keys were not k1 and k2 (sum %d)", seen);
+    snprintf(key, sizeof key, "%sk3", pfx);
+    CHECK(c_put(&single, key, "live", 0) == FELIX_STATUS_OK, "live put");
+    status = w_next(watch, 10000, &it);
+    CHECK(status == FELIX_STATUS_OK && it.kind == FELIX_WATCH_CHANGE &&
+              strcmp(it.key, key) == 0 && strcmp(it.value, "live") == 0,
+          "the live change gave %d kind %d key '%s'", (int)status, (int)it.kind,
+          it.key);
+    felix_cache_watch_free(watch);
+  }
+
+  /* A sharded watch sees puts spread over the shards; resuming from its
+     offsets sees only what came after. */
+  watch = w_open_sharded(&sharded, pfx, false, NULL);
+  struct resume at;
+  memset(&at, 0, sizeof at);
+  if (watch) {
+    unsigned seen_mask = 0;
+    for (int i = 0; i < 8; i++) {
+      snprintf(key, sizeof key, "%ss%d", pfx, i);
+      CHECK(c_put(&sharded, key, "spread", 0) == FELIX_STATUS_OK, "spread put %d",
+            i);
+    }
+    for (int i = 0; i < 8; i++) {
+      status = w_next(watch, 10000, &it);
+      CHECK(status == FELIX_STATUS_OK && it.has_item &&
+                it.kind == FELIX_WATCH_CHANGE && it.has_shard &&
+                strncmp(it.key, pfx, strlen(pfx)) == 0,
+            "spread item %d gave %d kind %d key '%s'", i, (int)status,
+            (int)it.kind, it.key);
+      if (strlen(it.key) == strlen(pfx) + 2) {
+        seen_mask |= 1u << (it.key[strlen(pfx) + 1] - '0');
+      }
+    }
+    CHECK(seen_mask == 0xff, "the watch saw keys %#x of 8", seen_mask);
+    status = felix_cache_watch_resume_offsets(watch, at.shards, at.offsets,
+                                              MAX_SHARDS, &at.count);
+    CHECK(status == FELIX_STATUS_OK && at.count >= 1 && at.count <= MAX_SHARDS,
+          "resume offsets gave %d, %zu shards", (int)status, at.count);
+    felix_cache_watch_free(watch);
+
+    watch = w_open_sharded(&sharded, pfx, false, &at);
+    if (watch) {
+      for (int i = 0; i < 2; i++) {
+        snprintf(key, sizeof key, "%slater%d", pfx, i);
+        CHECK(c_put(&sharded, key, "later", 0) == FELIX_STATUS_OK, "later put");
+      }
+      for (int i = 0; i < 2; i++) {
+        status = w_next(watch, 10000, &it);
+        CHECK(status == FELIX_STATUS_OK && it.has_item &&
+                  it.kind == FELIX_WATCH_CHANGE &&
+                  strncmp(it.key + strlen(pfx), "later", 5) == 0,
+              "resumed item %d gave %d kind %d key '%s'", i, (int)status,
+              (int)it.kind, it.key);
+      }
+      status = w_next(watch, 300, &it);
+      CHECK(status == FELIX_STATUS_TIMEOUT,
+            "the resumed watch had more than the later puts (%d, key '%s')",
+            (int)status, it.key);
+      felix_cache_watch_free(watch);
+    }
+  }
+
+  /* A sharded retained watch delivers every shard's state, then says so. */
+  watch = w_open_sharded(&sharded, pfx, true, NULL);
+  if (watch) {
+    int changes = 0;
+    bool complete = false;
+    for (int i = 0; i < 64 && !complete; i++) {
+      status = w_next(watch, 10000, &it);
+      if (status != FELIX_STATUS_OK || !it.has_item) {
+        CHECK(0, "retained read %d gave %d", i, (int)status);
+        break;
+      }
+      if (it.kind == FELIX_WATCH_STATE_COMPLETE) {
+        complete = true;
+        CHECK(!it.has_shard, "state complete named a shard");
+      } else if (it.kind == FELIX_WATCH_CHANGE &&
+                 strncmp(it.key, pfx, strlen(pfx)) == 0 &&
+                 (it.key[strlen(pfx)] == 's' || it.key[strlen(pfx)] == 'l')) {
+        /* Only the keys the spread and resume steps stored. */
+        changes++;
+      }
+    }
+    /* s0..s7 and later0..later1 are stored; the deleted keys are not. */
+    CHECK(complete && changes == 10,
+          "the retained watch delivered %d changes, complete %d", changes,
+          (int)complete);
+    felix_cache_watch_free(watch);
+  }
+
+  /* A pending read is cancelled through its token and loses nothing. */
+  snprintf(key, sizeof key, "%scancel", pfx);
+  watch = w_open(&sharded, FELIX_WATCH_KEY, key, false);
+  if (watch) {
+    witem_init(&it);
+    FelixCancelToken *cancel = felix_cancel_token_new();
+    status = felix_cache_watch_next(watch, -1, cancel, on_watch_item, &it);
+    CHECK(status == FELIX_STATUS_OK, "starting a long read gave %d", (int)status);
+    if (status == FELIX_STATUS_OK) {
+      pause_ms(100);
+      /* One read at a time. */
+      struct witem second;
+      witem_init(&second);
+      status = felix_cache_watch_next(watch, 0, NULL, on_watch_item, &second);
+      CHECK(status == FELIX_STATUS_INVALID_ARGUMENT,
+            "a second pending read gave %d", (int)status);
+      waiter_destroy(&second.w);
+      felix_cancel_token_cancel(cancel);
+      status = wait_for(&it.w, WAIT_MS);
+      CHECK(status == FELIX_STATUS_CANCELLED, "a cancelled read gave %d",
+            (int)status);
+    }
+    waiter_destroy(&it.w);
+    felix_cancel_token_free(cancel);
+    CHECK(c_put(&sharded, key, "after", 0) == FELIX_STATUS_OK, "put after cancel");
+    status = w_next(watch, 10000, &it);
+    CHECK(status == FELIX_STATUS_OK && it.has_item &&
+              strcmp(it.value, "after") == 0,
+          "the read after a cancel gave %d", (int)status);
+
+    /* Freeing the watch under a pending read cancels it. */
+    witem_init(&it);
+    status = felix_cache_watch_next(watch, -1, NULL, on_watch_item, &it);
+    CHECK(status == FELIX_STATUS_OK, "starting a read to free under gave %d",
+          (int)status);
+    if (status == FELIX_STATUS_OK) {
+      pause_ms(100);
+      felix_cache_watch_free(watch);
+      status = wait_for(&it.w, WAIT_MS);
+      CHECK(status == FELIX_STATUS_CANCELLED, "a freed watch's read gave %d",
+            (int)status);
+    } else {
+      felix_cache_watch_free(watch);
+    }
+    waiter_destroy(&it.w);
+  }
+
+  /* Arguments the call itself refuses; the callback never runs. */
+  struct waiter w;
+  waiter_init(&w);
+  status = felix_client_watch_cache(client, f->tenant, f->ns, f->cache,
+                                    FELIX_WATCH_PREFIX, pfx, true, true, 5, NULL,
+                                    on_watch_open, &w);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT,
+        "retained with a from_offset gave %d", (int)status);
+  status = felix_client_watch_cache(client, f->tenant, f->ns, f->cache, 7, pfx,
+                                    false, false, 0, NULL, on_watch_open, &w);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "an unknown filter gave %d",
+        (int)status);
+  uint32_t dup_shards[2] = {1, 1};
+  uint64_t dup_offsets[2] = {0, 0};
+  status = felix_client_watch_cache_sharded(client, f->tenant, f->ns, f->cache,
+                                            pfx, false, dup_shards, dup_offsets,
+                                            2, NULL, on_watch_open, &w);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT,
+        "a shard listed twice gave %d", (int)status);
+  status = felix_client_watch_cache_sharded(client, f->tenant, f->ns, f->cache,
+                                            pfx, true, dup_shards, dup_offsets,
+                                            1, NULL, on_watch_open, &w);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT,
+        "retained with resume offsets gave %d", (int)status);
+  struct cres cr;
+  cres_init(&cr);
+  status = felix_client_cache_put_if(client, f->tenant, f->ns, f->cache, pfx,
+                                     (const uint8_t *)"x", 1, 0, 9, 0, NULL,
+                                     on_cache_condition, &cr);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT,
+        "an unknown condition kind gave %d", (int)status);
+  pause_ms(100);
+  CHECK(w.calls == 0 && cr.w.calls == 0, "a refused cache call ran its callback");
+  waiter_destroy(&cr.w);
+  waiter_destroy(&w);
+
+  /* Clean up what this run stored. */
+  const char *stored[] = {"k1", "k2", "k3"};
+  for (size_t i = 0; i < sizeof stored / sizeof *stored; i++) {
+    snprintf(key, sizeof key, "%s%s", pfx, stored[i]);
+    c_delete(&single, key, &r);
+  }
+  felix_client_free(client);
+}
+
 int main(int argc, char **argv) {
   if (argc == 2 && strcmp(argv[1], "offline") == 0) {
     offline();
-  } else if (argc == 11 && strcmp(argv[1], "fixture") == 0) {
-    struct fixture f = {argv[2], argv[3], argv[4], argv[5], argv[6],
-                        argv[7], argv[8], argv[9], argv[10]};
+  } else if (argc == 13 && strcmp(argv[1], "fixture") == 0) {
+    struct fixture f = {argv[2], argv[3], argv[4],  argv[5],  argv[6],
+                        argv[7], argv[8], argv[9], argv[10], argv[11],
+                        argv[12]};
     /* Nanoseconds too: the shared and static builds run within a second of
        each other against the same fixture, and group names must not repeat. */
     struct timespec ts;
@@ -1625,10 +2213,11 @@ int main(int argc, char **argv) {
     batches(&f, run);
     subscriptions(&f, run);
     groups(&f, run);
+    caches(&f, run);
   } else {
     fprintf(stderr, "usage: %s offline | fixture ADDRS TENANT NAMESPACE TOKEN "
                     "CA_FILE STREAM MISSING UNAUTHORIZED_TOKEN "
-                    "GROUP_OPERATOR_TOKEN\n",
+                    "GROUP_OPERATOR_TOKEN CACHE SINGLE_SHARD_CACHE\n",
             argv[0]);
     return 2;
   }

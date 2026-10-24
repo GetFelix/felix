@@ -578,7 +578,7 @@ pub unsafe extern "C" fn felix_sharded_subscription_free(
 /// # Safety
 ///
 /// `shards` and `offsets` are each null or point to `count` readable values.
-unsafe fn shard_offsets(
+pub(crate) unsafe fn shard_offsets(
     shards: *const u32,
     offsets: *const u64,
     count: usize,
@@ -607,7 +607,7 @@ unsafe fn shard_offsets(
 
 /// A poisoned lock means a panic while the value was held. It is still
 /// whole, so carry on with it.
-fn lock<T>(value: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(crate) fn lock<T>(value: &Mutex<T>) -> MutexGuard<'_, T> {
     match value.lock() {
         Ok(value) => value,
         Err(poisoned) => poisoned.into_inner(),
