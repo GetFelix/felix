@@ -5,8 +5,9 @@ namespace Felix.Client.Tests;
 
 /// <summary>
 /// Consumer groups against the fixture. Each test makes groups under its own names. The queue
-/// test counts records on shard 0, which relies on the assembly running tests one at a time
-/// (<c>DisableTestParallelization</c> in LeakTests.cs) so no other test publishes there meanwhile.
+/// test counts records on shard 0, which relies on tests running one at a time within a host
+/// (<c>DisableTestParallelization</c> in LeakTests.cs) and on CI running one framework at a time,
+/// so nothing else publishes there meanwhile.
 /// </summary>
 public class GroupFixtureTests
 {
