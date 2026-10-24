@@ -108,23 +108,42 @@ if [ -n "${FELIX_CONFORMANCE_RESULTS:-}" ]; then
 import json, os, sys
 
 destination, version, *paths = sys.argv[1:]
-# Worst outcome wins: a scenario that failed or was skipped in either build
-# has not been shown to hold in both.
+builds = ("shared", "static")
 rank = {"pass": 0, "skip": 1, "fail": 2}
+
+def read(path):
+    outcomes = {}
+    if os.path.exists(path):
+        for line in open(path, encoding="utf-8"):
+            scenario, status, detail = (line.rstrip("\n").split("\t", 2) + ["", ""])[:3]
+            if status not in rank:
+                continue
+            held = outcomes.get(scenario)
+            if held is None or rank[status] > rank[held[0]]:
+                outcomes[scenario] = (status, detail)
+    return outcomes
+
+per_build = dict(zip(builds, (read(path) for path in paths)))
+if not any(per_build.values()):
+    # Nothing was recorded: leave no document, so verify reports it missing.
+    print("no build recorded any outcome; writing no results", file=sys.stderr)
+    sys.exit(0)
+
+# Worst outcome wins, and an id one build never recorded (it crashed, or never
+# started) fails: it has not been shown to hold in both.
 merged = {}
-for path in paths:
-    if not os.path.exists(path):
-        continue
-    for line in open(path, encoding="utf-8"):
-        scenario, status, detail = (line.rstrip("\n").split("\t", 2) + ["", ""])[:3]
-        if status not in rank:
-            continue
-        held = merged.get(scenario)
-        if held is None or rank[status] > rank[held["status"]]:
-            outcome = {"id": scenario, "status": status}
-            if detail:
-                outcome["detail"] = detail
-            merged[scenario] = outcome
+for scenario in sorted(set().union(*per_build.values())):
+    worst = None
+    for build in builds:
+        held = per_build[build].get(scenario)
+        if held is None:
+            held = ("fail", f"not recorded by the {build} build")
+        if worst is None or rank[held[0]] > rank[worst[0]]:
+            worst = held
+    outcome = {"id": scenario, "status": worst[0]}
+    if worst[1]:
+        outcome["detail"] = worst[1]
+    merged[scenario] = outcome
 document = {
     "client": "felix-capi (C)",
     "version": version,

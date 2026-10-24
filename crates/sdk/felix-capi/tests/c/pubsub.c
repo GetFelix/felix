@@ -3272,7 +3272,9 @@ static void delivery(const struct fixture *f, const char *run) {
   SCENARIO_END("ack.none_does_not_wait_for_the_broker");
 
   /* Re-sending is opt-in: the choice exists, the plain publish is at most
-     once, and an unknown choice is refused rather than defaulted. */
+     once, and an unknown choice is refused rather than defaulted. That an
+     at-most-once publish with an unknown outcome is not re-sent is asserted
+     in faults(), where one is produced. */
   SCENARIO_BEGIN("retry.ambiguous_outcomes_are_not_silently_retried");
   snprintf(payload, sizeof payload, "c-%s-once", run);
   status = publish_acked(client, f, payload, FELIX_ACK_PER_MESSAGE,
@@ -3385,7 +3387,15 @@ static void redirects(const struct fixture *f, const char *run) {
        a = strtok_r(NULL, ",", &save)) {
     addrs[count++] = a;
   }
-  if (count == 0) {
+  /* A shard has one owner, so with two or more brokers each asked alone, at
+     least one is not the owner and the request has to be routed. */
+  if (count < 2) {
+    char reason[96];
+    snprintf(reason, sizeof reason,
+             "the fixture has %zu broker; a redirect needs a non-owner", count);
+    SKIP("redirect.follows_to_the_shard_owner", reason);
+    SKIP("redirect.is_not_reported_as_a_failure", reason);
+    SKIP("redirect.carries_the_start_offset_through_every_hop", reason);
     return;
   }
 
@@ -3527,6 +3537,50 @@ static bool control_addr(const char *body, char *addr, size_t cap) {
   return true;
 }
 
+/* How many copies of `payload` `stream` holds, read from the start until the
+   feed has been idle for a few seconds. */
+static int copies_of(const struct fixture *f, const char *stream,
+                     const char *payload) {
+  struct fixture q = *f;
+  q.stream = stream;
+  FelixClient *client = NULL;
+  if (connect_sync(f->addrs, f->tenant, f->token, f->ca_file, &client) !=
+      FELIX_STATUS_OK) {
+    return -1;
+  }
+  FelixSubscription *sub = NULL;
+  int copies = -1;
+  if (subscribe(client, &q, FELIX_START_EARLIEST, 0, &sub) == FELIX_STATUS_OK) {
+    copies = 0;
+    for (int i = 0; i < 100000; i++) {
+      struct waiter w;
+      waiter_init(&w);
+      FelixStatus status = felix_subscription_next(sub, 3000, NULL, on_event, &w);
+      if (status == FELIX_STATUS_OK) {
+        status = wait_for(&w, WAIT_MS * 2);
+      }
+      FelixEvent *event = status == FELIX_STATUS_OK ? w.handle : NULL;
+      waiter_destroy(&w);
+      if (!event) {
+        if (status != FELIX_STATUS_TIMEOUT) {
+          copies = -1;
+        }
+        break;
+      }
+      const uint8_t *data = NULL;
+      size_t len = 0;
+      felix_event_payload(event, &data, &len);
+      if (len == strlen(payload) && memcmp(data, payload, len) == 0) {
+        copies++;
+      }
+      felix_event_free(event);
+    }
+    felix_subscription_free(sub);
+  }
+  felix_client_free(client);
+  return copies;
+}
+
 /* Heals, and waits until `stream` takes a publish through `addr` again, so the
    next scenario and the other build find a working cluster. */
 static bool heal_and_recover(const struct fixture *f, const char *addr,
@@ -3562,9 +3616,16 @@ static bool heal_and_recover(const struct fixture *f, const char *addr,
 static void faults(const struct fixture *f, const char *run) {
   static const char *const ids[] = {"error.shard_unavailable_is_retryable",
                                     "error.quorum_timeout_is_outcome_unknown"};
-  if (!f->control_url[0] || !f->movable_stream[0] || !f->quorum_stream[0]) {
+  const char *absent = !f->control_url[0]      ? "control_url"
+                       : !f->movable_stream[0] ? "movable_stream"
+                                               : !f->quorum_stream[0]
+                                                     ? "quorum_stream"
+                                                     : NULL;
+  if (absent) {
+    char reason[128];
+    snprintf(reason, sizeof reason, "the fixture file has no %s", absent);
     for (size_t i = 0; i < 2; i++) {
-      SKIP(ids[i], "the fixture has no control endpoint");
+      SKIP(ids[i], reason);
     }
     return;
   }
@@ -3574,8 +3635,12 @@ static void faults(const struct fixture *f, const char *run) {
      to the fenced owner: through another broker the answer would be about the
      forward. */
   int code = control_post(f, "/fence", body, sizeof body);
-  if (code == 409) {
-    SKIP(ids[0], "the fixture cannot fence a shard (needs a second broker)");
+  if (code < 200 || code > 299) {
+    char reason[2200];
+    snprintf(reason, sizeof reason, "POST /fence answered %d: %.2000s", code,
+             body);
+    CHECK(code == 409, "%s", reason);
+    SKIP(ids[0], reason);
   } else {
     SCENARIO_BEGIN("error.shard_unavailable_is_retryable");
     CHECK(code == 200 && control_addr(body, addr, sizeof addr),
@@ -3603,10 +3668,17 @@ static void faults(const struct fixture *f, const char *run) {
 
   /* The leader wrote it and cannot say whether it will survive. */
   code = control_post(f, "/partition", body, sizeof body);
-  if (code == 409) {
-    SKIP(ids[1], "the fixture cannot partition a leader (needs followers)");
+  if (code < 200 || code > 299) {
+    char reason[2200];
+    snprintf(reason, sizeof reason, "POST /partition answered %d: %.2000s", code,
+             body);
+    CHECK(code == 409, "%s", reason);
+    SKIP(ids[1], reason);
   } else {
     SCENARIO_BEGIN("error.quorum_timeout_is_outcome_unknown");
+    SCENARIO_BEGIN("retry.ambiguous_outcomes_are_not_silently_retried");
+    char ambiguous[96];
+    snprintf(ambiguous, sizeof ambiguous, "c-%s-no-majority", run);
     CHECK(code == 200 && control_addr(body, addr, sizeof addr),
           "partition answered %d: %s", code, body);
     if (code == 200 && control_addr(body, addr, sizeof addr)) {
@@ -3617,15 +3689,21 @@ static void faults(const struct fixture *f, const char *run) {
             (int)status);
       if (client) {
         char message[512] = "";
-        status = publish(client, f, f->quorum_stream, "no majority", NULL,
-                         message, sizeof message);
+        status = publish(client, f, f->quorum_stream, ambiguous, NULL, message,
+                         sizeof message);
         CHECK(status == FELIX_STATUS_OUTCOME_UNKNOWN,
               "a write no majority confirmed gave %d (%s)", (int)status,
               message);
         felix_client_free(client);
       }
       heal_and_recover(f, addr, f->quorum_stream, run);
+      /* The publish was at most once and its outcome unknown: a client that
+         re-sent it would leave two copies. One or none is right. */
+      int copies = copies_of(f, f->quorum_stream, ambiguous);
+      CHECK(copies >= 0 && copies <= 1,
+            "%d copies of a publish that ended outcome unknown", copies);
     }
+    SCENARIO_END("retry.ambiguous_outcomes_are_not_silently_retried");
     SCENARIO_END("error.quorum_timeout_is_outcome_unknown");
   }
 }

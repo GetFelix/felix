@@ -666,6 +666,7 @@ jobs:
       # Report-only: the fault and broker-loss scenarios are skipped until the
       # harness runs a cluster of its own, and verify fails on a skipped required one.
       - name: C ABI conformance verdict (report-only)
+        if: always()
         continue-on-error: true
         run: cargo run --locked -q -p felix-conformance -- verify c-conformance.json
 
