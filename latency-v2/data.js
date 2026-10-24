@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792818746425,
+  "lastUpdate": 1792819486935,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -43362,6 +43362,72 @@ window.BENCHMARK_DATA = {
             "range": "138.91",
             "unit": "us",
             "extra": "trials: 5\nmedian: 732.00\nmean: 731.40\nstdev: 138.91\ncv: 18.99%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "54b5b5158a44c634b3f825dc48776213154a946c",
+          "message": "docs: v0.6.0 performance write-up (#1425)\n\n* docs: v0.6.0 performance write-up (skeleton and result-independent sections)\n\n* docs: v0.6.0 performance, gate, defaults and site-check results; table generator\n\n* docs(perf): how each Felix/NATS pair is matched and where it still differs\n\n* docs(perf): the fire-and-forget pair is Felix's ephemeral stream against core NATS\n\n* docs(perf): v0.6.0 write-up near final: full single-broker results, NATS pairs, RF=3 before finalizing, campaign defects\n\nFills the single-broker throughput, latency, offered-load, sweep and drop\ntables from the final cells; finishes the NATS pair notes (Felix batch\natomicity, fsync intervals, the replay ring) and adds the ratios; adds the\nRF=3 cluster measured before its fleet features were finalized and a table of\nthe defects the campaign found. Release A/B, NATS latency and the RF=3\nrelease run stay as TODO(data) subsections.\n\n* docs(perf): charts for the v0.6.0 write-up\n\nv060_charts.py draws one SVG per point the page makes, from the same cells\nas v060_tables.py: the preview.9 gate, throughput by shape, lossless modes,\nthe two latency regimes, one-in-flight percentiles, Felix against NATS, and\nthe RF=3 cluster before finalizing. Charts for the pending runs (release A/B,\nNATS latency, RF=3 release) are drawn once their cells exist. The periodic\nfsync NATS pair now has two trials.\n\n* docs(perf): omit unmeasured shapes from the throughput chart instead of labeling them\n\n* docs(perf): consistent units, figures and chart contrast in the v0.6.0 write-up\n\nLatency is in µs below 1 ms and ms above in every table and chart, with the\nunit in each header or cell. The durable 256 B batch pair is 14.8x and the\n4 KiB one 3.50x, as the cell data gives. Headings of pending subsections move\ninto their TODO comments so no empty heading shows. Chart colours keep 3:1\non both white and the dark themes, bar labels use the prose's GB/s form, and\n--site writes ms-only latency for getfelix.dev.\n\n* docs(perf): what Little's law means for a client's in-flight budget\n\n* docs(perf): the RF=3 chapter from the release-build run\n\nThroughput, one-in-flight latency, the Quorum cache and forwarding on three\nbrokers at 6ec23a8f, with why the matrix runs unfinalized and what the\nforwarding gap costs (CPU per hop, and one forward per shard held for the\nquorum wait). v060_charts.py takes the release RF=3 run with --rf3-release,\nadds the forwarding chart, and leaves the latency chart's after-finalizing\nbars to fill from the pass that finalizes the features. SVG ids are now\nfixed, so a re-run on unchanged data leaves the files unchanged.\n\n* docs(perf): release A/B, NATS latency pairs, known issues, one source for performance numbers\n\nThe release build against the campaign build on the same VMs: no regression\non any headline shape except 256 B fire-and-forget (#1469), and the\nfire-and-forget gap to acked publishing remains, so the connection stall was\nnot its cause. Adds the one-in-flight Felix and NATS latency pairs with their\nchart, the release row of the defaults table, the cache at 32 workers, and a\nknown-issues section. The older performance pages and the README now point at\nthis page for current numbers.\n\n* docs(perf): fix acked pacing, NATS throughput wording, release provenance; add failover\n\nAcked publishes are paced by ack after the write (EnqueuePolicy::Wait, up to\nFELIX_PUBLISH_QUEUE_WAIT_MS), not FELIX_PUB_INGRESS_WAIT, which affects only\nfire-and-forget. NATS comparison now says throughput, and notes NATS wins every\none-in-flight latency pair. States which build the single-broker figures come\nfrom and what the release A/B repeated. Fills the failover subsection from the\nRF=3 release run and removes the data placeholders.",
+          "timestamp": "2026-10-24T05:20:15Z",
+          "tree_id": "c3939b8bc7ca2298cc7d04dede299a9d61256299",
+          "url": "https://github.com/GetFelix/felix/commit/54b5b5158a44c634b3f825dc48776213154a946c"
+        },
+        "date": 1792819482358,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 183,
+            "range": "4.53",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 183.00\nmean: 181.00\nstdev: 4.53\ncv: 2.50%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 241,
+            "range": "4.21",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 241.00\nmean: 240.20\nstdev: 4.21\ncv: 1.75%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 304,
+            "range": "48.09",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 304.00\nmean: 323.20\nstdev: 48.09\ncv: 14.88%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 221,
+            "range": "2.49",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 221.00\nmean: 221.20\nstdev: 2.49\ncv: 1.13%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 466,
+            "range": "23.47",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 466.00\nmean: 465.60\nstdev: 23.47\ncv: 5.04%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 847,
+            "range": "459.69",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 847.00\nmean: 987.80\nstdev: 459.69\ncv: 46.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
