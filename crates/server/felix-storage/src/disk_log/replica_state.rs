@@ -111,6 +111,7 @@ pub(super) fn load(dir: &Path) -> Result<ReplicaState> {
 pub(super) fn store(dir: &Path, state: &ReplicaState) -> Result<()> {
     use std::io::Write;
 
+    let started = std::time::Instant::now();
     let path = path_in(dir);
     let temporary = path.with_extension("tmp");
     {
@@ -120,6 +121,9 @@ pub(super) fn store(dir: &Path, state: &ReplicaState) -> Result<()> {
     }
     std::fs::rename(&temporary, &path).map_err(StorageError::Io)?;
     sync_dir(dir).map_err(StorageError::Io)?;
+    metrics::counter!(crate::metrics_names::REPLICA_STATE_WRITES_TOTAL).increment(1);
+    metrics::histogram!(crate::metrics_names::REPLICA_STATE_WRITE_DURATION_SECONDS)
+        .record(started.elapsed().as_secs_f64());
     Ok(())
 }
 

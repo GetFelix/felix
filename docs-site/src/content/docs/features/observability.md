@@ -175,6 +175,8 @@ felix_storage_sync_batch_appends       # records made durable per device flush
 felix_storage_unsynced_bytes           # what a crash would lose right now
 felix_storage_sync_failures_total      # non-zero: acknowledged durability in doubt
 felix_storage_full_total               # writes refused on a full disk; nothing written
+felix_storage_replica_state_writes_total            # generation, commit offset and hold writes
+felix_storage_replica_state_write_duration_seconds  # each is two flushes and a rename
 ```
 
 If sync dominates append, the fsync policy is the cost. A
@@ -191,6 +193,7 @@ felix_broker_membership_live                # broker: does the cluster still cou
 felix_broker_heartbeat_age_seconds          # alert when this nears the expiry timeout
 felix_broker_fleet_feature_enabled{feature} # 1 once an operator has finalized it
 felix_broker_replication_lag_records
+felix_broker_publish_quorum_wait_seconds    # a Quorum publish's wait for its majority; a tail near the replication tick is a missed wake
 felix_broker_replication_halted             # a count; GET /replication/halted says which
 felix_broker_replication_rebuilding         # halted followers the leader is rebuilding right now
 felix_broker_replication_rebuilds_total     # by outcome: started, completed, refused

@@ -90,6 +90,10 @@ pub const REPORTS_PER_REQUEST: &str = "felix_broker_replica_reports_per_request"
 /// invites the two to disagree.
 pub const QUORUM_FAILED_TOTAL: &str = "felix_broker_publish_quorum_failed_total";
 
+/// How long a `Quorum` publish waited for its majority, whatever the outcome.
+/// Across every shard this broker leads, like the rest.
+pub const QUORUM_WAIT_SECONDS: &str = "felix_broker_publish_quorum_wait_seconds";
+
 /// No majority within the budget. The records are durable on this broker and
 /// may yet reach one; this broker simply cannot say that they have.
 pub const QUORUM_TIMED_OUT: &str = "timed_out";
@@ -145,6 +149,10 @@ pub fn record_mark_withheld() {
 
 pub fn record_drain_withheld(log: &'static str) {
     metrics::counter!(DRAIN_WITHHELD, "log" => log).increment(1);
+}
+
+pub fn record_quorum_wait(waited: std::time::Duration) {
+    metrics::histogram!(QUORUM_WAIT_SECONDS).record(waited.as_secs_f64());
 }
 
 pub fn record_quorum(reason: &'static str) {
