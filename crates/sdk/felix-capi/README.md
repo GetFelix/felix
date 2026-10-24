@@ -296,7 +296,9 @@ callback.
 back a `FelixProducer`. Its batches are numbered per shard and the shard's leader
 answers a number it already holds without appending again, so a batch that got
 no answer can be sent again and cannot land twice, across a reconnection or a
-leader change. Calls on one producer are sent in the order they were made.
+leader change. Calls on one producer are handed to it in the order the C
+calls returned, so they take sequences in that order, and they do not wait for
+each other's answers.
 
 - `felix_producer_publish` sends a batch of one or more records as one
   sequence, to shard 0 or, with a `key`, to the key's shard. It takes the
@@ -321,9 +323,10 @@ leader change. Calls on one producer are sent in the order they were made.
   on the handle complete with `FELIX_STATUS_CLOSED` and the id calls return it.
   `felix_producer_free` drops what is left without waiting; use close to drain.
 
-For a C# binding, keep one producer per logical writer and queue the calls
-through it instead of racing several, since they are sent in call order anyway.
-Retry a failed publish with the same buffers rather than building a new batch.
+For a C# binding, keep one producer per logical writer and start its calls from
+one thread or under a lock: the order is the order the C calls return, so
+calls racing on several threads have no order of their own. Retry a failed
+publish with the same buffers rather than building a new batch.
 
 ### Why callbacks, and why pull
 

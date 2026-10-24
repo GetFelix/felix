@@ -33,8 +33,9 @@ typedef struct FelixEvent FelixEvent;
 // A producer whose publishes are numbered, so a batch the caller never got
 // an answer for can be sent again without landing twice.
 //
-// Calls on one producer are sent in the order they were made. It must not be
-// freed while another thread is calling it.
+// Calls on one producer reach its task in the order they were made, and take
+// their sequences in that order without waiting for each other's answers. It
+// must not be freed while another thread is calling it.
 typedef struct FelixProducer FelixProducer;
 
 // A live subscription to every shard of a stream, merged into one feed.
@@ -1587,10 +1588,10 @@ FelixStatus felix_producer_id_for(const struct FelixProducer *producer,
 //
 // The producer leaves the handle as soon as this returns `FELIX_STATUS_OK`:
 // later calls on the handle complete, or return, `FELIX_STATUS_CLOSED`. A
-// negative `timeout_ms` waits as long as it takes. Otherwise a producer
-// that has not finished by then is stopped where it is, with a failure
-// status: nothing more is sent or re-sent, and a batch it had already sent
-// may or may not land.
+// negative `timeout_ms` waits as long as it takes. Otherwise, when it has
+// not finished by then, the wait ends with a failure status and the handle
+// stays closed. Batches already handed to the producer may still be sent or
+// re-sent after that, and one already sent may or may not land.
 //
 // A cancelled close completes with `FELIX_STATUS_CANCELLED`. The producer
 // is closed all the same and its task finishes on its own. The handle is

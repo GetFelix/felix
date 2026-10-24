@@ -3,16 +3,19 @@
 //!
 //! The producer keeps one sequence per shard and a task that sends in call
 //! order, so the contract is `felix_client::IdempotentProducer`'s; this module
-//! only gives it a handle. Every call that sends is a write, so all of them
-//! start through [`spawn_write`].
+//! only gives it a handle. A call is queued for hand-off to that task before
+//! the C function returns, which is what keeps calls in order.
 
 use std::ffi::{c_char, c_void};
+use std::future::Future;
 use std::ops::Deref;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use felix_client::IdempotentProducer;
-use tokio::sync::Notify;
+use felix_client::{Handed, IdempotentProducer};
+use tokio::sync::{Notify, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::boundary::{Failure, guard, guard_void, required_str};
@@ -20,10 +23,11 @@ use crate::cancel::{FelixCancelToken, user_token};
 use crate::client::{FelixClient, Shared};
 use crate::completion::{Completion, Deliver, cancelled, is_cancelled};
 use crate::groups::{Done, FelixDoneCallback};
-use crate::publish::{FelixPublishCallback, Published, laid_end_to_end, routing_key, spawn_write};
+use crate::publish::{FelixPublishCallback, Published, laid_end_to_end, routing_key};
 use crate::sharded::lock;
 use crate::status::{
-    FELIX_STATUS_CANCELLED, FELIX_STATUS_CLOSED, FELIX_STATUS_OK, FELIX_STATUS_TIMEOUT, FelixStatus,
+    FELIX_STATUS_CANCELLED, FELIX_STATUS_CLOSED, FELIX_STATUS_OK, FELIX_STATUS_OUTCOME_UNKNOWN,
+    FELIX_STATUS_TIMEOUT, FelixStatus,
 };
 
 /// Called once when `felix_client_idempotent_producer` finishes. On
@@ -41,10 +45,13 @@ pub type FelixProducerCallback = Option<
 /// A producer whose publishes are numbered, so a batch the caller never got
 /// an answer for can be sent again without landing twice.
 ///
-/// Calls on one producer are sent in the order they were made. It must not be
-/// freed while another thread is calling it.
+/// Calls on one producer reach its task in the order they were made, and take
+/// their sequences in that order without waiting for each other's answers. It
+/// must not be freed while another thread is calling it.
 pub struct FelixProducer {
     slot: Arc<Slot<IdempotentProducer>>,
+    /// Hand-offs in call order; see [`forward`].
+    forward: mpsc::UnboundedSender<Job>,
     /// Cancelled when this handle is freed, which ends its pending calls.
     cancel: CancellationToken,
     shared: Arc<Shared>,
@@ -201,8 +208,11 @@ pub unsafe extern "C" fn felix_client_idempotent_producer(
             };
             match outcome {
                 Some(Ok(producer)) if !is_cancelled(&handle, user.as_ref()) => {
+                    let (forward, jobs) = mpsc::unbounded_channel();
+                    tokio::spawn(forward_in_order(jobs));
                     done.ok(Box::new(FelixProducer {
                         slot: Slot::new(producer),
+                        forward,
                         cancel: shared.cancel_token(),
                         shared,
                     }));
@@ -276,19 +286,18 @@ pub unsafe extern "C" fn felix_producer_publish(
         // SAFETY: null or a live token, per the contract above.
         let user = unsafe { user_token(cancel) };
         let done = Completion::<Published>::new(callback, user_data)?;
-        let lease = producer.slot.lease();
-        let write = async move {
-            let lease = lease?;
+        let hand = move |lease: Lease<IdempotentProducer>| async move {
             let (t, n, s) = (&stream.0, &stream.1, &stream.2);
-            let sent = match key {
-                None => lease.publish_batch(t, n, s, payloads).await,
-                Some(key) => lease.publish_batch_keyed(t, n, s, key, payloads).await,
-            };
-            sent.map_err(Failure::from)
+            lease.hand_off_batch(t, n, s, key, payloads).await
         };
-        spawn(producer, user, done, write, |done, outcome| {
-            done.result(outcome.map(Published));
-        });
+        spawn(
+            producer,
+            user,
+            done,
+            hand,
+            |handed| async move { handed.offset().await.map_err(Failure::from) },
+            |done, outcome| done.result(outcome.map(Published)),
+        );
         Ok(FELIX_STATUS_OK)
     })
 }
@@ -338,18 +347,18 @@ pub unsafe extern "C" fn felix_producer_publish_batches(
         // SAFETY: null or a live token, per the contract above.
         let user = unsafe { user_token(cancel) };
         let done = Completion::<Done>::new(callback, user_data)?;
-        let lease = producer.slot.lease();
-        let write = async move {
-            let lease = lease?;
+        let hand = move |lease: Lease<IdempotentProducer>| async move {
             let (t, n, s) = (&stream.0, &stream.1, &stream.2);
-            lease
-                .publish_batches(t, n, s, batches)
-                .await
-                .map_err(Failure::from)
+            lease.hand_off_batches(t, n, s, batches).await
         };
-        spawn(producer, user, done, write, |done, outcome| {
-            done.result(outcome.map(|()| Done));
-        });
+        spawn(
+            producer,
+            user,
+            done,
+            hand,
+            |handed| async move { handed.done().await.map_err(Failure::from) },
+            |done, outcome| done.result(outcome.map(|()| Done)),
+        );
         Ok(FELIX_STATUS_OK)
     })
 }
@@ -384,15 +393,18 @@ pub unsafe extern "C" fn felix_producer_abandon_in_doubt(
         // SAFETY: null or a live token, per the contract above.
         let user = unsafe { user_token(cancel) };
         let done = Completion::<Done>::new(callback, user_data)?;
-        let lease = producer.slot.lease();
-        let write = async move {
-            let lease = lease?;
+        let hand = move |lease: Lease<IdempotentProducer>| async move {
             let (t, n, s) = (&stream.0, &stream.1, &stream.2);
-            lease.abandon_in_doubt(t, n, s).await.map_err(Failure::from)
+            lease.hand_off_abandon(t, n, s).await
         };
-        spawn(producer, user, done, write, |done, outcome| {
-            done.result(outcome.map(|()| Done));
-        });
+        spawn(
+            producer,
+            user,
+            done,
+            hand,
+            |handed| async move { handed.done().await.map_err(Failure::from) },
+            |done, outcome| done.result(outcome.map(|()| Done)),
+        );
         Ok(FELIX_STATUS_OK)
     })
 }
@@ -464,10 +476,10 @@ pub unsafe extern "C" fn felix_producer_id_for(
 ///
 /// The producer leaves the handle as soon as this returns `FELIX_STATUS_OK`:
 /// later calls on the handle complete, or return, `FELIX_STATUS_CLOSED`. A
-/// negative `timeout_ms` waits as long as it takes. Otherwise a producer
-/// that has not finished by then is stopped where it is, with a failure
-/// status: nothing more is sent or re-sent, and a batch it had already sent
-/// may or may not land.
+/// negative `timeout_ms` waits as long as it takes. Otherwise, when it has
+/// not finished by then, the wait ends with a failure status and the handle
+/// stays closed. Batches already handed to the producer may still be sent or
+/// re-sent after that, and one already sent may or may not land.
 ///
 /// A cancelled close completes with `FELIX_STATUS_CANCELLED`. The producer
 /// is closed all the same and its task finishes on its own. The handle is
@@ -582,25 +594,109 @@ unsafe fn target<'a>(
     Ok((producer, name))
 }
 
-fn spawn<V, T, F>(
+/// A hand-off waiting its turn.
+type Job = Pin<Box<dyn Future<Output = ()> + Send>>;
+
+/// Runs the hand-offs one at a time, in the order they were queued. A
+/// hand-off ends when the producer's task has the request, not when the
+/// leader answers, so calls still overlap.
+async fn forward_in_order(mut jobs: mpsc::UnboundedReceiver<Job>) {
+    while let Some(job) = jobs.recv().await {
+        job.await;
+    }
+}
+
+/// Where a call's hand-off stands, so that a cancel and the hand-off agree
+/// on whether the batch may have been sent.
+const WAITING: u8 = 0;
+const HANDING: u8 = 1;
+const ABORTED: u8 = 2;
+
+/// Queue a send and report it.
+///
+/// The lease is taken and the hand-off queued before this returns, which is
+/// what fixes the order of calls. `hand` gives the request to the producer's
+/// task; `answer` waits for the leader. A cancel before the hand-off starts
+/// stops it and reports `FELIX_STATUS_CANCELLED`; one after reports
+/// `FELIX_STATUS_OUTCOME_UNKNOWN`, since the batch is still sent.
+fn spawn<V, T, H, HF, A, AF>(
     producer: &FelixProducer,
     user: Option<CancellationToken>,
     done: Completion<V>,
-    write: F,
-    report: impl FnOnce(Completion<V>, T) + Send + 'static,
+    hand: H,
+    answer: A,
+    report: impl FnOnce(Completion<V>, Result<T, Failure>) + Send + 'static,
 ) where
     V: Deliver,
     T: Send + 'static,
-    F: std::future::Future<Output = T> + Send + 'static,
+    H: FnOnce(Lease<IdempotentProducer>) -> HF + Send + 'static,
+    HF: Future<Output = anyhow::Result<Handed>> + Send + 'static,
+    A: FnOnce(Handed) -> AF + Send + 'static,
+    AF: Future<Output = Result<T, Failure>> + Send + 'static,
 {
-    spawn_write(
-        &producer.shared,
-        producer.cancel.clone(),
-        user,
-        done,
-        write,
-        report,
-    );
+    let lease = producer.slot.lease();
+    let state = Arc::new(AtomicU8::new(WAITING));
+    let (handed, handed_rx) = oneshot::channel::<Result<Handed, Failure>>();
+    let job = {
+        let state = Arc::clone(&state);
+        async move {
+            let outcome = match lease {
+                Err(failure) => Err(failure),
+                Ok(lease) => {
+                    let begin = state.compare_exchange(
+                        WAITING,
+                        HANDING,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    );
+                    if begin.is_err() {
+                        return;
+                    }
+                    hand(lease).await.map_err(Failure::from)
+                }
+            };
+            let _ = handed.send(outcome);
+        }
+    };
+    // A send fails only once the forwarder is gone, which drops the job and
+    // so `handed`; the call then reports cancelled below.
+    let _ = producer.forward.send(Box::pin(job));
+
+    let handle = producer.cancel.clone();
+    producer.shared.spawn(done, move |done| async move {
+        let aborted = |done: Completion<V>| {
+            if state
+                .compare_exchange(WAITING, ABORTED, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                done.status(FELIX_STATUS_CANCELLED);
+            } else {
+                done.fail(unknown());
+            }
+        };
+        let handed = tokio::select! {
+            biased;
+            () = cancelled(&handle, user.as_ref()) => return aborted(done),
+            handed = handed_rx => handed,
+        };
+        let handed = match handed {
+            Ok(Ok(handed)) => handed,
+            Ok(Err(failure)) => return done.fail(failure),
+            Err(_) => return done.status(FELIX_STATUS_CANCELLED),
+        };
+        tokio::select! {
+            biased;
+            () = cancelled(&handle, user.as_ref()) => done.fail(unknown()),
+            outcome = answer(handed) => report(done, outcome),
+        }
+    });
+}
+
+fn unknown() -> Failure {
+    Failure {
+        status: FELIX_STATUS_OUTCOME_UNKNOWN,
+        message: "the write was cancelled after it may have been sent".to_string(),
+    }
 }
 
 /// A batch's payloads. An empty batch has no sequence to take, so the call

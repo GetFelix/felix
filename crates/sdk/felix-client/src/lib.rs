@@ -87,7 +87,7 @@ pub use error::{
     BrokerError, NotLeaderError, PublishRefused, SubscribeCursorError, SubscriptionLagged,
     SubscriptionLost,
 };
-pub use publish::{IdempotentProducer, PublishSharding, Publisher};
+pub use publish::{Handed, IdempotentProducer, PublishSharding, Publisher};
 pub use subscribe::{Event, ShardMoved, Subscription};
 pub use telemetry::{
     FrameCountersSnapshot, frame_counters_snapshot, publishes_forwarded, reset_frame_counters,

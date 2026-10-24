@@ -17,7 +17,7 @@ mod shard_streams;
 mod widths;
 mod writer;
 
-pub use idempotent::IdempotentProducer;
+pub use idempotent::{Handed, IdempotentProducer};
 pub use routing::PublishSharding;
 
 pub(crate) use admission::PublishAdmission;

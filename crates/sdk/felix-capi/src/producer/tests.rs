@@ -123,3 +123,20 @@ fn freeing_null_is_ignored() {
     // SAFETY: null is allowed.
     unsafe { felix_producer_free(ptr::null_mut()) };
 }
+
+#[tokio::test]
+async fn hand_offs_run_in_the_order_they_were_queued() {
+    let (forward, jobs) = mpsc::unbounded_channel::<Job>();
+    let ran = Arc::new(Mutex::new(Vec::new()));
+    // Earlier jobs are slower, so any concurrency would reorder them.
+    for n in 0..20u64 {
+        let ran = Arc::clone(&ran);
+        let _ = forward.send(Box::pin(async move {
+            tokio::time::sleep(Duration::from_millis(20 - n)).await;
+            ran.lock().expect("ran").push(n);
+        }));
+    }
+    drop(forward);
+    forward_in_order(jobs).await;
+    assert_eq!(*ran.lock().expect("ran"), (0..20).collect::<Vec<_>>());
+}
