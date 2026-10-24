@@ -10,8 +10,7 @@ a header, `felix.h`. Like the Python and TypeScript bindings it wraps
 Rust client's. See [Choosing a Client](/clients/overview/) for why bindings wrap
 one client instead of reimplementing it.
 
-It is meant as a base: the C# SDK will bind to it, and so can any other
-language with a C FFI. You can also call it from C directly.
+It is a base for bindings: any language with a C FFI can bind to it, C# included. You can also call it from C directly.
 
 ## Building and linking
 
@@ -453,7 +452,7 @@ returned, and they do not wait for each other's answers.
   stream of it, sends under.
 - `felix_producer_close` waits for what was handed over, then stops the producer;
   a non-negative `timeout_ms` bounds the wait. After it, async calls on the
-  handle complete with `FELIX_STATUS_CLOSED`. `felix_producer_free` drops what is
+  handle either complete with `FELIX_STATUS_CLOSED` or return it directly. `felix_producer_free` drops what is
   left without waiting.
 
 ## Status codes
@@ -462,7 +461,7 @@ returned, and they do not wait for each other's answers.
 | --- | --- | --- | --- |
 | `FELIX_STATUS_OK` | 0 | the call did what it was asked | |
 | `FELIX_STATUS_TIMEOUT` | 1 | a bounded wait ended with nothing; the handle is still usable | |
-| `FELIX_STATUS_CLOSED` | 2 | the broker ended the subscription | |
+| `FELIX_STATUS_CLOSED` | 2 | the broker ended the subscription, or the producer is closed | |
 | `FELIX_STATUS_CANCELLED` | 3 | cancelled through its token or by freeing its handle; nothing left behind | |
 | `FELIX_STATUS_INVALID_ARGUMENT` | 10 | a null pointer, non-UTF-8 string or out-of-range value; nothing was sent | no |
 | `FELIX_STATUS_PANIC` | 11 | the library panicked; a bug worth reporting | |
@@ -481,7 +480,7 @@ These are the same classes as the
 
 ## Binding from another language
 
-The C# SDK is the first consumer, and these rules hold for any managed binding.
+These rules hold for any managed binding, C# included.
 
 - Copy borrowed data inside the callback. Payloads, keys, values, messages,
   group records and watch items are valid only while the callback runs. Keep
@@ -505,14 +504,13 @@ The C# SDK is the first consumer, and these rules hold for any managed binding.
   racing across threads have no order of their own. Retry a failed publish with
   the same buffers.
 
-## What is not covered yet
+## Not covered
 
 The sharded group (a group composed over every shard), the group `*_stream`
 admin calls, and the record publisher and timestamp fields are not in the ABI.
 Use one group per shard with `felix_client_stream_shards`.
 
 The C test, `crates/sdk/felix-capi/tests/c/pubsub.c`, runs against the
-conformance fixture in CI. It is not yet a claimed run of the
+conformance fixture in CI. It does not report a claimed run of the
 [conformance suite](/clients/overview/#the-conformance-suite), which gates
-Python and TypeScript. A C harness that reports to `felix-conformance` will be a
-gate once the remaining scenarios are covered.
+Python and TypeScript.

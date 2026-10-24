@@ -196,17 +196,15 @@ rather than passing over them in silence; their pages say which.
 
 ## Planned
 
-C# is next, then Go. Each is gated on passing the conformance suite.
-
-The C# SDK will live in this repository and, like Python and TypeScript, wrap
-the Rust client rather than reimplement it: it binds through P/Invoke to
+No C# or Go client exists. A C# SDK would live in this repository and, like Python and TypeScript, wrap
+the Rust client rather than reimplement it, binding through P/Invoke to
 `crates/sdk/felix-capi`, the C ABI described on the [C page](/clients/c/). The
 ABI covers connect, publishes, subscriptions, consumer groups on a shard, caches,
 counters and watches, atomic commits, conditional publishes and idempotent
 producers, asynchronous through callbacks so a `Task` needs no waiting thread.
-The sharded group, the group stream admin calls and the record publisher and
-timestamp fields are not in it yet, and the C test runs against the conformance
-fixture but is not yet a claimed run of the suite.
+It has no sharded group, group stream admin calls, or record publisher and
+timestamp fields. The C test runs against the conformance fixture but is not a
+claimed run of the suite.
 
 If you want to write one sooner, the things you need are all public: the
 [wire protocol](/architecture/wire-protocol/) if you are implementing

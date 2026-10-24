@@ -203,8 +203,7 @@ the client conformance catalogue, and CI is gated on it. Go and C# are not
 started. `felix-capi`, the [C ABI](/clients/c/) they will bind to, covers connect,
 publishes, subscriptions, consumer groups on a shard, caches, counters and
 watches, atomic commits, conditional publishes and idempotent producers, all
-asynchronous through callbacks. It does not yet have the sharded group or the
-group stream admin calls.
+asynchronous through callbacks. It has no sharded group or group stream admin calls.
 The wire protocol is language-neutral and documented precisely for this
 reason (see [Wire Protocol](/architecture/wire-protocol/)), and a
 conformance runner exists to check an implementation against it.
