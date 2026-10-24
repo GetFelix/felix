@@ -672,11 +672,10 @@ jobs:
           FELIX_CONFORMANCE_RESULTS: ${{ github.workspace }}/c-conformance.json
         run: crates/sdk/felix-capi/tests/c/run.sh fixture
 
-      # Report-only: the fault and broker-loss scenarios are skipped until the
-      # harness runs a cluster of its own, and verify fails on a skipped required one.
-      - name: C ABI conformance verdict (report-only)
+      # Gates like the Python and TypeScript verdicts: a required scenario the C
+      # harness failed, skipped or never recorded fails the job.
+      - name: C ABI conformance verdict
         if: always()
-        continue-on-error: true
         run: cargo run --locked -q -p felix-conformance -- verify c-conformance.json
 
   # Same reasoning as the Python job above, and the same shape: the binding
