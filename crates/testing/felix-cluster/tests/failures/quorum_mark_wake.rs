@@ -6,7 +6,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use felix_cluster::{Cluster, ClusterConfig, StreamSpec};
-use felix_common::fleet;
 use felix_wire::AckMode;
 use serial_test::serial;
 
@@ -16,6 +15,18 @@ const CONNECTIONS: usize = 8;
 const PUBLISHERS_PER_CONNECTION: usize = 8;
 const PAYLOAD: usize = 256;
 const LOAD: Duration = Duration::from_secs(25);
+/// Every fleet feature but the opt-in `publisher_principal`, prerequisites first.
+const FEATURES: [&str; 9] = [
+    "generation_start",
+    "majority_ack",
+    "lease_free_reads",
+    "fenced_caches",
+    "jump_hash_routing",
+    "atomic_commit",
+    "group_cursor_dependencies",
+    "stream_incarnations",
+    "cache_incarnations",
+];
 /// The replication tick. A wake the mark misses costs about this long.
 const TICK_MS: u64 = 30_000;
 /// A healthy ack takes milliseconds; this leaves room for a slow runner.
@@ -43,28 +54,13 @@ async fn a_busy_followers_answer_moves_the_mark_without_the_tick() {
     .await
     .expect("start cluster");
 
-    // A new cluster finalizes every feature but the opt-in one itself.
-    let expected = (fleet::IMPLEMENTED.len() - 1) as f64;
-    for id in cluster.node_ids() {
-        felix_cluster::wait::until(
-            Duration::from_secs(90),
-            "the new cluster's fleet features to turn on",
-            || {
-                let id = id.clone();
-                let cluster = &cluster;
-                async move {
-                    cluster
-                        .metric(&id, "felix_broker_fleet_feature_enabled")
-                        .await
-                        .ok()
-                        .flatten()
-                        == Some(expected)
-                }
-            },
-        )
+    // What a new cluster in production starts with. The harness creates its
+    // streams before the first broker registers, so it never reads as new and
+    // finalizes nothing itself.
+    cluster
+        .finalize_fleet_features(&FEATURES, Duration::from_secs(90))
         .await
-        .expect("every broker enables the features a new cluster finalizes");
-    }
+        .expect("every broker enables the fleet features");
 
     let mut clients = Vec::new();
     for _ in 0..CONNECTIONS {
