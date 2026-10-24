@@ -22,6 +22,7 @@ mod majority_ack;
 mod membership;
 mod partition;
 mod promotion_fence;
+mod quorum_mark_wake;
 mod recreate;
 mod retention_floor;
 mod wiped;
