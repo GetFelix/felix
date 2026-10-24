@@ -56,7 +56,7 @@ pub const COMMAND_VERSION: u16 = 1;
 /// it the next level and raises this, so nothing proposes it until every
 /// member runs that release. New fields get their level in `fields.txt`.
 /// Never lower it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 18;
+pub const METADATA_VERSION: u16 = 19;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -119,6 +119,10 @@ pub enum MetaCommand {
     PatchStream {
         key: StreamKey,
         patch: StreamPatchRequest,
+        /// Level 19: a change of consistency or durability advances the
+        /// placement token (`store::memory::InMemoryStore::apply_patch_stream`).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        fence: bool,
     },
     /// The shards' assignments always go. `take_reports` also takes their
     /// replica reports; level 10, for the reason given on

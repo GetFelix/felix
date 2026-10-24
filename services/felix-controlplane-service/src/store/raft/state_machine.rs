@@ -229,8 +229,8 @@ impl MetadataStateMachine {
                 .await
                 .map(|stream| MetaResponse::Stream { stream })
                 .map_err(Into::into),
-            MetaCommand::PatchStream { key, patch } => store
-                .patch_stream(&key, patch)
+            MetaCommand::PatchStream { key, patch, fence } => store
+                .apply_patch_stream(&key, patch, fence)
                 .await
                 .map(|stream| MetaResponse::Stream { stream })
                 .map_err(Into::into),

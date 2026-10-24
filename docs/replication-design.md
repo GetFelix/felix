@@ -296,11 +296,23 @@ so an earlier pass can see an empty set; it decides nothing and does not count
 (`Serving::adopted` in `quorum.rs`). Its writes wait for a mark its followers
 decide and its `Quorum` reads for a round, and a promotion's fence ends both.
 
-One gap remains. Changing a stream's consistency from `Quorum` to `Leader`
-does not bump its shard's generation, and a report at that generation that
-says `by_round` stands until the leader's next report. In that window the
-leader acknowledges on its lease while placement may still promote on its
-followers' word. Reports carry the incarnation the broker last registered,
+Changing a stream's consistency bumps no generation, and a report at that
+generation that says `by_round` stands until the leader's next one. Placement
+acts on suspicion only on a shard whose stream it read as a durable `Quorum`
+stream in the same pass, so a report left over from before a change to
+`Leader` is never read on its own. What remains is a pass that read the
+stream before the change and writes after it, while the leader serves on its
+lease. A change to a stream's consistency or durability advances the
+placement token, so that pass's write is fenced and it replans from the new
+catalog (`docs/control-plane.md`, "How shards get placed"). The token moves in
+the same lock, transaction or log entry as the change, and the broker learns
+the change only from the catalog after it commits, so no pass that read the
+old consistency can write once the leader serves on its lease. The same fence
+covers a change to `Quorum`: a pass that read `Leader` planned a failover that
+need not keep a majority of the set. Under Raft this holds once every member
+is at metadata level 19; before that a patch moves no token.
+
+Reports carry the incarnation the broker last registered,
 and the control plane stamps `leader_incarnation` only when it matches. A
 Postgres member that predates the column updates a report without it, so the
 flag is read as true only while `by_round_at` matches the row's

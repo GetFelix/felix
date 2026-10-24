@@ -317,6 +317,12 @@ by the same round before it is acknowledged.
   so for a heartbeat or so after the finalize leaders still fail over on the
   lease. A Raft control plane keeps the report's flag only once every member
   is at metadata level 11.
+- **Change a stream's consistency with every control-plane member
+  upgraded.** A pass that read a stream as `Quorum` must not replace its
+  leader on its followers' word after the stream became `Leader`, so the
+  change fences placement. On Postgres migration 0036 does that for every
+  instance. Under Raft it takes every member at metadata level 19; until
+  then a change of consistency fences nothing, as before.
 - **Finalize with every control-plane member upgraded.** The order is checked
   by the member that serves the `finalize` call. During a rolling
   control-plane upgrade an older member does not check it, so finish the

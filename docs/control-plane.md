@@ -882,9 +882,11 @@ assignments, replica reports and pause switch separately
 that safe is **conditional writes**: every assignment write names the generation
 it was planned from and the placement token read at the start of the pass, and
 is refused if either moved, so a plan built on stale input is dropped and
-replanned. The token advances only on placement's own writes, not on node
-lifecycle or stream changes, so a pass can still act on a node or stream that
-changed after it was read; the next pass corrects it.
+replanned. The token advances on placement's own writes and on a change to a
+stream's consistency or durability, which decide how its shards fail over
+(below). Node lifecycle and other stream changes do not move it, so a pass can
+still act on a node or stream that changed in those ways after it was read;
+the next pass corrects it.
 
 The hash is written out rather than taken from `DefaultHasher`, whose seeding is
 not part of its contract. A placement decision that changed with the Rust
@@ -1032,14 +1034,20 @@ checks do that, both compared under the same lock or log entry as the write:
 - **Every placement write is fenced by the placement token.** The token is a
   counter beside the lease. A pass reads it before anything else, and each of
   its writes lands only if the token is still where the pass left it; landing
-  advances it by one, and so does a change of lease holder. The generation
+  advances it by one, and so does a change of lease holder or of a stream's
+  consistency or durability. The generation
   guards one shard, but the move limits are about all of them: two passes,
   or a pass and an operator's request, that each read one free slot would
   otherwise start moves on two different shards. A fenced write writes
   nothing and ends its pass, which is counted in
   `felix_placement_writes_fenced_total`; the next pass re-plans. An
   instance that paused past its lease finds its next write fenced by the
-  takeover, before it has written anything.
+  takeover, before it has written anything. A pass that read a stream as
+  `Quorum` and finds it changed to `Leader` is fenced the same way, so it
+  cannot replace a leader on its followers' word once that leader may be
+  serving on its lease (#1253). On Postgres a trigger (migration 0036)
+  advances it, so an instance from before it is held to this too; under Raft
+  the patch entry does, once every member is at metadata level 19.
 
 An occasional conflict or fenced pass is expected with several instances; a
 steady rate means instances keep planning from reads that are already old. A shard with

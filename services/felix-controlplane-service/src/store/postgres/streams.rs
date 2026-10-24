@@ -213,6 +213,14 @@ pub(super) async fn patch_stream(
     patch: StreamPatchRequest,
 ) -> StoreResult<Stream> {
     let (_gates, mut tx) = begin_feed_write(store, &[CatalogFeed::Streams]).await?;
+    // Migration 0036's trigger advances the placement token when either of
+    // these changes. Its row is locked before the stream's, the order
+    // placement's writes take them in.
+    if patch.consistency.is_some() || patch.durable.is_some() {
+        sqlx::query("SELECT 1 FROM placement_lease WHERE id = 1 FOR UPDATE")
+            .execute(&mut *tx)
+            .await?;
+    }
     let current = sqlx::query_as::<_, DbStream>(
         r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing, incarnation
                FROM streams WHERE tenant_id = $1 AND namespace = $2 AND stream = $3 FOR UPDATE"#,
