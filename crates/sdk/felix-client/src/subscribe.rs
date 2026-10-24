@@ -70,10 +70,14 @@ impl Subscription {
         self.queue_capacity
     }
 
-    /// The first offset this subscription delivers.
+    /// Where this subscription starts: no event below it is delivered.
     ///
     /// `None` for an in-memory stream, or from a broker older than event
-    /// offsets. A plain tail subscribe reports the tail, as `Latest` does.
+    /// offsets. A plain tail subscribe reports the tail, as `Latest` does,
+    /// stopping short of generation-start records the log ends with. Count
+    /// drops before the first event as
+    /// `offset - start_offset - skipped_before`; `start_offset` can be 0, so
+    /// do not subtract 1 from it.
     pub fn start_offset(&self) -> Option<u64> {
         self.start_offset
     }
@@ -84,7 +88,8 @@ impl Subscription {
     /// written after, and none are skipped in between. Generation-start
     /// records at the end of the log are left out, since they never arrive as
     /// events, so a reader that reaches it has caught up. From `Latest` this
-    /// equals [`Self::start_offset`].
+    /// equals [`Self::start_offset`]; a broker before 0.6.1 reported both at
+    /// the raw tail there.
     pub fn live_offset(&self) -> Option<u64> {
         self.live_offset
     }
@@ -210,7 +215,8 @@ pub struct Event {
     /// events (a new leader's generation-start record), so a jump between
     /// consecutive events is a drop exactly when it is larger than
     /// [`Event::skipped_before`] explains --
-    /// `offset - previous - 1 - skipped_before` events were dropped. A broker
+    /// `offset - previous - 1 - skipped_before` events were dropped (for the
+    /// first event, `offset - start_offset - skipped_before`). A broker
     /// that predates the skip count reports none, and a generation start then
     /// reads as a drop of one.
     pub offset: Option<u64>,

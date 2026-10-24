@@ -585,7 +585,10 @@ Success answers. Each names the request it answers where there is one.
 ```
 
 `subscribed` confirms a subscription, and its id matches the
-`event_stream_hello` on the event stream. `start_offset` and `live_offset` are
+`event_stream_hello` on the event stream. `start_offset` is where the
+subscription starts and `live_offset` the tail at join, both stopping short of
+generation-start records the log ends with, which are never delivered (see
+`docs/protocol.md`). For `latest` they are equal. They are
 sent on a durable stream to a client that negotiated event offsets, whose
 subscribe with no `start` is treated as `latest`. Like an explicit `latest`, it
 can then be refused on a `Quorum` shard that is still settling (`not_ready`) or

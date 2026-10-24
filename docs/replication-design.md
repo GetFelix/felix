@@ -1074,7 +1074,8 @@ the same:
 - **Readers never see it.** It occupies a log offset, which subscriptions,
   replay, Kafka fetch, consumer groups and backups skip. How a subscriber tells
   that offset from a dropped record is in `docs/protocol.md`. A subscription's
-  `live_offset` stops short of any such records the log ends with, so a reader
+  `live_offset`, and from `latest` its `start_offset` too, stops short of any
+  such records the log ends with, so a reader
   that waits to reach it does not wait on an offset that never delivers an
   event, which is every new leadership until a client writes.
 

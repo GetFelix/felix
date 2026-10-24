@@ -221,11 +221,20 @@ impl Broker {
             return Err(BrokerError::CursorInFuture { requested, tail });
         }
 
+        // `latest` is reported before the generation-start records the log
+        // ends with. They are never delivered, so a client reading history up
+        // to the raw tail would wait for one, and the first event's
+        // `skipped_before` would reach below the reported start. Registration
+        // still uses `requested`: nothing in between is ever delivered.
+        let joined = match (&durable, start) {
+            (Some(log), StartPosition::Latest) => log.event_end(0, requested).await?,
+            _ => requested,
+        };
         // Where a reader of the history has everything that was in the stream.
         // Reported past a trailing generation-start record, a reader that
         // caught up would wait at it for an event that never comes.
         let live = match &durable {
-            Some(log) => log.event_end(requested, tail).await?,
+            Some(log) => log.event_end(joined, tail).await?,
             None => tail,
         };
 
@@ -277,7 +286,7 @@ impl Broker {
             // `tail` was read before registering, so anything published since
             // is at or past it and already captured: the join has no gap.
             join: durable.as_ref().map(|_| JoinOffsets {
-                start_offset: requested,
+                start_offset: joined,
                 live_offset: live,
             }),
             subscription: Subscription {
@@ -536,7 +545,9 @@ pub struct HistoryRange {
 /// Where a resumed subscription joins its stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JoinOffsets {
-    /// The first offset delivered.
+    /// Where the subscription starts: no event below it is delivered. For
+    /// `Latest`, just past the last event, so before any generation-start
+    /// records the log ends with, and equal to `live_offset`.
     pub start_offset: u64,
     /// The tail when the subscriber was registered, less any generation-start
     /// records the log ended with (they carry no event), never below

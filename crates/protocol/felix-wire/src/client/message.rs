@@ -513,15 +513,17 @@ pub enum Message {
     /// Subscription confirmation with server-assigned ID.
     Subscribed {
         subscription_id: u64,
-        /// The first offset this subscription delivers. Sent only on a durable
-        /// stream, to a client that negotiated offsets, which is the client
-        /// that can read it. A plain subscribe from such a client is `latest`;
-        /// any other client gets the frame it always did.
+        /// Where this subscription starts: no event below it is delivered. Sent
+        /// only on a durable stream, to a client that negotiated offsets, which
+        /// is the client that can read it. A plain subscribe from such a client
+        /// is `latest`; any other client gets the frame it always did.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         start_offset: Option<u64>,
         /// The stream's tail when the subscriber was registered. Records below
         /// it are catch-up, records from it on are live, and none are skipped
-        /// in between. Equal to `start_offset` for `latest`.
+        /// in between. Leaves out generation-start records the log ends with.
+        /// Equal to `start_offset` for `latest`, both stopping short of those
+        /// records.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         live_offset: Option<u64>,
         /// The queue capacity the broker granted, after clamping. Sent only

@@ -585,6 +585,46 @@ async fn quic_subscribe_resumes_from_a_checkpointed_offset() -> Result<()> {
         .await?;
     assert_eq!(latest.start_offset(), Some(TOTAL as u64));
     assert_eq!(latest.live_offset(), Some(TOTAL as u64));
+    drop(latest);
+
+    // A new leader's generation-start records end the log. They are never
+    // delivered, so `Latest` joins before them: a client reading history up
+    // to `live_offset - 1` stops at the last event instead of waiting.
+    for generation in [2, 3] {
+        broker
+            .append_generation_start("t1", "default", "orders", 0, generation)
+            .await?;
+    }
+    let mut latest = client2
+        .subscribe_from(
+            "t1",
+            "default",
+            "orders",
+            Some(felix_client::StartPosition::Latest),
+        )
+        .await?;
+    assert_eq!(latest.start_offset(), Some(TOTAL as u64));
+    assert_eq!(latest.live_offset(), Some(TOTAL as u64));
+    publisher
+        .publish(
+            "t1",
+            "default",
+            "orders",
+            b"after".to_vec(),
+            felix_wire::AckMode::None,
+        )
+        .await?;
+    let event = timeout(Duration::from_secs(5), latest.next_event())
+        .await??
+        .expect("the next event");
+    let offset = event.offset.expect("offset");
+    assert_eq!((offset, event.skipped_before), (TOTAL as u64 + 2, 2));
+    let previous = latest.start_offset().expect("start") - 1;
+    assert_eq!(
+        offset - previous - 1 - event.skipped_before,
+        0,
+        "the generation starts are not a drop"
+    );
 
     drop(latest);
     drop(resumed);
