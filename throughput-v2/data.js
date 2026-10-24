@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792800272484,
+  "lastUpdate": 1792800636332,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -34060,6 +34060,58 @@ window.BENCHMARK_DATA = {
             "range": "5745.86",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 828102.94\nmean: 826645.65\nstdev: 5745.86\ncv: 0.70%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "07eb0a4cd755b520eac8887ade001d66cf370d1d",
+          "message": "perf(azure): RF=3 driver for the release run (#1462)\n\nSKIP_LF=1 drops the lease-free repeat (a new cluster finalizes every feature\nitself since #1457), keeping failover; the loop is guarded because BSD seq\ncounts down. In-memory cells now say one copy: ephemeral streams are not\nreplicated.",
+          "timestamp": "2026-10-24T00:06:54Z",
+          "tree_id": "5e5348db5bc8eaa8e2d3c9a94822b3ce165cfa45",
+          "url": "https://github.com/GetFelix/felix/commit/07eb0a4cd755b520eac8887ade001d66cf370d1d"
+        },
+        "date": 1792800635705,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 656274.91,
+            "range": "55698.30",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 656274.91\nmean: 659815.07\nstdev: 55698.30\ncv: 8.44%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 656274.91,
+            "range": "55698.30",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 656274.91\nmean: 659815.07\nstdev: 55698.30\ncv: 8.44%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 153792.58,
+            "range": "9147.85",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 153792.58\nmean: 153755.77\nstdev: 9147.85\ncv: 5.95%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1537925.79,
+            "range": "91478.48",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1537925.79\nmean: 1537557.74\nstdev: 91478.48\ncv: 5.95%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
