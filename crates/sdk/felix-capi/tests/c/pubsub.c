@@ -6,8 +6,8 @@
  *     Argument checking, the last-error channel, and connects that fail or
  *     are cancelled. Needs no broker.
  *
- *   pubsub fixture ADDRS TENANT NAMESPACE TOKEN CA_FILE STREAM MISSING UNAUTHORIZED_TOKEN
- *     The publish, batch, subscribe and subscription scenarios, against `felix-cluster
+ *   pubsub fixture ADDRS TENANT NAMESPACE TOKEN CA_FILE STREAM MISSING UNAUTHORIZED_TOKEN GROUP_OPERATOR_TOKEN
+ *     The publish, batch, subscribe, subscription and group scenarios, against `felix-cluster
  *     client-fixture`. tests/c/run.sh starts the fixture and passes its
  *     fields in.
  *
@@ -262,7 +262,7 @@ static FelixStatus connect_sync(const char *addrs, const char *tenant,
 
 struct fixture {
   const char *addrs, *tenant, *ns, *token, *ca_file, *stream, *missing,
-      *unauthorized_token;
+      *unauthorized_token, *group_operator_token;
 };
 
 static void offline(void) {
@@ -1150,20 +1150,485 @@ static void subscriptions(const struct fixture *f, const char *run) {
   felix_client_free(client);
 }
 
+/* ---- consumer groups ---------------------------------------------------- */
+
+#define MAX_GROUP_RECORDS 8
+
+struct grecord {
+  uint64_t offset;
+  uint32_t attempts;
+  uint64_t skipped_before;
+  char payload[96];
+};
+
+/* One group call's result; each call fills the fields it reports. */
+struct gres {
+  struct waiter w;
+  struct grecord records[MAX_GROUP_RECORDS];
+  size_t count;
+  uint64_t visible_ms;
+  uint64_t position;
+  bool moved;
+  bool existed;
+  uint32_t shards;
+  FelixGroupInfo info;
+  bool has_info;
+};
+
+static void on_done(void *user_data, FelixStatus status, const char *message) {
+  struct gres *r = user_data;
+  finish(&r->w, status, message, NULL);
+}
+
+static void on_group_poll(void *user_data, FelixStatus status,
+                          const char *message, const FelixGroupRecord *records,
+                          size_t count) {
+  struct gres *r = user_data;
+  r->count = count;
+  for (size_t i = 0; i < count && i < MAX_GROUP_RECORDS; i++) {
+    struct grecord *out = &r->records[i];
+    out->offset = records[i].offset;
+    out->attempts = records[i].attempts;
+    out->skipped_before = records[i].skipped_before;
+    size_t len = records[i].payload_len;
+    if (len >= sizeof out->payload) {
+      len = sizeof out->payload - 1;
+    }
+    if (len) {
+      memcpy(out->payload, records[i].payload, len);
+    }
+    out->payload[len] = '\0';
+  }
+  finish(&r->w, status, message, NULL);
+}
+
+static void on_extend(void *user_data, FelixStatus status, const char *message,
+                      uint64_t visible_ms) {
+  struct gres *r = user_data;
+  r->visible_ms = visible_ms;
+  finish(&r->w, status, message, NULL);
+}
+
+static void on_dead_letters(void *user_data, FelixStatus status,
+                            const char *message, const uint64_t *offsets,
+                            size_t count) {
+  struct gres *r = user_data;
+  r->count = count;
+  for (size_t i = 0; i < count && i < MAX_GROUP_RECORDS; i++) {
+    r->records[i].offset = offsets[i];
+  }
+  finish(&r->w, status, message, NULL);
+}
+
+static void on_position(void *user_data, FelixStatus status,
+                        const char *message, uint64_t offset, bool moved) {
+  struct gres *r = user_data;
+  r->position = offset;
+  r->moved = moved;
+  finish(&r->w, status, message, NULL);
+}
+
+static void on_info(void *user_data, FelixStatus status, const char *message,
+                    const FelixGroupInfo *info) {
+  struct gres *r = user_data;
+  r->has_info = info != NULL;
+  if (info) {
+    r->info = *info;
+  }
+  finish(&r->w, status, message, NULL);
+}
+
+static void on_deleted(void *user_data, FelixStatus status, const char *message,
+                       bool existed) {
+  struct gres *r = user_data;
+  r->existed = existed;
+  finish(&r->w, status, message, NULL);
+}
+
+static void on_shards(void *user_data, FelixStatus status, const char *message,
+                      uint32_t shards) {
+  struct gres *r = user_data;
+  r->shards = shards;
+  finish(&r->w, status, message, NULL);
+}
+
+/* `client` consumes groups; `admin` holds group.manage and creates, seeks and
+   deletes them, and discards and redrives dead letters. */
+struct gctx {
+  FelixClient *client;
+  FelixClient *admin;
+  const struct fixture *f;
+  uint32_t shard;
+  const char *group;
+};
+
+static void gres_init(struct gres *r) {
+  memset(r, 0, sizeof *r);
+  waiter_init(&r->w);
+}
+
+/* The callback's status, or the call's when it was refused. */
+static FelixStatus gwait(struct gres *r, FelixStatus started) {
+  return started == FELIX_STATUS_OK ? wait_for(&r->w, WAIT_MS) : started;
+}
+
+/* The group calls below each run one call to completion. */
+static FelixStatus g_create(const struct gctx *g, FelixStartKind start,
+                            uint64_t *offset, bool *moved) {
+  struct gres r;
+  gres_init(&r);
+  FelixStatus status = gwait(
+      &r, felix_client_group_create(g->admin, g->f->tenant, g->f->ns,
+                                    g->f->stream, g->shard, g->group, start, 0,
+                                    NULL, on_position, &r));
+  *offset = r.position;
+  *moved = r.moved;
+  waiter_destroy(&r.w);
+  return status;
+}
+
+static FelixStatus g_seek(const struct gctx *g, FelixStartKind start,
+                          uint64_t *offset) {
+  struct gres r;
+  gres_init(&r);
+  FelixStatus status = gwait(
+      &r, felix_client_group_seek(g->admin, g->f->tenant, g->f->ns,
+                                  g->f->stream, g->shard, g->group, start, 0,
+                                  NULL, on_position, &r));
+  *offset = r.position;
+  waiter_destroy(&r.w);
+  return status;
+}
+
+static FelixStatus g_poll(const struct gctx *g, uint32_t max, uint64_t wait_ms,
+                          const char *consumer, struct gres *out) {
+  gres_init(out);
+  return gwait(out, felix_client_group_poll(
+                        g->client, g->f->tenant, g->f->ns, g->f->stream,
+                        g->shard, g->group, max, wait_ms, 0, consumer, false,
+                        NULL, on_group_poll, out));
+}
+
+/* Polls until `want` records have arrived. Fewer is a failure to report. */
+static size_t g_collect(const struct gctx *g, const char *consumer,
+                        size_t want, struct grecord *got) {
+  size_t have = 0;
+  for (int attempt = 0; attempt < 10 && have < want; attempt++) {
+    struct gres r;
+    FelixStatus status = g_poll(g, (uint32_t)(want - have), 3000, consumer, &r);
+    CHECK(status == FELIX_STATUS_OK, "group poll gave %d (%s)", (int)status,
+          r.w.message);
+    for (size_t i = 0; status == FELIX_STATUS_OK && i < r.count && have < want;
+         i++) {
+      got[have++] = r.records[i];
+    }
+    waiter_destroy(&r.w);
+    if (status != FELIX_STATUS_OK) {
+      break;
+    }
+  }
+  CHECK(have == want, "group poll returned %zu of %zu records", have, want);
+  return have;
+}
+
+static FelixStatus g_settle(const struct gctx *g, const char *what,
+                            uint64_t offset, uint32_t attempts,
+                            uint64_t arg_ms, uint64_t *visible_ms) {
+  struct gres r;
+  gres_init(&r);
+  const FelixClient *c = g->client;
+  if (strcmp(what, "discard") == 0 || strcmp(what, "redrive") == 0) {
+    c = g->admin;
+  }
+  const char *t = g->f->tenant, *n = g->f->ns, *s = g->f->stream;
+  FelixStatus started;
+  if (strcmp(what, "ack") == 0) {
+    started = felix_client_group_ack(c, t, n, s, g->shard, g->group, offset,
+                                     NULL, on_done, &r);
+  } else if (strcmp(what, "nack") == 0) {
+    started = felix_client_group_nack(c, t, n, s, g->shard, g->group, offset,
+                                      attempts, arg_ms, NULL, on_done, &r);
+  } else if (strcmp(what, "dead_letter") == 0) {
+    started = felix_client_group_dead_letter(c, t, n, s, g->shard, g->group,
+                                             offset, NULL, on_done, &r);
+  } else if (strcmp(what, "discard") == 0) {
+    started = felix_client_group_discard(c, t, n, s, g->shard, g->group, offset,
+                                         NULL, on_done, &r);
+  } else if (strcmp(what, "redrive") == 0) {
+    started = felix_client_group_redrive(c, t, n, s, g->shard, g->group, offset,
+                                         NULL, on_done, &r);
+  } else {
+    started = felix_client_group_extend(c, t, n, s, g->shard, g->group, offset,
+                                        attempts, arg_ms, NULL, on_extend, &r);
+  }
+  FelixStatus status = gwait(&r, started);
+  CHECK(status == FELIX_STATUS_OK, "group %s gave %d (%s)", what, (int)status,
+        r.w.message);
+  if (visible_ms) {
+    *visible_ms = r.visible_ms;
+  }
+  waiter_destroy(&r.w);
+  return status;
+}
+
+/* The group's dead letters, as offsets. */
+static size_t g_dead_letters(const struct gctx *g, uint64_t *offsets) {
+  struct gres r;
+  gres_init(&r);
+  FelixStatus status = gwait(
+      &r, felix_client_group_dead_letters(g->client, g->f->tenant, g->f->ns,
+                                          g->f->stream, g->shard, g->group, NULL,
+                                          on_dead_letters, &r));
+  CHECK(status == FELIX_STATUS_OK, "dead_letters gave %d (%s)", (int)status,
+        r.w.message);
+  size_t count = status == FELIX_STATUS_OK ? r.count : 0;
+  for (size_t i = 0; i < count && i < MAX_GROUP_RECORDS; i++) {
+    offsets[i] = r.records[i].offset;
+  }
+  waiter_destroy(&r.w);
+  return count < MAX_GROUP_RECORDS ? count : MAX_GROUP_RECORDS;
+}
+
+static bool g_describe(const struct gctx *g, FelixGroupInfo *info) {
+  struct gres r;
+  gres_init(&r);
+  FelixStatus status = gwait(
+      &r, felix_client_group_describe(g->client, g->f->tenant, g->f->ns,
+                                      g->f->stream, g->shard, g->group, NULL,
+                                      on_info, &r));
+  CHECK(status == FELIX_STATUS_OK && r.has_info, "describe gave %d (%s)",
+        (int)status, r.w.message);
+  *info = r.info;
+  bool ok = status == FELIX_STATUS_OK && r.has_info;
+  waiter_destroy(&r.w);
+  return ok;
+}
+
+static FelixStatus g_delete(const struct gctx *g, bool *existed) {
+  struct gres r;
+  gres_init(&r);
+  FelixStatus status = gwait(
+      &r, felix_client_group_delete(g->admin, g->f->tenant, g->f->ns,
+                                    g->f->stream, g->shard, g->group, NULL,
+                                    on_deleted, &r));
+  *existed = r.existed;
+  waiter_destroy(&r.w);
+  return status;
+}
+
+/* Publishes `count` payloads to the group's shard in one batch. */
+static void g_publish(const struct gctx *g, char (*payloads)[96],
+                      size_t count) {
+  uint8_t data[8 * 96];
+  size_t lens[8], used = 0;
+  for (size_t i = 0; i < count; i++) {
+    lens[i] = strlen(payloads[i]);
+    memcpy(data + used, payloads[i], lens[i]);
+    used += lens[i];
+  }
+  struct batch_waiter b;
+  batch_init(&b);
+  FelixStatus status = batch_wait(
+      &b, felix_client_publish_on_shard(g->client, g->f->tenant, g->f->ns,
+                                        g->f->stream, g->shard, data, lens,
+                                        count, FELIX_ACK_PER_BATCH, NULL,
+                                        on_batch, &b));
+  CHECK(status == FELIX_STATUS_OK, "group publish gave %d (%s)", (int)status,
+        b.w.message);
+  waiter_destroy(&b.w);
+}
+
+static void groups(const struct fixture *f, const char *run) {
+  FelixClient *client = NULL;
+  REQUIRE_OK(connect_sync(f->addrs, f->tenant, f->token, f->ca_file, &client));
+
+  char name[128], idle_name[128], consumer[128];
+  snprintf(name, sizeof name, "cg-%s", run);
+  snprintf(idle_name, sizeof idle_name, "cg-%s-idle", run);
+  snprintf(consumer, sizeof consumer, "consumer-%s", run);
+  FelixClient *admin = NULL;
+  if (connect_sync(f->addrs, f->tenant, f->group_operator_token, f->ca_file,
+                   &admin) != FELIX_STATUS_OK) {
+    CHECK(0, "the group operator could not connect");
+    felix_client_free(client);
+    return;
+  }
+  struct gctx g = {client, admin, f, 1, name};
+  uint64_t offset = 0;
+  bool moved = false;
+
+  /* Creating reports the move; creating again leaves the group alone. Then
+     skip to the tail so earlier scenarios' records are not the group's. */
+  FelixStatus status = g_create(&g, FELIX_START_EARLIEST, &offset, &moved);
+  CHECK(status == FELIX_STATUS_OK && moved, "create gave %d, moved %d",
+        (int)status, (int)moved);
+  status = g_create(&g, FELIX_START_EARLIEST, &offset, &moved);
+  CHECK(status == FELIX_STATUS_OK && !moved, "a second create gave %d, moved %d",
+        (int)status, (int)moved);
+  status = g_seek(&g, FELIX_START_LATEST, &offset);
+  CHECK(status == FELIX_STATUS_OK, "seek to latest gave %d", (int)status);
+
+  char payloads[4][96];
+  for (int i = 0; i < 4; i++) {
+    snprintf(payloads[i], sizeof payloads[i], "cg-%s-rec%d", run, i);
+  }
+  g_publish(&g, payloads, 3);
+
+  struct grecord got[4];
+  if (g_collect(&g, consumer, 3, got) != 3) {
+    felix_client_free(admin);
+    felix_client_free(client);
+    return;
+  }
+  for (int i = 0; i < 3; i++) {
+    CHECK(strcmp(got[i].payload, payloads[i]) == 0,
+          "record %d was '%s', want '%s'", i, got[i].payload, payloads[i]);
+    CHECK(got[i].attempts == 1, "record %d first attempt was %u", i,
+          (unsigned)got[i].attempts);
+  }
+
+  /* A nack with no delay hands the first record out again, one attempt on. */
+  CHECK(g_settle(&g, "nack", got[0].offset, got[0].attempts, 0, NULL) ==
+            FELIX_STATUS_OK,
+        "nack failed");
+  struct grecord again[1];
+  if (g_collect(&g, consumer, 1, again) == 1) {
+    CHECK(again[0].offset == got[0].offset, "redelivered offset %" PRIu64
+          ", want %" PRIu64, again[0].offset, got[0].offset);
+    CHECK(again[0].attempts == 2, "redelivery was attempt %u",
+          (unsigned)again[0].attempts);
+
+    uint64_t visible = 0;
+    g_settle(&g, "extend", again[0].offset, again[0].attempts, 30000, &visible);
+    CHECK(visible > 0, "extend reported a claim of %" PRIu64 " ms", visible);
+    g_settle(&g, "ack", again[0].offset, 0, 0, NULL);
+  }
+  g_settle(&g, "ack", got[1].offset, 0, 0, NULL);
+
+  /* A dead letter is listed, can be driven back, and is delivered again. */
+  g_settle(&g, "dead_letter", got[2].offset, 0, 0, NULL);
+  uint64_t letters[MAX_GROUP_RECORDS];
+  size_t n = g_dead_letters(&g, letters);
+  CHECK(n == 1 && letters[0] == got[2].offset, "dead letters: %zu listed", n);
+  FelixGroupInfo info;
+  if (g_describe(&g, &info)) {
+    CHECK(info.dead_letters == 1, "describe counted %" PRIu64 " dead letters",
+          info.dead_letters);
+  }
+  g_settle(&g, "redrive", got[2].offset, 0, 0, NULL);
+  struct grecord redriven[1];
+  if (g_collect(&g, consumer, 1, redriven) == 1) {
+    CHECK(redriven[0].offset == got[2].offset, "redrove offset %" PRIu64
+          ", want %" PRIu64, redriven[0].offset, got[2].offset);
+    g_settle(&g, "ack", redriven[0].offset, 0, 0, NULL);
+  }
+
+  /* A dead letter can instead be discarded. */
+  g_publish(&g, payloads + 3, 1);
+  struct grecord last[1];
+  if (g_collect(&g, consumer, 1, last) == 1) {
+    g_settle(&g, "dead_letter", last[0].offset, 0, 0, NULL);
+    g_settle(&g, "discard", last[0].offset, 0, 0, NULL);
+    n = g_dead_letters(&g, letters);
+    CHECK(n == 0, "%zu dead letters after a discard", n);
+  }
+
+  if (g_describe(&g, &info)) {
+    CHECK(info.has_committed && info.committed <= info.tail,
+          "describe: committed %" PRIu64 " (%d), tail %" PRIu64,
+          info.committed, (int)info.has_committed, info.tail);
+    CHECK(info.dead_letters == 0, "describe counted %" PRIu64 " dead letters",
+          info.dead_letters);
+  }
+
+  status = g_seek(&g, FELIX_START_LATEST, &offset);
+  CHECK(status == FELIX_STATUS_OK, "seek to latest gave %d", (int)status);
+
+  /* Deleting says whether the group was there. */
+  bool existed = false;
+  status = g_delete(&g, &existed);
+  CHECK(status == FELIX_STATUS_OK && existed, "delete gave %d, existed %d",
+        (int)status, (int)existed);
+  status = g_delete(&g, &existed);
+  CHECK(status == FELIX_STATUS_OK && !existed,
+        "a second delete gave %d, existed %d", (int)status, (int)existed);
+
+  /* The fixture's stream has four shards. */
+  struct gres r;
+  gres_init(&r);
+  status = gwait(&r, felix_client_stream_shards(client, f->tenant, f->ns,
+                                                f->stream, NULL, on_shards, &r));
+  CHECK(status == FELIX_STATUS_OK && r.shards == 4,
+        "stream_shards gave %d, %u shards", (int)status, (unsigned)r.shards);
+  waiter_destroy(&r.w);
+
+  /* A poll waiting for records is cancelled through its token. */
+  g.group = idle_name;
+  status = g_create(&g, FELIX_START_LATEST, &offset, &moved);
+  CHECK(status == FELIX_STATUS_OK, "create of the idle group gave %d",
+        (int)status);
+  gres_init(&r);
+  FelixCancelToken *cancel = felix_cancel_token_new();
+  status = felix_client_group_poll(client, f->tenant, f->ns, f->stream, 1,
+                                   idle_name, 1, 10000, 0, NULL, false, cancel,
+                                   on_group_poll, &r);
+  CHECK(status == FELIX_STATUS_OK, "starting a long poll gave %d", (int)status);
+  if (status == FELIX_STATUS_OK) {
+    pause_ms(100);
+    felix_cancel_token_cancel(cancel);
+    status = wait_for(&r.w, WAIT_MS);
+    CHECK(status == FELIX_STATUS_CANCELLED, "a cancelled poll gave %d",
+          (int)status);
+    CHECK(r.count == 0, "a cancelled poll returned %zu records", r.count);
+  }
+  felix_cancel_token_free(cancel);
+  waiter_destroy(&r.w);
+  g_delete(&g, &existed);
+
+  /* Arguments the call itself refuses; the callback never runs. */
+  gres_init(&r);
+  status = felix_client_group_poll(client, f->tenant, f->ns, f->stream, 1,
+                                   idle_name, 1, 0, 0, NULL, true, NULL,
+                                   on_group_poll, &r);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT,
+        "reclaim without a consumer gave %d", (int)status);
+  status = felix_client_group_poll(client, f->tenant, f->ns, f->stream, 1,
+                                   idle_name, 0, 0, 0, NULL, false, NULL,
+                                   on_group_poll, &r);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "max_records 0 gave %d",
+        (int)status);
+  status = felix_client_group_extend(client, f->tenant, f->ns, f->stream, 1,
+                                     idle_name, 0, 1, 0, NULL, on_extend, &r);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "extend of 0 ms gave %d",
+        (int)status);
+  pause_ms(100);
+  CHECK(r.w.calls == 0, "a refused group call ran its callback");
+  waiter_destroy(&r.w);
+
+  felix_client_free(admin);
+  felix_client_free(client);
+}
+
 int main(int argc, char **argv) {
   if (argc == 2 && strcmp(argv[1], "offline") == 0) {
     offline();
-  } else if (argc == 10 && strcmp(argv[1], "fixture") == 0) {
+  } else if (argc == 11 && strcmp(argv[1], "fixture") == 0) {
     struct fixture f = {argv[2], argv[3], argv[4], argv[5], argv[6],
-                        argv[7], argv[8], argv[9]};
+                        argv[7], argv[8], argv[9], argv[10]};
+    /* Nanoseconds too: the shared and static builds run within a second of
+       each other against the same fixture, and group names must not repeat. */
+    struct timespec ts;
+    timespec_get(&ts, TIME_UTC);
     char run[32];
-    snprintf(run, sizeof run, "%ld", (long)time(NULL));
+    snprintf(run, sizeof run, "%ld-%09ld", (long)ts.tv_sec, (long)ts.tv_nsec);
     pubsub(&f, run);
     batches(&f, run);
     subscriptions(&f, run);
+    groups(&f, run);
   } else {
     fprintf(stderr, "usage: %s offline | fixture ADDRS TENANT NAMESPACE TOKEN "
-                    "CA_FILE STREAM MISSING UNAUTHORIZED_TOKEN\n",
+                    "CA_FILE STREAM MISSING UNAUTHORIZED_TOKEN "
+                    "GROUP_OPERATOR_TOKEN\n",
             argv[0]);
     return 2;
   }

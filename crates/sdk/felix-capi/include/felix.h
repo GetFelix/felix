@@ -51,6 +51,106 @@ typedef void (*FelixConnectCallback)(void *user_data,
                                      const char *message,
                                      struct FelixClient *client);
 
+// One record handed to a consumer by `felix_client_group_poll`.
+typedef struct FelixGroupRecord {
+  // The offset to pass to ack, nack, extend and the other settles.
+  uint64_t offset;
+  // How many times the record has been handed out, this one included. `1`
+  // is a first attempt. `0` means the broker did not report it.
+  uint32_t attempts;
+  // How many offsets directly below this one the broker settled without
+  // delivering. Zero from a broker that does not report it.
+  uint64_t skipped_before;
+  // The record's payload, `payload_len` bytes. Valid only while the
+  // callback runs; may be null when the length is zero.
+  const uint8_t *payload;
+  size_t payload_len;
+} FelixGroupRecord;
+
+// Called once when `felix_client_group_poll` finishes.
+//
+// `records` holds `count` entries and is valid, with every payload in it,
+// only while the callback runs; copy what you keep. An empty poll is
+// `FELIX_STATUS_OK` with a count of zero. `records` is null on failure.
+typedef void (*FelixGroupPollCallback)(void *user_data,
+                                       FelixStatus status,
+                                       const char *message,
+                                       const struct FelixGroupRecord *records,
+                                       size_t count);
+
+// Called once when a group call that returns nothing finishes.
+typedef void (*FelixDoneCallback)(void *user_data, FelixStatus status, const char *message);
+
+// Called once when `felix_client_group_extend` finishes. On
+// `FELIX_STATUS_OK`, `visible_ms` is how long the claim now stands, from the
+// broker's clock; zero otherwise.
+typedef void (*FelixExtendCallback)(void *user_data,
+                                    FelixStatus status,
+                                    const char *message,
+                                    uint64_t visible_ms);
+
+// Called once when `felix_client_group_dead_letters` finishes. `offsets`
+// holds `count` entries and is valid only while the callback runs; it is
+// null on failure or when there are none.
+typedef void (*FelixOffsetsCallback)(void *user_data,
+                                     FelixStatus status,
+                                     const char *message,
+                                     const uint64_t *offsets,
+                                     size_t count);
+
+// Where a subscription starts reading.
+typedef int32_t FelixStartKind;
+
+// Called once when `felix_client_group_seek` or `felix_client_group_create`
+// finishes. On `FELIX_STATUS_OK`, `offset` is where the group resumes from
+// and `moved` is false when `felix_client_group_create` found the group
+// already there and left it alone.
+typedef void (*FelixGroupPositionCallback)(void *user_data,
+                                           FelixStatus status,
+                                           const char *message,
+                                           uint64_t offset,
+                                           bool moved);
+
+// Where a group stands on one shard.
+typedef struct FelixGroupInfo {
+  // Whether `committed` holds an offset. False for a group with no cursor
+  // on the shard, which starts at the beginning of the log when polled.
+  bool has_committed;
+  // Everything below this is finished.
+  uint64_t committed;
+  // The shard's committed tail.
+  uint64_t tail;
+  // Records handed out and not yet settled. Leader memory: it restarts
+  // from zero when the leader changes.
+  uint64_t in_flight;
+  // Records owed again after a nack or a lapsed claim. Leader memory.
+  uint64_t owed;
+  // Records the group gave up on.
+  uint64_t dead_letters;
+} FelixGroupInfo;
+
+// Called once when `felix_client_group_describe` finishes. `info` is valid
+// only while the callback runs, and null on failure.
+typedef void (*FelixGroupInfoCallback)(void *user_data,
+                                       FelixStatus status,
+                                       const char *message,
+                                       const struct FelixGroupInfo *info);
+
+// Called once when `felix_client_group_delete` finishes. On
+// `FELIX_STATUS_OK`, `existed` says whether the group was there to delete.
+typedef void (*FelixDeletedCallback)(void *user_data,
+                                     FelixStatus status,
+                                     const char *message,
+                                     bool existed);
+
+// Called once when `felix_client_stream_shards` finishes. On
+// `FELIX_STATUS_OK`, `shards` is the stream's shard count, and zero means
+// the broker does not know the stream.
+typedef void (*FelixShardsCallback)(void *user_data,
+                                    FelixStatus status,
+                                    const char *message,
+                                    uint32_t shards);
+
 // What the broker must have done before a publish completes.
 typedef int32_t FelixAckMode;
 
@@ -95,9 +195,6 @@ typedef void (*FelixBatchCallback)(void *user_data,
                                    const char *message,
                                    const struct FelixRecordResult *results,
                                    size_t count);
-
-// Where a subscription starts reading.
-typedef int32_t FelixStartKind;
 
 // Called once when a sharded subscribe finishes. On `FELIX_STATUS_OK`,
 // `subscription` is a new subscription the callee owns; otherwise it is
@@ -376,6 +473,274 @@ FelixStatus felix_event_skipped_before(const struct FelixEvent *event, uint64_t 
 // `event` is null or a pointer from `felix_subscription_next` that has
 // not been freed.
 void felix_event_free(struct FelixEvent *event);
+
+// Take up to `max_records` records of a group on one shard.
+//
+// `wait_ms` is how long the broker may hold the poll open for work; the
+// broker caps it. `visibility_ms` is how long this poll's claims stand
+// before the records are owed again; zero is the broker's own timeout, and a
+// broker that cannot honour another value refuses it. `consumer` names the
+// polling member (1 to 128 bytes, stable across restarts) or is null for one
+// that does not; `reclaim` takes back what that member holds from older
+// connections and needs a `consumer`. `max_records` must be at least one.
+//
+// A record neither settled nor handed back is redelivered after its claim
+// lapses. A poll cancelled while it waits completes with
+// `FELIX_STATUS_CANCELLED`; anything it claimed in the meantime comes back
+// after the visibility timeout.
+//
+// # Safety
+//
+// `client` is a live client, the strings are null or NUL-terminated (only
+// `consumer` may be null), `cancel` is null or a live token, and `callback`
+// is safe to call with `user_data` from any thread.
+FelixStatus felix_client_group_poll(const struct FelixClient *client,
+                                    const char *tenant_id,
+                                    const char *ns,
+                                    const char *stream,
+                                    uint32_t shard,
+                                    const char *group,
+                                    uint32_t max_records,
+                                    uint64_t wait_ms,
+                                    uint64_t visibility_ms,
+                                    const char *consumer,
+                                    bool reclaim,
+                                    const struct FelixCancelToken *cancel,
+                                    FelixGroupPollCallback callback,
+                                    void *user_data);
+
+// Finish a record: everything below the group's cursor stays finished.
+//
+// A settle is a write. Cancelled after it may have been sent it completes
+// with `FELIX_STATUS_OUTCOME_UNKNOWN`; settling a record again is refused or
+// harmless, so the caller can look at the group and retry.
+//
+// # Safety
+//
+// As for `felix_client_group_poll`, without the optional `consumer`.
+FelixStatus felix_client_group_ack(const struct FelixClient *client,
+                                   const char *tenant_id,
+                                   const char *ns,
+                                   const char *stream,
+                                   uint32_t shard,
+                                   const char *group,
+                                   uint64_t offset,
+                                   const struct FelixCancelToken *cancel,
+                                   FelixDoneCallback callback,
+                                   void *user_data);
+
+// Hand a record back for another attempt, after `delay_ms` (zero is at
+// once). `attempts` is the record's count from the poll: the nack names that
+// delivery, so it is refused once the claim has lapsed or the record was
+// handed out again. A broker without claim control takes only a zero delay.
+//
+// A write; see `felix_client_group_ack` for cancellation.
+//
+// # Safety
+//
+// As for `felix_client_group_ack`.
+FelixStatus felix_client_group_nack(const struct FelixClient *client,
+                                    const char *tenant_id,
+                                    const char *ns,
+                                    const char *stream,
+                                    uint32_t shard,
+                                    const char *group,
+                                    uint64_t offset,
+                                    uint32_t attempts,
+                                    uint64_t delay_ms,
+                                    const struct FelixCancelToken *cancel,
+                                    FelixDoneCallback callback,
+                                    void *user_data);
+
+// Give up on a record: list it as a dead letter of the group and finish it.
+// `felix_client_group_redrive` puts it back. Refused for a record already
+// finished.
+//
+// A write; see `felix_client_group_ack` for cancellation.
+//
+// # Safety
+//
+// As for `felix_client_group_ack`.
+FelixStatus felix_client_group_dead_letter(const struct FelixClient *client,
+                                           const char *tenant_id,
+                                           const char *ns,
+                                           const char *stream,
+                                           uint32_t shard,
+                                           const char *group,
+                                           uint64_t offset,
+                                           const struct FelixCancelToken *cancel,
+                                           FelixDoneCallback callback,
+                                           void *user_data);
+
+// Drop a dead letter from the group's list without delivering it again.
+//
+// A write; see `felix_client_group_ack` for cancellation.
+//
+// # Safety
+//
+// As for `felix_client_group_ack`.
+FelixStatus felix_client_group_discard(const struct FelixClient *client,
+                                       const char *tenant_id,
+                                       const char *ns,
+                                       const char *stream,
+                                       uint32_t shard,
+                                       const char *group,
+                                       uint64_t offset,
+                                       const struct FelixCancelToken *cancel,
+                                       FelixDoneCallback callback,
+                                       void *user_data);
+
+// Put a dead letter back, to be delivered again by a later poll.
+//
+// A write; see `felix_client_group_ack` for cancellation.
+//
+// # Safety
+//
+// As for `felix_client_group_ack`.
+FelixStatus felix_client_group_redrive(const struct FelixClient *client,
+                                       const char *tenant_id,
+                                       const char *ns,
+                                       const char *stream,
+                                       uint32_t shard,
+                                       const char *group,
+                                       uint64_t offset,
+                                       const struct FelixCancelToken *cancel,
+                                       FelixDoneCallback callback,
+                                       void *user_data);
+
+// Lengthen a record's claim by `extend_ms` (at least one), for a consumer
+// that needs longer than the visibility timeout. `attempts` is the record's
+// count from the poll; the extend is refused once the claim has lapsed or
+// the record was handed out again. The callback reports how long the claim
+// now stands.
+//
+// A write; see `felix_client_group_ack` for cancellation.
+//
+// # Safety
+//
+// As for `felix_client_group_ack`.
+FelixStatus felix_client_group_extend(const struct FelixClient *client,
+                                      const char *tenant_id,
+                                      const char *ns,
+                                      const char *stream,
+                                      uint32_t shard,
+                                      const char *group,
+                                      uint64_t offset,
+                                      uint32_t attempts,
+                                      uint64_t extend_ms,
+                                      const struct FelixCancelToken *cancel,
+                                      FelixExtendCallback callback,
+                                      void *user_data);
+
+// The offsets of the group's dead letters on one shard, oldest first as the
+// broker lists them. A read: cancelled, it completes with
+// `FELIX_STATUS_CANCELLED`.
+//
+// # Safety
+//
+// As for `felix_client_group_ack`, without `offset`.
+FelixStatus felix_client_group_dead_letters(const struct FelixClient *client,
+                                            const char *tenant_id,
+                                            const char *ns,
+                                            const char *stream,
+                                            uint32_t shard,
+                                            const char *group,
+                                            const struct FelixCancelToken *cancel,
+                                            FelixOffsetsCallback callback,
+                                            void *user_data);
+
+// Move a group's cursor on one shard: to the oldest retained record, past
+// everything now there, or to `start_offset`, as `start` says (the
+// `FELIX_START_*` values). The callback reports where the group resumes.
+//
+// A write; see `felix_client_group_ack` for cancellation. Safe to repeat.
+//
+// # Safety
+//
+// As for `felix_client_group_ack`, without `offset`.
+FelixStatus felix_client_group_seek(const struct FelixClient *client,
+                                    const char *tenant_id,
+                                    const char *ns,
+                                    const char *stream,
+                                    uint32_t shard,
+                                    const char *group,
+                                    FelixStartKind start,
+                                    uint64_t start_offset,
+                                    const struct FelixCancelToken *cancel,
+                                    FelixGroupPositionCallback callback,
+                                    void *user_data);
+
+// Create a group on one shard at `start`, leaving it alone when it is
+// already there: the callback's `moved` is then false and `offset` is where
+// it stands.
+//
+// A write; see `felix_client_group_ack` for cancellation.
+//
+// # Safety
+//
+// As for `felix_client_group_seek`.
+FelixStatus felix_client_group_create(const struct FelixClient *client,
+                                      const char *tenant_id,
+                                      const char *ns,
+                                      const char *stream,
+                                      uint32_t shard,
+                                      const char *group,
+                                      FelixStartKind start,
+                                      uint64_t start_offset,
+                                      const struct FelixCancelToken *cancel,
+                                      FelixGroupPositionCallback callback,
+                                      void *user_data);
+
+// Where a group stands on one shard. A read: cancelled, it completes with
+// `FELIX_STATUS_CANCELLED`.
+//
+// # Safety
+//
+// As for `felix_client_group_ack`, without `offset`.
+FelixStatus felix_client_group_describe(const struct FelixClient *client,
+                                        const char *tenant_id,
+                                        const char *ns,
+                                        const char *stream,
+                                        uint32_t shard,
+                                        const char *group,
+                                        const struct FelixCancelToken *cancel,
+                                        FelixGroupInfoCallback callback,
+                                        void *user_data);
+
+// Delete a group on one shard, with its cursor and dead letters. The
+// callback says whether it existed.
+//
+// A write; see `felix_client_group_ack` for cancellation.
+//
+// # Safety
+//
+// As for `felix_client_group_ack`, without `offset`.
+FelixStatus felix_client_group_delete(const struct FelixClient *client,
+                                      const char *tenant_id,
+                                      const char *ns,
+                                      const char *stream,
+                                      uint32_t shard,
+                                      const char *group,
+                                      const struct FelixCancelToken *cancel,
+                                      FelixDeletedCallback callback,
+                                      void *user_data);
+
+// How many shards a stream was placed with, so a caller can run one group
+// per shard. Zero means the broker does not know the stream. A read:
+// cancelled, it completes with `FELIX_STATUS_CANCELLED`.
+//
+// # Safety
+//
+// `client` is a live client, the strings are null or NUL-terminated,
+// `cancel` is null or a live token, and `callback` is safe to call with
+// `user_data` from any thread.
+FelixStatus felix_client_stream_shards(const struct FelixClient *client,
+                                       const char *tenant_id,
+                                       const char *ns,
+                                       const char *stream,
+                                       const struct FelixCancelToken *cancel,
+                                       FelixShardsCallback callback,
+                                       void *user_data);
 
 // Publish one record.
 //

@@ -365,6 +365,10 @@ pub struct Fixture {
     /// than redirected around it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link_stream: Option<String>,
+    /// A token that may also manage consumer groups (create, seek, delete,
+    /// discard, redrive); `token` only consumes them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_operator_token: Option<String>,
     /// The catalogue's fault scenarios, so a suite that cannot read TOML gets
     /// the steps without hard-coding them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

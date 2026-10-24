@@ -38,7 +38,8 @@ The calls are `felix_client_connect`, the publishes (`felix_client_publish`,
 `felix_client_publish_records`), the subscribes (`felix_client_subscribe` for one
 shard and `felix_client_subscribe_sharded` for all of them),
 `felix_subscription_next`, `felix_sharded_next` and
-`felix_client_offset_for_time`. Each takes a callback, a `void *user_data`
+`felix_client_offset_for_time`, and the group calls (`felix_client_group_*` and
+`felix_client_stream_shards`). Each takes a callback, a `void *user_data`
 passed back to it untouched, and an optional `FelixCancelToken`.
 
 The rules are the same for every function:
@@ -164,6 +165,47 @@ means nothing is that recent: subscribe at `FELIX_START_LATEST`.
 For a C# binding, the item callback's `FelixEvent *` is null unless the kind is
 `FELIX_SHARD_RECORD`, and its message is read only for `FELIX_SHARD_LOST`.
 
+### Consumer groups
+
+Every group call names one shard and goes to the broker that leads it,
+following a move. `felix_client_stream_shards` gives the shard count, so a
+caller runs one group per shard; composing a group over all shards
+(`ShardedGroup`) and the `*_stream` admin calls are later work, as are the
+record publisher and timestamp fields, which need connect flags.
+
+- `felix_client_group_create` and `felix_client_group_seek` take a
+  `FELIX_START_*` position and report where the group resumes. Create leaves
+  an existing group alone (`moved` false).
+- `felix_client_group_poll` returns up to `max_records` as `FelixGroupRecord`
+  values (offset, attempts, skipped-before, payload), valid only during the
+  callback. An empty poll is OK with a count of zero. `consumer` names the
+  member, `reclaim` takes back what that member held before a restart, and
+  `visibility_ms` of zero is the broker's timeout. A poll cancelled while it
+  waits completes with `FELIX_STATUS_CANCELLED`; records it claimed come back
+  after the visibility timeout.
+- Records are not handles. `felix_client_group_ack`, `_nack`, `_extend`,
+  `_dead_letter`, `_discard` and `_redrive` take the `offset`, and nack and
+  extend also the `attempts` the poll reported, which the broker checks: a
+  claim that lapsed or moved on is refused. Settles and creates are writes, so
+  a cancel after one may have been sent completes with
+  `FELIX_STATUS_OUTCOME_UNKNOWN`; reads (`_dead_letters`, `_describe`,
+  `felix_client_stream_shards`) report `FELIX_STATUS_CANCELLED`.
+- `felix_client_group_describe` fills a `FelixGroupInfo`, and
+  `felix_client_group_delete` says whether the group existed.
+
+A broker without claim control refuses a delayed nack, an extend and a
+visibility override with the same error the Rust client raises. The status is
+the broker's error class; a `stale_claim` refusal is `FELIX_STATUS_ERROR` with
+the reason in the message.
+
+Creating, seeking and deleting a group, and discarding or redriving a dead
+letter, need the `group.manage` permission; polling, settling, extending,
+listing dead letters and describing need only consumer access. The C test
+uses a second client with the fixture's group operator token for the former.
+
+For a C# binding, copy the poll's records inside the callback and keep
+`(offset, attempts)` as a plain struct to settle with.
+
 ### Why callbacks, and why pull
 
 A pollable completion handle would still need a notification to complete a
@@ -199,5 +241,5 @@ test fails while the two differ.
 `task capi:test` compiles [`tests/c/pubsub.c`](tests/c/pubsub.c) against the
 header, links it against both the shared and the static library, and runs the
 checks that need no broker. `task capi:test -- fixture` also runs the publish,
-batch and subscribe scenarios against `felix-cluster client-fixture`, which CI does
+batch, subscribe and group scenarios against `felix-cluster client-fixture`, which CI does
 on every pull request.

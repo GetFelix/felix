@@ -28,6 +28,7 @@ mod client;
 mod completion;
 mod error;
 mod event;
+mod groups;
 mod publish;
 mod sharded;
 mod status;
@@ -41,6 +42,15 @@ pub use error::felix_last_error_message;
 pub use event::{
     FelixEvent, felix_event_free, felix_event_offset, felix_event_payload,
     felix_event_skipped_before,
+};
+pub use groups::{
+    FelixDeletedCallback, FelixDoneCallback, FelixExtendCallback, FelixGroupInfo,
+    FelixGroupInfoCallback, FelixGroupPollCallback, FelixGroupPositionCallback, FelixGroupRecord,
+    FelixOffsetsCallback, FelixShardsCallback, felix_client_group_ack, felix_client_group_create,
+    felix_client_group_dead_letter, felix_client_group_dead_letters, felix_client_group_delete,
+    felix_client_group_describe, felix_client_group_discard, felix_client_group_extend,
+    felix_client_group_nack, felix_client_group_poll, felix_client_group_redrive,
+    felix_client_group_seek, felix_client_stream_shards,
 };
 pub use publish::{
     FELIX_ACK_NONE, FELIX_ACK_PER_BATCH, FELIX_ACK_PER_MESSAGE, FELIX_DELIVERY_AT_LEAST_ONCE,
