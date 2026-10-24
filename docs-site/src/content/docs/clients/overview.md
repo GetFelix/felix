@@ -194,7 +194,7 @@ offer [atomic commits](/features/atomic-commits/) with the same typed
 refusals. Each leaves a couple of optional scenarios unclaimed
 rather than passing over them in silence; their pages say which.
 
-## Planned
+## Other languages
 
 No C# or Go client exists. A C# SDK would live in this repository and, like Python and TypeScript, wrap
 the Rust client rather than reimplement it, binding through P/Invoke to
