@@ -171,9 +171,21 @@ worth writing code for.
 
 | | | |
 | --- | --- | --- |
-| **[Rust](/clients/rust/)** | `felix-client` on crates.io | The reference client, and the one the others are built from. |
+| **[Rust](/clients/rust/)** | `felix-client` on crates.io | The reference client, and the one the others are built from. Applications use `ClusterClient`. |
 | **[Python](/clients/python/)** | `felix-client` on PyPI | A PyO3 binding, with a synchronous and an asyncio surface over the same Rust client. |
 | **[TypeScript](/clients/typescript/)** | `felix-client` on npm | A napi-rs addon. One asynchronous surface, because blocking Node's event loop is not something a library may do. |
+
+### Which client to use
+
+In Rust, use `ClusterClient`, on one broker or many. It sends each record
+straight to the broker that leads its shard and handles failover and
+reconnects. `Client` is the single-connection building block underneath it,
+for tools and special cases; in a cluster its publishes to shards the broker
+does not lead are forwarded. In the v0.6.0 three-node, three-replica run that
+hop cut in-memory throughput 2.4× (256 B records, batches of 64: 2,096 to 890
+MB/s, broker CPU up 40%) and durable quorum-acked throughput 4.4× (490 to 111
+MB/s). See [v0.6.0 performance](/features/v060-performance/). The Python and
+TypeScript clients are built on `ClusterClient` and have no other kind.
 
 Python and TypeScript both pass every required scenario in the catalogue, and
 CI is gated on both. That includes the `commit.*` scenarios: all three clients

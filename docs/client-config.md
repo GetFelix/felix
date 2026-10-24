@@ -13,6 +13,29 @@ redirects) is [Running a client against a cluster](multi-node-client.md). None
 of it is configured here: it is chosen by using `ClusterClient` rather than
 `Client`, and by the `ReconnectPolicy` handed to it.
 
+## Which client to use
+
+Applications should use `ClusterClient`, on a single broker as well as a
+cluster. It sends each record straight to the broker that leads its shard
+and handles failover and reconnects. A single broker needs no cluster mode for
+it, and the client asks nothing of the control plane: discovery finds nothing
+to add and that broker owns every shard. `Client` is the single-connection building block underneath it,
+for tools and special cases.
+
+In a cluster, a publish sent through `Client` to a broker that does not lead
+the shard is forwarded, and the hop is expensive. In the v0.6.0 three-node,
+three-replica run, compared with sending straight to the owner:
+
+| Workload (256 B records, batches of 64) | Owner-direct (`ClusterClient`) | Forwarded (`Client`) |
+| --- | --- | --- |
+| In-memory | 2,096 MB/s | 890 MB/s (2.4× lower, broker CPU up 40%) |
+| Durable, `Quorum` acks | 490 MB/s | 111 MB/s (4.4× lower) |
+
+Figures are client ingress. See
+[v0.6.0 performance](https://docs.getfelix.dev/features/v060-performance/).
+
+The options below apply to both clients except where a section says otherwise.
+
 ## Loading Order
 
 `ClientConfig::from_env_or_yaml(quinn, config_path)` uses:

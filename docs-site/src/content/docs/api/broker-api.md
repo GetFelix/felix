@@ -36,7 +36,7 @@ For optimal performance, clients should maintain connection pools:
 
 ```rust
 // Rust client example
-use felix_client::{Client, ClientConfig};
+use felix_client::{ClientConfig, ClusterClient};
 use std::net::SocketAddr;
 
 let quinn = quinn::ClientConfig::with_platform_verifier();
@@ -46,8 +46,8 @@ let config = ClientConfig {
     ..ClientConfig::optimized_defaults(quinn)
 };
 
-let addr: SocketAddr = "127.0.0.1:5000".parse()?;
-let client = Client::connect(addr, "localhost", config).await?;
+let seeds: Vec<SocketAddr> = vec!["127.0.0.1:5000".parse()?];
+let client = ClusterClient::connect(&seeds, "localhost", config).await?;
 ```
 
 Connection setup costs a TLS handshake, so the client keeps long-lived
@@ -134,23 +134,21 @@ once the publish is committed, or with the reason it was refused:
 **Example usage**:
 
 ```rust
-use felix_client::{Client, ClientConfig};
-use felix_client::AckMode;
+use felix_client::{AckMode, ClientConfig, ClusterClient};
 use std::net::SocketAddr;
 
 let quinn = quinn::ClientConfig::with_platform_verifier();
 let config = ClientConfig::optimized_defaults(quinn);
-let addr: SocketAddr = "127.0.0.1:5000".parse()?;
-let client = Client::connect(addr, "localhost", config).await?;
-let publisher = client.publisher().await?;
+let seeds: Vec<SocketAddr> = vec!["127.0.0.1:5000".parse()?];
+let client = ClusterClient::connect(&seeds, "localhost", config).await?;
 
 // Fire-and-forget publish
-publisher
+client
     .publish("acme", "prod", "events", b"Hello Felix".to_vec(), AckMode::None)
     .await?;
 
 // With acknowledgement
-publisher
+client
     .publish(
         "acme",
         "prod",
@@ -204,8 +202,7 @@ let messages = vec![
 ];
 
 use felix_client::AckMode;
-let publisher = client.publisher().await?;
-publisher
+client
     .publish_batch("acme", "prod", "events", messages, AckMode::PerBatch)
     .await?;
 ```
@@ -231,7 +228,9 @@ For maximum throughput, use binary encoding.
 ...
 ```
 
-**Example** (Rust client handles encoding automatically):
+**Example** (Rust client handles encoding automatically; `Publisher` is the
+single-connection `Client`'s API, and applications should use `ClusterClient`,
+whose `publish_batch` sends this frame):
 
 ```rust
 // Encode a batch directly as binary
@@ -1224,18 +1223,16 @@ say nothing was applied. `outcome_unknown` may have landed, so re-sending it is
 safe only through an idempotent producer.
 
 ```rust
-use felix_client::{BrokerError, Client, RetryClass};
-use felix_client::AckMode;
+use felix_client::{AckMode, BrokerError, ClusterClient, RetryClass};
 use std::time::Duration;
 
-async fn publish_with_retry(client: &Client, data: &[u8], retries: u32) -> anyhow::Result<()> {
-    let publisher = client.publisher().await?;
+async fn publish_with_retry(client: &ClusterClient, data: &[u8], retries: u32) -> anyhow::Result<()> {
     for attempt in 0..retries {
-        let err = match publisher
+        let err = match client
             .publish("acme", "prod", "events", data.to_vec(), AckMode::PerMessage)
             .await
         {
-            Ok(()) => return Ok(()),
+            Ok(_) => return Ok(()),
             Err(err) => err,
         };
         match err.downcast_ref::<BrokerError>().map(|e| e.retry) {
@@ -1288,8 +1285,7 @@ event_batch_max_delay_us: 100
 
 ```rust
 // Client: publish immediately
-let publisher = client.publisher().await?;
-publisher
+client
     .publish("acme", "prod", "events", data.to_vec(), AckMode::PerMessage)
     .await?;
 ```

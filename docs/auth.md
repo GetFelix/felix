@@ -555,13 +555,14 @@ expired or been revoked.
 ### Many users over one client
 
 A gateway that acts for many users, each with their own Felix token, does not
-need a `Client` per user. `Client::with_identity(tenant_id, token_provider)`
+need a client per user. `ClusterClient::with_identity(tenant_id, token_provider)`
 returns a client that shares the parent's connections and authenticates every
 stream it opens with the user's token. `with_identity_token` takes a fixed
-token instead.
+token instead. The single-connection `Client` has the same two calls;
+applications should use `ClusterClient`.
 
 ```rust,ignore
-let gateway = Client::connect(addr, "broker", gateway_config).await?;
+let gateway = ClusterClient::connect(&seeds, "broker", gateway_config).await?;
 let alice = gateway.with_identity("t1", alice_tokens).await?;
 // Checked against alice's grants, not the gateway's.
 alice.cache_get("t1", "app", "sessions", "alice:profile").await?;

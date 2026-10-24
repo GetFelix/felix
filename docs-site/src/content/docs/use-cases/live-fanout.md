@@ -92,21 +92,23 @@ felixctl pub ticker '{"sym":"ACME","px":101.25}' --count 100
 Publishing from Rust, with no ack for the lossy feed and a batch for throughput:
 
 ```rust
-use felix_client::{AckMode, Client, ClientConfig};
+use felix_client::{AckMode, ClientConfig, ClusterClient};
 
 let quinn = quinn::ClientConfig::with_platform_verifier();
-let client = Client::connect("127.0.0.1:5000".parse()?, "localhost",
+let client = ClusterClient::connect(&["127.0.0.1:5000".parse()?], "localhost",
     ClientConfig::optimized_defaults(quinn)).await?;
-let publisher = client.publisher().await?;
 
-publisher
+client
     .publish("acme", "prod", "ticker", br#"{"sym":"ACME","px":101.25}"#.to_vec(), AckMode::None)
     .await?;
 
 let batch: Vec<Vec<u8>> = (0..64).map(|i| format!("tick {i}").into_bytes()).collect();
-publisher
+client
     .publish_batch("acme", "prod", "alerts", batch, AckMode::PerBatch)
     .await?;
+
+// Flush the unacknowledged ticker publish before exiting.
+client.finish().await?;
 ```
 
 A subscriber on a durable stream turns a jump in offsets into a count of missed

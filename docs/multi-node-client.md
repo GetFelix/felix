@@ -12,10 +12,18 @@ is the contract; this page is how to reach it from an application.
 
 ## Use `ClusterClient`, not `Client`
 
-`Client` holds connection pools to **one** broker. It is the right thing for a
-single-node deployment and the wrong thing for a cluster: the broker it was
-given is exactly the one that may fail over, and when it does, that client stops
-working while every other broker sits there able to serve.
+`Client` holds connection pools to **one** broker. It is the single-connection
+building block underneath `ClusterClient`, for tools and special cases, and the
+wrong thing for an application on a cluster: the broker it was given is exactly
+the one that may fail over, and when it does, that client stops working while
+every other broker sits there able to serve. Its publishes to shards that
+broker does not lead are forwarded, which in the v0.6.0 three-node run cost
+2.4× in-memory and 4.4× durable throughput against sending straight to the
+owner ([v0.6.0 performance](https://docs.getfelix.dev/features/v060-performance/)).
+
+Use `ClusterClient` on a single broker too. With one seed and no cluster behind
+it, discovery finds nothing to add and that broker owns every shard. The
+broker needs no cluster mode, and the client asks nothing of the control plane.
 
 `ClusterClient` holds a `Client` for each broker it reaches and rebuilds the
 one in use from the other endpoints when it fails.

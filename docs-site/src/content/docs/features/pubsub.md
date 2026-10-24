@@ -63,8 +63,7 @@ for i in 0..64 {
     batch.push(format!("Event {}", i).into_bytes());
 }
 
-let publisher = client.publisher().await?;
-publisher
+client
     .publish_batch("tenant", "ns", "stream", batch, AckMode::PerBatch)
     .await?;
 ```

@@ -108,10 +108,10 @@ not retry it.
 A fixed-window limiter in Rust:
 
 ```rust
-use felix_client::Client;
+use felix_client::ClusterClient;
 
 struct RateLimiter<'a> {
-    client: &'a Client,
+    client: &'a ClusterClient,
     limit: i64,
     window_ms: u64,
 }
