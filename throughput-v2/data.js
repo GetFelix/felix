@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792861952637,
+  "lastUpdate": 1792862981382,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -34788,6 +34788,58 @@ window.BENCHMARK_DATA = {
             "range": "48175.71",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 811884.02\nmean: 794607.03\nstdev: 48175.71\ncv: 6.06%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "550140b10b4c3f97cb728381f2dd9f4be0042035",
+          "message": "feat(capi): make connect, publish and subscribe asynchronous (#1493) (#1496)\n\n* feat(capi): make connect, publish and subscribe asynchronous (#1493)\n\nEvery broker-facing call now returns at once and reports its result to a\nC callback exactly once, so a C# Task needs no parked thread. Calls take\nan optional FelixCancelToken; freeing a handle cancels its pending calls.\nA cancelled publish that may have been sent reports outcome unknown.\nSubscriptions are pulled one read at a time. The blocking forms are gone.\n\n* fix(capi): review findings on the async C ABI\n\nTeardown falls back to a non-blocking shutdown if its thread cannot start,\nthe docs say when freeing the last handle returns before the teardown, a\ntimed-out wait in the C test exits instead of freeing a waiter a callback\nmay still use, and the C test now checks that a cancelled read loses no\nrecord published while it was pending.",
+          "timestamp": "2026-10-24T10:26:13-07:00",
+          "tree_id": "05afe5e026fdb00c65f417baeb6672351029f754",
+          "url": "https://github.com/GetFelix/felix/commit/550140b10b4c3f97cb728381f2dd9f4be0042035"
+        },
+        "date": 1792862980788,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 657288.14,
+            "range": "68112.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 657288.14\nmean: 655638.39\nstdev: 68112.75\ncv: 10.39%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 657288.14,
+            "range": "68112.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 657288.14\nmean: 655638.39\nstdev: 68112.75\ncv: 10.39%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 170573.25,
+            "range": "3108.83",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 170573.25\nmean: 169201.70\nstdev: 3108.83\ncv: 1.84%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1705732.46,
+            "range": "31088.32",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1705732.46\nmean: 1692017.04\nstdev: 31088.32\ncv: 1.84%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
