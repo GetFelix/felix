@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792882328681,
+  "lastUpdate": 1792885255357,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -35412,6 +35412,58 @@ window.BENCHMARK_DATA = {
             "range": "3932.03",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 814265.30\nmean: 813185.72\nstdev: 3932.03\ncv: 0.48%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d7f2874d826e5a30d1382b4cad67ef0fea9902bf",
+          "message": "feat(csharp): consumer groups, sharded groups, connect options, conformance writer (step 2) (#1519)\n\n* feat(csharp): consumer groups, sharded groups, stream-wide admin, connect options, publisher/timestamp, conformance writer\n* fix(csharp): review findings on step 2 (per-TFM results, best-effort cleanup, skip without operator token, null checks)\n* fix(ci): run the C# fixture tests one framework at a time\n* fix(csharp): describe a stream-wide group with the consumer client, as the C scenario does",
+          "timestamp": "2026-10-24T16:36:48-07:00",
+          "tree_id": "c4f9442763b0ad3d03157c94dd0d568592549a17",
+          "url": "https://github.com/GetFelix/felix/commit/d7f2874d826e5a30d1382b4cad67ef0fea9902bf"
+        },
+        "date": 1792885254538,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 479102.2,
+            "range": "16407.65",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 479102.20\nmean: 486466.12\nstdev: 16407.65\ncv: 3.37%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 479102.2,
+            "range": "16407.65",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 479102.20\nmean: 486466.12\nstdev: 16407.65\ncv: 3.37%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 113202.53,
+            "range": "1428.95",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 113202.53\nmean: 112461.43\nstdev: 1428.95\ncv: 1.27%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1132025.31,
+            "range": "14289.49",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1132025.31\nmean: 1124614.35\nstdev: 14289.49\ncv: 1.27%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
