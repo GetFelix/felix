@@ -67,8 +67,8 @@ A call returns a `FelixStatus` for the call itself. `FELIX_STATUS_OK` means it
 was accepted and its callback will run exactly once. Anything else means it was
 refused before it started (a null pointer, bad UTF-8, a value out of range). The
 callback will not run, and `felix_last_error_message()` says why. That message is
-per thread and valid until the next Felix call on that thread. It is set only
-for refused calls.
+per thread and valid until the next Felix call on that thread; copy it to keep
+it. It is null after a call that returned `FELIX_STATUS_OK`.
 
 The callback gets the result's own status. For a failure (10 and above) it also
 gets a message, valid only while the callback runs. On success it may own a new
@@ -92,9 +92,13 @@ stays one function.
 
 ### Cancelling
 
-Cancelling a token, or freeing the client or subscription a call was made on,
-completes the call with `FELIX_STATUS_CANCELLED`, unless it already finished. A
-cancelled connect or subscribe never hands out a handle. A write cancelled after
+Cancelling a token, or freeing the handle a call was made on, completes the call
+with `FELIX_STATUS_CANCELLED`, unless it already finished. Each handle cancels
+only its own calls: freeing the client does not end a subscription, watch,
+producer or group made from it, which keep working until they are freed. One
+token may be passed to any number of calls, and a token that is already
+cancelled cancels a call at once. A cancelled connect or subscribe never hands
+out a handle. A write cancelled after
 it may have been sent completes with `FELIX_STATUS_OUTCOME_UNKNOWN` instead,
 because it may have landed. Reads report `FELIX_STATUS_CANCELLED`. A token can be
 freed while calls still hold it.
@@ -102,11 +106,14 @@ freed while calls still hold it.
 ### Freeing handles
 
 Handles (`FelixClient`, `FelixSubscription`, `FelixShardedSubscription`,
-`FelixCacheWatch`, `FelixProducer`, `FelixEvent`, `FelixCancelToken`) are opaque.
+`FelixShardedGroup`, `FelixCacheWatch`, `FelixProducer`, `FelixEvent`,
+`FelixCancelToken`) are opaque.
 Everything the library hands out has a `*_free` function, which accepts null. A
 handle may be used from several threads, but never freed while another thread is
 using it, a callback included.
 
+A subscription, sharded group, watch, producer or event keeps the client's runtime alive, so
+the runtime stops when the last of them is freed, not when the client is.
 Callbacks for calls cancelled by a free may run after the free returns, so
 `user_data` must stay valid until they do. Freeing the last handle on a client's
 runtime waits up to a few seconds for them. From inside a callback, or from
@@ -225,9 +232,14 @@ to trust, or null for the system store. `addrs` is a `host:port` string.
 `felix_client_publish` sends one record. A non-null `key` routes it, so records
 sharing a key share a shard and stay in order; a null key sends it to shard 0.
 `FELIX_DELIVERY_AT_MOST_ONCE` reports a lost connection instead of risking a
-second write. `FELIX_DELIVERY_AT_LEAST_ONCE` reconnects and sends it again, so
+second write (a record the broker refused without applying is still sent once
+more, to the shard's current owner). `FELIX_DELIVERY_AT_LEAST_ONCE` reconnects and sends it again, so
 the record is certain to land and may land twice. The ack mode is
-`FELIX_ACK_NONE`, `FELIX_ACK_PER_MESSAGE` or `FELIX_ACK_PER_BATCH`.
+`FELIX_ACK_NONE` (complete once the record is sent), `FELIX_ACK_PER_MESSAGE` or
+`FELIX_ACK_PER_BATCH`. The callback's `has_offset` is false with
+`FELIX_ACK_NONE`, on a stream without a log, or when the broker acknowledged
+before writing. A non-null `key` with a zero length is the empty key, which is a
+key like any other.
 
 The batch calls take the payloads end to end in one buffer, with an array of
 lengths:
@@ -244,13 +256,17 @@ felix_client_publish_batch(client, "t1", "default", "events", data, lens, 3,
 that the broker appends contiguously and accepts or refuses whole.
 `felix_client_publish_records` takes a key per record, splits the records by
 shard and sends each share to its owner, so some shards can succeed while others
-fail. Only it can resend, with `FELIX_DELIVERY_AT_LEAST_ONCE`; the two
-single-shard batch calls never resend a batch that may have been written.
+fail. Only it can resend, with `FELIX_DELIVERY_AT_LEAST_ONCE`, and a resent batch
+lands after records sent later; the two single-shard batch calls never resend a
+batch that may have been written. `felix_client_publish_on_shard` fails without
+sending against a broker too old to take a shard number, since it would
+otherwise write to shard 0.
 
 A batch callback gets a `FelixRecordResult` per record, in the order passed: its
 status, its log offset when the broker reported one, and the failure's message.
 The callback's own status is `FELIX_STATUS_OK` only when every record was
-accepted. The results are null when no record has an outcome of its own: the
+accepted; otherwise it is the status, and message, of the first record that
+failed. The results are null when no record has an outcome of its own: the
 batch was empty, or the call was cancelled or panicked.
 
 ## Subscribing
@@ -273,16 +289,19 @@ broker-side queue and its overflow policy are the only buffer.
 An event is read with `felix_event_payload`, `felix_event_offset` and
 `felix_event_skipped_before`, and freed with `felix_event_free`. On a durable
 stream a jump in offsets is a drop. `felix_subscription_start_offset` returns
-where the subscription began, so a drop before the first event counts as
-`offset - start_offset - skipped_before`.
+where the subscription began (its `out_has` is false on a stream without a log
+or from a broker that did not negotiate offsets), so a drop before the first
+event counts as `offset - start_offset - skipped_before`. The start can be 0.
 
 After a read reports `FELIX_STATUS_CLOSED`, `felix_subscription_close_reason`
 says whether the broker ended the stream (`FELIX_CLOSE_ENDED`) or it was deleted
 (`FELIX_CLOSE_STREAM_DELETED`). A live subscription reports `FELIX_CLOSE_OPEN`.
 
 `felix_client_offset_for_time` finds the first offset on a shard at or after a
-time in microseconds, to subscribe from with `FELIX_START_OFFSET`. If no offset
-is that recent, subscribe with `FELIX_START_LATEST`.
+time in microseconds, to subscribe from with `FELIX_START_OFFSET`. The callback's
+`has_offset` is false when no record is that recent yet; subscribe with
+`FELIX_START_LATEST` to wait for one. A time older than every record answers
+with the oldest. It only reads, so a cancel is `FELIX_STATUS_CANCELLED`.
 
 ### All shards
 
@@ -290,23 +309,28 @@ is that recent, subscribe with `FELIX_START_LATEST`.
 any cannot be opened. `felix_sharded_next` completes with an item: a record
 (`FELIX_SHARD_RECORD`, with an event to free) or a notice about one shard:
 `FELIX_SHARD_LOST` with the error text, `FELIX_SHARD_RECOVERED`,
-`FELIX_SHARD_MOVED` or `FELIX_SHARD_STREAM_DELETED`. Order holds within a shard
-only. A caller that ignores `FELIX_SHARD_LOST` reads an incomplete stream without
+`FELIX_SHARD_MOVED` or `FELIX_SHARD_STREAM_DELETED`. A lost-shard notice is
+still `FELIX_STATUS_OK`, with the error text as the message. With any other
+status the kind is `FELIX_SHARD_NONE`. The read completes with
+`FELIX_STATUS_CLOSED` once every shard's feed has ended. Order holds within a
+shard only. `felix_sharded_shards` gives the shard count. A caller that ignores `FELIX_SHARD_LOST` reads an incomplete stream without
 knowing it.
 
 Resuming takes a map of offsets, because offsets are per shard.
 `felix_sharded_positions` writes the last offset handed out per shard, never
 ahead of what the caller has been given, and may be called while a read is
-pending. Pass the result to `felix_client_resubscribe_sharded`: listed shards
-continue after their offset and the rest start at `start`. A shard that
-delivered nothing is not listed, so with the default start it begins at the live
-tail.
+pending. Only shards that have delivered a record appear. It writes at most
+`cap` entries, in ascending shard order, and sets `*out_count` to the total, so
+call again with larger buffers if that exceeds `cap`. Pass the result to
+`felix_client_resubscribe_sharded`: listed shards continue after their offset,
+the rest start at `start` (a shard listed twice is
+`FELIX_STATUS_INVALID_ARGUMENT`).
 
 ## Consumer groups
 
 Every group call names one shard and goes to the broker that leads it, following
-a move. `felix_client_stream_shards` gives the shard count, so a caller runs one
-group per shard.
+a move. `felix_client_stream_shards` gives the shard count, so a caller can run one
+group per shard, or open a sharded group over all of them (below).
 
 ```c
 felix_client_group_poll(client, "t1", "default", "orders", shard, "billing",
@@ -324,20 +348,84 @@ felix_client_group_poll(client, "t1", "default", "orders", shard, "billing",
   names the member, `reclaim` takes back what that member held before a restart,
   and a `visibility_ms` of zero uses the broker's timeout. A poll cancelled while
   it waits completes with `FELIX_STATUS_CANCELLED`, and records it claimed come
-  back after the visibility timeout.
+  back after the visibility timeout. A `max_records` of zero, and `reclaim`
+  without a `consumer` (1 to 128 bytes), are `FELIX_STATUS_INVALID_ARGUMENT` at
+  the call.
 - Records are not handles. `felix_client_group_ack`, `_nack`, `_extend`,
   `_dead_letter`, `_discard` and `_redrive` take the offset. Nack and extend also
   take the `attempts` the poll reported, which the broker checks, so a claim that
   has lapsed or moved on is refused. A `stale_claim` refusal is
   `FELIX_STATUS_ERROR` with the reason in the message.
-- `felix_client_group_describe` fills a `FelixGroupInfo`, and
-  `felix_client_group_delete` says whether the group existed.
+- `felix_client_group_extend` takes an `extend_ms` of at least one and reports
+  how long the claim now stands (`visible_ms`). `felix_client_group_nack` takes a
+  `delay_ms`, where zero is at once. Settles are writes: cancelled after they may
+  have been sent they complete with `FELIX_STATUS_OUTCOME_UNKNOWN`, and settling
+  again is refused or harmless.
+- `felix_client_group_dead_letters` lists a shard's dead-letter offsets, and
+  `felix_client_group_describe` fills a `FelixGroupInfo` (`has_committed`,
+  `committed`, `tail`, `in_flight`, `owed`, `dead_letters`; `in_flight` and
+  `owed` are leader memory and restart from zero when the leader changes).
+  `felix_client_group_delete` says whether the group existed. Describe and
+  listing are reads, so a cancel is `FELIX_STATUS_CANCELLED`.
+- `felix_client_stream_shards` reports zero for a stream the broker does not
+  know, not one.
 
 Creating, seeking and deleting a group, and discarding or redriving a dead
 letter, need the `group.manage` permission. Polling, settling, extending, listing
 dead letters and describing need only consumer access. A broker without claim
 control refuses a delayed nack, an extend and a visibility override with the
 same error the Rust client raises.
+
+### All shards
+
+`felix_client_group_sharded` opens a `FelixShardedGroup` over every shard of a
+stream; it creates nothing, so create the group first. `felix_sharded_group_shards`
+gives the count and `felix_sharded_group_free` frees it. `felix_sharded_group_poll`
+takes up to `max_records` (at least one), visiting the shards in turn from where
+the last poll left off and returning the first non-empty batch as
+`FelixShardedGroupRecord` values: a `shard` and a borrowed `FelixGroupRecord`,
+valid only during the callback. Order holds within a shard only, and a shard that
+cannot be polled fails the whole poll. Settle a record with the per-shard calls
+(`felix_client_group_ack`, `_nack`, `_extend`, `_dead_letter`), passing its
+`shard`: an offset means nothing without it. The poll is a read, so a cancel, or
+freeing the group, completes it with `FELIX_STATUS_CANCELLED`, and what it
+claimed comes back after the visibility timeout.
+
+`felix_client_group_create_stream`, `_seek_stream`, `_describe_stream` and
+`_delete_stream` run the admin call on every shard in shard order. Create and
+seek report a `FelixGroupPosition` (`offset`, `moved`) per shard and describe a
+`FelixGroupInfo` per shard, both indexed by shard and valid during the callback;
+delete says whether any shard had the group. It is one request per shard, so a
+failure partway leaves the earlier shards changed; every call is safe to repeat.
+An offset start is refused for a stream with more than one shard, since an offset
+means something different on each; use `FELIX_START_EARLIEST` or
+`FELIX_START_LATEST`. Create, seek and delete are writes
+(`FELIX_STATUS_OUTCOME_UNKNOWN` on a late cancel); describe is a read.
+
+## Publisher and timestamp
+
+`felix_client_connect_with` takes a `FelixConnectOptions`. Set `size` to
+`sizeof(FelixConnectOptions)`; a field is read only when `size` covers it, so a
+caller built against an older header keeps working and a field it does not know
+is off. A null `options` is the defaults, which is what `felix_client_connect`
+uses.
+
+```c
+FelixConnectOptions options = {
+    .size = sizeof options, .publishers = true, .timestamps = true};
+felix_client_connect_with("127.0.0.1:5000", "t1", "my-token", "localhost", NULL,
+                          &options, NULL, on_connect, state);
+```
+
+`publishers` asks brokers to say who published each event, which adds the
+principal to every event batch; `timestamps` asks for each record's append time,
+which adds eight bytes per event. With them set, `felix_event_publisher` writes a
+pointer and length (UTF-8, not NUL-terminated, valid until the event is freed)
+and `felix_event_timestamp` writes microseconds since the Unix epoch by the clock
+of the broker that led the shard. A `FelixGroupRecord` carries `publisher` and
+`publisher_len` (borrowed, null when absent) and `has_timestamp` with
+`timestamp_micros`. A broker that does not negotiate them, or an in-memory stream
+that stores no time, leaves them absent; that is never an error.
 
 ## Caches, counters and watches
 
@@ -347,8 +435,8 @@ to a callback are valid only while it runs. Any broker serves a cache request by
 forwarding it to the key's owner, so there is no shard to name.
 
 - `felix_client_cache_put` takes a `ttl_ms`, where zero is no expiry.
-  `felix_client_cache_get` and `_delete` report `found` and the value (for a
-  delete, the one removed). `felix_client_cache_get_versioned` adds the entry's
+  A put is safe to repeat. `felix_client_cache_get` and `_delete` report `found`
+  and the value (for a delete, the one removed). `felix_client_cache_get_versioned` adds the entry's
   version.
 - `felix_client_cache_put_if` takes `FELIX_IF_ABSENT`, or `FELIX_IF_VERSION` with
   a version from a versioned get. `felix_client_cache_delete_if` takes a version.
@@ -368,6 +456,13 @@ prefix on every shard, and fails rather than cover fewer shards than the cache
 has. Both take `retained` to deliver the stored entries first; it cannot be
 combined with an offset to resume from.
 
+`felix_client_watch_cache` takes a filter kind, `FELIX_WATCH_KEY` or
+`FELIX_WATCH_PREFIX` (anything else is `FELIX_STATUS_INVALID_ARGUMENT`), and
+`has_from_offset` with `from_offset` to resume after a change's offset. A watch
+is read until it reports `FELIX_STATUS_CLOSED`. A single watch's offsets are
+sparse, because other keys' changes consume them, so a gap is not a drop;
+`FELIX_WATCH_LAGGED` is.
+
 A `FelixWatchItem` is borrowed for the callback, and its `kind` says what it is:
 
 | Kind | Meaning |
@@ -381,7 +476,10 @@ A `FelixWatchItem` is borrowed for the callback, and its `kind` says what it is:
 Keys are not NUL-terminated, so use `key_len`. After `FELIX_WATCH_LAGGED` a single
 watch's next read is `FELIX_STATUS_CLOSED`, while a sharded watch loses only that
 shard. `felix_cache_watch_resume_offsets` writes each shard's offset for a
-sharded watch, never ahead of what reads have handed out, and
+sharded watch (a single watch is `FELIX_STATUS_INVALID_ARGUMENT`), never ahead
+of what reads have handed out, in ascending shard order with `cap` and
+`*out_count` as for `felix_sharded_positions`. `has_shard` says whether an
+item's `shard` is meaningful, and
 `felix_cache_watch_retained_count` reports how many entries a retained watch
 started from.
 
@@ -392,7 +490,9 @@ A commit is an array of `FelixCommitOp` (`FELIX_COMMIT_PUBLISH`,
 record on the shard that owns an entity. Every reader sees the event at the
 commit's offset and the state it wrote at the same version. It must hold exactly
 one event, and every operation must name that event's stream. Anything else is
-`FELIX_STATUS_INVALID_ARGUMENT` at the call, and the callback never runs.
+`FELIX_STATUS_INVALID_ARGUMENT` at the call, and the callback never runs. A
+broker that does not serve commits completes the call with
+`FELIX_STATUS_UNSUPPORTED`.
 
 ```c
 FelixCommitOp ops[] = {
@@ -437,7 +537,9 @@ returned, and they do not wait for each other's answers.
 - `felix_producer_publish` sends a batch of one or more records as one sequence,
   to shard 0 or, with a `key`, to the key's shard. It reports the batch's first
   offset. `felix_producer_publish_batches` takes several batches in one call,
-  split by `batch_sizes`, and reports only success.
+  split by `batch_sizes`, and reports only success. It has no key: all its
+  batches go to shard 0. After a failure, call again with the same batches and
+  only the unacknowledged ones are sent.
 - A failure other than a broker refusal leaves the batch in doubt: the sequence
   has not advanced and the batch may have landed. Call again with the same
   payloads and key to settle it. A different batch is refused without being sent
@@ -451,9 +553,15 @@ returned, and they do not wait for each other's answers.
 - `felix_producer_id` and `felix_producer_id_for` read the id a producer, or one
   stream of it, sends under.
 - `felix_producer_close` waits for what was handed over, then stops the producer;
-  a non-negative `timeout_ms` bounds the wait. After it, async calls on the
-  handle either complete with `FELIX_STATUS_CLOSED` or return it directly. `felix_producer_free` drops what is
-  left without waiting.
+  a non-negative `timeout_ms` bounds the wait, and a negative one waits as long
+  as it takes. After a successful close, calls on the handle complete with or
+  return `FELIX_STATUS_CLOSED`. A close that runs out of time reports
+  `FELIX_STATUS_TIMEOUT` and the handle stays closed; batches already handed
+  over may still be sent. A cancelled close is `FELIX_STATUS_CANCELLED`, and the
+  producer is closed all the same. `felix_producer_free` does not wait: pending
+  calls complete with `FELIX_STATUS_CANCELLED` (or `FELIX_STATUS_OUTCOME_UNKNOWN`
+  for a send that may be out), and batches already handed over may still be
+  sent.
 
 ## Brokers the client knows
 
@@ -495,9 +603,15 @@ These rules hold for any managed binding, C# included.
   ends the process.
 - Keep `user_data` alive until the callback runs, including for calls cancelled
   by a free. Pin or allocate it so it does not move.
-- `bool` in a callback or in `FelixRecordResult` is one byte (`byte` in an
+- Every `bool` that crosses the ABI is one byte (`byte` in an
   `[UnmanagedCallersOnly]` signature or a sequential struct in C#), and `size_t`
-  is `nuint`.
+  is `nuint`. That covers callback parameters (`found`, `applied`, `has_offset`,
+  `existed`, `written`, `moved`), out-pointers (`out_has`, `out_has_offset`),
+  call arguments (`reclaim`, `retained`, `has_from_offset`), and struct fields:
+  `FelixRecordResult`, `FelixConnectOptions.publishers` and `.timestamps`,
+  `FelixGroupPosition.moved`, `FelixGroupRecord.has_timestamp`,
+  `FelixGroupInfo.has_committed`, `FelixWatchItem` (`has_shard`, `has_value`,
+  `has_resume_from`) and `FelixStateValue`.
 - An empty `fixed` array is a null pointer, which `felix_client_publish` reads as
   no key, so pass an empty key from a non-empty buffer.
 - Build a `FelixCommitOp` array in pinned memory for the call only, since the
@@ -510,16 +624,11 @@ These rules hold for any managed binding, C# included.
   racing across threads have no order of their own. Retry a failed publish with
   the same buffers.
 
-## Not covered
-
-The sharded group (a group composed over every shard), the group `*_stream`
-admin calls, and the record publisher and timestamp fields are not in the ABI.
-Use one group per shard with `felix_client_stream_shards`.
-
 ## Conformance
 
 The C test, `crates/sdk/felix-capi/tests/c/pubsub.c`, is a claimed run of the
 [conformance suite](/clients/overview/#the-conformance-suite), like Python's and
-TypeScript's. It runs every scenario in both the shared and the static build
-against the fixture, fault injection and broker loss included, and CI fails
-unless every required scenario passes in both.
+TypeScript's. It tags the scenarios it exercises and runs them in both the shared
+and the static build against the fixture, fault injection and broker loss
+included. CI fails unless every required scenario passes in both. Optional
+scenarios it does not exercise are reported as not claimed, not as passes.

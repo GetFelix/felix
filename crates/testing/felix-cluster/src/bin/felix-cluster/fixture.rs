@@ -86,10 +86,14 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
         ..Default::default()
     })
     .await?;
-    // Commits are refused until the fleet finalizes the feature, as in any
-    // real cluster.
+    // Commits are refused until the fleet finalizes the feature, and a record
+    // carries its publisher only once it finalizes the opt-in
+    // `publisher_principal`, as in any real cluster.
     cluster
-        .finalize_fleet_features(&["atomic_commit"], Duration::from_secs(30))
+        .finalize_fleet_features(
+            &["atomic_commit", "publisher_principal"],
+            Duration::from_secs(30),
+        )
         .await?;
 
     // Each broker wrote its own certificate; a client needs to trust all of
@@ -152,6 +156,7 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
         link_addr: Some(link.addr().to_string()),
         link_stream: Some(LINK_STREAM.to_string()),
         group_operator_token: Some(cluster.group_operator_token()),
+        records_publishers: true,
         faults: felix_conformance::kit::catalogue()?.fault_scenarios(),
     };
     let body = serde_json::to_vec_pretty(&fixture).context("encode the fixture")?;

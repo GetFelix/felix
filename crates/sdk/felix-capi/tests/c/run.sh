@@ -104,6 +104,8 @@ for key in ("movable_stream", "quorum_stream", "control_url", "link_addr",
             "link_stream"):
     if f.get(key):
         emit(key, f[key])
+if f.get("records_publishers"):
+    emit("records_publishers", "true")
 emit("kill_helper", sys.argv[2])
 for fault in f.get("faults", []):
     step = {k: v for k, v in fault.items() if k != "id"}

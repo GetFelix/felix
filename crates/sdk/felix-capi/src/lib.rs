@@ -57,8 +57,8 @@ pub use cancel::{
     FelixCancelToken, felix_cancel_token_cancel, felix_cancel_token_free, felix_cancel_token_new,
 };
 pub use client::{
-    FelixClient, FelixConnectCallback, FelixEndpointsCallback, felix_client_connect,
-    felix_client_endpoints, felix_client_free,
+    FelixClient, FelixConnectCallback, FelixConnectOptions, FelixEndpointsCallback,
+    felix_client_connect, felix_client_connect_with, felix_client_endpoints, felix_client_free,
 };
 pub use commit::{
     FELIX_COMMIT_DELETE, FELIX_COMMIT_ENQUEUE, FELIX_COMMIT_PUBLISH, FELIX_COMMIT_PUT,
@@ -69,17 +69,23 @@ pub use commit::{
 };
 pub use error::felix_last_error_message;
 pub use event::{
-    FelixEvent, felix_event_free, felix_event_offset, felix_event_payload,
-    felix_event_skipped_before,
+    FelixEvent, felix_event_free, felix_event_offset, felix_event_payload, felix_event_publisher,
+    felix_event_skipped_before, felix_event_timestamp,
 };
 pub use groups::{
     FelixDeletedCallback, FelixDoneCallback, FelixExtendCallback, FelixGroupInfo,
-    FelixGroupInfoCallback, FelixGroupPollCallback, FelixGroupPositionCallback, FelixGroupRecord,
-    FelixOffsetsCallback, FelixShardsCallback, felix_client_group_ack, felix_client_group_create,
+    FelixGroupInfoCallback, FelixGroupInfosCallback, FelixGroupPollCallback, FelixGroupPosition,
+    FelixGroupPositionCallback, FelixGroupPositionsCallback, FelixGroupRecord,
+    FelixOffsetsCallback, FelixShardedGroup, FelixShardedGroupCallback,
+    FelixShardedGroupPollCallback, FelixShardedGroupRecord, FelixShardsCallback,
+    felix_client_group_ack, felix_client_group_create, felix_client_group_create_stream,
     felix_client_group_dead_letter, felix_client_group_dead_letters, felix_client_group_delete,
-    felix_client_group_describe, felix_client_group_discard, felix_client_group_extend,
+    felix_client_group_delete_stream, felix_client_group_describe,
+    felix_client_group_describe_stream, felix_client_group_discard, felix_client_group_extend,
     felix_client_group_nack, felix_client_group_poll, felix_client_group_redrive,
-    felix_client_group_seek, felix_client_stream_shards,
+    felix_client_group_seek, felix_client_group_seek_stream, felix_client_group_sharded,
+    felix_client_stream_shards, felix_sharded_group_free, felix_sharded_group_poll,
+    felix_sharded_group_shards,
 };
 pub use producer::{
     FelixProducer, FelixProducerCallback, felix_client_idempotent_producer,

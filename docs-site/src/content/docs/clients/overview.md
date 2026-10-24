@@ -204,8 +204,9 @@ publish and subscribe to a shard so far; the [C# page](/clients/csharp/) says wh
 ABI covers connect, publishes, subscriptions, consumer groups on a shard, caches,
 counters and watches, atomic commits, conditional publishes and idempotent
 producers, asynchronous through callbacks so a `Task` needs no waiting thread.
-It has no sharded group, group stream admin calls, or record publisher and
-timestamp fields. Driven from C, it passes every required scenario of the conformance suite,
+Groups also run across every shard of a stream, with stream-wide admin calls,
+and connect options ask brokers for each record's publisher and append time.
+Driven from C, it passes every required scenario of the conformance suite,
 which gates it in CI as it does Python and TypeScript.
 
 If you want to write one sooner, the things you need are all public: the

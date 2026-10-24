@@ -3,7 +3,7 @@ use std::sync::Mutex;
 
 use felix_client::Seed;
 
-use super::{Endpoints, parse_addrs, resolve_names};
+use super::{ConnectOptions, Endpoints, FelixConnectOptions, parse_addrs, resolve_names};
 use crate::boundary::Failure;
 use crate::completion::Completion;
 use crate::status::{FELIX_STATUS_AUTH, FELIX_STATUS_INVALID_ARGUMENT, FELIX_STATUS_OK};
@@ -105,4 +105,56 @@ fn endpoints_refuses_a_null_client_and_a_null_callback() {
         )
     };
     assert_eq!(status, FELIX_STATUS_INVALID_ARGUMENT);
+}
+
+fn read(options: &FelixConnectOptions) -> ConnectOptions {
+    // SAFETY: a live struct, readable up to its own `size`.
+    unsafe { ConnectOptions::read(options) }.expect("valid options")
+}
+
+#[test]
+fn no_options_means_the_defaults() {
+    // SAFETY: null is the case under test.
+    let options = unsafe { ConnectOptions::read(std::ptr::null()) }.unwrap();
+    assert!(!options.publishers && !options.timestamps);
+}
+
+/// A caller built against an older header passes a smaller struct, and the
+/// fields it does not cover stay off whatever the bytes after it hold.
+#[test]
+fn a_field_is_read_only_when_size_covers_it() {
+    let full = FelixConnectOptions {
+        size: size_of::<FelixConnectOptions>(),
+        publishers: true,
+        timestamps: true,
+    };
+    let options = read(&full);
+    assert!(options.publishers && options.timestamps);
+
+    let older = FelixConnectOptions {
+        size: std::mem::offset_of!(FelixConnectOptions, timestamps),
+        ..full
+    };
+    let options = read(&older);
+    assert!(options.publishers);
+    assert!(!options.timestamps);
+
+    let oldest = FelixConnectOptions {
+        size: size_of::<usize>(),
+        ..full
+    };
+    let options = read(&oldest);
+    assert!(!options.publishers && !options.timestamps);
+}
+
+#[test]
+fn a_size_smaller_than_the_size_field_is_refused() {
+    let bad = FelixConnectOptions {
+        size: 0,
+        publishers: true,
+        timestamps: true,
+    };
+    // SAFETY: a live struct.
+    let failure = unsafe { ConnectOptions::read(&bad) }.unwrap_err();
+    assert_eq!(failure.status, FELIX_STATUS_INVALID_ARGUMENT);
 }
