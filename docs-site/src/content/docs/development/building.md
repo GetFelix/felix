@@ -204,7 +204,51 @@ docs and `compose.yaml` pin (`scripts/check_release_version.py`), and its releas
   `<owner>/getfelix.github.io` so the landing page shows the new version. This
   needs the `SITE_DISPATCH_TOKEN` secret: a fine-grained token on that one
   repository with Contents read and write. Without it the job only leaves a
-  notice, and the site picks the release up on its own schedule.
+  notice, and the site picks the release up on its own schedule;
+- once those jobs finish, sends a `felix-release` dispatch to each repo in
+  `.github/companions.txt` so it can open a bump PR (see below).
+
+### Companion repos
+
+The `companion-dispatch` job runs under the same conditions as the site job.
+It sends a `repository_dispatch` with event type `felix-release` to every repo
+listed in `.github/companions.txt`. A repo that fails is reported and the rest
+still get theirs; the job then fails, and nothing else in the release depends
+on it. A prerelease tag (one with a `-` suffix, such as `v0.6.0-preview.9`)
+only goes to repos whose line ends in `prerelease`.
+
+The payload a companion workflow can rely on:
+
+```json
+{
+  "version": "0.6.0",
+  "tag": "v0.6.0",
+  "prerelease": false,
+  "release_url": "https://github.com/GetFelix/felix/releases/tag/v0.6.0"
+}
+```
+
+`version` has no leading `v`. A companion listens with
+`on: repository_dispatch: types: [felix-release]` and reads
+`github.event.client_payload`.
+
+To add a companion, append its repo name to `.github/companions.txt`, install
+the release bot on it (below), and add the workflow that handles the event.
+
+The job needs a GitHub App, so that the dispatch and the bump PRs are not tied
+to a person and the PRs trigger CI. Without the two secrets the job only leaves
+a notice. An org owner sets it up once:
+
+1. In the GetFelix org settings, under Developer settings, create a GitHub App.
+   Turn the webhook off.
+2. Give it repository permissions Contents (read and write), Pull requests
+   (read and write), Workflows (read and write) and Metadata (read).
+3. Install it on the companion repos only. The felix repo does not need it,
+   because the dispatch goes to the companions.
+4. Generate a private key for the App.
+5. Add the App ID as the org secret `FELIX_RELEASE_BOT_APP_ID` and the key as
+   `FELIX_RELEASE_BOT_PRIVATE_KEY`, shared with felix and the companion repos.
+   The companions use the same App to open their PRs.
 
 ### crates.io credentials
 

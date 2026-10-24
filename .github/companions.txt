@@ -1,0 +1,9 @@
+# Repos told about each release (see "Companion repos" in
+# docs-site/src/content/docs/development/building.md).
+# One repo name per line, in the GetFelix org. Add `prerelease` to also be
+# told about prerelease tags such as v0.6.0-preview.9.
+felix-gateway
+felix-canvas
+felix-webhook-relay
+felix-metro
+felix-arena
