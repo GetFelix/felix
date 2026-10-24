@@ -4,11 +4,10 @@ using Xunit;
 namespace Felix.Client.Tests;
 
 /// <summary>
-/// Consumer groups against the fixture. Each test makes groups under its own names, and the
-/// class shares a collection with the other fixture tests so no other test publishes to shard 0
-/// while a group there is being counted.
+/// Consumer groups against the fixture. Each test makes groups under its own names. The queue
+/// test counts records on shard 0, which relies on the assembly running tests one at a time
+/// (<c>DisableTestParallelization</c> in LeakTests.cs) so no other test publishes there meanwhile.
 /// </summary>
-[Collection("fixture")]
 public class GroupFixtureTests
 {
     private static readonly TimeSpan Wait = TimeSpan.FromSeconds(30);
@@ -30,7 +29,7 @@ public class GroupFixtureTests
 
     private static string Text(GroupRecord record) => Encoding.UTF8.GetString(record.Payload.Span);
 
-    [FixtureFact]
+    [GroupFixtureFact]
     [Scenario(
         "queue.poll_returns_claimed_records",
         "queue.unacknowledged_records_are_redelivered",
@@ -39,13 +38,10 @@ public class GroupFixtureTests
     public async Task AQueueClaimsSettlesAndDeadLetters()
     {
         var f = Fixture.Load();
-        if (f.GroupOperatorToken is null)
-        {
-            Assert.Fail("the fixture has no group_operator_token");
-        }
+        var operatorToken = f.GroupOperatorToken!;
 
         await using var client = await f.ConnectAsync();
-        await using var admin = await f.ConnectAsync(f.GroupOperatorToken);
+        await using var admin = await f.ConnectAsync(operatorToken);
         var run = Run();
         var name = $"cs-queue-{run}";
         var consumer = $"consumer-{run}";
@@ -120,17 +116,14 @@ public class GroupFixtureTests
         Assert.Equal(0u, await client.GetShardCountAsync(f.Tenant, f.Namespace, f.MissingStream));
     }
 
-    [FixtureFact]
+    [GroupFixtureFact]
     public async Task ACancelledPollEndsAsCancelled()
     {
         var f = Fixture.Load();
-        if (f.GroupOperatorToken is null)
-        {
-            Assert.Fail("the fixture has no group_operator_token");
-        }
+        var operatorToken = f.GroupOperatorToken!;
 
         await using var client = await f.ConnectAsync();
-        await using var admin = await f.ConnectAsync(f.GroupOperatorToken);
+        await using var admin = await f.ConnectAsync(operatorToken);
         var name = $"cs-idle-{Run()}";
         await admin.JoinGroup(f.Tenant, f.Namespace, f.Stream, 1, name).CreateAsync(StartPosition.Latest);
         try
@@ -141,7 +134,14 @@ public class GroupFixtureTests
         }
         finally
         {
-            await admin.JoinGroup(f.Tenant, f.Namespace, f.Stream, 1, name).DeleteAsync();
+            try
+            {
+                await admin.JoinGroup(f.Tenant, f.Namespace, f.Stream, 1, name).DeleteAsync();
+            }
+            catch (Exception)
+            {
+                // Best effort; it must not mask a failure above.
+            }
         }
     }
 
@@ -157,17 +157,14 @@ public class GroupFixtureTests
         Assert.Equal(FelixStatus.InvalidArgument, none.Status);
     }
 
-    [FixtureFact]
+    [GroupFixtureFact]
     public async Task AShardedGroupCoversEveryShard()
     {
         var f = Fixture.Load();
-        if (f.GroupOperatorToken is null)
-        {
-            Assert.Fail("the fixture has no group_operator_token");
-        }
+        var operatorToken = f.GroupOperatorToken!;
 
         await using var client = await f.ConnectAsync(null, publishers: false, timestamps: true);
-        await using var admin = await f.ConnectAsync(f.GroupOperatorToken);
+        await using var admin = await f.ConnectAsync(operatorToken);
         var run = Run();
         var name = $"cs-sharded-{run}";
 
@@ -220,10 +217,21 @@ public class GroupFixtureTests
             Assert.Equal(4, infos.Length);
             Assert.All(infos, i => Assert.True(i.Committed <= i.Tail));
         }
-        finally
+        catch
         {
-            Assert.True(await admin.DeleteStreamGroupAsync(f.Tenant, f.Namespace, f.Stream, name));
+            // Best effort: the failure being reported is the test's, not the cleanup's.
+            try
+            {
+                await admin.DeleteStreamGroupAsync(f.Tenant, f.Namespace, f.Stream, name);
+            }
+            catch (Exception)
+            {
+            }
+
+            throw;
         }
+
+        Assert.True(await admin.DeleteStreamGroupAsync(f.Tenant, f.Namespace, f.Stream, name));
     }
 
     [FixtureFact]

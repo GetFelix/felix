@@ -15,6 +15,9 @@ public class GroupTests
         // Offsets and sizes as a 64-bit C compiler lays out felix.h.
         if (nint.Size != 8)
         {
+            // 8-byte fields align differently on 32-bit targets; the size field and two flags
+            // pad to two pointers on every one, which is all felix.h promises there.
+            Assert.Equal(2 * nint.Size, sizeof(NativeConnectOptions));
             return;
         }
 
@@ -103,6 +106,17 @@ public class GroupTests
         var other = new GroupRecord(3, 1, 1, 0, default, null, null);
         Assert.Throws<ArgumentException>(() => { _ = group.AckAsync(other); });
         Assert.Throws<ArgumentException>(() => { _ = group.NackAsync(other); });
+    }
+
+    [Fact]
+    public void AShardedGroupRefusesANullRecord()
+    {
+        // The constructor needs a live native group; the null check runs before any use of it.
+        var group = (FelixShardedGroup)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(FelixShardedGroup));
+        Assert.Throws<ArgumentNullException>(() => { _ = group.AckAsync(null!); });
+        Assert.Throws<ArgumentNullException>(() => { _ = group.NackAsync(null!); });
+        Assert.Throws<ArgumentNullException>(() => { _ = group.ExtendAsync(null!, TimeSpan.FromSeconds(1)); });
+        Assert.Throws<ArgumentNullException>(() => { _ = group.DeadLetterAsync(null!); });
     }
 
     [Fact]

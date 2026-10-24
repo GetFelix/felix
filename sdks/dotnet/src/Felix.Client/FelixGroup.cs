@@ -53,7 +53,7 @@ public sealed class FelixGroup
     /// </summary>
     /// <param name="maxRecords">At least one.</param>
     /// <param name="wait">How long the broker may hold the poll open for work; the broker caps it. Zero returns at once.</param>
-    /// <param name="visibility">How long the claims stand before the records are owed again; null is the broker's own timeout, and a broker that cannot honour another value refuses it.</param>
+    /// <param name="visibility">How long the claims stand before the records are owed again; null or <see cref="TimeSpan.Zero"/> is the broker's own timeout (the C ABI's zero), and a broker that cannot honour another value refuses it.</param>
     /// <param name="reclaim">Take back what this <see cref="Consumer"/> holds from older connections; needs a consumer name.</param>
     /// <exception cref="FelixException">With <see cref="FelixStatus.InvalidArgument"/> for a zero count or a reclaim without a consumer.</exception>
     public async Task<GroupRecord[]> PollAsync(

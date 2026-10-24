@@ -4,7 +4,7 @@ using Xunit;
 namespace Felix.Client.Tests;
 
 /// <summary>Skips with a reason when the broker fixture is not available.</summary>
-public sealed class FixtureFactAttribute : FactAttribute
+public class FixtureFactAttribute : FactAttribute
 {
     public FixtureFactAttribute()
     {
@@ -15,6 +15,18 @@ public sealed class FixtureFactAttribute : FactAttribute
         else if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("FELIX_NATIVE_LIB")))
         {
             Skip = "FELIX_NATIVE_LIB is not set; build libfelix with `cargo build --release -p felix-capi`";
+        }
+    }
+}
+
+/// <summary>As <see cref="FixtureFactAttribute"/>, and skips when the fixture has no group operator token.</summary>
+public sealed class GroupFixtureFactAttribute : FixtureFactAttribute
+{
+    public GroupFixtureFactAttribute()
+    {
+        if (Skip is null && Fixture.Load().GroupOperatorToken is null)
+        {
+            Skip = "the fixture has no group_operator_token (an older client-fixture)";
         }
     }
 }
@@ -66,7 +78,6 @@ internal sealed record Fixture(
             ct);
 }
 
-[Collection("fixture")]
 public class FixtureTests
 {
     private static readonly TimeSpan Wait = TimeSpan.FromSeconds(30);

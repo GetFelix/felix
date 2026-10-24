@@ -99,6 +99,10 @@ internal sealed class ConformanceResults
         File.WriteAllText(path, ToJson(client, version));
     }
 
+    /// <summary>Inserts the framework before the extension: <c>r.json</c> becomes <c>r-net8.0.json</c>.</summary>
+    internal static string PerFramework(string path, string framework) =>
+        Path.Combine(Path.GetDirectoryName(path) ?? string.Empty, $"{Path.GetFileNameWithoutExtension(path)}-{framework}{Path.GetExtension(path)}");
+
     internal static string SdkVersion()
     {
         var info = typeof(FelixClient).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
@@ -179,6 +183,8 @@ public sealed class ConformanceFramework : XunitTestFramework
                 return;
             }
 
+            // One document per target framework, so a failure on one is not hidden by the other.
+            path = ConformanceResults.PerFramework(path, $"net{Environment.Version.Major}.0");
             results.WriteTo(path, "Felix.Client (C#)", ConformanceResults.SdkVersion());
             if (!results.IsEmpty)
             {

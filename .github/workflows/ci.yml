@@ -826,7 +826,7 @@ jobs:
           [ -s "$work/fixture.json" ] || { cat "$work/fixture.log"; exit 1; }
           export FELIX_FIXTURE="$work/fixture.json"
           export FELIX_NATIVE_LIB="$PWD/target/release/libfelix.so"
-          # Both target frameworks write this; the last one run is the document.
+          # Each target framework writes its own file (csharp-conformance-net8.0.json, ...).
           export FELIX_CONFORMANCE_RESULTS="$PWD/csharp-conformance.json"
           dotnet test sdks/dotnet/Felix.sln -c Release --no-build
 
@@ -836,7 +836,13 @@ jobs:
       - name: C# conformance verdict
         if: always() && matrix.os == 'ubuntu-latest'
         continue-on-error: true
-        run: cargo run --locked -q -p felix-conformance -- verify csharp-conformance.json
+        run: |
+          status=0
+          for doc in csharp-conformance-net*.json; do
+            cargo run --locked -q -p felix-conformance -- verify "$doc" || status=1
+          done
+          [ -e csharp-conformance-net8.0.json ] && [ -e csharp-conformance-net10.0.json ] || status=1
+          exit "$status"
 
   # The formal model of one shard's lease, replication and promotion, checked
   # with TLC. Bounded, so it finishes in minutes; each configuration says

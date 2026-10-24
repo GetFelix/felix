@@ -62,20 +62,32 @@ public sealed class FelixShardedGroup : IAsyncDisposable, IDisposable
     public FelixGroup OnShard(uint shard) => client.JoinGroup(Tenant, Namespace, Stream, shard, Name);
 
     /// <inheritdoc cref="FelixGroup.AckAsync(GroupRecord, CancellationToken)" />
-    public Task AckAsync(GroupRecord record, CancellationToken cancellationToken = default) =>
-        OnShard(record.Shard).AckAsync(record, cancellationToken);
+    public Task AckAsync(GroupRecord record, CancellationToken cancellationToken = default) 
+    {
+        ArgumentNullException.ThrowIfNull(record);
+        return OnShard(record.Shard).AckAsync(record, cancellationToken);
+    }
 
     /// <inheritdoc cref="FelixGroup.NackAsync" />
-    public Task NackAsync(GroupRecord record, TimeSpan delay = default, CancellationToken cancellationToken = default) =>
-        OnShard(record.Shard).NackAsync(record, delay, cancellationToken);
+    public Task NackAsync(GroupRecord record, TimeSpan delay = default, CancellationToken cancellationToken = default) 
+    {
+        ArgumentNullException.ThrowIfNull(record);
+        return OnShard(record.Shard).NackAsync(record, delay, cancellationToken);
+    }
 
     /// <inheritdoc cref="FelixGroup.ExtendAsync" />
-    public Task<TimeSpan> ExtendAsync(GroupRecord record, TimeSpan extension, CancellationToken cancellationToken = default) =>
-        OnShard(record.Shard).ExtendAsync(record, extension, cancellationToken);
+    public Task<TimeSpan> ExtendAsync(GroupRecord record, TimeSpan extension, CancellationToken cancellationToken = default) 
+    {
+        ArgumentNullException.ThrowIfNull(record);
+        return OnShard(record.Shard).ExtendAsync(record, extension, cancellationToken);
+    }
 
     /// <inheritdoc cref="FelixGroup.DeadLetterAsync(GroupRecord, CancellationToken)" />
-    public Task DeadLetterAsync(GroupRecord record, CancellationToken cancellationToken = default) =>
-        OnShard(record.Shard).DeadLetterAsync(record, cancellationToken);
+    public Task DeadLetterAsync(GroupRecord record, CancellationToken cancellationToken = default) 
+    {
+        ArgumentNullException.ThrowIfNull(record);
+        return OnShard(record.Shard).DeadLetterAsync(record, cancellationToken);
+    }
 
     /// <summary>Frees the group.</summary>
     public void Dispose() => handle.Dispose();
