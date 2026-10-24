@@ -50,12 +50,19 @@ use felix_replication::peer::pool::PeerError;
 /// chasing it.
 const MAX_ATTEMPTS: u32 = 3;
 
+/// Bound on learning a cache owner's capabilities before the first forward
+/// to it; the request that follows has its own timeout.
+const CACHE_CAPABILITY_WAIT: Duration = Duration::from_secs(1);
+
 /// Where a publish is being sent, as this broker currently resolves it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForwardTarget {
     pub node_id: String,
     pub advertise_addr: SocketAddr,
     pub generation: u64,
+    /// The stream or cache incarnation the route was for, 0 for one from
+    /// before incarnations.
+    pub incarnation: u64,
 }
 
 /// Which shard the batch belongs to.
@@ -137,6 +144,7 @@ pub async fn forward_publish(
                 detail: budget_spent(&target.node_id, budget, attempt, &last),
             });
         };
+        let incarnation = named_incarnation(pool, &target, remaining).await;
         let request = InternalMessage::ForwardPublish(ForwardPublish {
             // The pool assigns the real id; it owns the connection this lands on.
             correlation_id: 0,
@@ -146,7 +154,7 @@ pub async fn forward_publish(
                 stream: key.stream.clone(),
                 shard: key.shard,
                 generation: target.generation,
-                incarnation: None,
+                incarnation,
             },
             ack,
             payloads: payloads.clone(),
@@ -222,6 +230,9 @@ pub async fn forward_publish(
                     node_id: moved.node_id,
                     advertise_addr,
                     generation: moved.generation,
+                    // A redirect is for the same stream; the owner it names
+                    // checks the incarnation again.
+                    incarnation: target.incarnation,
                 };
             }
             Ok(InternalMessage::ForwardPublishError(err))
@@ -287,6 +298,35 @@ pub async fn forward_publish(
         code: last_code,
         detail: format!("gave up after {MAX_ATTEMPTS} attempts: {last}"),
     })
+}
+
+/// The incarnation a forward to `target` names: the route's, once there is
+/// one (incarnations exist only once the fleet finalized them) and the owner
+/// offered to read it. A broker that predates the envelope around a forward
+/// refuses the frame, so it is sent the plain kind and checks generation
+/// alone, as it always did.
+async fn named_incarnation(
+    pool: &impl PeerRequester,
+    target: &ForwardTarget,
+    wait: Duration,
+) -> Option<u64> {
+    if target.incarnation == 0 {
+        return None;
+    }
+    let offered = match pool.recorded_capabilities(&target.node_id) {
+        Some(offered) => offered,
+        // No handshake with it yet: the request would dial it anyway.
+        None => tokio::time::timeout(
+            wait,
+            PeerRequester::capabilities(pool, &target.node_id, target.advertise_addr),
+        )
+        .await
+        .ok()?
+        .ok()?,
+    };
+    offered
+        .contains(PeerCapabilities::FORWARD_INCARNATION)
+        .then_some(target.incarnation)
 }
 
 /// What a cache operation asks the owner to do.
@@ -419,6 +459,7 @@ pub async fn forward_cache_request(
         if attempt > 0 {
             metrics::record_forward_retry();
         }
+        let incarnation = named_incarnation(pool, &target, CACHE_CAPABILITY_WAIT).await;
         let message = InternalMessage::ForwardCacheOp(ForwardCacheOp {
             correlation_id: 0,
             shard: ShardRef {
@@ -427,7 +468,7 @@ pub async fn forward_cache_request(
                 stream: key.stream.clone(),
                 shard: key.shard,
                 generation: target.generation,
-                incarnation: None,
+                incarnation,
             },
             op,
             key: cache_key.to_string(),
@@ -481,6 +522,7 @@ pub async fn forward_cache_request(
                     node_id: moved.node_id,
                     advertise_addr,
                     generation: moved.generation,
+                    incarnation: target.incarnation,
                 };
             }
             Ok(InternalMessage::ForwardPublishError(err))

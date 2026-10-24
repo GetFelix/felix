@@ -17,6 +17,8 @@ struct ScriptedOwner {
     answers: Mutex<std::collections::VecDeque<std::result::Result<InternalMessage, PeerError>>>,
     asked: Mutex<Vec<(String, u64)>>,
     kinds: Mutex<Vec<felix_wire::internal::Kind>>,
+    /// The incarnation each request named.
+    incarnations: Mutex<Vec<Option<u64>>>,
     /// What the owner offered in its handshake.
     offered: Option<PeerCapabilities>,
 }
@@ -29,6 +31,7 @@ impl ScriptedOwner {
             answers: Mutex::new(answers.into_iter().collect()),
             asked: Mutex::new(Vec::new()),
             kinds: Mutex::new(Vec::new()),
+            incarnations: Mutex::new(Vec::new()),
             offered: Some(PeerCapabilities::FORWARD_OFFSETS),
         }
     }
@@ -61,11 +64,14 @@ impl PeerRequester for ScriptedOwner {
         _addr: SocketAddr,
         message: InternalMessage,
     ) -> std::result::Result<InternalMessage, PeerError> {
-        let generation = match &message {
-            InternalMessage::ForwardPublish(publish) => publish.shard.generation,
-            InternalMessage::ForwardCacheOp(op) => op.shard.generation,
+        let (generation, incarnation) = match &message {
+            InternalMessage::ForwardPublish(publish) => {
+                (publish.shard.generation, publish.shard.incarnation)
+            }
+            InternalMessage::ForwardCacheOp(op) => (op.shard.generation, op.shard.incarnation),
             other => panic!("forwarding sent a {:?}", other.kind()),
         };
+        self.incarnations.lock().expect("lock").push(incarnation);
         self.asked
             .lock()
             .expect("lock")
@@ -91,6 +97,7 @@ fn target() -> ForwardTarget {
         node_id: "broker-b".to_string(),
         advertise_addr: "10.0.0.4:7002".parse().expect("addr"),
         generation: 4,
+        incarnation: 0,
     }
 }
 
@@ -531,4 +538,56 @@ async fn an_owner_that_predates_conditions_refuses_the_write_and_serves_the_read
             Kind::AuthorizedForwardCacheOp
         ],
     );
+}
+
+/// **A forward names its route's incarnation only to an owner that offered
+/// to read it**, and only once there is one: a broker that predates the
+/// envelope around a forward refuses the frame, and a stream or cache from
+/// before incarnations travels as it always did.
+#[tokio::test]
+async fn a_forward_names_its_incarnation_only_to_an_owner_that_reads_it() {
+    let reads = PeerCapabilities::FORWARD_OFFSETS.union(PeerCapabilities::FORWARD_INCARNATION);
+    let cases = [
+        (9, Some(reads), Some(9)),
+        (9, Some(PeerCapabilities::FORWARD_OFFSETS), None),
+        (0, Some(reads), None),
+        // No handshake recorded, and the default requester reports nothing.
+        (9, None, None),
+    ];
+    for (incarnation, offered, named) in cases {
+        let target = ForwardTarget {
+            incarnation,
+            ..target()
+        };
+        let owner = ScriptedOwner {
+            offered,
+            ..ScriptedOwner::new([
+                Ok(accepted(0, 0)),
+                Ok(InternalMessage::ForwardCacheOk(ForwardCacheOk {
+                    correlation_id: 0,
+                    value: None,
+                    outcome: None,
+                })),
+            ])
+        };
+        forward_publish(
+            &owner,
+            &target,
+            &key(),
+            AckMode::OnCommit,
+            "token",
+            vec![Bytes::from_static(b"an order")],
+            Duration::from_secs(30),
+        )
+        .await
+        .expect("accepted");
+        forward_cache_op(&owner, &target, &key(), "k", "token", &CacheRequest::Get)
+            .await
+            .expect("answered");
+        assert_eq!(
+            *owner.incarnations.lock().expect("lock"),
+            vec![named, named],
+            "incarnation {incarnation}, owner offered {offered:?}",
+        );
+    }
 }

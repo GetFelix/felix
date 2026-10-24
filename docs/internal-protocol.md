@@ -112,6 +112,7 @@ never have dialled the one that shipped to it.
 | `1 << 10` | `STORAGE_IDENTITY` | answers a `HelloCapable` that offers this bit with its storage identity (see "Storage identity" below) |
 | `1 << 11` | `NODE_INCARNATION` | answers a `HelloCapable` that offers this bit with its node incarnation, and closes the connection once that changes (see "Node incarnation" below) |
 | `1 << 12` | `LANE_RENEWAL` | offered by a caller: it replaces a request stream it gets no answer on, so the listener may drop a stream whose handler overran (see "The transport") |
+| `1 << 13` | `FORWARD_INCARNATION` | reads a forwarded publish or cache op inside an `Incarnated` frame, and refuses one whose incarnation is not the one its routes name (see "Naming the stream incarnation") |
 
 <!-- `1 << 9` is reserved for `ELECTION` (#1009). -->
 
@@ -271,6 +272,14 @@ assignment generation it resolved against; the owner compares it with its own.
 
 That asymmetry is the point. A generation mismatch in either direction is an
 explicit typed answer, and **never a successful ownership claim**.
+
+A forward can also name the incarnation of the stream its route was for. The
+owner checks that first, because generations of two incarnations say nothing
+about each other: a stream deleted and created again can start at the
+generation the deleted one had, for example after a control-plane restore
+rewinds the change sequence. Any other incarnation than the one the owner's
+routes name is answered `StaleRoute`. See
+[Naming the stream incarnation](#naming-the-stream-incarnation).
 
 ### Authorization across a forward
 
@@ -772,6 +781,23 @@ a request for a cache shard (cache records, counter records, their bootstraps,
 and a follower that has not registered the cache or holds another incarnation
 answers `StaleRoute`. See `docs/durable-storage.md`, "Deleting a cache".
 
+A forwarded publish or cache op names the incarnation of the assignment the
+ingress broker routed it by, in the same envelope, when it is not 0 and the
+owner offered `FORWARD_INCARNATION`. Here a capability bit is needed: a broker
+can report `stream_incarnations` and still predate the envelope around a
+forward, which it refuses as malformed. To an owner without the bit, and for a
+stream or cache from before incarnations, the forward is its own kind byte for
+byte and is checked by generation alone.
+
+The owner compares the named incarnation with the one its own routes give the
+shard, before the generation. If its routes are behind, it waits for them as it
+does for a newer generation. Any mismatch is answered `StaleRoute` and nothing
+is written: the ingress broker's routes are for a stream that was deleted, or
+the owner's are. A forward that names none is checked by generation alone,
+which is what an ingress broker from before the check sends. Recreating a name
+deleted before incarnations were finalized is refused by the control plane, so
+an incarnation-0 route for a name that now has an incarnation does not arise.
+
 ### Pinging a leader
 
 A follower asks each broker that leads a shard it follows whether it is there:
@@ -796,7 +822,7 @@ Typed, because they need different responses:
 | --- | --- | --- |
 | `NotLeader` | the shard is owned elsewhere | retry against the named owner |
 | version mismatch | the peer speaks a version this broker does not know | the connection closes; there is no frame to answer with, because a reply would carry the version the peer just rejected |
-| `StaleRoute` | the *responder* is behind the requester's generation | retry shortly; the owner is catching up |
+| `StaleRoute` | the *responder* is behind the requester's generation, or the two name different incarnations of the stream or cache | retry shortly; the owner, or the requester's routes, are catching up |
 | `Unavailable` | the owner cannot serve right now, e.g. still opening | retry with backoff |
 | `Unauthorized` | the peer is not permitted, or the credential a forward carries is missing or does not allow the write | do not retry |
 | `Overload` | the owner is shedding load | retry with backoff |

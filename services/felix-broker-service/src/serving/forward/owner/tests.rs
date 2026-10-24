@@ -122,6 +122,12 @@ fn cache_key() -> felix_router::ShardKey {
 
 /// A router in which this broker leads the shard with one follower.
 fn router() -> Arc<ShardRouter> {
+    router_at(0)
+}
+
+/// [`router`], with both assignments for `incarnation` of their stream and
+/// cache.
+fn router_at(incarnation: u64) -> Arc<ShardRouter> {
     let router = Arc::new(ShardRouter::new(
         LOCAL,
         "us-west-2",
@@ -144,21 +150,18 @@ fn router() -> Arc<ShardRouter> {
             )
         })
         .collect();
-    let table = RoutingTable::build(
-        [
-            (
-                key(),
-                LOCAL.to_string(),
-                vec!["broker-b".to_string(), "broker-c".to_string()],
-                GENERATION,
-            ),
-            (
-                cache_key(),
-                LOCAL.to_string(),
-                vec!["broker-b".to_string(), "broker-c".to_string()],
-                GENERATION,
-            ),
-        ],
+    let table = RoutingTable::build_with(
+        [key(), cache_key()].map(|key| felix_router::Placed {
+            key,
+            leader: LOCAL.to_string(),
+            replicas: vec!["broker-b".to_string(), "broker-c".to_string()],
+            generation: GENERATION,
+            draining: false,
+            successor: None,
+            routing: felix_wire::routing::ShardRouting::Modulo,
+            incarnation,
+            fence_storage_ids: Default::default(),
+        }),
         &nodes,
     );
     router.publish(table, &nodes);
@@ -215,7 +218,16 @@ fn handler_with(
     timeout: Duration,
     auth: Arc<BrokerAuth>,
 ) -> ForwardingHandler {
-    let router = router();
+    handler_routed(broker, marks, timeout, auth, router())
+}
+
+fn handler_routed(
+    broker: Arc<Broker>,
+    marks: Option<Arc<QuorumMarks>>,
+    timeout: Duration,
+    auth: Arc<BrokerAuth>,
+    router: Arc<ShardRouter>,
+) -> ForwardingHandler {
     let ingress = Arc::new(crate::shards::routing::IngressRouter::new(
         Arc::clone(&router),
         Arc::default(),
@@ -1017,4 +1029,68 @@ async fn a_forwarded_conditional_put_answers_with_its_outcome() {
         ),
         other => panic!("not served: {other:?}"),
     }
+}
+
+/// **A forward routed by another incarnation's assignment is refused**, even
+/// at the owner's own generation: a stream deleted and created again can
+/// start at the generation the deleted one had (after a control-plane restore
+/// rewinds the change sequence), and generation alone would put the deleted
+/// stream's write in the new one. A forward that names the owner's
+/// incarnation, or none, is served as before.
+#[tokio::test]
+async fn a_forward_for_another_incarnation_is_refused_and_writes_nothing() {
+    let (broker, _dir) = broker_with(ConsistencyLevel::Leader).await;
+    let credentials = Credentials::new();
+    let handler = handler_routed(
+        Arc::clone(&broker),
+        None,
+        Duration::from_secs(1),
+        Arc::clone(&credentials.auth),
+        router_at(5),
+    );
+    let tail = || async {
+        broker
+            .cursor_tail(TENANT, NAMESPACE, STREAM, 0)
+            .await
+            .expect("tail")
+            .next_seq()
+    };
+
+    for sent in [4, 6] {
+        let mut publish = forwarded_with(credentials.publisher());
+        publish.shard.incarnation = Some(sent);
+        match handler.apply(publish).await {
+            InternalMessage::ForwardPublishError(err) => {
+                assert_eq!(err.code, ErrorCode::StaleRoute, "{}", err.detail);
+                assert!(err.detail.contains("incarnation 5"), "{}", err.detail);
+            }
+            other => panic!("incarnation {sent} was not refused: {other:?}"),
+        }
+        assert_eq!(tail().await, 0, "incarnation {sent} reached the log");
+
+        let mut op = forwarded_cache_op(
+            CacheOpKind::Put,
+            credentials.token(&[&format!("cache.write:cache:{TENANT}/{NAMESPACE}/{CACHE}")]),
+        );
+        op.shard.incarnation = Some(sent);
+        match handler.apply_cache_op(op).await {
+            InternalMessage::ForwardCacheError(err) => {
+                assert_eq!(err.code, ErrorCode::StaleRoute, "{}", err.detail);
+            }
+            other => panic!("cache incarnation {sent} was not refused: {other:?}"),
+        }
+    }
+
+    for sent in [Some(5), None] {
+        let mut publish = forwarded_with(credentials.publisher());
+        publish.shard.incarnation = sent;
+        assert!(
+            matches!(
+                handler.apply(publish).await,
+                InternalMessage::ForwardPublishOk(_)
+            ),
+            "a forward naming {sent:?} was refused",
+        );
+    }
+    assert_eq!(tail().await, 2);
 }

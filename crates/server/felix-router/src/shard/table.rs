@@ -239,8 +239,8 @@ pub struct Route {
     /// The node a move in progress is handing the shard to, when the control
     /// plane has named one. Always one of `replicas`.
     pub successor: Option<String>,
-    /// Which incarnation of the stream the assignment is for; 0 for a cache,
-    /// and for a stream from before incarnations.
+    /// Which incarnation of the stream or cache the assignment is for; 0 for
+    /// one from before incarnations.
     pub incarnation: u64,
     /// The storage identity, by node id, that the replica report a failover
     /// was decided on named for each replica. A leader promoted by that

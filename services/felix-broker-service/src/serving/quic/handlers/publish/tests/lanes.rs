@@ -53,6 +53,7 @@ async fn a_stalled_forward_does_not_hold_up_another_shard() {
                 node_id: "broker-b".to_string(),
                 advertise_addr: blackhole.local_addr().expect("addr"),
                 generation: 1,
+                incarnation: 0,
             },
             key: ForwardKey {
                 tenant_id: "t2".to_string(),
@@ -181,6 +182,7 @@ async fn forwards_to_one_shard_reach_the_owner_in_order() {
                     node_id: "broker-b".to_string(),
                     advertise_addr: owner_addr,
                     generation: 1,
+                    incarnation: 0,
                 },
                 key: ForwardKey {
                     tenant_id: "t2".to_string(),

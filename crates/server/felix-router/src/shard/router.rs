@@ -138,7 +138,8 @@ impl ShardRouter {
         }
     }
 
-    /// The stream incarnation `key`'s assignment names, if the table has one.
+    /// The stream or cache incarnation `key`'s assignment names, if the
+    /// table has one.
     pub fn incarnation(&self, key: &ShardKey) -> Option<u64> {
         self.routes
             .load()
@@ -200,6 +201,7 @@ impl ShardRouter {
             node_id: route.leader.node_id.clone(),
             advertise_addr: route.leader.advertise_addr,
             generation: route.generation,
+            incarnation: route.incarnation,
         }
     }
 }
@@ -216,6 +218,9 @@ pub enum Resolution {
         node_id: String,
         advertise_addr: SocketAddr,
         generation: u64,
+        /// The stream or cache incarnation the assignment is for; see
+        /// [`Route::incarnation`](crate::Route::incarnation).
+        incarnation: u64,
     },
     /// The caller's view of the assignment is newer than this router's.
     ///

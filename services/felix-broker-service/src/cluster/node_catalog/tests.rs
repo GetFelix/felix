@@ -419,6 +419,7 @@ fn a_redirect_to_a_draining_broker_carries_its_client_address() {
             node_id: "broker-a".to_string(),
             advertise_addr: "10.0.0.4:7000".parse().expect("addr"),
             generation: 3,
+            incarnation: 0,
         },
         Some(&endpoints),
         "orders",

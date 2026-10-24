@@ -310,7 +310,7 @@ impl InternalMessage {
             return Err(Error::FrameTooLarge);
         }
 
-        let incarnation = self.replication_shard().and_then(|shard| shard.incarnation);
+        let incarnation = self.incarnated_shard().and_then(|shard| shard.incarnation);
         let (kind, body) = match incarnation {
             None => (self.kind(), body),
             Some(incarnation) => {
@@ -365,7 +365,7 @@ impl InternalMessage {
                 if message.correlation_id() != correlation_id {
                     return Err(Error::Incomplete);
                 }
-                let shard = message.replication_shard_mut().ok_or(Error::Incomplete)?;
+                let shard = message.incarnated_shard_mut().ok_or(Error::Incomplete)?;
                 shard.incarnation = Some(incarnation);
                 Ok(message)
             }

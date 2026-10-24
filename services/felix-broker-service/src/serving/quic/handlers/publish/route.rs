@@ -78,11 +78,13 @@ pub(crate) async fn resolve_route(
                 node_id,
                 advertise_addr,
                 generation,
+                incarnation,
             } => {
                 return PublishRoute::Forward(ForwardTarget {
                     node_id,
                     advertise_addr,
                     generation,
+                    incarnation,
                 });
             }
             Dispatch::Unavailable(reason) => {

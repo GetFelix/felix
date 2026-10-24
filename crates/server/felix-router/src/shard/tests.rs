@@ -71,6 +71,7 @@ fn a_shard_led_elsewhere_resolves_remote_with_an_address() {
             node_id: "broker-b".to_string(),
             advertise_addr: SocketAddr::from(([10, 0, 0, 4], 7002)),
             generation: 7,
+            incarnation: 0,
         },
     );
 }
@@ -150,6 +151,7 @@ fn a_bridge_makes_another_region_routable() {
             node_id: "broker-far".to_string(),
             advertise_addr: SocketAddr::from(([10, 0, 0, 4], 7004)),
             generation: 2,
+            incarnation: 0,
         },
     );
 }

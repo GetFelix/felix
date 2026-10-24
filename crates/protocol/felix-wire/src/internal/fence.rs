@@ -82,6 +82,12 @@ impl PeerCapabilities {
     /// request timeout; to a caller without it, the stream is kept and the
     /// late answer still sent.
     pub const LANE_RENEWAL: Self = Self(1 << 12);
+    /// Reads a forwarded publish or cache op in a [`Kind::Incarnated`]
+    /// envelope, and refuses one whose incarnation is not the one its own
+    /// route names for the shard.
+    ///
+    /// [`Kind::Incarnated`]: super::Kind::Incarnated
+    pub const FORWARD_INCARNATION: Self = Self(1 << 13);
 
     pub fn from_bits(bits: u64) -> Self {
         Self(bits)
