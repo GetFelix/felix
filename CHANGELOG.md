@@ -37,6 +37,12 @@ from reading.
 - On a new cluster, start every broker with the same `FELIX_QUORUM_READS` and
   `FELIX_INTERNAL_FENCE`.
 
+**Known issues.**
+
+- With `pub_ingress_wait` on, fire-and-forget batches of 256 B messages run about
+  13% slower than on the build the performance runs measured (#1469). Larger
+  messages, acked publishes and the shipped defaults are unaffected.
+
 ### Security
 - Updated `rustls-webpki` to 0.103.16 and `webpki-roots` and `webpki-root-certs` to 1.0.10 for RUSTSEC-2026-0382 and
   RUSTSEC-2026-0383, in the workspace and every out-of-workspace lockfile.
