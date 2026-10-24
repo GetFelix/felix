@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792857585758,
+  "lastUpdate": 1792859431521,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -34684,6 +34684,58 @@ window.BENCHMARK_DATA = {
             "range": "10466.95",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 786291.48\nmean: 791671.94\nstdev: 10466.95\ncv: 1.32%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "58cdd72dafce4d8d09f3169785c499fee13cb9d6",
+          "message": "fix(ci): compose smoke reads all of a pipe before matching (#1498)\n\nThe readiness check ran `compose logs ... | grep -q 'Felix is up'` under\npipefail. grep -q exits on its match, compose logs can then die of SIGPIPE\n(141), and the pipeline fails although the line is there: the job reported\nthat the stack never printed its connection settings, beside a log that\nshows it did (main 181d3c50, PR #1483). Match through a helper that reads\nall of its input.\n\nSpec-Unaffected: CI script only.",
+          "timestamp": "2026-10-24T16:27:10Z",
+          "tree_id": "752b8de98c9595ac7aa452dff41f002bdf9d4e60",
+          "url": "https://github.com/GetFelix/felix/commit/58cdd72dafce4d8d09f3169785c499fee13cb9d6"
+        },
+        "date": 1792859430924,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 693690.6,
+            "range": "57684.15",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 693690.60\nmean: 671231.10\nstdev: 57684.15\ncv: 8.59%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 693690.6,
+            "range": "57684.15",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 693690.60\nmean: 671231.10\nstdev: 57684.15\ncv: 8.59%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 170023.16,
+            "range": "1963.16",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 170023.16\nmean: 170210.71\nstdev: 1963.16\ncv: 1.15%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1700231.6,
+            "range": "19631.57",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1700231.60\nmean: 1702107.11\nstdev: 19631.57\ncv: 1.15%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
