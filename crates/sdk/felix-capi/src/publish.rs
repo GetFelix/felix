@@ -579,12 +579,13 @@ unsafe fn target<'a>(
     ))
 }
 
-/// Run a publish on the client's runtime and hand its outcome to `report`.
+/// Run a publish, or any write, on the client's runtime and hand its outcome
+/// to `report`.
 ///
-/// A publish is not cancel-safe: once started the record may land anyway.
+/// A write is not cancel-safe: once started the record may land anyway.
 /// So a publish cancelled before it starts reports `FELIX_STATUS_CANCELLED`,
 /// and one cancelled after, `FELIX_STATUS_OUTCOME_UNKNOWN`.
-fn spawn_publish<V, T, F>(
+pub(crate) fn spawn_publish<V, T, F>(
     client: &FelixClient,
     user: Option<CancellationToken>,
     done: Completion<V>,
@@ -604,7 +605,7 @@ fn spawn_publish<V, T, F>(
             biased;
             () = cancelled(&handle, user.as_ref()) => done.fail(Failure {
                 status: FELIX_STATUS_OUTCOME_UNKNOWN,
-                message: "the publish was cancelled after it may have been sent".to_string(),
+                message: "the write was cancelled after it may have been sent".to_string(),
             }),
             outcome = publish => report(done, outcome),
         }
