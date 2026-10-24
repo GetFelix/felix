@@ -6,7 +6,7 @@
  *     Argument checking, the last-error channel, and connects that fail or
  *     are cancelled. Needs no broker.
  *
- *   pubsub fixture ADDRS TENANT NAMESPACE TOKEN CA_FILE STREAM MISSING UNAUTHORIZED_TOKEN
+ *   pubsub fixture ADDRS TENANT NAMESPACE TOKEN CA_FILE STREAM MISSING UNAUTHORIZED_TOKEN GROUP_OPERATOR_TOKEN
  *     The publish, batch, subscribe, subscription and group scenarios, against `felix-cluster
  *     client-fixture`. tests/c/run.sh starts the fixture and passes its
  *     fields in.
@@ -262,7 +262,7 @@ static FelixStatus connect_sync(const char *addrs, const char *tenant,
 
 struct fixture {
   const char *addrs, *tenant, *ns, *token, *ca_file, *stream, *missing,
-      *unauthorized_token;
+      *unauthorized_token, *group_operator_token;
 };
 
 static void offline(void) {
@@ -1252,8 +1252,11 @@ static void on_shards(void *user_data, FelixStatus status, const char *message,
   finish(&r->w, status, message, NULL);
 }
 
+/* `client` consumes groups; `admin` holds group.manage and creates, seeks and
+   deletes them, and discards and redrives dead letters. */
 struct gctx {
   FelixClient *client;
+  FelixClient *admin;
   const struct fixture *f;
   uint32_t shard;
   const char *group;
@@ -1275,7 +1278,7 @@ static FelixStatus g_create(const struct gctx *g, FelixStartKind start,
   struct gres r;
   gres_init(&r);
   FelixStatus status = gwait(
-      &r, felix_client_group_create(g->client, g->f->tenant, g->f->ns,
+      &r, felix_client_group_create(g->admin, g->f->tenant, g->f->ns,
                                     g->f->stream, g->shard, g->group, start, 0,
                                     NULL, on_position, &r));
   *offset = r.position;
@@ -1289,7 +1292,7 @@ static FelixStatus g_seek(const struct gctx *g, FelixStartKind start,
   struct gres r;
   gres_init(&r);
   FelixStatus status = gwait(
-      &r, felix_client_group_seek(g->client, g->f->tenant, g->f->ns,
+      &r, felix_client_group_seek(g->admin, g->f->tenant, g->f->ns,
                                   g->f->stream, g->shard, g->group, start, 0,
                                   NULL, on_position, &r));
   *offset = r.position;
@@ -1334,6 +1337,9 @@ static FelixStatus g_settle(const struct gctx *g, const char *what,
   struct gres r;
   gres_init(&r);
   const FelixClient *c = g->client;
+  if (strcmp(what, "discard") == 0 || strcmp(what, "redrive") == 0) {
+    c = g->admin;
+  }
   const char *t = g->f->tenant, *n = g->f->ns, *s = g->f->stream;
   FelixStatus started;
   if (strcmp(what, "ack") == 0) {
@@ -1402,7 +1408,7 @@ static FelixStatus g_delete(const struct gctx *g, bool *existed) {
   struct gres r;
   gres_init(&r);
   FelixStatus status = gwait(
-      &r, felix_client_group_delete(g->client, g->f->tenant, g->f->ns,
+      &r, felix_client_group_delete(g->admin, g->f->tenant, g->f->ns,
                                     g->f->stream, g->shard, g->group, NULL,
                                     on_deleted, &r));
   *existed = r.existed;
@@ -1440,7 +1446,14 @@ static void groups(const struct fixture *f, const char *run) {
   snprintf(name, sizeof name, "cg-%s", run);
   snprintf(idle_name, sizeof idle_name, "cg-%s-idle", run);
   snprintf(consumer, sizeof consumer, "consumer-%s", run);
-  struct gctx g = {client, f, 1, name};
+  FelixClient *admin = NULL;
+  if (connect_sync(f->addrs, f->tenant, f->group_operator_token, f->ca_file,
+                   &admin) != FELIX_STATUS_OK) {
+    CHECK(0, "the group operator could not connect");
+    felix_client_free(client);
+    return;
+  }
+  struct gctx g = {client, admin, f, 1, name};
   uint64_t offset = 0;
   bool moved = false;
 
@@ -1463,6 +1476,7 @@ static void groups(const struct fixture *f, const char *run) {
 
   struct grecord got[4];
   if (g_collect(&g, consumer, 3, got) != 3) {
+    felix_client_free(admin);
     felix_client_free(client);
     return;
   }
@@ -1591,15 +1605,16 @@ static void groups(const struct fixture *f, const char *run) {
   CHECK(r.w.calls == 0, "a refused group call ran its callback");
   waiter_destroy(&r.w);
 
+  felix_client_free(admin);
   felix_client_free(client);
 }
 
 int main(int argc, char **argv) {
   if (argc == 2 && strcmp(argv[1], "offline") == 0) {
     offline();
-  } else if (argc == 10 && strcmp(argv[1], "fixture") == 0) {
+  } else if (argc == 11 && strcmp(argv[1], "fixture") == 0) {
     struct fixture f = {argv[2], argv[3], argv[4], argv[5], argv[6],
-                        argv[7], argv[8], argv[9]};
+                        argv[7], argv[8], argv[9], argv[10]};
     /* Nanoseconds too: the shared and static builds run within a second of
        each other against the same fixture, and group names must not repeat. */
     struct timespec ts;
@@ -1612,7 +1627,8 @@ int main(int argc, char **argv) {
     groups(&f, run);
   } else {
     fprintf(stderr, "usage: %s offline | fixture ADDRS TENANT NAMESPACE TOKEN "
-                    "CA_FILE STREAM MISSING UNAUTHORIZED_TOKEN\n",
+                    "CA_FILE STREAM MISSING UNAUTHORIZED_TOKEN "
+                    "GROUP_OPERATOR_TOKEN\n",
             argv[0]);
     return 2;
   }

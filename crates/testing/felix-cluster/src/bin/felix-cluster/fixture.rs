@@ -151,6 +151,7 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
         control_url: Some(control_url.clone()),
         link_addr: Some(link.addr().to_string()),
         link_stream: Some(LINK_STREAM.to_string()),
+        group_operator_token: Some(cluster.group_operator_token()),
         faults: felix_conformance::kit::catalogue()?.fault_scenarios(),
     };
     let body = serde_json::to_vec_pretty(&fixture).context("encode the fixture")?;

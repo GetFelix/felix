@@ -198,6 +198,11 @@ visibility override with the same error the Rust client raises. The status is
 the broker's error class; a `stale_claim` refusal is `FELIX_STATUS_ERROR` with
 the reason in the message.
 
+Creating, seeking and deleting a group, and discarding or redriving a dead
+letter, need the `group.manage` permission; polling, settling, extending,
+listing dead letters and describing need only consumer access. The C test
+uses a second client with the fixture's group operator token for the former.
+
 For a C# binding, copy the poll's records inside the callback and keep
 `(offset, attempts)` as a plain struct to settle with.
 
