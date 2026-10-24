@@ -57,6 +57,23 @@ internal sealed class FelixEventHandle : SafeHandle
     }
 }
 
+internal sealed class FelixShardedGroupHandle : SafeHandle
+{
+    internal FelixShardedGroupHandle(nint handle)
+        : base(0, true)
+    {
+        SetHandle(handle);
+    }
+
+    public override bool IsInvalid => handle == 0;
+
+    protected override bool ReleaseHandle()
+    {
+        NativeMethods.felix_sharded_group_free(handle);
+        return true;
+    }
+}
+
 /// <summary>Holds a SafeHandle's reference for the span of one native call.</summary>
 internal readonly struct HandleLease : IDisposable
 {

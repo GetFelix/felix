@@ -826,7 +826,17 @@ jobs:
           [ -s "$work/fixture.json" ] || { cat "$work/fixture.log"; exit 1; }
           export FELIX_FIXTURE="$work/fixture.json"
           export FELIX_NATIVE_LIB="$PWD/target/release/libfelix.so"
+          # Both target frameworks write this; the last one run is the document.
+          export FELIX_CONFORMANCE_RESULTS="$PWD/csharp-conformance.json"
           dotnet test sdks/dotnet/Felix.sln -c Release --no-build
+
+      # Not blocking yet: the C# SDK binds the C ABI step by step, so scenarios
+      # for surfaces it has not reached are still missing. The gate becomes
+      # blocking, like the Python and C verdicts, once the whole surface is bound.
+      - name: C# conformance verdict
+        if: always() && matrix.os == 'ubuntu-latest'
+        continue-on-error: true
+        run: cargo run --locked -q -p felix-conformance -- verify csharp-conformance.json
 
   # The formal model of one shard's lease, replication and promotion, checked
   # with TLC. Bounded, so it finishes in minutes; each configuration says

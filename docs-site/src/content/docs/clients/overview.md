@@ -175,7 +175,7 @@ worth writing code for.
 | **[Python](/clients/python/)** | `felix-client` on PyPI | A PyO3 binding, with a synchronous and an asyncio surface over the same Rust client. |
 | **[TypeScript](/clients/typescript/)** | `felix-client` on npm | A napi-rs addon. One asynchronous surface, because blocking Node's event loop is not something a library may do. |
 | **[C](/clients/c/)** | `libfelix` and `felix.h`, built from the repository | A C ABI over the Rust client, asynchronous through callbacks. The base for the C# SDK; not on a registry. |
-| **[C#](/clients/csharp/)** | `Felix.Client`, built from `sdks/dotnet` | A P/Invoke binding over the C ABI: connect, publish and subscribe to a shard so far. Not on NuGet yet. |
+| **[C#](/clients/csharp/)** | `Felix.Client`, built from `sdks/dotnet` | A P/Invoke binding over the C ABI: connect, publish, subscribe to a shard, consumer groups and publisher and timestamp metadata so far. Not on NuGet yet. |
 
 ### Which client to use
 
@@ -200,7 +200,8 @@ rather than passing over them in silence; their pages say which.
 No Go client exists. The C# SDK lives in this repository and, like Python and TypeScript, wraps
 the Rust client rather than reimplementing it, binding through P/Invoke to
 `crates/sdk/felix-capi`, the C ABI described on the [C page](/clients/c/). It covers connect,
-publish and subscribe to a shard so far; the [C# page](/clients/csharp/) says what is bound. The
+publish, subscribe to a shard, consumer groups and publisher and timestamp metadata so far; the
+[C# page](/clients/csharp/) says what is bound. The
 ABI covers connect, publishes, subscriptions, consumer groups on a shard, caches,
 counters and watches, atomic commits, conditional publishes and idempotent
 producers, asynchronous through callbacks so a `Task` needs no waiting thread.

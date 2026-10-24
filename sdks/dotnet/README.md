@@ -5,8 +5,9 @@ client, so reconnection, redirects and error classes are the Rust client's. Targ
 net10.0 on Linux, macOS and Windows, each on x64 and arm64; CI tests every one of those natively
 (the broker scenarios on Linux x64 only). The native libraries will ship inside the NuGet package in a later release. Until then, build `felix-capi` and set `FELIX_NATIVE_LIB`.
 
-This step covers connect, publish (single and batch) and subscribe to one shard. Not packaged
-or released yet. See [the C# page](../../docs-site/src/content/docs/clients/csharp.md).
+It covers connect, publish (single and batch), subscribe to one shard, consumer groups (on a
+shard and across every shard, with the stream-wide admin calls) and the publisher and timestamp
+metadata. Caches, commits, producers and multi-shard subscribe follow. Not packaged or released yet. See [the C# page](../../docs-site/src/content/docs/clients/csharp.md).
 
 ```csharp
 await using var client = await FelixClient.ConnectAsync(new FelixClientOptions
@@ -32,3 +33,7 @@ The native library is found at `FELIX_NATIVE_LIB`, next to `Felix.Client.dll`, o
 `runtimes/<rid>/native/`. Scenario tests against a broker are skipped unless `FELIX_FIXTURE` names
 the file written by `felix-cluster client-fixture --out FILE --ca-file CA.PEM`. The version comes
 from the workspace `Cargo.toml`; pass `-p:Version=...` to override it.
+
+Tests tag the conformance scenarios they cover with `[Scenario("id")]`. Set
+`FELIX_CONFORMANCE_RESULTS=FILE` to write the results document, then check it with
+`cargo run -p felix-conformance -- verify FILE`.
