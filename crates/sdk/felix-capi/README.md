@@ -35,14 +35,16 @@ felix_client_publish(client, "t1", "default", "events",
 
 The calls are `felix_client_connect`, the publishes (`felix_client_publish`,
 `felix_client_publish_batch`, `felix_client_publish_on_shard` and
-`felix_client_publish_records`), `felix_client_subscribe` and
-`felix_subscription_next`. Each takes a callback, a `void *user_data`
+`felix_client_publish_records`), the subscribes (`felix_client_subscribe` for one
+shard and `felix_client_subscribe_sharded` for all of them),
+`felix_subscription_next`, `felix_sharded_next` and
+`felix_client_offset_for_time`. Each takes a callback, a `void *user_data`
 passed back to it untouched, and an optional `FelixCancelToken`.
 
 The rules are the same for every function:
 
-- Handles (`FelixClient`, `FelixSubscription`, `FelixEvent`,
-  `FelixCancelToken`) are opaque. Everything the library hands out has a
+- Handles (`FelixClient`, `FelixSubscription`,
+  `FelixShardedSubscription`, `FelixEvent`, `FelixCancelToken`) are opaque. Everything the library hands out has a
   `*_free` function, which accepts null. A handle may be used from several
   threads, but never freed while another thread is using it, a callback
   included.
@@ -131,6 +133,37 @@ byte, so declare it `byte` in an `[UnmanagedCallersOnly]` signature or a
 no key, so pass the empty key from a non-empty buffer. Catch every exception inside the
 callback, since one that escapes ends the process.
 
+### Subscribing
+
+`felix_client_subscribe` reads one shard, named by `shard`; a shard past the
+stream's width is refused by the broker. The subscription follows the shard
+to its owner and resubscribes after the last event when it falls behind, so
+no lag item reaches C. `felix_subscription_start_offset` returns where it
+began, for counting a drop before the first event as
+`offset - start_offset - skipped_before`. Once a read reports
+`FELIX_STATUS_CLOSED`, `felix_subscription_close_reason` says whether the
+broker ended the stream (`FELIX_CLOSE_ENDED`) or it was deleted
+(`FELIX_CLOSE_STREAM_DELETED`); a live one is `FELIX_CLOSE_OPEN`.
+
+`felix_client_subscribe_sharded` opens every shard and merges them, failing
+if any cannot be opened. `felix_sharded_next` completes with an item: a
+record (`FELIX_SHARD_RECORD`, with an event to free) or a notice about one
+shard (`FELIX_SHARD_LOST` with the error text, `FELIX_SHARD_RECOVERED`,
+`FELIX_SHARD_MOVED`, `FELIX_SHARD_STREAM_DELETED`). Order holds within a shard
+only. A caller that ignores `FELIX_SHARD_LOST` reads an incomplete stream
+without knowing it. `felix_sharded_positions` writes the last offset handed
+out per shard, never ahead of what the caller saw, and may be called while a
+read is pending; pass the result to `felix_client_resubscribe_sharded` to
+resume, where listed shards continue after their offset and the rest start at
+`start`.
+
+`felix_client_offset_for_time` finds the first offset on a shard at or after a
+time in microseconds, to subscribe from with `FELIX_START_OFFSET`. No offset
+means nothing is that recent: subscribe at `FELIX_START_LATEST`.
+
+For a C# binding, the item callback's `FelixEvent *` is null unless the kind is
+`FELIX_SHARD_RECORD`, and its message is read only for `FELIX_SHARD_LOST`.
+
 ### Why callbacks, and why pull
 
 A pollable completion handle would still need a notification to complete a
@@ -151,8 +184,9 @@ mutex and condition variable, as [`tests/c/pubsub.c`](tests/c/pubsub.c)
 shows, and one surface keeps every later operation to one function.
 
 This covers connect, every publish the Rust cluster client offers except the
-idempotent and conditional ones, and subscribe on shard 0 of a stream.
-Multi-shard subscribe, groups, caches and commits come later.
+idempotent and conditional ones, and subscribing to one shard or to all of
+them. Event publisher and timestamp fields, groups, caches and commits come
+later.
 
 ## The header
 

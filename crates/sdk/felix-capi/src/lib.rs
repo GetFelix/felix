@@ -29,6 +29,7 @@ mod completion;
 mod error;
 mod event;
 mod publish;
+mod sharded;
 mod status;
 mod subscription;
 
@@ -47,6 +48,13 @@ pub use publish::{
     FelixPublishCallback, FelixRecordResult, felix_client_publish, felix_client_publish_batch,
     felix_client_publish_on_shard, felix_client_publish_records,
 };
+pub use sharded::{
+    FELIX_SHARD_LOST, FELIX_SHARD_MOVED, FELIX_SHARD_NONE, FELIX_SHARD_RECORD,
+    FELIX_SHARD_RECOVERED, FELIX_SHARD_STREAM_DELETED, FelixShardItemCallback, FelixShardItemKind,
+    FelixShardedSubscribeCallback, FelixShardedSubscription, felix_client_resubscribe_sharded,
+    felix_client_subscribe_sharded, felix_sharded_next, felix_sharded_positions,
+    felix_sharded_shards, felix_sharded_subscription_free,
+};
 pub use status::{
     FELIX_STATUS_AUTH, FELIX_STATUS_CANCELLED, FELIX_STATUS_CLOSED, FELIX_STATUS_CONNECTION,
     FELIX_STATUS_CURSOR, FELIX_STATUS_ERROR, FELIX_STATUS_INVALID_ARGUMENT, FELIX_STATUS_NOT_FOUND,
@@ -54,7 +62,9 @@ pub use status::{
     FELIX_STATUS_SHARD_UNAVAILABLE, FELIX_STATUS_TIMEOUT, FelixStatus,
 };
 pub use subscription::{
-    FELIX_START_EARLIEST, FELIX_START_LATEST, FELIX_START_OFFSET, FelixEventCallback,
-    FelixStartKind, FelixSubscribeCallback, FelixSubscription, felix_client_subscribe,
-    felix_subscription_free, felix_subscription_next,
+    FELIX_CLOSE_ENDED, FELIX_CLOSE_OPEN, FELIX_CLOSE_STREAM_DELETED, FELIX_START_EARLIEST,
+    FELIX_START_LATEST, FELIX_START_OFFSET, FelixCloseReason, FelixEventCallback,
+    FelixOffsetCallback, FelixStartKind, FelixSubscribeCallback, FelixSubscription,
+    felix_client_offset_for_time, felix_client_subscribe, felix_subscription_close_reason,
+    felix_subscription_free, felix_subscription_next, felix_subscription_start_offset,
 };

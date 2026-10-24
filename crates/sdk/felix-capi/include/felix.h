@@ -24,10 +24,19 @@ typedef struct FelixClient FelixClient;
 // `felix_event_free`.
 typedef struct FelixEvent FelixEvent;
 
+// A live subscription to every shard of a stream, merged into one feed.
+//
+// Order holds within a shard and nowhere across shards. Losing a shard is
+// an item, not an error: a caller that ignores `FELIX_SHARD_LOST` reads an
+// incomplete stream. One read may be pending at a time. It must not be freed
+// while another thread is calling it.
+typedef struct FelixShardedSubscription FelixShardedSubscription;
+
 // A live subscription to one shard of a stream.
 //
 // It follows the shard to whichever broker owns it, as the Rust client
-// does. One read may be pending at a time. It must not be freed while
+// does, and resubscribes after the last event if it falls behind, so a lag
+// is not reported. One read may be pending at a time. It must not be freed while
 // another thread is calling it.
 typedef struct FelixSubscription FelixSubscription;
 
@@ -90,6 +99,30 @@ typedef void (*FelixBatchCallback)(void *user_data,
 // Where a subscription starts reading.
 typedef int32_t FelixStartKind;
 
+// Called once when a sharded subscribe finishes. On `FELIX_STATUS_OK`,
+// `subscription` is a new subscription the callee owns; otherwise it is
+// null.
+typedef void (*FelixShardedSubscribeCallback)(void *user_data,
+                                              FelixStatus status,
+                                              const char *message,
+                                              struct FelixShardedSubscription *subscription);
+
+// What a sharded read delivered.
+typedef int32_t FelixShardItemKind;
+
+// Called once when `felix_sharded_next` finishes.
+//
+// On `FELIX_STATUS_OK`, `kind` says what arrived and `shard` which shard it
+// concerns. `event` is non-null only for `FELIX_SHARD_RECORD`. `message` is
+// valid only while the callback runs; it is set for `FELIX_SHARD_LOST`.
+// With any other status, `kind` is `FELIX_SHARD_NONE`.
+typedef void (*FelixShardItemCallback)(void *user_data,
+                                       FelixStatus status,
+                                       const char *message,
+                                       FelixShardItemKind kind,
+                                       uint32_t shard,
+                                       struct FelixEvent *event);
+
 // Called once when `felix_client_subscribe` finishes. On `FELIX_STATUS_OK`,
 // `subscription` is a new subscription the callee owns; otherwise it is
 // null.
@@ -105,6 +138,18 @@ typedef void (*FelixEventCallback)(void *user_data,
                                    FelixStatus status,
                                    const char *message,
                                    struct FelixEvent *event);
+
+// Why a subscription ended, or that it has not.
+typedef int32_t FelixCloseReason;
+
+// Called once when `felix_client_offset_for_time` finishes. On
+// `FELIX_STATUS_OK`, `has_offset` says whether any record is that recent,
+// and `offset` holds the first one when it does.
+typedef void (*FelixOffsetCallback)(void *user_data,
+                                    FelixStatus status,
+                                    const char *message,
+                                    bool has_offset,
+                                    uint64_t offset);
 
 // Fire and forget: complete once the record is sent.
 #define FELIX_ACK_NONE 0
@@ -123,6 +168,29 @@ typedef void (*FelixEventCallback)(void *user_data,
 // Reconnect and send it again, until it is acknowledged or the client's
 // reconnect policy gives up. A record can be written twice.
 #define FELIX_DELIVERY_AT_LEAST_ONCE 1
+
+// No item: the read failed, timed out or was cancelled, which the status says.
+#define FELIX_SHARD_NONE 0
+
+// A record, in `event`. The callee owns it and frees it with
+// `felix_event_free`.
+#define FELIX_SHARD_RECORD 1
+
+// The shard's owner stopped answering and the shard is being re-established;
+// the other shards are unaffected. The message holds the error text, and the
+// status is still `FELIX_STATUS_OK`.
+#define FELIX_SHARD_LOST 2
+
+// The shard is delivering again, resuming after the last offset seen from
+// it.
+#define FELIX_SHARD_RECOVERED 3
+
+// The shard moved to another broker and is being followed there.
+#define FELIX_SHARD_MOVED 4
+
+// The stream was deleted. This shard's feed has ended and every other shard
+// ends the same way.
+#define FELIX_SHARD_STREAM_DELETED 5
 
 // The call did what it was asked.
 #define FELIX_STATUS_OK 0
@@ -184,6 +252,16 @@ typedef void (*FelixEventCallback)(void *user_data,
 // The record at `start_offset`: the first one the caller has not seen, so a
 // resuming caller passes the offset it last handled plus one.
 #define FELIX_START_OFFSET 2
+
+// The subscription is live, or ended only because it was freed.
+#define FELIX_CLOSE_OPEN 0
+
+// The broker ended the stream: the event stream closed cleanly, and the
+// stream was not deleted.
+#define FELIX_CLOSE_ENDED 1
+
+// The stream was deleted. There is nothing to resubscribe to.
+#define FELIX_CLOSE_STREAM_DELETED 2
 
 #ifdef __cplusplus
 extern "C" {
@@ -431,9 +509,123 @@ FelixStatus felix_client_publish_records(const struct FelixClient *client,
                                          FelixBatchCallback callback,
                                          void *user_data);
 
-// Subscribe to shard 0 of a stream.
+// Subscribe to every shard of a stream.
 //
-// `start` is one of the `FELIX_START_*` values; `start_offset` is read only
+// The shard count is asked of the broker. The call fails, and no
+// subscription is handed out, if any shard cannot be opened, so a
+// subscription never quietly covers fewer shards than the stream has.
+// `start` is one of the `FELIX_START_*` values and applies to every shard;
+// `start_offset` is read only for `FELIX_START_OFFSET`.
+//
+// `callback` runs once, unless this returns something other than
+// `FELIX_STATUS_OK`. A cancelled subscribe never hands out a subscription.
+//
+// # Safety
+//
+// `client` is a live client, the strings are null or NUL-terminated,
+// `cancel` is null or a live token, and `callback` is safe to call with
+// `user_data` from any thread.
+FelixStatus felix_client_subscribe_sharded(const struct FelixClient *client,
+                                           const char *tenant_id,
+                                           const char *ns,
+                                           const char *stream,
+                                           FelixStartKind start,
+                                           uint64_t start_offset,
+                                           const struct FelixCancelToken *cancel,
+                                           FelixShardedSubscribeCallback callback,
+                                           void *user_data);
+
+// Resume a sharded subscription from where each shard had reached.
+//
+// `shards` and `offsets` are `count` parallel entries, as
+// `felix_sharded_positions` writes them. Each listed shard resumes at its
+// offset plus one; a shard not listed starts at `start`, which is what a
+// shard that had delivered nothing should do. A shard listed twice is
+// `FELIX_STATUS_INVALID_ARGUMENT`. Otherwise this is
+// `felix_client_subscribe_sharded`.
+//
+// # Safety
+//
+// As `felix_client_subscribe_sharded`, and `shards` and `offsets` are each
+// null or point to `count` readable values (null only when `count` is
+// zero).
+FelixStatus felix_client_resubscribe_sharded(const struct FelixClient *client,
+                                             const char *tenant_id,
+                                             const char *ns,
+                                             const char *stream,
+                                             const uint32_t *shards,
+                                             const uint64_t *offsets,
+                                             size_t count,
+                                             FelixStartKind start,
+                                             uint64_t start_offset,
+                                             const struct FelixCancelToken *cancel,
+                                             FelixShardedSubscribeCallback callback,
+                                             void *user_data);
+
+// Read the next item from any shard.
+//
+// `callback` runs once: with `FELIX_STATUS_OK` and an item (see
+// `FelixShardItemCallback`); `FELIX_STATUS_TIMEOUT` when `timeout_ms` passed
+// with nothing (the subscription stays usable); `FELIX_STATUS_CLOSED` once
+// every shard's feed has ended; or `FELIX_STATUS_CANCELLED`. A cancelled or
+// timed-out read loses nothing; the next read gets the item.
+//
+// A negative `timeout_ms` waits indefinitely; zero only takes an item that
+// is already waiting. Only one read may be pending: a second returns
+// `FELIX_STATUS_INVALID_ARGUMENT`. The callback may start the next read.
+//
+// # Safety
+//
+// `subscription` is a live sharded subscription, `cancel` is null or a live
+// token, and `callback` is safe to call with `user_data` from any thread.
+FelixStatus felix_sharded_next(const struct FelixShardedSubscription *subscription,
+                               int64_t timeout_ms,
+                               const struct FelixCancelToken *cancel,
+                               FelixShardItemCallback callback,
+                               void *user_data);
+
+// How many shards the subscription covers.
+//
+// # Safety
+//
+// `subscription` is a live sharded subscription and `out` is writable.
+FelixStatus felix_sharded_shards(const struct FelixShardedSubscription *subscription,
+                                 uint32_t *out);
+
+// Where each shard has reached, for `felix_client_resubscribe_sharded`.
+//
+// Only shards that have delivered a record to the caller appear, with the
+// offset of the last one. `*out_count` is the total number of entries; at
+// most `cap` are written to `shards` and `offsets`, in ascending shard
+// order, so a caller whose buffers were too small calls again with a larger
+// one. It may be called while a read is pending.
+//
+// # Safety
+//
+// `subscription` is a live sharded subscription. `shards` and `offsets` are
+// each null or writable for `cap` values (null only when `cap` is zero), and
+// `out_count` is null or writable.
+FelixStatus felix_sharded_positions(const struct FelixShardedSubscription *subscription,
+                                    uint32_t *shards,
+                                    uint64_t *offsets,
+                                    size_t cap,
+                                    size_t *out_count);
+
+// Free a sharded subscription, which stops every shard. Null is ignored.
+//
+// A pending read completes with `FELIX_STATUS_CANCELLED`, possibly after
+// this returns.
+//
+// # Safety
+//
+// `subscription` is null or a pointer from a sharded subscribe callback that
+// has not been freed, and no other thread is using it.
+void felix_sharded_subscription_free(struct FelixShardedSubscription *subscription);
+
+// Subscribe to one shard of a stream.
+//
+// A `shard` past the stream's width is refused by the broker, so the
+// callback gets an error. `start` is one of the `FELIX_START_*` values; `start_offset` is read only
 // for `FELIX_START_OFFSET`. `callback` runs once with the new subscription,
 // unless this returns something other than `FELIX_STATUS_OK`. A cancelled
 // subscribe never hands one out.
@@ -447,6 +639,7 @@ FelixStatus felix_client_subscribe(const struct FelixClient *client,
                                    const char *tenant_id,
                                    const char *ns,
                                    const char *stream,
+                                   uint32_t shard,
                                    FelixStartKind start,
                                    uint64_t start_offset,
                                    const struct FelixCancelToken *cancel,
@@ -474,6 +667,56 @@ FelixStatus felix_subscription_next(const struct FelixSubscription *subscription
                                     const struct FelixCancelToken *cancel,
                                     FelixEventCallback callback,
                                     void *user_data);
+
+// Why the subscription ended: `FELIX_CLOSE_OPEN` while it is live, else
+// `FELIX_CLOSE_ENDED` or `FELIX_CLOSE_STREAM_DELETED`. A read that returned
+// `FELIX_STATUS_CLOSED` has already set it.
+//
+// # Safety
+//
+// `subscription` is a live subscription and `out_reason` is writable.
+FelixStatus felix_subscription_close_reason(const struct FelixSubscription *subscription,
+                                            FelixCloseReason *out_reason);
+
+// Where the subscription began: no event below it is delivered.
+//
+// `*out_has` is false on a stream without a log, and from a broker that did
+// not negotiate offsets. Count the drops before the first event as
+// `offset - start_offset - skipped_before`; the start can be 0. Either
+// out-pointer may be null.
+//
+// # Safety
+//
+// `subscription` is a live subscription, and the out-pointers are null or
+// writable.
+FelixStatus felix_subscription_start_offset(const struct FelixSubscription *subscription,
+                                            uint64_t *out_offset,
+                                            bool *out_has);
+
+// The first offset on one shard whose record was appended at or after
+// `at_micros` (microseconds since the Unix epoch), as the leading broker's
+// clock saw it. Subscribe with `FELIX_START_OFFSET` at it to replay from a
+// time.
+//
+// `callback` runs once with `has_offset` false when nothing is that recent
+// yet; subscribe with `FELIX_START_LATEST` to wait for it. A time older
+// than every record answers with the oldest. A cancelled call completes
+// with `FELIX_STATUS_CANCELLED`: it only reads, so nothing is left unknown.
+//
+// # Safety
+//
+// `client` is a live client, the strings are null or NUL-terminated,
+// `cancel` is null or a live token, and `callback` is safe to call with
+// `user_data` from any thread.
+FelixStatus felix_client_offset_for_time(const struct FelixClient *client,
+                                         const char *tenant_id,
+                                         const char *ns,
+                                         const char *stream,
+                                         uint32_t shard,
+                                         uint64_t at_micros,
+                                         const struct FelixCancelToken *cancel,
+                                         FelixOffsetCallback callback,
+                                         void *user_data);
 
 // Free a subscription, which stops it. Null is ignored.
 //
