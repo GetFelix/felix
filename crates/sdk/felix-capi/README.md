@@ -242,8 +242,8 @@ resume from.
 A `FelixWatchItem` is borrowed for the callback and its `kind` says what it is:
 `FELIX_WATCH_CHANGE` (a deleted key has `has_value` false; `expires_at_millis`
 is zero for never), `FELIX_WATCH_LAGGED` (the broker ended the watch;
-`resume_from` is where a new one continues, and the next read is
-`FELIX_STATUS_CLOSED`), `FELIX_WATCH_SHARD_MOVED` (followed automatically),
+`resume_from` is where a new one continues; a single watch's next read is
+`FELIX_STATUS_CLOSED`, while a sharded watch loses only that shard), `FELIX_WATCH_SHARD_MOVED` (followed automatically),
 `FELIX_WATCH_STATE_COMPLETE` (every shard's stored state delivered, sharded
 retained only) and `FELIX_WATCH_SHARD_CLOSED`. Keys are not NUL-terminated;
 use `key_len`. `felix_cache_watch_resume_offsets` writes each shard's offset for
@@ -253,8 +253,9 @@ started from.
 
 For a C# binding, copy the key and value inside the item callback, and treat an
 unknown `kind` as skip-and-read-again so a newer library does not break an older
-binding. To resume after `FELIX_WATCH_LAGGED` on a sharded watch, reopen with the
-offsets from `felix_cache_watch_resume_offsets` taken before the lag.
+binding. After `FELIX_WATCH_LAGGED` on a sharded watch the other shards keep
+delivering; to get the lagged shard back, reopen with the offsets from
+`felix_cache_watch_resume_offsets`, which already account for the lag.
 
 ### Why callbacks, and why pull
 

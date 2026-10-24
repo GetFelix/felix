@@ -369,8 +369,9 @@ typedef void (*FelixOffsetCallback)(void *user_data,
 #define FELIX_WATCH_CHANGE 1
 
 // The watch fell behind and the broker ended it. `resume_from` is where a
-// new watch picks up without a gap; the next read is
-// `FELIX_STATUS_CLOSED`.
+// new watch picks up without a gap. On a single watch the next read is
+// `FELIX_STATUS_CLOSED`; on a sharded watch only `shard` has ended, the
+// others carry on, and `felix_cache_watch_resume_offsets` accounts for it.
 #define FELIX_WATCH_LAGGED 2
 
 // The shard moved to another broker. The watch follows it by itself;
@@ -711,7 +712,8 @@ FelixStatus felix_client_watch_cache_sharded(const struct FelixClient *client,
 // `callback` runs once: with `FELIX_STATUS_OK` and an item;
 // `FELIX_STATUS_TIMEOUT` when `timeout_ms` passed with nothing (the watch
 // stays usable); `FELIX_STATUS_CLOSED` once the feed has ended, as after
-// `FELIX_WATCH_LAGGED`; or `FELIX_STATUS_CANCELLED`. A cancelled or
+// `FELIX_WATCH_LAGGED` on a single watch or once every shard of a sharded
+// watch has ended; or `FELIX_STATUS_CANCELLED`. A cancelled or
 // timed-out read loses nothing; the next read gets the item.
 //
 // A negative `timeout_ms` waits indefinitely; zero only takes an item that
