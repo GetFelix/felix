@@ -1073,6 +1073,19 @@ static void subscriptions(const struct fixture *f, const char *run) {
     memset(&seen, 0, sizeof seen);
     forbidden = 0;
     read_prefixed(sharded, resumed_prefix, RESUMED, prefix, &forbidden, &seen);
+    /* Shards that resumed at EARLIEST replay history, which can still be
+       queued. Drain it, still counting replays, so the pending read below
+       waits on an empty feed. */
+    for (int drained = 0; drained < 200; drained++) {
+      struct item_waiter extra;
+      if (next_item(sharded, 100, &extra) != FELIX_STATUS_OK) {
+        break;
+      }
+      if (extra.kind == FELIX_SHARD_RECORD &&
+          strncmp(extra.payload, prefix, strlen(prefix)) == 0) {
+        forbidden++;
+      }
+    }
     CHECK(forbidden == 0, "a resumed subscription replayed %d records",
           forbidden);
 

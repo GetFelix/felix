@@ -77,7 +77,7 @@ pub type FelixShardItemCallback = Option<
 pub struct FelixShardedSubscription {
     slot: Arc<Mutex<Slot>>,
     /// What the caller has been handed, per shard. Updated by the read that
-    /// hands a record out, so it is never ahead of the caller and can be read
+    /// hands a record out, so it is never ahead of what the caller has been handed and can be read
     /// while another read is pending.
     positions: Arc<Mutex<ShardOffsets>>,
     shards: u32,

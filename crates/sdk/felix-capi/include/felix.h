@@ -625,10 +625,10 @@ void felix_sharded_subscription_free(struct FelixShardedSubscription *subscripti
 // Subscribe to one shard of a stream.
 //
 // A `shard` past the stream's width is refused by the broker, so the
-// callback gets an error. `start` is one of the `FELIX_START_*` values; `start_offset` is read only
-// for `FELIX_START_OFFSET`. `callback` runs once with the new subscription,
-// unless this returns something other than `FELIX_STATUS_OK`. A cancelled
-// subscribe never hands one out.
+// callback gets an error. `start` is one of the `FELIX_START_*` values;
+// `start_offset` is read only for `FELIX_START_OFFSET`. `callback` runs once
+// with the new subscription, unless this returns something other than
+// `FELIX_STATUS_OK`. A cancelled subscribe never hands one out.
 //
 // # Safety
 //

@@ -152,7 +152,7 @@ shard (`FELIX_SHARD_LOST` with the error text, `FELIX_SHARD_RECOVERED`,
 `FELIX_SHARD_MOVED`, `FELIX_SHARD_STREAM_DELETED`). Order holds within a shard
 only. A caller that ignores `FELIX_SHARD_LOST` reads an incomplete stream
 without knowing it. `felix_sharded_positions` writes the last offset handed
-out per shard, never ahead of what the caller saw, and may be called while a
+out per shard, never ahead of what the caller has been handed, and may be called while a
 read is pending; pass the result to `felix_client_resubscribe_sharded` to
 resume, where listed shards continue after their offset and the rest start at
 `start`.
