@@ -482,3 +482,34 @@ async fn an_unknown_flag_on_a_delete_is_refused() {
         "a refused delete must change nothing"
     );
 }
+
+/// A consistency change advances the placement token only from an entry
+/// with its level-19 flag, so a member before that level, which never
+/// does, stays identical to the rest (#1253).
+#[tokio::test]
+async fn a_consistency_change_fences_placement_only_when_its_entry_says_so() {
+    for fence in [false, true] {
+        let machine = machine_with_reported_shards().await;
+        let before = machine.store().placement_token().await.expect("token");
+        machine
+            .dispatch(MetaCommand::PatchStream {
+                key: StreamKey {
+                    tenant_id: "t1".to_string(),
+                    namespace: "ns".to_string(),
+                    stream: "orders".to_string(),
+                },
+                patch: crate::model::StreamPatchRequest {
+                    retention: None,
+                    // The stream starts at `Leader`.
+                    consistency: Some(crate::model::ConsistencyLevel::Quorum),
+                    delivery: None,
+                    durable: None,
+                },
+                fence,
+            })
+            .await
+            .expect("patch");
+        let after = machine.store().placement_token().await.expect("token");
+        assert_eq!(after, before + u64::from(fence), "fence: {fence}");
+    }
+}

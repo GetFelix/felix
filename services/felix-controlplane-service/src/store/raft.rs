@@ -70,6 +70,10 @@ const SHARD_RENEWAL_LEVEL: u16 = 17;
 /// and refuse to create one again before its incarnations are finalized
 /// (#1447).
 const DELETED_NAMES_LEVEL: u16 = 18;
+
+/// The metadata level whose members advance the placement token when a
+/// stream's consistency or durability changes (#1253).
+const PATCH_FENCE_LEVEL: u16 = 19;
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
@@ -356,10 +360,14 @@ impl ControlPlaneStore for RaftStore {
         key: &StreamKey,
         patch: StreamPatchRequest,
     ) -> StoreResult<Stream> {
+        // Only where it can matter, so other patches stay at level 0.
+        let fence = (patch.consistency.is_some() || patch.durable.is_some())
+            && self.group_level().await >= PATCH_FENCE_LEVEL;
         match self
             .propose(MetaCommand::PatchStream {
                 key: key.clone(),
                 patch,
+                fence,
             })
             .await?
         {

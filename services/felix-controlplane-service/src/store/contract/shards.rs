@@ -8,7 +8,8 @@ use super::nodes::node;
 use super::replica_reports;
 use crate::model::{
     Cache, CacheKey, ConsistencyLevel, DeliveryGuarantee, MoveReason, Namespace, RetentionPolicy,
-    ShardAssignment, ShardKey, ShardKind, ShardState, Stream, StreamKey, StreamKind, Tenant,
+    ShardAssignment, ShardKey, ShardKind, ShardState, Stream, StreamKey, StreamKind,
+    StreamPatchRequest, Tenant,
 };
 use crate::store::{AssignmentWrite, ControlPlaneStore, StoreError};
 
@@ -161,6 +162,7 @@ pub(crate) async fn run_shard_contract(store: Arc<dyn ControlPlaneStore>) {
     replica_reports::a_give_up_is_kept(store).await;
     a_conditional_write_lands_only_at_the_expected_generation(store).await;
     a_fence_planned_before_a_cut_over_is_refused_after_it(store).await;
+    a_consistency_change_fences_placement(store).await;
     why_a_move_started_is_persisted(store).await;
     fence_storage_ids_are_persisted_until_the_next_write(store).await;
     pausing_moves_is_persisted(store).await;
@@ -894,6 +896,71 @@ async fn a_fence_planned_before_a_cut_over_is_refused_after_it(store: &dyn Contr
     assert_eq!(
         store.get_shard_assignment(&key(0)).await.expect("get"),
         cut_over
+    );
+}
+
+/// Placement decides from a stream's consistency and durability whether a
+/// leader its followers cannot reach may be replaced before its lease lapses.
+/// A pass that read them before a change must not write after it: a
+/// `Quorum` stream lowered to `Leader` serves on its lease while the pass
+/// promotes on its followers' word (#1253), and one raised to `Quorum` acks
+/// by a majority the pass may not keep. Other changes leave the token alone.
+async fn a_consistency_change_fences_placement(store: &dyn ControlPlaneStore) {
+    clear(store).await;
+    let read = store
+        .put_shard_assignment(assignment(0, "broker-x"))
+        .await
+        .expect("assign");
+    let stream_key = StreamKey {
+        tenant_id: TENANT.to_string(),
+        namespace: NAMESPACE.to_string(),
+        stream: STREAM.to_string(),
+    };
+    let patch = |consistency: Option<ConsistencyLevel>, durable: Option<bool>| StreamPatchRequest {
+        retention: None,
+        consistency,
+        delivery: None,
+        durable,
+    };
+    let unchanged = [
+        patch(None, None),
+        patch(Some(ConsistencyLevel::Leader), None),
+        patch(None, Some(true)),
+    ];
+    for unchanged in unchanged {
+        let before = token(store).await;
+        store
+            .patch_stream(&stream_key, unchanged.clone())
+            .await
+            .expect("patch");
+        assert_eq!(token(store).await, before, "{unchanged:?}");
+    }
+    let changes = [
+        patch(Some(ConsistencyLevel::Quorum), None),
+        patch(Some(ConsistencyLevel::Leader), None),
+        patch(None, Some(false)),
+        patch(None, Some(true)),
+    ];
+    for change in changes {
+        let fence = token(store).await;
+        store
+            .patch_stream(&stream_key, change.clone())
+            .await
+            .expect("patch");
+        let mut promoted = read.clone();
+        promoted.leader = "broker-y".to_string();
+        let write = store
+            .put_shard_assignment_if(promoted, Some(read.generation), fence)
+            .await
+            .expect("write");
+        assert!(
+            matches!(write, AssignmentWrite::Fenced { .. }),
+            "{change:?}: {write:?}"
+        );
+    }
+    assert_eq!(
+        store.get_shard_assignment(&key(0)).await.expect("get"),
+        read
     );
 }
 

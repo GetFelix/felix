@@ -544,6 +544,7 @@
 0 patch_node.patch.lifecycle
 0 patch_node.patch.region
 0 patch_stream
+19 patch_stream.fence
 0 patch_stream.key
 0 patch_stream.key.namespace
 0 patch_stream.key.stream

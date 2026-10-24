@@ -199,6 +199,18 @@ impl InMemoryStore {
         streams::create_stream(self, stream, decide).await
     }
 
+    /// [`ControlPlaneStore::patch_stream`]. `fence`: a change of consistency
+    /// or durability advances the placement token, as every backend does
+    /// once a Raft group can apply it.
+    pub(crate) async fn apply_patch_stream(
+        &self,
+        key: &StreamKey,
+        patch: StreamPatchRequest,
+        fence: bool,
+    ) -> StoreResult<Stream> {
+        streams::patch_stream(self, key, patch, fence).await
+    }
+
     /// [`ControlPlaneStore::create_cache`], with incarnations decided by `decide`.
     pub(crate) async fn apply_create_cache(
         &self,
@@ -453,7 +465,7 @@ impl ControlPlaneStore for InMemoryStore {
         key: &StreamKey,
         patch: StreamPatchRequest,
     ) -> StoreResult<Stream> {
-        streams::patch_stream(self, key, patch).await
+        streams::patch_stream(self, key, patch, true).await
     }
 
     async fn delete_stream(&self, key: &StreamKey) -> StoreResult<()> {

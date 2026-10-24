@@ -1864,7 +1864,7 @@ async fn an_older_member_is_refused_after_a_flagged_delete() {
     assert!(
         matches!(&refused, Err(err) if err.to_string().contains(&format!(
             "the group is at {}",
-            crate::store::raft::command::METADATA_VERSION
+            super::DELETED_NAMES_LEVEL
         ))),
         "{refused:?}"
     );
@@ -2227,7 +2227,7 @@ async fn cache_entries_are_flagged_only_once_every_member_is_at_14() {
     store.delete_cache(&key).await.expect("delete");
     assert_eq!(
         store.machine.levels_used(),
-        crate::store::raft::command::METADATA_VERSION,
+        super::DELETED_NAMES_LEVEL,
         "the delete was not flagged"
     );
 }
@@ -2263,4 +2263,67 @@ fn a_cache_proposal_always_flags_its_entry() {
         14,
         std::slice::from_ref(&unproposed)
     ));
+}
+
+/// A member before level 19 would apply a consistency change without
+/// advancing the placement token, so the patch is flagged only once every
+/// member is there, and only when it changes consistency or durability.
+#[tokio::test]
+async fn a_consistency_change_fences_placement_once_every_member_is_at_19() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), super::PATCH_FENCE_LEVEL - 1).await;
+    store
+        .create_stream(routed_stream("orders", Default::default()))
+        .await
+        .expect("create");
+    let key = StreamKey {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "orders".to_string(),
+    };
+    let patch = |consistency| crate::model::StreamPatchRequest {
+        retention: None,
+        consistency: Some(consistency),
+        delivery: None,
+        durable: None,
+    };
+    let before = store.placement_token().await.expect("token");
+    store
+        .patch_stream(&key, patch(crate::model::ConsistencyLevel::Quorum))
+        .await
+        .expect("patch");
+    assert_eq!(store.placement_token().await.expect("token"), before);
+    assert!(store.machine.levels_used() < super::PATCH_FENCE_LEVEL);
+
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while store.group_level().await < super::PATCH_FENCE_LEVEL {
+        assert!(std::time::Instant::now() < deadline, "level never read");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    store
+        .patch_stream(
+            &key,
+            crate::model::StreamPatchRequest {
+                retention: Some(crate::model::RetentionPolicy {
+                    max_age_seconds: Some(60),
+                    max_size_bytes: None,
+                }),
+                consistency: None,
+                delivery: None,
+                durable: None,
+            },
+        )
+        .await
+        .expect("patch");
+    assert!(store.machine.levels_used() < super::PATCH_FENCE_LEVEL);
+    store
+        .patch_stream(&key, patch(crate::model::ConsistencyLevel::Leader))
+        .await
+        .expect("patch");
+    assert_eq!(store.placement_token().await.expect("token"), before + 1);
+    assert_eq!(store.machine.levels_used(), super::PATCH_FENCE_LEVEL);
 }

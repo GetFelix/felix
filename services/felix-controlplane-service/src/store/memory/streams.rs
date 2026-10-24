@@ -82,11 +82,13 @@ pub(super) async fn patch_stream(
     store: &InMemoryStore,
     key: &StreamKey,
     patch: StreamPatchRequest,
+    fence: bool,
 ) -> StoreResult<Stream> {
     let mut streams = store.streams.write().await;
     let stream = streams
         .get_mut(key)
         .ok_or_else(|| StoreError::NotFound("stream".into()))?;
+    let (consistency, durable) = (stream.consistency.clone(), stream.durable);
     if let Some(retention) = patch.retention {
         stream.retention = retention;
     }
@@ -98,6 +100,11 @@ pub(super) async fn patch_stream(
     }
     if let Some(durable) = patch.durable {
         stream.durable = durable;
+    }
+    // Placement decides how a shard fails over from these, so a pass that
+    // read them before the change must not write after it (#1253).
+    if fence && (stream.consistency != consistency || stream.durable != durable) {
+        store.shards.write().await.placement.token += 1;
     }
     // After applying the patch, we emit an `Updated` change so watchers can reconcile.
     let updated = stream.clone();

@@ -408,6 +408,7 @@ fn commands() -> Vec<MetaCommand> {
         MetaCommand::PatchStream {
             key: stream_key(),
             patch: stream_patch(),
+            fence: true,
         },
         MetaCommand::DeleteStream {
             names: true,
