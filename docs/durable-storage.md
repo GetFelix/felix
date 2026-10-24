@@ -1242,9 +1242,11 @@ nothing is acknowledged while it is still only in the process's memory.
 - What is written behind is derived: a segment's sparse index and a cache's
   key index (`keys.idx`), both rebuilt from the segment when short, and the
   `durable.mark`, which only bounds what recovery may call damage.
-- The one exception is a replicated log's commit offset, which under a relaxed
-  mode reaches disk at most once a second (`DiskLog::advance_commit_offset`).
-  After a process crash it can read back behind, so a follower's refusal to
+- The one exception is a replicated log's commit offset, which is written
+  behind in every mode: under `OnCommit` by a write that starts at once and
+  serves every advance made while it runs, otherwise at most once a second
+  (`DiskLog::advance_commit_offset`). After a crash it can read back behind, so
+  a follower's refusal to
   truncate below it guards less until the leader's next batch carries it
   again. It is not a record and not what the id vouches for: a follower
   truncates only at the request of a leader at a generation it accepted, and

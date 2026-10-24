@@ -234,8 +234,24 @@ async fn a_reset_that_would_discard_committed_records_is_refused() {
     assert_eq!(log.tail_offset().await.expect("tail"), 3);
 }
 
+/// Wait until the `replica` file holds `offset` as the commit offset.
+async fn on_disk(dir: &TempDir, offset: u64) {
+    let written = async {
+        loop {
+            let state = crate::disk_log::replica_state::load(dir.path()).expect("replica state");
+            if state.commit_offset == offset {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    };
+    tokio::time::timeout(COMMIT_PERSIST_INTERVAL * 5, written)
+        .await
+        .expect("the commit offset never reached disk");
+}
+
 #[tokio::test]
-async fn the_commit_offset_is_written_through_on_every_advance_under_on_commit() {
+async fn the_commit_offset_is_written_behind_every_advance_under_on_commit() {
     let dir = tempdir().expect("tempdir");
     {
         let log = open(&dir, FsyncMode::OnCommit);
@@ -244,9 +260,160 @@ async fn the_commit_offset_is_written_through_on_every_advance_under_on_commit()
             .expect("append");
         log.advance_commit_offset(1).await.expect("commit");
         log.advance_commit_offset(3).await.expect("commit");
+        // Without waiting for an interval or another advance.
+        on_disk(&dir, 3).await;
     }
-    // Reopened without a shutdown: each advance was on disk before it returned.
+    // Reopened without a shutdown.
     assert_eq!(open(&dir, FsyncMode::OnCommit).commit_offset(), 3);
+}
+
+/// **An advance does not wait on a replica-state write** (#1456). Under
+/// `OnCommit` a follower advances on almost every batch, and a write costs a
+/// create, two fsyncs and a rename on the ack path.
+// Holding the writer's lock across the awaits is the point: it stands in for
+// a write that has not finished.
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn an_advance_does_not_wait_on_a_replica_state_write() {
+    let dir = tempdir().expect("tempdir");
+    let log = open(&dir, FsyncMode::OnCommit);
+    log.append(&records(&["a", "b", "c", "d"]))
+        .await
+        .expect("append");
+
+    // The writer's lock, as a slow write in flight holds it.
+    let held = log.inner.replica_persisted.lock();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        log.advance_commit_offset(2),
+    )
+    .await
+    .expect("the advance waited on the replica-state write")
+    .expect("commit");
+
+    // The guard holds before the write lands; disk is behind, never ahead.
+    assert!(matches!(
+        log.truncate(1).await,
+        Err(StorageError::BelowCommit {
+            offset: 1,
+            commit: 2
+        })
+    ));
+    assert_eq!(
+        crate::disk_log::replica_state::load(dir.path())
+            .expect("replica state")
+            .commit_offset,
+        0
+    );
+
+    drop(held);
+    on_disk(&dir, 2).await;
+    drop(log);
+    let reopened = open(&dir, FsyncMode::OnCommit);
+    assert_eq!(reopened.commit_offset(), 2);
+    assert!(matches!(
+        reopened.truncate(1).await,
+        Err(StorageError::BelowCommit { .. })
+    ));
+}
+
+/// **Advances made while a write runs share the next one**, so a busy
+/// follower writes its replica state far less often than once per batch.
+#[tokio::test]
+async fn advances_coalesce_into_few_replica_state_writes() {
+    let dir = tempdir().expect("tempdir");
+    let log = open(&dir, FsyncMode::OnCommit);
+    let batches = 200u64;
+    let payloads: Vec<String> = (0..batches).map(|n| n.to_string()).collect();
+    let payloads: Vec<&str> = payloads.iter().map(String::as_str).collect();
+    log.append(&records(&payloads)).await.expect("append");
+    for offset in 1..=batches {
+        log.advance_commit_offset(offset).await.expect("commit");
+    }
+    on_disk(&dir, batches).await;
+    let writes = log.inner.replica_writes.load(Ordering::Relaxed);
+    assert!(
+        writes <= 2,
+        "{writes} replica-state writes for {batches} advances"
+    );
+}
+
+/// **An advance made as the writer finishes is not left behind.** The writer
+/// clears its flag and then checks memory; an advance that found the flag
+/// still set relies on that check. A race, so this cannot fail on demand; it
+/// advances right as each write lands to give it the most chances.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_advance_as_the_writer_finishes_still_reaches_disk() {
+    let dir = tempdir().expect("tempdir");
+    let log = open(&dir, FsyncMode::OnCommit);
+    let rounds = 100u64;
+    let payloads: Vec<String> = (0..rounds * 2).map(|n| n.to_string()).collect();
+    let payloads: Vec<&str> = payloads.iter().map(String::as_str).collect();
+    log.append(&records(&payloads)).await.expect("append");
+    for round in 1..=rounds {
+        log.advance_commit_offset(round * 2 - 1)
+            .await
+            .expect("commit");
+        while log.inner.commit_persisted.load(Ordering::Acquire) < round * 2 - 1 {
+            std::hint::spin_loop();
+        }
+        log.advance_commit_offset(round * 2).await.expect("commit");
+        on_disk(&dir, round * 2).await;
+    }
+}
+
+/// **`close` waits out a replica-state write that found the log open**, so
+/// nothing is written into a directory another log may own once it returns.
+// The held locks stand in for a writer partway through its write.
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn close_waits_for_a_replica_state_write_in_flight() {
+    let dir = tempdir().expect("tempdir");
+    let log = open(&dir, FsyncMode::OnCommit);
+    log.append(&records(&["a", "b"])).await.expect("append");
+
+    // Holding the flush lock stops `close` after its last write and before
+    // it marks the log closed, where a writer could still find it open.
+    let flushes = log.inner.durability.lock_flushes().await;
+    let closing = tokio::spawn({
+        let log = log.clone();
+        async move { log.close().await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(!closing.is_finished(), "close did not reach the flush lock");
+
+    // A writer that has seen the log open and holds the writer's lock.
+    let writer = log.inner.replica_persisted.lock();
+    assert!(!log.inner.closed.load(Ordering::Acquire));
+    drop(flushes);
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        !closing.is_finished(),
+        "close returned while a replica-state write was in flight"
+    );
+    drop(writer);
+    closing.await.expect("join").expect("close");
+}
+
+/// **A raised generation is still on disk before it is answered**, with a
+/// commit-offset write behind in flight.
+#[tokio::test]
+async fn a_raised_generation_is_written_through_while_the_commit_offset_is_behind() {
+    let dir = tempdir().expect("tempdir");
+    {
+        let log = open(&dir, FsyncMode::OnCommit);
+        log.append(&records(&["a", "b"])).await.expect("append");
+        log.advance_commit_offset(2).await.expect("commit");
+        assert_eq!(
+            log.accept_generation(7, None).await.expect("accept"),
+            GenerationCheck::Raised
+        );
+    }
+    // Reopened at once: the raise was durable when it returned, and carried
+    // the commit offset raised before it.
+    let log = open(&dir, FsyncMode::OnCommit);
+    assert_eq!(log.accepted_generation(), 7);
+    assert_eq!(log.commit_offset(), 2);
 }
 
 #[tokio::test]
@@ -277,7 +444,11 @@ async fn without_on_commit_the_commit_offset_is_written_behind() {
 #[tokio::test]
 async fn a_failed_commit_offset_write_is_retried_with_the_same_offset() {
     let dir = tempdir().expect("tempdir");
-    let log = open(&dir, FsyncMode::OnCommit);
+    // Not `OnCommit`, which writes behind and does not report the failure.
+    let periodic = FsyncMode::Periodic {
+        interval: std::time::Duration::from_secs(3600),
+    };
+    let log = open(&dir, periodic);
     log.append(&records(&["a", "b", "c"]))
         .await
         .expect("append");
@@ -293,7 +464,7 @@ async fn a_failed_commit_offset_write_is_retried_with_the_same_offset() {
 
     log.advance_commit_offset(2).await.expect("retry");
     drop(log);
-    let reopened = open(&dir, FsyncMode::OnCommit);
+    let reopened = open(&dir, periodic);
     assert_eq!(reopened.commit_offset(), 2, "the retry reached disk");
 }
 
@@ -311,7 +482,9 @@ async fn a_failed_commit_offset_write_is_retried_on_its_own() {
     std::fs::create_dir(&blocker).expect("block the write");
     log.advance_commit_offset(2)
         .await
-        .expect_err("injected write failure");
+        .expect("written behind, so the failure is not the caller's");
+    // Let the write behind fail before unblocking.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     std::fs::remove_dir(&blocker).expect("unblock");
 
     let written = async {

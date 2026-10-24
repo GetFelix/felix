@@ -439,15 +439,14 @@ acknowledged.
 Written through a temporary, an fsync, a rename and a directory sync. A raised
 generation is on disk before the batch that raised it is stored or
 acknowledged, so a leader this broker has seen replaced is refused after a
-restart too, whatever the routing view says by then. Under `FsyncMode::OnCommit`
-the commit offset is written through on every advance, before the
-batch that carried it is acknowledged. If that write fails the batch is still
-acknowledged, since the offset only guards truncation, and the log writes it
-again once a second until it lands. Under `Periodic` and `None` it is written
-at most once a second and at shutdown, as its records are written behind too;
-read back behind after a crash, it permits *more* truncation than it should:
-records committed since are unguarded until the leader's next batch carries the
-offset again.
+restart too, whatever the routing view says by then. The commit offset is
+written behind the advance that raised it, so no acknowledgement waits on this
+file. Under `FsyncMode::OnCommit` the write starts at once and one write in
+flight carries every advance made while it runs; under `Periodic` and `None` it
+is written at most once a second. In every mode it is written at shutdown, and
+a failed write is retried once a second until it lands. Read back behind after
+a crash, it permits *more* truncation than it should: records committed since
+are unguarded until the leader's next batch carries the offset again.
 
 **Unlike `epochs`, this file is authoritative.** Nothing in the log can rebuild
 it, and reading a damaged one as zero would accept any leader, so a file that

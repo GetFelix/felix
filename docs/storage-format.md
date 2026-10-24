@@ -584,17 +584,19 @@ generation is on disk before the batch that raised it is stored or
 acknowledged, so a leader this broker has seen replaced is refused after a
 restart too, whatever the routing view says by then.
 
-Under `FsyncMode::OnCommit` the commit offset is written through on every
-advance, and the call returns an error if the write fails. A follower still
-acknowledges the batch in that case: the offset only guards truncation, so no
-acknowledged record depends on it. The log writes it again once a second until
-it lands, without waiting for another batch: an idle shard sends none.
+The commit offset is written behind the advance that raised it, so no batch or
+replication pass waits on this file. Under `FsyncMode::OnCommit` the write
+starts at once, and one write in flight carries every advance made while it
+runs, so a busy shard writes it far less often than once per batch. Under
+`Periodic` and `None` it is written at most once a second, as its records are
+written behind too. In every mode it is written with a raised generation and at
+shutdown, and a write that fails is retried once a second until it lands,
+without waiting for another batch: an idle shard sends none.
 
-Under `Periodic` and `None` it is written at most once a second and at
-shutdown, as its records are written behind too. Read back behind after a
-crash, it permits *more* truncation than it should:
+Read back behind after a crash, it permits *more* truncation than it should:
 records committed since are unguarded until the leader's next batch carries the
-offset again.
+offset again. It is never read back ahead. Why that is acceptable is in
+`docs/replication-design.md`, "Divergence and truncation".
 
 The flags were a reserved zero before the hold was recorded, and no build
 checked them, so a file without the flag reads as not held and an older build
