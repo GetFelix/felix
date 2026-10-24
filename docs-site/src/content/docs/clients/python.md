@@ -567,13 +567,27 @@ with its own connection pool, and they do not share discovery.
 
 ## What is not wrapped
 
+These are in the [Rust client](/clients/rust/) and not in this binding yet:
+
+- **Conditional writes.** `cache_put_if`, `cache_delete_if` and
+  `cache_get_versioned` (compare-and-set on a cache key), and the conditional
+  `publish_if` and `commit_if`. Without them a lease or lock cannot be built
+  from Python.
+- **Atomic commits on a named shard** (`commit_on_shard`). `commit` routes by
+  key only.
+- **Merged prefix watches** (`watch_cache_sharded`). A prefix on a
+  multi-shard cache needs one `watch_cache` per shard.
+- **Idempotent producers.** At-least-once without the duplicate; see
+  [the Rust page](/clients/rust/#idempotent-producers).
 - **`at_least_once` with a routing key.** The re-send path does not carry one,
   and the client refuses the combination rather than silently dropping the key.
-- **Idempotent producers.** The Rust client's `IdempotentProducer` is not
-  wrapped yet.
+- **Group lease extension and administration.** `group_extend`, `group_seek`,
+  and creating, describing or deleting a group. Groups are created with
+  `felixctl`.
+- **Starting from a time** (`offset_for_time`).
 
-Both are marked in the conformance catalogue, so the binding reports them as
-unclaimed.
+The ones the conformance catalogue covers are marked there, so the binding
+reports them as unclaimed.
 
 ## Conformance
 
