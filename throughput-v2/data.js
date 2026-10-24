@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792879798423,
+  "lastUpdate": 1792882328681,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -35360,6 +35360,58 @@ window.BENCHMARK_DATA = {
             "range": "42504.63",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 802408.25\nmean: 784009.62\nstdev: 42504.63\ncv: 5.42%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "41bc87f81edaddcbda6e78fd2466c1aec3a83f72",
+          "message": "feat(csharp): Felix.Client SDK step 1: connect, publish, subscribe over the C ABI (#1518)\n\n* feat(csharp): Felix.Client SDK step 1, connect, publish and subscribe over the C ABI\n* fix(csharp): review findings on step 1\n* fix(csharp): one owner for a call's GCHandle; callbacks never throw\n* fix(csharp): fail fast on a corrupt call table; test the double-free it came from",
+          "timestamp": "2026-10-24T15:47:38-07:00",
+          "tree_id": "33c548ff795b03a9448afe4726144b8346b3988f",
+          "url": "https://github.com/GetFelix/felix/commit/41bc87f81edaddcbda6e78fd2466c1aec3a83f72"
+        },
+        "date": 1792882328015,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 343374.24,
+            "range": "11441.30",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 343374.24\nmean: 348842.98\nstdev: 11441.30\ncv: 3.28%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 343374.24,
+            "range": "11441.30",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 343374.24\nmean: 348842.98\nstdev: 11441.30\ncv: 3.28%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81426.53,
+            "range": "393.20",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81426.53\nmean: 81318.57\nstdev: 393.20\ncv: 0.48%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 814265.3,
+            "range": "3932.03",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 814265.30\nmean: 813185.72\nstdev: 3932.03\ncv: 0.48%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
