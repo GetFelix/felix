@@ -1,5 +1,6 @@
 using System.Text;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace Felix.Client.Tests;
 
@@ -11,6 +12,10 @@ namespace Felix.Client.Tests;
 /// </summary>
 public class CommitFixtureTests
 {
+    private readonly ITestOutputHelper output;
+
+    public CommitFixtureTests(ITestOutputHelper output) => this.output = output;
+
     private static readonly TimeSpan Wait = TimeSpan.FromSeconds(30);
 
     private static string Run() => Guid.NewGuid().ToString("N")[..12];
@@ -20,7 +25,7 @@ public class CommitFixtureTests
     private static string Text(ReadOnlyMemory<byte>? value) => Encoding.UTF8.GetString(value!.Value.Span);
 
     /// <summary>Best-effort cleanup that never masks the failure being reported.</summary>
-    private static async Task DeleteState(FelixClient client, Fixture f, string entity, uint? shard, params string[] keys)
+    private async Task DeleteState(FelixClient client, Fixture f, string entity, uint? shard, params string[] keys)
     {
         foreach (var key in keys)
         {
@@ -33,10 +38,22 @@ public class CommitFixtureTests
                     [CommitOp.Publish(f.Stream, Bytes("cleanup")), CommitOp.Delete(f.Stream, key)],
                     shard);
             }
-            catch (Exception)
+            catch (Exception e)
             {
+                output.WriteLine($"cleanup of state key '{key}' failed: {e.Message}");
             }
         }
+    }
+
+    /// <summary>
+    /// The last shard of the stream. Named-shard tests use it, so they need no more than one shard
+    /// and never name one the stream lacks.
+    /// </summary>
+    private static async Task<uint> LastShard(FelixClient client, Fixture f)
+    {
+        var count = await client.GetShardCountAsync(f.Tenant, f.Namespace, f.Stream);
+        Assert.True(count >= 1, $"the stream reports {count} shards");
+        return count - 1;
     }
 
     private static Task<long> Commit(FelixClient client, Fixture f, string entity, string eventText, string key, string? value, uint? shard = null) =>
@@ -47,25 +64,39 @@ public class CommitFixtureTests
             [CommitOp.Publish(f.Stream, Bytes(eventText)), value is null ? CommitOp.Delete(f.Stream, key) : CommitOp.Put(f.Stream, key, Bytes(value))],
             shard);
 
-    /// <summary>A write at a stale offset is refused with the tail; one at the tail lands there; the same again is refused.</summary>
+    /// <summary>
+    /// A write at a stale offset is refused with the tail; one at the tail lands there; the same again is
+    /// refused. Another writer can move the tail between the probe and the write, so that step is retried.
+    /// </summary>
     private static async Task CheckConditional(string what, Func<long, Task<ConditionalWrite>> write)
     {
-        // No shard's tail is this large, so the first write is always stale.
-        var stale = await write(long.MaxValue);
-        Assert.False(stale.Written, $"{what} at a stale offset was written");
+        ConditionalWrite landed = default;
+        long tail = 0;
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            // No shard's tail is this large, so the probe is always stale.
+            var stale = await write(long.MaxValue);
+            Assert.False(stale.Written, $"{what} at a stale offset was written");
 
-        var tail = stale.Offset;
-        var landed = await write(tail);
-        Assert.True(landed.Written, $"{what} at the tail {tail} was refused");
+            tail = stale.Offset;
+            landed = await write(tail);
+            if (landed.Written)
+            {
+                break;
+            }
+        }
+
+        Assert.True(landed.Written, $"{what} at the tail was refused every time; last tail {tail}");
         Assert.Equal(tail, landed.Offset);
 
+        // The tail has moved past the write, whoever else is writing.
         var again = await write(tail);
         Assert.False(again.Written, $"{what} again at {tail} was written");
         Assert.True(again.Offset > landed.Offset, $"{what} again reported tail {again.Offset}, not past {landed.Offset}");
     }
 
     [FixtureFact]
-    [Scenario("commit.negotiated", "commit.state_get_returns_the_version")]
+    [Scenario("commit.state_get_returns_the_version")]
     public async Task AStateChangeReadsBackAtTheCommitsOffsetAndDeleteLeavesItAbsent()
     {
         var f = Fixture.Load();
@@ -103,6 +134,7 @@ public class CommitFixtureTests
         var run = Run();
         var byEntity = $"cm-{run}-if";
         var byShard = $"cm-{run}-ifs";
+        var shard = await LastShard(client, f);
         try
         {
             await CheckConditional("commit_if", expected => client.CommitIfAsync(
@@ -117,17 +149,17 @@ public class CommitFixtureTests
                 Bytes(byShard),
                 [CommitOp.Publish(f.Stream, Bytes(byShard)), CommitOp.Put(f.Stream, byShard, Bytes("cond"))],
                 expected,
-                shard: 2));
+                shard: shard));
         }
         finally
         {
             await DeleteState(client, f, byEntity, null, byEntity);
-            await DeleteState(client, f, byShard, 2, byShard);
+            await DeleteState(client, f, byShard, shard, byShard);
         }
     }
 
     [FixtureFact]
-    [Scenario("commit.returns_the_offset", "explicit_shard.commit_lands_on_the_named_shard")]
+    [Scenario("explicit_shard.commit_lands_on_the_named_shard")]
     public async Task ACommitOnANamedShardIsDeliveredThereAndReadBackFromIt()
     {
         var f = Fixture.Load();
@@ -135,24 +167,77 @@ public class CommitFixtureTests
         var run = Run();
         var entity = $"cm-{run}-shard";
         var text = $"cm-{run}-event";
+        var shard = await LastShard(client, f);
         try
         {
-            var offset = await Commit(client, f, entity, text, entity, "shard-value", shard: 2);
+            var offset = await Commit(client, f, entity, text, entity, "shard-value", shard: shard);
 
             // The commit's event is on the named shard, at the offset the commit answered with.
-            await using var sub = await client.SubscribeAsync(f.Tenant, f.Namespace, f.Stream, 2, StartPosition.FromOffset((ulong)offset));
+            await using var sub = await client.SubscribeAsync(f.Tenant, f.Namespace, f.Stream, shard, StartPosition.FromOffset((ulong)offset));
             var ev = await sub.ReadAsync(Wait);
             Assert.NotNull(ev);
             Assert.Equal(text, Encoding.UTF8.GetString(ev!.Payload.Span));
             Assert.Equal(offset, ev.Offset);
 
-            var state = await client.GetStateAsync(f.Tenant, f.Namespace, f.Stream, entity, shard: 2);
+            var state = await client.GetStateAsync(f.Tenant, f.Namespace, f.Stream, entity, shard: shard);
             Assert.Equal("shard-value", Text(state.Value));
             Assert.Equal(offset, state.Version);
         }
         finally
         {
-            await DeleteState(client, f, entity, 2, entity);
+            await DeleteState(client, f, entity, shard, entity);
+        }
+    }
+
+    [FixtureFact]
+    [Scenario("commit.returns_the_offset")]
+    public async Task AnEntityKeyedCommitsEventIsReadBackAtTheReturnedOffset()
+    {
+        var f = Fixture.Load();
+        await using var client = await f.ConnectAsync();
+        var run = Run();
+        var entity = $"cm-{run}-ent";
+        var text = $"cm-{run}-ent-event";
+        var count = await client.GetShardCountAsync(f.Tenant, f.Namespace, f.Stream);
+        Assert.True(count >= 1);
+
+        // The entity key picks the shard, so watch every shard from its tail before committing.
+        var subs = new List<FelixSubscription>();
+        try
+        {
+            for (uint shard = 0; shard < count; shard++)
+            {
+                subs.Add(await client.SubscribeAsync(f.Tenant, f.Namespace, f.Stream, shard, StartPosition.Latest));
+            }
+
+            var offset = await Commit(client, f, entity, text, entity, "entity-value");
+
+            FelixEvent? found = null;
+            var deadline = DateTime.UtcNow + Wait;
+            while (found is null && DateTime.UtcNow < deadline)
+            {
+                foreach (var sub in subs)
+                {
+                    var ev = await sub.ReadAsync(TimeSpan.FromMilliseconds(100));
+                    if (ev is not null && Encoding.UTF8.GetString(ev.Payload.Span) == text)
+                    {
+                        found = ev;
+                        break;
+                    }
+                }
+            }
+
+            Assert.NotNull(found);
+            Assert.Equal(offset, found!.Offset);
+        }
+        finally
+        {
+            foreach (var sub in subs)
+            {
+                await sub.DisposeAsync();
+            }
+
+            await DeleteState(client, f, entity, null, entity);
         }
     }
 
@@ -166,7 +251,8 @@ public class CommitFixtureTests
         ReadOnlyMemory<byte>[] payloads = [Bytes("pi-1"), Bytes("pi-2")];
 
         await CheckConditional("publish_if", expected => client.PublishIfAsync(f.Tenant, f.Namespace, f.Stream, payloads, expected, Bytes(key)));
-        await CheckConditional("publish_if_on_shard", expected => client.PublishIfAsync(f.Tenant, f.Namespace, f.Stream, payloads, expected, shard: 3));
+        var shard = await LastShard(client, f);
+        await CheckConditional("publish_if_on_shard", expected => client.PublishIfAsync(f.Tenant, f.Namespace, f.Stream, payloads, expected, shard: shard));
     }
 
     [FixtureFact]
@@ -252,7 +338,6 @@ public class CommitFixtureTests
     }
 
     [FixtureFact]
-    [Scenario("client.close_is_idempotent")]
     public async Task DisposingAProducerClosesItGracefullyAndASecondDisposeIsSafe()
     {
         var f = Fixture.Load();
@@ -278,6 +363,23 @@ public class CommitFixtureTests
         var ev = await sub.ReadAsync(Wait);
         Assert.NotNull(ev);
         Assert.Equal(text, Encoding.UTF8.GetString(ev!.Payload.Span));
+    }
+
+    [FixtureFact]
+    [Scenario("client.close_is_idempotent")]
+    public async Task ClosingAClientOrASubscriptionTwiceIsSafe()
+    {
+        var f = Fixture.Load();
+        var client = await f.ConnectAsync();
+        var sub = await client.SubscribeAsync(f.Tenant, f.Namespace, f.Stream, 0, StartPosition.Latest);
+
+        await sub.DisposeAsync();
+        await sub.DisposeAsync();
+        sub.Dispose();
+
+        await client.DisposeAsync();
+        await client.DisposeAsync();
+        client.Dispose();
     }
 
     [FixtureFact]
