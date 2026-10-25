@@ -6,6 +6,54 @@ namespace Felix.Native;
 // while another thread is calling the handle. SafeHandle's reference count
 // keeps a free waiting until a call that is starting has returned.
 
+/// <summary>
+/// A native handle that shares the client's runtime and so its token source: the provider
+/// stays uncancelled until the client and every such handle are disposed.
+/// </summary>
+internal abstract class TokenHeldHandle : SafeHandle
+{
+    private TokenSource? tokens;
+
+    protected TokenHeldHandle(nint invalid, bool ownsHandle)
+        : base(invalid, ownsHandle)
+    {
+    }
+
+    /// <summary>Takes a reference on <paramref name="source"/> until this handle is released.</summary>
+    internal void Track(TokenSource? source)
+    {
+        if (source is not null && source.Retain())
+        {
+            Adopt(source);
+        }
+    }
+
+    /// <summary>
+    /// Takes over a reference already retained for this handle (null for none). The handle
+    /// releases it once, when it is released; a second reference is dropped at once.
+    /// </summary>
+    internal void Adopt(TokenSource? retained)
+    {
+        if (retained is null)
+        {
+            return;
+        }
+
+        if (Interlocked.CompareExchange(ref tokens, retained, null) is not null)
+        {
+            retained.ReleaseHolder();
+            return;
+        }
+
+        if (IsClosed)
+        {
+            Untrack();
+        }
+    }
+
+    protected void Untrack() => Interlocked.Exchange(ref tokens, null)?.ReleaseHolder();
+}
+
 internal sealed class FelixClientHandle : SafeHandle
 {
     internal FelixClientHandle(nint handle)
@@ -23,7 +71,7 @@ internal sealed class FelixClientHandle : SafeHandle
     }
 }
 
-internal sealed class FelixSubscriptionHandle : SafeHandle
+internal sealed class FelixSubscriptionHandle : TokenHeldHandle
 {
     internal FelixSubscriptionHandle(nint handle)
         : base(0, true)
@@ -36,11 +84,12 @@ internal sealed class FelixSubscriptionHandle : SafeHandle
     protected override bool ReleaseHandle()
     {
         NativeMethods.felix_subscription_free(handle);
+        Untrack();
         return true;
     }
 }
 
-internal sealed class FelixShardedSubscriptionHandle : SafeHandle
+internal sealed class FelixShardedSubscriptionHandle : TokenHeldHandle
 {
     internal FelixShardedSubscriptionHandle(nint handle)
         : base(0, true)
@@ -53,6 +102,7 @@ internal sealed class FelixShardedSubscriptionHandle : SafeHandle
     protected override bool ReleaseHandle()
     {
         NativeMethods.felix_sharded_subscription_free(handle);
+        Untrack();
         return true;
     }
 }
@@ -74,7 +124,7 @@ internal sealed class FelixEventHandle : SafeHandle
     }
 }
 
-internal sealed class FelixShardedGroupHandle : SafeHandle
+internal sealed class FelixShardedGroupHandle : TokenHeldHandle
 {
     internal FelixShardedGroupHandle(nint handle)
         : base(0, true)
@@ -87,11 +137,12 @@ internal sealed class FelixShardedGroupHandle : SafeHandle
     protected override bool ReleaseHandle()
     {
         NativeMethods.felix_sharded_group_free(handle);
+        Untrack();
         return true;
     }
 }
 
-internal sealed class FelixCacheWatchHandle : SafeHandle
+internal sealed class FelixCacheWatchHandle : TokenHeldHandle
 {
     internal FelixCacheWatchHandle(nint handle)
         : base(0, true)
@@ -104,11 +155,12 @@ internal sealed class FelixCacheWatchHandle : SafeHandle
     protected override bool ReleaseHandle()
     {
         NativeMethods.felix_cache_watch_free(handle);
+        Untrack();
         return true;
     }
 }
 
-internal sealed class FelixProducerHandle : SafeHandle
+internal sealed class FelixProducerHandle : TokenHeldHandle
 {
     internal FelixProducerHandle(nint handle)
         : base(0, true)
@@ -121,6 +173,7 @@ internal sealed class FelixProducerHandle : SafeHandle
     protected override bool ReleaseHandle()
     {
         NativeMethods.felix_producer_free(handle);
+        Untrack();
         return true;
     }
 }
