@@ -202,10 +202,10 @@ docs and `compose.yaml` pin (`scripts/check_release_version.py`), and its releas
   a version already there;
 - attaches `libfelix-<tag>-<rid>.tar.gz` (`.zip` on Windows) and a `.sha256`
   for `linux-x64`, `linux-arm64`, `osx-x64`, `osx-arm64`, `win-x64` and
-  `win-arm64`, from the same builds. Each holds `lib/` (shared and static
-  library, plus the import library on Windows), `include/felix.h`, `LICENSE`
-  and `LINKING.txt` with the platform's static-link system libraries and the
-  link commands. Before an archive is kept, `scripts/package_libfelix.sh`
+  `win-arm64`, through `release-capi-archives.yml`. Each holds `lib/` (shared
+  and static library, plus the import library on Windows), `include/felix.h`,
+  `LICENSE` and `LINKING.txt` with the platform's static-link system libraries
+  and the link commands. Before an archive is kept, `scripts/package_libfelix.sh`
   compiles a C program against its header and links and runs it both ways, so
   a dry run exercises every platform and attaches nothing;
 - after both conformance suites, packages `felix-transport`, `felix-wire`,
@@ -219,6 +219,20 @@ docs and `compose.yaml` pin (`scripts/check_release_version.py`), and its releas
   notice, and the site picks the release up on its own schedule;
 - once those jobs finish, sends a `felix-release` dispatch to each repo in
   `.github/companions.txt` so it can open a bump PR (see below).
+
+### Backfilling the C archives
+
+A release that predates the archives gets them without rerunning anything
+else. The workflow builds the tag's own source, smoke-links the six archives
+and uploads them to the existing release; it refuses a name that is not a tag
+or has no published release. It defaults to a dry run:
+
+```bash
+gh workflow run release-capi-archives.yml -f tag=v0.6.2            # build and smoke only
+gh workflow run release-capi-archives.yml -f tag=v0.6.2 -f dry_run=false
+```
+
+Uploading again replaces the files already there.
 
 ### Companion repos
 

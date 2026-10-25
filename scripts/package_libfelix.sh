@@ -2,7 +2,10 @@
 # Packages the felix-capi libraries already built in target/release into a
 # release archive, then proves the archive links and loads both ways.
 #
-#   scripts/package_libfelix.sh <tag> <rid> <outdir>
+#   scripts/package_libfelix.sh <tag> <rid> <outdir> [source-dir]
+#
+# [source-dir] is the tree that was built, when it is not this one: a backfill
+# builds an old tag's source with this script and smoke program.
 #
 # <rid> is the NuGet runtime id (linux-x64, osx-arm64, win-x64, ...). Writes
 # libfelix-<tag>-<rid>.tar.gz (.zip on Windows) and its .sha256 to <outdir>.
@@ -13,8 +16,9 @@ tag="$1"
 rid="$2"
 out="$3"
 repo="$(cd "$(dirname "$0")/.." && pwd)"
-crate="$repo/crates/sdk/felix-capi"
-release="${CARGO_TARGET_DIR:-$repo/target}/release"
+src="$(cd "${4:-$repo}" && pwd)"
+crate="$src/crates/sdk/felix-capi"
+release="${CARGO_TARGET_DIR:-$src/target}/release"
 root="libfelix-${tag}-${rid}"
 
 case "$rid" in
@@ -23,7 +27,7 @@ case "$rid" in
   *)       shared=libfelix.so; static=libfelix.a; import="" ;;
 esac
 
-cd "$repo"
+cd "$src"
 # What a static link needs from the system differs per platform; rustc says.
 # --color never, or CARGO_TERM_COLOR=always leaves an escape code in the list.
 # Run before copying: it may relink the static library.
@@ -85,7 +89,7 @@ TXT
 # Smoke check from the staged tree, as a user would build it.
 smoke="$stage/smoke"
 mkdir -p "$smoke"
-cp "$crate/tests/c/archive_smoke.c" "$stage/$root/app.c"
+cp "$repo/crates/sdk/felix-capi/tests/c/archive_smoke.c" "$stage/$root/app.c"
 (
   cd "$stage/$root"
   case "$rid" in
