@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792889761714,
+  "lastUpdate": 1792896501167,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -45144,6 +45144,72 @@ window.BENCHMARK_DATA = {
             "range": "893.31",
             "unit": "us",
             "extra": "trials: 5\nmedian: 840.00\nmean: 1204.00\nstdev: 893.31\ncv: 74.20%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0a871335f29ca1a99d00bbdf705e7bc0147cb1e1",
+          "message": "feat(capi): token provider through a fetch callback; core: 30 s fetch timeout that joins, never repeats (#1525)\n\nToken provider for the C ABI, plus the shared token-fetch rules in the Rust core that every client binding relies on.\n\nCore (felix-client): FETCH_TIMEOUT (30 s) fails the waiters, not the provider call; the call keeps running, later refreshes join it, a late answer is used, and the provider is never called while a call is outstanding. new_cancellable / with_initial_cancellable pass a CancellationToken that fires on timeout and drop. A token refused by every broker is an auth error. Connect fetches the token outside connect_timeout, bounded by FETCH_TIMEOUT for any TokenProvider; owner learning keeps its 2 s bound; a reconnect fetches once. Only credential refusals invalidate the held token.\n\nC ABI (felix-capi): FelixTokenFetch / FelixTokenReply, felix_token_reply_ok / _err, and token_fetch, token_user_data, token_release on FelixConnectOptions (size-gated). A reply is consumed by its first answer; token_release runs once, after the client is freed and the last reply is answered.\n\nDocs: c.md token section around the fetch callback (example compiled in tests/c), rust.md, client-config.md, overview, status page, felix-capi README, changelog.",
+          "timestamp": "2026-10-25T02:42:48Z",
+          "tree_id": "a886e49a3577732d94a0394ddc816470fe49b967",
+          "url": "https://github.com/GetFelix/felix/commit/0a871335f29ca1a99d00bbdf705e7bc0147cb1e1"
+        },
+        "date": 1792896495736,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 107,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 107.00\nmean: 106.80\nstdev: 0.45\ncv: 0.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 141,
+            "range": "2.68",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 141.00\nmean: 142.20\nstdev: 2.68\ncv: 1.89%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 202,
+            "range": "10.95",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 202.00\nmean: 204.60\nstdev: 10.95\ncv: 5.35%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 141,
+            "range": "2.77",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 141.00\nmean: 142.20\nstdev: 2.77\ncv: 1.95%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 281,
+            "range": "96.50",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 281.00\nmean: 325.20\nstdev: 96.50\ncv: 29.67%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 385,
+            "range": "621.18",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 385.00\nmean: 694.20\nstdev: 621.18\ncv: 89.48%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
