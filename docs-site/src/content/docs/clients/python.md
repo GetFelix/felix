@@ -346,13 +346,20 @@ A call that cannot reach a broker is retried with a backoff. Two options tune th
 Pass them as `reconnect_attempts` (an int) and `reconnect_deadline` (seconds, a float) to `Client(...)` or `AsyncClient.connect(...)`. Zero, a negative number, `NaN` or infinity raises `ValueError`.
 
 ```python
-client = felix.Client(
+import felix
+
+with felix.Client(
     ["felix-0:5000", "felix-1:5000", "felix-2:5000"],
     tenant_id="t1",
     token=tok,
     reconnect_attempts=10,
     reconnect_deadline=30.0,
-)
+) as client:
+    try:
+        # Raises the last error once 30 s have passed, however many attempts remain.
+        client.publish("t1", "default", "orders", b"hello", at_least_once=True)
+    except felix.FelixError as err:
+        print(f"publish gave up: {err}")
 ```
 
 A deadline shorter than one attempt's own timeout means no retry happens: the first attempt spends the whole budget and the call returns after trying once. Set it to cover at least one attempt plus the backoff you can afford, and leave it off if you would rather wait out a failover. A client from `with_identity` inherits both.

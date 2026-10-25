@@ -1947,6 +1947,11 @@ let policy = ReconnectPolicy {
     ..ReconnectPolicy::default()
 };
 let client = ClusterClient::connect_with_policy(&seeds, "localhost", config, policy).await?;
+
+// Fails with the last error once 30 s have passed, however many attempts remain.
+client
+    .publish_at_least_once("t1", "default", "orders", b"hello".to_vec(), AckMode::PerMessage)
+    .await?;
 ```
 
 A deadline shorter than one attempt's own timeout means no retry happens: the first attempt spends the whole budget and the call returns after trying once. Set it to cover at least one attempt plus the backoff you can afford, and leave it off if you would rather wait out a failover. A client from `with_identity` inherits the policy.

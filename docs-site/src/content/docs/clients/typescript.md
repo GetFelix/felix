@@ -282,6 +282,14 @@ const client = await Client.connect(
   "t1",
   { token, reconnectAttempts: 10, reconnectDeadline: 30_000 },
 );
+try {
+  // Rejects with the last error once 30 s have passed, however many attempts remain.
+  await client.publish("t1", "default", "orders", Buffer.from("hello"), undefined, "per_message", true);
+} catch (err) {
+  console.error("publish gave up:", err);
+} finally {
+  client.close();
+}
 ```
 
 A deadline shorter than one attempt's own timeout means no retry happens: the first attempt spends the whole budget and the call returns after trying once. Set it to cover at least one attempt plus the backoff you can afford, and leave it off if you would rather wait out a failover. A client from `withIdentity` inherits both.

@@ -305,7 +305,7 @@ A call that cannot reach a broker is retried with a backoff. Two options tune th
 - **Attempts** is how many times a call tries to reach a broker before it gives up. Each attempt tries every broker the client knows. The default is 5, and the minimum is 1.
 - **Deadline** is a ceiling on one call across every attempt and every wait between them. It is off by default. Attempt counts alone do not bound time: five attempts against a broker that takes its full publish timeout to answer is minutes.
 
-Set them as `FelixClientOptions.ReconnectAttempts` (`int?`) and `FelixClientOptions.ReconnectDeadline` (`TimeSpan?`). Both are null by default. An attempt count below 1 or a deadline under one millisecond throws `ArgumentOutOfRangeException`.
+Set them as `FelixClientOptions.ReconnectAttempts` (`int?`) and `FelixClientOptions.ReconnectDeadline` (`TimeSpan?`). Both are null by default. There is no per-user handle to carry the policy to. An attempt count below 1 or a deadline under one millisecond throws `ArgumentOutOfRangeException`.
 
 ```csharp
 await using var client = await FelixClient.ConnectAsync(new FelixClientOptions
@@ -316,6 +316,15 @@ await using var client = await FelixClient.ConnectAsync(new FelixClientOptions
     ReconnectAttempts = 10,
     ReconnectDeadline = TimeSpan.FromSeconds(30),
 });
+try
+{
+    // Throws the last error once 30 s have passed, however many attempts remain.
+    await client.PublishAsync("t1", "default", "orders", "hello"u8.ToArray(), delivery: Delivery.AtLeastOnce);
+}
+catch (FelixException e)
+{
+    Console.Error.WriteLine($"publish gave up: {e.Message}");
+}
 ```
 
 A deadline shorter than one attempt's own timeout means no retry happens: the first attempt spends the whole budget and the call returns after trying once. Set it to cover at least one attempt plus the backoff you can afford, and leave it off if you would rather wait out a failover.

@@ -948,7 +948,7 @@ one `host:port` or several separated by commas:
 static FelixStatus connect_to_cluster(const char *token, void *state) {
     FelixStatus status = felix_client_connect_with(
         "felix-0:5000,felix-1:5000,felix-2:5000", "t1", token, NULL, NULL, NULL,
-        NULL, on_connect, state);
+        NULL, on_connect, NULL);
     if (status != FELIX_STATUS_OK) {
         fprintf(stderr, "connect refused: %s\n", felix_last_error_message());
     }
@@ -984,13 +984,21 @@ A call that cannot reach a broker is retried with a backoff. Two options tune th
 Set them as `reconnect_attempts` (zero is the default) and `reconnect_deadline_ms` (zero is no deadline) in `FelixConnectOptions`. They follow `token_release` in the struct, so a caller built against an older header gets the defaults.
 
 ```c
-FelixConnectOptions options = {
-    .size = sizeof options,
-    .reconnect_attempts = 10,
-    .reconnect_deadline_ms = 30000,
-};
-felix_client_connect_with("felix-0:5000,felix-1:5000", "t1", "my-token",
-                          "localhost", NULL, &options, NULL, on_connect, state);
+static bool connect_bounded(void) {
+  FelixConnectOptions options = {
+      .size = sizeof options,
+      .reconnect_attempts = 10,
+      .reconnect_deadline_ms = 30000,
+  };
+  FelixStatus status = felix_client_connect_with(
+      "felix-0:5000,felix-1:5000", "t1", "my-token", "localhost", NULL,
+      &options, NULL, on_connect, NULL);
+  if (status != FELIX_STATUS_OK) {
+    fprintf(stderr, "connect refused: %s\n", felix_last_error_message());
+    return false;
+  }
+  return true;
+}
 ```
 
 A deadline shorter than one attempt's own timeout means no retry happens: the first attempt spends the whole budget and the call returns after trying once. Set it to cover at least one attempt plus the backoff you can afford, and leave it off if you would rather wait out a failover.

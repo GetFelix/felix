@@ -505,6 +505,14 @@ const EXAMPLES: &[Example] = &[
         },
     ),
     example(
+        "Reconnecting",
+        1,
+        Body {
+            params: "seeds: Vec<SocketAddr>, config: ClientConfig",
+            context: "",
+        },
+    ),
+    example(
         "Collecting Metrics",
         1,
         Body {

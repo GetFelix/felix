@@ -1478,7 +1478,28 @@ mod connection_management_2 {
     }
 }
 
-/// rust.md line 1946: "Collecting Metrics", block 1.
+/// rust.md line 1943: "Reconnecting", block 1.
+mod reconnecting_1 {
+    #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
+    use super::prelude::*;
+
+    async fn example(seeds: Vec<SocketAddr>, config: ClientConfig) -> Result<()> {
+        let policy = ReconnectPolicy {
+            attempts: 10,
+            deadline: Some(Duration::from_secs(30)),
+            ..ReconnectPolicy::default()
+        };
+        let client = ClusterClient::connect_with_policy(&seeds, "localhost", config, policy).await?;
+
+        // Fails with the last error once 30 s have passed, however many attempts remain.
+        client
+            .publish_at_least_once("t1", "default", "orders", b"hello".to_vec(), AckMode::PerMessage)
+            .await?;
+        Ok(())
+    }
+}
+
+/// rust.md line 1971: "Collecting Metrics", block 1.
 mod collecting_metrics_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1499,7 +1520,7 @@ mod collecting_metrics_1 {
     }
 }
 
-/// rust.md line 1962: "Timing Measurements", block 1.
+/// rust.md line 1987: "Timing Measurements", block 1.
 mod timing_measurements_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1520,7 +1541,7 @@ mod timing_measurements_1 {
     }
 }
 
-/// rust.md line 1989: "Connection Pooling", block 1.
+/// rust.md line 2014: "Connection Pooling", block 1.
 mod connection_pooling_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use std::net::SocketAddr;
@@ -1556,7 +1577,7 @@ mod connection_pooling_1 {
     }
 }
 
-/// rust.md line 2029: "Error Recovery", block 1.
+/// rust.md line 2054: "Error Recovery", block 1.
 mod error_recovery_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use std::time::Duration;
@@ -1599,7 +1620,7 @@ mod error_recovery_1 {
     }
 }
 
-/// rust.md line 2076: "Resource Cleanup", block 1.
+/// rust.md line 2101: "Resource Cleanup", block 1.
 mod resource_cleanup_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1615,7 +1636,7 @@ mod resource_cleanup_1 {
     }
 }
 
-/// rust.md line 2087: "Batching for Throughput", block 1.
+/// rust.md line 2112: "Batching for Throughput", block 1.
 mod batching_for_throughput_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use anyhow::Result;
@@ -1659,7 +1680,7 @@ mod batching_for_throughput_1 {
     }
 }
 
-/// rust.md line 2136: "Integration Tests", block 1.
+/// rust.md line 2161: "Integration Tests", block 1.
 mod integration_tests_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use std::net::SocketAddr;
