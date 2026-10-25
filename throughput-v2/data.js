@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792908519510,
+  "lastUpdate": 1792909744351,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -36192,6 +36192,58 @@ window.BENCHMARK_DATA = {
             "range": "6953.84",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 797821.98\nmean: 797513.52\nstdev: 6953.84\ncv: 0.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "37f258170435bd72319a355e6dcf555c294dd5bc",
+          "message": "docs(python): the async token example uses aiohttp instead of to_thread (#1539)\n\nThe AsyncClient token example ran the blocking urllib calls through\nasyncio.to_thread. It now uses one aiohttp.ClientSession created on the\nclient's loop: no thread, and when the client cancels the provider at the 30 s\ntimeout or on close the request stops with it, where a to_thread call keeps\nrunning. The session is closed if the exchange or connect fails, and the page\nsays it must stay open as long as the client and every with_identity handle\nthat uses the provider.\n\nThe doc test fakes aiohttp (no new dependency), sends on __aenter__ like the\nreal client, and checks refresh-token rotation and that no snippet uses\nto_thread.",
+          "timestamp": "2026-10-25T06:24:40Z",
+          "tree_id": "25dc64d4ed60ab27888a4d0227355094fc459f36",
+          "url": "https://github.com/GetFelix/felix/commit/37f258170435bd72319a355e6dcf555c294dd5bc"
+        },
+        "date": 1792909743772,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 350403.18,
+            "range": "9806.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 350403.18\nmean: 345378.62\nstdev: 9806.76\ncv: 2.84%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 350403.18,
+            "range": "9806.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 350403.18\nmean: 345378.62\nstdev: 9806.76\ncv: 2.84%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82280.42,
+            "range": "644.42",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82280.42\nmean: 82089.18\nstdev: 644.42\ncv: 0.79%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 822804.21,
+            "range": "6444.22",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 822804.21\nmean: 820891.77\nstdev: 6444.22\ncv: 0.79%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
