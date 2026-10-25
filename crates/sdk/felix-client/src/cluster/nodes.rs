@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 
 use crate::auth::TokenProvider;
-use crate::client::Client;
+use crate::client::{Client, fetch_token, no_broker_answered};
 use crate::config::ClientConfig;
 
 use super::seeds::{LOOKUP_TIMEOUT, Lookup};
@@ -302,17 +302,17 @@ impl Nodes {
                 "no broker addresses were given to connect to"
             ));
         }
+        if let Source::Dial { config, .. } = &self.source {
+            fetch_token(config).await?;
+        }
         let mut refusals = Vec::with_capacity(addrs.len());
         for addr in addrs {
             match self.connect_to(*addr).await {
                 Ok(client) => return Ok(client),
-                Err(err) => refusals.push(format!("{addr}: {err:#}")),
+                Err(err) => refusals.push((*addr, err)),
             }
         }
-        Err(anyhow::anyhow!(
-            "no broker answered ({})",
-            refusals.join("; ")
-        ))
+        Err(no_broker_answered(refusals))
     }
 
     /// Stop handing out `client`, so the next caller for its broker gets a

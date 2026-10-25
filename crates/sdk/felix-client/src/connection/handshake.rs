@@ -177,7 +177,7 @@ pub(crate) struct Negotiated {
 /// The broker refused a stream's credentials.
 #[derive(Debug, thiserror::Error)]
 #[error("auth rejected: {0}")]
-struct AuthRejected(String);
+pub(crate) struct AuthRejected(String);
 
 /// Authenticate a stream and negotiate capabilities.
 ///
