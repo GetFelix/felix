@@ -60,9 +60,12 @@ type Fetch = Box<dyn Fn(CancellationToken) -> TokenFuture<'static> + Send + Sync
 
 /// One provider call that has not finished. Later refreshes join it instead of
 /// calling the provider again.
+#[derive(Clone)]
 struct Flight {
     answer: watch::Receiver<Option<Result<String, String>>>,
     cancel: CancellationToken,
+    /// Tells this flight's guard apart from a later flight in the slot.
+    id: Arc<()>,
 }
 
 type State = Arc<Mutex<Option<Held>>>;
@@ -159,50 +162,69 @@ impl RefreshingToken {
     /// Join the call in flight, or start one. `Err` carries a token that
     /// turned out fresh.
     fn join(&self) -> Result<Flight, String> {
-        let mut flight = self.flight.lock().expect("token flight poisoned");
-        if let Some(flight) = flight.as_ref() {
-            return Ok(Flight {
-                answer: flight.answer.clone(),
-                cancel: flight.cancel.clone(),
-            });
-        }
-        // The task stores its token before clearing `flight`, so with none in
-        // flight the state is current.
-        if let Some(token) = self.fresh(now_secs()) {
-            return Err(token);
-        }
-        let cancel = self.closed.child_token();
-        let (sender, answer) = watch::channel(None);
-        let call = (self.fetch)(cancel.clone());
-        let guard = FlightGuard(Arc::clone(&self.flight));
-        let state = Arc::clone(&self.state);
-        tokio::spawn(async move {
-            let result = call.await.map_err(|err| format!("{err:#}"));
-            if let Ok(token) = &result {
-                *state.lock().expect("token state poisoned") = Some(Held::new(token.clone()));
+        // Checked before the flight exists: with no runtime there is nothing to
+        // run the call and nothing to clear afterwards.
+        let runtime = tokio::runtime::Handle::try_current()
+            .expect("RefreshingToken needs a Tokio runtime to run its token fetch");
+        let (sender, flight, guard) = {
+            let mut slot = lock_flights(&self.flight);
+            if let Some(flight) = slot.as_ref() {
+                return Ok(flight.clone());
             }
-            sender.send_replace(Some(result));
-            drop(guard);
-        });
-        let started = Flight {
-            answer,
-            cancel: cancel.clone(),
+            // The task stores its token and clears the slot in one step, so
+            // with none in flight the state is current.
+            if let Some(token) = self.fresh(now_secs()) {
+                return Err(token);
+            }
+            let (sender, answer) = watch::channel(None);
+            let flight = Flight {
+                answer,
+                cancel: self.closed.child_token(),
+                id: Arc::new(()),
+            };
+            *slot = Some(flight.clone());
+            let guard = FlightGuard {
+                slot: Arc::clone(&self.flight),
+                id: Arc::clone(&flight.id),
+            };
+            (sender, flight, guard)
         };
-        *flight = Some(Flight {
-            answer: started.answer.clone(),
-            cancel,
+        // Past this point the lock is free: if the call below panics or the
+        // runtime drops the task unrun, the guard clears the slot, and it
+        // must be able to take the lock.
+        let call = (self.fetch)(flight.cancel.clone());
+        let state = Arc::clone(&self.state);
+        runtime.spawn(async move {
+            let result = call.await.map_err(|err| format!("{err:#}"));
+            guard.finish(&state, &sender, result);
         });
-        Ok(started)
+        Ok(flight)
     }
 
     async fn current(&self) -> Result<String> {
-        if let Some(token) = self.fresh(now_secs()) {
-            return Ok(token);
+        loop {
+            if let Some(token) = self.fresh(now_secs()) {
+                return Ok(token);
+            }
+            let flight = match self.join() {
+                Ok(flight) => flight,
+                Err(token) => return Ok(token),
+            };
+            match self.wait(flight).await {
+                // Refused while we waited: fetch again, don't hand it out.
+                Ok(token) if !self.holds(&token) => continue,
+                other => return other,
+            }
         }
-        let mut flight = match self.join() {
-            Ok(flight) => flight,
-            Err(token) => return Ok(token),
-        };
+    }
+
+    /// Whether `token` is still the held one.
+    fn holds(&self, token: &str) -> bool {
+        let state = self.state.lock().expect("token state poisoned");
+        state.as_ref().is_some_and(|held| held.token == token)
+    }
+
+    async fn wait(&self, mut flight: Flight) -> Result<String> {
         let waited = tokio::time::timeout(
             FETCH_TIMEOUT,
             flight.answer.wait_for(|answer| answer.is_some()),
@@ -250,16 +272,49 @@ impl Drop for RefreshingToken {
     }
 }
 
-/// Clears the flight when its task ends, including by panic, so a later
-/// refresh is not stuck joining a call that is gone.
-struct FlightGuard(Flights);
+/// Clears the flight when its task ends, including by panic or by being
+/// dropped unrun, so a later refresh is not stuck joining a call that is gone.
+struct FlightGuard {
+    slot: Flights,
+    id: Arc<()>,
+}
+
+impl FlightGuard {
+    /// Store the token, publish the answer and clear the flight under one
+    /// lock, so nobody can join a finished flight and be handed a token that
+    /// `invalidate` has since dropped.
+    fn finish(
+        self,
+        state: &State,
+        sender: &watch::Sender<Option<Result<String, String>>>,
+        result: Result<String, String>,
+    ) {
+        let mut slot = lock_flights(&self.slot);
+        if let Ok(token) = &result {
+            *state.lock().expect("token state poisoned") = Some(Held::new(token.clone()));
+        }
+        sender.send_replace(Some(result));
+        self.clear(&mut slot);
+    }
+
+    fn clear(&self, slot: &mut Option<Flight>) {
+        if slot.as_ref().is_some_and(|f| Arc::ptr_eq(&f.id, &self.id)) {
+            *slot = None;
+        }
+    }
+}
 
 impl Drop for FlightGuard {
     fn drop(&mut self) {
-        if let Ok(mut flight) = self.0.lock() {
-            *flight = None;
-        }
+        let slot = Arc::clone(&self.slot);
+        self.clear(&mut lock_flights(&slot));
     }
+}
+
+fn lock_flights(flights: &Flights) -> std::sync::MutexGuard<'_, Option<Flight>> {
+    flights
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 impl TokenProvider for RefreshingToken {
@@ -268,6 +323,9 @@ impl TokenProvider for RefreshingToken {
     }
 
     fn invalidate(&self, rejected: &str) {
+        // Same order as the task's finish, so a refusal lands either before
+        // the answer is stored or after the flight is gone.
+        let _flight = lock_flights(&self.flight);
         let mut state = self.state.lock().expect("token state poisoned");
         if state.as_ref().is_some_and(|held| held.token == rejected) {
             *state = None;

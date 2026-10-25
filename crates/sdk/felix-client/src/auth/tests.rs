@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -206,16 +207,19 @@ async fn a_hung_fetch_fails_the_waiter_and_is_joined_not_repeated() {
 /// The answer to a call whose waiters timed out is used, with no second call.
 #[tokio::test(start_paused = true)]
 async fn a_late_answer_is_used_without_a_second_call() -> Result<()> {
-    let g = gated("late-token".into());
+    let late = "late-token".to_string();
+    let g = gated(late.clone());
     assert!(g.provider.token().await.is_err());
+    // No yield: the call has not stored its answer yet, so the provider holds
+    // nothing and only joining the call avoids a second one.
     g.open.notify_one();
-    tokio::task::yield_now().await;
-    assert_eq!(g.provider.token().await?, "late-token");
+    assert_eq!(g.provider.token().await?, late);
     assert_eq!(g.calls.load(Ordering::SeqCst), 1);
     Ok(())
 }
 
-/// A late answer is used even when nobody is waiting when it lands.
+/// A second refresh that joins the call after the first timed out gets the
+/// late answer.
 #[tokio::test(start_paused = true)]
 async fn a_late_answer_joined_by_a_second_waiter_is_returned() -> Result<()> {
     let g = gated("joined".into());
@@ -253,4 +257,111 @@ async fn the_cancellation_token_fires_on_drop() {
     waiter.abort();
     let _ = waiter.await;
     assert!(cancel.is_cancelled());
+}
+
+/// A panicking provider ends its flight: the waiter gets an error and the
+/// next refresh calls the provider again.
+#[tokio::test]
+async fn a_panicking_provider_clears_the_flight() -> Result<()> {
+    let (provider, calls) = counting(|n| {
+        if n == 1 {
+            panic!("provider blew up");
+        }
+        Ok(format!("opaque-{n}"))
+    });
+    assert!(provider.token().await.is_err());
+    assert!(lock_flights(&provider.flight).is_none());
+    assert_eq!(provider.token().await?, "opaque-2");
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    Ok(())
+}
+
+/// Run `f` on a thread of its own and fail if it does not finish.
+fn finishes<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    rx.recv_timeout(Duration::from_secs(10))
+        .expect("token call hung")
+}
+
+/// With no runtime, starting a fetch panics instead of hanging, and leaves
+/// nothing behind that a later call could wait on.
+#[test]
+fn without_a_runtime_a_fetch_panics_and_does_not_hang() {
+    let (provider, _) = counting(|n| Ok(format!("opaque-{n}")));
+    let provider = Arc::new(provider);
+    let outcome = finishes(move || {
+        let first = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| provider.join()));
+        let second = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| provider.join()));
+        (
+            first.is_err(),
+            second.is_err(),
+            lock_flights(&provider.flight).is_none(),
+        )
+    });
+    assert_eq!(outcome, (true, true, true));
+}
+
+/// A runtime that has shut down drops the spawned task unrun. The guard
+/// inside it must not deadlock on the lock `join` took.
+#[test]
+fn a_shut_down_runtime_does_not_hang_the_next_call() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let handle = runtime.handle().clone();
+    drop(runtime);
+    let (provider, _) = counting(|n| Ok(format!("opaque-{n}")));
+    let provider = Arc::new(provider);
+    let cleared = finishes(move || {
+        let _entered = handle.enter();
+        let flight = provider.join();
+        // The task never ran, so the flight is gone and nobody answers it.
+        let answer_dropped = flight.is_ok_and(|f| f.answer.has_changed().is_err());
+        (answer_dropped, lock_flights(&provider.flight).is_none())
+    });
+    assert_eq!(cleared, (true, true));
+}
+
+/// A token refused while its replacement is being fetched is not handed out
+/// again, and neither is one refused right after its call completed.
+#[tokio::test(start_paused = true)]
+async fn a_refused_token_is_never_handed_to_a_retry() -> Result<()> {
+    let (provider, calls) = counting(|n| Ok(format!("opaque-{n}")));
+    let first = provider.token().await?;
+    provider.invalidate(&first);
+    let second = provider.token().await?;
+    assert_ne!(first, second);
+
+    // Refused after the call completed, before anyone reads the flight.
+    provider.invalidate(&second);
+    assert!(lock_flights(&provider.flight).is_none());
+    assert_eq!(provider.token().await?, "opaque-3");
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+    Ok(())
+}
+
+/// A waiter whose answer is refused before it reads it fetches again.
+#[tokio::test(start_paused = true)]
+async fn a_waiter_is_not_handed_a_token_refused_in_flight() -> Result<()> {
+    let g = gated("opaque-gated".into());
+    let mut waiter = Box::pin(g.provider.token());
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    assert!(waiter.as_mut().poll(&mut cx).is_pending());
+
+    // Let the call finish while the waiter is not being polled, then refuse
+    // its token before the waiter reads the answer.
+    g.open.notify_one();
+    while lock_flights(&g.provider.flight).is_some() {
+        tokio::task::yield_now().await;
+    }
+    g.provider.invalidate("opaque-gated");
+
+    assert!(waiter.as_mut().poll(&mut cx).is_pending());
+    assert_eq!(g.calls.load(Ordering::SeqCst), 2);
+    g.open.notify_one();
+    assert_eq!(waiter.await?, "opaque-gated");
+    Ok(())
 }
