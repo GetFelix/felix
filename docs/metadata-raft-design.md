@@ -760,6 +760,7 @@ the field itself, on every member alike, or refuses the command:
 | delete `unassign`, shard put `seq_generation` | 17 | the delete records no unassignment for the shards it takes, and an unincarnated shard's first assignment starts at generation 0, on every member; a broker following the shard feed keeps the deleted stream's assignment until a newer one replaces it |
 | create and delete `names`, snapshot `deleted_stream_names` and `deleted_cache_names` | 18 | deletes record no names and a deleted name is created again before the finalize, on every member, as before #1447 |
 | stream patch `fence` | 19 | a change of consistency or durability does not advance the placement token, on every member, as before #1253 |
+| replica report `inherited_storage`, and in the snapshot | 20 | the report is proposed without it, so a failover names a follower its leader had not reached by no identity, on every member, as before #1574 |
 
 **A member refuses what it would drop.** From level 3 on, a member that
 decodes an entry carrying a non-empty field it does not know answers

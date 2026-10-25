@@ -163,6 +163,13 @@ pub struct ShardReplicaStatus {
     /// false, and by brokers that predate it, which never give a shard up.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub given_up: bool,
+    /// For a follower the leader has not reached yet at this generation, and
+    /// so names no identity for in `replica_storage_ids`, the identity the
+    /// assignment that promoted the leader named for it, keyed by node id.
+    /// Placement names the follower by it in the next failover instead of by
+    /// none. Omitted when empty, and by brokers that predate it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub inherited_storage_ids: BTreeMap<String, String>,
 }
 
 fn is_zero(value: &u64) -> bool {

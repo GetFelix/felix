@@ -443,9 +443,28 @@ same one the catch-up trusts to hold every acknowledged record, so a
 replica that may have lost some cannot be part of it. A member of the old
 set the report named no identity for, but that is registered with one, was
 not yet known to its leader when the report was made, so everything it
-answered that leader came later: the assignment names it with an empty
-identity, which nothing matches (`FelixShardFencedCrashCountsUnnamed.cfg`
-finds the record lost when it counts). A replica the assignment does not
+answered that leader came later and the report vouches for none of it
+(`FelixShardFencedCrashCountsUnnamed.cfg` finds the record lost when it
+counts).
+
+Such a member is named by the identity the reporting leader's own promotion
+named it by, which the report carries for each follower the leader has not
+reached at its generation (`inherited_storage_ids`, #1574). A leader learns a
+follower's identity on its first contact with it, so one it has not reached
+acknowledged nothing to it, and every acknowledgement that follower ever gave
+went to an earlier leader, from the copy that promotion named or from one
+before it. Storage identities never repeat: a wipe or a machine crash
+rotates one, and a process crash keeps it only when nothing was lost. An
+answer under the inherited identity therefore comes from a copy that has
+kept everything it acknowledged. A leader sends no report while it still
+fences, so a copy whose fence answer it did not count is named in its
+reports only once it has opened and ships to that copy. Without an inherited identity, from a leader nobody promoted or one that
+predates the field, the member is named with an empty identity, which
+nothing matches. `FelixShardFencedCrashNamesByInheritance.cfg`,
+`FelixShardFencedWipeNamesByInheritance.cfg` and
+`FelixShardFencedLeaderCrashNamesByInheritance.cfg` check two promotions in
+a row with inherited names, and `FelixShardFencedCrashInheritedCounts.cfg`
+shows the second one counting an inherited name. A replica the assignment does not
 name counts as it always has: one outside the old set, which gave the old
 leader nothing to count, such as a new copy a `Leader` failover brings in,
 and one registered without an identity, a build from before them, where
@@ -466,11 +485,14 @@ coming back ends the wait. There are two ways to get there:
   the leader gone too, that is two faults, and the records the follower lost
   may be on no copy at all.
 - A follower the report named no identity for, because its leader had not
-  asked it yet when it reported, and that gives an identity now. It may hold
-  everything; nothing vouches for it. Naming it by the identity it is
-  registered under would not do: the report's incarnation for such a follower
-  is the control plane's stamp as the report arrives, which can come after a
-  crash the report predates (`FelixShardFencedCrashNamesByRegistration.cfg`).
+  asked it yet when it reported, and for which the report inherits none: the
+  leader was not promoted by a failover that named one, or it predates the
+  field. It may hold everything; nothing vouches for it. Naming it by the
+  identity it is registered under would not do: the report's incarnation for
+  such a follower is the control plane's stamp as the report arrives, which
+  can come after a crash the report predates
+  (`FelixShardFencedCrashNamesByRegistration.cfg`). Re-planning the promotion
+  on a timeout would not do either: another leader reads the same report.
 
 The way out is the operator's, as for a crashed leader: stop the broker the
 shard was promoted to, so placement finds no caught-up replica, run
@@ -483,7 +505,8 @@ takes the copy furthest ahead. What is lost is what no copy in the new set
 holds: the old leader's, a copy left out of the new set, and whatever a
 rotated follower had really lost. A waiting follower that holds everything
 keeps it, as long as the new set includes it. Under Raft the
-field waits for metadata level 16. `FelixShardFencedCrash.cfg`,
+field waits for metadata level 16, and the inherited identities for level 20;
+until then a report carries none and the member is named with an empty one. `FelixShardFencedCrash.cfg`,
 `FelixShardFencedWipe.cfg` and `FelixShardFencedLeaderCrash.cfg` check it on
 the fenced, follower-acked path, and `FelixShardFencedCrashCountsRotated.cfg`
 finds the lost record when the rotated copy counts.
@@ -1872,7 +1895,12 @@ crashed follower's old connection still shows only ever reads as a mismatch
 once the restarted broker has registered. Each report also names the
 incarnation every follower gave on the connection its positions came over
 (`replica_incarnations`, `null` for one that had not registered yet, omitted
-when empty). `FelixShardWipe.cfg` checks the design with the identity
+when empty). For a follower it has not reached yet at its generation, a
+leader promoted by a failover reports the identity that failover named it by
+(`inherited_storage_ids`, omitted when empty, kept as `inherited_storage`).
+Placement reads it only to name that follower in the next failover's fence
+(see "Fencing a promotion"), never to decide who is caught up.
+`FelixShardWipe.cfg` checks the design with the identity
 comparison in place, and `FelixShardWipeNoIds.cfg` finds the lost record
 without it. `FelixShardWipeStripped.cfg` registers the wiped follower again
 without an identity, with the leader still on its old connection, and passes

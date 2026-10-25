@@ -123,6 +123,8 @@ jobs:
           - FelixShardFencedAckMove
           - FelixShardFencedAckStagedMove
           - FelixShardFencedAckMoveCancel
+          - FelixShardFencedCrashNamesByInheritance
+          - FelixShardFencedWipeNamesByInheritance
     steps:
       - name: Checkout
         uses: actions/checkout@v7

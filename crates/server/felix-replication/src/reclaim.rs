@@ -211,6 +211,8 @@ fn given_up_report(
             .map(|(node, _, _, incarnation)| (node.clone(), Some(*incarnation)))
             .collect(),
         given_up: true,
+        // Every follower answered the probe, so each is named by its answer.
+        inherited_storage: Vec::new(),
     }
 }
 

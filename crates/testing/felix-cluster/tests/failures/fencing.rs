@@ -11,7 +11,7 @@
 //! Run with `cargo test -p felix-cluster --test failures fencing::`.
 use std::time::Duration;
 
-use felix_cluster::{Cluster, ClusterConfig, StreamSpec};
+use felix_cluster::{Cluster, ClusterConfig, Fault, StreamSpec};
 use serial_test::serial;
 
 const STREAM: &str = "orders";
@@ -28,7 +28,12 @@ fn quorum_cluster(nodes: usize, replication_factor: u32) -> ClusterConfig {
 /// Everything `node_id` will replay, retried until it yields something: being
 /// named leader and being ready to serve are different moments.
 async fn replay(cluster: &Cluster, node_id: &str) -> Vec<String> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    replay_within(cluster, node_id, Duration::from_secs(20)).await
+}
+
+/// [`replay`], retried for up to `within`.
+async fn replay_within(cluster: &Cluster, node_id: &str, within: Duration) -> Vec<String> {
+    let deadline = std::time::Instant::now() + within;
     loop {
         if let Ok((_client, mut subscription)) = cluster.replay_on(node_id, STREAM).await {
             let mut payloads = Vec::new();
@@ -326,6 +331,104 @@ async fn records_survive_repeated_failovers() {
         assert!(
             payloads.contains(&expected.to_string()),
             "{expected} was acknowledged under a quorum and did not survive two failovers: {payloads:?}",
+        );
+    }
+
+    cluster.shutdown().await;
+}
+
+/// **A second failover counts a follower the first promoted leader never
+/// reached (#1574).** The leader promoted at the first failover cannot reach
+/// follower X, so its reports name no identity for X. When it dies too, the
+/// next promotion needs X for its majority. Named by no identity, X's answer
+/// never counted and the shard stayed closed. Named by the identity the first
+/// promotion held X to, which the report now carries, it counts.
+#[serial]
+#[tokio::test]
+async fn a_second_failover_counts_a_follower_its_predecessor_never_reached() {
+    let mut cluster = Cluster::start(quorum_cluster(5, 5))
+        .await
+        .expect("start cluster");
+
+    let first = cluster.owner(STREAM).await.expect("owner");
+    cluster
+        .publish_via(&first, STREAM, b"epoch-1".to_vec())
+        .await
+        .expect("publish under the first leader");
+    let followers: Vec<String> = cluster
+        .node_ids()
+        .into_iter()
+        .filter(|id| *id != first)
+        .collect();
+    felix_cluster::wait::until(
+        Duration::from_secs(30),
+        "a report naming every follower under an identity",
+        || async {
+            let Ok(Some(report)) = cluster.replica_report(STREAM, 0).await else {
+                return false;
+            };
+            followers
+                .iter()
+                .all(|node| report.follower_storage.contains_key(node))
+        },
+    )
+    .await
+    .expect("the first leader reports its followers");
+
+    // Nobody reaches X from here on, and X answers nothing, so the next
+    // leader neither reaches it nor is it.
+    let x = followers[0].clone();
+    let cut: Vec<Fault> = cluster
+        .node_ids()
+        .into_iter()
+        .filter(|node| *node != x)
+        .map(|node| Fault::Refuse {
+            node,
+            peers: vec![x.clone()],
+        })
+        .collect();
+    for fault in &cut {
+        cluster.inject(fault).await.expect("refuse X");
+    }
+    cluster.pause_node(&x).expect("pause X");
+    cluster.kill_node(&first).expect("kill the first leader");
+    let second = failover_from(&cluster, &first)
+        .await
+        .expect("a replica should have been promoted");
+    cluster.resume_node(&x).expect("resume X");
+    assert_ne!(second, x, "the follower nobody reaches was promoted");
+    publish_when_ready(&cluster, &second, b"epoch-2").await;
+    felix_cluster::wait::until(
+        Duration::from_secs(30),
+        "a report from the second leader naming no identity for X",
+        || async {
+            let Ok(Some(report)) = cluster.replica_report(STREAM, 0).await else {
+                return false;
+            };
+            report.leader.as_deref() == Some(second.as_str())
+                && !report.follower_storage.contains_key(&x)
+        },
+    )
+    .await
+    .expect("the second leader reports");
+
+    // Killed before the cut heals, so it never reaches X and reports it.
+    cluster.kill_node(&second).expect("kill the second leader");
+    for fault in &cut {
+        cluster.heal(fault).await.expect("heal");
+    }
+    let third = failover_from(&cluster, &second)
+        .await
+        .expect("a replica should have been promoted a second time");
+
+    // Two of five are dead: the third leader opens only on X's answer.
+    let payloads = replay_within(&cluster, &third, Duration::from_secs(60)).await;
+    for expected in ["epoch-1", "epoch-2"] {
+        assert!(
+            payloads.contains(&expected.to_string()),
+            "{expected} did not survive a second failover that needed X ({x}); \
+             third leader {third} replayed {payloads:?}{}",
+            timeline(&cluster, "after the second failover").await,
         );
     }
 

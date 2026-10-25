@@ -590,6 +590,7 @@ const C_WIPED: &str = "dddddddddddddddddddddddddddddddd";
 /// [`REPORTED_AT`], under [`C_STORAGE`].
 fn last_report() -> crate::model::ReplicaReport {
     crate::model::ReplicaReport {
+        inherited_storage: Default::default(),
         given_up: false,
         key: assigned("orders", "broker-a", &[]).key,
         generation: 3,
@@ -1196,4 +1197,43 @@ fn an_old_drained_report_without_a_tail_is_not_a_give_up() {
     let plan = plan_from(&nodes, report, 3);
     assert_eq!(plan.to_place().count(), 0, "the live leader was replaced");
     assert_eq!(plan.unplaceable().count(), 0);
+}
+
+/// **A member the report names no identity for is named by the one its
+/// leader's promotion named, when the report inherits one (#1574).** That
+/// leader had not reached broker-b, so every acknowledgement broker-b gave
+/// went to an earlier leader from the copy the promotion named. Without an
+/// inherited identity it is still named by none, which no fence answer
+/// matches.
+#[test]
+fn a_member_the_report_never_reached_is_named_by_the_inherited_identity() {
+    let nodes = cluster_after_report(NodeLifecycle::Down, REPORTED_AT + 200, 2, Some(C_STORAGE));
+    let existing = vec![assigned("orders", "broker-a", &["broker-b", "broker-c"])];
+    let view = |report: crate::model::ReplicaReport| {
+        ReplicaPositions::new(vec![report], &report_liveness(), REPORTED_AT)
+            .with_nodes(&nodes, &existing)
+    };
+    let old_set = ["broker-a", "broker-b", "broker-c"];
+    let unreached = || {
+        let mut report = last_report();
+        report.follower_storage.remove("broker-b");
+        report
+    };
+
+    let mut inheriting = unreached();
+    inheriting.inherited_storage = [
+        ("broker-b".to_string(), B_STORAGE.to_string()),
+        // Reached, so what it answered under wins.
+        ("broker-c".to_string(), C_WIPED.to_string()),
+    ]
+    .into();
+    let ids =
+        view(inheriting).report_storage_ids(&assigned("orders", "broker-a", &[]).key, &old_set);
+    assert_eq!(ids.get("broker-b").map(String::as_str), Some(B_STORAGE));
+    assert_eq!(ids.get("broker-c").map(String::as_str), Some(C_STORAGE));
+
+    let ids =
+        view(unreached()).report_storage_ids(&assigned("orders", "broker-a", &[]).key, &old_set);
+    assert_eq!(ids.get("broker-b").map(String::as_str), Some(""));
+    assert_eq!(ids.get("broker-c").map(String::as_str), Some(C_STORAGE));
 }

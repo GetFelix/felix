@@ -1,7 +1,7 @@
 //! One shard's pass: ship to each follower, advance the quorum mark, and
 //! build the report.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -66,6 +66,11 @@ pub struct ShardCursors {
     /// The generation this leader leads at, and where it begins. See
     /// [`own_start`].
     pub(super) own_start: Option<(u64, u64)>,
+    /// The storage identity the assignment that promoted this leader named
+    /// for each replica, read at the generation's first pass. A report names
+    /// a follower this leader has not reached yet by it. `None` before that
+    /// pass. See [`inherited_names`].
+    pub(super) inherited: Option<BTreeMap<String, String>>,
 }
 
 impl ShardCursors {
@@ -80,6 +85,7 @@ impl ShardCursors {
             followers: Vec::new(),
             learner: None,
             own_start: None,
+            inherited: None,
         }
     }
 
@@ -99,6 +105,23 @@ impl ShardCursors {
             };
         }
     }
+}
+
+/// The identities `route` hands its leader for the replicas it fences
+/// (`Route::fence_storage_ids`), without the empty ones placement names a
+/// member it could not vouch for with.
+///
+/// Only the promotion's own assignment carries them, and every assignment
+/// write moves the generation, so the first pass at a generation reads all
+/// there will be.
+fn inherited_names(route: &Route) -> BTreeMap<String, String> {
+    route
+        .fence_storage_ids
+        .iter()
+        .flat_map(|ids| ids.iter())
+        .filter(|(_, id)| !id.is_empty())
+        .map(|(node, id)| (node.clone(), id.clone()))
+        .collect()
 }
 
 /// Where this leader's generation begins in a stream log, for
@@ -277,6 +300,10 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     let shard = crate::incarnation::shard_ref(broker, key, route.generation);
     let incarnation = shard.incarnation.unwrap_or(0);
     entry.keep_for(route.generation, incarnation);
+    let inherited_ids = entry
+        .inherited
+        .get_or_insert_with(|| inherited_names(route))
+        .clone();
     let Some(log) = broker
         .shard_log_for(
             log_kind,
@@ -855,6 +882,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                         tail,
                         acknowledged(tail, &counted),
                         &positions,
+                        &inherited_ids,
                         false,
                     )
                     .at_incarnation(incarnation)
@@ -999,6 +1027,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                         tail,
                         acknowledged(tail, &counted),
                         &positions,
+                        &inherited_ids,
                         false,
                     )
                     .at_incarnation(incarnation)
@@ -1195,6 +1224,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
             tail,
             acknowledged(tail, &counted),
             &entry.followers,
+            &inherited_ids,
             drained,
         )
         .at_incarnation(incarnation)
