@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792900344710,
+  "lastUpdate": 1792901459610,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -35828,6 +35828,58 @@ window.BENCHMARK_DATA = {
             "range": "12407.21",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1248762.27\nmean: 1242887.63\nstdev: 12407.21\ncv: 1.00%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f63226cff47ee2f0a27f45627e597d6f407222c4",
+          "message": "ci: run the C ABI harness even when the Python suite fails (#1537)\n\nThe C step ran only after a passing Python suite, while its verdict ran\nalways(), so a Python failure was followed by a misleading \"read the results\nfile c-conformance.json: No such file\" error and no C result. The C step now\nneeds only the harness build, and the verdict runs only when the C step did.\nThe job still fails on any Python or C failure.",
+          "timestamp": "2026-10-25T04:04:53Z",
+          "tree_id": "aee0b9f2e45b652c6f6883cf0692f7bb8ec19428",
+          "url": "https://github.com/GetFelix/felix/commit/f63226cff47ee2f0a27f45627e597d6f407222c4"
+        },
+        "date": 1792901458778,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 524341.75,
+            "range": "50218.13",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 524341.75\nmean: 514213.07\nstdev: 50218.13\ncv: 9.77%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 524341.75,
+            "range": "50218.13",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 524341.75\nmean: 514213.07\nstdev: 50218.13\ncv: 9.77%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 124074.67,
+            "range": "907.20",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 124074.67\nmean: 123753.19\nstdev: 907.20\ncv: 0.73%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1240746.68,
+            "range": "9072.03",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1240746.68\nmean: 1237531.95\nstdev: 9072.03\ncv: 0.73%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
