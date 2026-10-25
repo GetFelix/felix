@@ -9,5 +9,5 @@
     "noEmit": true,
     "skipLibCheck": false
   },
-  "include": ["test/*.ts"]
+  "include": ["test/*.ts", "test/doc-examples/*.ts"]
 }

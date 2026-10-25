@@ -672,7 +672,7 @@ class FakeControlPlane:
 
         return Response(json.dumps(reply).encode())
 
-    def aiohttp_module(self):
+    def aiohttp_module(self, log):
         """A minimal aiohttp: ClientSession.post and ClientResponseError."""
         plane = self
 
@@ -700,19 +700,33 @@ class FakeControlPlane:
             async def json(self):
                 return self.reply
 
+        class ClientTimeout:
+            def __init__(self, total=None):
+                self.total = total
+
         class ClientSession:
-            def __init__(self, raise_for_status=False, **kwargs):
+            def __init__(self, raise_for_status=False, timeout=None):
                 assert raise_for_status is True
+                assert timeout.total < 30, "requests must give up before the client does"
                 self.closed = False
+                plane.session = self
 
             def post(self, url, json=None, headers=None):
+                assert not self.closed
                 return Response(url, json, headers)
 
-            async def close(self):
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
                 self.closed = True
+                log.append("session closed")
+                return False
 
         return types.SimpleNamespace(
-            ClientSession=ClientSession, ClientResponseError=ClientResponseError
+            ClientSession=ClientSession,
+            ClientResponseError=ClientResponseError,
+            ClientTimeout=ClientTimeout,
         )
 
 
@@ -720,7 +734,8 @@ def test_the_documented_example_rotates_the_refresh_token(monkeypatch):
     import urllib.request
 
     plane = FakeControlPlane()
-    fake_aiohttp = plane.aiohttp_module()
+    log = []
+    fake_aiohttp = plane.aiohttp_module(log)
     monkeypatch.setattr(urllib.request, "urlopen", plane.urlopen)
     monkeypatch.setitem(sys.modules, "aiohttp", fake_aiohttp)
     built = {}
@@ -733,6 +748,17 @@ def test_the_documented_example_rotates_the_refresh_token(monkeypatch):
         @staticmethod
         async def connect(addrs, **kwargs):
             built["async"] = kwargs
+            return FakeAsyncClient()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            log.append("client closed")
+            return False
+
+        async def publish(self, *args):
+            log.append("published")
 
     monkeypatch.setattr(felix, "Client", FakeClient)
     monkeypatch.setattr(felix, "AsyncClient", FakeAsyncClient)
@@ -744,24 +770,30 @@ def test_the_documented_example_rotates_the_refresh_token(monkeypatch):
         exec(compile(snippet, "python.md", "exec"), namespace)  # noqa: S102
 
     namespace["connect"]("oidc")
-    _client, session = asyncio.run(namespace["connect_async"]("oidc"))
-
     sync = built["client"]
     assert sync["token"] == "ft1"
-    assert [sync["token_provider"]() for _ in range(3)] == ["ft3", "ft4", "ft5"]
+    assert [sync["token_provider"]() for _ in range(3)] == ["ft2", "ft3", "ft4"]
 
-    fetch = built["async"]["token_provider"]
-    assert asyncio.iscoroutinefunction(fetch)
-    # Each refresh spent the newest token; a stale one would have raised 403.
-    assert asyncio.run(fetch()) == "ft6"
-    assert asyncio.run(fetch()) == "ft7"
+    async def use_async():
+        async with namespace["connect_async"]("oidc") as client:
+            assert built["async"]["token"] == "ft5"
+            fetch = built["async"]["token_provider"]
+            assert asyncio.iscoroutinefunction(fetch)
+            # Each refresh spent the newest token; a stale one would raise 403.
+            assert await fetch() == "ft6"
+            assert await fetch() == "ft7"
+            # The provider's session raises on a spent refresh token.
+            with pytest.raises(fake_aiohttp.ClientResponseError, match="403"):
+                async with plane.session.post("/token/refresh", json={"refresh_token": "rt1"}):
+                    pass
+            await client.publish("t1", "default", "events", b"hello")
+
+    asyncio.run(use_async())
     assert plane.refreshes == 5
     assert "to_thread" not in "".join(snippets)
+    # The session outlives the client, on every path.
+    assert log == ["published", "client closed", "session closed"]
 
-    # The provider's session raises on a spent refresh token.
-    async def replay():
-        async with session.post("/token/refresh", json={"refresh_token": "rt1"}):
-            pass
-
-    with pytest.raises(fake_aiohttp.ClientResponseError, match="403"):
-        asyncio.run(replay())
+    log.clear()
+    asyncio.run(namespace["main"]("oidc"))
+    assert log == ["published", "client closed", "session closed"]

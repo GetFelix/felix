@@ -72,6 +72,11 @@ that someone new can find their way from the directory tree alone.
   `felix-`; published names are permanent, so choose carefully.
 - Shared dependency versions go in `[workspace.dependencies]`. Members add
   features, they don't re-pin versions.
+- `crates/` holds what cargo builds, including the bindings compiled from Rust
+  (Python on PyO3, TypeScript on napi-rs, the C ABI). `sdks/<language>/` holds
+  SDKs built by their own toolchain on top of `felix-capi` (C# now, Go next).
+  They live in this repo so they move in step with the C ABI, and may move to
+  their own repos once that interface settles.
 
 ### Modules
 

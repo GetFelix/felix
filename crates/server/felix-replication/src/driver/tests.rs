@@ -49,6 +49,8 @@ const LOCAL: &str = "broker-a";
 #[derive(Default)]
 struct AcceptingFollower {
     sent: Mutex<Vec<(String, ReplicateRecords)>>,
+    /// A node whose requests never answer.
+    hung: Mutex<Option<String>>,
 }
 
 impl AcceptingFollower {
@@ -69,6 +71,9 @@ impl PeerRequester for AcceptingFollower {
         _addr: SocketAddr,
         message: InternalMessage,
     ) -> std::result::Result<InternalMessage, PeerError> {
+        if self.hung.lock().expect("lock").as_deref() == Some(node_id) {
+            std::future::pending::<()>().await;
+        }
         let batch = match message {
             InternalMessage::ReplicateRecords(batch)
             | InternalMessage::ReplicateCacheRecords(batch) => batch,

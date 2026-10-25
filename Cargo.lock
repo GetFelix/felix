@@ -1170,6 +1170,7 @@ dependencies = [
  "metrics",
  "quinn",
  "rcgen",
+ "reqwest",
  "rustls",
  "rustls-platform-verifier",
  "serde",

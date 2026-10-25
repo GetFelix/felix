@@ -190,6 +190,8 @@ async fn ship_batch<R: PeerRequester>(
                 "could not read the local log to replicate",
             );
             metrics::record_shipped(metrics::OUTCOME_READ_FAILED);
+            // Stalled, or the unanswered pass that follows would start another.
+            cursor.stalled = true;
             return Progress::Retry;
         }
     };
