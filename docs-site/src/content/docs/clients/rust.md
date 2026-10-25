@@ -226,6 +226,8 @@ async fn configure(config: &mut ClientConfig, oidc_token: &str) -> Result<()> {
         .timeout(Duration::from_secs(10))
         .build()?;
     let first = exchange(&http, oidc_token).await?;
+    // The client runs one fetch at a time, so this lock is never contended;
+    // it only gives the `Fn` closure somewhere to keep the newest refresh token.
     let refresh_token = Arc::new(Mutex::new(first.refresh_token));
 
     let tokens = RefreshingToken::with_initial(first.felix_token, move || {

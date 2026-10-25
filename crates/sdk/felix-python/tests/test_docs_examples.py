@@ -14,6 +14,7 @@ stubs name what the module has.
 from __future__ import annotations
 
 import ast
+import builtins
 import inspect
 import pathlib
 import re
@@ -344,3 +345,42 @@ def test_the_thread_pool_example_raises_a_failed_publish(monkeypatch):
     assert namespace["offsets"] == [1, 2]
     with pytest.raises(RuntimeError, match="publish failed"):
         run_block(source, monkeypatch, client=Client(), payloads=[b"a", b"bad"])
+
+
+# Names a fragment may use without defining: the client, credentials and
+# application callbacks the surrounding prose supplies. Anything else, an
+# import or a logger included, has to be in the block.
+CONTEXT_NAMES = {
+    "client", "alice", "tok", "addrs", "alice_token", "oidc_token",
+    "payload", "payloads", "orders", "data", "customer_id", "shard", "records",
+    "checkpoint", "handle", "alert", "charge", "quarantine", "retry",
+    "reconcile", "give_up", "create_stream", "fixed_the_cause",
+    "RetryableError",
+}
+
+
+def undefined_names(source):
+    tree = ast.parse(source)
+    defined = set(dir(builtins)) | {"__name__"} | CONTEXT_NAMES
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            defined.add(node.name)
+        elif isinstance(node, ast.arg):
+            defined.add(node.arg)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                defined.add((alias.asname or alias.name).split(".")[0])
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            defined.add(node.name)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            defined.update(node.names)
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            defined.add(node.id)
+    return sorted(
+        {n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and n.id not in defined}
+    )
+
+
+@pytest.mark.parametrize("line,source", blocks())
+def test_blocks_use_only_defined_names(line, source):
+    assert undefined_names(source) == [], f"python.md line {line}"

@@ -71,8 +71,8 @@ process that outlives one gives `Client`, `AsyncClient.connect` and
 `with_identity` a `token_provider`, and the client asks it for a token when it
 needs one. It asks lazily: when no token is held, when the held one has passed
 two thirds of its life, or when a broker has just refused it (one refetch per refused stream, retried only if the provider returns a different token, then the operation fails with the auth error). If a fetch fails
-while the held token is still valid, the client keeps using that one, logs a
-warning and asks again about five seconds later.
+while the held token is still valid, the client keeps using that one and
+asks again about five seconds later.
 
 The provider is a callable that takes no arguments and returns the token as a
 `str`, passed as `token_provider=`; `token=` is then optional, so leave it out
@@ -97,8 +97,8 @@ call, because it does not depend on that loop.
 
 **Failure.** The provider fails when it raises, returns something that is not a
 non-empty string, or does not answer within 30 seconds. While the held token is
-still valid the client keeps it, logs a warning and asks again about five
-seconds later. Otherwise the operation that needed the token fails with
+still valid the client keeps it and asks again about five seconds
+later. Otherwise the operation that needed the token fails with
 `AuthError` carrying the provider's message unchanged. A provider failure is
 final for that operation: it is not retried, because each call can rotate a
 refresh token. The next operation asks again. The 30 second timeout fails the
@@ -252,6 +252,8 @@ its first stream.
 ## Connecting
 
 ```python
+import felix
+
 felix.Client(
     addrs,                    # "host:port", or a list of them
     tenant_id="t1",
@@ -306,6 +308,8 @@ In every language the client is a cluster client; see
 [Choosing a Client](/clients/overview/#every-client-is-a-cluster-client).
 
 ```python
+import felix
+
 with felix.Client(
     ["felix-0:5000", "felix-1:5000", "felix-2:5000"],
     tenant_id="t1",
@@ -362,6 +366,8 @@ behaves like a single-shard one. If you created a stream with several shards to
 get throughput, and you are not passing a key, you are not getting it.
 
 ```python
+import json
+
 for order in orders:
     client.publish(
         "t1", "default", "orders",
@@ -430,6 +436,8 @@ exception is a new leader's generation-start record, which takes an offset; the
 next event reports it in `skipped_before`:
 
 ```python
+import logging
+
 log = logging.getLogger(__name__)
 
 expected = None
@@ -491,6 +499,8 @@ different things. The recovery differs, so the error types differ.
 ## Errors you can act on
 
 ```python
+import felix
+
 try:
     client.publish("t1", "default", "orders", payload)
 except felix.ShardUnavailableError:
@@ -636,6 +646,8 @@ Watches can resume by offset and report loss explicitly, which makes the cache
 usable for state synchronisation.
 
 ```python
+import felix
+
 def mirror(client, roster):
     """Keep `roster` equal to the room's entries until the broker ends the watch."""
     resume_from = None
@@ -735,6 +747,12 @@ print(state.value, state.version)  # the version is receipt.offset
 A commit is refused before anything is sent when it cannot be one record:
 
 ```python
+import logging
+
+import felix
+
+log = logging.getLogger(__name__)
+
 try:
     client.commit("acme", "orders", b"order-42", [
         felix.CommitOp.publish("order-events", b"placed"),
@@ -768,6 +786,12 @@ A subscription reads one shard. `subscribe_sharded` opens one per shard,
 follows each shard's own owner, and merges them:
 
 ```python
+import logging
+
+import felix
+
+log = logging.getLogger(__name__)
+
 with client.subscribe_sharded("t1", "default", "orders") as stream:
     for item in stream:
         if isinstance(item, felix.ShardRecord):
@@ -792,6 +816,8 @@ Resuming is a **map**, not a number, because offsets are per shard.
 and each listed shard continues after its offset:
 
 ```python
+import felix
+
 resume = checkpoint.load()             # None on a cold start
 with client.subscribe_sharded("t1", "default", "orders", resume=resume) as stream:
     for item in stream:
