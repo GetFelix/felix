@@ -352,21 +352,59 @@ async fn an_answer_at_the_tail_starts_no_pass() {
     );
 }
 
-/// **Only a checked answer from a follower still taking records is owed a
-/// pass.** A halted follower's answer moves nothing the pass could ship.
+/// **An unchecked answer is owed a pass too.** The exchange launched level
+/// with the tail, read the log before the record landed and sent nothing, so
+/// no answer was checked; the follower is still behind (#1545).
 #[tokio::test(start_paused = true)]
-async fn an_unchecked_halted_or_stalled_answer_starts_no_pass() {
+async fn an_unchecked_level_answer_behind_the_tail_starts_a_pass() {
     let rig = Rig::new().await;
     let mut shards = appended_behind_busy(&rig).await;
-    let unchecked = shards.answer_from(&key(), "broker-b", TAIL, false);
-    let mut stalled = shards.answer_from(&key(), "broker-c", TAIL, true);
-    stalled.cursor.stalled = true;
-    shards.apply(unchecked);
-    shards.apply(stalled);
+    let answers = [
+        shards.answer_from(&key(), "broker-b", TAIL, false),
+        shards.answer_from(&key(), "broker-c", TAIL, false),
+    ];
+    for answer in answers {
+        shards.apply(answer);
+    }
+    assert!(!shards.passes.is_empty(), "no pass started");
+    drain(&mut shards).await;
+    assert_eq!(rig.marks.offset(&watch_key(&key()), 4), Some(TAIL + 1));
+}
+
+/// An unchecked answer at the tail owes nothing, so unchecked answers cannot
+/// feed each other.
+#[tokio::test(start_paused = true)]
+async fn an_unchecked_answer_at_the_tail_starts_no_pass() {
+    let rig = Rig::new().await;
+    let mut shards = settled(&rig).await;
+    for _ in 0..20 {
+        let answers = [
+            shards.answer_from(&key(), "broker-b", TAIL, false),
+            shards.answer_from(&key(), "broker-c", TAIL, false),
+        ];
+        for answer in answers {
+            shards.apply(answer);
+        }
+    }
     assert!(
         shards.passes.is_empty(),
-        "an answer that is not owed started a pass"
+        "an answer at the tail started a pass"
     );
+}
+
+/// **A halted or stalled follower's answer owes no pass.** A halted
+/// follower takes nothing, and a stalled one failed its request, so a pass
+/// would only dial it again in a loop.
+#[tokio::test(start_paused = true)]
+async fn a_halted_or_stalled_answer_starts_no_pass() {
+    let rig = Rig::new().await;
+    let mut shards = appended_behind_busy(&rig).await;
+    for checked in [true, false] {
+        let mut stalled = shards.answer_from(&key(), "broker-c", TAIL, checked);
+        stalled.cursor.stalled = true;
+        shards.apply(stalled);
+        assert!(shards.passes.is_empty(), "a stalled answer started a pass");
+    }
 
     let mut halted = shards.answer_from(&key(), "broker-b", TAIL, true);
     halted.cursor.halted = Some(crate::follower::Halt::Diverged);
@@ -438,5 +476,36 @@ async fn an_absorbed_answer_behind_the_tail_starts_a_pass() {
         "b was not shipped the record: {:?}",
         rig.peers.batches()
     );
+    assert_eq!(rig.marks.offset(&watch_key(&key()), 4), Some(TAIL + 1));
+}
+
+/// An unchecked answer the running pass absorbs is owed a pass as well.
+#[tokio::test(start_paused = true)]
+async fn an_absorbed_unchecked_answer_behind_the_tail_starts_a_pass() {
+    let rig = Rig::new().await;
+    let mut shards = settled(&rig).await;
+    shards.hold_busy(&key(), "broker-b");
+    let log = rig
+        .broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    let runtime = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || {
+        runtime
+            .block_on(log.append(&[Bytes::from_static(b"late")]))
+            .expect("append")
+    })
+    .await
+    .expect("append task");
+    *rig.peers.hung.lock().expect("lock") = Some("broker-c".to_string());
+    let answer = shards.answer_from(&key(), "broker-b", TAIL, false);
+    shards.scan(WakeKind::Append);
+    shards.apply(answer);
+    let (scan, ended) = shards.passes.next().await.expect("a pass");
+    shards.fold(scan, ended);
+    assert!(!shards.passes.is_empty(), "no pass started for b");
+    let (scan, ended) = shards.passes.next().await.expect("a pass");
+    shards.fold(scan, ended);
     assert_eq!(rig.marks.offset(&watch_key(&key()), 4), Some(TAIL + 1));
 }

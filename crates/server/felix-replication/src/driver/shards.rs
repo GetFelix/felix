@@ -953,7 +953,6 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         let counts_for_more =
             current && checked && cursor.halted.is_none() && cursor.confirmed > mark;
         let owed = current
-            && checked
             && cursor.halted.is_none()
             && !cursor.stalled
             && tail.is_some_and(|tail| cursor.next_offset < tail);

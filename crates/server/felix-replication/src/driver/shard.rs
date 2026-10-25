@@ -1302,9 +1302,9 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     let again = absorbed_moved
         || entry.followers.iter().any(|cursor| {
             absorbed.contains(&cursor.node_id)
-                && checked.lock().contains(&cursor.node_id)
                 && cursor.halted.is_none()
-                && (cursor.confirmed > mark || (!cursor.stalled && cursor.next_offset < tail))
+                && ((checked.lock().contains(&cursor.node_id) && cursor.confirmed > mark)
+                    || (!cursor.stalled && cursor.next_offset < tail))
         });
 
     ShardPass {
