@@ -8,6 +8,7 @@ would appear to work until the first failure left half of it behind.
 from __future__ import annotations
 
 import asyncio
+import urllib.request
 
 import pytest
 
@@ -25,7 +26,7 @@ def find(subscription, payload, attempts=200, timeout=15.0):
     return None
 
 
-@pytest.mark.scenario("commit.returns_the_offset", "commit.negotiated")
+@pytest.mark.scenario("commit.returns_the_offset")
 def test_a_commit_is_read_at_its_offset(client, fixture, key):
     stream = fixture["durable_stream"]
     payload = f"{key}-placed".encode()
@@ -46,6 +47,34 @@ def test_a_commit_is_read_at_its_offset(client, fixture, key):
     assert isinstance(receipt, felix.CommitReceipt)
     assert record is not None, "the commit's event never reached a subscriber"
     assert record.event.offset == receipt.offset
+
+
+@pytest.mark.scenario("commit.negotiated")
+def test_commits_are_refused_by_a_broker_that_advertised_none(fixture, key):
+    addrs = fixture.get("no_commit_addrs")
+    control_url = fixture.get("control_url")
+    if not addrs or not control_url:
+        pytest.skip("the fixture file has no no_commit_addrs or control_url")
+    tenant, namespace = fixture["tenant_id"], fixture["namespace"]
+    stream = fixture["durable_stream"]
+
+    with felix.Client(
+        addrs,
+        tenant_id=tenant,
+        token=fixture["token"],
+        ca_file=fixture["ca_file"],
+    ) as bare:
+        # The plain base class: a typed refusal (wrong shard, event count) would
+        # mean the call reached the broker.
+        with pytest.raises(felix.CommitError) as refused:
+            bare.commit(tenant, namespace, key.encode(), [felix.CommitOp.publish(stream, b"x")])
+        assert type(refused.value) is felix.CommitError
+        with pytest.raises(felix.CommitError) as refused:
+            bare.state_get(tenant, namespace, stream, key.encode(), key)
+        assert type(refused.value) is felix.CommitError
+
+    with urllib.request.urlopen(control_url + "/no-commit/requests", timeout=10) as response:
+        assert int(response.read()) == 0, "the broker was sent a commit or state read"
 
 
 @pytest.mark.scenario("commit.state_get_returns_the_version")
