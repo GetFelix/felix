@@ -937,7 +937,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             .marks
             .offset_at(&watch_key(&key), incarnation, generation)
             .unwrap_or(0);
-        let counts_for_more = checked && cursor.halted.is_none() && cursor.confirmed > mark;
+
         // A pass that found this follower busy shipped it nothing, and the
         // append that started that pass was its only wake. Without another
         // pass the records past its cursor wait for the tick.
@@ -950,6 +950,8 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             .streams
             .get(&key)
             .is_some_and(|e| (e.generation, e.incarnation) == (generation, incarnation));
+        let counts_for_more =
+            current && checked && cursor.halted.is_none() && cursor.confirmed > mark;
         let owed = current
             && checked
             && cursor.halted.is_none()

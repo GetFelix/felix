@@ -1296,12 +1296,15 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     let mark = marks
         .offset_at(mark_key, incarnation, route.generation)
         .unwrap_or(0);
+    // An absorbed answer behind the tail is owed a pass as well: the pass
+    // may end on a straggler whose answer will not be checked, and nothing
+    // else wakes this follower before the tick.
     let again = absorbed_moved
         || entry.followers.iter().any(|cursor| {
             absorbed.contains(&cursor.node_id)
                 && checked.lock().contains(&cursor.node_id)
                 && cursor.halted.is_none()
-                && cursor.confirmed > mark
+                && (cursor.confirmed > mark || (!cursor.stalled && cursor.next_offset < tail))
         });
 
     ShardPass {

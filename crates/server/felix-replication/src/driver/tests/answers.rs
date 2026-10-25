@@ -386,9 +386,6 @@ async fn a_stale_incarnation_answer_starts_no_pass() {
     other.incarnation += 1;
     let mut older = shards.answer_from(&key(), "broker-c", TAIL, true);
     older.generation += 1;
-    // Nothing for the "counts for more" case to fire on.
-    other.cursor.confirmed = 0;
-    older.cursor.confirmed = 0;
     shards.apply(other);
     assert!(
         shards.passes.is_empty(),
@@ -399,4 +396,47 @@ async fn a_stale_incarnation_answer_starts_no_pass() {
         shards.passes.is_empty(),
         "a stale generation started a pass"
     );
+}
+
+/// **An answer the running pass absorbs is owed a pass too.** b is busy and
+/// level when a record lands, so the append's pass launches c alone, and c
+/// never answers. b's level answer is absorbed by that pass and moves
+/// nothing; with no pass started after it, b waits for the tick.
+#[tokio::test(start_paused = true)]
+async fn an_absorbed_answer_behind_the_tail_starts_a_pass() {
+    let rig = Rig::new().await;
+    let mut shards = settled(&rig).await;
+    shards.hold_busy(&key(), "broker-b");
+    let log = rig
+        .broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    let runtime = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || {
+        runtime
+            .block_on(log.append(&[Bytes::from_static(b"late")]))
+            .expect("append")
+    })
+    .await
+    .expect("append task");
+    *rig.peers.hung.lock().expect("lock") = Some("broker-c".to_string());
+    // Built while the cursors are held; the pass takes them.
+    let answer = shards.answer_from(&key(), "broker-b", TAIL, true);
+    shards.scan(WakeKind::Append);
+    shards.apply(answer);
+    let (scan, ended) = shards.passes.next().await.expect("a pass");
+    shards.fold(scan, ended);
+
+    assert!(!shards.passes.is_empty(), "no pass started for b");
+    let (scan, ended) = shards.passes.next().await.expect("a pass");
+    shards.fold(scan, ended);
+    assert!(
+        rig.peers
+            .batches()
+            .contains(&("broker-b".to_string(), TAIL, 1)),
+        "b was not shipped the record: {:?}",
+        rig.peers.batches()
+    );
+    assert_eq!(rig.marks.offset(&watch_key(&key()), 4), Some(TAIL + 1));
 }
