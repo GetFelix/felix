@@ -122,6 +122,16 @@ async fn a_reply_from_another_thread_is_the_token_and_no_initial_token_is_fine()
     assert_eq!(probe.fetches.load(Ordering::SeqCst), 1);
 }
 
+/// A whitespace-only initial token is no token either.
+#[tokio::test]
+async fn a_blank_initial_token_is_fetched_over() {
+    use felix_client::TokenProvider;
+    let probe = Probe::new(Answer::OtherThread("fetched"));
+    let tokens = provider(&probe.source(), Some("  "));
+    assert_eq!(tokens.token().await.unwrap(), "fetched");
+    assert_eq!(probe.fetches.load(Ordering::SeqCst), 1);
+}
+
 /// The initial token is used without asking the app.
 #[tokio::test]
 async fn the_initial_token_is_served_without_a_fetch() {
@@ -383,6 +393,29 @@ async fn a_refused_argument_leaves_the_reply_open() {
         assert_eq!(felix_token_reply_ok(probe.reply(0), good), FELIX_STATUS_OK);
     }
     assert_eq!(waiting.await.unwrap(), "good");
+}
+
+/// Whitespace passes the reply but the core fails the fetch with it.
+#[tokio::test]
+async fn a_blank_token_reply_fails_the_fetch() {
+    use felix_client::TokenProvider;
+    let probe = Probe::new(Answer::Hold);
+    let tokens = Arc::new(provider(&probe.source(), None));
+    let held = Arc::clone(&tokens);
+    let waiting = tokio::spawn(async move { held.token().await });
+    wait_for("the fetch", || probe.fetches.load(Ordering::SeqCst) == 1).await;
+    // SAFETY: a live reply and a NUL-terminated string.
+    unsafe {
+        assert_eq!(
+            felix_token_reply_ok(probe.reply(0), c"  ".as_ptr()),
+            FELIX_STATUS_OK
+        );
+    }
+    let err = waiting.await.unwrap().unwrap_err();
+    assert!(
+        format!("{err:#}").contains("the token provider returned an empty token"),
+        "{err:#}"
+    );
 }
 
 /// The core stops waiting on a fetch after its timeout but not the fetch. An
