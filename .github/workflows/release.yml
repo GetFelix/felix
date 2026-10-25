@@ -1218,6 +1218,22 @@ jobs:
           path: target/release/${{ matrix.lib }}
           if-no-files-found: error
 
+  # The prebuilt C libraries for the GitHub release live in their own workflow
+  # so an old release can be backfilled without rerunning any publish job.
+  # Called after linux-x86_64 so the release exists; a dry run and a nightly
+  # build and smoke the archives and attach nothing.
+  libfelix-archives:
+    name: libfelix archives
+    needs: linux-x86_64
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release-capi-archives.yml
+    with:
+      tag: ${{ inputs.tag || github.ref_name }}
+      dry_run: ${{ inputs.dry_run || inputs.nightly != '' || false }}
+      ref: ${{ inputs.ref || '' }}
+      from_release: true
+
   dotnet-package:
     name: Pack Felix.Client
     needs: dotnet-native

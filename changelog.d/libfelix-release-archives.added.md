@@ -1,0 +1,1 @@
+- Each GitHub release now carries prebuilt `libfelix` C libraries, shared and static with `felix.h` and a `LINKING.txt`, for Linux, macOS and Windows on x64 and arm64.
