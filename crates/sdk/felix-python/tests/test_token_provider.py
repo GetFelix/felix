@@ -575,10 +575,16 @@ class FakeControlPlane:
                 self.status = status
 
         class Response:
-            def __init__(self, reply):
-                self.reply = reply
+            def __init__(self, url, body, headers):
+                self.args = (url, body, (headers or {}).get("Authorization"))
+                self.reply = None
 
             async def __aenter__(self):
+                # Real aiohttp sends the request here, not in post().
+                try:
+                    self.reply = plane.handle(*self.args)
+                except PermissionError:
+                    raise ClientResponseError(403) from None
                 return self
 
             async def __aexit__(self, *exc):
@@ -593,11 +599,7 @@ class FakeControlPlane:
                 self.closed = False
 
             def post(self, url, json=None, headers=None):
-                try:
-                    reply = plane.handle(url, json, (headers or {}).get("Authorization"))
-                except PermissionError:
-                    raise ClientResponseError(403) from None
-                return Response(reply)
+                return Response(url, json, headers)
 
             async def close(self):
                 self.closed = True
@@ -651,7 +653,8 @@ def test_the_documented_example_rotates_the_refresh_token(monkeypatch):
 
     # The provider's session raises on a spent refresh token.
     async def replay():
-        await session.post("/token/refresh", json={"refresh_token": "rt1"})
+        async with session.post("/token/refresh", json={"refresh_token": "rt1"}):
+            pass
 
     with pytest.raises(fake_aiohttp.ClientResponseError, match="403"):
         asyncio.run(replay())
