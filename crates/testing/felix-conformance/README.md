@@ -22,6 +22,9 @@ fixture serves one at `link_addr` and breaks it on `POST /link`, and the
 protocol suite puts one in front of its in-process broker. See the
 "Connection faults" section of `scenarios.toml` for what passes.
 
+The `token.*` scenarios need tokens that expire during a run: the fixture mints
+one with a chosen life on `POST /tokens` (`{"ttl_secs": N, "forged": false}`).
+
 Byte-level wire fixtures are separate:
 they live in [`felix-wire`'s `tests/vectors/`](../../protocol/felix-wire/tests/vectors).
 

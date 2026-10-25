@@ -875,3 +875,89 @@ publish_batch and commit naming a shard at or past the stream's shard count are
 refused with invalid_request rather than wrapped onto another shard. The
 shard's next offset is unchanged afterwards.
 """
+
+# ---------------------------------------------------------------------------
+# Token provider
+#
+# A client given a function that returns a fresh Felix token, instead of one
+# fixed token. The fixture mints tokens with a chosen life (`POST /tokens` on
+# `control_url`, see the fixture's control endpoint), so these run against
+# real brokers. Optional until every client exposes a provider and passes them
+# all; a client with no provider skips them with a reason.
+# ---------------------------------------------------------------------------
+
+[[scenario]]
+id = "token.lazy"
+required = false
+title = "The provider is called only when a stream is about to authenticate"
+detail = """
+No background timer. A client holding a token with life left makes no provider
+call, however long it sits idle, and opening further streams reuses the held
+token. With no initial token the first authentication makes the one call.
+"""
+
+[[scenario]]
+id = "token.single_flight"
+required = false
+title = "Concurrent stream opens share one provider call"
+detail = """
+Stream opens that each need a token while a call is in flight wait on that
+call. The provider never runs twice at once, so rotating a refresh token
+inside it is safe.
+"""
+
+[[scenario]]
+id = "token.refused_retry_once"
+required = false
+title = "A refused token costs one refetch and one retry"
+detail = """
+When the broker refuses the held token, the client drops it, fetches once and
+retries. A provider that hands back a refused token again is not asked a
+third time: the caller gets the auth error. With one address that is one
+refetch; a client given several brokers refetches once per refusing broker,
+because each broker authenticates for itself.
+"""
+
+[[scenario]]
+id = "token.keep_valid_on_failure"
+required = false
+title = "A failed refresh keeps a token that is still valid"
+detail = """
+Past two thirds of its life but not expired, the held token is refreshed on
+the next stream open. If the provider fails then, the client logs it, keeps
+the token, the operation succeeds, and the refresh is tried again a few
+seconds later rather than on every open.
+"""
+
+[[scenario]]
+id = "token.expiry_refresh"
+required = false
+title = "A short-lived token is replaced mid-run on a live client"
+detail = """
+Hold a token minted with a life of a few seconds. Once two thirds of it have
+passed, a new publish or subscribe stream on the same client calls the
+provider, presents the replacement, and works. The brokers accept a token
+for 60 s past its expiry, so this proves the client refreshed from the
+token's own `exp`, not that a broker refused it.
+"""
+
+[[scenario]]
+id = "token.failure_message"
+required = false
+title = "The provider's error text reaches the caller's auth error"
+detail = """
+With no valid token held, a provider that fails (error, exception, rejection,
+or a result that is not a string) fails the operation with the client's auth
+error carrying the provider's own message, unchanged.
+"""
+
+[[scenario]]
+id = "token.timeout_joins"
+required = false
+title = "A provider past the 30 s timeout fails the waiters, and is joined"
+detail = """
+The timeout fails whoever is waiting, not the call. The provider is not
+called again while that call is outstanding, and a later operation joins it
+and uses its late answer. A provider that hangs therefore still runs once at
+a time.
+"""

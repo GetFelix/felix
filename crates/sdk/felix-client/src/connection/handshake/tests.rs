@@ -130,6 +130,7 @@ impl Drop for TokenCheckingServer {
     }
 }
 
+// Scenario token.refused_retry_once.
 /// #629: after the token expires, a new subscription should retry with a fresh
 /// token instead of failing.
 #[tokio::test]

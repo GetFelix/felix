@@ -13,6 +13,13 @@
 //!   of `{"fault": "drop" | "reset" | "stall", "hold_ms": N}`. It answers at
 //!   once; a drop or a stall heals itself after `hold_ms`.
 //! - `/heal` undoes all of them.
+//! - `POST /tokens` mints a token for the fixture tenant with the same grants
+//!   as `token`, with a body of `{"ttl_secs": N, "forged": false}`, and
+//!   answers `{"token", "ttl_secs"}`. A suite uses a short life to make a
+//!   client refresh mid-run. A `forged` token is signed with a key no broker
+//!   trusts, so it looks live to the client and every broker refuses it. The
+//!   brokers allow 60 s of clock skew, so "expires" is the client's view of
+//!   the token's `exp`, not a refusal at the broker.
 //! - `GET /no-commit/requests` answers how many commits and state reads the
 //!   broker at `no_commit_addrs` has been sent (a plain integer).
 //!
@@ -61,6 +68,23 @@ struct LinkRequest {
     hold_ms: u64,
 }
 
+#[derive(Deserialize)]
+struct TokenRequest {
+    ttl_secs: u64,
+    #[serde(default)]
+    forged: bool,
+}
+
+#[derive(Serialize)]
+struct Minted {
+    token: String,
+    ttl_secs: u64,
+}
+
+/// A token a suite asks for lives at least a second and at most the harness's
+/// own tokens' hour.
+const MAX_TOKEN_TTL_SECS: u64 = 3600;
+
 #[derive(Serialize)]
 struct Target {
     node_id: String,
@@ -100,6 +124,7 @@ impl Control {
             .route("/partition", post(partition))
             .route("/link", post(link))
             .route("/heal", post(heal))
+            .route("/tokens", post(tokens))
             .route("/no-commit/requests", get(no_commit_requests))
             .with_state(Arc::new(self));
         let task = tokio::spawn(async move {
@@ -119,6 +144,29 @@ impl Control {
             addr,
         }
     }
+}
+
+async fn tokens(
+    State(control): State<Arc<Control>>,
+    Json(request): Json<TokenRequest>,
+) -> Result<Json<Minted>, (StatusCode, String)> {
+    if !(1..=MAX_TOKEN_TTL_SECS).contains(&request.ttl_secs) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("ttl_secs must be 1 to {MAX_TOKEN_TTL_SECS}"),
+        ));
+    }
+    let ttl = Duration::from_secs(request.ttl_secs);
+    let credentials = control.cluster.credentials();
+    let token = if request.forged {
+        credentials.forged_client_token(ttl).map_err(failed)?
+    } else {
+        credentials.client_token_for(ttl)
+    };
+    Ok(Json(Minted {
+        token,
+        ttl_secs: request.ttl_secs,
+    }))
 }
 
 async fn no_commit_requests(State(control): State<Arc<Control>>) -> String {

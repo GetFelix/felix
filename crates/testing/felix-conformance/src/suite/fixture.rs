@@ -28,6 +28,25 @@ pub(crate) struct AuthFixture {
     pub(crate) tenant_id: String,
     pub(crate) token: String,
     pub(crate) broker_auth: Arc<BrokerAuth>,
+    signing_keys: Arc<dyn TenantKeyStore>,
+    perms: Vec<String>,
+}
+
+impl AuthFixture {
+    /// The same token as `token`, signed with the same key, living `ttl`.
+    pub(crate) fn token_living(&self, ttl: Duration) -> Result<String> {
+        let issuer = FelixTokenIssuer::new(
+            "felix-auth",
+            "felix-broker",
+            ttl,
+            Arc::clone(&self.signing_keys),
+        );
+        Ok(issuer.mint(
+            &TenantId::new(&self.tenant_id),
+            "conformance",
+            self.perms.clone(),
+        )?)
+    }
 }
 
 pub(crate) fn build_auth_fixture() -> Result<AuthFixture> {
@@ -54,12 +73,12 @@ pub(crate) fn build_auth_fixture() -> Result<AuthFixture> {
     };
     let mut keys = HashMap::new();
     keys.insert(tenant_id.clone(), key_material);
-    let key_store: Arc<dyn TenantKeyStore> = Arc::new(keys);
+    let signing_keys: Arc<dyn TenantKeyStore> = Arc::new(keys);
     let issuer = FelixTokenIssuer::new(
         "felix-auth",
         "felix-broker",
         Duration::from_secs(900),
-        key_store,
+        Arc::clone(&signing_keys),
     );
     let perms = vec![
         format!("stream.publish:stream:{tenant_id}/default/*"),
@@ -67,7 +86,7 @@ pub(crate) fn build_auth_fixture() -> Result<AuthFixture> {
         format!("cache.read:cache:{tenant_id}/default/*"),
         format!("cache.write:cache:{tenant_id}/default/*"),
     ];
-    let token = issuer.mint(&TenantId::new(&tenant_id), "conformance", perms)?;
+    let token = issuer.mint(&TenantId::new(&tenant_id), "conformance", perms.clone())?;
 
     let key_store = Arc::new(ControlPlaneKeyStore::new(
         "http://127.0.0.1:1".to_string(),
@@ -79,6 +98,8 @@ pub(crate) fn build_auth_fixture() -> Result<AuthFixture> {
         tenant_id,
         token,
         broker_auth,
+        signing_keys,
+        perms,
     })
 }
 

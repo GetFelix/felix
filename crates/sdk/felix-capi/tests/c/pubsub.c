@@ -677,6 +677,11 @@ struct token_app {
   const char *token;   /* NULL makes the fetch fail */
   atomic_int fetches;
   atomic_int released;
+  int delay_ms;        /* how long a fetch takes to answer */
+  atomic_int failing;  /* nonzero makes the fetch fail */
+  atomic_int running;  /* fetches started and not yet answered */
+  atomic_int peak;     /* the most that ran at once */
+  atomic_long last_fetch_ms; /* monotonic time of the latest fetch */
 };
 
 struct token_job {
@@ -686,7 +691,11 @@ struct token_job {
 
 static void *token_answer(void *arg) {
   struct token_job *job = arg;
-  if (job->app->token) {
+  if (job->app->delay_ms) {
+    pause_ms(job->app->delay_ms);
+  }
+  atomic_fetch_sub(&job->app->running, 1);
+  if (job->app->token && !atomic_load(&job->app->failing)) {
     /* The reply is consumed by this call. */
     felix_token_reply_ok(job->reply, job->app->token);
   } else {
@@ -699,6 +708,14 @@ static void *token_answer(void *arg) {
 static void token_fetch(void *user_data, FelixTokenReply *reply) {
   struct token_app *app = user_data;
   atomic_fetch_add(&app->fetches, 1);
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  atomic_store(&app->last_fetch_ms,
+               (long)(now.tv_sec * 1000L + now.tv_nsec / 1000000L));
+  int running = atomic_fetch_add(&app->running, 1) + 1;
+  int peak = atomic_load(&app->peak);
+  while (running > peak && !atomic_compare_exchange_weak(&app->peak, &peak, running)) {
+  }
   struct token_job *job = malloc(sizeof *job);
   pthread_t thread;
   if (!job) {
@@ -722,8 +739,13 @@ static void token_release(void *user_data) {
 
 static void token_app_init(struct token_app *app, const char *token) {
   app->token = token;
+  app->delay_ms = 0;
   atomic_init(&app->fetches, 0);
   atomic_init(&app->released, 0);
+  atomic_init(&app->failing, 0);
+  atomic_init(&app->running, 0);
+  atomic_init(&app->peak, 0);
+  atomic_init(&app->last_fetch_ms, 0);
 }
 
 static FelixConnectOptions token_options(struct token_app *app) {
@@ -2470,6 +2492,7 @@ static void connect_options(const struct fixture *f, const char *run) {
    from, with one it never needs to replace, and with a fetch that fails. */
 static void token_provider(const struct fixture *f, const char *run) {
   (void)run;
+  SCENARIO_BEGIN("token.lazy");
   struct token_app app;
   token_app_init(&app, f->token);
   FelixConnectOptions options = token_options(&app);
@@ -2492,7 +2515,13 @@ static void token_provider(const struct fixture *f, const char *run) {
                      sizeof message);
     CHECK(status == FELIX_STATUS_OK, "publish through a fetched token: %d %s",
           (int)status, message);
-    CHECK(atomic_load(&app.fetches) >= 1, "the fetch was never called");
+    status = publish(client, f, f->stream, "token-provider-2", NULL, message,
+                     sizeof message);
+    CHECK(status == FELIX_STATUS_OK, "second publish: %d %s", (int)status,
+          message);
+    CHECK(atomic_load(&app.fetches) == 1,
+          "the fetch ran %d times; the held token should be reused",
+          atomic_load(&app.fetches));
     CHECK(atomic_load(&app.released) == 0, "released while the client lives");
     felix_client_free(client);
   }
@@ -2521,17 +2550,18 @@ static void token_provider(const struct fixture *f, const char *run) {
                      sizeof message);
     CHECK(status == FELIX_STATUS_OK, "publish with an initial token: %d %s",
           (int)status, message);
+    pause_ms(300);
     CHECK(atomic_load(&idle.fetches) == 0, "the fetch ran %d times",
           atomic_load(&idle.fetches));
     felix_client_free(client);
   }
   CHECK(released_once(&idle), "token_release ran %d times",
         atomic_load(&idle.released));
+  SCENARIO_END("token.lazy");
 
   /* An initial token the broker refuses is replaced by one fetch, and the
-     stream is retried with it. The fixture mints only hour-long tokens and
-     keeps no signing key, so a short-lived token that expires mid-run cannot
-     be made here; the refresh timing is covered by felix-client's tests. */
+     stream is retried with it. Expiry is in token_scenarios(). */
+  SCENARIO_BEGIN("token.refused_retry_once");
   struct token_app refused;
   token_app_init(&refused, f->token);
   options = token_options(&refused);
@@ -2559,8 +2589,11 @@ static void token_provider(const struct fixture *f, const char *run) {
   }
   CHECK(released_once(&refused), "token_release ran %d times",
         atomic_load(&refused.released));
+  SCENARIO_END("token.refused_retry_once");
 
-  /* A fetch that fails with nothing to fall back on fails the connect. */
+  /* A fetch that fails with nothing to fall back on fails the connect, and
+     the app's own message reaches the caller. */
+  SCENARIO_BEGIN("token.failure_message");
   struct token_app failing;
   token_app_init(&failing, NULL);
   options = token_options(&failing);
@@ -2573,11 +2606,14 @@ static void token_provider(const struct fixture *f, const char *run) {
     status = wait_for(&w, WAIT_MS);
     client = w.handle;
   }
-  waiter_destroy(&w);
   CHECK(status != FELIX_STATUS_OK, "a failing fetch connected");
+  CHECK(strstr(w.message, "no token for you") != NULL,
+        "the fetch's message did not reach the caller: \"%s\"", w.message);
+  waiter_destroy(&w);
   felix_client_free(client);
   CHECK(released_once(&failing), "token_release ran %d times",
         atomic_load(&failing.released));
+  SCENARIO_END("token.failure_message");
 }
 
 /* The sharded group and the stream-wide admin calls. */
@@ -5168,6 +5204,246 @@ static void lost_shard(const struct fixture *f, const char *run) {
   SCENARIO_END(id);
 }
 
+/* ---- token scenarios against short-lived tokens ------------------------ */
+
+/* A token for the fixture tenant that lives `ttl` seconds, from the control
+   endpoint; false if the fixture has none or the call failed. */
+static bool mint_token(const struct fixture *f, int ttl, bool forged,
+                       char *out, size_t cap) {
+  char json[64], body[2048];
+  snprintf(json, sizeof json, "{\"ttl_secs\":%d,\"forged\":%s}", ttl,
+           forged ? "true" : "false");
+  int code = control_post_json(f, "/tokens", json, body, sizeof body);
+  return code == 200 && json_text(body, "token", out, cap);
+}
+
+static long monotonic_ms(void) {
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  return (long)(now.tv_sec * 1000L + now.tv_nsec / 1000000L);
+}
+
+/* Connects holding `initial` and fetching through `app`. */
+static FelixStatus connect_token(const struct fixture *f, const char *addrs,
+                                 const char *initial, struct token_app *app,
+                                 FelixClient **out) {
+  FelixConnectOptions options = token_options(app);
+  struct waiter w;
+  waiter_init(&w);
+  *out = NULL;
+  FelixStatus status = felix_client_connect_with(
+      addrs, f->tenant, initial, NULL, f->ca_file, &options, NULL, on_connect,
+      &w);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&w, WAIT_MS);
+    *out = w.handle;
+  }
+  waiter_destroy(&w);
+  return status;
+}
+
+/* Opens a subscription, a stream that authenticates, and closes it. Waits up
+   to `ms` for the open to answer. */
+static FelixStatus open_stream(FelixClient *client, const struct fixture *f,
+                               int ms, char *message, size_t cap) {
+  struct waiter w;
+  waiter_init(&w);
+  FelixStatus status =
+      felix_client_subscribe(client, f->tenant, f->ns, f->stream, 0,
+                             FELIX_START_LATEST, 0, NULL, on_subscribe, &w);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&w, ms);
+    if (message) {
+      snprintf(message, cap, "%s", w.message);
+    }
+    if (status == FELIX_STATUS_OK) {
+      felix_subscription_free(w.handle);
+    }
+  }
+  waiter_destroy(&w);
+  return status;
+}
+
+/* The first broker of a comma-separated list: a refusal is then one broker's
+   own authentication, so it costs one fetch rather than one per broker. */
+static void first_addr(const char *addrs, char *out, size_t cap) {
+  snprintf(out, cap, "%s", addrs);
+  char *comma = strchr(out, ',');
+  if (comma) {
+    *comma = '\0';
+  }
+}
+
+static void token_scenarios(const struct fixture *f) {
+  if (!f->control_url[0]) {
+    SKIP("token.expiry_refresh", "the fixture file has no control_url");
+    SKIP("token.keep_valid_on_failure", "the fixture file has no control_url");
+    SKIP("token.single_flight", "the fixture file has no control_url");
+    SKIP("token.timeout_joins", "the fixture file has no control_url");
+    return;
+  }
+  char tok[2048], message[256], one[256];
+  first_addr(f->addrs, one, sizeof one);
+  FelixClient *client = NULL;
+  struct token_app app;
+
+  /* Two thirds of a 6 s token's life later, a new stream asks for a fresh one,
+     and it is then held. Concurrent opens at that point share one call. */
+  SCENARIO_BEGIN("token.expiry_refresh");
+  SCENARIO_BEGIN("token.single_flight");
+  if (!mint_token(f, 6, false, tok, sizeof tok)) {
+    CHECK(0, "the fixture would not mint a 6 s token");
+  } else {
+    token_app_init(&app, f->token);
+    app.delay_ms = 500;
+    FelixStatus status = connect_token(f, f->addrs, tok, &app, &client);
+    CHECK(status == FELIX_STATUS_OK, "connecting with a short token: %d",
+          (int)status);
+    if (status == FELIX_STATUS_OK) {
+      status = open_stream(client, f, WAIT_MS, message, sizeof message);
+      CHECK(status == FELIX_STATUS_OK, "open before the refresh: %d %s",
+            (int)status, message);
+      CHECK(atomic_load(&app.fetches) == 0, "the token still had most of its life");
+      pause_ms(4500);
+      struct waiter a, b;
+      waiter_init(&a);
+      waiter_init(&b);
+      FelixStatus sa = felix_client_subscribe(client, f->tenant, f->ns, f->stream,
+                                              0, FELIX_START_LATEST, 0, NULL,
+                                              on_subscribe, &a);
+      FelixStatus sb = felix_client_subscribe(client, f->tenant, f->ns, f->stream,
+                                              0, FELIX_START_LATEST, 0, NULL,
+                                              on_subscribe, &b);
+      CHECK(sa == FELIX_STATUS_OK && sb == FELIX_STATUS_OK, "subscribe: %d %d",
+            (int)sa, (int)sb);
+      if (sa == FELIX_STATUS_OK && sb == FELIX_STATUS_OK) {
+        sa = wait_for(&a, WAIT_MS);
+        sb = wait_for(&b, WAIT_MS);
+        CHECK(sa == FELIX_STATUS_OK && sb == FELIX_STATUS_OK,
+              "opens after the refresh: %d %d (%s %s)", (int)sa, (int)sb,
+              a.message, b.message);
+        if (sa == FELIX_STATUS_OK) {
+          felix_subscription_free(a.handle);
+        }
+        if (sb == FELIX_STATUS_OK) {
+          felix_subscription_free(b.handle);
+        }
+      }
+      waiter_destroy(&a);
+      waiter_destroy(&b);
+      CHECK(atomic_load(&app.fetches) == 1, "the fetch ran %d times",
+            atomic_load(&app.fetches));
+      CHECK(atomic_load(&app.peak) == 1, "the fetch ran %d at once",
+            atomic_load(&app.peak));
+      status = open_stream(client, f, WAIT_MS, message, sizeof message);
+      CHECK(status == FELIX_STATUS_OK && atomic_load(&app.fetches) == 1,
+            "the fresh token was not held: %d, %d fetches", (int)status,
+            atomic_load(&app.fetches));
+      felix_client_free(client);
+    }
+    CHECK(released_once(&app), "token_release ran %d times",
+          atomic_load(&app.released));
+  }
+  SCENARIO_END("token.single_flight");
+  SCENARIO_END("token.expiry_refresh");
+
+  /* A refresh that fails while the token is still valid keeps it, and is
+     tried again later rather than on every open. */
+  SCENARIO_BEGIN("token.keep_valid_on_failure");
+  if (!mint_token(f, 9, false, tok, sizeof tok)) {
+    CHECK(0, "the fixture would not mint a 9 s token");
+  } else {
+    token_app_init(&app, f->token);
+    atomic_store(&app.failing, 1);
+    FelixStatus status = connect_token(f, f->addrs, tok, &app, &client);
+    CHECK(status == FELIX_STATUS_OK, "connecting with a short token: %d",
+          (int)status);
+    if (status == FELIX_STATUS_OK) {
+      pause_ms(6500); /* refresh is due at 6 s; the token expires at 9 s */
+      status = open_stream(client, f, WAIT_MS, message, sizeof message);
+      CHECK(status == FELIX_STATUS_OK, "open with a failing refresh: %d %s",
+            (int)status, message);
+      CHECK(atomic_load(&app.fetches) == 1, "the fetch ran %d times",
+            atomic_load(&app.fetches));
+      status = open_stream(client, f, WAIT_MS, message, sizeof message);
+      CHECK(status == FELIX_STATUS_OK && atomic_load(&app.fetches) == 1,
+            "a failed refresh was retried at once: %d, %d fetches",
+            (int)status, atomic_load(&app.fetches));
+      /* Past the retry delay and the token's expiry: asked again, answered. */
+      atomic_store(&app.failing, 0);
+      long wait = atomic_load(&app.last_fetch_ms) + 9500 - monotonic_ms();
+      if (wait > 0) {
+        pause_ms(wait);
+      }
+      status = open_stream(client, f, WAIT_MS, message, sizeof message);
+      CHECK(status == FELIX_STATUS_OK && atomic_load(&app.fetches) == 2,
+            "the retry: %d %s, %d fetches", (int)status, message,
+            atomic_load(&app.fetches));
+      felix_client_free(client);
+    }
+    CHECK(released_once(&app), "token_release ran %d times",
+          atomic_load(&app.released));
+  }
+  SCENARIO_END("token.keep_valid_on_failure");
+
+  /* A token the broker refuses though it has not expired costs one fetch. */
+  SCENARIO_BEGIN("token.refused_retry_once");
+  if (!mint_token(f, 60, true, tok, sizeof tok)) {
+    CHECK(0, "the fixture would not mint a forged token");
+  } else {
+    token_app_init(&app, f->token);
+    FelixStatus status = connect_token(f, one, tok, &app, &client);
+    CHECK(status == FELIX_STATUS_OK, "connecting with a forged token: %d",
+          (int)status);
+    if (status == FELIX_STATUS_OK) {
+      status = publish(client, f, f->stream, "token-forged", NULL, message,
+                       sizeof message);
+      CHECK(status == FELIX_STATUS_OK, "publish after a forged token: %d %s",
+            (int)status, message);
+      CHECK(atomic_load(&app.fetches) == 1, "the fetch ran %d times",
+            atomic_load(&app.fetches));
+      felix_client_free(client);
+    }
+    CHECK(released_once(&app), "token_release ran %d times",
+          atomic_load(&app.released));
+  }
+  SCENARIO_END("token.refused_retry_once");
+
+  /* A fetch past the 30 s timeout fails the stream waiting on it, and the next
+     open joins that call instead of starting another. */
+  SCENARIO_BEGIN("token.timeout_joins");
+  if (!mint_token(f, 6, false, tok, sizeof tok)) {
+    CHECK(0, "the fixture would not mint a 6 s token");
+  } else {
+    token_app_init(&app, f->token);
+    app.delay_ms = 33000;
+    FelixStatus status = connect_token(f, f->addrs, tok, &app, &client);
+    CHECK(status == FELIX_STATUS_OK, "connecting with a short token: %d",
+          (int)status);
+    if (status == FELIX_STATUS_OK) {
+      pause_ms(6500); /* expired: nothing to fall back on */
+      long started = monotonic_ms();
+      status = open_stream(client, f, 60000, message, sizeof message);
+      long took = monotonic_ms() - started;
+      CHECK(status != FELIX_STATUS_OK, "an open past the timeout succeeded");
+      CHECK(took >= 25000 && took < 60000, "gave up after %ld ms", took);
+      CHECK(atomic_load(&app.fetches) == 1, "the fetch ran %d times",
+            atomic_load(&app.fetches));
+      status = open_stream(client, f, 60000, message, sizeof message);
+      CHECK(status == FELIX_STATUS_OK,
+            "the open joining the late answer: %d %s", (int)status, message);
+      CHECK(atomic_load(&app.fetches) == 1, "the second open started call %d",
+            atomic_load(&app.fetches));
+      CHECK(atomic_load(&app.peak) == 1, "the fetch ran %d at once",
+            atomic_load(&app.peak));
+      felix_client_free(client);
+    }
+    CHECK(released_once(&app), "token_release ran %d times",
+          atomic_load(&app.released));
+  }
+  SCENARIO_END("token.timeout_joins");
+}
+
 int main(int argc, char **argv) {
   if (argc == 2 && strcmp(argv[1], "offline") == 0) {
     offline();
@@ -5189,6 +5465,7 @@ int main(int argc, char **argv) {
     groups(&f, run);
     connect_options(&f, run);
     token_provider(&f, run);
+    token_scenarios(&f);
     sharded_groups(&f, run);
     caches(&f, run);
     commits(&f, run);

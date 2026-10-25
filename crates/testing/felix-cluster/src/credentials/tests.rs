@@ -1,6 +1,8 @@
 use std::time::Duration;
 
-use felix_controlplane_service::auth::felix_token::{CONTROLPLANE_AUDIENCE, verify_token_for};
+use felix_controlplane_service::auth::felix_token::{
+    BROKER_AUDIENCE, CONTROLPLANE_AUDIENCE, verify_token_for,
+};
 
 use super::Credentials;
 
@@ -51,4 +53,32 @@ async fn node_token_files_are_rewritten_before_they_expire() {
         valid_now(&credentials, &token),
         "the broker's token file still holds an expired token"
     );
+}
+
+fn broker_accepts(credentials: &Credentials, token: &str) -> bool {
+    verify_token_for(&credentials.keys, TENANT, token, 0, &[BROKER_AUDIENCE]).is_ok()
+}
+
+#[test]
+fn a_client_token_lives_as_long_as_asked() {
+    let credentials = credentials(Duration::from_secs(3600));
+    let short = credentials.client_token_for(Duration::from_secs(1));
+    assert!(broker_accepts(&credentials, &short));
+
+    std::thread::sleep(Duration::from_millis(2_500));
+
+    assert!(
+        !broker_accepts(&credentials, &short),
+        "it should have expired"
+    );
+    assert!(broker_accepts(&credentials, &credentials.client_token()));
+}
+
+#[test]
+fn a_forged_client_token_is_not_signed_by_the_tenant_key() {
+    let credentials = credentials(Duration::from_secs(3600));
+    let forged = credentials
+        .forged_client_token(Duration::from_secs(60))
+        .expect("forge");
+    assert!(!broker_accepts(&credentials, &forged));
 }

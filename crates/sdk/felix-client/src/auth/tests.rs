@@ -56,6 +56,7 @@ fn due(token: String) -> Held {
     }
 }
 
+// Scenario token.lazy.
 #[tokio::test]
 async fn a_token_with_life_left_is_reused() -> Result<()> {
     let (provider, calls) = counting(|_| Ok(jwt(now_secs() + 900)));
@@ -79,6 +80,7 @@ async fn a_token_past_two_thirds_of_its_life_is_replaced() -> Result<()> {
     Ok(())
 }
 
+// Scenario token.keep_valid_on_failure.
 #[tokio::test]
 async fn a_failed_fetch_falls_back_to_a_token_that_is_still_valid() -> Result<()> {
     let (provider, calls) = counting(|_| Err(anyhow::anyhow!("control plane down")));
@@ -112,6 +114,7 @@ async fn invalidate_drops_only_the_token_it_names() -> Result<()> {
     Ok(())
 }
 
+// Scenario token.lazy.
 #[tokio::test]
 async fn an_initial_token_is_used_before_any_fetch() -> Result<()> {
     let provider =
@@ -186,6 +189,41 @@ fn gated(answer: String) -> Gated {
     }
 }
 
+// Scenario token.timeout_joins.
+// Scenario token.single_flight.
+/// Refreshes that overlap share one provider call, and all get its token.
+#[tokio::test(start_paused = true)]
+async fn overlapping_refreshes_share_one_call() -> Result<()> {
+    let g = gated("shared".into());
+    let provider = Arc::new(g.provider);
+    let waiters: Vec<_> = (0..4)
+        .map(|_| {
+            let provider = Arc::clone(&provider);
+            tokio::spawn(async move { provider.token().await })
+        })
+        .collect();
+    tokio::task::yield_now().await;
+    g.open.notify_one();
+    for waiter in waiters {
+        assert_eq!(waiter.await??, "shared");
+    }
+    assert_eq!(g.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(g.peak.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+// Scenario token.failure_message.
+/// With nothing valid held, the provider's own text is in the error.
+#[tokio::test]
+async fn a_failed_fetch_carries_the_providers_message() {
+    let (provider, _) = counting(|_| Err(anyhow::anyhow!("the refresh token was revoked")));
+    let err = provider.token().await.unwrap_err();
+    assert!(
+        format!("{err:#}").contains("the refresh token was revoked"),
+        "{err:#}"
+    );
+}
+
 /// A call that outlives the timeout fails its waiter at the timeout, and the
 /// next refresh joins it rather than calling the provider again.
 #[tokio::test(start_paused = true)]
@@ -204,6 +242,7 @@ async fn a_hung_fetch_fails_the_waiter_and_is_joined_not_repeated() {
     assert_eq!(g.running.load(Ordering::SeqCst), 1);
 }
 
+// Scenario token.timeout_joins.
 /// The answer to a call whose waiters timed out is used, with no second call.
 #[tokio::test(start_paused = true)]
 async fn a_late_answer_is_used_without_a_second_call() -> Result<()> {
@@ -218,6 +257,7 @@ async fn a_late_answer_is_used_without_a_second_call() -> Result<()> {
     Ok(())
 }
 
+// Scenario token.timeout_joins.
 /// A second refresh that joins the call after the first timed out gets the
 /// late answer.
 #[tokio::test(start_paused = true)]

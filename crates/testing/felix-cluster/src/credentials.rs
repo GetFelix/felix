@@ -55,16 +55,51 @@ impl Credentials {
     /// Stream and cache permissions only. A broker rejects a whole token if one
     /// of its actions is not client-facing.
     pub fn client_token(&self) -> String {
+        self.client_token_for(self.ttl)
+    }
+
+    /// [`Self::client_token`] with a lifetime of the caller's choosing, for a
+    /// suite that needs a token to expire during a run.
+    pub fn client_token_for(&self, ttl: Duration) -> String {
+        let (perms, principal) = self.client_grants();
+        mint_token_for(
+            &self.keys,
+            &self.tenant_id,
+            principal,
+            perms,
+            ttl,
+            BROKER_AUDIENCE,
+        )
+        .unwrap_or_else(|err| panic!("mint {principal} token: {err}"))
+    }
+
+    /// [`Self::client_token_for`] signed with a key the brokers do not know,
+    /// so it looks live to a client and is refused by every broker.
+    pub fn forged_client_token(&self, ttl: Duration) -> Result<String> {
+        let keys = felix_controlplane_service::auth::keys::generate_signing_keys()
+            .context("generate a key the brokers do not trust")?;
+        let (perms, principal) = self.client_grants();
+        mint_token_for(
+            &keys,
+            &self.tenant_id,
+            principal,
+            perms,
+            ttl,
+            BROKER_AUDIENCE,
+        )
+        .context("mint the forged token")
+    }
+
+    fn client_grants(&self) -> (Vec<String>, &'static str) {
         let tenant_id = &self.tenant_id;
-        self.mint(
-            "p:harness-client",
+        (
             vec![
                 format!("stream.publish:stream:{tenant_id}/*/*"),
                 format!("stream.subscribe:stream:{tenant_id}/*/*"),
                 format!("cache.read:cache:{tenant_id}/*/*"),
                 format!("cache.write:cache:{tenant_id}/*/*"),
             ],
-            BROKER_AUDIENCE,
+            "p:harness-client",
         )
     }
 
