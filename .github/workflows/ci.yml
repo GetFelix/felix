@@ -813,6 +813,7 @@ jobs:
           cargo build --locked -p felix-cluster --bin felix-cluster
 
       - name: Scenarios against the fixture
+        id: scenarios
         if: matrix.os == 'ubuntu-latest'
         run: |
           work="$(mktemp -d)"
@@ -842,8 +843,10 @@ jobs:
 
       # Gates like the Python, C and TypeScript verdicts: a required scenario a
       # framework failed, skipped or never recorded fails the job.
+      # Only when the scenarios step ran: after an earlier step failed there is nothing
+      # to read, and "was not written" would hide the real failure.
       - name: C# conformance verdict
-        if: always() && matrix.os == 'ubuntu-latest'
+        if: ${{ !cancelled() && steps.scenarios.outcome != 'skipped' && matrix.os == 'ubuntu-latest' }}
         run: |
           status=0
           for tfm in net8.0 net10.0; do

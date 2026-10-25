@@ -13,6 +13,7 @@ public sealed partial class FelixClient : IAsyncDisposable, IDisposable
 {
     private readonly FelixClientHandle handle;
     private readonly TokenSource? tokens;
+    private int closed;
 
     internal FelixClient(FelixClientHandle handle, TokenSource? tokens = null)
     {
@@ -285,13 +286,13 @@ public sealed partial class FelixClient : IAsyncDisposable, IDisposable
             }
         }
 
-        return status != 0 ? Refused<FelixSubscription>(state, status, error) : SubscribedAsync(state);
+        return status != 0 ? Refused<FelixSubscription>(state, status, error) : SubscribedAsync(state, tokens);
     }
 
     /// <summary>Frees the client, cancelling its pending calls.</summary>
     public void Dispose()
     {
-        tokens?.Cancel();
+        Close();
         handle.Dispose();
     }
 
@@ -301,8 +302,21 @@ public sealed partial class FelixClient : IAsyncDisposable, IDisposable
     /// </summary>
     public ValueTask DisposeAsync()
     {
-        tokens?.Cancel();
+        Close();
         return new(Task.Run(handle.Dispose));
+    }
+
+    /// <summary>
+    /// Drops the client's reference on the token source, once. Subscriptions, sharded groups,
+    /// cache watches and producers made from it hold their own, and a provider mid-fetch is not
+    /// cancelled while any of them could still need its token.
+    /// </summary>
+    private void Close()
+    {
+        if (Interlocked.Exchange(ref closed, 1) == 0)
+        {
+            tokens?.ReleaseHolder();
+        }
     }
 
     private static async Task<FelixClient> ConnectedAsync(CallState<FelixClientHandle> state, TokenSource? tokens)
@@ -319,8 +333,12 @@ public sealed partial class FelixClient : IAsyncDisposable, IDisposable
         }
     }
 
-    private static async Task<FelixSubscription> SubscribedAsync(CallState<FelixSubscriptionHandle> state) =>
-        new(await state.WaitAsync().ConfigureAwait(false));
+    private static async Task<FelixSubscription> SubscribedAsync(CallState<FelixSubscriptionHandle> state, TokenSource? tokens)
+    {
+        var handle = await state.WaitAsync().ConfigureAwait(false);
+        handle.Track(tokens);
+        return new(handle);
+    }
 
     /// <summary>
     /// The call returned an error, so its callback never runs. The library's message

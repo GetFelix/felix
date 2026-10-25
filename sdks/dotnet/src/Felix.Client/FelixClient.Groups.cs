@@ -116,6 +116,17 @@ public sealed partial class FelixClient
     /// </summary>
     public FelixCache Cache(string tenant, string ns, string cache) => new(this, tenant, ns, cache);
 
-    internal Task<T> Call<T>(CancellationToken cancellationToken, Func<nint, nint, nint, int> begin) =>
-        NativeCall.Start<T>(handle, cancellationToken, begin);
+    internal Task<T> Call<T>(CancellationToken cancellationToken, Func<nint, nint, nint, int> begin)
+    {
+        var call = NativeCall.Start<T>(handle, cancellationToken, begin);
+        return tokens is not null && typeof(TokenHeldHandle).IsAssignableFrom(typeof(T)) ? Tracked(call) : call;
+    }
+
+    /// <summary>A handle that outlives the client shares its token source, so it takes a reference.</summary>
+    private async Task<T> Tracked<T>(Task<T> call)
+    {
+        var result = await call.ConfigureAwait(false);
+        (result as TokenHeldHandle)?.Track(tokens);
+        return result;
+    }
 }

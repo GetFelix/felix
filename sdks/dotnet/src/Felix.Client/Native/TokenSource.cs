@@ -45,6 +45,7 @@ internal sealed class TokenSource
     private readonly List<CancellationTokenSource> inFlight = [];
     private GCHandle self;
     private int allocated;
+    private int holders = 1;
 
     internal TokenSource(
         Func<CancellationToken, ValueTask<string>> provider,
@@ -59,6 +60,9 @@ internal sealed class TokenSource
 
     /// <summary>Sources whose <c>token_release</c> has not run (or that were not abandoned); a test hook for leaks.</summary>
     internal static int Live => Volatile.Read(ref live);
+
+    /// <summary>References held now: the client and each handle made from it; a test hook.</summary>
+    internal int Holders => Volatile.Read(ref holders);
 
     /// <summary>Sources released by the library so far; a test hook.</summary>
     internal static int Released => Volatile.Read(ref released);
@@ -78,9 +82,9 @@ internal sealed class TokenSource
         userData == 0 ? null : GCHandle.FromIntPtr(userData).Target as TokenSource;
 
     /// <summary>
-    /// Cancels the fetches running now, so a provider stuck on the network gives up when the
-    /// client is disposed. Later fetches (a subscription outliving the client may still need
-    /// one) get a fresh token.
+    /// Cancels the fetches running now. Normally reached through <see cref="ReleaseHolder"/>,
+    /// when the client and every handle made from it are gone, so a provider stuck on the
+    /// network gives up. A fetch that starts later gets a fresh token.
     /// </summary>
     internal void Cancel()
     {
@@ -100,6 +104,39 @@ internal sealed class TokenSource
             {
                 // Disposed by its fetch finishing, or a registered callback threw.
             }
+        }
+    }
+
+    /// <summary>
+    /// Takes a reference for a handle that shares the client's runtime. False once the last
+    /// reference is gone and the fetches were cancelled.
+    /// </summary>
+    internal bool Retain()
+    {
+        while (true)
+        {
+            var held = Volatile.Read(ref holders);
+            if (held <= 0)
+            {
+                return false;
+            }
+
+            if (Interlocked.CompareExchange(ref holders, held + 1, held) == held)
+            {
+                return true;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Drops a reference: the client's own or a handle's. The last one cancels the fetches
+    /// in flight, because nothing is left to use the token they would return.
+    /// </summary>
+    internal void ReleaseHolder()
+    {
+        if (Interlocked.Decrement(ref holders) == 0)
+        {
+            Cancel();
         }
     }
 

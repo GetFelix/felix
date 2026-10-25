@@ -83,13 +83,16 @@ waits on that same call (up to 30 seconds again) and uses its answer if it
 arrives, so the provider is not called a second time while one is outstanding.
 
 **Cancellation.** The `CancellationToken` the provider receives is cancelled when
-the 30 seconds pass and when the client is disposed (`Dispose` or `DisposeAsync`),
-or when a connect that has not finished fails or is cancelled. Pass it to your
-`HttpClient` calls. Let the `OperationCanceledException` propagate: the cancelled
-call counts as a failed fetch, and the next fetch calls the provider again. A
-provider that ignores the token is left to finish and its late answer is still
-used. A subscription can outlive the client it came from, and its later fetches
-get a fresh token. Disposing does not wait for a provider that is running.
+the 30 seconds pass, when the client and every subscription, producer, cache watch
+and sharded group made from it have been disposed, or when a connect that has not
+finished fails or is cancelled. Those handles share the client's connections and
+token, so one that is still open keeps a fetch running even after `Dispose` on the
+client: cancelling it would lose a refresh token the control plane already
+rotated. Pass the token to your `HttpClient` calls and let the
+`OperationCanceledException` propagate: the cancelled call counts as a failed
+fetch, and the next fetch calls the provider again. A provider that ignores the
+token is left to finish and its late answer is still used. Disposing does not wait
+for a provider that is running.
 
 **Async variant.** The provider is already asynchronous: return a `ValueTask`
 from an `async` lambda, or `new ValueTask<string>(token)` when you hold the token

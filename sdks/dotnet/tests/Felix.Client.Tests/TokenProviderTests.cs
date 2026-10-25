@@ -252,6 +252,54 @@ public class TokenProviderTests
     }
 
     [Fact]
+    public async Task AFetchIsNotCancelledWhileAHandleMadeFromTheClientIsOpen()
+    {
+        var started = new TaskCompletionSource<CancellationToken>();
+        var replies = new Replies();
+        var source = new TokenSource(async ct =>
+        {
+            started.SetResult(ct);
+            await Task.Delay(Timeout.Infinite, ct);
+            return "unreachable";
+        }, replies);
+        // The client's reference, and a subscription's.
+        Assert.Equal(1, source.Holders);
+        var subscription = new FelixSubscriptionHandle(0);
+        subscription.Track(source);
+        Assert.Equal(2, source.Holders);
+        source.Fetch(1);
+        var ct = await started.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        source.ReleaseHolder(); // the client is disposed
+        await Task.Delay(200);
+        Assert.False(ct.IsCancellationRequested);
+        Assert.Empty(replies.Answers);
+
+        source.ReleaseHolder(); // the last handle is disposed
+        await replies.Answered.WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.True(ct.IsCancellationRequested);
+        Assert.Single(replies.Answers);
+    }
+
+    [Fact]
+    public void AHandleTakesOneReferenceHoweverOftenItIsTracked()
+    {
+        var source = new TokenSource(_ => new ValueTask<string>("tok"), new Replies());
+        var handle = new FelixProducerHandle(0);
+        handle.Track(source);
+        handle.Track(source);
+        Assert.Equal(2, source.Holders);
+    }
+
+    [Fact]
+    public void ASourceWhoseLastReferenceIsGoneTakesNoMore()
+    {
+        var source = new TokenSource(_ => new ValueTask<string>("tok"), new Replies());
+        source.ReleaseHolder();
+        Assert.False(source.Retain());
+    }
+
+    [Fact]
     public async Task AFailedConnectFreesTheSource()
     {
         // Nothing listens on port 1: the connect fails through its callback, and the
@@ -344,15 +392,27 @@ public class TokenProviderTests
     }
 
     [FixtureFact]
-    public async Task WithoutAnInitialTokenTheFirstConnectCallsTheProvider()
+    public async Task WithoutAnInitialTokenTheFirstConnectCallsTheProviderOnceWhateverOpensTogether()
     {
         var f = Fixture.Load();
-        var provider = new Provider(_ => Task.FromResult(f.Token));
+        // Holds long enough that anything started during the connect would overlap it.
+        var provider = new Provider(async _ =>
+        {
+            await Task.Delay(500);
+            return f.Token;
+        });
         await using var client = await FelixClient.ConnectAsync(Options(f, null, provider.Fetch));
-        await client.PublishAsync(f.Tenant, f.Namespace, f.Stream, "a"u8.ToArray());
-        await client.PublishAsync(f.Tenant, f.Namespace, f.Stream, "b"u8.ToArray());
+        var cache = client.Cache(f.Tenant, f.Namespace, f.Cache);
 
-        // The token it returned is held, so later streams do not ask.
+        // Publishers, a subscriber and a cache stream open together.
+        var publishes = Enumerable.Range(0, 4)
+            .Select(i => client.PublishAsync(f.Tenant, f.Namespace, f.Stream, new[] { (byte)i }));
+        var subscribe = client.SubscribeAsync(f.Tenant, f.Namespace, f.Stream, 0, StartPosition.Latest);
+        var read = cache.GetAsync("token-provider-single-flight");
+        await Task.WhenAll(publishes.Cast<Task>().Append(subscribe).Append(read));
+        await (await subscribe).DisposeAsync();
+
+        // The token it returned is held, so none of those asked again.
         Assert.Equal(1, provider.Calls);
         Assert.Equal(1, provider.MaxRunning);
     }
