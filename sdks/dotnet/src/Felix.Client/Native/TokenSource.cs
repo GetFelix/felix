@@ -46,6 +46,7 @@ internal sealed class TokenSource
     private GCHandle self;
     private int allocated;
     private int holders = 1;
+    private int cancelled;
 
     internal TokenSource(
         Func<CancellationToken, ValueTask<string>> provider,
@@ -63,6 +64,9 @@ internal sealed class TokenSource
 
     /// <summary>References held now: the client and each handle made from it; a test hook.</summary>
     internal int Holders => Volatile.Read(ref holders);
+
+    /// <summary>Whether <see cref="Cancel"/> has run; a test hook.</summary>
+    internal bool IsCancelled => Volatile.Read(ref cancelled) == 1;
 
     /// <summary>Sources released by the library so far; a test hook.</summary>
     internal static int Released => Volatile.Read(ref released);
@@ -88,6 +92,7 @@ internal sealed class TokenSource
     /// </summary>
     internal void Cancel()
     {
+        Volatile.Write(ref cancelled, 1);
         CancellationTokenSource[] running;
         lock (gate)
         {

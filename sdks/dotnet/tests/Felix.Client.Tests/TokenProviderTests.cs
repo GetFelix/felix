@@ -273,9 +273,11 @@ public class TokenProviderTests
         source.ReleaseHolder(); // the client is disposed
         await Task.Delay(200);
         Assert.False(ct.IsCancellationRequested);
+        Assert.False(source.IsCancelled);
         Assert.Empty(replies.Answers);
 
         source.ReleaseHolder(); // the last handle is disposed
+        Assert.True(source.IsCancelled);
         await replies.Answered.WaitAsync(TimeSpan.FromSeconds(30));
         Assert.True(ct.IsCancellationRequested);
         Assert.Single(replies.Answers);
@@ -589,15 +591,20 @@ public class TokenProviderTests
         await client.DisposeAsync();
         await client.DisposeAsync();
         Assert.Equal(4, source.Holders);
+        Assert.False(source.IsCancelled);
 
         await subscription.DisposeAsync();
         Assert.Equal(3, source.Holders);
+        Assert.False(source.IsCancelled);
         await producer.DisposeAsync();
         Assert.Equal(2, source.Holders);
+        Assert.False(source.IsCancelled);
         await sharded.DisposeAsync();
         Assert.Equal(1, source.Holders);
+        Assert.False(source.IsCancelled);
         await watch.DisposeAsync();
         Assert.Equal(0, source.Holders);
+        Assert.True(source.IsCancelled);
     }
 
     [FixtureFact]
