@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792944105136,
+  "lastUpdate": 1792951772739,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -36972,6 +36972,58 @@ window.BENCHMARK_DATA = {
             "range": "5699.60",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 817005.06\nmean: 816006.02\nstdev: 5699.60\ncv: 0.70%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fcc46a2d0f8d1448f932cc62d202cfc210152213",
+          "message": "release: attach prebuilt libfelix (shared and static) for six platforms (#1567)\n\n* release: attach prebuilt libfelix (shared and static) for six platforms\n\n* release: build the libfelix archives in their own workflow so an old release can be backfilled",
+          "timestamp": "2026-10-25T11:04:11-07:00",
+          "tree_id": "bd9cd4900a19d3fe61bf18d0c0d1361fccedac81",
+          "url": "https://github.com/GetFelix/felix/commit/fcc46a2d0f8d1448f932cc62d202cfc210152213"
+        },
+        "date": 1792951771902,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 524023.16,
+            "range": "42282.71",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 524023.16\nmean: 525568.99\nstdev: 42282.71\ncv: 8.05%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 524023.16,
+            "range": "42282.71",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 524023.16\nmean: 525568.99\nstdev: 42282.71\ncv: 8.05%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 124984.53,
+            "range": "913.78",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 124984.53\nmean: 125151.06\nstdev: 913.78\ncv: 0.73%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1249845.27,
+            "range": "9137.86",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1249845.27\nmean: 1251510.55\nstdev: 9137.86\ncv: 0.73%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
