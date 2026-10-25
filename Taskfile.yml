@@ -162,13 +162,19 @@ tasks:
         fi
       - |
         export CONTAINER_ENGINE="{{.CONTAINER_ENGINE}}"
+        flags="--no-cfg-coverage --skip-functions --all-features --workspace"
         if [ -n "${FELIX_TEST_DATABASE_URL:-}" ]; then
-          FELIX_TEST_DATABASE_URL="$FELIX_TEST_DATABASE_URL" cargo llvm-cov --no-clean --no-cfg-coverage --skip-functions --all-features --workspace --ignore-filename-regex '(^|/)(demos)(/|$)|(^|/)src/bin/' --lcov --output-path lcov.info
+          FELIX_TEST_DATABASE_URL="$FELIX_TEST_DATABASE_URL" cargo llvm-cov --no-report $flags
         elif [ -n "$CONTAINER_ENGINE" ]; then
-          FELIX_TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:55432/postgres" cargo llvm-cov --no-clean --no-cfg-coverage --skip-functions --all-features --workspace --ignore-filename-regex '(^|/)(demos)(/|$)|(^|/)src/bin/' --lcov --output-path lcov.info
+          FELIX_TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:55432/postgres" cargo llvm-cov --no-report $flags
         else
-          cargo llvm-cov --no-clean --no-cfg-coverage --skip-functions --all-features --workspace --ignore-filename-regex '(^|/)(demos)(/|$)|(^|/)src/bin/' --lcov --output-path lcov.info
+          cargo llvm-cov --no-report $flags
         fi
+      # The C ABI is only exercised by its conformance harness, so the
+      # workspace tests alone leave felix-capi mostly uncovered. This run adds
+      # its profiles before the report.
+      - "bash scripts/ci/coverage-capi.sh"
+      - "cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex '(^|/)(demos)(/|$)|(^|/)src/bin/'"
       - "cargo llvm-cov report --summary-only --ignore-filename-regex '(^|/)(demos)(/|$)|(^|/)src/bin/'"
       - |
         if [ -z "${CI:-}" ]; then
