@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792940592233,
+  "lastUpdate": 1792941211854,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -46794,6 +46794,72 @@ window.BENCHMARK_DATA = {
             "range": "295.25",
             "unit": "us",
             "extra": "trials: 5\nmedian: 656.00\nmean: 778.20\nstdev: 295.25\ncv: 37.94%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6bc0805e19a74273f4960244d7dc6794253454ef",
+          "message": "fix(replication): an answer behind the tail starts a pass, so a level straggler doesn't strand appended records (#1545) (#1556)\n\n* fix(replication): an answer behind the tail starts a pass (#1545)\n\nA pass cut short by an append leaves both followers busy. The append's own\npass skips busy followers and ends at once; their answers then arrive level\nwith the old tail, move no cursor, and started no pass, so the new records\nwaited for the tick. An answer from a current, checked, unhalted, unstalled\nfollower behind the tail the last pass read now starts one.\n\nSpec-Unaffected: only when a pass is scheduled changes; the mark still moves only in a pass, on a real majority, and fencing and leadership are untouched.\n\n* fix(replication): an absorbed answer behind the tail starts a pass; stale answers count for nothing (#1545)\n\nA busy answer the running pass absorbs never reached merge, so a pass that\nended on a straggler left the level follower waiting for the tick. The\npass now asks for another when an absorbed follower is checked, unhalted,\nunstalled and behind its tail. merge also gates the counts-for-more case on\nthe answer's generation and incarnation being current.\n\nSpec-Unaffected: only when a pass is scheduled changes; the mark still moves only in a pass, on a real majority.\n\n* fix(replication): an unchecked answer behind the tail starts a pass too (#1545)\n\nThe exchange launched level with the tail reads the log before the append\nlands and sends nothing, so its answer is unchecked and the follower is\nstill behind. Only a halted or stalled follower, or an answer from another\ngeneration or incarnation, is owed no pass.\n\nSpec-Unaffected: only when a pass is scheduled changes; the mark still moves only in a pass, on a real majority.\n\n* fix(replication): a failed read or bootstrap offer stalls the cursor (#1545)\n\nWith unchecked answers now owed a pass, a follower that cannot progress and\nis not marked stalled would start a pass per answer. Both Retry returns\nthat left it unmarked now set it, as the request-error path already did.\n\nSpec-Unaffected: only when a pass is scheduled changes; the mark still moves only in a pass, on a real majority.\n\n* test(replication): a leader read failure stalls the cursor and loops no pass (#1545)\n\nSpec-Unaffected: tests only.",
+          "timestamp": "2026-10-25T08:09:08-07:00",
+          "tree_id": "8a1aec4d61afbe215c8cc0f6bf480f1561b9e201",
+          "url": "https://github.com/GetFelix/felix/commit/6bc0805e19a74273f4960244d7dc6794253454ef"
+        },
+        "date": 1792941206735,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 181,
+            "range": "1.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 181.00\nmean: 181.40\nstdev: 1.52\ncv: 0.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 241,
+            "range": "5.54",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 241.00\nmean: 243.20\nstdev: 5.54\ncv: 2.28%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 320,
+            "range": "32.74",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 320.00\nmean: 322.20\nstdev: 32.74\ncv: 10.16%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 220,
+            "range": "8.79",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 220.00\nmean: 222.60\nstdev: 8.79\ncv: 3.95%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 439,
+            "range": "67.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 439.00\nmean: 468.00\nstdev: 67.14\ncv: 14.35%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 610,
+            "range": "762.95",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 610.00\nmean: 955.80\nstdev: 762.95\ncv: 79.82%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
