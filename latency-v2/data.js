@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792902510673,
+  "lastUpdate": 1792902801468,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -45606,6 +45606,72 @@ window.BENCHMARK_DATA = {
             "range": "31.03",
             "unit": "us",
             "extra": "trials: 5\nmedian: 316.00\nmean: 321.20\nstdev: 31.03\ncv: 9.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "33718073d55941e0895d045a08b03bbaef225341",
+          "message": "feat(python): token provider (#1528)\n\nToken provider for the Python client, following the shared token contract.\n\n- token_provider= on Client, AsyncClient.connect and both with_identity; the token is optional when a provider is set.\n- Client: a plain callable runs on a Felix worker thread with the GIL; an async def runs via asyncio.run there. Not cancellable; joined across the 30 s timeout.\n- AsyncClient: awaited on the loop running at connect (it must outlive the client); a non-awaitable result fails at first call; the provider's task is cancelled at the timeout and when the client is gone.\n- Failures (exception, non-str, empty, non-UTF-8) become AuthError carrying the provider's message.\n- Docs: python.md token section with a tested example that rotates the refresh token; stubs, docstrings, README, overview.md, changelog.",
+          "timestamp": "2026-10-25T04:26:57Z",
+          "tree_id": "dbba85a317f4ca69fce56ae39847c5ef41e1eabc",
+          "url": "https://github.com/GetFelix/felix/commit/33718073d55941e0895d045a08b03bbaef225341"
+        },
+        "date": 1792902796204,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 183,
+            "range": "1.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 183.00\nmean: 182.60\nstdev: 1.52\ncv: 0.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 244,
+            "range": "4.04",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 244.00\nmean: 243.60\nstdev: 4.04\ncv: 1.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 310,
+            "range": "8.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 310.00\nmean: 306.40\nstdev: 8.14\ncv: 2.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 222,
+            "range": "6.58",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 222.00\nmean: 224.40\nstdev: 6.58\ncv: 2.93%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 452,
+            "range": "288.17",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 452.00\nmean: 578.60\nstdev: 288.17\ncv: 49.80%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 666,
+            "range": "924.90",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 666.00\nmean: 1286.00\nstdev: 924.90\ncv: 71.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
