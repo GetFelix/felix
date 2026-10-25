@@ -50,7 +50,9 @@ fn an_outcome_unknown_retry_class_wins_over_the_code() {
 #[test]
 fn without_a_code_the_message_decides_and_keeps_the_old_prefix() {
     let cases = [
-        ("publish failed: forbidden", KIND_AUTH),
+        // Words that used to mean auth are only words now.
+        ("publish failed: forbidden", KIND_GENERIC),
+        ("tls: could not load the token file", KIND_GENERIC),
         ("unknown stream t1/default/nope", KIND_NOT_FOUND),
         ("offset trimmed", KIND_CURSOR),
         ("connection lost", KIND_CONNECTION),
@@ -110,4 +112,28 @@ fn a_commit_refusal_carries_its_fields() {
     );
     let old = encode(&anyhow::Error::new(CommitError::Unsupported));
     assert!(old.starts_with("FELIX_COMMIT: "), "{old}");
+}
+
+/// An auth error is recognised by its type, so a message that says nothing
+/// about tokens or permissions still classes as auth.
+#[test]
+fn a_typed_auth_error_is_auth_whatever_it_says() {
+    for err in [
+        felix_client::AuthError {
+            kind: felix_client::AuthErrorKind::Refused,
+            message: "quota of 3".to_string(),
+        },
+        felix_client::AuthError {
+            kind: felix_client::AuthErrorKind::Token,
+            message: "idp returned 503".to_string(),
+        },
+    ] {
+        let message = err.to_string();
+        let encoded = encode(&anyhow::Error::new(err).context("open stream"));
+        assert!(
+            encoded.starts_with(&format!("{KIND_AUTH}{KIND_SEPARATOR}")),
+            "{encoded}"
+        );
+        assert!(encoded.contains(&message), "{encoded}");
+    }
 }

@@ -82,9 +82,7 @@ impl Client {
             mut recv,
             lease: _lease,
             ..
-        } = self
-            .bounded("open a stream", self.open_event_stream())
-            .await?;
+        } = self.open_event_stream_bounded().await?;
         write_message(&mut send, Message::Topology)
             .await
             .context("send topology request")?;
@@ -195,9 +193,7 @@ impl Client {
             mut recv,
             lease: _lease,
             ..
-        } = self
-            .bounded("open a stream", self.open_event_stream())
-            .await?;
+        } = self.open_event_stream_bounded().await?;
         let request_id = self
             .cache_request_counter
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -278,9 +274,7 @@ impl Client {
             mut recv,
             lease: _lease,
             ..
-        } = self
-            .bounded("open a stream", self.open_event_stream())
-            .await?;
+        } = self.open_event_stream_bounded().await?;
         let request_id = self
             .cache_request_counter
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -341,6 +335,8 @@ pub(super) async fn ask_stream_routing(
     namespace: &str,
     stream: &str,
 ) -> Result<(u32, felix_wire::routing::ShardRouting)> {
+    // Outside the timer, so a slow provider fails with its own typed error.
+    credentials.fetch().await?;
     let mut opened = tokio::time::timeout(
         runtime_config.connect_timeout,
         event_node.open_as(credentials),

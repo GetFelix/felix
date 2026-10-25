@@ -33,6 +33,33 @@ fn an_error_without_a_code_is_read_conservatively() {
     );
     assert_eq!(classify_text("connection lost"), FELIX_STATUS_CONNECTION);
     assert_eq!(classify_text("something odd"), FELIX_STATUS_ERROR);
+    // Words that used to mean auth are only words now.
+    assert_eq!(classify_text("forbidden"), FELIX_STATUS_ERROR);
+    assert_eq!(
+        classify_text("tls: could not load the token file"),
+        FELIX_STATUS_ERROR
+    );
+}
+
+/// An auth error is recognised by its type, so a message that says nothing
+/// about tokens or permissions still maps to the auth status.
+#[test]
+fn a_typed_auth_error_is_auth_whatever_it_says() {
+    for err in [
+        felix_client::AuthError {
+            kind: felix_client::AuthErrorKind::Refused,
+            message: "quota of 3".to_string(),
+        },
+        felix_client::AuthError {
+            kind: felix_client::AuthErrorKind::Token,
+            message: "idp returned 503".to_string(),
+        },
+    ] {
+        assert_eq!(
+            classify(&anyhow::Error::new(err).context("open stream")),
+            FELIX_STATUS_AUTH
+        );
+    }
 }
 
 #[test]

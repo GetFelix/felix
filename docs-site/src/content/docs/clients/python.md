@@ -97,7 +97,7 @@ call, because it does not depend on that loop.
 non-empty `str` (a `str` that is not valid UTF-8 counts). While the held token
 is still valid the client keeps it, logs a warning and asks again a few seconds
 later. Otherwise the call that needed the token raises `AuthError` with the
-exception's message in its text. A provider that has not answered after 30
+exception's message in its text. A provider failure is final for that operation: it is not retried, because each call can rotate a refresh token. The next operation asks the provider again. A provider that has not answered after 30
 seconds fails the operations waiting on it, but the call itself is not
 abandoned: the next operation that needs a token waits on that same call (up to
 30 seconds again) and uses its answer if it arrives, so the provider is not

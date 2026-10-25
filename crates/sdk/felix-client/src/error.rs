@@ -5,6 +5,79 @@
 
 use felix_wire::{CursorErrorReason, ErrorCode, ErrorDetail, PublishRefusalReason, RetryClass};
 
+/// Authentication failed, and retrying will not change that.
+///
+/// Either the broker refused the credential ([`AuthErrorKind::Refused`]) or
+/// the token source could not produce one: the provider failed, answered
+/// with something unusable, panicked, or took longer than
+/// [`FETCH_TIMEOUT`](crate::FETCH_TIMEOUT) ([`AuthErrorKind::Token`]). The
+/// message is the provider's or broker's own, unchanged.
+///
+/// Typed so the client and its bindings classify an auth failure by this
+/// marker rather than by words in the message. A cluster client does not
+/// retry it: a provider call can rotate a refresh token, so repeating a
+/// failed one costs a rotation each time. Recover it from an
+/// `anyhow::Error` with `downcast_ref`, including when it is wrapped in context.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthError {
+    /// Whether the broker or the token source failed.
+    pub kind: AuthErrorKind,
+    /// The provider's or broker's message.
+    pub message: String,
+}
+
+/// Which side of authentication failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthErrorKind {
+    /// The broker refused the credential.
+    Refused,
+    /// The token source failed to produce a token.
+    Token,
+}
+
+impl AuthError {
+    pub(crate) fn refused(message: impl Into<String>) -> Self {
+        Self {
+            kind: AuthErrorKind::Refused,
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn token(message: impl Into<String>) -> Self {
+        Self {
+            kind: AuthErrorKind::Token,
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for AuthError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.kind {
+            AuthErrorKind::Refused => write!(f, "auth rejected: {}", self.message),
+            AuthErrorKind::Token => f.write_str(&self.message),
+        }
+    }
+}
+
+impl std::error::Error for AuthError {}
+
+/// Whether the token source, not the broker, failed.
+pub(crate) fn is_token_failure(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<AuthError>()
+        .is_some_and(|a| a.kind == AuthErrorKind::Token)
+}
+
+/// Mark a token source's failure as an [`AuthError`], keeping its text. An
+/// error that already is one passes through.
+pub(crate) fn token_failure(err: anyhow::Error) -> anyhow::Error {
+    if err.is::<AuthError>() {
+        err
+    } else {
+        AuthError::token(format!("{err:#}")).into()
+    }
+}
+
 /// The broker would not append an idempotent publish, and said why.
 ///
 /// Carried as a typed error so a producer can act on the reason rather than

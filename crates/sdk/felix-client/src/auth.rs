@@ -14,6 +14,8 @@ use anyhow::Result;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
+use crate::error::AuthError;
+
 /// Delay before retrying a failed fetch, so every stream open doesn't trigger
 /// one.
 const RETRY_AFTER: Duration = Duration::from_secs(5);
@@ -251,14 +253,15 @@ impl RefreshingToken {
             Ok(Ok(answer)) => answer
                 .clone()
                 .expect("waited for an answer")
-                .map_err(anyhow::Error::msg),
-            Ok(Err(_)) => Err(anyhow::anyhow!("the token fetch ended without an answer")),
+                .map_err(|message| AuthError::token(message).into()),
+            Ok(Err(_)) => Err(AuthError::token("the token fetch ended without an answer").into()),
             Err(_) => {
                 flight.cancel.cancel();
-                Err(anyhow::anyhow!(
+                Err(AuthError::token(format!(
                     "the token fetch took longer than {}s",
                     FETCH_TIMEOUT.as_secs()
                 ))
+                .into())
             }
         };
         match fetched {

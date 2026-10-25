@@ -214,6 +214,13 @@ async fn a_fixed_token_that_is_refused_is_not_retried() -> Result<()> {
 /// Refuse the next auth with `code`, subscribe, and count the tokens the
 /// provider minted.
 async fn refused_with(code: Option<felix_wire::ErrorCode>) -> Result<usize> {
+    Ok(refused_outcome(code).await?.0)
+}
+
+/// [`refused_with`], also returning the subscribe's error.
+async fn refused_outcome(
+    code: Option<felix_wire::ErrorCode>,
+) -> Result<(usize, Option<anyhow::Error>)> {
     let server = TokenCheckingServer::start("token-1")?;
     let minted = Arc::new(AtomicUsize::new(0));
     let counter = Arc::clone(&minted);
@@ -235,12 +242,13 @@ async fn refused_with(code: Option<felix_wire::ErrorCode>) -> Result<usize> {
     .await??;
     server.expire_current_token("other");
     *server.refusal.lock().unwrap() = code;
-    let _ = timeout(
+    let err = timeout(
         Duration::from_secs(5),
         client.subscribe("t1", "default", "updates"),
     )
-    .await?;
-    Ok(minted.load(std::sync::atomic::Ordering::SeqCst))
+    .await?
+    .err();
+    Ok((minted.load(std::sync::atomic::Ordering::SeqCst), err))
 }
 
 /// A draining or overloaded broker says nothing about the token: it is kept,
@@ -266,6 +274,31 @@ async fn a_credential_refusal_fetches_a_fresh_token() -> Result<()> {
         None,
     ] {
         assert_eq!(refused_with(code.clone()).await?, 2, "{code:?}");
+    }
+    Ok(())
+}
+
+/// Only a refusal of the credential is an auth error. A draining or
+/// overloaded broker's refusal keeps its code and is not marked, so the
+/// cluster client still retries it and moves off a broker that is shutting
+/// down.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_draining_or_overloaded_refusal_is_not_an_auth_error() -> Result<()> {
+    use felix_wire::ErrorCode;
+    for code in [ErrorCode::Draining, ErrorCode::Overloaded] {
+        let (_, err) = refused_outcome(Some(code.clone())).await?;
+        let err = err.expect("the subscribe was refused");
+        assert!(!err.is::<crate::AuthError>(), "{code:?}: {err:#}");
+        assert_eq!(
+            crate::cluster::wants_reconnect(&err),
+            code == ErrorCode::Draining,
+            "{code:?}"
+        );
+    }
+    for code in [ErrorCode::Unauthenticated, ErrorCode::Forbidden] {
+        let (_, err) = refused_outcome(Some(code.clone())).await?;
+        assert!(err.expect("refused").is::<crate::AuthError>(), "{code:?}");
     }
     Ok(())
 }

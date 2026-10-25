@@ -1,3 +1,4 @@
+mod auth_failure;
 mod batch;
 mod cache_routing;
 mod cancelled_producer;
@@ -82,11 +83,23 @@ fn backoff_is_jittered_rather_than_fixed() {
 }
 
 #[test]
-fn a_forbidden_error_is_terminal() {
-    assert!(is_terminal(&anyhow::anyhow!("forbidden")));
-    assert!(is_terminal(
-        &anyhow::anyhow!("publish failed").context("forbidden")
-    ));
+fn an_auth_error_is_terminal_whatever_it_says() {
+    for kind in [
+        crate::AuthError::token("provider down"),
+        crate::AuthError::refused("nope"),
+    ] {
+        let err = anyhow::Error::new(kind);
+        assert!(is_terminal(&err));
+        assert!(is_terminal(&err.context("open subscription")));
+    }
+}
+
+/// The text decides nothing: prose that used to mark an error terminal does
+/// not, and an error that mentions a token is retried unless it is typed.
+#[test]
+fn untyped_auth_words_are_still_retried() {
+    assert!(!is_terminal(&anyhow::anyhow!("forbidden")));
+    assert!(!is_terminal(&anyhow::anyhow!("token endpoint reset")));
 }
 
 /// A cursor error is terminal by construction, and typed, so it does not

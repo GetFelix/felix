@@ -19,6 +19,7 @@ use crate::config::{
     event_transport_config, shared_transport_config,
 };
 use crate::connection::{Credentials, NodeConnections, NodeLimits, OpenedStream};
+use crate::error::token_failure;
 use crate::publish::{
     LearnWidth, OpenWorker, PublishAdmission, PublishWorker, ShardStreams, StreamWidths,
     run_publisher_writer_with_limit,
@@ -37,14 +38,15 @@ pub(crate) async fn fetch_token(config: &ClientConfig) -> Result<()> {
 /// provider's fallback to a still-valid token.
 pub(crate) async fn fetch_from(tokens: &dyn TokenProvider) -> Result<()> {
     if tokens.bounds_its_own_fetch() {
-        return tokens.token().await.map(drop);
+        return tokens.token().await.map(drop).map_err(token_failure);
     }
     match tokio::time::timeout(FETCH_TIMEOUT, tokens.token()).await {
-        Ok(token) => token.map(drop),
-        Err(_) => Err(anyhow::anyhow!(
+        Ok(token) => token.map(drop).map_err(token_failure),
+        Err(_) => Err(crate::AuthError::token(format!(
             "the token fetch took longer than {}s",
             FETCH_TIMEOUT.as_secs()
-        )),
+        ))
+        .into()),
     }
 }
 
@@ -475,6 +477,16 @@ impl Client {
     /// subscription, on the event connections.
     pub(crate) async fn open_event_stream(&self) -> Result<OpenedStream> {
         self.event_node.open_as(&self.credentials).await
+    }
+
+    /// [`open_event_stream`](Self::open_event_stream) under the connect
+    /// timeout, with the token fetched first and outside it. Inside, a slow
+    /// provider would trip the short timer with an error nothing marks as an
+    /// auth failure, and each retry would wait out the timer again.
+    pub(crate) async fn open_event_stream_bounded(&self) -> Result<OpenedStream> {
+        self.credentials.fetch().await?;
+        self.bounded("open a stream", self.open_event_stream())
+            .await
     }
 }
 

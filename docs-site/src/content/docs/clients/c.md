@@ -157,7 +157,7 @@ reply may be completed from any thread, now or later, with
 so the reply is how a slow answer is returned.
 
 **Failure.** The `message` you give reaches the call that needed the token
-unchanged, once no valid token is held to fall back on. A caller waits at most
+unchanged, once no valid token is held to fall back on. A provider failure is final for that operation: it is not retried, because each call can rotate a refresh token. The next operation asks the provider again. A caller waits at most
 30 seconds for a fetch and then counts it as failed, but the fetch is not
 abandoned: the library does not call the function again while a reply is
 unanswered, the next refresh waits on the same reply, and an answer that arrives
