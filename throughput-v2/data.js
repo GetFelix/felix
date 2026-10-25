@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792927303295,
+  "lastUpdate": 1792927603348,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -36660,6 +36660,58 @@ window.BENCHMARK_DATA = {
             "range": "7941.18",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 803033.80\nmean: 806036.18\nstdev: 7941.18\ncv: 0.99%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8df08e098e873734fcda82097cf62a07a95ceded",
+          "message": "fix(replication): live pass state in quorum-timeout diagnostics (#1545) (#1551)\n\nThe quorum-timeout warn caught #1545 once (no pass ended for about 5 s, both\nfollowers at the mark), but its follower state is written only when a pass\nends, so it could not tell a pass waiting on its exchanges from a blocked\ndriver loop or a lost wake. The shard's live record now holds the running\npass's start, scan and launched followers with each exchange's launch offset\nand time, the driver's current scan against the shard's last, followers still\nbusy from earlier passes, passes started since the mark last moved and the\nkind of the last wake; the warn prints them. A lost shard's entry is removed.\nDiagnostics only: no scheduling change.\n\nRefs #1545.\n\nSpec-Unaffected: diagnostics only; no change to how passes are scheduled or the mark moves.",
+          "timestamp": "2026-10-25T11:17:22Z",
+          "tree_id": "9f16890a783a9b36957a2f5ff8b6dd0cc8aae10e",
+          "url": "https://github.com/GetFelix/felix/commit/8df08e098e873734fcda82097cf62a07a95ceded"
+        },
+        "date": 1792927602402,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 354723.98,
+            "range": "9157.32",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 354723.98\nmean: 352454.22\nstdev: 9157.32\ncv: 2.60%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 354723.98,
+            "range": "9157.32",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 354723.98\nmean: 352454.22\nstdev: 9157.32\ncv: 2.60%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81009.98,
+            "range": "821.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81009.98\nmean: 80970.21\nstdev: 821.26\ncv: 1.01%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 810099.76,
+            "range": "8212.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 810099.76\nmean: 809702.15\nstdev: 8212.59\ncv: 1.01%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
