@@ -415,6 +415,9 @@ struct fixture {
      needs the fleet to finalize publisher_principal, which is opt-in and which
      the fixture does not do, so a client that asks is told nothing. */
   const char *records_publishers;
+  /* Brokers that advertise no features, so no commits. Empty when the fixture
+     has none. */
+  const char *no_commit_addrs;
   /* The link interposer: a broker address that faults can be injected on, and
      the single-shard stream behind it. Empty when the fixture has none. */
   const char *link_addr, *link_stream;
@@ -470,6 +473,7 @@ static bool load_fixture(const char *path, struct fixture *f) {
       {&f->quorum_stream, "quorum_stream", false},
       {&f->control_url, "control_url", false},
       {&f->records_publishers, "records_publishers", false},
+      {&f->no_commit_addrs, "no_commit_addrs", false},
       {&f->link_addr, "link_addr", false},
       {&f->link_stream, "link_stream", false},
       {&f->kill_helper, "kill_helper", false},
@@ -3593,6 +3597,51 @@ static void check_conditional(const struct kctx *k, const char *what,
         (int)status, (int)r.written, r.offset);
 }
 
+/* The count of commits and state reads the no-commit broker was sent, from the
+   control endpoint; -1 if it could not be read. */
+static long no_commit_requests(const struct fixture *f) {
+  char command[MAX_LINE + 64];
+  snprintf(command, sizeof command, "curl -sS -m 10 '%s/no-commit/requests' 2>/dev/null",
+           f->control_url);
+  FILE *pipe = popen(command, "r");
+  if (!pipe) {
+    return -1;
+  }
+  char out[64];
+  size_t used = fread(out, 1, sizeof out - 1, pipe);
+  out[used] = '\0';
+  pclose(pipe);
+  return used ? atol(out) : -1;
+}
+
+/* A client sends commit and state_get only to a broker that advertised
+   FEATURE_ATOMIC_COMMIT: against one that advertised nothing both fail at the
+   call with UNSUPPORTED, and nothing reaches the broker. The commit that
+   succeeds against a broker that did advertise it is in commits(). */
+static void commits_negotiated(const struct fixture *f, const char *run) {
+  if (!f->no_commit_addrs[0] || !f->control_url[0]) {
+    SKIP("commit.negotiated", "the fixture file has no no_commit_addrs or control_url");
+    return;
+  }
+  FelixClient *client = NULL;
+  SCENARIO_BEGIN("commit.negotiated");
+  REQUIRE_OK(connect_sync(f->no_commit_addrs, f->tenant, f->token, f->ca_file, &client));
+  struct kctx k = {client, f};
+  struct kres r;
+  char key[160];
+  snprintf(key, sizeof key, "cn-%s", run);
+  FelixStatus status = k_commit(&k, -1, key, "placed", key, "placed", false, 0, &r);
+  CHECK(status == FELIX_STATUS_UNSUPPORTED, "commit to a broker without the feature gave %d",
+        (int)status);
+  status = k_state(&k, -1, key, key, &r);
+  CHECK(status == FELIX_STATUS_UNSUPPORTED, "state_get from a broker without the feature gave %d",
+        (int)status);
+  long sent = no_commit_requests(f);
+  CHECK(sent == 0, "the broker without the feature was sent %ld commits or state reads", sent);
+  felix_client_free(client);
+  SCENARIO_END("commit.negotiated");
+}
+
 static void commits(const struct fixture *f, const char *run) {
   FelixClient *client = NULL;
   REQUIRE_OK(connect_sync(f->addrs, f->tenant, f->token, f->ca_file, &client));
@@ -3603,11 +3652,9 @@ static void commits(const struct fixture *f, const char *run) {
 
   /* A commit returns its offset, and its state reads back at that version.
      The commit is accepted, so the broker advertised commits. */
-  SCENARIO_BEGIN("commit.negotiated");
   SCENARIO_BEGIN("commit.state_get_returns_the_version");
   FelixStatus status = k_commit(&k, -1, key, "placed", key, "placed", false, 0, &r);
   CHECK(status == FELIX_STATUS_OK, "commit gave %d", (int)status);
-  SCENARIO_END("commit.negotiated");
   uint64_t offset = r.offset;
   status = k_state(&k, -1, key, key, &r);
   CHECK(status == FELIX_STATUS_OK && r.has_state && r.has_value &&
@@ -5145,6 +5192,7 @@ int main(int argc, char **argv) {
     sharded_groups(&f, run);
     caches(&f, run);
     commits(&f, run);
+    commits_negotiated(&f, run);
     producers(&f, run);
     concurrency(&f, run);
     delivery(&f, run);

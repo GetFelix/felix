@@ -1,5 +1,6 @@
 //! `client-fixture`: a cluster for a client conformance suite to run against.
 
+mod bare_broker;
 mod control;
 
 use std::sync::Arc;
@@ -98,7 +99,12 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
 
     // Each broker wrote its own certificate; a client needs to trust all of
     // them, and a PEM bundle holding several is exactly how that is spelled.
-    let mut bundle = String::new();
+    // The broker that advertises no commits adds its own.
+    let bare = bare_broker::BareBroker::start()?;
+    let mut bundle = bare.cert_pem.clone();
+    if !bundle.ends_with('\n') {
+        bundle.push('\n');
+    }
     for node in &cluster.nodes {
         let path = node.data_dir.join("broker-cert.pem");
         let pem = std::fs::read_to_string(&path).with_context(|| {
@@ -129,6 +135,7 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
         Arc::clone(&cluster),
         Arc::clone(&hold),
         Arc::clone(&link),
+        Arc::clone(&bare.requests),
         MOVABLE_STREAM,
         QUORUM_STREAM,
     )
@@ -157,6 +164,7 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
         link_stream: Some(LINK_STREAM.to_string()),
         group_operator_token: Some(cluster.group_operator_token()),
         records_publishers: true,
+        no_commit_addrs: vec![bare.addr.to_string()],
         faults: felix_conformance::kit::catalogue()?.fault_scenarios(),
     };
     let body = serde_json::to_vec_pretty(&fixture).context("encode the fixture")?;
@@ -167,6 +175,7 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
     println!("ca        {ca_file}");
     println!("control   {control_url}");
     println!("link      {} -> {link_owner}", link.addr());
+    println!("no commit {}", fixture.no_commit_addrs.join(", "));
     eprintln!("\nholding the fixture. press Ctrl-C to tear it down.");
 
     // A placement pass on a timer, which is what makes the reconnect scenario
@@ -196,6 +205,7 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
     let _ = placement.await;
     eprintln!("\ntearing down...");
     let _ = std::fs::remove_file(&out);
+    drop(bare);
     drop(cluster);
     Ok(())
 }

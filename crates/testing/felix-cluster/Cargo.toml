@@ -31,6 +31,7 @@ rcgen = { workspace = true, features = ["x509-parser"] }
 felix-common = { path = "../../server/felix-common", version = "0.6.1" }
 felix-controlplane-service = { path = "../../../services/felix-controlplane-service", version = "0.6.1" }
 felix-client = { path = "../../sdk/felix-client", version = "0.6.1" }
+felix-transport = { path = "../../protocol/felix-transport", version = "0.6.1" }
 felix-wire = { path = "../../protocol/felix-wire", version = "0.6.1" }
 bytes = { workspace = true }
 quinn = { workspace = true }
