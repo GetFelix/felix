@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792953008900,
+  "lastUpdate": 1792955678486,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -37232,6 +37232,58 @@ window.BENCHMARK_DATA = {
             "range": "5029.98",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 814192.04\nmean: 815530.13\nstdev: 5029.98\ncv: 0.62%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5935e47fcb48a8c9d39ed3b94ac07d96a2ca5565",
+          "message": "fix(release): give the macOS libfelix.dylib an @rpath install name (#1571)\n\nrustc leaves the build machine's absolute path as the dylib's install name, so\na program linked against the released archive looked for\n/Users/runner/.../target/release/deps/libfelix.dylib and failed to start; the\nCI smoke test passed only because that path exists on the runner. The archive\nstep sets the id to @rpath/libfelix.dylib, re-signs ad hoc, and fails if the id\nis anything else.",
+          "timestamp": "2026-10-25T12:10:04-07:00",
+          "tree_id": "114501f1603a6daaa44bb1699bbe929a1003680a",
+          "url": "https://github.com/GetFelix/felix/commit/5935e47fcb48a8c9d39ed3b94ac07d96a2ca5565"
+        },
+        "date": 1792955677691,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 349376.47,
+            "range": "9413.30",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 349376.47\nmean: 347568.85\nstdev: 9413.30\ncv: 2.71%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 349376.47,
+            "range": "9413.30",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 349376.47\nmean: 347568.85\nstdev: 9413.30\ncv: 2.71%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81683.1,
+            "range": "314.90",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81683.10\nmean: 81573.32\nstdev: 314.90\ncv: 0.39%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 816831.01,
+            "range": "3149.07",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 816831.01\nmean: 815733.24\nstdev: 3149.07\ncv: 0.39%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
