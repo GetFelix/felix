@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792952356903,
+  "lastUpdate": 1792952731035,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -47124,6 +47124,72 @@ window.BENCHMARK_DATA = {
             "range": "107.87",
             "unit": "us",
             "extra": "trials: 5\nmedian: 630.00\nmean: 661.00\nstdev: 107.87\ncv: 16.32%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c914f0a9036610b4860492c74769a614dd12bb70",
+          "message": "feat(bindings): reconnect deadline and attempts in every client (#1559)\n\nEvery binding exposes the two ReconnectPolicy knobs a latency budget needs: a\nreconnect deadline bounding a retried operation across attempts and sleeps, and\nan attempt count. Python reconnect_deadline / reconnect_attempts, TypeScript\nreconnectDeadline / reconnectAttempts, C FelixConnectOptions\nreconnect_deadline_ms / reconnect_attempts (size-versioned, so older callers\nget the defaults), C# FelixClientOptions.ReconnectDeadline / ReconnectAttempts.\nDefaults are unchanged. The deadline is checked between attempts, caps at one\nyear (the core cannot overflow the clock), and covers publish, subscribe opens\nand follows, commit, publish_if and state_get; cache and group calls do not\nread the policy yet (#1565).\n\nA new required conformance scenario, retry.deadline_bounds_an_operation, fences\na shard and checks a retried publish fails within the deadline instead of\nrunning every attempt, in Python, TypeScript, C and C#.",
+          "timestamp": "2026-10-25T11:18:37-07:00",
+          "tree_id": "97439bc156d448d62e3d133169bce203b42bb993",
+          "url": "https://github.com/GetFelix/felix/commit/c914f0a9036610b4860492c74769a614dd12bb70"
+        },
+        "date": 1792952725407,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 181,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 181.00\nmean: 180.60\nstdev: 1.14\ncv: 0.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 240,
+            "range": "1.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 240.00\nmean: 240.60\nstdev: 1.52\ncv: 0.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 296,
+            "range": "8.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 296.00\nmean: 296.20\nstdev: 8.84\ncv: 2.99%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 218,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 218.00\nmean: 217.80\nstdev: 1.30\ncv: 0.60%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 451,
+            "range": "7.54",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 451.00\nmean: 451.40\nstdev: 7.54\ncv: 1.67%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 638,
+            "range": "74.21",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 638.00\nmean: 651.60\nstdev: 74.21\ncv: 11.39%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
