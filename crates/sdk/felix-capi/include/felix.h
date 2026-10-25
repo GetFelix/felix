@@ -220,6 +220,14 @@ typedef struct FelixConnectOptions {
   // An app that never answers a reply leaks it. Used only with
   // `token_fetch`.
   FelixTokenRelease token_release;
+  // How many times a retried call tries to reach a broker before it gives
+  // up. Zero is the default, 5. Each attempt tries every known endpoint.
+  uint32_t reconnect_attempts;
+  // A ceiling in milliseconds on one retried call, across every attempt and
+  // every wait between them. Zero is no ceiling, the default. A ceiling
+  // shorter than one attempt's own timeout leaves the call a single attempt,
+  // since that attempt spends the whole budget.
+  uint64_t reconnect_deadline_ms;
 } FelixConnectOptions;
 
 // Called once when `felix_client_connect` or `felix_client_connect_with`

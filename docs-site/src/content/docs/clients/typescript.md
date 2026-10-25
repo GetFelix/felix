@@ -264,10 +264,35 @@ down.
 - **A subscription's broker fails.** On a durable stream it resubscribes from
   the offset after the last one it delivered, and where it cannot it rejects
   rather than ending as though the stream had finished.
-- **Knobs.** None. The client uses the Rust default `ReconnectPolicy` (5
-  attempts, backing off from 200 ms to 2 s) and the binding has no option to
-  change it. `await client.endpoints()` lists the brokers it would try, discovered
+- **Knobs.** [Reconnecting](#reconnecting) sets the attempt count and a deadline. `await client.endpoints()` lists the brokers it would try, discovered
   ones included.
+
+### Reconnecting
+
+Publishes, opening and following subscriptions, commits, `publish_if` and state reads retry with a backoff when no broker can be reached. Cache and consumer-group calls are not bounded by these options yet. Two options tune the retrying, and both default to the Rust client's own policy, so a client that sets neither behaves as it always did.
+
+- **Attempts** is how many times a call tries to reach a broker before it gives up. Each attempt tries every broker the client knows. The default is 5, and the minimum is 1.
+- **Deadline** is a ceiling on one call across every attempt and every wait between them. It is off by default, and it is checked between attempts, before each backoff sleep, so a call can last the deadline plus one attempt's own timeout. Attempt counts alone do not bound time: five attempts against a broker that takes its full publish timeout to answer is minutes.
+
+Pass them as `reconnectAttempts` (a whole number) and `reconnectDeadline` (milliseconds) in the options object of `Client.connect`. The attempt count must be a whole number of at least 1 and the deadline between 1 ms and one year; anything else rejects with an `InvalidArgumentError`.
+
+```ts
+const client = await Client.connect(
+  ["felix-0:5000", "felix-1:5000", "felix-2:5000"],
+  "t1",
+  { token, reconnectAttempts: 10, reconnectDeadline: 30_000 },
+);
+try {
+  // Stops retrying once 30 s have passed, checked between attempts, and reports the last error.
+  await client.publish("t1", "default", "orders", Buffer.from("hello"), undefined, "per_message", true);
+} catch (err) {
+  console.error("publish gave up:", err);
+} finally {
+  client.close();
+}
+```
+
+A deadline shorter than one attempt's own timeout means no retry happens: the first attempt spends the whole budget and the call returns after trying once. Set it to cover at least one attempt plus the backoff you can afford, and leave it off if you would rather wait out a failover. A client from `withIdentity` inherits both.
 
 The Rust page covers [clusters](/clients/rust/#clusters) in full.
 

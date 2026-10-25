@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use felix_client::{ClientConfig, ClusterClient, ReconnectPolicy};
+use felix_client::{ClientConfig, ClusterClient};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
@@ -32,6 +32,9 @@ impl AsyncClient {
     /// which must stay open for the life of the client and every
     /// `with_identity` handle; once it is closed the provider fails with "the
     /// event loop the token provider was bound to is closed".
+    ///
+    /// `reconnect_attempts` and `reconnect_deadline` are as for the
+    /// synchronous `Client`.
     #[staticmethod]
     #[pyo3(signature = (
         addrs,
@@ -42,6 +45,8 @@ impl AsyncClient {
         server_name="localhost",
         ca_file=None,
         offer_alpn=false,
+        reconnect_attempts=None,
+        reconnect_deadline=None,
     ))]
     fn connect<'py>(
         py: Python<'py>,
@@ -52,6 +57,8 @@ impl AsyncClient {
         server_name: &str,
         ca_file: Option<&str>,
         offer_alpn: bool,
+        reconnect_attempts: Option<Bound<'_, PyAny>>,
+        reconnect_deadline: Option<f64>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let seeds = parse_addrs(py, &addrs)?;
         if seeds.is_empty() {
@@ -59,6 +66,8 @@ impl AsyncClient {
                 "at least one broker address is required",
             ));
         }
+        let policy =
+            crate::args::reconnect_policy(reconnect_attempts.as_ref(), reconnect_deadline)?;
         let quinn = crate::tls::client_config(ca_file, offer_alpn)?;
         let mut config = ClientConfig::optimized_defaults(quinn);
         config.auth_tenant_id = Some(tenant_id.to_string());
@@ -70,14 +79,9 @@ impl AsyncClient {
         let server_name = server_name.to_string();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let inner = ClusterClient::connect_seeds(
-                &seeds,
-                &server_name,
-                config,
-                ReconnectPolicy::default(),
-            )
-            .await
-            .map_err(to_py_err)?;
+            let inner = ClusterClient::connect_seeds(&seeds, &server_name, config, policy)
+                .await
+                .map_err(to_py_err)?;
             Ok(AsyncClient {
                 inner: Arc::new(inner),
             })

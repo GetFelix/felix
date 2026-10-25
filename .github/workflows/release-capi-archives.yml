@@ -1,0 +1,177 @@
+name: Release C library archives
+
+# Prebuilt libfelix (shared and static, with felix.h) for the GitHub release.
+#
+# Called by release.yml after its release gates. Run by hand to backfill a
+# release that predates the archives; it builds the TAG's source, so the
+# libraries match what was released, and only uploads files to the release:
+#
+#   gh workflow run release-capi-archives.yml -f tag=v0.6.2 -f dry_run=false
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag whose archives to build
+        required: true
+        type: string
+      dry_run:
+        description: Build and smoke-link the archives, upload nothing
+        required: false
+        default: true
+        type: boolean
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+      dry_run:
+        type: boolean
+        default: false
+      ref:
+        type: string
+        default: ""
+      from_release:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  RELEASE_TAG: ${{ inputs.tag }}
+
+jobs:
+  plan:
+    name: Which source to build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      source: ${{ steps.source.outputs.source }}
+    steps:
+      # release.yml has made these checks already. A hand run has not, and an
+      # upload to a tag nobody released would create a release by accident.
+      - name: A hand run needs an existing tag with a published release
+        if: ${{ !inputs.from_release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! gh api "repos/${{ github.repository }}/git/ref/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "::error::${RELEASE_TAG} is not a tag of this repository."
+            exit 1
+          fi
+          draft="$(gh release view "${RELEASE_TAG}" --repo "${{ github.repository }}" --json isDraft --jq .isDraft 2>/dev/null || echo missing)"
+          if [ "$draft" != false ]; then
+            echo "::error::${RELEASE_TAG} has no published GitHub release (${draft})."
+            exit 1
+          fi
+
+      - name: Source ref
+        id: source
+        env:
+          REF: ${{ inputs.ref }}
+        run: |
+          if [ -n "$REF" ]; then
+            echo "source=${REF}" >> "$GITHUB_OUTPUT"
+          else
+            echo "source=refs/tags/${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: libfelix (${{ matrix.rid }})
+    needs: plan
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-latest, rid: linux-x64 }
+          - { runner: ubuntu-24.04-arm, rid: linux-arm64 }
+          - { runner: macos-latest, rid: osx-arm64 }
+          - { runner: macos-15-intel, rid: osx-x64 }
+          - { runner: windows-latest, rid: win-x64, msvc_arch: x64 }
+          - { runner: windows-11-arm, rid: win-arm64, msvc_arch: arm64 }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # This workflow's own checkout holds the packaging script and smoke
+      # program; the release's source, which may be older, is built under src.
+      - name: Checkout the packaging script
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          path: tools
+
+      - name: Checkout the release source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ needs.plan.outputs.source }}
+          path: src
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.97.1"
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src
+
+      # Same release profile as the NuGet build, so felix-capi's strip = "none"
+      # applies to the static library too.
+      - name: Build the native libraries
+        working-directory: src
+        run: cargo build --locked --release -p felix-capi
+
+      # cl links the Windows smoke check.
+      - name: MSVC environment
+        if: ${{ matrix.msvc_arch }}
+        uses: ilammy/msvc-dev-cmd@a102174a2b586eec2ea151a69e6fd14404a8ce7c # v1.13.0
+        with:
+          arch: ${{ matrix.msvc_arch }}
+
+      - name: Package libfelix and link it both ways
+        run: tools/scripts/package_libfelix.sh "${RELEASE_TAG}" "${{ matrix.rid }}" libfelix-dist src
+
+      - name: Upload the archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: libfelix-archive-${{ matrix.rid }}
+          path: libfelix-dist/*
+          if-no-files-found: error
+
+  # The only job that can write to the release, and it only adds files.
+  attach:
+    name: Attach the archives to ${{ inputs.tag }}
+    needs: build
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: libfelix-archive-*
+          path: dist
+          merge-multiple: true
+
+      # Six platforms, or the release would quietly miss one.
+      - name: All six archives are here
+        run: |
+          set -euo pipefail
+          ls -la dist
+          for rid in linux-x64 linux-arm64 osx-x64 osx-arm64 win-x64 win-arm64; do
+            ls dist/libfelix-"${RELEASE_TAG}-${rid}".* >/dev/null
+          done
+
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${RELEASE_TAG}" dist/* --clobber --repo "${{ github.repository }}"

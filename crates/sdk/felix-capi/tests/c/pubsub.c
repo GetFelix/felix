@@ -406,6 +406,29 @@ static FelixStatus connect_sync(const char *addrs, const char *tenant,
   return status;
 }
 
+/* connect_sync with the reconnect options set. */
+static FelixStatus connect_reconnecting(const char *addrs, const char *tenant,
+                                        const char *token, const char *ca_file,
+                                        uint32_t attempts,
+                                        uint64_t deadline_ms,
+                                        FelixClient **out) {
+  FelixConnectOptions options;
+  memset(&options, 0, sizeof options);
+  options.size = sizeof options;
+  options.reconnect_attempts = attempts;
+  options.reconnect_deadline_ms = deadline_ms;
+  struct waiter w;
+  waiter_init(&w);
+  FelixStatus status = felix_client_connect_with(
+      addrs, tenant, token, NULL, ca_file, &options, NULL, on_connect, &w);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&w, WAIT_MS);
+    *out = w.handle;
+  }
+  waiter_destroy(&w);
+  return status;
+}
+
 struct fixture {
   const char *addrs, *tenant, *ns, *token, *ca_file, *stream, *missing,
       *unauthorized_token, *group_operator_token, *cache, *single_shard_cache;
@@ -1021,15 +1044,16 @@ static void offline(void) {
   waiter_destroy(&w);
 }
 
-static FelixStatus publish(FelixClient *client, const struct fixture *f,
-                           const char *stream, const char *payload,
-                           uint64_t *offset, char *message, size_t cap) {
+static FelixStatus publish_with(FelixClient *client, const struct fixture *f,
+                                const char *stream, const char *payload,
+                                FelixDelivery delivery, uint64_t *offset,
+                                char *message, size_t cap) {
   struct waiter w;
   waiter_init(&w);
   FelixStatus status = felix_client_publish(
       client, f->tenant, f->ns, stream, (const uint8_t *)payload,
       strlen(payload), NULL, 0, FELIX_ACK_PER_MESSAGE,
-      FELIX_DELIVERY_AT_MOST_ONCE, NULL, on_publish, &w);
+      delivery, NULL, on_publish, &w);
   if (status == FELIX_STATUS_OK) {
     status = wait_for(&w, WAIT_MS);
     if (offset) {
@@ -1041,6 +1065,13 @@ static FelixStatus publish(FelixClient *client, const struct fixture *f,
   }
   waiter_destroy(&w);
   return status;
+}
+
+static FelixStatus publish(FelixClient *client, const struct fixture *f,
+                           const char *stream, const char *payload,
+                           uint64_t *offset, char *message, size_t cap) {
+  return publish_with(client, f, stream, payload, FELIX_DELIVERY_AT_MOST_ONCE,
+                      offset, message, cap);
 }
 
 static FelixStatus subscribe_shard(FelixClient *client,
@@ -4548,7 +4579,8 @@ static bool heal_and_recover(const struct fixture *f, const char *addr,
 
 static void faults(const struct fixture *f, const char *run) {
   static const char *const ids[] = {"error.shard_unavailable_is_retryable",
-                                    "error.quorum_timeout_is_outcome_unknown"};
+                                    "error.quorum_timeout_is_outcome_unknown",
+                                    "retry.deadline_bounds_an_operation"};
   const char *absent = !f->control_url[0]      ? "control_url"
                        : !f->movable_stream[0] ? "movable_stream"
                                                : !f->quorum_stream[0]
@@ -4557,7 +4589,7 @@ static void faults(const struct fixture *f, const char *run) {
   if (absent) {
     char reason[128];
     snprintf(reason, sizeof reason, "the fixture file has no %s", absent);
-    for (size_t i = 0; i < 2; i++) {
+    for (size_t i = 0; i < 3; i++) {
       SKIP(ids[i], reason);
     }
     return;
@@ -4574,7 +4606,37 @@ static void faults(const struct fixture *f, const char *run) {
              body);
     CHECK(code == 409, "%s", reason);
     SKIP(ids[0], reason);
+    SKIP(ids[2], reason);
   } else {
+    /* A fenced shard refuses at once and every refusal is retryable, so only
+       the deadline stops an at-least-once publish with a large attempt
+       budget. */
+    SCENARIO_BEGIN("retry.deadline_bounds_an_operation");
+    if (code == 200 && control_addr(body, addr, sizeof addr)) {
+      FelixClient *bounded = NULL;
+      FelixStatus status = connect_reconnecting(
+          addr, f->tenant, f->token, f->ca_file, 40, 2000, &bounded);
+      CHECK(status == FELIX_STATUS_OK, "connect to the owner gave %d",
+            (int)status);
+      if (bounded) {
+        struct timespec began, ended;
+        clock_gettime(CLOCK_MONOTONIC, &began);
+        status = publish_with(bounded, f, f->movable_stream, "bounded",
+                              FELIX_DELIVERY_AT_LEAST_ONCE, NULL, NULL, 0);
+        clock_gettime(CLOCK_MONOTONIC, &ended);
+        double seconds = (double)(ended.tv_sec - began.tv_sec) +
+                         (double)(ended.tv_nsec - began.tv_nsec) / 1e9;
+        CHECK(status == FELIX_STATUS_SHARD_UNAVAILABLE,
+              "a bounded publish during a move gave %d", (int)status);
+        CHECK(seconds < 10.0,
+              "the publish took %.1fs against a 2s deadline: it spent its "
+              "attempts instead",
+              seconds);
+        felix_client_free(bounded);
+      }
+    }
+    SCENARIO_END("retry.deadline_bounds_an_operation");
+
     SCENARIO_BEGIN("error.shard_unavailable_is_retryable");
     CHECK(code == 200 && control_addr(body, addr, sizeof addr),
           "fence answered %d: %s", code, body);

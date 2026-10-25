@@ -278,6 +278,23 @@ A client that retries the same failed endpoint burns its budget on the one
 broker known not to be answering.
 """
 
+[[scenario]]
+id = "retry.deadline_bounds_an_operation"
+required = true
+title = "A reconnect deadline bounds a retried operation, whatever attempts remain"
+detail = """
+A client configured with a large attempt budget and a short reconnect deadline
+must stop retrying once the deadline passes, rather than spending every
+attempt. Attempt counts alone do not bound time. The fixture holds a shard
+fenced with `POST /fence`, so every publish to its owner is refused at once
+with a retryable error; an at-least-once publish through a client built with
+40 attempts and a two second deadline must fail with that error well inside
+ten seconds. Without the deadline the same publish backs off through all 40
+attempts, which takes the better part of a minute. The deadline defaults to
+none, and a deadline shorter than one attempt's own timeout leaves the
+operation a single attempt.
+"""
+
 # ---------------------------------------------------------------------------
 # Acknowledgement modes
 #

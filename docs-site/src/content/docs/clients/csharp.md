@@ -295,10 +295,39 @@ down. An empty list throws `ArgumentException`.
 - **A subscription's broker fails.** On a durable stream it resubscribes from
   the offset after the last one it delivered, and where it cannot it throws
   rather than ending the enumeration as though the stream had finished.
-- **Knobs.** None. The client uses the Rust default `ReconnectPolicy` (5
-  attempts, backing off from 200 ms to 2 s) and the options have no field to
-  change it. `GetEndpointsAsync` lists the brokers it would try, discovered ones
+- **Knobs.** [Reconnecting](#reconnecting) sets the attempt count and a deadline. `GetEndpointsAsync` lists the brokers it would try, discovered ones
   included.
+
+### Reconnecting
+
+Publishes, opening and following subscriptions, commits, `publish_if` and state reads retry with a backoff when no broker can be reached. Cache and consumer-group calls are not bounded by these options yet. Two options tune the retrying, and both default to the Rust client's own policy, so a client that sets neither behaves as it always did.
+
+- **Attempts** is how many times a call tries to reach a broker before it gives up. Each attempt tries every broker the client knows. The default is 5, and the minimum is 1.
+- **Deadline** is a ceiling on one call across every attempt and every wait between them. It is off by default, and it is checked between attempts, before each backoff sleep, so a call can last the deadline plus one attempt's own timeout. Attempt counts alone do not bound time: five attempts against a broker that takes its full publish timeout to answer is minutes.
+
+Set them as `FelixClientOptions.ReconnectAttempts` (`int?`) and `FelixClientOptions.ReconnectDeadline` (`TimeSpan?`). Both are null by default. There is no per-user handle to carry the policy to. An attempt count below 1, or a deadline under one millisecond or over one year, throws `ArgumentOutOfRangeException`.
+
+```csharp
+await using var client = await FelixClient.ConnectAsync(new FelixClientOptions
+{
+    Addrs = ["felix-0:5000", "felix-1:5000", "felix-2:5000"],
+    TenantId = "t1",
+    Token = token,
+    ReconnectAttempts = 10,
+    ReconnectDeadline = TimeSpan.FromSeconds(30),
+});
+try
+{
+    // Stops retrying once 30 s have passed, checked between attempts, and reports the last error.
+    await client.PublishAsync("t1", "default", "orders", "hello"u8.ToArray(), delivery: Delivery.AtLeastOnce);
+}
+catch (FelixException e)
+{
+    Console.Error.WriteLine($"publish gave up: {e.Message}");
+}
+```
+
+A deadline shorter than one attempt's own timeout means no retry happens: the first attempt spends the whole budget and the call returns after trying once. Set it to cover at least one attempt plus the backoff you can afford, and leave it off if you would rather wait out a failover.
 
 The Rust page covers [clusters](/clients/rust/#clusters) in full.
 

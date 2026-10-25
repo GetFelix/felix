@@ -59,7 +59,9 @@ test("connect options become the addon's positional arguments", async () => {
   const args = connectArgs(["h:1", "t1", { token: "tok", serverName: "s", caFile: "ca", offerAlpn: true, tokenProvider: provider }]);
   assert.deepEqual(args.slice(0, 6), ["h:1", "t1", "tok", "s", "ca", true]);
   assert.equal(await args[6](1), "t");
-  assert.deepEqual(connectArgs(["h:1", "t1"]), ["h:1", "t1", undefined, undefined, undefined, undefined, undefined]);
+  assert.deepEqual(connectArgs(["h:1", "t1"]), ["h:1", "t1", undefined, undefined, undefined, undefined, undefined, undefined, undefined]);
+  const tuned = connectArgs(["h:1", "t1", { token: "tok", reconnectAttempts: 3, reconnectDeadline: 1500 }]);
+  assert.deepEqual(tuned.slice(7), [3, 1500]);
   assert.deepEqual(withIdentityArgs(["t1", { token: "tok" }]), ["t1", "tok", undefined]);
 });
 

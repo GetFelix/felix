@@ -63,6 +63,16 @@ impl Default for ReconnectPolicy {
 }
 
 impl ReconnectPolicy {
+    /// How long a loop may run: the policy's deadline, or `otherwise` when it
+    /// sets none.
+    ///
+    /// Capped at a year, so adding it to an `Instant` cannot overflow and
+    /// panic. A longer deadline is no deadline in practice.
+    pub(crate) fn budget(&self, otherwise: Duration) -> Duration {
+        const A_YEAR: Duration = Duration::from_secs(365 * 24 * 3600);
+        self.deadline.unwrap_or(otherwise).min(A_YEAR)
+    }
+
     /// How long to wait before attempt `attempt` (0-based), jittered.
     ///
     /// **Full jitter: uniform over `[0, ceiling]`, not the ceiling itself.**
