@@ -151,27 +151,35 @@ internal static unsafe partial class Callbacks
 
         try
         {
-            if (status != 0)
+            // A partly failed publish still reports each record: status is the first failure's, and the
+            // caller needs the rest to know what landed.
+            if (status != 0 && (results == null || count == 0))
             {
                 state.Fail(status, NativeMethods.Utf8(message));
                 return;
             }
 
-            var outcomes = new PublishResult[(int)count];
-            for (var i = 0; i < outcomes.Length; i++)
-            {
-                var record = results[i];
-                outcomes[i] = new PublishResult(
-                    record.HasOffset != 0 ? unchecked((long)record.Offset) : null,
-                    (FelixStatus)record.Status,
-                    record.Status == 0 ? null : NativeMethods.Utf8(record.Message));
-            }
-
-            state.Succeed(outcomes);
+            state.Succeed(CopyRecordResults(results, count));
         }
         catch (Exception e)
         {
             CallState<PublishResult[]>.TryFail(state, e);
         }
+    }
+
+    /// <summary>Copies the per-record outcomes out of native memory.</summary>
+    internal static PublishResult[] CopyRecordResults(NativeRecordResult* results, nuint count)
+    {
+        var outcomes = new PublishResult[(int)count];
+        for (var i = 0; i < outcomes.Length; i++)
+        {
+            var record = results[i];
+            outcomes[i] = new PublishResult(
+                record.HasOffset != 0 ? unchecked((long)record.Offset) : null,
+                (FelixStatus)record.Status,
+                record.Status == 0 ? null : NativeMethods.Utf8(record.Message));
+        }
+
+        return outcomes;
     }
 }

@@ -47,6 +47,40 @@ public class ShardedTests
     }
 
     [Fact]
+    public async Task ACancelledTokenStopsOffsetForTimeBeforeAnythingIsSent()
+    {
+        var client = DisposedClient();
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        // A time before the epoch is also refused; the cancelled token is checked first, like the other calls.
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            client.OffsetForTimeAsync("t", "n", "s", 0, DateTimeOffset.UnixEpoch.AddDays(-1), cts.Token));
+    }
+
+    [Fact]
+    public unsafe void APartlyFailedPublishKeepsEveryRecordsOutcome()
+    {
+        var refused = "shard moved"u8.ToArray();
+        fixed (byte* message = refused)
+        {
+            var native = stackalloc NativeRecordResult[2];
+            native[0] = new NativeRecordResult { Status = 0, HasOffset = 1, Offset = 7 };
+            native[1] = new NativeRecordResult { Status = (int)FelixStatus.ShardUnavailable, Message = message };
+
+            var outcomes = Callbacks.CopyRecordResults(native, 2);
+
+            Assert.Equal(2, outcomes.Length);
+            Assert.Equal(7, outcomes[0].Offset);
+            Assert.Equal(FelixStatus.Ok, outcomes[0].Status);
+            Assert.Null(outcomes[0].Message);
+            Assert.Null(outcomes[1].Offset);
+            Assert.Equal(FelixStatus.ShardUnavailable, outcomes[1].Status);
+            Assert.Equal("shard moved", outcomes[1].Message);
+        }
+    }
+
+    [Fact]
     public async Task ArgumentsAreCheckedBeforeAnythingIsSent()
     {
         var client = DisposedClient();

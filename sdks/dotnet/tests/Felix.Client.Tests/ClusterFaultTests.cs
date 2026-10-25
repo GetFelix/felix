@@ -19,7 +19,7 @@ public class ClusterFaultTests
             // Published straight to the fenced owner: through another broker the answer would be
             // about the forward.
             var (code, body) = await FaultControl.PostAsync(f, "/fence");
-            Assert.True(code == 200, $"POST /fence answered {code}: {body}");
+            FaultControl.RequireFault("/fence", code, body);
             var addr = FaultControl.AddrIn(body);
             Assert.True(addr is not null, $"fence answered no broker address: {body}");
 
@@ -52,7 +52,7 @@ public class ClusterFaultTests
         {
             // The leader wrote it and cannot say whether it will survive.
             var (code, body) = await FaultControl.PostAsync(f, "/partition");
-            Assert.True(code == 200, $"POST /partition answered {code}: {body}");
+            FaultControl.RequireFault("/partition", code, body);
             var addr = FaultControl.AddrIn(body);
             Assert.True(addr is not null, $"partition answered no broker address: {body}");
 

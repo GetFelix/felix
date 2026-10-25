@@ -11,6 +11,7 @@ namespace Felix.Client.Tests;
 /// Skips unless the test can start its own cluster (<c>FELIX_CLUSTER_BIN</c>) and tell which process
 /// listens on a broker's port (<c>lsof</c> or <c>ss</c>).
 /// </summary>
+[XunitTestCaseDiscoverer("Felix.Client.Tests.RuntimeSkipDiscoverer", "Felix.Client.Tests")]
 public sealed class ClusterProcessFactAttribute : FactAttribute
 {
     public ClusterProcessFactAttribute()
@@ -251,14 +252,20 @@ public class BrokerLossTests
     {
         await using var cluster = await DisposableCluster.StartAsync(Environment.GetEnvironmentVariable("FELIX_CLUSTER_BIN")!);
         var f = cluster.Fixture;
-        Assert.True(f.Addrs.Length >= 2, "the disposable fixture has one broker");
+        if (f.Addrs.Length < 2)
+        {
+            throw RuntimeSkipException.Because("the disposable fixture has one broker");
+        }
 
         await using var client = await f.ConnectAsync();
         var run = FaultControl.Run();
         await FaultControl.PublishAsync(client, f, f.Stream, $"cs-{run}-before-loss");
 
         var seed = f.Addrs[0];
-        Assert.True(await BrokerProcess.KillAsync(seed), $"could not identify the broker process listening on {seed}");
+        if (!await BrokerProcess.KillAsync(seed))
+        {
+            throw RuntimeSkipException.Because($"could not identify the broker process listening on {seed}");
+        }
 
         // Generous: the client has to notice the broker is gone, and the cluster has to give its
         // shards a new leader. Only the first is the client's.

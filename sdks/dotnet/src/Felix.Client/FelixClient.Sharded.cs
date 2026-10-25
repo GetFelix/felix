@@ -112,6 +112,7 @@ public sealed partial class FelixClient
         Arg.Text(tenant);
         Arg.Text(ns);
         Arg.Text(stream);
+        cancellationToken.ThrowIfCancellationRequested();
         var micros = (at.UtcTicks - DateTimeOffset.UnixEpoch.UtcTicks) / 10;
         if (micros < 0)
         {

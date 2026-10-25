@@ -115,6 +115,7 @@ public sealed class LinkFixtureFactAttribute : FixtureFactAttribute
 }
 
 /// <summary>Skips unless the fixture file carries the control endpoint and the streams /fence and /partition act on.</summary>
+[XunitTestCaseDiscoverer("Felix.Client.Tests.RuntimeSkipDiscoverer", "Felix.Client.Tests")]
 public sealed class ShardFixtureFactAttribute : FixtureFactAttribute
 {
     public ShardFixtureFactAttribute()
@@ -168,6 +169,20 @@ internal static class FaultControl
         {
             return null;
         }
+    }
+
+    /// <summary>
+    /// Skips the test when the endpoint refuses a fault with 409, as it does when the cluster has no
+    /// shard to move or cut off; any other non-200 answer is a failure.
+    /// </summary>
+    internal static void RequireFault(string path, int code, string body)
+    {
+        if (code == 409)
+        {
+            throw RuntimeSkipException.Because($"POST {path} answered {code}: {body}");
+        }
+
+        Assert.True(code == 200, $"POST {path} answered {code}: {body}");
     }
 
     internal static async Task InjectAsync(FaultFixture f, FaultStep step)
