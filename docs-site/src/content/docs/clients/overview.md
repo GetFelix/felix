@@ -178,6 +178,15 @@ started a resubscribe that took longer than the timeout over on every call.
 New languages are gated on this suite, not on review, because "looks correct"
 is the standard that produces divergence.
 
+### A broker without commits
+
+Every real broker advertises `commit` and `state_get`, so the fixture also
+runs a stand-in that answers `auth` and advertises no features, and writes its
+address to `no_commit_addrs`. A client must refuse both requests against it
+without sending anything: `commit.negotiated`. The count of requests it
+received is at `GET <control_url>/no-commit/requests`. A fixture without the key
+has no such broker, and a suite skips the scenario rather than claiming it.
+
 ### Licensing of the kit
 
 The conformance kit is **AGPL-3.0**, like the broker it links to run its suite.
@@ -297,9 +306,10 @@ client reopens after losing its connection to a broker. A client that holds one
 fixed token presents that same token every time, so once it has expired those
 are refused. Revoking a principal is how you end streams that are already open.
 
-Only the Rust client can replace its token while it runs, through a token
-provider. The others hold the token they connected with, so build a new client
-with a fresh token before the old one expires. Each client's page has an example.
+The Rust client and the C ABI can replace the token while the client runs: the
+Rust client through a token provider, C through the `token_fetch` callback. The
+other clients hold the token they connected with, so build a new client with a
+fresh token before the old one expires. Each client's page has an example.
 
 ## The clients
 

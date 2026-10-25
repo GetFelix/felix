@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 
-import { reader, scenario, unique } from "../harness.mjs";
+import { connect, reader, scenario, skipScenarios, unique } from "../harness.mjs";
 
 /** The shard event carrying `payload`, or `null`. */
 async function find(subscription, payload, attempts = 200) {
@@ -22,7 +22,7 @@ async function find(subscription, payload, attempts = 200) {
 
 export default function register(ctx) {
   it("a commit is read at the offset it returns", () =>
-    scenario(["commit.returns_the_offset", "commit.negotiated"], async () => {
+    scenario("commit.returns_the_offset", async () => {
       const { client, fixture, felix } = ctx;
       const stream = fixture.durable_stream;
       const key = unique("commit");
@@ -46,6 +46,39 @@ export default function register(ctx) {
       assert.equal(typeof receipt.offset, "bigint");
       assert.ok(record, "the commit's event never reached a subscriber");
       assert.equal(record.event.offset, receipt.offset);
+    }));
+
+  it("a broker that advertised no commits is sent none", () =>
+    scenario("commit.negotiated", async () => {
+      const { fixture, felix } = ctx;
+      if (!fixture.no_commit_addrs?.length || !fixture.control_url) {
+        skipScenarios(
+          "commit.negotiated",
+          "the fixture file has no no_commit_addrs or control_url",
+        );
+        return;
+      }
+      const stream = fixture.durable_stream;
+      const key = unique("negotiated");
+      const bare = await connect(fixture, { addrs: fixture.no_commit_addrs });
+      try {
+        // The plain base class: a typed refusal (wrong shard, event count)
+        // would mean the call reached the broker.
+        await assert.rejects(
+          bare.commit(fixture.tenant_id, fixture.namespace, Buffer.from(key), [
+            felix.CommitOp.publish(stream, "x"),
+          ]),
+          (err) => err.constructor === felix.CommitError,
+        );
+        await assert.rejects(
+          bare.stateGet(fixture.tenant_id, fixture.namespace, stream, Buffer.from(key), key),
+          (err) => err.constructor === felix.CommitError,
+        );
+      } finally {
+        bare.close();
+      }
+      const sent = await fetch(`${fixture.control_url}/no-commit/requests`);
+      assert.equal(Number(await sent.text()), 0, "the broker was sent a commit or state read");
     }));
 
   it("state reads back at the commit's version", () =>

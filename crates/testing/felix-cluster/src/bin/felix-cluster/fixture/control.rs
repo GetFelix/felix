@@ -13,6 +13,8 @@
 //!   of `{"fault": "drop" | "reset" | "stall", "hold_ms": N}`. It answers at
 //!   once; a drop or a stall heals itself after `hold_ms`.
 //! - `/heal` undoes all of them.
+//! - `GET /no-commit/requests` answers how many commits and state reads the
+//!   broker at `no_commit_addrs` has been sent (a plain integer).
 //!
 //! `/fence`, `/partition` and `/heal` answer `{"node_id", "addr"}` for the
 //! broker to publish through directly. Going through another broker would add a forward, and what the
@@ -23,13 +25,13 @@
 //! against a fixture of its own.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use felix_cluster::Cluster;
 use felix_conformance::link::{Interposer, LinkFault};
@@ -46,6 +48,7 @@ pub(crate) struct Control {
     /// because the next pass would finish the move this is holding open.
     hold: Arc<AtomicBool>,
     link: Arc<Interposer>,
+    no_commit_requests: Arc<AtomicUsize>,
     movable_stream: String,
     quorum_stream: String,
     drained: Mutex<Option<String>>,
@@ -71,6 +74,7 @@ impl Control {
         cluster: Arc<Cluster>,
         hold: Arc<AtomicBool>,
         link: Arc<Interposer>,
+        no_commit_requests: Arc<AtomicUsize>,
         movable_stream: &str,
         quorum_stream: &str,
     ) -> Self {
@@ -78,6 +82,7 @@ impl Control {
             cluster,
             hold,
             link,
+            no_commit_requests,
             movable_stream: movable_stream.to_string(),
             quorum_stream: quorum_stream.to_string(),
             drained: Mutex::new(None),
@@ -95,6 +100,7 @@ impl Control {
             .route("/partition", post(partition))
             .route("/link", post(link))
             .route("/heal", post(heal))
+            .route("/no-commit/requests", get(no_commit_requests))
             .with_state(Arc::new(self));
         let task = tokio::spawn(async move {
             let _ = axum::serve(listener, router).await;
@@ -113,6 +119,13 @@ impl Control {
             addr,
         }
     }
+}
+
+async fn no_commit_requests(State(control): State<Arc<Control>>) -> String {
+    control
+        .no_commit_requests
+        .load(Ordering::SeqCst)
+        .to_string()
 }
 
 async fn fence(State(control): State<Arc<Control>>) -> Answer {

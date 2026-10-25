@@ -17,6 +17,7 @@ use crate::cancel::{FelixCancelToken, user_token};
 use crate::completion::{Completion, Deliver, user_cancelled};
 use crate::groups::spawn_read;
 use crate::status::{FELIX_STATUS_CANCELLED, FELIX_STATUS_OK, FelixStatus};
+use crate::token::{FelixTokenFetch, FelixTokenRelease, TokenSource, provider};
 
 /// Two workers are plenty for one client's connections and background tasks,
 /// and keep a process with several clients from spawning a thread per core
@@ -110,6 +111,9 @@ pub(crate) struct Shared {
     tracker: TaskTracker,
     /// The parent of every handle's token.
     cancel: CancellationToken,
+    /// The app's token fetch, failed when the last handle is freed so a fetch
+    /// waiting on the app does not hold the shutdown.
+    tokens: Option<Arc<TokenSource>>,
 }
 
 impl Shared {
@@ -119,7 +123,13 @@ impl Shared {
             runtime: Some(runtime),
             tracker: TaskTracker::new(),
             cancel: CancellationToken::new(),
+            tokens: None,
         }
+    }
+
+    fn with_tokens(mut self, tokens: Option<Arc<TokenSource>>) -> Self {
+        self.tokens = tokens;
+        self
     }
 
     pub(crate) fn client(&self) -> &Arc<ClusterClient> {
@@ -154,6 +164,9 @@ impl Shared {
 
 impl Drop for Shared {
     fn drop(&mut self) {
+        if let Some(tokens) = &self.tokens {
+            tokens.close();
+        }
         let Some(runtime) = self.runtime.take() else {
             return;
         };
@@ -237,13 +250,45 @@ pub struct FelixConnectOptions {
     /// Ask brokers for each record's append time, for `felix_event_timestamp`
     /// and a group record's `timestamp_micros`. Adds eight bytes per event.
     pub timestamps: bool,
+    /// Supplies tokens after connect, so a client outlives its first token.
+    /// The `token` argument is then only the first one, and may be null; the
+    /// first connect then calls this. An empty `token` counts as none. See
+    /// `FelixTokenFetch`. When `felix_client_connect_with` returns anything
+    /// but `FELIX_STATUS_OK` this is not used, `token_release` never runs and
+    /// `token_user_data` is still the caller's. When it returns
+    /// `FELIX_STATUS_OK`, `token_release` runs exactly once later, including
+    /// when the connect then reports failure through its callback.
+    /// It runs after the client is freed and every reply is answered.
+    pub token_fetch: FelixTokenFetch,
+    /// Passed to `token_fetch` and `token_release`, from any thread.
+    pub token_user_data: *mut c_void,
+    /// Runs once, after the client is freed and every reply handed to
+    /// `token_fetch` has been answered, so `token_user_data` can be released.
+    /// An app that never answers a reply leaks it. Used only with
+    /// `token_fetch`.
+    pub token_release: FelixTokenRelease,
 }
 
 /// The options a connect applies, read out of [`FelixConnectOptions`].
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 struct ConnectOptions {
     publishers: bool,
     timestamps: bool,
+    token_fetch: FelixTokenFetch,
+    token_user_data: *mut c_void,
+    token_release: FelixTokenRelease,
+}
+
+impl Default for ConnectOptions {
+    fn default() -> Self {
+        Self {
+            publishers: false,
+            timestamps: false,
+            token_fetch: None,
+            token_user_data: ptr::null_mut(),
+            token_release: None,
+        }
+    }
 }
 
 impl ConnectOptions {
@@ -266,9 +311,28 @@ impl ConnectOptions {
             // may hold any value there.
             size > offset && unsafe { options.cast::<u8>().add(offset).read() } != 0
         };
+        // A field the caller's struct does not reach reads as its default,
+        // whatever follows the struct in memory.
+        let at = |offset: usize, len: usize| {
+            // SAFETY: `size` covers the field, so the address is in bounds.
+            (size >= offset + len).then(|| unsafe { options.cast::<u8>().add(offset) })
+        };
+        let fetch = std::mem::offset_of!(FelixConnectOptions, token_fetch);
+        let data = std::mem::offset_of!(FelixConnectOptions, token_user_data);
+        let release = std::mem::offset_of!(FelixConnectOptions, token_release);
         Ok(Self {
             publishers: flag(std::mem::offset_of!(FelixConnectOptions, publishers)),
             timestamps: flag(std::mem::offset_of!(FelixConnectOptions, timestamps)),
+            // SAFETY: each is inside the `size` bytes the caller promised
+            // readable. Read unaligned: nothing checks the caller's alignment.
+            token_fetch: at(fetch, size_of::<FelixTokenFetch>())
+                .and_then(|p| unsafe { p.cast::<FelixTokenFetch>().read_unaligned() }),
+            token_user_data: at(data, size_of::<*mut c_void>())
+                .map_or(ptr::null_mut(), |p| unsafe {
+                    p.cast::<*mut c_void>().read_unaligned()
+                }),
+            token_release: at(release, size_of::<FelixTokenRelease>())
+                .and_then(|p| unsafe { p.cast::<FelixTokenRelease>().read_unaligned() }),
         })
     }
 }
@@ -316,7 +380,7 @@ pub unsafe extern "C" fn felix_client_connect_with(
             (
                 required_str(addrs, "addrs")?,
                 required_str(tenant_id, "tenant_id")?,
-                required_str(token, "token")?,
+                optional_str(token, "token")?,
                 optional_str(server_name, "server_name")?.unwrap_or("localhost"),
                 optional_str(ca_file, "ca_file")?,
             )
@@ -327,6 +391,10 @@ pub unsafe extern "C" fn felix_client_connect_with(
         }
         // SAFETY: null or readable up to its size, per the contract above.
         let options = unsafe { ConnectOptions::read(options) }?;
+        // Without a fetch function the token is all the client will ever have.
+        if token.is_none() && options.token_fetch.is_none() {
+            return Err(Failure::invalid("token is null"));
+        }
         let seeds = parse_addrs(addrs)?;
         let server_name = server_name.to_string();
 
@@ -339,7 +407,7 @@ pub unsafe extern "C" fn felix_client_connect_with(
         let quinn = felix_client::quic_client_config(roots, false).map_err(invalid)?;
         let mut config = ClientConfig::optimized_defaults(quinn);
         config.auth_tenant_id = Some(tenant_id.to_string());
-        config.auth_token = Some(token.to_string());
+        config.auth_token = token.map(str::to_string);
         config.publishers = options.publishers;
         config.timestamps = options.timestamps;
         // SAFETY: null or a live token, per the contract above.
@@ -351,9 +419,21 @@ pub unsafe extern "C" fn felix_client_connect_with(
             .enable_all()
             .build()
             .context("could not start the Felix runtime")?;
-        let shared = Arc::new(Shared::new(runtime));
-        let task_shared = Arc::clone(&shared);
         let done = Completion::<Box<FelixClient>>::new(callback, user_data)?;
+        // Built last: from here nothing fails, so `token_release` runs only
+        // for a connect that returned OK.
+        let tokens = options.token_fetch.map(|fetch| {
+            Arc::new(TokenSource::new(
+                fetch,
+                options.token_user_data,
+                options.token_release,
+            ))
+        });
+        if let Some(tokens) = &tokens {
+            config.token_provider = Some(provider(tokens, token));
+        }
+        let shared = Arc::new(Shared::new(runtime).with_tokens(tokens));
+        let task_shared = Arc::clone(&shared);
         shared.spawn(done, move |done| async move {
             let connect = async {
                 resolve_names(&seeds).await?;

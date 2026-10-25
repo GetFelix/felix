@@ -42,6 +42,10 @@ case "$(uname -s)" in
   Darwin) shared="$target/libfelix.dylib" ;;
   *) shared="$target/libfelix.so" ;;
 esac
+# The token example in the C docs, compiled only (it needs libcurl's header).
+if echo '#include <curl/curl.h>' | cc -E -x c - >/dev/null 2>&1; then
+  cc "${cflags[@]}" -c "$crate/tests/c/token_example.c" -o "$work/token_example.o"
+fi
 cc "${cflags[@]}" "$crate/tests/c/pubsub.c" "$shared" -Wl,-rpath,"$target" -o "$work/pubsub-shared"
 # shellcheck disable=SC2086 # the native library list is meant to split
 cc "${cflags[@]}" "$crate/tests/c/pubsub.c" "$target/libfelix.a" $native -o "$work/pubsub-static"
@@ -106,6 +110,8 @@ for key in ("movable_stream", "quorum_stream", "control_url", "link_addr",
         emit(key, f[key])
 if f.get("records_publishers"):
     emit("records_publishers", "true")
+if f.get("no_commit_addrs"):
+    emit("no_commit_addrs", ",".join(f["no_commit_addrs"]))
 emit("kill_helper", sys.argv[2])
 for fault in f.get("faults", []):
     step = {k: v for k, v in fault.items() if k != "id"}
