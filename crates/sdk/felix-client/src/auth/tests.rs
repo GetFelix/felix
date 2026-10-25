@@ -259,8 +259,8 @@ async fn the_cancellation_token_fires_on_drop() {
     assert!(cancel.is_cancelled());
 }
 
-/// A panicking provider ends its flight: the waiter gets an error and the
-/// next refresh calls the provider again.
+/// Coverage for the flight's cleanup on a panic: the waiter gets an error and
+/// the next refresh calls the provider again.
 #[tokio::test]
 async fn a_panicking_provider_clears_the_flight() -> Result<()> {
     let (provider, calls) = counting(|n| {
@@ -325,8 +325,9 @@ fn a_shut_down_runtime_does_not_hang_the_next_call() {
     assert_eq!(cleared, (true, true));
 }
 
-/// A token refused while its replacement is being fetched is not handed out
-/// again, and neither is one refused right after its call completed.
+/// Coverage for refusals around a fetch: a token refused while its
+/// replacement is being fetched is not handed out again, and neither is one
+/// refused right after its call completed.
 #[tokio::test(start_paused = true)]
 async fn a_refused_token_is_never_handed_to_a_retry() -> Result<()> {
     let (provider, calls) = counting(|n| Ok(format!("opaque-{n}")));
@@ -363,5 +364,45 @@ async fn a_waiter_is_not_handed_a_token_refused_in_flight() -> Result<()> {
     assert_eq!(g.calls.load(Ordering::SeqCst), 2);
     g.open.notify_one();
     assert_eq!(waiter.await?, "opaque-gated");
+    Ok(())
+}
+
+/// A waiter whose answer was replaced by a later fetch returns the newer token
+/// and does not fetch a third time, even when the newer one is already due.
+#[tokio::test(start_paused = true)]
+async fn a_waiter_returns_a_newer_stored_token_instead_of_fetching_again() -> Result<()> {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let open = Arc::new(tokio::sync::Notify::new());
+    let (counter, gate) = (Arc::clone(&calls), Arc::clone(&open));
+    let provider = RefreshingToken::new(move || {
+        let n = counter.fetch_add(1, Ordering::SeqCst) + 1;
+        let gate = Arc::clone(&gate);
+        async move {
+            gate.notified().await;
+            // The second answer is already due for replacement.
+            Ok(if n == 1 {
+                "opaque-1".to_string()
+            } else {
+                jwt(now_secs())
+            })
+        }
+    });
+    let mut waiter = Box::pin(provider.token());
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    assert!(waiter.as_mut().poll(&mut cx).is_pending());
+
+    open.notify_one();
+    while lock_flights(&provider.flight).is_some() {
+        tokio::task::yield_now().await;
+    }
+    provider.invalidate("opaque-1");
+    let mut other = Box::pin(provider.token());
+    assert!(other.as_mut().poll(&mut cx).is_pending());
+    open.notify_one();
+    let newer = other.await?;
+    assert_ne!(newer, "opaque-1");
+
+    assert_eq!(waiter.await?, newer);
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
     Ok(())
 }

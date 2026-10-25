@@ -211,17 +211,22 @@ impl RefreshingToken {
                 Err(token) => return Ok(token),
             };
             match self.wait(flight).await {
-                // Refused while we waited: fetch again, don't hand it out.
-                Ok(token) if !self.holds(&token) => continue,
-                other => return other,
+                // Nothing held means the answer was refused while we waited:
+                // fetch again, don't hand it out.
+                Ok(_) => match self.held() {
+                    Some(held) => return Ok(held),
+                    None => continue,
+                },
+                err => return err,
             }
         }
     }
 
-    /// Whether `token` is still the held one.
-    fn holds(&self, token: &str) -> bool {
+    /// The held token, whatever its age. A newer one than the answer just
+    /// read means a later fetch stored it, and it is not a refused token.
+    fn held(&self) -> Option<String> {
         let state = self.state.lock().expect("token state poisoned");
-        state.as_ref().is_some_and(|held| held.token == token)
+        state.as_ref().map(|held| held.token.clone())
     }
 
     async fn wait(&self, mut flight: Flight) -> Result<String> {
