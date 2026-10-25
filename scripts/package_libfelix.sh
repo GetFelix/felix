@@ -45,7 +45,12 @@ case "$rid" in
     # MSVC takes library files, not -l flags.
     converted=""
     for lib in $native; do
-      case "$lib" in -l*) lib="${lib#-l}.lib" ;; esac
+      case "$lib" in
+        -l*) lib="${lib#-l}.lib" ;;
+        # The CRT that rustc names this way is the one /MD selects; cl would
+        # ignore it as a compiler option anyway.
+        /defaultlib:*) continue ;;
+      esac
       converted="$converted $lib"
     done
     native="${converted# }" ;;
@@ -63,9 +68,9 @@ cp "$crate/LICENSE" "$stage/$root/"
 
 case "$rid" in
   win-*)
-    dyn_cmd="cl -I include app.c lib\\felix.dll.lib"
-    static_cmd="cl -I include app.c lib\\felix.lib $native"
-    run_note="Put lib\\felix.dll next to the program or on PATH when it runs." ;;
+    dyn_cmd="cl /MD -I include app.c lib\\felix.dll.lib"
+    static_cmd="cl /MD -I include app.c lib\\felix.lib $native"
+    run_note="Put lib\\felix.dll next to the program or on PATH when it runs. Build with /MD: the library uses the dynamic C runtime, and /MT fails to link." ;;
   *)
     dyn_cmd="cc -I include app.c -L lib -lfelix -Wl,-rpath,\"\$PWD/lib\""
     static_cmd="cc -I include app.c lib/$static $native"
@@ -97,8 +102,8 @@ cp "$repo/crates/sdk/felix-capi/tests/c/archive_smoke.c" "$stage/$root/app.c"
   cd "$stage/$root"
   case "$rid" in
     win-*)
-      cl -nologo -W3 -WX -I include app.c lib/felix.dll.lib -Fe"../smoke/shared.exe" -Fo"../smoke/shared.obj"
-      cl -nologo -W3 -WX -I include app.c lib/felix.lib $native -Fe"../smoke/static.exe" -Fo"../smoke/static.obj"
+      cl -nologo -MD -W3 -WX -I include app.c lib/felix.dll.lib -Fe"../smoke/shared.exe" -Fo"../smoke/shared.obj"
+      cl -nologo -MD -W3 -WX -I include app.c lib/felix.lib $native -Fe"../smoke/static.exe" -Fo"../smoke/static.obj"
       PATH="$PWD/lib:$PATH" "../smoke/shared.exe"
       "../smoke/static.exe" ;;
     *)
