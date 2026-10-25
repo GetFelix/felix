@@ -33,22 +33,18 @@ const exchanged = await post(
 // this twice at the same time, so no lock is needed.
 let refreshToken: string = exchanged.refresh_token;
 
-const client = await Client.connect(
-  "127.0.0.1:5000",
-  "t1",
-  exchanged.felix_token,
-  "localhost",
+const client = await Client.connect("127.0.0.1:5000", "t1", {
+  token: exchanged.felix_token,
   caFile,
-  undefined,
-  async () => {
+  tokenProvider: async () => {
     const minted = await post("/token/refresh", { refresh_token: refreshToken });
     refreshToken = minted.refresh_token;
     return minted.felix_token;
   },
-);
+});
 // </example>
 
 // A synchronous provider fits the type too, and so does a per-user handle.
-const alice = await client.withIdentity("t1", null, () => "a-felix-token");
+const alice = await client.withIdentity("t1", { tokenProvider: () => "a-felix-token" });
 alice.close();
 client.close();

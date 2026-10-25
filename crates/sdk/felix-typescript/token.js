@@ -1,4 +1,5 @@
-// The app's token function, made safe to call from the native side.
+// Argument handling for `connect` and `withIdentity`, including the app's
+// token function made safe to call from the native side.
 
 "use strict";
 
@@ -29,4 +30,35 @@ function fetchFrom(tokenProvider) {
   };
 }
 
-module.exports = { fetchFrom };
+const CONNECT_OPTIONS = ["token", "tokenProvider", "serverName", "caFile", "offerAlpn"];
+const IDENTITY_OPTIONS = ["token", "tokenProvider"];
+
+/** The options object, checked: unknown keys are a mistake, not something to drop. */
+function optionsOf(method, args, count, allowed) {
+  if (args.length > count + 1) {
+    throw new TypeError(`${method} takes ${count} arguments and an options object, got ${args.length}`);
+  }
+  const options = args[count] ?? {};
+  if (typeof options !== "object" || Array.isArray(options)) {
+    throw new TypeError(`${method}: the last argument must be an options object`);
+  }
+  const unknown = Object.keys(options).filter((key) => !allowed.includes(key));
+  if (unknown.length > 0) {
+    throw new TypeError(`${method}: unknown option ${unknown.join(", ")}; expected ${allowed.join(", ")}`);
+  }
+  return options;
+}
+
+/** `connect(addrs, tenantId, options)` as the addon's positional call. */
+function connectArgs(args) {
+  const o = optionsOf("Client.connect", args, 2, CONNECT_OPTIONS);
+  return [args[0], args[1], o.token, o.serverName, o.caFile, o.offerAlpn, fetchFrom(o.tokenProvider)];
+}
+
+/** `withIdentity(tenantId, options)` as the addon's positional call. */
+function withIdentityArgs(args) {
+  const o = optionsOf("withIdentity", args, 1, IDENTITY_OPTIONS);
+  return [args[0], o.token, fetchFrom(o.tokenProvider)];
+}
+
+module.exports = { fetchFrom, connectArgs, withIdentityArgs };

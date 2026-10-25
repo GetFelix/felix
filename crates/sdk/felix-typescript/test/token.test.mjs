@@ -7,7 +7,7 @@ import { createRequire } from "node:module";
 import { test } from "node:test";
 
 const require = createRequire(import.meta.url);
-const { fetchFrom } = require("../token.js");
+const { fetchFrom, connectArgs, withIdentityArgs } = require("../token.js");
 
 test("no provider is no fetch function", () => {
   assert.equal(fetchFrom(undefined), undefined);
@@ -52,4 +52,21 @@ test("a result that is not a non-empty string is a failure", async () => {
       return true;
     });
   }
+});
+
+test("connect options become the addon's positional arguments", async () => {
+  const provider = () => "t";
+  const args = connectArgs(["h:1", "t1", { token: "tok", serverName: "s", caFile: "ca", offerAlpn: true, tokenProvider: provider }]);
+  assert.deepEqual(args.slice(0, 6), ["h:1", "t1", "tok", "s", "ca", true]);
+  assert.equal(await args[6](), "t");
+  assert.deepEqual(connectArgs(["h:1", "t1"]), ["h:1", "t1", undefined, undefined, undefined, undefined, undefined]);
+  assert.deepEqual(withIdentityArgs(["t1", { token: "tok" }]), ["t1", "tok", undefined]);
+});
+
+test("an unknown option, an extra argument or a non-object is a TypeError", () => {
+  assert.throws(() => connectArgs(["h:1", "t1", { tokenprovider: () => "x" }]), /unknown option tokenprovider/);
+  assert.throws(() => connectArgs(["h:1", "t1", {}, "extra"]), TypeError);
+  assert.throws(() => connectArgs(["h:1", "t1", "tok"]), TypeError);
+  assert.throws(() => withIdentityArgs(["t1", "tok"]), TypeError);
+  assert.throws(() => withIdentityArgs(["t1", { serverName: "s" }]), /unknown option serverName/);
 });

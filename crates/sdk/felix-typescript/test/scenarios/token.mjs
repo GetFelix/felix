@@ -42,11 +42,7 @@ export default function register(ctx) {
     return ctx.felix.Client.connect(
       fixture.addrs,
       fixture.tenant_id,
-      token,
-      undefined,
-      fixture.ca_file,
-      undefined,
-      provider,
+      { token, caFile: fixture.ca_file, tokenProvider: provider },
     );
   }
 
@@ -145,10 +141,57 @@ export default function register(ctx) {
     assert.ok(caught instanceof ctx.felix.InvalidArgumentError, `got ${caught}`);
   });
 
+  it("a provider that never answers fails the call with an AuthError after the fetch timeout", { timeout: 150_000 }, async () => {
+    // Needs the client's 30 s fetch timeout (felix-client FETCH_TIMEOUT).
+    let calls = 0;
+    const never = () => {
+      calls += 1;
+      return new Promise(() => {});
+    };
+    const started = Date.now();
+    const caught = await failure(connectWith(never));
+    assert.ok(caught instanceof ctx.felix.AuthError, `got ${caught}`);
+    const took = Date.now() - started;
+    assert.ok(took >= 25_000 && took < 60_000, `gave up after ${took} ms`);
+    assert.equal(calls, 1, "the provider was called again while its first call was pending");
+  });
+
+  it("the app's message arrives unchanged, whatever the provider threw", async () => {
+    const cases = [
+      ["a thrown Error", () => { throw new Error("vault is sealed: code 7"); }, "vault is sealed: code 7"],
+      ["a rejected Error", () => Promise.reject(new Error("refresh answered 403")), "refresh answered 403"],
+      ["a thrown string", () => { throw "plain string reason"; }, "plain string reason"],
+      ["a rejected string", () => Promise.reject("rejected reason"), "rejected reason"],
+    ];
+    for (const [label, provider, message] of cases) {
+      const caught = await failure(connectWith(provider));
+      assert.ok(caught instanceof ctx.felix.AuthError, `${label}: got ${caught}`);
+      assert.ok(caught.message.includes(message), `${label}: ${caught.message}`);
+    }
+    for (const value of [undefined, 42, ""]) {
+      const caught = await failure(connectWith(async () => value));
+      assert.ok(caught instanceof ctx.felix.AuthError, `got ${caught}`);
+      assert.match(caught.message, /tokenProvider must return a non-empty string/);
+    }
+  });
+
+  it("an unknown option or an extra argument is a TypeError, not dropped", async () => {
+    const { fixture } = ctx;
+    await assert.rejects(
+      ctx.felix.Client.connect(fixture.addrs, fixture.tenant_id, { token: fixture.token, tokenprovider: () => "x" }),
+      (err) => err instanceof TypeError && /unknown option tokenprovider/.test(err.message),
+    );
+    await assert.rejects(
+      ctx.felix.Client.connect(fixture.addrs, fixture.tenant_id, { token: fixture.token }, "extra"),
+      TypeError,
+    );
+    await assert.rejects(ctx.client.withIdentity(fixture.tenant_id, fixture.token), TypeError);
+  });
+
   it("withIdentity takes a provider too", async () => {
     const { fixture } = ctx;
     const { state, provider } = counting(async () => fixture.token);
-    const identity = await ctx.client.withIdentity(fixture.tenant_id, null, provider);
+    const identity = await ctx.client.withIdentity(fixture.tenant_id, { tokenProvider: provider });
     try {
       await identity.publish(fixture.tenant_id, fixture.namespace, fixture.durable_stream, Buffer.from("as me"));
       assert.equal(state.calls, 1);
@@ -157,20 +200,22 @@ export default function register(ctx) {
     }
   });
 
-  for (const mode of ["close", "leave"]) {
+  for (const mode of ["close", "leave", "slow", "abandon"]) {
     it(`the process exits by itself with a provider set (${mode})`, async () => {
       const path = join(tmpdir(), `felix-ts-token-fixture-${process.pid}-${mode}.json`);
       writeFileSync(path, JSON.stringify(ctx.fixture));
       const child = spawn(process.execPath, [join(CRATE_ROOT, "test", "token-exit-child.mjs"), path, mode], {
-        stdio: ["ignore", "pipe", "inherit"],
+        stdio: ["ignore", "pipe", "pipe"],
       });
       let out = "";
       child.stdout.on("data", (chunk) => (out += chunk));
+      child.stderr.on("data", (chunk) => (out += chunk)); // exit 13 prints its warning here
       const timer = setTimeout(() => child.kill("SIGKILL"), 30_000);
       const code = await new Promise((resolve) => child.on("exit", (c, signal) => resolve(signal ?? c)));
       clearTimeout(timer);
       assert.equal(code, 0, `the child did not exit cleanly (${code}); it printed ${out}`);
-      assert.match(out, /calls=1/);
+      assert.doesNotMatch(out, /unsettled/);
+      if (mode !== "abandon") assert.match(out, /calls=1/);
     });
   }
 }

@@ -53,7 +53,7 @@ while a publish is in flight.
 ```ts
 import { Client } from "felix-client";
 
-const client = await Client.connect("127.0.0.1:5000", "t1", token, "localhost", caFile);
+const client = await Client.connect("127.0.0.1:5000", "t1", { token, caFile });
 await client.publish("t1", "default", "events", Buffer.from("hello"));
 client.close();
 ```
@@ -75,10 +75,10 @@ client keeps using that one and asks again a few seconds later. If the broker
 refuses a token and the provider returns a different one, the client retries
 once with it.
 
-The provider has the shape `() => string | Promise<string>`. Pass it as the last
-argument of `Client.connect`, and as the last argument of `withIdentity`. Pass
-`undefined` or `null` for `token` to have the first connect call it, or pass a
-token you already hold to use that first. An empty string counts as no token.
+The provider has the shape `() => string | Promise<string>`. Pass it as the
+`tokenProvider` option of `Client.connect` and of `withIdentity`. Leave out
+`token` to have the first connect call it, or pass a token you already hold to
+use that first. An empty string counts as no token.
 
 **When it is called.** When a stream is about to authenticate and the client
 holds no token, the held one is due for replacement, or the broker just refused
@@ -94,7 +94,9 @@ the client releases it when the client is closed.
 **Failure.** A throw, a rejected promise, a result that is not a non-empty
 string, or no answer within 30 seconds counts as a failed fetch. The message you
 throw reaches the call that needed the token unchanged, in an `AuthError`, once
-no valid token is held to fall back on.
+no valid token is held to fall back on. After a timeout the calls waiting on the
+token fail, but the client does not call the provider again until the pending
+call settles, and a late answer is used.
 
 **Async variant.** `async` functions are the usual case, as in the example. A
 plain function that returns the string works too.
@@ -133,22 +135,18 @@ const exchanged = await post(
 // this twice at the same time, so no lock is needed.
 let refreshToken: string = exchanged.refresh_token;
 
-const client = await Client.connect(
-  "127.0.0.1:5000",
-  "t1",
-  exchanged.felix_token,
-  "localhost",
+const client = await Client.connect("127.0.0.1:5000", "t1", {
+  token: exchanged.felix_token,
   caFile,
-  undefined,
-  async () => {
+  tokenProvider: async () => {
     const minted = await post("/token/refresh", { refresh_token: refreshToken });
     refreshToken = minted.refresh_token;
     return minted.felix_token;
   },
-);
+});
 ```
 
-`client.withIdentity("t1", null, provider)` takes the same kind of function for
+`client.withIdentity("t1", { tokenProvider })` takes the same kind of function for
 one user, with that user's own refresh token. Refresh each chain from one place
 at a time and keep the newest refresh token.
 
@@ -158,13 +156,18 @@ at a time and keep the newest refresh token.
 Client.connect(
   addrs,        // "host:port", or an array of them
   tenantId,
-  token,        // a Felix token; optional when tokenProvider is set
-  serverName,   // the name the broker's certificate carries; defaults to "localhost"
-  caFile,       // trust a specific CA; omit for the system trust store
-  offerAlpn,    // offer the felix/1 ALPN; defaults to false
-  tokenProvider, // () => string | Promise<string>; see above
+  {
+    token,          // a Felix token; optional when tokenProvider is set
+    tokenProvider,  // () => string | Promise<string>; see above
+    serverName,     // the name the broker's certificate carries; defaults to "localhost"
+    caFile,         // trust a specific CA; omit for the system trust store
+    offerAlpn,      // offer the felix/1 ALPN; defaults to false
+  },
 )
 ```
+
+An option the client does not know, or an extra positional argument, throws a
+`TypeError` instead of being ignored.
 
 One reachable address is enough. The client discovers the rest of the cluster
 and will use brokers it was never told about. Passing several only helps the
@@ -180,13 +183,13 @@ TLS is always on. QUIC has no unencrypted mode, so there are two trust
 choices: the platform trust store, or an explicit `caFile` for a self-signed
 development broker. There is no "skip verification" switch.
 
-Passing `true` as `offerAlpn` makes the client offer the `felix/1` ALPN, which
+Passing `offerAlpn: true` makes the client offer the `felix/1` ALPN, which
 a broker running with `FELIX_TLS_REQUIRE_ALPN=true` insists on. It is off by
 default because a broker older than ALPN support refuses a client that offers
 it.
 
 ```ts
-const client = await Client.connect(addrs, "t1", token, "localhost", caFile, true);
+const client = await Client.connect(addrs, "t1", { token, caFile, offerAlpn: true });
 ```
 
 ### Acting for many users
@@ -195,7 +198,7 @@ A gateway serving many users can hold one client and give each user a client
 that shares its connections:
 
 ```ts
-const alice = await client.withIdentity("t1", aliceToken);
+const alice = await client.withIdentity("t1", { token: aliceToken });
 await alice.publish("t1", "app", "alice-feed", Buffer.from("hello"));
 ```
 

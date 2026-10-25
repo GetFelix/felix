@@ -34,7 +34,7 @@ publish is in flight.
 ```ts
 import { Client } from "felix-client";
 
-const client = await Client.connect("127.0.0.1:5000", "t1", token, "localhost", caFile);
+const client = await Client.connect("127.0.0.1:5000", "t1", { token, caFile });
 
 await client.publish("t1", "default", "events", Buffer.from("hello"));
 
@@ -54,9 +54,11 @@ client asks it for a fresh one when it needs one, never in the background, one
 call at a time:
 
 ```ts
-const client = await Client.connect(addr, "t1", firstToken, "localhost", caFile, undefined, async () =>
-  (await refresh()).felix_token,
-);
+const client = await Client.connect(addr, "t1", {
+  token: firstToken,
+  caFile,
+  tokenProvider: async () => (await refresh()).felix_token,
+});
 ```
 
 A failure keeps the held token while it is valid and otherwise reaches you as an

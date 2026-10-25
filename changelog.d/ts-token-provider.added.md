@@ -2,3 +2,7 @@
   returning a Felix token or a promise of one. The client calls it lazily, one call at a time, when
   a stream authenticates without a valid token, and keeps a still-valid token if a fetch fails. It
   is the Rust `RefreshingToken` underneath, and `token` is now optional when a provider is set.
+  Breaking: `Client.connect(addrs, tenantId, { token, tokenProvider, serverName, caFile, offerAlpn })`
+  and `client.withIdentity(tenantId, { token, tokenProvider })` now take an options object in place
+  of the positional `token`, `serverName`, `caFile` and `offerAlpn`. An unknown option or an extra
+  positional argument throws a `TypeError`.

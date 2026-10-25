@@ -730,6 +730,14 @@ jobs:
       - name: Error mapping
         run: cd crates/sdk/felix-typescript && node --test test/errors.test.mjs test/token.test.mjs
 
+      # The documented example, checked against index.d.ts. Installed without
+      # touching package.json or the lockfile.
+      - name: Type-check the token example
+        working-directory: crates/sdk/felix-typescript
+        run: |
+          npm i --no-save --no-package-lock typescript@5.9.3 @types/node@22.20.3
+          npx tsc -p tsconfig.json
+
       - name: Run the conformance suite
         env:
           FELIX_CONFORMANCE_RESULTS: ${{ github.workspace }}/ts-conformance.json
