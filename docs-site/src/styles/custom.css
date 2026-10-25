@@ -85,6 +85,20 @@
 	--felix-surface: color-mix(in srgb, var(--sl-color-gray-6) 55%, transparent);
 }
 
+/*
+ * JetBrains Mono draws `->`, `!=`, `<=` and friends as single glyphs. Readers
+ * copy these blocks, so show the characters they will paste. The font uses both
+ * standard ligatures and contextual alternates for these, so turn off both.
+ */
+code,
+kbd,
+pre,
+.expressive-code pre,
+.expressive-code code {
+	font-variant-ligatures: none;
+	font-feature-settings: 'liga' 0, 'calt' 0;
+}
+
 :root[data-theme='light'] {
 	/* Light mode inverts the low/high ends; see the contrast note above for why
 	 * `accent` is much darker here than Starlight's default. */
