@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792889764501,
+  "lastUpdate": 1792896503854,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -35568,6 +35568,58 @@ window.BENCHMARK_DATA = {
             "range": "6281.78",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 813741.05\nmean: 812371.29\nstdev: 6281.78\ncv: 0.77%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0a871335f29ca1a99d00bbdf705e7bc0147cb1e1",
+          "message": "feat(capi): token provider through a fetch callback; core: 30 s fetch timeout that joins, never repeats (#1525)\n\nToken provider for the C ABI, plus the shared token-fetch rules in the Rust core that every client binding relies on.\n\nCore (felix-client): FETCH_TIMEOUT (30 s) fails the waiters, not the provider call; the call keeps running, later refreshes join it, a late answer is used, and the provider is never called while a call is outstanding. new_cancellable / with_initial_cancellable pass a CancellationToken that fires on timeout and drop. A token refused by every broker is an auth error. Connect fetches the token outside connect_timeout, bounded by FETCH_TIMEOUT for any TokenProvider; owner learning keeps its 2 s bound; a reconnect fetches once. Only credential refusals invalidate the held token.\n\nC ABI (felix-capi): FelixTokenFetch / FelixTokenReply, felix_token_reply_ok / _err, and token_fetch, token_user_data, token_release on FelixConnectOptions (size-gated). A reply is consumed by its first answer; token_release runs once, after the client is freed and the last reply is answered.\n\nDocs: c.md token section around the fetch callback (example compiled in tests/c), rust.md, client-config.md, overview, status page, felix-capi README, changelog.",
+          "timestamp": "2026-10-25T02:42:48Z",
+          "tree_id": "a886e49a3577732d94a0394ddc816470fe49b967",
+          "url": "https://github.com/GetFelix/felix/commit/0a871335f29ca1a99d00bbdf705e7bc0147cb1e1"
+        },
+        "date": 1792896503005,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 528992.58,
+            "range": "35361.24",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 528992.58\nmean: 529562.70\nstdev: 35361.24\ncv: 6.68%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 528992.58,
+            "range": "35361.24",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 528992.58\nmean: 529562.70\nstdev: 35361.24\ncv: 6.68%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 120021.63,
+            "range": "1451.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 120021.63\nmean: 120175.43\nstdev: 1451.75\ncv: 1.21%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1200216.33,
+            "range": "14517.50",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1200216.33\nmean: 1201754.36\nstdev: 14517.50\ncv: 1.21%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
