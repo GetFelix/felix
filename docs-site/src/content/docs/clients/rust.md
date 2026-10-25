@@ -32,67 +32,56 @@ cargo add felix-client --features telemetry
 ```rust
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
-use anyhow::Result;
-use felix_client::{AckMode, ClientConfig, ClusterClient};
+use anyhow::{Context, Result};
+use felix_client::{AckMode, ClientConfig, ClusterClient, quic_client_config};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let quinn = quinn::ClientConfig::with_platform_verifier();
-    let mut config = ClientConfig::optimized_defaults(quinn);
-    config.auth_tenant_id = Some("acme".into());
-    config.auth_token = Some(token); // a Felix token; see below
+    // FELIX_AUTH_TENANT and FELIX_AUTH_TOKEN supply the tenant and the token,
+    // so neither is written into the program.
+    let config = ClientConfig::from_env_or_yaml(quic_client_config(None, false)?, None)?;
 
     // One broker is enough. The rest of a cluster is discovered from it.
     let seeds: Vec<SocketAddr> = vec!["127.0.0.1:5000".parse()?];
     let client = Arc::new(ClusterClient::connect(&seeds, "localhost", config).await?);
 
-    // Publish a message
+    // Subscribe before publishing: a subscription starts at the stream's tail.
+    let mut subscription = client.subscribe("acme", "prod", "events").await?;
+
+    // tenant, namespace, stream, payload, and when the broker answers.
     client
-        .publish(
-            "acme",           // tenant_id
-            "prod",           // namespace
-            "events",         // stream
-            b"Hello Felix".to_vec(), // payload
-            AckMode::PerMessage,
-        )
+        .publish("acme", "prod", "events", b"Hello Felix".to_vec(), AckMode::PerMessage)
         .await?;
 
-    // Subscribe to stream
-    let mut subscription = client.subscribe(
-        "acme",
-        "prod",
-        "events"
-    ).await?;
-
-    // Receive events
-    while let Some(event) = subscription.next_event().await? {
-        println!("Received: {:?}", event.payload);
-    }
-
+    let event = tokio::time::timeout(Duration::from_secs(5), subscription.next_event())
+        .await
+        .context("no event within 5 seconds")??
+        .context("the broker ended the subscription")?;
+    println!("received {:?}", event.payload);
     Ok(())
 }
 ```
+
+`subscribe` takes `&Arc<ClusterClient>`, because a subscription keeps a handle
+on the client to follow its shard. The examples below that subscribe assume an
+`Arc<ClusterClient>`.
 
 ### Basic Cache Operations
 
 ```rust
 use bytes::Bytes;
 
-// Store value with 60-second TTL
-client.cache_put(
-    "acme",
-    "prod",
-    "sessions",
-    "user-123",
-    Bytes::from_static(b"session-data"),
-    Some(60_000)  // TTL in milliseconds
-).await?;
+// Store a value that expires after 60 seconds (the TTL is in milliseconds).
+let value = Bytes::from_static(b"session-data");
+client
+    .cache_put("acme", "prod", "sessions", "user-123", value, Some(60_000))
+    .await?;
 
-// Retrieve value
 match client.cache_get("acme", "prod", "sessions", "user-123").await? {
-    Some(value) => println!("Found: {:?}", value),
-    None => println!("Not found or expired"),
+    Some(value) => println!("found {value:?}"),
+    None => println!("not found or expired"),
 }
 ```
 
@@ -113,100 +102,165 @@ through `Client` instead of straight to the owner cut in-memory throughput
 34% more broker CPU, and durable quorum-acked throughput 4.4×, from 475 to 107
 MB/s. See [v0.6.0 performance](/features/v060-performance/).
 
-`auth_token` is fixed, which suits a short job. [Getting a
-token](/clients/overview/#getting-a-token) covers where a token comes from. A
-process that outlives one, 15 minutes by default, sets `token_provider` instead.
-The client asks it for the token each time a stream authenticates, including
-the streams a reconnect opens. `RefreshingToken` wraps a fetch function, usually
-a call to `/token/refresh`, and replaces its token once two thirds of its life
-has passed. A fetch that takes longer than 30 seconds fails the callers waiting
-on it but keeps running; the provider is never called again while it is
-outstanding, the next refresh waits on it, and a late answer is used. The
-first fetch at connect, from any provider, is cut off at that limit and not counted in
-`connect_timeout`; a refetch after a broker refuses the token happens in the handshake and does
-count. A token every broker refuses surfaces as an auth error.
-`RefreshingToken::new_cancellable` and `with_initial_cancellable` pass the fetch
-a `tokio_util::sync::CancellationToken` that fires at that timeout and when the
-`RefreshingToken` is dropped, for a provider that can stop early. If a fetch fails while the current token is still valid, it keeps
-using that one and tries again a few seconds later. If the broker refuses a
-token and the provider has a different one, the client retries once with it.
-When there is no valid token to fall back on, a provider failure (an error, a
-timeout) fails that operation with a `felix_client::AuthError` carrying the
-provider's message. It is not retried, because each call can rotate a refresh
-token; the next operation asks again. A broker's refusal of the credential is an
-`AuthError` too, and bindings tell auth failures apart by this type, not by the
-message.
-
 ### Getting and refreshing a token
 
+A token lasts 15 minutes by default, and the broker checks it each time a
+stream authenticates, including the streams a reconnect opens. [Getting a
+token](/clients/overview/#getting-a-token) covers where one comes from. A
+process that outlives one gives `ClientConfig` a `token_provider`, and the
+client asks it for a token when it needs one. It asks lazily: when no token is
+held, when the held one has passed two thirds of its life, or when a broker has
+just refused it (one refetch per refused stream, retried only if the provider
+returns a different token, then the operation fails with the auth error). If a
+fetch fails while the held token is still valid, the client keeps using that
+one, logs a warning and asks again about five seconds later.
+
+`auth_token` is a fixed token, which suits a short job. The
+`FELIX_AUTH_TENANT` and `FELIX_AUTH_TOKEN` variables fill `auth_tenant_id` and
+`auth_token` when you build the config with `ClientConfig::from_env_or_yaml`.
+
+The provider is an `Arc<dyn TokenProvider>`, usually a `RefreshingToken`
+built from an async closure `Fn() -> impl Future<Output = anyhow::Result<String>>`:
+`RefreshingToken::with_initial(token, fetch)` starts from a token you already
+hold, and `RefreshingToken::new(fetch)` starts with none, so the first connect
+calls `fetch`. Setting `token_provider` overrides `auth_token`. Two thirds of a
+token's life is read from its `exp` claim; a token without one is kept until a
+broker refuses it.
+
+**When it is called.** When a stream is about to authenticate and the client
+holds no token, the held one is due for replacement, or a broker just refused
+it. An idle client makes no calls, and there is no timer. The client never runs
+two calls at once: streams that open together wait on one and share its token.
+That is also what makes it safe to rotate a refresh token inside the provider.
+The first fetch at connect is cut off at 30 seconds and not counted in
+`connect_timeout`; a refetch after a refusal happens in the handshake and does
+count.
+
+**Threading.** The closure is called on the task that needs the token, and the
+future it returns runs as a task spawned on that task's Tokio runtime, which
+for the client's own streams is the runtime it was connected on. So the closure
+must be `Send + Sync + 'static`, its future `Send + 'static`, and neither may
+block: use an async HTTP client. A `RefreshingToken` asked for a token outside
+a Tokio runtime panics.
+
+**Failure.** The provider fails when it returns an error or does not answer
+within 30 seconds. While the held token is still valid the client keeps it,
+logs a warning and asks again about five seconds later. Otherwise the operation
+that needed the token fails with `felix_client::AuthError` carrying the
+provider's error message and its causes. A provider failure is final for that
+operation: it is not retried, because each call can rotate a refresh token.
+The next operation asks again. The 30 second timeout fails the operations
+waiting on the call, but the call itself keeps running: the client never starts
+a second one while it is outstanding, the next refresh joins it, and a late
+answer is used. A broker's refusal of the credential is an `AuthError` too, so
+recover either with `err.downcast_ref::<AuthError>()`, not by matching the
+message.
+
+**Cancellation.** `RefreshingToken::new_cancellable` and
+`with_initial_cancellable` pass the closure a
+`tokio_util::sync::CancellationToken`. It fires at the 30 second timeout and
+when the `RefreshingToken` is dropped, which happens once the config and every
+client built from it are gone. A provider that ignores it still
+works: it is not called again while pending, and its late answer is used.
+Cancelling ends nothing by itself; the future decides what to return. A
+provider that rotates a refresh token is usually better off ignoring it: a
+refresh the control plane answered but the provider abandoned loses the
+replacement refresh token.
+
+**Async variant.** There is no separate one: the provider is async by
+construction, so it awaits its HTTP calls directly.
+
 The client has no HTTP code of its own, so the exchange and refresh calls are
-yours. This sketch uses `reqwest` (with its `json` feature) and `serde`. The
-refresh token rotates on every use, so the callback keeps the newest one:
+yours. This example uses `reqwest` (with its `json` feature) and `serde`:
 
 ```rust
-use std::sync::{Arc, Mutex};
-use felix_client::RefreshingToken;
-use serde::Deserialize;
+use std::sync::Arc;
+use std::time::Duration;
 
+use anyhow::Result;
+use felix_client::{ClientConfig, RefreshingToken};
+use serde::Deserialize;
+use serde_json::json;
+use tokio::sync::Mutex;
+
+const CONTROLPLANE: &str = "https://controlplane:8443/v1/tenants/acme";
+
+// No `Debug`, so the tokens cannot end up in a log line by accident.
 #[derive(Deserialize)]
 struct Minted {
     felix_token: String,
     refresh_token: String,
 }
 
-const CONTROLPLANE: &str = "https://controlplane:8443/v1/tenants/acme";
-
-async fn exchange(http: &reqwest::Client, oidc: &str) -> anyhow::Result<Minted> {
-    Ok(http
+async fn exchange(http: &reqwest::Client, oidc_token: &str) -> Result<Minted> {
+    let minted = http
         .post(format!("{CONTROLPLANE}/token/exchange"))
-        .bearer_auth(oidc)
-        .json(&serde_json::json!({
+        .bearer_auth(oidc_token)
+        .json(&json!({
             "requested": ["stream.publish", "stream.subscribe"],
             "resources": ["stream:acme/prod/*"],
         }))
-        .send().await?.error_for_status()?.json().await?)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    Ok(minted)
 }
 
-let http = reqwest::Client::new();
-let first = exchange(&http, &oidc_token).await?;
-let refresh = Arc::new(Mutex::new(first.refresh_token));
+async fn refresh(http: &reqwest::Client, refresh_token: &str) -> Result<Minted> {
+    let minted = http
+        .post(format!("{CONTROLPLANE}/token/refresh"))
+        .json(&json!({ "refresh_token": refresh_token }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    Ok(minted)
+}
 
-let tokens = RefreshingToken::with_initial(first.felix_token, {
-    let (http, refresh) = (http.clone(), Arc::clone(&refresh));
-    move || {
-        let (http, refresh) = (http.clone(), Arc::clone(&refresh));
+async fn configure(config: &mut ClientConfig, oidc_token: &str) -> Result<()> {
+    // Well inside the client's 30 second limit on one fetch.
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()?;
+    let first = exchange(&http, oidc_token).await?;
+    let refresh_token = Arc::new(Mutex::new(first.refresh_token));
+
+    let tokens = RefreshingToken::with_initial(first.felix_token, move || {
+        let (http, refresh_token) = (http.clone(), Arc::clone(&refresh_token));
         async move {
-            let current = refresh.lock().unwrap().clone();
-            let minted: Minted = http
-                .post(format!("{CONTROLPLANE}/token/refresh"))
-                .json(&serde_json::json!({ "refresh_token": current }))
-                .send().await?.error_for_status()?.json().await?;
-            *refresh.lock().unwrap() = minted.refresh_token;
-            Ok::<_, anyhow::Error>(minted.felix_token)
+            let mut refresh_token = refresh_token.lock().await;
+            let minted = refresh(&http, &refresh_token).await?;
+            *refresh_token = minted.refresh_token;
+            Ok(minted.felix_token)
         }
-    }
-});
-config.token_provider = Some(Arc::new(tokens));
+    });
+    config.auth_tenant_id = Some("acme".into());
+    config.token_provider = Some(Arc::new(tokens));
+    Ok(())
+}
 ```
 
-`RefreshingToken` calls the closure once two thirds of the token's life has
-passed, so a client left running for days picks up new tokens by itself. If the
-refresh token itself has expired or been revoked, the call fails with a `403`
-and the client keeps the last token until it expires. Run `exchange` again and
-build a new client from the result.
+The refresh token works once: every refresh returns a replacement, so the
+provider stores it before it returns. A 403 means the refresh token expired or
+was revoked: run the exchange again (fresh OIDC login) and connect a new
+client; the client keeps the last token until it expires.
 
-The `FELIX_AUTH_TENANT` and `FELIX_AUTH_TOKEN` variables fill `auth_tenant_id`
-and `auth_token` when you build the config with `ClientConfig::from_env_or_yaml`.
+A gateway gives each user's handle a provider of its own; see [Acting for many
+users](#acting-for-many-users).
 
 ## Client Configuration
 
 ### ClientConfig
 
 ```rust
-use felix_client::{ClientConfig, ClusterClient, PublishSharding};
 use std::net::SocketAddr;
 
-let quinn = quinn::ClientConfig::with_platform_verifier();
+use felix_client::{ClientConfig, ClusterClient, PublishSharding, quic_client_config};
+
+let quinn = quic_client_config(None, false)?;
 let config = ClientConfig {
     // Connection pools
     event_conn_pool: 8,              // Connections for pub/sub
@@ -227,7 +281,8 @@ let config = ClientConfig {
     // per broker (0 turns them off)
     publish_shard_streams: 4,
 
-    ..ClientConfig::optimized_defaults(quinn)
+    // Everything else, the tenant and token included, from FELIX_* variables.
+    ..ClientConfig::from_env_or_yaml(quinn, None)?
 };
 
 let seeds: Vec<SocketAddr> = vec!["127.0.0.1:5000".parse()?];
@@ -241,19 +296,21 @@ A gateway that serves many users, each with their own Felix token, can hold one
 
 ```rust
 use std::sync::Arc;
-use felix_client::{RefreshingToken, TokenProvider};
+
+use felix_client::{Client, RefreshingToken, TokenProvider};
 
 let gateway = Client::connect(addr, "localhost", config).await?;
 
 // Every stream alice's handle opens authenticates with alice's token, and the
 // broker checks each of her requests against her grants, not the gateway's.
+// `refresh_alice` is a token fetch like the one above, for her refresh token.
 let alice_tokens: Arc<dyn TokenProvider> =
     Arc::new(RefreshingToken::with_initial(alice_token, refresh_alice));
-let alice = gateway.with_identity("t1", alice_tokens).await?;
-let mut feed = alice.subscribe("t1", "app", "alice-feed").await?;
+let alice = gateway.with_identity("acme", alice_tokens).await?;
+let feed = alice.subscribe("acme", "app", "alice-feed").await?;
 
 // A fixed token, for a handle that will not outlive it.
-let bob = gateway.with_identity_token("t1", bob_token).await?;
+let bob = gateway.with_identity_token("acme", bob_token).await?;
 ```
 
 Refresh each chain from one place at a time and keep the newest refresh token.
@@ -293,8 +350,9 @@ subscription, and the gateway still holds one connection per broker:
 
 ```rust
 let gateway = ClusterClient::connect(&seeds, "broker.internal", config).await?;
-let alice = Arc::new(gateway.with_identity("t1", alice_tokens).await?);
-let mut feed = alice.subscribe("t1", "app", "alice-feed").await?;
+// `subscribe` takes the handle as an `Arc`, like any `ClusterClient`.
+let alice = Arc::new(gateway.with_identity("acme", alice_tokens).await?);
+let feed = alice.subscribe("acme", "app", "alice-feed").await?;
 ```
 
 Its routing state is its own, learned from its own requests, and when a
@@ -309,8 +367,10 @@ the roots you pass, or the platform trust store for `None`, and offers the
 `felix/1` ALPN when its second argument is `true`.
 
 ```rust
-let quinn = felix_client::quic_client_config(None, true)?;
-let config = ClientConfig::optimized_defaults(quinn);
+use felix_client::{ClientConfig, quic_client_config};
+
+let quinn = quic_client_config(None, true)?;
+let config = ClientConfig::from_env_or_yaml(quinn, None)?;
 ```
 
 A broker with `FELIX_TLS_REQUIRE_ALPN=true` serves only clients that offer
@@ -322,6 +382,7 @@ files:
 
 ```rust
 use std::sync::Arc;
+
 use felix_client::{ClientIdentity, quic_client_config_with_identity, root_store_from_pem_file};
 
 let roots = Arc::new(root_store_from_pem_file("ca.pem")?);
@@ -339,21 +400,19 @@ to offer `felix/1`.
 **Low-latency configuration**:
 
 ```rust
-let quinn = quinn::ClientConfig::with_platform_verifier();
 let config = ClientConfig {
     event_conn_pool: 4,
     cache_conn_pool: 4,
     publish_streams_per_conn: 1,
     cache_streams_per_conn: 2,
     publish_conn_pool: 2,
-    ..ClientConfig::optimized_defaults(quinn)
+    ..ClientConfig::from_env_or_yaml(quic_client_config(None, false)?, None)?
 };
 ```
 
 **High-throughput configuration**:
 
 ```rust
-let quinn = quinn::ClientConfig::with_platform_verifier();
 let config = ClientConfig {
     event_conn_pool: 16,
     cache_conn_pool: 16,
@@ -361,7 +420,7 @@ let config = ClientConfig {
     cache_streams_per_conn: 8,
     publish_conn_pool: 8,
     publish_sharding: PublishSharding::HashStream,
-    ..ClientConfig::optimized_defaults(quinn)
+    ..ClientConfig::from_env_or_yaml(quic_client_config(None, false)?, None)?
 };
 ```
 
@@ -370,16 +429,18 @@ let config = ClientConfig {
 ### Single Message Publish
 
 ```rust
-// Fire-and-forget (no ack). Call `client.finish()` before exiting.
 use felix_client::AckMode;
+
+// Fire-and-forget: returns once queued. Call `client.finish()` before exiting.
 client
     .publish("acme", "prod", "events", b"message".to_vec(), AckMode::None)
     .await?;
 
-// With acknowledgement
+// Returns once the broker acknowledges it.
 let offset = client
     .publish("acme", "prod", "events", b"important".to_vec(), AckMode::PerMessage)
     .await?;
+println!("written at {offset:?}");
 ```
 
 An acknowledged publish returns `Option<u64>`: the log offset of the first
@@ -409,11 +470,15 @@ behaves like a single-shard one. If you created a stream with several shards to
 get throughput and are not passing a key, you are not getting it.
 
 ```rust
+use bytes::Bytes;
+
 cluster
     .publish_keyed(
-        "acme", "prod", "orders",
+        "acme",
+        "prod",
+        "orders",
         payload,
-        bytes::Bytes::from(customer_id),
+        Bytes::from(customer_id),
         AckMode::PerMessage,
     )
     .await?;
@@ -484,13 +549,9 @@ let messages = vec![
     b"message 3".to_vec(),
 ];
 
-client.publish_batch(
-    "acme",
-    "prod",
-    "events",
-    messages,
-    AckMode::PerBatch,
-).await?;
+client
+    .publish_batch("acme", "prod", "events", messages, AckMode::PerBatch)
+    .await?;
 ```
 
 ### Batches through a ClusterClient
@@ -511,7 +572,9 @@ let report = cluster
     .publish_records("acme", "prod", "orders", records, AckMode::PerBatch)
     .await;
 for piece in report.failed() {
-    eprintln!("shard {} failed: {:#}", piece.shard, piece.outcome.as_ref().unwrap_err());
+    if let Err(err) = &piece.outcome {
+        tracing::warn!(shard = piece.shard, records = ?piece.records, "batch failed: {err:#}");
+    }
 }
 ```
 
@@ -556,33 +619,31 @@ should not need; `ClusterClient` publishes through the same workers per broker.
 For a tool that holds a `Client`:
 
 ```rust
-use felix_client::Publisher;
 use felix_client::AckMode;
 
-// Create publisher (uses ClientConfig settings)
+// Uses the pools and sharding from the client's `ClientConfig`.
 let publisher = client.publisher().await?;
 
-// Publish messages
-for i in 0..10000 {
-    let payload = format!("Event {}", i);
+for i in 0..10_000 {
+    let payload = format!("event {i}");
     publisher
         .publish("acme", "prod", "events", payload.into_bytes(), AckMode::None)
         .await?;
 }
+
+// `AckMode::None` returns once queued: wait for the writes before going on.
+publisher.finish().await?;
 ```
 
 ### Publisher Sharding
 
-Control load distribution across worker streams:
+`ClientConfig::publish_sharding` decides which worker stream a publish goes on:
 
 ```rust
 use felix_client::PublishSharding;
 
-// Round-robin: distribute evenly across workers
-PublishSharding::RoundRobin
-
-// Hash-based: consistent hashing by stream name
-PublishSharding::HashStream
+// Spread publishes evenly over the workers, giving up per-stream order.
+config.publish_sharding = PublishSharding::RoundRobin;
 ```
 
 `HashStream` is the default. It sends every publish to one stream through the
@@ -666,22 +727,20 @@ typed errors inside it. Recover them with `downcast_ref`. Matching on the
 message would break the first time one is reworded.
 
 ```rust
-use felix_client::{PublishRefused, PublishRefusalReason, SubscribeCursorError};
+use felix_client::{AckMode, BrokerError, RetryClass};
 
-match cluster.publish("acme", "prod", "events", payload, AckMode::PerMessage).await {
-    Ok(()) => {}
-    Err(err) => {
-        if let Some(refused) = err.downcast_ref::<PublishRefused>() {
-            match refused.reason {
-                // Routing, not a failure: the client already followed it.
-                PublishRefusalReason::NotLeader { .. } => {}
-                // The producer's sequence cannot be mended by retrying.
-                _ => return Err(err),
-            }
+let result = cluster
+    .publish("acme", "prod", "events", payload, AckMode::PerMessage)
+    .await;
+if let Err(err) = result {
+    match err.downcast_ref::<BrokerError>() {
+        // Nothing was applied, so sending the record again later is safe.
+        Some(refusal) if matches!(refusal.retry, RetryClass::Retry | RetryClass::RetryAfter) => {
+            tracing::warn!(code = ?refusal.code, "publish refused; will retry later");
         }
-        // Everything else: the cluster client has already tried the other
-        // brokers, so arriving here means none of them answered.
-        return Err(err);
+        // It may have landed (`OutcomeUnknown`), will never succeed
+        // (`Fatal`), or no broker answered at all: report it.
+        _ => return Err(err),
     }
 }
 ```
@@ -725,11 +784,13 @@ is final, and everything else is retried. The full table is under "Retries" in
 `SubscribeCursorError` carries more than the other clients get:
 
 ```rust
+use felix_client::{StartPosition, SubscribeCursorError};
+
 if let Some(cursor) = err.downcast_ref::<SubscribeCursorError>() {
     // `available` is the nearest offset that would have worked: the oldest
     // retained for TooOld, the current tail for InFuture. Resuming from it is
     // the smallest gap you can take rather than restarting at `earliest`.
-    eprintln!("asked for {}, nearest is {}", cursor.requested, cursor.available);
+    tracing::warn!(requested = cursor.requested, nearest = cursor.available, "cursor out of range");
     start = StartPosition::Offset(cursor.available);
 }
 ```
@@ -751,9 +812,10 @@ be stored or moved into a task without borrowing anything.
 let cluster = Arc::new(cluster);
 let producer = cluster.idempotent_producer().await?;
 
-producer
-    .publish("acme", "prod", "orders", payload)
-    .await?;
+producer.publish("acme", "prod", "orders", payload).await?;
+
+// Before exiting: let what the producer was handed finish.
+producer.close_within(Duration::from_secs(10)).await?;
 ```
 
 `publish_keyed` and `publish_batch_keyed` take a routing key, which picks the
@@ -767,6 +829,8 @@ stream, as its other publishes do; a plain `Client`'s producer stays on the
 hashed pool with the rest of that client's publishes.
 
 ```rust
+use bytes::Bytes;
+
 producer
     .publish_keyed("acme", "prod", "orders", Bytes::from("customer-42"), payload)
     .await?;
@@ -796,25 +860,26 @@ The sequence is the mechanism, so the failures are about the sequence and are
 worth branching on:
 
 ```rust
-use felix_client::{PublishRefused, PublishRefusalReason};
+use anyhow::bail;
+use felix_client::{PublishRefusalReason, PublishRefused};
 
-if let Err(err) = producer.publish("acme", "prod", "orders", payload).await
-    && let Some(refused) = err.downcast_ref::<PublishRefused>()
-{
-    match &refused.reason {
+if let Err(err) = producer.publish("acme", "prod", "orders", payload).await {
+    match err.downcast_ref::<PublishRefused>().map(|refused| &refused.reason) {
         // Something was skipped and is lost to this broker. Do not carry on
         // past it; the gap will not close by retrying.
-        PublishRefusalReason::SequenceGap { expected } => bail!("gap at {expected}"),
-        // A new leader knows no producers. Take a fresh id and start again.
-        PublishRefusalReason::UnknownProducer => reinitialise().await?,
+        Some(PublishRefusalReason::SequenceGap { expected }) => bail!("gap at {expected}"),
+        // A new leader knows no producers. Start again under a fresh id.
+        Some(PublishRefusalReason::UnknownProducer) => {
+            producer = cluster.idempotent_producer().await?;
+        }
         // Older than the window the broker keeps, so whether it was appended
         // cannot be told any more.
-        PublishRefusalReason::SequenceExpired => bail!("outside the dedup window"),
+        Some(PublishRefusalReason::SequenceExpired) => bail!("outside the dedup window"),
         // A different batch under a sequence the broker already holds: this
         // producer reused a number it had spent, and the batch was not written.
-        PublishRefusalReason::SequenceReused => bail!("sequence reused"),
-        // Routing, not failure: the client follows it itself.
-        PublishRefusalReason::NotLeader { .. } => {}
+        Some(PublishRefusalReason::SequenceReused) => bail!("sequence reused"),
+        // Any other refusal, or no answer at all: the batch is in doubt, so
+        // the next call on this shard must be the same batch (see below).
         _ => return Err(err),
     }
 }
@@ -837,7 +902,8 @@ re-sends it itself before the next batch on that shard; if that re-send fails
 too, the next call fails without sending and tries again on the call after.
 
 Dropping the producer lets what it was handed finish. `close().await` waits for
-that, which is the call to make before a process exits.
+that, which is the call to make before a process exits. `close_within(timeout)`
+gives up after `timeout` and stops the producer where it is.
 :::
 
 A publish that returns an error other than a refusal is in doubt for the same
@@ -854,7 +920,6 @@ fresh id.
 ```rust
 let mut subscription = client.subscribe("acme", "prod", "events").await?;
 
-// Process events
 while let Some(event) = subscription.next_event().await? {
     process_event(event).await?;
 }
@@ -902,7 +967,7 @@ write from. Group records carry the same value as `publisher`. Off by default,
 since it adds the principal to every batch.
 
 ```rust
-let mut config = ClientConfig::from_env_or_yaml(quinn, None)?;
+let mut config = ClientConfig::from_env_or_yaml(quic_client_config(None, false)?, None)?;
 config.publishers = true;
 let client = Arc::new(ClusterClient::connect(&seeds, "localhost", config).await?);
 let mut inputs = client.subscribe("arena", "match-7", "inputs").await?;
@@ -935,6 +1000,7 @@ let client = Client::connect(addr, "localhost", config).await?;
 let subscription = client.subscribe("acme", "prod", "webhooks").await?;
 // `None` from a broker that predates the option: the stream's default applies.
 let granted = subscription.queue_capacity();
+tracing::info!(?granted, "subscription queue");
 ```
 
 It applies to every subscription the client opens, including the ones a
@@ -961,7 +1027,7 @@ let position = match start {
     // Nothing that recent yet.
     None => StartPosition::Latest,
 };
-let mut replay = client
+let replay = client
     .subscribe_from("acme", "prod", "webhooks", Some(position))
     .await?;
 ```
@@ -1013,13 +1079,12 @@ never delivered, and the event after it says so in `skipped_before`.
 ```rust
 let mut expected: Option<u64> = None;
 while let Some(event) = subscription.next_event().await? {
-    if let (Some(want), Some(got)) = (expected, event.offset)
-        && got - event.skipped_before != want
-    {
-        tracing::warn!(
-            dropped = got - event.skipped_before - want,
-            "subscriber queue overflowed"
-        );
+    if let (Some(want), Some(got)) = (expected, event.offset) {
+        // The first offset this event accounts for, past any that hold no event.
+        let first = got - event.skipped_before;
+        if first > want {
+            tracing::warn!(dropped = first - want, "subscriber queue overflowed");
+        }
     }
     expected = event.offset.map(|offset| offset + 1);
     handle(&event.payload);
@@ -1036,9 +1101,9 @@ Checkpoint what you handled and resume at the next one. `start` is the first
 record you have **not** seen, so a resuming consumer passes `offset + 1`.
 
 ```rust
-use felix_client::{SubscribeCursorError, StartPosition};
+use felix_client::{StartPosition, SubscribeCursorError};
 
-let mut start = match checkpoint.load()? {
+let mut start = match checkpoint.load().await? {
     Some(offset) => StartPosition::Offset(offset + 1),
     None => StartPosition::Earliest,
 };
@@ -1053,11 +1118,14 @@ loop {
             Ok(Some(event)) => {
                 handle(&event.payload).await?;
                 if let Some(offset) = event.offset {
-                    checkpoint.save(offset)?;
+                    checkpoint.save(offset).await?;
                     start = StartPosition::Offset(offset + 1);
                 }
             }
-            Ok(None) => break,                     // ended, not moved; resubscribe
+            // Nothing left to read.
+            Ok(None) if subscription.stream_deleted() => return Ok(()),
+            // Ended for another reason: resubscribe from `start`.
+            Ok(None) => break,
             Err(err) => {
                 if let Some(cursor) = err.downcast_ref::<SubscribeCursorError>() {
                     // Retention discarded it. `available` is the nearest offset
@@ -1090,11 +1158,11 @@ On a durable stream, a subscribe with a start position tells you where it
 joined:
 
 ```rust
-let sub = client
+let subscription = client
     .subscribe_from("acme", "prod", "orders", Some(StartPosition::Offset(1_000)))
     .await?;
-let first = sub.start_offset(); // Some(1000)
-let live = sub.live_offset();   // the tail when you subscribed
+let first = subscription.start_offset(); // Some(1000)
+let live = subscription.live_offset(); // the tail when you subscribed
 ```
 
 Events below `live_offset()` are catch-up; events from it on are new, and none
@@ -1151,23 +1219,26 @@ the next publish. Resubscribe after the last event you received, not at
 subscriber without reporting it, and that frame can sit below `resume_from`.
 
 ```rust
+use felix_client::{StartPosition, SubscriptionLagged};
+
 let mut last = None;
-loop {
+let resume_at = loop {
     match subscription.next_event().await {
         Ok(Some(event)) => {
             last = event.offset;
             handle(&event);
         }
-        Ok(None) => break,
-        Err(err) => match err.downcast_ref::<felix_client::SubscriptionLagged>() {
+        Ok(None) => return Ok(()),
+        Err(err) => match err.downcast_ref::<SubscriptionLagged>() {
             // Subscribe again after the last record; the log still has the rest.
-            Some(lagged) => {
-                break resubscribe_from(last.map_or(lagged.resume_from, |last| last + 1));
-            }
+            Some(lagged) => break last.map_or(lagged.resume_from, |last| last + 1),
             None => return Err(err),
         },
     }
-}
+};
+let subscription = client
+    .subscribe_from("acme", "prod", "events", Some(StartPosition::Offset(resume_at)))
+    .await?;
 ```
 
 `ClusterSubscription` does this itself, so a slow reader catches up from the
@@ -1180,85 +1251,77 @@ dropping as before; `felix_client_sub_queue_dropped_total` and
 Handle multiple streams concurrently:
 
 ```rust
-use tokio::select;
+let mut orders = client.subscribe("acme", "prod", "orders").await?;
+let mut inventory = client.subscribe("acme", "prod", "inventory").await?;
+let mut logs = client.subscribe("acme", "staging", "logs").await?;
 
-let mut sub1 = client.subscribe("acme", "prod", "orders").await?;
-let mut sub2 = client.subscribe("acme", "prod", "inventory").await?;
-let mut sub3 = client.subscribe("acme", "staging", "logs").await?;
-
+// `next_event` is cancel-safe, so the branches that lose a round lose nothing.
+// Stops when any of the three ends.
 loop {
-    select! {
-        event = sub1.next_event() => {
-            if let Some(event) = event? {
-                handle_order(event).await?;
-            } else {
-                break;
-            }
-        }
-        event = sub2.next_event() => {
-            if let Some(event) = event? {
-                handle_inventory(event).await?;
-            } else {
-                break;
-            }
-        }
-        event = sub3.next_event() => {
-            if let Some(event) = event? {
-                handle_log(event).await?;
-            } else {
-                break;
-            }
-        }
+    tokio::select! {
+        event = orders.next_event() => match event? {
+            Some(event) => handle_order(event).await?,
+            None => break,
+        },
+        event = inventory.next_event() => match event? {
+            Some(event) => handle_inventory(event).await?,
+            None => break,
+        },
+        event = logs.next_event() => match event? {
+            Some(event) => handle_log(event).await?,
+            None => break,
+        },
     }
 }
 ```
 
 ### Async Event Processing
 
-Avoid blocking the subscription loop:
+Slow work inside the read loop holds up the next event, and a reader that
+falls behind loses records (see [When a subscription falls
+behind](#when-a-subscription-falls-behind)). Hand the work to a task over a
+bounded channel instead. A task per event would also keep up, but with no
+limit on how many run at once or on the memory they hold.
 
 ```rust
-// Bad: blocks subscription loop
-while let Some(event) = subscription.next_event().await? {
-    expensive_processing(event).await?;  // Blocks next event
-}
+use tokio::sync::mpsc;
 
-// Good: spawn task for processing
-while let Some(event) = subscription.next_event().await? {
-    tokio::spawn(async move {
-        expensive_processing(event).await.ok();
-    });
-}
-
-// Better: use bounded channel for backpressure
-let (tx, mut rx) = mpsc::channel(100);
-
-tokio::spawn(async move {
-    while let Some(event) = rx.recv().await {
-        expensive_processing(event).await.ok();
+let (events, mut queued) = mpsc::channel(100);
+let worker = tokio::spawn(async move {
+    while let Some(event) = queued.recv().await {
+        expensive_processing(event).await?;
     }
+    anyhow::Ok(())
 });
 
 while let Some(event) = subscription.next_event().await? {
-    tx.send(event).await.ok();
+    if events.send(event).await.is_err() {
+        break; // the worker stopped; its result below says why
+    }
 }
+// Closing the channel lets the worker drain what is queued and finish.
+drop(events);
+worker.await??;
 ```
+
+Once the channel is full, `send` waits, and the reader slows to the worker's
+pace like any slow reader.
 
 ### Subscription Lifecycle
 
 ```rust
-// Subscribe
-let mut sub = client.subscribe("acme", "prod", "events").await?;
+let mut subscription = client.subscribe("acme", "prod", "events").await?;
 
-// Process events
+// Read up to 100 events, then stop.
 for _ in 0..100 {
-    if let Some(event) = sub.next_event().await? {
-        process(event);
-    }
+    let Some(event) = subscription.next_event().await? else {
+        break;
+    };
+    process(event);
 }
 
-// Drop subscription to close
-drop(sub);
+// Dropping the subscription closes it on the broker.
+drop(subscription);
 ```
 
 ## Cache Operations
@@ -1266,27 +1329,17 @@ drop(sub);
 ### Put and Get
 
 ```rust
-// Put with TTL
-client.cache_put(
-    "acme",               // tenant
-    "prod",               // namespace
-    "sessions",           // cache
-    "user-abc",           // key
-    session_data,         // value (Bytes)
-    Some(3600_000)        // 1 hour TTL
-).await?;
+use anyhow::bail;
 
-// Get
-match client.cache_get("acme", "prod", "sessions", "user-abc").await? {
-    Some(data) => {
-        let session: Session = deserialize(&data)?;
-        // Use session
-    }
-    None => {
-        // Session expired or doesn't exist
-        return Err("Invalid session");
-    }
-}
+// tenant, namespace, cache, key, value (`Bytes`), TTL in milliseconds
+client
+    .cache_put("acme", "prod", "sessions", "user-abc", session_data, Some(60 * 60 * 1000))
+    .await?;
+
+let Some(data) = client.cache_get("acme", "prod", "sessions", "user-abc").await? else {
+    bail!("session user-abc expired or never existed");
+};
+let session: Session = serde_json::from_slice(&data)?;
 ```
 
 ### Without TTL
@@ -1412,7 +1465,7 @@ Start from current state instead of from now: each matching key's current
 value first, then live changes. Use it to join presence or state sync:
 
 ```rust
-let mut watch = client
+let watch = client
     .watch_cache_retained(
         "acme",
         "prod",
@@ -1422,7 +1475,9 @@ let mut watch = client
     .await?;
 
 // The state phase is exactly this many changes; 0 means empty, definitively.
-let state_size = watch.retained_count().expect("retained watches report a count");
+let state_size = watch
+    .retained_count()
+    .context("the broker did not report the retained count")?;
 ```
 
 Needs `FEATURE_CACHE_WATCH_RETAINED`, a separate bit so an older watch-capable
@@ -1434,10 +1489,14 @@ shortcuts.
 
 ```rust
 // Apply a delta and learn the sum including it, in one round trip.
-let after = client.counter_add("acme", "prod", "limits", "user:42:reqs", 1).await?;
+let after = client
+    .counter_add("acme", "prod", "limits", "user:42:reqs", 1)
+    .await?;
 
 // Read; None means never written, which differs from a sum of zero.
-let sum = client.counter_get("acme", "prod", "metrics", "page:home").await?;
+let views = client
+    .counter_get("acme", "prod", "metrics", "page:home")
+    .await?;
 ```
 
 Scoped and routed like cache keys, stored beside the cache; durable and
@@ -1446,21 +1505,25 @@ twice. Needs a broker advertising `FEATURE_COUNTERS` (durable brokers only).
 
 ### Concurrent Cache Operations
 
-Pipeline multiple cache operations:
+Requests issued together share the client's connections and run
+concurrently:
 
 ```rust
-use futures::future::join_all;
+use tokio::task::JoinSet;
 
-// Issue multiple requests concurrently
-let futures = (0..10).map(|i| {
-    let key = format!("key-{}", i);
-    client.cache_get("acme", "prod", "data", &key)
-});
+let mut lookups = JoinSet::new();
+for i in 0..10 {
+    let client = Arc::clone(&client);
+    lookups.spawn(async move {
+        let key = format!("key-{i}");
+        client.cache_get("acme", "prod", "data", &key).await
+    });
+}
 
-let results = join_all(futures).await;
-
-for result in results {
-    if let Ok(Some(value)) = result {
+// Answers arrive in completion order. The first failure stops the loop, and
+// dropping the set cancels the rest.
+while let Some(answer) = lookups.join_next().await {
+    if let Some(value) = answer?? {
         process(value);
     }
 }
@@ -1502,11 +1565,20 @@ loop {
         // `attempts` is 1 on a first delivery and higher on a redelivery, so a
         // consumer can treat a retry differently. 0 means the broker did not
         // report it, which is not the same as a first attempt.
-        match handle(&record.payload, record.attempts) {
-            Ok(()) => client.group_ack("acme", "prod", "jobs", 0, "fulfilment", record.offset).await?,
-            // Hand it back for immediate redelivery rather than waiting out the
-            // visibility timeout.
-            Err(_) => client.group_nack("acme", "prod", "jobs", 0, "fulfilment", &record).await?,
+        match handle(&record.payload, record.attempts).await {
+            Ok(()) => {
+                client
+                    .group_ack("acme", "prod", "jobs", 0, "fulfilment", record.offset)
+                    .await?;
+            }
+            Err(err) => {
+                tracing::warn!(offset = record.offset, "job failed: {err:#}");
+                // Hand it back for immediate redelivery rather than waiting
+                // out the visibility timeout.
+                client
+                    .group_nack("acme", "prod", "jobs", 0, "fulfilment", &record)
+                    .await?;
+            }
         }
     }
 }
@@ -1521,7 +1593,9 @@ cannot stall the queue behind it. These need `FEATURE_GROUP_DEAD_LETTERS`, a
 separate bit from `FEATURE_CONSUMER_GROUP`:
 
 ```rust
-let offsets = client.group_dead_letters("acme", "prod", "jobs", 0, "fulfilment").await?;
+let offsets = client
+    .group_dead_letters("acme", "prod", "jobs", 0, "fulfilment")
+    .await?;
 for offset in offsets {
     if worth_retrying(offset) {
         client.group_redrive("acme", "prod", "jobs", 0, "fulfilment", offset).await?;
@@ -1540,18 +1614,27 @@ A group starts at offset 0 on its first poll unless it was created first. These
 need `FEATURE_GROUP_ADMIN` (`Client::supports_group_admin`):
 
 ```rust
-use felix_wire::StartPosition;
+use felix_client::StartPosition;
 
 // Left alone if the group already exists, so safe on every start.
-client.group_create("acme", "prod", "jobs", 0, "fulfilment", StartPosition::Latest).await?;
+client
+    .group_create("acme", "prod", "jobs", 0, "fulfilment", StartPosition::Latest)
+    .await?;
 
 // Replay everything the shard still holds.
-client.group_seek("acme", "prod", "jobs", 0, "fulfilment", StartPosition::Earliest).await?;
+client
+    .group_seek("acme", "prod", "jobs", 0, "fulfilment", StartPosition::Earliest)
+    .await?;
 
-let info = client.group_describe("acme", "prod", "jobs", 0, "fulfilment").await?;
+let info = client
+    .group_describe("acme", "prod", "jobs", 0, "fulfilment")
+    .await?;
 println!("committed {:?}, {} behind", info.committed, info.lag());
 
-let existed = client.group_delete("acme", "prod", "jobs", 0, "fulfilment").await?;
+// `false` if there was no such group.
+let existed = client
+    .group_delete("acme", "prod", "jobs", 0, "fulfilment")
+    .await?;
 ```
 
 A seek voids the claims standing when it lands, so an ack for a record the
@@ -1564,6 +1647,7 @@ A consumer can also manage each claim itself on a broker that advertises
 
 ```rust
 use std::time::Duration;
+
 use felix_client::GroupPollOptions;
 
 // Claims from this poll stand for five minutes instead of the broker's default.
@@ -1576,16 +1660,31 @@ let records = client
     .await?;
 
 for record in &records {
-    // Still working: keep the claim for another minute.
-    client
-        .group_extend("acme", "prod", "jobs", 0, "fulfilment", record, Duration::from_secs(60))
-        .await?;
-    // Back off before the next try,
-    client
-        .group_nack_after("acme", "prod", "jobs", 0, "fulfilment", record, Duration::from_secs(30))
-        .await?;
-    // or give up on it now: it is listed as a dead letter and can be redriven.
-    // client.group_dead_letter("acme", "prod", "jobs", 0, "fulfilment", record.offset).await?;
+    match check(record) {
+        Job::Done => {
+            client
+                .group_ack("acme", "prod", "jobs", 0, "fulfilment", record.offset)
+                .await?;
+        }
+        // Still working: keep the claim for another minute.
+        Job::Running => {
+            client
+                .group_extend("acme", "prod", "jobs", 0, "fulfilment", record, Duration::from_secs(60))
+                .await?;
+        }
+        // Failed for now: back off before the next try.
+        Job::Failed => {
+            client
+                .group_nack_after("acme", "prod", "jobs", 0, "fulfilment", record, Duration::from_secs(30))
+                .await?;
+        }
+        // Will never work: listed as a dead letter at once, and can be redriven.
+        Job::Poison => {
+            client
+                .group_dead_letter("acme", "prod", "jobs", 0, "fulfilment", record.offset)
+                .await?;
+        }
+    }
 }
 ```
 
@@ -1628,20 +1727,25 @@ let receipt = cluster
 let state = cluster
     .state_get("acme", "orders", "order-events", b"order-42", "order-42")
     .await?;
-assert_eq!(state.version, Some(receipt.offset));
+// The state's version is the offset of the commit that wrote it.
+println!("committed at {}, state version {:?}", receipt.offset, state.version);
 
 // Refused before anything is sent: another stream is another log.
-let err = cluster
+let refused = cluster
     .commit("acme", "orders", b"order-42", vec![
         CommitOp::publish("order-events", "placed"),
         CommitOp::put("inventory", "sku-1", "3"),
     ])
-    .await
-    .unwrap_err();
-assert!(matches!(
-    err.downcast_ref::<CommitError>(),
-    Some(CommitError::NotOnOwningShard { index: 1, .. })
-));
+    .await;
+if let Err(err) = refused {
+    match err.downcast_ref::<CommitError>() {
+        // Op 1 names a stream the entity key does not route to.
+        Some(CommitError::NotOnOwningShard { index, .. }) => {
+            tracing::error!(index, "commit spans two streams");
+        }
+        _ => return Err(err),
+    }
+}
 ```
 
 `CommitError::EventCount` refuses a commit without exactly one event, and
@@ -1652,15 +1756,21 @@ assert!(matches!(
 next, for a single writer that must not append after it has been replaced:
 
 ```rust
+use anyhow::bail;
 use felix_client::ConditionalWrite;
 
+// The offset this writer expects to write next, starting at an empty shard.
 let mut next = 0;
-match cluster
-    .publish_if("acme", "games", "match-7", None, vec![b"tick".to_vec()], next)
-    .await?
-{
-    ConditionalWrite::Written { offset } => next = offset + 1,
-    ConditionalWrite::Refused { tail } => { /* lost the stream; it is at `tail` */ }
+for tick in ticks {
+    match cluster
+        .publish_if("acme", "games", "match-7", None, vec![tick], next)
+        .await?
+    {
+        ConditionalWrite::Written { offset } => next = offset + 1,
+        ConditionalWrite::Refused { tail } => {
+            bail!("another writer has the stream; its next offset is {tail}")
+        }
+    }
 }
 ```
 
@@ -1675,14 +1785,16 @@ the shard at the expected offset instead.
 writer that keeps one shard per partition:
 
 ```rust
+let ops = vec![
+    CommitOp::publish("ticks", tick),
+    CommitOp::put("ticks", "district", state),
+];
 let written = cluster
-    .commit_if_on_shard(
-        "acme", "city", district, b"district",
-        vec![CommitOp::publish("ticks", tick), CommitOp::put("ticks", "district", state)],
-        next,
-    )
+    .commit_if_on_shard("acme", "city", district, b"district", ops, next)
     .await?;
-let state = cluster.state_get_on_shard("acme", "city", "ticks", district, "district").await?;
+let current = cluster
+    .state_get_on_shard("acme", "city", "ticks", district, "district")
+    .await?;
 ```
 
 A keyed `state_get(entity_key)` reads the shard the key hashes to, so it does
@@ -1718,6 +1830,9 @@ connection open. The 30 s ack timeout is only a backstop for a broker that is
 alive and never answers.
 
 ```rust
+use felix_client::{ShardEvent, StartPosition};
+use tracing::{info, warn};
+
 let client = Arc::new(ClusterClient::connect(&seeds, "localhost", config).await?);
 
 // Every shard of a multi-shard stream, merged into one channel.
@@ -1783,6 +1898,8 @@ not reconnect: when its connection drops, calls fail and the application
 decides what to do.
 
 ```rust
+use std::time::Duration;
+
 use felix_client::{ClusterClient, ReconnectPolicy};
 
 let policy = ReconnectPolicy {
@@ -1862,75 +1979,87 @@ Telemetry adds measurable overhead (5-15% in high-throughput workloads). Use onl
 
 ### Connection Pooling
 
-Connect once and share the client. Connect inside the application's own
-runtime: the client's tasks live on the runtime that created it, so a client
-built on a throwaway runtime dies with that runtime.
+Connect once and share the client: it is cheap to clone an `Arc` of it into
+every task, and its pools are the expensive part. Connect inside the
+application's own runtime: the client's tasks live on the runtime that created
+it, so a client built on a throwaway runtime dies with that runtime.
 
 ```rust
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use felix_client::{AckMode, ClientConfig, ClusterClient};
-use tokio::sync::OnceCell;
+use anyhow::Result;
+use felix_client::{AckMode, ClientConfig, ClusterClient, quic_client_config};
+use tokio::task::JoinSet;
 
-static FELIX_CLIENT: OnceCell<Arc<ClusterClient>> = OnceCell::const_new();
+#[tokio::main]
+async fn main() -> Result<()> {
+    let config = ClientConfig::from_env_or_yaml(quic_client_config(None, false)?, None)?;
+    let seeds: Vec<SocketAddr> = vec!["127.0.0.1:5000".parse()?];
+    let client = Arc::new(ClusterClient::connect(&seeds, "localhost", config).await?);
 
-async fn felix() -> Result<&'static Arc<ClusterClient>> {
-    FELIX_CLIENT
-        .get_or_try_init(|| async {
-            let quinn = quinn::ClientConfig::with_platform_verifier();
-            let config = ClientConfig::optimized_defaults(quinn);
-            let seeds: Vec<SocketAddr> = vec!["127.0.0.1:5000".parse()?];
-            Ok(Arc::new(ClusterClient::connect(&seeds, "localhost", config).await?))
-        })
-        .await
+    let mut workers = JoinSet::new();
+    for worker in 0..4 {
+        let client = Arc::clone(&client);
+        workers.spawn(async move {
+            let payload = format!("hello from worker {worker}").into_bytes();
+            client
+                .publish("acme", "prod", "events", payload, AckMode::None)
+                .await
+        });
+    }
+    while let Some(published) = workers.join_next().await {
+        published??;
+    }
+
+    // Before exiting: wait for everything queued with `AckMode::None`.
+    client.finish().await?;
+    Ok(())
 }
-
-felix()
-    .await?
-    .publish("acme", "prod", "events", data.to_vec(), AckMode::None)
-    .await?;
-
-// Before exiting: wait for everything queued with `AckMode::None`.
-felix().await?.finish().await?;
 ```
 
 ### Error Recovery
 
-```rust
-use felix_client::{BrokerError, ClusterClient, RetryClass};
+`ClusterClient` already retries what it safely can (see [Errors you can act
+on](#errors-you-can-act-on)). A caller that wants more attempts on top resends
+only what the broker says was not applied:
 
+```rust
+use std::time::Duration;
+
+use anyhow::Result;
+use felix_client::{AckMode, BrokerError, ClusterClient, RetryClass};
+
+/// Publish to `stream`, resending only when the broker applied nothing, with
+/// a doubling pause between at most `attempts` tries.
 async fn publish_with_retry(
     client: &ClusterClient,
-    tenant: &str,
-    namespace: &str,
     stream: &str,
-    data: &[u8],
-    max_retries: u32
-) -> Result<()> {
-    use felix_client::AckMode;
-    for attempt in 0..max_retries {
-        match client
-            .publish(tenant, namespace, stream, data.to_vec(), AckMode::PerMessage)
-            .await
-        {
-            Ok(_) => return Ok(()),
-            Err(e) if safe_to_resend(&e) && attempt < max_retries - 1 => {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                continue;
+    payload: &[u8],
+    attempts: u32,
+) -> Result<Option<u64>> {
+    let mut pause = Duration::from_millis(100);
+    let mut attempt = 1;
+    loop {
+        let result = client
+            .publish("acme", "prod", stream, payload.to_vec(), AckMode::PerMessage)
+            .await;
+        match result {
+            Err(err) if attempt < attempts && safe_to_resend(&err) => {
+                tokio::time::sleep(pause).await;
+                pause = (pause * 2).min(Duration::from_secs(5));
+                attempt += 1;
             }
-            Err(e) => return Err(e),
+            result => return result,
         }
     }
-    unreachable!()
 }
 
-// The broker says in `BrokerError::retry` whether the publish may have been
-// applied. `OutcomeUnknown` is not safe to resend here, because a plain
-// publish could land twice. Use an `IdempotentProducer` for that case.
+// `OutcomeUnknown` means the publish may have been applied, so a plain resend
+// could write it twice. Use an `IdempotentProducer` when that must not happen.
 fn safe_to_resend(error: &anyhow::Error) -> bool {
     matches!(
-        error.downcast_ref::<BrokerError>().map(|e| e.retry),
+        error.downcast_ref::<BrokerError>().map(|refusal| refusal.retry),
         Some(RetryClass::Retry | RetryClass::RetryAfter)
     )
 }
@@ -1938,45 +2067,60 @@ fn safe_to_resend(error: &anyhow::Error) -> bool {
 
 ### Resource Cleanup
 
+Dropping a subscription, a watch or a client closes it. The one thing a drop
+cannot do is wait, so a client that published with `AckMode::None` calls
+`finish` before it goes:
+
 ```rust
-// Subscriptions are cleaned up on drop
-{
-    let mut sub = client.subscribe("acme", "prod", "events").await?;
-    // Process events...
-}  // Automatic close on drop
+// Closes the subscription on the broker.
+drop(subscription);
+
+// Waits until everything queued with `AckMode::None` is written, then closes
+// the publish streams.
+client.finish().await?;
 ```
 
 ### Batching for Throughput
 
 ```rust
-use felix_client::AckMode;
-use tokio::time::{interval, Duration};
+use anyhow::Result;
+use felix_client::{AckMode, ClusterClient};
+use tokio::sync::mpsc;
+use tokio::time::{Duration, interval};
 
-async fn batching_publisher(client: &ClusterClient) -> Result<()> {
-    let mut batch = Vec::new();
+const MAX_BATCH: usize = 64;
+
+/// Publish what arrives on `messages` in batches of up to `MAX_BATCH`,
+/// sending a partial batch every 10 ms, until every sender is gone.
+async fn batching_publisher(
+    client: &ClusterClient,
+    mut messages: mpsc::Receiver<Vec<u8>>,
+) -> Result<()> {
+    let mut batch = Vec::with_capacity(MAX_BATCH);
     let mut ticker = interval(Duration::from_millis(10));
-    
-    loop {
-        select! {
-            _ = ticker.tick() => {
-                if !batch.is_empty() {
-                    client
-                        .publish_batch("acme", "prod", "events", batch.clone(), AckMode::PerBatch)
-                        .await?;
-                    batch.clear();
+    let mut open = true;
+    while open {
+        tokio::select! {
+            _ = ticker.tick() => {}
+            // `recv` is cancel-safe: a tick that wins loses no message.
+            message = messages.recv() => match message {
+                Some(message) => {
+                    batch.push(message);
+                    if batch.len() < MAX_BATCH {
+                        continue;
+                    }
                 }
-            }
-            msg = receive_message() => {
-                batch.push(msg);
-                if batch.len() >= 64 {
-                    client
-                        .publish_batch("acme", "prod", "events", batch.clone(), AckMode::PerBatch)
-                        .await?;
-                    batch.clear();
-                }
-            }
+                None => open = false,
+            },
+        }
+        if !batch.is_empty() {
+            let full = std::mem::replace(&mut batch, Vec::with_capacity(MAX_BATCH));
+            client
+                .publish_batch("acme", "prod", "events", full, AckMode::PerBatch)
+                .await?;
         }
     }
+    Ok(())
 }
 ```
 
@@ -1984,43 +2128,34 @@ async fn batching_publisher(client: &ClusterClient) -> Result<()> {
 
 ### Integration Tests
 
-```rust
-#[tokio::test]
-async fn test_cache_ttl() {
-    use std::net::SocketAddr;
+A test against a real broker is marked `#[ignore]`, so `cargo test` skips it
+and `cargo test -- --ignored` runs it once a broker is up:
 
-    let quinn = quinn::ClientConfig::with_platform_verifier();
-    let config = ClientConfig::optimized_defaults(quinn);
-    let seeds: Vec<SocketAddr> = vec!["127.0.0.1:5000".parse().unwrap()];
-    let client = ClusterClient::connect(&seeds, "localhost", config).await.unwrap();
-    
-    // Store with 100ms TTL
-    use bytes::Bytes;
+```rust
+use std::net::SocketAddr;
+use std::time::Duration;
+
+use anyhow::Result;
+use bytes::Bytes;
+use felix_client::{ClientConfig, ClusterClient, quic_client_config};
+
+#[tokio::test]
+#[ignore = "needs a broker on 127.0.0.1:5000"]
+async fn cache_entry_expires() -> Result<()> {
+    let config = ClientConfig::from_env_or_yaml(quic_client_config(None, false)?, None)?;
+    let seeds: Vec<SocketAddr> = vec!["127.0.0.1:5000".parse()?];
+    let client = ClusterClient::connect(&seeds, "localhost", config).await?;
+
     client
         .cache_put("test", "default", "cache", "key", Bytes::from_static(b"value"), Some(100))
-        .await
-        .unwrap();
-    
-    // Immediately readable
-    assert_eq!(
-        client
-            .cache_get("test", "default", "cache", "key")
-            .await
-            .unwrap(),
-        Some(Bytes::from_static(b"value"))
-    );
-    
-    // Wait for expiration
+        .await?;
+    let stored = client.cache_get("test", "default", "cache", "key").await?;
+    assert_eq!(stored, Some(Bytes::from_static(b"value")));
+
     tokio::time::sleep(Duration::from_millis(150)).await;
-    
-    // Should be expired
-    assert_eq!(
-        client
-            .cache_get("test", "default", "cache", "key")
-            .await
-            .unwrap(),
-        None
-    );
+    let expired = client.cache_get("test", "default", "cache", "key").await?;
+    assert_eq!(expired, None);
+    Ok(())
 }
 ```
 
