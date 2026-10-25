@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792910072483,
+  "lastUpdate": 1792911418567,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -36296,6 +36296,58 @@ window.BENCHMARK_DATA = {
             "range": "4683.13",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 811396.37\nmean: 809408.88\nstdev: 4683.13\ncv: 0.58%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "06326a41e5974cdd84642d7ebe6a6893cf7a027c",
+          "message": "test(csharp): commit.negotiated against a broker that advertises no commits (#1544)\n\ncommit.negotiated was tagged in C# only on a positive commit test. A fixture\ntest now connects to the stub broker that advertises no features\n(no_commit_addrs), checks CommitAsync and GetStateAsync fail with\nFelixStatus.Unsupported, and that the stub saw no commit or state request, the\nsame check as the C, Python and TypeScript suites. The tag moved to it.",
+          "timestamp": "2026-10-25T06:49:23Z",
+          "tree_id": "178a51957d290c3294d05a08a5df32cbbbdfb5ab",
+          "url": "https://github.com/GetFelix/felix/commit/06326a41e5974cdd84642d7ebe6a6893cf7a027c"
+        },
+        "date": 1792911417907,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 492200.99,
+            "range": "36131.21",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 492200.99\nmean: 488695.48\nstdev: 36131.21\ncv: 7.39%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 492200.99,
+            "range": "36131.21",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 492200.99\nmean: 488695.48\nstdev: 36131.21\ncv: 7.39%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 122058.39,
+            "range": "2014.68",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 122058.39\nmean: 121223.05\nstdev: 2014.68\ncv: 1.66%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1220583.91,
+            "range": "20146.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1220583.91\nmean: 1212230.49\nstdev: 20146.75\ncv: 1.66%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
