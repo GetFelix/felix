@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792911416266,
+  "lastUpdate": 1792914079285,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -46134,6 +46134,72 @@ window.BENCHMARK_DATA = {
             "range": "23.48",
             "unit": "us",
             "extra": "trials: 5\nmedian: 376.00\nmean: 367.40\nstdev: 23.48\ncv: 6.39%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ff6c0c7a9ad3251d0ad5144ed7b454218e2c4d8d",
+          "message": "fix(client): a token fetch failure is final, not retried; bindings classify auth by type (#1533) (#1546)\n\nA token source failure (provider error, bad result, panic, the 30 s fetch\ntimeout) and a broker's credential refusal (unauthenticated, forbidden, or an\nuncoded refusal) are now a typed felix_client::AuthError carrying the message\nunchanged. Every retry classifier treats it as final: a subscribe, sharded\nsubscribe or group open called a failing provider up to five times and could\nblock about 5 x 30 s on a hung one, depending on whether the message happened\nto contain \"forbidden\". Draining and overloaded refusals are not auth errors and\nbehave as before. Token fetches for subscribe, topology and stream routing now\nrun before the 10 s open timer, so a hung provider fails once at 30 s with the\ntyped error. connect stops at the first token failure and still moves on after\na refusal from one broker.\n\nThe C ABI, Python and TypeScript bindings classify auth errors by type instead\nof matching \"token\" or \"forbidden\" in the text (#1533). Client pages say a\nprovider failure is final for that operation.\n\nFixes #1533.",
+          "timestamp": "2026-10-25T07:36:30Z",
+          "tree_id": "ead1cde2b2e5591b4dd23cabec706d6fd816ce35",
+          "url": "https://github.com/GetFelix/felix/commit/ff6c0c7a9ad3251d0ad5144ed7b454218e2c4d8d"
+        },
+        "date": 1792914075012,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 73,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 73.00\nmean: 73.20\nstdev: 0.45\ncv: 0.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 95,
+            "range": "5.08",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 95.00\nmean: 97.40\nstdev: 5.08\ncv: 5.21%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 130,
+            "range": "24.57",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 130.00\nmean: 136.00\nstdev: 24.57\ncv: 18.06%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 90,
+            "range": "2.17",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 90.00\nmean: 91.20\nstdev: 2.17\ncv: 2.38%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 262,
+            "range": "44.21",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 262.00\nmean: 253.00\nstdev: 44.21\ncv: 17.47%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1292,
+            "range": "863.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1292.00\nmean: 1264.20\nstdev: 863.84\ncv: 68.33%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
