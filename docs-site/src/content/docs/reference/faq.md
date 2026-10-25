@@ -199,8 +199,8 @@ role permissions:
 
 Rust, Python and TypeScript ship today, the latter two as bindings over the
 Rust client rather than reimplementations. Both pass every required scenario in
-the client conformance catalogue, and CI is gated on it. Go and C# are not
-started. `felix-capi`, the [C ABI](/clients/c/) they will bind to, covers connect,
+the client conformance catalogue, and CI is gated on it. Go is not
+started, and the C# SDK binds the same ABI from `sdks/dotnet`. `felix-capi`, the [C ABI](/clients/c/) they will bind to, covers connect,
 publishes, subscriptions, consumer groups on a shard, caches, counters and
 watches, atomic commits, conditional publishes and idempotent producers, all
 asynchronous through callbacks. It also has the sharded group, the group stream admin calls, and the record publisher and timestamp fields.

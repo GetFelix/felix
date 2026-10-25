@@ -190,7 +190,7 @@ public class CommitFixtureTests
     }
 
     [FixtureFact]
-    [Scenario("commit.returns_the_offset")]
+    [Scenario("commit.returns_the_offset", "commit.negotiated")]
     public async Task AnEntityKeyedCommitsEventIsReadBackAtTheReturnedOffset()
     {
         var f = Fixture.Load();

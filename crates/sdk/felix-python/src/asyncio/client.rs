@@ -10,6 +10,7 @@ use pyo3::prelude::*;
 use super::{AsyncCacheWatch, AsyncShardedSubscription, AsyncSubscription};
 use crate::args::{parse_ack, parse_addrs, parse_start};
 use crate::errors::to_py_err;
+use crate::token::{Flavor, Tokens, resolve};
 use crate::types::{CacheWatchFilter, GroupRecord, OwnedGroupRecord};
 
 /// A connection to a Felix cluster, for asyncio.
@@ -24,12 +25,20 @@ pub struct AsyncClient {
 
 #[pymethods]
 impl AsyncClient {
+    /// Connect to a cluster. Arguments are those of `Client(...)`, except that
+    /// `token_provider` must be an `async def` function, or any callable
+    /// returning an awaitable; one that returns a `str` fails with `AuthError`
+    /// when first called. It is awaited on the event loop running this call,
+    /// which must stay open for the life of the client and every
+    /// `with_identity` handle; once it is closed the provider fails with "the
+    /// event loop the token provider was bound to is closed".
     #[staticmethod]
     #[pyo3(signature = (
         addrs,
         *,
         tenant_id,
-        token,
+        token=None,
+        token_provider=None,
         server_name="localhost",
         ca_file=None,
         offer_alpn=false,
@@ -38,7 +47,8 @@ impl AsyncClient {
         py: Python<'py>,
         addrs: Py<PyAny>,
         tenant_id: &str,
-        token: &str,
+        token: Option<&str>,
+        token_provider: Option<Py<PyAny>>,
         server_name: &str,
         ca_file: Option<&str>,
         offer_alpn: bool,
@@ -52,7 +62,11 @@ impl AsyncClient {
         let quinn = crate::tls::client_config(ca_file, offer_alpn)?;
         let mut config = ClientConfig::optimized_defaults(quinn);
         config.auth_tenant_id = Some(tenant_id.to_string());
-        config.auth_token = Some(token.to_string());
+        let flavor = Flavor::asyncio(py, token_provider.is_some())?;
+        match resolve(py, token, token_provider, flavor)? {
+            Tokens::Fixed(token) => config.auth_token = Some(token),
+            Tokens::Provider(provider) => config.token_provider = Some(provider),
+        }
         let server_name = server_name.to_string();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
@@ -72,19 +86,24 @@ impl AsyncClient {
 
     /// Resolve to a client that acts as another user over this client's
     /// connections. See the synchronous `Client.with_identity`.
+    #[pyo3(signature = (tenant_id, token=None, *, token_provider=None))]
     fn with_identity<'py>(
         &self,
         py: Python<'py>,
         tenant_id: &str,
-        token: &str,
+        token: Option<&str>,
+        token_provider: Option<Py<PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let flavor = Flavor::asyncio(py, token_provider.is_some())?;
+        let tokens = resolve(py, token, token_provider, flavor)?;
         let inner = Arc::clone(&self.inner);
-        let (tenant_id, token) = (tenant_id.to_string(), token.to_string());
+        let tenant_id = tenant_id.to_string();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let identity = inner
-                .with_identity_token(tenant_id, token)
-                .await
-                .map_err(to_py_err)?;
+            let identity = match tokens {
+                Tokens::Fixed(token) => inner.with_identity_token(tenant_id, token).await,
+                Tokens::Provider(provider) => inner.with_identity(tenant_id, provider).await,
+            }
+            .map_err(to_py_err)?;
             Ok(AsyncClient {
                 inner: Arc::new(identity),
             })

@@ -125,17 +125,6 @@ internal static unsafe partial class NativeMethods
     [LibraryImport(Lib)]
     internal static partial byte* felix_last_error_message();
 
-    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
-    internal static partial int felix_client_connect(
-        string addrs,
-        string tenantId,
-        string token,
-        string? serverName,
-        string? caFile,
-        nint cancel,
-        delegate* unmanaged[Cdecl]<nint, int, byte*, nint, void> callback,
-        nint userData);
-
     [LibraryImport(Lib)]
     internal static partial void felix_client_free(nint client);
 
@@ -797,6 +786,101 @@ internal static unsafe partial class NativeMethods
 
     [LibraryImport(Lib)]
     internal static partial void felix_producer_free(nint producer);
+
+    [LibraryImport(Lib)]
+    internal static partial int felix_client_endpoints(
+        nint client,
+        nint cancel,
+        delegate* unmanaged[Cdecl]<nint, int, byte*, byte**, nuint, void> callback,
+        nint userData);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial int felix_client_publish_on_shard(
+        nint client,
+        string tenantId,
+        string ns,
+        string stream,
+        uint shard,
+        byte* data,
+        nuint* lens,
+        nuint count,
+        int ack,
+        nint cancel,
+        delegate* unmanaged[Cdecl]<nint, int, byte*, NativeRecordResult*, nuint, void> callback,
+        nint userData);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial int felix_client_publish_records(
+        nint client,
+        string tenantId,
+        string ns,
+        string stream,
+        byte* data,
+        nuint* lens,
+        byte* keys,
+        nuint* keyLens,
+        nuint count,
+        int ack,
+        int delivery,
+        nint cancel,
+        delegate* unmanaged[Cdecl]<nint, int, byte*, NativeRecordResult*, nuint, void> callback,
+        nint userData);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial int felix_client_offset_for_time(
+        nint client,
+        string tenantId,
+        string ns,
+        string stream,
+        uint shard,
+        ulong atMicros,
+        nint cancel,
+        delegate* unmanaged[Cdecl]<nint, int, byte*, byte, ulong, void> callback,
+        nint userData);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial int felix_client_subscribe_sharded(
+        nint client,
+        string tenantId,
+        string ns,
+        string stream,
+        int start,
+        ulong startOffset,
+        nint cancel,
+        delegate* unmanaged[Cdecl]<nint, int, byte*, nint, void> callback,
+        nint userData);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial int felix_client_resubscribe_sharded(
+        nint client,
+        string tenantId,
+        string ns,
+        string stream,
+        uint* shards,
+        ulong* offsets,
+        nuint count,
+        int start,
+        ulong startOffset,
+        nint cancel,
+        delegate* unmanaged[Cdecl]<nint, int, byte*, nint, void> callback,
+        nint userData);
+
+    [LibraryImport(Lib)]
+    internal static partial int felix_sharded_next(
+        nint subscription,
+        long timeoutMs,
+        nint cancel,
+        delegate* unmanaged[Cdecl]<nint, int, byte*, int, uint, nint, void> callback,
+        nint userData);
+
+    [LibraryImport(Lib)]
+    internal static partial int felix_sharded_shards(nint subscription, uint* outShards);
+
+    [LibraryImport(Lib)]
+    internal static partial int felix_sharded_positions(nint subscription, uint* shards, ulong* offsets, nuint cap, nuint* outCount);
+
+    [LibraryImport(Lib)]
+    internal static partial void felix_sharded_subscription_free(nint subscription);
 
     /// <summary>The library's message for the last failed call on this thread, copied.</summary>
     internal static string? LastError()

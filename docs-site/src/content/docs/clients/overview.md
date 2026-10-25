@@ -3,7 +3,7 @@ title: "Choosing a Client"
 description: "Why Felix has one client implementation with bindings over it, what the conformance suite checks, and which client to reach for."
 ---
 
-Felix has Rust, Python and TypeScript clients, a C ABI over the Rust client that other language SDKs bind to, and a C# SDK on that ABI that is still gaining coverage. Every one of them is a cluster client. This page covers
+Felix has Rust, Python and TypeScript clients, a C ABI over the Rust client that other language SDKs bind to, and a C# SDK on that ABI. Every one of them is a cluster client. This page covers
 how they relate to each other, which is worth understanding before you depend
 on one. Each client's own page covers using it.
 
@@ -306,11 +306,12 @@ client reopens after losing its connection to a broker. A client that holds one
 fixed token presents that same token every time, so once it has expired those
 are refused. Revoking a principal is how you end streams that are already open.
 
-The Rust client, the C ABI and the TypeScript client can replace the token
-while the client runs: the Rust client through a token provider, C through the
-`token_fetch` callback, TypeScript through a `tokenProvider` function. The
-other clients hold the token they connected with, so build a new client with a
-fresh token before the old one expires. Each client's page has an example.
+The Rust client, the C ABI, the Python client and the TypeScript client can
+replace the token while the client runs: the Rust client through a token
+provider, C through the `token_fetch` callback, Python through `token_provider`,
+TypeScript through a `tokenProvider` function. The other clients hold the token
+they connected with, so build a new client with a fresh token before the old one
+expires. Each client's page has an example.
 
 ## The clients
 
@@ -323,7 +324,7 @@ worth writing code for.
 | **[Python](/clients/python/)** | `felix-client` on PyPI | A PyO3 binding, with a synchronous and an asyncio surface over the same Rust client. `Client([...])` takes a list of seeds, and the cluster behaviour is the Rust client's. |
 | **[TypeScript](/clients/typescript/)** | `felix-client` on npm | A napi-rs addon. One asynchronous surface, because blocking Node's event loop is not something a library may do. `Client.connect([...])` takes an array of seeds, with the Rust client's cluster behaviour. |
 | **[C](/clients/c/)** | `libfelix` and `felix.h`, built from the repository | A C ABI over the Rust client, asynchronous through callbacks. `felix_client_connect_with` takes comma-separated seeds and builds a `ClusterClient`. The base for the C# SDK; not on a registry. |
-| **[C#](/clients/csharp/)** | `Felix.Client`, built from `sdks/dotnet` | A P/Invoke binding over the C ABI, so `FelixClientOptions.Addrs` is a list of seeds for a `ClusterClient`. Connect, publish, subscribe to a shard, consumer groups, caches, counters and cache watches, atomic commits and conditional publishes, idempotent producers, and publisher and timestamp metadata so far. Not on NuGet yet. |
+| **[C#](/clients/csharp/)** | `Felix.Client`, built from `sdks/dotnet` | A P/Invoke binding over the C ABI, so `FelixClientOptions.Addrs` is a list of seeds for a `ClusterClient`. Every `felix.h` function is bound except the token provider, which follows: publish, subscribe to a shard or every shard, consumer groups, caches, counters and cache watches, atomic commits, idempotent producers, and publisher and timestamp metadata. Not on NuGet yet. |
 
 ### Which client to use
 
@@ -348,9 +349,8 @@ rather than passing over them in silence; their pages say which.
 
 No Go client exists. The C# SDK lives in this repository and, like Python and TypeScript, wraps
 the Rust client rather than reimplementing it, binding through P/Invoke to
-`crates/sdk/felix-capi`, the C ABI described on the [C page](/clients/c/). It covers connect,
-publish, subscribe to a shard, consumer groups and publisher and timestamp metadata so far; the
-[C# page](/clients/csharp/) says what is bound. The
+`crates/sdk/felix-capi`, the C ABI described on the [C page](/clients/c/). It binds every function of the ABI except
+the token provider, which follows; the [C# page](/clients/csharp/) says what that covers. The
 ABI covers connect, publishes, subscriptions, consumer groups on a shard, caches,
 counters and watches, atomic commits, conditional publishes and idempotent
 producers, asynchronous through callbacks so a `Task` needs no waiting thread.
