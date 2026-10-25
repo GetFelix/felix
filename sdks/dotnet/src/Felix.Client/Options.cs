@@ -77,8 +77,10 @@ public sealed class FelixClientOptions
     /// calls. It is never called concurrently, and a failure (an exception, a null or empty
     /// result, or no answer within 30 seconds) keeps a still-valid token or fails the operation
     /// with a <see cref="FelixException"/> of status <see cref="FelixStatus.Auth"/> carrying the
-    /// exception's message. The <see cref="CancellationToken"/> fires after 30 seconds, or when
-    /// the client and every subscription, group, cache and watch made from it are disposed. At least one of <see cref="Token"/> and this is required.
+    /// exception's message. The <see cref="CancellationToken"/> fires after 30 seconds, when the
+    /// connect fails, or once the client and every subscription, sharded subscription, sharded
+    /// group, cache watch and producer made from it are disposed. At least one of
+    /// <see cref="Token"/> and this is required.
     /// </summary>
     public Func<CancellationToken, ValueTask<string>>? TokenProvider { get; init; }
 

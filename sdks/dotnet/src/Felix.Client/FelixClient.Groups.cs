@@ -118,15 +118,48 @@ public sealed partial class FelixClient
 
     internal Task<T> Call<T>(CancellationToken cancellationToken, Func<nint, nint, nint, int> begin)
     {
-        var call = NativeCall.Start<T>(handle, cancellationToken, begin);
-        return tokens is not null && typeof(TokenHeldHandle).IsAssignableFrom(typeof(T)) ? Tracked(call) : call;
+        if (tokens is null || !typeof(TokenHeldHandle).IsAssignableFrom(typeof(T)))
+        {
+            return NativeCall.Start<T>(handle, cancellationToken, begin);
+        }
+
+        // A handle that outlives the client shares its token source. The reference is taken
+        // before the call, so a Dispose racing the callback cannot cancel a fetch it needs.
+        var held = tokens.Retain() ? tokens : null;
+        try
+        {
+            return Tracked(NativeCall.Start<T>(handle, cancellationToken, begin), held);
+        }
+        catch
+        {
+            held?.ReleaseHolder();
+            throw;
+        }
     }
 
-    /// <summary>A handle that outlives the client shares its token source, so it takes a reference.</summary>
-    private async Task<T> Tracked<T>(Task<T> call)
+    /// <summary>Hands the reference to the handle the call produced, or releases it if there is none.</summary>
+    private static async Task<T> Tracked<T>(Task<T> call, TokenSource? held)
     {
-        var result = await call.ConfigureAwait(false);
-        (result as TokenHeldHandle)?.Track(tokens);
+        T result;
+        try
+        {
+            result = await call.ConfigureAwait(false);
+        }
+        catch
+        {
+            held?.ReleaseHolder();
+            throw;
+        }
+
+        if (result is TokenHeldHandle handle)
+        {
+            handle.Adopt(held);
+        }
+        else
+        {
+            held?.ReleaseHolder();
+        }
+
         return result;
     }
 }

@@ -563,6 +563,44 @@ public class TokenProviderTests
     }
 
     [FixtureFact]
+    public async Task EveryHandleMadeFromTheClientHoldsTheTokenSourceUntilItIsDisposed()
+    {
+        var f = Fixture.Load();
+        var provider = new Provider(_ => Task.FromResult(f.Token));
+        var client = await FelixClient.ConnectAsync(Options(f, null, provider.Fetch));
+        var source = client.Tokens!;
+        Assert.Equal(1, source.Holders);
+
+        var subscription = await client.SubscribeAsync(f.Tenant, f.Namespace, f.Stream, 0, StartPosition.Latest);
+        Assert.Equal(2, source.Holders);
+        var producer = await client.CreateProducerAsync();
+        Assert.Equal(3, source.Holders);
+        var sharded = await client.SubscribeShardedAsync(f.Tenant, f.Namespace, f.Stream, StartPosition.Latest);
+        Assert.Equal(4, source.Holders);
+        var watch = await client.Cache(f.Tenant, f.Namespace, f.Cache).WatchKeyAsync("token-provider-holders");
+        Assert.Equal(5, source.Holders);
+
+        // A call that fails hands its reference back.
+        await Assert.ThrowsAsync<FelixException>(
+            () => client.SubscribeAsync(f.Tenant, f.Namespace, f.MissingStream, 0, StartPosition.Latest));
+        Assert.Equal(5, source.Holders);
+
+        // The client is not the last user: the handles keep the provider's token alive.
+        await client.DisposeAsync();
+        await client.DisposeAsync();
+        Assert.Equal(4, source.Holders);
+
+        await subscription.DisposeAsync();
+        Assert.Equal(3, source.Holders);
+        await producer.DisposeAsync();
+        Assert.Equal(2, source.Holders);
+        await sharded.DisposeAsync();
+        Assert.Equal(1, source.Holders);
+        await watch.DisposeAsync();
+        Assert.Equal(0, source.Holders);
+    }
+
+    [FixtureFact]
     public async Task DisposingAClientCancelsNothingWhenNoFetchIsRunning()
     {
         var f = Fixture.Load();

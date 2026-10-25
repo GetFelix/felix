@@ -82,10 +82,10 @@ it, but the call itself is not abandoned: the next operation that needs a token
 waits on that same call (up to 30 seconds again) and uses its answer if it
 arrives, so the provider is not called a second time while one is outstanding.
 
-**Cancellation.** The `CancellationToken` the provider receives is cancelled when
-the 30 seconds pass, when the client and every subscription, producer, cache watch
-and sharded group made from it have been disposed, or when a connect that has not
-finished fails or is cancelled. Those handles share the client's connections and
+**Cancellation.** The `CancellationToken` the provider receives is cancelled at the
+30 second timeout, when the connect fails or is cancelled, or once the client and every
+subscription, sharded subscription, sharded group, cache watch and producer made from it
+have been disposed. Those handles share the client's connections and
 token, so one that is still open keeps a fetch running even after `Dispose` on the
 client: cancelling it would lose a refresh token the control plane already
 rotated. Pass the token to your `HttpClient` calls and let the

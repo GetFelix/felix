@@ -15,6 +15,9 @@ public sealed partial class FelixClient : IAsyncDisposable, IDisposable
     private readonly TokenSource? tokens;
     private int closed;
 
+    /// <summary>The client's token source, null without a provider; a test hook.</summary>
+    internal TokenSource? Tokens => tokens;
+
     internal FelixClient(FelixClientHandle handle, TokenSource? tokens = null)
     {
         this.handle = handle;
@@ -258,11 +261,14 @@ public sealed partial class FelixClient : IAsyncDisposable, IDisposable
         cancellationToken.ThrowIfCancellationRequested();
 
         CallState<FelixSubscriptionHandle> state;
+        TokenSource? held;
         int status;
         string? error;
         using (var call = new HandleLease(handle))
         {
             state = new CallState<FelixSubscriptionHandle>(cancellationToken);
+            // Before the call, so a Dispose racing the callback cannot cancel a fetch this handle needs.
+            held = tokens?.Retain() == true ? tokens : null;
             try
             {
                 var userData = state.Pin();
@@ -281,12 +287,19 @@ public sealed partial class FelixClient : IAsyncDisposable, IDisposable
             }
             catch
             {
+                held?.ReleaseHolder();
                 state.Abandon();
                 throw;
             }
         }
 
-        return status != 0 ? Refused<FelixSubscription>(state, status, error) : SubscribedAsync(state, tokens);
+        if (status != 0)
+        {
+            held?.ReleaseHolder();
+            return Refused<FelixSubscription>(state, status, error);
+        }
+
+        return SubscribedAsync(state, held);
     }
 
     /// <summary>Frees the client, cancelling its pending calls.</summary>
@@ -333,10 +346,20 @@ public sealed partial class FelixClient : IAsyncDisposable, IDisposable
         }
     }
 
-    private static async Task<FelixSubscription> SubscribedAsync(CallState<FelixSubscriptionHandle> state, TokenSource? tokens)
+    private static async Task<FelixSubscription> SubscribedAsync(CallState<FelixSubscriptionHandle> state, TokenSource? held)
     {
-        var handle = await state.WaitAsync().ConfigureAwait(false);
-        handle.Track(tokens);
+        FelixSubscriptionHandle handle;
+        try
+        {
+            handle = await state.WaitAsync().ConfigureAwait(false);
+        }
+        catch
+        {
+            held?.ReleaseHolder();
+            throw;
+        }
+
+        handle.Adopt(held);
         return new(handle);
     }
 

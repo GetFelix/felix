@@ -22,14 +22,26 @@ internal abstract class TokenHeldHandle : SafeHandle
     /// <summary>Takes a reference on <paramref name="source"/> until this handle is released.</summary>
     internal void Track(TokenSource? source)
     {
-        if (source is null || Volatile.Read(ref tokens) is not null || !source.Retain())
+        if (source is not null && source.Retain())
+        {
+            Adopt(source);
+        }
+    }
+
+    /// <summary>
+    /// Takes over a reference already retained for this handle (null for none). The handle
+    /// releases it once, when it is released; a second reference is dropped at once.
+    /// </summary>
+    internal void Adopt(TokenSource? retained)
+    {
+        if (retained is null)
         {
             return;
         }
 
-        if (Interlocked.CompareExchange(ref tokens, source, null) is not null)
+        if (Interlocked.CompareExchange(ref tokens, retained, null) is not null)
         {
-            source.ReleaseHolder();
+            retained.ReleaseHolder();
             return;
         }
 
