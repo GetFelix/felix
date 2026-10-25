@@ -11,7 +11,7 @@ mod lag;
 mod quorum;
 mod rebuild;
 mod shipping;
-mod trimmed_history;
+pub(crate) mod trimmed_history;
 
 use std::net::SocketAddr;
 use std::sync::Mutex;

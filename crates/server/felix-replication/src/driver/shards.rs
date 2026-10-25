@@ -130,9 +130,9 @@ pub(super) struct FenceAttempt {
 /// An exchange handed back by a pass, ended.
 pub(super) struct Answered {
     key: ShardKey,
-    generation: u64,
-    incarnation: u64,
-    cursor: FollowerCursor,
+    pub(super) generation: u64,
+    pub(super) incarnation: u64,
+    pub(super) cursor: FollowerCursor,
     /// Boxed: three more cursors make every event as large as this one.
     rode: Box<RideAlong>,
     cut: bool,
@@ -211,6 +211,8 @@ struct LastPass {
     lag: Option<u64>,
     behind: bool,
     drain_pending: bool,
+    /// The tail the pass read.
+    tail: Option<u64>,
 }
 
 impl LastPass {
@@ -222,6 +224,7 @@ impl LastPass {
             lag: None,
             behind: false,
             drain_pending: false,
+            tail: None,
         }
     }
 }
@@ -731,6 +734,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             lag,
             behind,
             drain_pending,
+            tail,
         });
         let mut again = std::mem::take(&mut state.again) || copying || again;
         let held = std::mem::take(&mut state.held);
@@ -854,6 +858,39 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         }
     }
 
+    /// An answer carrying `node`'s held cursor exactly as it is.
+    #[cfg(test)]
+    pub(super) fn answer_held(&self, key: &ShardKey, node: &str, checked: bool) -> Answered {
+        let entry = self.streams.get(key).expect("cursors");
+        let cursor = entry
+            .followers
+            .iter()
+            .find(|cursor| cursor.node_id == node)
+            .expect("follower")
+            .clone();
+        Answered {
+            key: key.clone(),
+            generation: entry.generation,
+            incarnation: entry.incarnation,
+            cursor,
+            rode: Box::default(),
+            cut: false,
+            checked,
+        }
+    }
+
+    /// Halt `node`'s held cursor, as an earlier pass would have.
+    #[cfg(test)]
+    pub(super) fn halt_follower(&mut self, key: &ShardKey, node: &str) {
+        let entry = self.streams.get_mut(key).expect("cursors");
+        let cursor = entry
+            .followers
+            .iter_mut()
+            .find(|cursor| cursor.node_id == node)
+            .expect("follower");
+        cursor.halted = Some(crate::follower::Halt::Diverged);
+    }
+
     /// Mark `node` as having an exchange from an earlier pass under way.
     #[cfg(test)]
     pub(super) fn hold_busy(&mut self, key: &ShardKey, node: &str) {
@@ -896,8 +933,9 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
     }
 
     /// Put an ended exchange's cursor where its stale copy is. True when the
-    /// follower moved, a copy was cut at its slice, or the follower answered
-    /// for more than the mark counts: each is a pass's worth of work to do now
+    /// follower moved, a copy was cut at its slice, the follower answered for
+    /// more than the mark counts, or it answered from behind the tail the last
+    /// pass read: each is a pass's worth of work to do now
     /// rather than at the next wake. A follower that did not answer is left
     /// for the next wake, or a peer that fails fast would be dialled in a loop.
     ///
@@ -920,9 +958,27 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             .marks
             .offset_at(&watch_key(&key), incarnation, generation)
             .unwrap_or(0);
-        let counts_for_more = checked && cursor.halted.is_none() && cursor.confirmed > mark;
+
+        // A pass that found this follower busy shipped it nothing, and the
+        // append that started that pass was its only wake. Without another
+        // pass the records past its cursor wait for the tick.
+        let tail = self
+            .states
+            .get(&key)
+            .and_then(|state| state.last.as_ref())
+            .and_then(|last| last.tail);
+        let current = self
+            .streams
+            .get(&key)
+            .is_some_and(|e| (e.generation, e.incarnation) == (generation, incarnation));
+        let counts_for_more =
+            current && checked && cursor.halted.is_none() && cursor.confirmed > mark;
+        let owed = current
+            && cursor.halted.is_none()
+            && !cursor.stalled
+            && tail.is_some_and(|tail| cursor.next_offset < tail);
         let at = (generation, incarnation);
-        let mut moved = put_back(self.streams.get_mut(&key), at, cursor) || counts_for_more;
+        let mut moved = put_back(self.streams.get_mut(&key), at, cursor) || counts_for_more || owed;
         for (entries, cursor) in [
             (&mut self.group, rode.group),
             (&mut self.dead_letters, rode.dead_letters),
