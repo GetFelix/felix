@@ -807,6 +807,17 @@ jobs:
       - name: Build the native library
         run: cargo build --locked --release -p felix-capi
 
+      # The release link ends in the platform's strip/linker post-processing, which can
+      # leave a library the OS loader rejects; load it before any test reaches for it.
+      - name: Release library loads
+        run: |
+          case "$RUNNER_OS" in
+            Windows) lib=felix.dll ;;
+            macOS) lib=libfelix.dylib ;;
+            *) lib=libfelix.so ;;
+          esac
+          python3 -I -c 'import ctypes, sys; ctypes.CDLL(sys.argv[1])' "$PWD/target/release/$lib"
+
       - name: Build and unit tests
         run: |
           case "$RUNNER_OS" in
