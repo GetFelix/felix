@@ -61,6 +61,9 @@ typedef struct FelixShardedSubscription FelixShardedSubscription;
 // another thread is calling it.
 typedef struct FelixSubscription FelixSubscription;
 
+// One request for a token, answered once.
+typedef struct FelixTokenReply FelixTokenReply;
+
 // The result of every fallible call. `FELIX_STATUS_OK` is zero; every other
 // value says why the call did not do what it was asked.
 typedef int32_t FelixStatus;
@@ -166,6 +169,17 @@ typedef void (*FelixWatchItemCallback)(void *user_data,
                                        const char *message,
                                        const struct FelixWatchItem *item);
 
+// Asks the app for a token. Called on a library thread each time the client
+// needs one; the app must not block in it. It completes `reply` exactly once,
+// from any thread, with `felix_token_reply_ok` or `felix_token_reply_err`.
+//
+// `reply` stays valid until `token_release` runs.
+typedef void (*FelixTokenFetch)(void *user_data, struct FelixTokenReply *reply);
+
+// Called once when the library is done with `token_user_data`: after the
+// client is freed and no fetch can run or be in flight.
+typedef void (*FelixTokenRelease)(void *user_data);
+
 // What a client asks of the cluster beyond the defaults.
 //
 // Set `size` to `sizeof(FelixConnectOptions)`; a field is read only when
@@ -181,6 +195,17 @@ typedef struct FelixConnectOptions {
   // Ask brokers for each record's append time, for `felix_event_timestamp`
   // and a group record's `timestamp_micros`. Adds eight bytes per event.
   bool timestamps;
+  // Supplies tokens after connect, so a client outlives its first token.
+  // The `token` argument is then only the first one, and may be null; the
+  // first connect then calls this. See `FelixTokenFetch`. When
+  // `felix_client_connect_with` returns anything but `FELIX_STATUS_OK`
+  // this is not used and `token_release` does not run.
+  FelixTokenFetch token_fetch;
+  // Passed to `token_fetch` and `token_release`, from any thread.
+  void *token_user_data;
+  // Runs once, after the client is freed and no fetch can be running, so
+  // `token_user_data` can be released. Used only with `token_fetch`.
+  FelixTokenRelease token_release;
 } FelixConnectOptions;
 
 // Called once when `felix_client_connect` or `felix_client_connect_with`
@@ -2289,6 +2314,30 @@ FelixStatus felix_client_offset_for_time(const struct FelixClient *client,
 // `subscription` is null or a pointer from a subscribe callback that has not
 // been freed, and no other thread is using it.
 void felix_subscription_free(struct FelixSubscription *subscription);
+
+// Complete a fetch with a token. The string is copied.
+//
+// Returns `FELIX_STATUS_INVALID_ARGUMENT` if the reply was already
+// completed (this call changes nothing), or if `token` is null, empty or not
+// UTF-8 (the reply stays open and can still be completed).
+//
+// # Safety
+//
+// `reply` is a pointer passed to a `FelixTokenFetch` whose `token_release`
+// has not run. `token` is null or NUL-terminated.
+FelixStatus felix_token_reply_ok(const struct FelixTokenReply *reply, const char *token);
+
+// Complete a fetch with a failure. The client keeps its current token while
+// that is still valid, and asks again a few seconds later. `message` may be
+// null.
+//
+// Returns `FELIX_STATUS_INVALID_ARGUMENT` if the reply was already
+// completed.
+//
+// # Safety
+//
+// As for `felix_token_reply_ok`, with `message` null or NUL-terminated.
+FelixStatus felix_token_reply_err(const struct FelixTokenReply *reply, const char *message);
 
 #ifdef __cplusplus
 }  // extern "C"

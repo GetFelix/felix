@@ -1,0 +1,1 @@
+- `RefreshingToken` treats a fetch that takes longer than `FETCH_TIMEOUT` (30 s) as failed, so it keeps a still-valid token instead of waiting on the provider forever.

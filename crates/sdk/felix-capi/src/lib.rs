@@ -37,6 +37,7 @@ mod publish;
 mod sharded;
 mod status;
 mod subscription;
+mod token;
 
 pub use cache::{
     FELIX_IF_ABSENT, FELIX_IF_VERSION, FelixCacheCondition, FelixConditionCallback,
@@ -117,4 +118,8 @@ pub use subscription::{
     FelixOffsetCallback, FelixStartKind, FelixSubscribeCallback, FelixSubscription,
     felix_client_offset_for_time, felix_client_subscribe, felix_subscription_close_reason,
     felix_subscription_free, felix_subscription_next, felix_subscription_start_offset,
+};
+pub use token::{
+    FelixTokenFetch, FelixTokenRelease, FelixTokenReply, felix_token_reply_err,
+    felix_token_reply_ok,
 };

@@ -123,12 +123,12 @@ async fn an_initial_token_is_used_before_any_fetch() -> Result<()> {
 /// a token that is still valid is kept.
 #[tokio::test(start_paused = true)]
 async fn a_fetch_that_never_answers_times_out_and_keeps_a_valid_token() -> Result<()> {
-    let provider = RefreshingToken::new(|| std::future::pending::<Result<String>>());
+    let provider = RefreshingToken::new(std::future::pending::<Result<String>>);
     let held = jwt(now_secs() + 600);
     *provider.state.lock().unwrap() = Some(due(held.clone()));
     assert_eq!(provider.token().await?, held);
 
-    let provider = RefreshingToken::new(|| std::future::pending::<Result<String>>());
+    let provider = RefreshingToken::new(std::future::pending::<Result<String>>);
     let err = provider.token().await.unwrap_err();
     assert!(format!("{err:#}").contains("took longer"), "{err:#}");
     Ok(())

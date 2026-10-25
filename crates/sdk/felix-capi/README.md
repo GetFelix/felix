@@ -232,6 +232,20 @@ uses a second client with the fixture's group operator token for the former.
 For a C# binding, copy the poll's records inside the callback and keep
 `(offset, attempts)` as a plain struct to settle with.
 
+### Refreshing a token
+
+`FelixConnectOptions` also takes `token_fetch`, `token_user_data` and
+`token_release`. The library calls `token_fetch(user_data, reply)` on one of its
+threads when a stream needs a token, and the app completes `reply` once, from
+any thread, with `felix_token_reply_ok` or `felix_token_reply_err`. The Rust
+client's `RefreshingToken` does the timing: refresh at two thirds of a token's
+life, keep the old token if a fetch fails or takes over 30 s, retry a refused
+token once. The `token` argument to connect may be `NULL` when a fetch is set.
+A reply never completed fails when the client is freed; a second reply returns
+`FELIX_STATUS_INVALID_ARGUMENT`. `token_release` runs once, after the last
+fetch can run, and not at all when the connect call is refused. See
+`docs-site/src/content/docs/clients/c.md`.
+
 ### Caches, counters and watches
 
 Keys and filters are UTF-8 C strings; values are a pointer and a length, copied

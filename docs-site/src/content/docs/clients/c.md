@@ -427,6 +427,51 @@ of the broker that led the shard. A `FelixGroupRecord` carries `publisher` and
 `timestamp_micros`. A broker that does not negotiate them, or an in-memory stream
 that stores no time, leaves them absent; that is never an error.
 
+## Refreshing a token
+
+A token lasts minutes, and the broker checks it each time a stream opens, so a
+client that runs longer needs a new one. Give `FelixConnectOptions` a fetch
+function and the library calls it when a stream is about to authenticate and
+the held token is missing, two thirds through its life, or was just refused. An
+idle client makes no calls, and the library never runs two fetches at once, so
+the function can rotate a refresh token safely.
+
+```c
+static void fetch_token(void *user_data, FelixTokenReply *reply) {
+  struct app *app = user_data;
+  /* Start the work and return; do not block here. Any thread may finish it. */
+  app_request_token(app, reply);
+}
+
+/* Later, on whichever thread has the answer: */
+felix_token_reply_ok(reply, token);      /* the string is copied */
+/* or */ felix_token_reply_err(reply, "control plane unreachable");
+
+FelixConnectOptions options = {.size = sizeof options,
+                               .token_fetch = fetch_token,
+                               .token_user_data = app,
+                               .token_release = release_app};
+felix_client_connect_with(addrs, "t1", NULL /* first fetch gets it */, NULL,
+                          ca_file, &options, NULL, on_connect, NULL);
+```
+
+- The `token` argument is the first token and may be `NULL` when a fetch
+  function is set; then the connect asks for it.
+- Complete each reply once. A second call returns
+  `FELIX_STATUS_INVALID_ARGUMENT` and changes nothing; so does an answer that
+  arrives after the library gave up on the fetch, which it does after 30
+  seconds. A reply is valid until `token_release` runs.
+- A failure, or a timeout, keeps the current token while it is still valid and
+  tries again a few seconds later; with no valid token the call that needed one
+  fails with the message you gave.
+- A reply still unanswered when the client is freed counts as a failure.
+- `token_release` runs once, after the client is freed and no fetch can be
+  running. Free what `token_user_data` points to there. If
+  `felix_client_connect_with` does not return `FELIX_STATUS_OK` it does not
+  run, and the data is still yours.
+- When the refresh token itself is spent or revoked, run a new login in the
+  fetch function.
+
 ## Caches, counters and watches
 
 Keys and filters are UTF-8 C strings. Values are a pointer and a length, copied
