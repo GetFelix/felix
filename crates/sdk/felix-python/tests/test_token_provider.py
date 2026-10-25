@@ -246,8 +246,7 @@ def test_the_provider_runs_while_the_callers_event_loop_is_blocked(fixture):
         return fixture["token"]
 
     async def main():
-        client = connect(fixture, token_provider=fetch)  # blocks this loop
-        client.close()
+        connect(fixture, token_provider=fetch)  # blocks this loop
         outcome["done"] = True
 
     runner = threading.Thread(target=lambda: asyncio.run(main()), daemon=True)
