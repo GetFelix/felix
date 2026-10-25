@@ -343,7 +343,8 @@ mod tokens {
     }
 
     /// Freeing the last handle fails a fetch the app never answered, so
-    /// neither the shutdown nor the waiting call hangs.
+    /// neither the shutdown nor the waiting call hangs. The app's data lives
+    /// until it answers.
     #[test]
     fn freeing_the_client_fails_a_fetch_the_app_never_answered() {
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -376,12 +377,25 @@ mod tokens {
             .expect("the waiting fetch was never failed")
             .unwrap_err();
         assert!(err.contains("freed"), "{err}");
-        for _ in 0..500 {
-            if probe.released.load(Ordering::SeqCst) == 1 {
-                break;
+        // The app still holds a reply, so its data is not released yet.
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(probe.released.load(Ordering::SeqCst), 0);
+
+        // Answering after the free is accepted and triggers the release.
+        let reply = probe.reply(0) as usize;
+        let status = std::thread::spawn(move || {
+            let token = std::ffi::CString::new("late").unwrap();
+            // SAFETY: the reply is live until this call consumes it.
+            unsafe {
+                crate::token::felix_token_reply_ok(
+                    reply as *const crate::token::FelixTokenReply,
+                    token.as_ptr(),
+                )
             }
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        })
+        .join()
+        .unwrap();
+        assert_eq!(status, FELIX_STATUS_OK);
         assert_eq!(probe.released.load(Ordering::SeqCst), 1);
     }
 }

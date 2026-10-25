@@ -161,23 +161,25 @@ unchanged, once no valid token is held to fall back on. A caller waits at most
 30 seconds for a fetch and then counts it as failed, but the fetch is not
 abandoned: the library does not call the function again while a reply is
 unanswered, the next refresh waits on the same reply, and an answer that arrives
-late returns `FELIX_STATUS_OK` and its token is used. The library holds every unanswered
-reply until the client is freed, when it counts as a failure, so answer each
-one, even late. A null, empty or non-UTF-8 `token` returns
+late returns `FELIX_STATUS_OK` and its token is used. Answer every reply, even
+late and even after the client is freed: a freed client waits on no one, and
+discards the token. A null, empty or non-UTF-8 `token` returns
 `FELIX_STATUS_INVALID_ARGUMENT` and leaves the reply open to be answered.
 
 **Lifetime.** The first `felix_token_reply_ok` or `felix_token_reply_err` call
 that is not refused for a bad argument consumes the reply, and the library
 frees it once the fetch is over. Using it again is undefined behaviour, as for
-any freed handle. A reply never answered stays until it is, or until
-`token_release` runs. `token_release` is how you free what `token_user_data`
-points to:
+any freed handle. `token_release` is how you free what `token_user_data`
+points to. It never runs while a reply is unanswered, so a fetch thread that
+outlives `felix_client_free` can still use that data until it answers; an app
+that never answers a reply leaks its data:
 
 - If `felix_client_connect_with` returns anything but `FELIX_STATUS_OK`, the
   fetch is never used, `token_release` never runs, and the data is still yours.
 - If it returns `FELIX_STATUS_OK`, `token_release` runs exactly once later,
-  after the client is freed and no fetch can be running, including when the
-  connect then reports failure through `on_connect`.
+  after the client is freed and the last reply has been answered (from any
+  thread, before or after the free), including when the connect then reports
+  failure through `on_connect`.
 
 The example below does the control plane call with libcurl and keeps the
 rotating refresh token. The refresh token works once: every refresh returns a
@@ -280,6 +282,9 @@ struct fetch_job {
   FelixTokenReply *reply;
 };
 
+/* This thread outlives felix_client_free, and that is safe: the library keeps
+ * the session until every reply has been answered, then calls release_session.
+ * So use the session only before answering, and answer on every path. */
 static void *answer(void *arg) {
   struct fetch_job *job = arg;
   char token[2048], error[160];

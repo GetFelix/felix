@@ -98,6 +98,9 @@ struct fetch_job {
   FelixTokenReply *reply;
 };
 
+/* This thread outlives felix_client_free, and that is safe: the library keeps
+ * the session until every reply has been answered, then calls release_session.
+ * So use the session only before answering, and answer on every path. */
 static void *answer(void *arg) {
   struct fetch_job *job = arg;
   char token[2048], error[160];

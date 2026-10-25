@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::ffi::{c_char, c_void};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use anyhow::{Result, anyhow, bail};
 use felix_client::RefreshingToken;
@@ -19,25 +19,35 @@ use crate::status::{FELIX_STATUS_OK, FelixStatus};
 /// from any thread, with `felix_token_reply_ok` or `felix_token_reply_err`.
 ///
 /// `reply` is valid until the first `felix_token_reply_ok` or
-/// `felix_token_reply_err` call on it that is not refused for a bad argument,
-/// or until `token_release` runs, whichever is first.
+/// `felix_token_reply_err` call on it that is not refused for a bad argument.
+/// Answer every reply, even after the client is freed: `token_release` runs
+/// only after the last one.
 pub type FelixTokenFetch =
     Option<unsafe extern "C" fn(user_data: *mut c_void, reply: *mut FelixTokenReply)>;
 
 /// Called once when the library is done with `token_user_data`: after the
-/// client is freed and no fetch can run or be in flight.
+/// client is freed and every reply handed to the app has been answered.
 pub type FelixTokenRelease = Option<unsafe extern "C" fn(user_data: *mut c_void)>;
 
 /// One request for a token, answered once.
 pub struct FelixTokenReply {
     answer: Mutex<Option<oneshot::Sender<Result<String, String>>>>,
-    /// Where this reply is held until it is answered.
-    held: Weak<Held>,
+    /// Keeps the source, and so `token_user_data`, alive until this is
+    /// answered. Dropped on the answer, which breaks the cycle through
+    /// `State::replies`.
+    source: Arc<TokenSource>,
 }
 
-/// The replies handed out and not yet answered, by address.
+/// The reply bookkeeping, under one lock so a fetch cannot start after the
+/// release decision.
 #[derive(Default)]
-struct Held(Mutex<HashMap<usize, Arc<FelixTokenReply>>>);
+struct State {
+    /// Replies handed out and not yet answered, by address.
+    replies: HashMap<usize, Arc<FelixTokenReply>>,
+    /// The client was freed: no new fetch starts.
+    freed: bool,
+    released: bool,
+}
 
 impl FelixTokenReply {
     /// Consumes the reply: it is freed once answered, so the app must not
@@ -49,13 +59,12 @@ impl FelixTokenReply {
         // The receiver is gone when the fetch was abandoned (the client was
         // freed); that is not the app's mistake.
         let _ = sender.send(answer);
-        // Last, because this may free `self`.
+        // Last, because removing the reply may free `self`.
+        let source = Arc::clone(&self.source);
         let key = std::ptr::from_ref(self) as usize;
-        let freed = self
-            .held
-            .upgrade()
-            .and_then(|held| lock(&held.0).remove(&key));
+        let freed = lock(&source.state).replies.remove(&key);
         drop(freed);
+        source.release_if_done();
         Ok(FELIX_STATUS_OK)
     }
 }
@@ -65,13 +74,14 @@ impl FelixTokenReply {
 /// Returns `FELIX_STATUS_INVALID_ARGUMENT` if `token` is null, empty or not
 /// UTF-8 (the reply stays open and can still be completed). Otherwise it
 /// returns `FELIX_STATUS_OK` and consumes the reply, including when the
-/// library had stopped waiting on the fetch; a late token is still used, and
-/// the fetch is not called again while a reply is outstanding.
+/// library had stopped waiting on the fetch or the client was freed; a late
+/// token is still used by a live client, and discarded by a freed one. The
+/// fetch is not called again while a reply is outstanding.
 ///
 /// # Safety
 ///
 /// `reply` is a pointer passed to a `FelixTokenFetch` that no call has
-/// consumed yet and whose `token_release` has not run. Using it again after
+/// consumed yet. Using it again after
 /// a call that consumed it is undefined behaviour. `token` is null or
 /// NUL-terminated.
 #[unsafe(no_mangle)]
@@ -125,8 +135,7 @@ pub(crate) struct TokenSource {
     /// Cancelled when the client is freed, which fails the fetches waiting on
     /// the app.
     closed: CancellationToken,
-    /// Replies the app has not answered yet; answering one frees it.
-    replies: Arc<Held>,
+    state: Mutex<State>,
 }
 
 // SAFETY: the library never dereferences `user_data`. The header tells the
@@ -146,43 +155,69 @@ impl TokenSource {
             user_data,
             release,
             closed: CancellationToken::new(),
-            replies: Arc::default(),
+            state: Mutex::default(),
         }
     }
 
     /// Replies handed to the app and not yet answered.
     #[cfg(test)]
     pub(crate) fn held(&self) -> usize {
-        lock(&self.replies.0).len()
+        lock(&self.state).replies.len()
     }
 
-    /// Fail every fetch waiting on the app, and any later one.
+    /// The client is freed: fail every fetch waiting on the app and any later
+    /// one. `token_release` runs now, or after the last outstanding answer.
     pub(crate) fn close(&self) {
+        lock(&self.state).freed = true;
         self.closed.cancel();
+        self.release_if_done();
     }
 
-    /// Hand the app a new reply and call its fetch function.
-    fn start(&self) -> oneshot::Receiver<Result<String, String>> {
+    /// Run `token_release` once, when the client is freed and no reply is
+    /// outstanding. The app's function runs outside the lock.
+    fn release_if_done(&self) {
+        {
+            let mut state = lock(&self.state);
+            if !state.freed || state.released || !state.replies.is_empty() {
+                return;
+            }
+            state.released = true;
+        }
+        if let Some(release) = self.release {
+            // SAFETY: the app's function. No reply is outstanding and none
+            // can start, so nothing will use `user_data` again.
+            unsafe { release(self.user_data) };
+        }
+    }
+
+    /// Hand the app a new reply and call its fetch function. `None` once the
+    /// client is freed.
+    fn start(self: &Arc<Self>) -> Option<oneshot::Receiver<Result<String, String>>> {
         let (sender, receiver) = oneshot::channel();
         let reply = Arc::new(FelixTokenReply {
             answer: Mutex::new(Some(sender)),
-            held: Arc::downgrade(&self.replies),
+            source: Arc::clone(self),
         });
         let pointer = Arc::as_ptr(&reply).cast_mut();
-        lock(&self.replies.0).insert(pointer as usize, Arc::clone(&reply));
+        {
+            let mut state = lock(&self.state);
+            if state.freed {
+                return None;
+            }
+            state.replies.insert(pointer as usize, Arc::clone(&reply));
+        }
         // SAFETY: the app's function, with the pointer it is documented to
         // take; `reply` keeps it alive through the call even if the app
         // answers inside it.
         unsafe { (self.fetch)(self.user_data, pointer) };
         drop(reply);
-        receiver
+        Some(receiver)
     }
 
     async fn fetch(self: Arc<Self>) -> Result<String> {
-        if self.closed.is_cancelled() {
+        let Some(receiver) = self.start() else {
             bail!("the client was freed");
-        }
-        let receiver = self.start();
+        };
         tokio::select! {
             biased;
             answer = receiver => match answer {
@@ -198,10 +233,15 @@ impl TokenSource {
 }
 
 impl Drop for TokenSource {
+    /// A source that was never closed (a connect that did not go ahead) still
+    /// releases. Outstanding replies hold the source, so none remain here.
     fn drop(&mut self) {
+        let state = self.state.get_mut().unwrap_or_else(PoisonError::into_inner);
+        if std::mem::replace(&mut state.released, true) {
+            return;
+        }
         if let Some(release) = self.release {
-            // SAFETY: the app's function. Nothing holds the source, so no
-            // fetch can run or be waiting on the app.
+            // SAFETY: the app's function; nothing holds the source.
             unsafe { release(self.user_data) };
         }
     }

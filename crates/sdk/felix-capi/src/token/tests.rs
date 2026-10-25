@@ -179,9 +179,12 @@ async fn an_unanswered_reply_fails_when_the_source_closes() {
     assert_eq!(probe.fetches.load(Ordering::SeqCst), 1);
 }
 
-/// `token_release` waits for the last fetch, and runs once.
+/// `token_release` never runs while a reply is unanswered, even once the
+/// client is freed and every reference but the reply's is gone; the last
+/// answer, from another thread, triggers it exactly once, and the late answer
+/// is accepted.
 #[tokio::test]
-async fn release_runs_once_after_the_last_fetch() {
+async fn release_waits_for_the_last_answer() {
     use felix_client::TokenProvider;
     let probe = Probe::new(Answer::Hold);
     let source = probe.source();
@@ -190,20 +193,54 @@ async fn release_runs_once_after_the_last_fetch() {
     let waiting = tokio::spawn(async move { held.token().await.map_err(|e| format!("{e:#}")) });
     wait_for("the fetch", || probe.fetches.load(Ordering::SeqCst) == 1).await;
 
-    // The caller lets go of everything it had while a fetch is in flight.
+    // The client is freed and the caller lets go of everything while the app
+    // still has a reply.
     source.close();
     drop(source);
+    assert!(waiting.await.unwrap().is_err());
     drop(tokens);
+    tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(
         probe.released.load(Ordering::SeqCst),
         0,
-        "released mid-fetch"
+        "released before the reply was answered"
     );
 
-    // The fetch settles (closed, so as an error), then the last reference goes.
-    assert!(waiting.await.unwrap().is_err());
-    wait_for("the release", || probe.released.load(Ordering::SeqCst) == 1).await;
+    let reply = probe.reply(0) as usize;
+    let answered = std::thread::spawn(move || {
+        let token = CString::new("late").unwrap();
+        // SAFETY: the reply is live until this call consumes it.
+        let status =
+            unsafe { felix_token_reply_ok(reply as *const FelixTokenReply, token.as_ptr()) };
+        // The release ran by the time the answer returned, not before it.
+        status
+    })
+    .join()
+    .unwrap();
+    assert_eq!(status_ok(answered), true);
+    assert_eq!(probe.released.load(Ordering::SeqCst), 1);
     tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(probe.released.load(Ordering::SeqCst), 1);
+}
+
+fn status_ok(status: crate::status::FelixStatus) -> bool {
+    status == FELIX_STATUS_OK
+}
+
+/// With every reply answered before the client is freed, the free releases.
+#[tokio::test]
+async fn release_runs_on_close_when_nothing_is_outstanding() {
+    use felix_client::TokenProvider;
+    let probe = Probe::new(Answer::OtherThread("t"));
+    let source = probe.source();
+    let tokens = provider(&source, None);
+    assert_eq!(tokens.token().await.unwrap(), "t");
+    wait_for("the reply to be freed", || source.held() == 0).await;
+    assert_eq!(probe.released.load(Ordering::SeqCst), 0);
+    source.close();
+    assert_eq!(probe.released.load(Ordering::SeqCst), 1);
+    drop(source);
+    drop(tokens);
     assert_eq!(probe.released.load(Ordering::SeqCst), 1);
 }
 

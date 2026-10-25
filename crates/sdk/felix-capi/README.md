@@ -241,7 +241,7 @@ any thread, with `felix_token_reply_ok` or `felix_token_reply_err`. The Rust
 client's `RefreshingToken` does the timing: refresh at two thirds of a token's
 life, keep the old token if a fetch fails or a caller has waited 30 s, retry a refused
 token once. The `token` argument to connect may be `NULL` (or empty) when a
-fetch is set. A reply never completed is held until the client is freed, so answer each one, even late.
+fetch is set. Answer every reply, even late and even after the client is freed: `token_release` waits for the last one, and an app that never answers leaks its `user_data`.
 
 The first reply call that is not refused for a bad argument consumes the reply,
 including an answer that arrives after the 30 s timeout (it returns
@@ -250,8 +250,8 @@ again while a reply is outstanding). Using the reply again is
 undefined behaviour. `token_release`: if `felix_client_connect_with` returns
 anything but `FELIX_STATUS_OK` it never runs and the caller keeps
 `token_user_data`; if it returns `FELIX_STATUS_OK` it runs exactly once later,
-after the client is freed and no fetch can run, including when the connect then
-fails through `on_connect`. See `docs-site/src/content/docs/clients/c.md`.
+after the client is freed and the last reply is answered, including when the
+connect then fails through `on_connect`. See `docs-site/src/content/docs/clients/c.md`.
 
 ### Caches, counters and watches
 
