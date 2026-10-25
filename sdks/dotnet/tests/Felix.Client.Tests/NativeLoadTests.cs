@@ -43,7 +43,8 @@ public class NativeLoadTests
 
     [Theory]
     [InlineData("linux-musl-x64")]
-    [InlineData("alpine.3.20-arm64-musl")]
+    [InlineData("alpine.3.20-x64")]
+    [InlineData("alpine.3.20-arm64")]
     public void AMuslRuntimeIsRefusedWithTheSupportedPlatforms(string rid)
     {
         var message = NativeLoader.Unsupported(rid);

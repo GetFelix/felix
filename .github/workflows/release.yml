@@ -755,7 +755,7 @@ jobs:
   # is actually available first — it is unrelated to the crate name.
   python-release-assets:
     name: Attach wheels to the release
-    needs: [python-wheels, python-sdist]
+    needs: [python-wheels, python-sdist, linux-x86_64]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -933,7 +933,7 @@ jobs:
 
   typescript-release-assets:
     name: Attach the Node addons to the release
-    needs: typescript-addon
+    needs: [typescript-addon, linux-x86_64]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
