@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792906780238,
+  "lastUpdate": 1792907361529,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -45804,6 +45804,72 @@ window.BENCHMARK_DATA = {
             "range": "580.63",
             "unit": "us",
             "extra": "trials: 5\nmedian: 649.00\nmean: 885.40\nstdev: 580.63\ncv: 65.58%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0bda1cd8cdee197633ea2c9a54d29feba2303033",
+          "message": "fix(replication): only this shard's appends or a busy answer cut a waiting pass (#1532) (#1541)\n\nA replication pass waiting on a busy follower before it has a majority was cut\nshort by any wake: the 2 s tick, a route change, or an append on any shard of\nthe broker (Broker::appended is broker-wide). The cut pass's exchanges became\nstragglers and the next pass re-pinged, one more round trip each time; under a\n400 ms link delay a publish missed its 1.5 s quorum timeout (#1532).\n\nBefore a majority, a wake now cuts the pass only when a busy follower answered\nor this shard's own log or counter log grew past what the pass ships. Every\nwake still ends the wait after the majority, so a drain or move starts at once.\nDeterministic driver tests (paused time) cover a route change, the tick and\nanother shard's append not cutting, this shard's append and a counter write\ncutting, and a route change ending a pass waiting on a dead follower; each\nfails with its part of the fix reverted (785 ms vs 405 ms for the original).\n\nFixes #1532.\n\nSpec-Unaffected: the quorum mark still moves only on a real majority; this changes when a waiting replication pass is cut short, which the formal model does not represent.",
+          "timestamp": "2026-10-24T22:45:55-07:00",
+          "tree_id": "3a57875066474736374e1b45dbeb9295fb4eebdb",
+          "url": "https://github.com/GetFelix/felix/commit/0bda1cd8cdee197633ea2c9a54d29feba2303033"
+        },
+        "date": 1792907357429,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 74,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 74.00\nmean: 73.40\nstdev: 0.89\ncv: 1.22%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 97,
+            "range": "19.68",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 97.00\nmean: 107.40\nstdev: 19.68\ncv: 18.32%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 144,
+            "range": "42.43",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 144.00\nmean: 150.80\nstdev: 42.43\ncv: 28.14%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 92,
+            "range": "3.27",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 92.00\nmean: 93.20\nstdev: 3.27\ncv: 3.51%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 211,
+            "range": "88.09",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 211.00\nmean: 249.00\nstdev: 88.09\ncv: 35.38%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 322,
+            "range": "368.72",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 322.00\nmean: 474.80\nstdev: 368.72\ncv: 77.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
