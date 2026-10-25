@@ -485,7 +485,13 @@ def test_with_identity_cancels_an_async_provider_at_the_timeout(fixture):
         async with client:
             with pytest.raises(felix.AuthError, match="longer than 30s"):
                 await client.with_identity(fixture["tenant_id"], token_provider=provider)
-            assert cancelled.wait(10), "the provider's task was not cancelled"
+            # Poll without blocking: the provider runs on this loop.
+            for _ in range(200):
+                if cancelled.is_set():
+                    break
+                await asyncio.sleep(0.05)
+            else:
+                raise AssertionError("the provider's task was not cancelled")
 
     asyncio.run(main())
 
