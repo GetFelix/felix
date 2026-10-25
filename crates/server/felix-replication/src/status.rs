@@ -37,6 +37,10 @@ pub struct FollowerStatus {
     /// A move's destination still copying, left out of the quorum.
     pub learner: bool,
     pub next_offset: u64,
+    /// How far the follower has answered that its log is this leader's.
+    pub confirmed: u64,
+    /// An exchange with it from an earlier pass is still unanswered.
+    pub busy: bool,
     /// Records behind the tail the pass read.
     pub lag: Option<u64>,
     /// `halted`, `rebuilding`, `copying`, `stalled` or `shipping`.
@@ -107,6 +111,8 @@ pub(crate) fn follower_status(
         node_id: cursor.node_id.clone(),
         learner,
         next_offset: cursor.next_offset,
+        confirmed: cursor.confirmed,
+        busy: false,
         lag: tail.map(|tail| tail.saturating_sub(cursor.next_offset)),
         state,
         halted: cursor.halted.map(|halt| crate::halted::describe(halt).0),

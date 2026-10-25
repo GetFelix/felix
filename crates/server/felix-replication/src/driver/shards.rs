@@ -31,7 +31,7 @@ use crate::promotion::Outcome;
 use crate::promotion::PromotionGate;
 use crate::quorum::QuorumMarks;
 use crate::reporter::Reporter;
-use crate::status::{FenceStatus, ShardStatus, ShardStatusBoard, follower_status};
+use crate::status::{FenceStatus, FollowerStatus, ShardStatus, ShardStatusBoard, follower_status};
 use crate::{FollowerCursor, MoveThrottle, Rebuilds};
 
 /// Everything a pass borrows from the driver task, for as long as it runs.
@@ -638,7 +638,10 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             .iter()
             .map(|cursor| {
                 let learner = cursors.learner.as_deref() == Some(cursor.node_id.as_str());
-                follower_status(cursor, tail, learner)
+                FollowerStatus {
+                    busy: straggling.iter().any(|(node, _)| *node == cursor.node_id),
+                    ..follower_status(cursor, tail, learner)
+                }
             })
             .collect();
         self.cx.status.put(
