@@ -5417,7 +5417,9 @@ static void token_scenarios(const struct fixture *f) {
   } else {
     token_app_init(&app, f->token);
     app.delay_ms = 33000;
-    FelixStatus status = connect_token(f, f->addrs, tok, &app, &client);
+    /* One broker: with several the client fails over after the timeout and
+       the next broker's auth joins the same call. */
+    FelixStatus status = connect_token(f, one, tok, &app, &client);
     CHECK(status == FELIX_STATUS_OK, "connecting with a short token: %d",
           (int)status);
     if (status == FELIX_STATUS_OK) {

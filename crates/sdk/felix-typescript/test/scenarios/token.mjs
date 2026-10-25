@@ -250,11 +250,13 @@ export default function register(ctx) {
   it("a provider past the timeout fails the waiter, and the next stream joins the call", { timeout: 150_000 }, () =>
     scenario("token.timeout_joins", async () => {
       const { fixture } = ctx;
-      // The held token expires at 6 s, so there is nothing to fall back on.
+      // One broker: with several, the client fails over to the next broker
+      // after the timeout, which joins the same call and succeeds. The held
+      // token expires at 6 s, so there is nothing to fall back on.
       // The provider answers 33 s after it is called: the first stream gives
       // up at 30 s and the second joins the same call and gets its answer.
       const { state, provider } = counting(async () => fixture.token, 33_000);
-      const client = await connectWith(provider, await mint(fixture, 6));
+      const client = await connectWith(provider, await mint(fixture, 6), fixture.addrs.slice(0, 1));
       try {
         const open = async () => {
           const subscription = await client.subscribe(fixture.tenant_id, fixture.namespace, fixture.durable_stream);

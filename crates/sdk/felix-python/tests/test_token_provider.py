@@ -597,7 +597,9 @@ def test_with_identity_cancels_an_async_provider_at_the_timeout(fixture):
 
 @pytest.mark.scenario("token.timeout_joins")
 def test_a_sync_provider_past_the_timeout_fails_the_waiter_and_the_next_call_joins_it(fixture):
-    # The held token expires at 6 s, so there is nothing to fall back on. The
+    # One broker: with several, the client fails over after the timeout and
+    # the next broker's auth joins the same call. The held token expires at
+    # 6 s, so there is nothing to fall back on. The
     # provider answers 33 s after it is called: the first stream gives up at
     # 30 s, the second joins the same call instead of starting another, and
     # gets its late answer. Sync providers cannot be cancelled, so joining is
@@ -608,7 +610,9 @@ def test_a_sync_provider_past_the_timeout_fails_the_waiter_and_the_next_call_joi
         fixture["namespace"],
         fixture["durable_stream"],
     )
-    with connect(fixture, token=mint(fixture, 6), token_provider=provider) as client:
+    with connect(
+        fixture, fixture["addrs"][:1], token=mint(fixture, 6), token_provider=provider
+    ) as client:
         time.sleep(6.5)
         started = time.monotonic()
         with pytest.raises(felix.AuthError, match="longer than 30s"):
