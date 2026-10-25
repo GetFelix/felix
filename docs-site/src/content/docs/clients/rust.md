@@ -130,6 +130,12 @@ a `tokio_util::sync::CancellationToken` that fires at that timeout and when the
 `RefreshingToken` is dropped, for a provider that can stop early. If a fetch fails while the current token is still valid, it keeps
 using that one and tries again a few seconds later. If the broker refuses a
 token and the provider has a different one, the client retries once with it.
+When there is no valid token to fall back on, a provider failure (an error, a
+timeout) fails that operation with a `felix_client::AuthError` carrying the
+provider's message. It is not retried, because each call can rotate a refresh
+token; the next operation asks again. A broker's refusal of the credential is an
+`AuthError` too, and bindings tell auth failures apart by this type, not by the
+message.
 
 ### Getting and refreshing a token
 

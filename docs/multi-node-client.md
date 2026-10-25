@@ -519,6 +519,7 @@ and `semantics.md` describe.
 | What you see | What it means | What to do |
 | --- | --- | --- |
 | `BrokerError` with `forbidden` | The token lacks the permission | Fix the credential. Not retried |
+| `AuthError` | The token provider failed or timed out, or the broker refused the credential | Fix the provider or credential. Not retried; the next operation asks the provider again |
 | `BrokerError` with `not_found` | This broker does not know it *yet*, or at all | Retried for you for 5 s |
 | `BrokerError` with `quorum_timeout` (`outcome_unknown`) | `Quorum` could not reach a majority in time | Unknown, not failed. Resend only if duplicates are acceptable, or use an idempotent producer |
 | `BrokerError` with `shard_unavailable` | The shard is between owners, or its owner is not ready | Retried for you; a cached owner is dropped at once |

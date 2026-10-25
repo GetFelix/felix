@@ -316,6 +316,9 @@ impl ClusterClient {
             .await
         {
             Ok(shards) => shards,
+            // A token failure is final: a new connection would call the
+            // provider again.
+            Err(first) if super::retry::is_terminal(&first) => return Err(first),
             Err(first) => {
                 self.reconnect(&client).await.map_err(|reconnect_err| {
                     first.context(format!(

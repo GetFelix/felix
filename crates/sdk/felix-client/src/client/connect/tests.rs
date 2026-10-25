@@ -87,10 +87,7 @@ async fn a_token_every_broker_refuses_is_an_auth_error() -> Result<()> {
         .await
         .err()
         .expect("every broker refused");
-    assert!(
-        err.downcast_ref::<crate::connection::AuthRejected>()
-            .is_some()
-    );
+    assert!(err.downcast_ref::<crate::AuthError>().is_some());
     let text = format!("{err:#}");
     assert!(text.contains("no broker accepted the token"), "{text}");
     assert!(text.contains(&a.addr.to_string()) && text.contains(&b.addr.to_string()));
@@ -106,10 +103,7 @@ async fn a_refusal_mixed_with_an_unreachable_broker_stays_a_connection_error() -
         .await
         .err()
         .expect("neither broker admitted the client");
-    assert!(
-        err.downcast_ref::<crate::connection::AuthRejected>()
-            .is_none()
-    );
+    assert!(err.downcast_ref::<crate::AuthError>().is_none());
     assert!(
         format!("{err:#}").starts_with("no broker answered"),
         "{err:#}"
@@ -233,7 +227,7 @@ async fn a_custom_provider_that_never_answers_fails_at_the_fetch_timeout() -> Re
 
 fn refusal(code: felix_wire::ErrorCode) -> anyhow::Error {
     crate::error::refused("auth rejected", "no".to_string(), Some(code), None, None)
-        .context(crate::connection::AuthRejected::for_test())
+        .context(crate::AuthError::refused("no"))
 }
 
 /// Only an unauthenticated or forbidden refusal is an auth failure; an

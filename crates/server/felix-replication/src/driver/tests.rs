@@ -133,7 +133,7 @@ fn key() -> ShardKey {
 }
 
 fn nodes() -> Map<String, NodeRef> {
-    ["broker-a", "broker-b", "broker-c"]
+    ["broker-a", "broker-b", "broker-c", "broker-d"]
         .into_iter()
         .enumerate()
         .map(|(i, id)| (id.to_string(), node(id, 7001 + i as u16)))

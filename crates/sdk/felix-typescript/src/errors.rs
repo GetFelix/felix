@@ -25,7 +25,7 @@
 //! detail rather than something a caller parses.
 
 use felix_client::{
-    BrokerError, CommitError, NotLeaderError, SubscribeCursorError, SubscriptionLost,
+    AuthError, BrokerError, CommitError, NotLeaderError, SubscribeCursorError, SubscriptionLost,
 };
 use felix_wire::RetryClass;
 use napi::{Error, Status};
@@ -132,6 +132,9 @@ pub(crate) fn encode(err: &anyhow::Error) -> String {
         .any(|e| e.downcast_ref::<SubscriptionLost>().is_some())
     {
         KIND_CONNECTION
+    } else if err.is::<AuthError>() {
+        // Typed, not read from the message: see `kind_from_text`.
+        KIND_AUTH
     } else {
         kind_from_text(&text.to_ascii_lowercase())
     };
@@ -160,11 +163,7 @@ pub(crate) fn kind_for_code(code: &str, retry: RetryClass) -> &'static str {
 
 /// The fallback for an error without a code.
 fn kind_from_text(lower: &str) -> &'static str {
-    if lower.contains("unauthorized")
-        || lower.contains("permission")
-        || lower.contains("forbidden")
-        || lower.contains("token")
-    {
+    if lower.contains("unauthorized") || lower.contains("permission") {
         KIND_AUTH
     } else if lower.contains("unknown tenant")
         || lower.contains("unknown stream")

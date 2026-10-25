@@ -63,6 +63,13 @@ debug = false
 lto = "fat"
 codegen-units = 1
 
+[profile.release.package.felix-capi]
+# On Apple targets rustc runs the system `strip` over every linked artifact, and
+# macOS 27's `strip` leaves a cdylib's LINKEDIT string pool 4-byte aligned, which
+# dyld refuses to load ("mis-aligned LINKEDIT string pool"). Skip the pass for the
+# C ABI library; symbols stay, which a shared library exports anyway.
+strip = "none"
+
 [workspace.package]
 edition = "2024"
 # Single source of truth for member crate versions. Members opt in with

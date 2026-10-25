@@ -1,0 +1,1 @@
+- The macOS release build of `libfelix.dylib` loads again: rustc's post-link `strip` left the library's LINKEDIT string pool misaligned and dyld rejected it. `felix-capi` now skips that pass, and CI loads the release library on every platform.

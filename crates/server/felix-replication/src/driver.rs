@@ -206,9 +206,9 @@ pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
             };
             let event = tokio::select! {
                 _ = shutdown.cancelled() => return,
-                _ = ticker.tick() => Event::Wake,
-                _ = woken => Event::Wake,
-                _ = routes_changed.notified() => Event::Wake,
+                _ = ticker.tick() => Event::Wake { appended: false },
+                _ = woken => Event::Wake { appended: true },
+                _ = routes_changed.notified() => Event::Wake { appended: false },
                 _ = retry => Event::Retry,
                 Some((scan, pass)) = shards.passes.next(), if !shards.passes.is_empty() => {
                     Event::Passed(scan, Box::new(pass))
@@ -224,8 +224,8 @@ pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
                 }
             };
             match event {
-                Event::Wake => {
-                    shards.scan();
+                Event::Wake { appended } => {
+                    shards.scan(appended);
                     seen.send_modify(|seen| seen.scan = shards.scan);
                 }
                 Event::Retry => shards.retry(),

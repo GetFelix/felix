@@ -11,8 +11,8 @@
 //! chosen from that. Only an error without a code (an older broker, or a
 //! failure inside the client) falls back to reading the message.
 use felix_client::{
-    BrokerError, CommitError as ClientCommitError, NotLeaderError, SubscribeCursorError,
-    SubscriptionLost,
+    AuthError as ClientAuthError, BrokerError, CommitError as ClientCommitError, NotLeaderError,
+    SubscribeCursorError, SubscriptionLost,
 };
 use felix_wire::RetryClass;
 use pyo3::create_exception;
@@ -179,7 +179,12 @@ pub(crate) fn classify(err: &anyhow::Error) -> Classified {
         out.kind = Kind::Connection;
         return out;
     }
-    out.kind = kind_from_text(&out.text.to_ascii_lowercase());
+    // Typed, not read from the message: see `kind_from_text`.
+    out.kind = if err.is::<ClientAuthError>() {
+        Kind::Auth
+    } else {
+        kind_from_text(&out.text.to_ascii_lowercase())
+    };
     out
 }
 
@@ -271,11 +276,7 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
 
 /// The fallback for an error without a code.
 fn kind_from_text(lower: &str) -> Kind {
-    if lower.contains("unauthorized")
-        || lower.contains("permission")
-        || lower.contains("forbidden")
-        || lower.contains("token")
-    {
+    if lower.contains("unauthorized") || lower.contains("permission") {
         return Kind::Auth;
     }
     if lower.contains("unknown tenant")

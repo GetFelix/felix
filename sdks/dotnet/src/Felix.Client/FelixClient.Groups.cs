@@ -116,6 +116,50 @@ public sealed partial class FelixClient
     /// </summary>
     public FelixCache Cache(string tenant, string ns, string cache) => new(this, tenant, ns, cache);
 
-    internal Task<T> Call<T>(CancellationToken cancellationToken, Func<nint, nint, nint, int> begin) =>
-        NativeCall.Start<T>(handle, cancellationToken, begin);
+    internal Task<T> Call<T>(CancellationToken cancellationToken, Func<nint, nint, nint, int> begin)
+    {
+        if (tokens is null || !typeof(TokenHeldHandle).IsAssignableFrom(typeof(T)))
+        {
+            return NativeCall.Start<T>(handle, cancellationToken, begin);
+        }
+
+        // A handle that outlives the client shares its token source. The reference is taken
+        // before the call, so a Dispose racing the callback cannot cancel a fetch it needs.
+        var held = tokens.Retain() ? tokens : null;
+        try
+        {
+            return Tracked(NativeCall.Start<T>(handle, cancellationToken, begin), held);
+        }
+        catch
+        {
+            held?.ReleaseHolder();
+            throw;
+        }
+    }
+
+    /// <summary>Hands the reference to the handle the call produced, or releases it if there is none.</summary>
+    private static async Task<T> Tracked<T>(Task<T> call, TokenSource? held)
+    {
+        T result;
+        try
+        {
+            result = await call.ConfigureAwait(false);
+        }
+        catch
+        {
+            held?.ReleaseHolder();
+            throw;
+        }
+
+        if (result is TokenHeldHandle handle)
+        {
+            handle.Adopt(held);
+        }
+        else
+        {
+            held?.ReleaseHolder();
+        }
+
+        return result;
+    }
 }

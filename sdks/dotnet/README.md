@@ -5,7 +5,7 @@ client, so reconnection, redirects and error classes are the Rust client's. Targ
 net10.0 on Linux, macOS and Windows, each on x64 and arm64; CI tests every one of those natively
 (the broker scenarios on Linux x64 only). The native libraries will ship inside the NuGet package in a later release. Until then, build `felix-capi` and set `FELIX_NATIVE_LIB`.
 
-It binds every function in `felix.h` except the token provider, which follows: connect, publish
+It binds every function in `felix.h`: connect (with a token provider that renews the token), publish
 (single, batch, keyed records and named-shard), subscribe to one shard or every shard and resume
 (`SubscribeShardedAsync`, `ResubscribeShardedAsync`), consumer groups (on a shard and across
 every shard, with the stream-wide admin calls), caches, counters and cache watches (single and
@@ -26,6 +26,10 @@ await using var sub = await client.SubscribeAsync("t1", "default", "events", 0, 
 long? offset = await client.PublishAsync("t1", "default", "events", "hello"u8.ToArray());
 await foreach (var ev in sub) { Console.WriteLine(ev.Offset); break; }
 ```
+
+A process that outlives its token sets `TokenProvider` (a `Func<CancellationToken, ValueTask<string>>`);
+`Token` is then optional. The library calls it lazily, one call at a time, and the page above covers
+failure and cancellation.
 
 ## Build and test
 

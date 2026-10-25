@@ -97,6 +97,25 @@ fn driver_with<R: PeerRequester + Send + Sync + 'static>(
     marks: &Arc<QuorumMarks>,
     routes_changed: &Arc<tokio::sync::Notify>,
 ) -> Replication {
+    // Reaching the tick would mean nothing else woke the driver.
+    driver_ticking(
+        requester,
+        broker,
+        router,
+        marks,
+        routes_changed,
+        Duration::from_secs(300),
+    )
+}
+
+fn driver_ticking<R: PeerRequester + Send + Sync + 'static>(
+    requester: Arc<R>,
+    broker: &Arc<Broker>,
+    router: &Arc<ShardRouter>,
+    marks: &Arc<QuorumMarks>,
+    routes_changed: &Arc<tokio::sync::Notify>,
+    tick: Duration,
+) -> Replication {
     spawn(
         requester,
         Arc::clone(broker),
@@ -109,8 +128,7 @@ fn driver_with<R: PeerRequester + Send + Sync + 'static>(
             status: Arc::default(),
         },
         None,
-        // Reaching the tick would mean nothing else woke the driver.
-        Duration::from_secs(300),
+        tick,
         Arc::clone(routes_changed),
         RebuildPolicy::default(),
         MoveThrottle::unlimited(),
@@ -591,4 +609,242 @@ fn the_fence_backoff_doubles_to_its_cap() {
     assert_eq!(waits[3], FENCE_RETRY * 8);
     assert_eq!(waits[6], FENCE_RETRY_MAX);
     assert_eq!(fence_backoff(u32::MAX), FENCE_RETRY_MAX);
+}
+
+/// Time from `since` until the mark for `shard` reaches `offset`, polled every
+/// 5 ms, or `None` past `within`.
+async fn mark_time(
+    marks: &QuorumMarks,
+    offset: u64,
+    since: tokio::time::Instant,
+    within: Duration,
+) -> Option<Duration> {
+    let watched = watch_key(&key());
+    tokio::time::timeout(within, async {
+        while marks.offset(&watched, 4) < Some(offset) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .ok()?;
+    Some(since.elapsed())
+}
+
+/// One round trip of the follower the pass waits on.
+const RTT: Duration = Duration::from_millis(400);
+
+/// A three-replica `Quorum` leader whose next pass waits on c alone: b is
+/// still answering the pass before it. Returns when the next record has been
+/// appended; the clock then reads [`RTT`] from c's answer.
+struct WaitingPass {
+    broker: Arc<Broker>,
+    marks: Arc<QuorumMarks>,
+    routes_changed: Arc<tokio::sync::Notify>,
+    since: tokio::time::Instant,
+    driver: Replication,
+    _dir: TempDir,
+}
+
+async fn waiting_pass(shards: u32, tick: Duration) -> WaitingPass {
+    let (broker, dir) = super::quorum::quorum_leader(3, 4).await;
+    let router = router_over_shards(LOCAL, &["broker-b", "broker-c"], 4, shards);
+    let marks = Arc::new(QuorumMarks::new());
+    let peers = Arc::new(ShiftingPeer::default());
+    let routes_changed = Arc::new(tokio::sync::Notify::new());
+    let started = tokio::time::Instant::now();
+    let driver = driver_ticking(
+        Arc::clone(&peers),
+        &broker,
+        &router,
+        &marks,
+        &routes_changed,
+        tick,
+    );
+    assert!(prompt(&marks, 0, 4, 3).await, "the first mark waited");
+    // Land so the next tick falls inside c's round trip.
+    tokio::time::sleep_until(started + tick * 2 - Duration::from_millis(350)).await;
+
+    peers.delay("broker-b", RTT);
+    append(&broker, 0).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(marks.offset(&watch_key(&key()), 4), Some(4));
+
+    peers.delay("broker-c", RTT);
+    let since = tokio::time::Instant::now();
+    append(&broker, 0).await;
+    tokio::time::sleep(RTT / 10).await;
+    WaitingPass {
+        broker,
+        marks,
+        routes_changed,
+        since,
+        driver,
+        _dir: dir,
+    }
+}
+
+impl WaitingPass {
+    /// Stops the driver, failing if the next mark took more than a round trip
+    /// and a half: a cut pass pings again, which costs another.
+    async fn finish(self) {
+        let took = mark_time(&self.marks, 5, self.since, Duration::from_secs(5))
+            .await
+            .expect("the mark never moved");
+        assert!(
+            took <= RTT + RTT / 2,
+            "the waiting pass was cut short: the mark took {took:?}",
+        );
+        self.driver.stop().await;
+    }
+}
+
+/// **A route change does not cut a waiting pass short.** b is still answering
+/// an earlier pass when a record lands, and c, the only follower the next pass
+/// ships to, takes a round trip. A route change mid-pass is not new data: the
+/// pass keeps waiting for c instead of giving up without a majority and
+/// asking again a round trip later.
+#[tokio::test(start_paused = true)]
+async fn a_route_change_does_not_cut_a_waiting_pass_short() {
+    let wait = waiting_pass(1, Duration::from_secs(300)).await;
+    wait.routes_changed.notify_one();
+    wait.finish().await;
+}
+
+/// **The tick does not cut a waiting pass short.**
+#[tokio::test(start_paused = true)]
+async fn the_tick_does_not_cut_a_waiting_pass_short() {
+    // The tick lands 300 ms after the record, inside c's round trip.
+    let wait = waiting_pass(1, Duration::from_secs(1)).await;
+    wait.finish().await;
+}
+
+/// **Another shard's append does not cut a waiting pass short.** The append
+/// wake is broker-wide, but only records this shard has not shipped are a
+/// reason to give up on the majority it is waiting for.
+#[tokio::test(start_paused = true)]
+async fn another_shards_append_does_not_cut_a_waiting_pass_short() {
+    let wait = waiting_pass(2, Duration::from_secs(300)).await;
+    append(&wait.broker, 1).await;
+    wait.finish().await;
+}
+
+/// **A route change ends the wait on a follower that is gone.** The pass has
+/// its majority and the mark is out, but c does not answer. A new route
+/// (here a higher generation) must get its pass at once, not once c's
+/// request times out.
+#[tokio::test(start_paused = true)]
+async fn a_route_change_ends_a_pass_waiting_on_a_dead_follower() {
+    let (broker, _dir) = super::quorum::quorum_leader(3, 4).await;
+    let router = router(LOCAL, &["broker-b", "broker-c"], 4);
+    let marks = Arc::new(QuorumMarks::new());
+    let routes_changed = Arc::new(tokio::sync::Notify::new());
+    let driver = driver("broker-c", &broker, &router, &marks, &routes_changed);
+    assert!(prompt(&marks, 0, 4, 3).await, "the first mark waited");
+
+    // The pass holding generation 4 now has its majority and waits on c.
+    publish_move(&router, &["broker-b", "broker-c"], None, 5);
+    routes_changed.notify_one();
+    assert!(
+        prompt(&marks, 0, 5, 3).await,
+        "the new route waited on the follower that is gone",
+    );
+    driver.stop().await;
+}
+
+/// Every request waits its node's current delay, and is logged with the time
+/// it was sent.
+#[derive(Default)]
+pub(super) struct Recording {
+    delays: std::sync::Mutex<Map<&'static str, Duration>>,
+    sent: std::sync::Mutex<Vec<(String, tokio::time::Instant)>>,
+}
+
+impl Recording {
+    pub(super) fn delay(&self, node: &'static str, by: Duration) {
+        self.delays.lock().expect("lock").insert(node, by);
+    }
+
+    /// Whether `node` was sent anything after `since` and before `before`.
+    pub(super) fn sent_between(
+        &self,
+        node: &str,
+        since: tokio::time::Instant,
+        before: tokio::time::Instant,
+    ) -> bool {
+        self.sent
+            .lock()
+            .expect("lock")
+            .iter()
+            .any(|(to, at)| to == node && *at >= since && *at < before)
+    }
+}
+
+impl PeerRequester for Recording {
+    async fn request(
+        &self,
+        node_id: &str,
+        _addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        let batch = match message {
+            InternalMessage::ReplicateRecords(batch)
+            | InternalMessage::ReplicateCacheRecords(batch)
+            | InternalMessage::ReplicateCounterRecords(batch) => batch,
+            other => panic!("unexpected {:?}", other.kind()),
+        };
+        self.sent
+            .lock()
+            .expect("lock")
+            .push((node_id.to_string(), tokio::time::Instant::now()));
+        let delay = self.delays.lock().expect("lock").get(node_id).copied();
+        if let Some(delay) = delay {
+            tokio::time::sleep(delay).await;
+        }
+        Ok(InternalMessage::ReplicateOk(ReplicateOk {
+            correlation_id: 0,
+            durable_offset: batch.first_offset + batch.payloads.len() as u64,
+        }))
+    }
+}
+
+/// How soon after a write the follower that is free must be sent it.
+pub(super) const SOON: Duration = Duration::from_millis(150);
+
+/// **A record appended to this shard cuts a pass waiting on a majority.** With
+/// b busy and d slow, the pass waits on d; c is free and level, so the record
+/// that lands meanwhile must reach it now, not once the pass ends.
+#[tokio::test(start_paused = true)]
+async fn an_append_to_this_shard_cuts_a_waiting_pass_short() {
+    let (broker, _dir) = super::quorum::quorum_leader(3, 4).await;
+    let router = router(LOCAL, &["broker-b", "broker-c", "broker-d"], 4);
+    let marks = Arc::new(QuorumMarks::new());
+    let peers = Arc::new(Recording::default());
+    let driver = driver_with(
+        Arc::clone(&peers),
+        &broker,
+        &router,
+        &marks,
+        &Arc::default(),
+    );
+    assert!(prompt(&marks, 0, 4, 3).await, "the first mark waited");
+
+    // b stays busy; c and d make the majority.
+    peers.delay("broker-b", RTT);
+    append(&broker, 0).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(marks.offset(&watch_key(&key()), 4), Some(4));
+
+    // Now d is slow and the next pass waits on it.
+    peers.delay("broker-c", Duration::from_millis(20));
+    peers.delay("broker-d", RTT);
+    append(&broker, 0).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let landed = tokio::time::Instant::now();
+    append(&broker, 0).await;
+    tokio::time::sleep(SOON).await;
+    assert!(
+        peers.sent_between("broker-c", landed, tokio::time::Instant::now()),
+        "the record waited for the pass to end before it was shipped to a free follower",
+    );
+    driver.stop().await;
 }

@@ -15,8 +15,6 @@ SOURCES = ROOT / "sdks/dotnet/src"
 # export -> why the C# SDK does not bind it.
 ALLOWLIST = {
     "felix_client_connect": "connect goes through felix_client_connect_with, which takes the same arguments plus the options struct",
-    "felix_token_reply_ok": "the TokenProvider option that answers token fetches is not bound yet",
-    "felix_token_reply_err": "the TokenProvider option that answers token fetches is not bound yet",
 }
 
 EXPORT = re.compile(r"^[A-Za-z][\w \*]*?\b(felix_\w+)\(", re.M)

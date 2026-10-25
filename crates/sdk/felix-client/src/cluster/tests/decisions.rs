@@ -208,10 +208,10 @@ fn the_not_found_clock_starts_at_the_first_not_found() {
 }
 
 /// **A peer that sent no code is handled as it always was**: prose, retried
-/// unless it names a refused credential.
+/// unless it carries an auth error.
 #[test]
 fn an_uncoded_error_keeps_the_old_rules() {
-    let refused = crate::error::refused("publish failed", "forbidden".into(), None, None, None);
+    let refused = anyhow::Error::new(crate::AuthError::refused("no")).context("publish failed");
     assert_eq!(next_step(&refused, routed()), Next::Fail);
     for message in [
         "connection lost",
