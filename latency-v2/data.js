@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792952072996,
+  "lastUpdate": 1792952356903,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -47058,6 +47058,72 @@ window.BENCHMARK_DATA = {
             "range": "874.98",
             "unit": "us",
             "extra": "trials: 5\nmedian: 600.00\nmean: 1188.20\nstdev: 874.98\ncv: 73.64%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7f1b5473f1514d613108ce4e277c450991c7c44e",
+          "message": "fix(release): resolve the libfelix archive's outdir before changing directory (#1568)\n\npackage_libfelix.sh made <outdir> absolute only after cd-ing into the source\ntree, so with a separate tag checkout (the backfill path) the archive landed in\nsrc/libfelix-dist while the upload looked in libfelix-dist and found nothing.",
+          "timestamp": "2026-10-25T11:12:21-07:00",
+          "tree_id": "3f5806794e21ec07d0cd87755b0548802aab8c30",
+          "url": "https://github.com/GetFelix/felix/commit/7f1b5473f1514d613108ce4e277c450991c7c44e"
+        },
+        "date": 1792952351590,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 171,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 171.00\nmean: 170.40\nstdev: 0.89\ncv: 0.52%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 227,
+            "range": "3.03",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 227.00\nmean: 228.20\nstdev: 3.03\ncv: 1.33%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 300,
+            "range": "54.06",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 300.00\nmean: 315.20\nstdev: 54.06\ncv: 17.15%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 208,
+            "range": "1.22",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 208.00\nmean: 208.00\nstdev: 1.22\ncv: 0.59%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 426,
+            "range": "11.65",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 426.00\nmean: 430.20\nstdev: 11.65\ncv: 2.71%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 630,
+            "range": "107.87",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 630.00\nmean: 661.00\nstdev: 107.87\ncv: 16.32%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
