@@ -593,18 +593,47 @@ async fn cache_and_counter_acks_skip_the_lease_where_followers_decide_the_mark()
 #[tokio::test(start_paused = true)]
 async fn a_timeout_is_logged_once_per_shard_per_window() {
     let marks = QuorumMarks::new();
-    assert!(marks.timeout_log_due(&key("orders")), "the first is logged");
+    assert!(
+        marks.log_timeout(&key("orders"), 4, 10),
+        "the first is logged"
+    );
     for _ in 0..50 {
-        assert!(!marks.timeout_log_due(&key("orders")), "repeat in window");
+        assert!(
+            !marks.log_timeout(&key("orders"), 4, 10),
+            "repeat in window"
+        );
     }
     assert!(
-        marks.timeout_log_due(&key("billing")),
+        marks.log_timeout(&key("billing"), 4, 10),
         "another shard has its own window"
     );
 
     tokio::time::sleep(TIMEOUT_LOG_EVERY - Duration::from_millis(1)).await;
-    assert!(!marks.timeout_log_due(&key("orders")), "window still open");
+    assert!(
+        !marks.log_timeout(&key("orders"), 4, 10),
+        "window still open"
+    );
     tokio::time::sleep(Duration::from_millis(1)).await;
-    assert!(marks.timeout_log_due(&key("orders")), "window passed");
-    assert!(!marks.timeout_log_due(&key("orders")), "and starts again");
+    assert!(marks.log_timeout(&key("orders"), 4, 10), "window passed");
+    assert!(
+        !marks.log_timeout(&key("orders"), 4, 10),
+        "and starts again"
+    );
+}
+
+/// A shard this broker stops leading drops its log window, so the table does
+/// not grow with every shard ever led.
+#[tokio::test(start_paused = true)]
+async fn forgetting_a_shard_drops_its_timeout_window() {
+    let marks = QuorumMarks::new();
+    for name in ["orders", "billing"] {
+        assert!(marks.log_timeout(&key(name), 4, 10));
+    }
+    marks.forget(&key("orders"));
+    marks.retain(&[key("orders")]);
+    assert!(marks.timeout_logged.lock().is_empty());
+    assert!(
+        marks.log_timeout(&key("billing"), 4, 10),
+        "window was dropped"
+    );
 }
