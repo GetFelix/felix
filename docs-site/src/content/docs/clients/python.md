@@ -53,47 +53,165 @@ async with client:
     await client.publish("t1", "default", "events", b"hello")
 ```
 
-`tok` is a Felix token; [Getting a token](/clients/overview/#getting-a-token)
-covers where it comes from. The client holds it fixed, for the main client as
-well as `with_identity`, so build a new client with a fresh token before it
-expires. Streams opened after expiry, including the ones a reconnect opens, are
-refused.
+`tok` is a Felix token; [Getting and refreshing a
+token](#getting-and-refreshing-a-token) covers where it comes from and how a
+client that outlives it gets the next one. These examples pass one and no
+`token_provider`, so the client holds it until it expires: streams opened after
+expiry, including the ones a reconnect opens, are refused.
 
 ### Getting and refreshing a token
 
-The client does not call the control plane, so use any HTTP library. The refresh
-token rotates on every use, so keep the newest one:
+A token lasts 15 minutes by default, and the broker checks it each time a stream
+authenticates, including the streams a reconnect opens. [Getting a
+token](/clients/overview/#getting-a-token) covers where one comes from. A
+process that outlives one gives `Client`, `AsyncClient.connect` and
+`with_identity` a `token_provider`, and the client asks it for a token when it
+needs one. The Rust client's `RefreshingToken` does the timing: it asks once two
+thirds of the held token's life has passed, or when the broker refused it. If a
+fetch fails while the held token is still valid, the client keeps using that one
+and asks again a few seconds later. If the broker refuses a token and the
+provider returns a different one, the client retries once with it.
+
+The provider is a callable that takes no arguments and returns the token as a
+`str`. Pass it as `token_provider=`. `token=` is then optional: leave it out
+(or pass `None` or `""`) to have the first connect call the provider, or pass a
+token you already hold to use that first.
+
+**When it is called.** When a stream is about to authenticate and the client
+holds no token, the held one is due for replacement, or the broker just refused
+it. `with_identity` authenticates its streams before it returns, so it calls
+the provider when no valid token is held. An idle client makes no calls, and
+there is no timer. The client never runs two calls at once: streams that open
+together wait on one and share its token. That is also what makes it safe to
+rotate a refresh token inside the provider.
+
+**Threading.** On `Client`, a plain function runs on a Felix worker thread, with
+the GIL, and never on a thread that is waiting on the broker. Blocking in it is
+fine, though it delays the streams waiting for the token. An `async def` runs on
+that same worker thread with `asyncio.run`, on a fresh event loop of its own, so
+do not use an object bound to another loop in it (an `aiohttp` session, say).
+The provider can be called while your own event loop is blocked in a synchronous
+call, because it does not depend on that loop.
+
+**Failure.** The provider fails when it raises, returns something that is not a
+non-empty `str` (a `str` that is not valid UTF-8 counts). While the held token
+is still valid the client keeps it, logs a warning and asks again a few seconds
+later. Otherwise the call that needed the token raises `AuthError` with the
+exception's message in its text. A provider that has not answered after 30
+seconds fails the operations waiting on it, but the call itself is not
+abandoned: the next operation that needs a token waits on that same call (up to
+30 seconds again) and uses its answer if it arrives, so the provider is not
+called a second time while one is outstanding.
+
+**Cancellation.** On `AsyncClient` the provider's task is cancelled on its loop
+when the 30 seconds pass and when the client and all its `with_identity` handles
+are gone (operations still in flight keep the client alive). Your provider sees
+an `asyncio.CancelledError` at its current `await`, so a `finally` block can
+release a connection. Let it propagate: the cancelled call counts as a failed
+fetch, and the next fetch calls the provider again. If the loop is already
+closed there is nothing to cancel. On `Client` the provider is a thread running
+your Python code and cannot be stopped, so it is left to finish, and an `async
+def` run there with `asyncio.run` is left to finish the same way. Give a
+blocking provider its own timeout (`urllib.request.urlopen(..., timeout=10)`) so
+it returns before the client gives up on it.
+
+**Async variant.** `AsyncClient` takes an `async def`, or any callable that
+returns an awaitable (a lambda or decorator around one). Whatever the provider
+returns is awaited; a `str` returned directly is a failure (`AuthError`), since
+a plain function belongs on `Client`. A non-callable raises `TypeError` at
+`connect` or `with_identity`. The coroutine is awaited on the event loop that
+was running at `connect` or `with_identity`, so a session bound to that loop
+works. That loop is captured once and must outlive the client and every
+`with_identity` handle; after it closes, calls that need a token fail with "the
+event loop the token provider was bound to is closed". While that loop is
+blocked, for instance in a synchronous call, the provider cannot run and the
+stream waits for it, up to the 30 seconds.
+
+The example below does the control plane calls with `urllib` and keeps the
+rotating refresh token. The refresh token works once: every refresh returns a
+replacement, so the provider stores it before it returns. A `403` means the
+refresh token expired or was revoked and the exchange has to be run again; the
+provider raises (`urllib` puts the status in the message) and the client keeps
+the last token until it expires. Run a new login, then connect a new client.
 
 ```python
-import json, urllib.request
+import json
+import urllib.request
+
+import felix
 
 CONTROLPLANE = "https://controlplane:8443/v1/tenants/t1"
 
+
 def post(path, body, bearer=None):
-    req = urllib.request.Request(
-        CONTROLPLANE + path,
-        data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json",
-                 **({"Authorization": f"Bearer {bearer}"} if bearer else {})},
+    headers = {"Content-Type": "application/json"}
+    if bearer:
+        headers["Authorization"] = f"Bearer {bearer}"
+    request = urllib.request.Request(
+        CONTROLPLANE + path, data=json.dumps(body).encode(), headers=headers
     )
-    with urllib.request.urlopen(req) as resp:
-        return json.load(resp)
+    with urllib.request.urlopen(request, timeout=20) as response:
+        return json.load(response)
 
-minted = post("/token/exchange",
-              {"requested": ["stream.publish"], "resources": ["stream:t1/default/*"]},
-              bearer=oidc_token)
-client = felix.Client("127.0.0.1:5000", tenant_id="t1", token=minted["felix_token"])
 
-# Later, before minted["expires_in"] runs out (say after two thirds of it):
-minted = post("/token/refresh", {"refresh_token": minted["refresh_token"]})
+def connect(oidc_token):
+    minted = post(
+        "/token/exchange",
+        {"requested": ["stream.publish"], "resources": ["stream:t1/default/*"]},
+        bearer=oidc_token,
+    )
+    refresh_token = minted["refresh_token"]
+
+    def fetch_token():
+        nonlocal refresh_token
+        minted = post("/token/refresh", {"refresh_token": refresh_token})
+        refresh_token = minted["refresh_token"]
+        return minted["felix_token"]
+
+    return felix.Client(
+        "127.0.0.1:5000",
+        tenant_id="t1",
+        token=minted["felix_token"],
+        token_provider=fetch_token,
+    )
 ```
 
-A client cannot swap its token. After a refresh, connect a new client with the
-new `felix_token` and move your work to it, or call
-`client.with_identity("t1", minted["felix_token"])` for a handle that shares the
-first client's connections and authenticates with the new token. Handles already
-in use keep the token they started with. A refresh that answers `403` means the
-refresh token expired or was revoked: run the exchange again.
+With `AsyncClient` the provider is an `async def`. This one runs the blocking
+`post` on a thread so it does not stall the loop:
+
+```python
+import asyncio
+
+
+async def connect_async(oidc_token):
+    minted = await asyncio.to_thread(
+        post,
+        "/token/exchange",
+        {"requested": ["stream.publish"], "resources": ["stream:t1/default/*"]},
+        oidc_token,
+    )
+    refresh_token = minted["refresh_token"]
+
+    async def fetch_token():
+        nonlocal refresh_token
+        minted = await asyncio.to_thread(
+            post, "/token/refresh", {"refresh_token": refresh_token}
+        )
+        refresh_token = minted["refresh_token"]
+        return minted["felix_token"]
+
+    return await felix.AsyncClient.connect(
+        "127.0.0.1:5000",
+        tenant_id="t1",
+        token=minted["felix_token"],
+        token_provider=fetch_token,
+    )
+```
+
+`with_identity` takes the same argument, so a gateway can give each user a
+handle that renews its own token: `client.with_identity("t1",
+token_provider=fetch_token)`. A handle with no `token` calls the provider for
+its first stream.
 
 The synchronous surface releases the GIL while it blocks, so threads run in
 parallel. A `concurrent.futures.ThreadPoolExecutor` over one shared client is a
@@ -105,7 +223,7 @@ reasonable design, not a queue behind a lock.
 felix.Client(
     addrs,                    # "host:port", or a list of them
     tenant_id="t1",
-    token=tok,
+    token=tok,                # or token_provider=fn; see above
     server_name="localhost",  # the name the broker's certificate carries
     ca_file=None,             # trust a specific CA; omit for the system store
     offer_alpn=False,         # offer the felix/1 ALPN
@@ -145,8 +263,8 @@ alice.publish("t1", "app", "alice-feed", b"hello")
 Every stream `alice` opens authenticates with her token, so the broker checks
 her requests against her grants, not the gateway's. She follows moved shards
 and failed brokers like any client, over the gateway's connection to each
-broker. The token is fixed, so build a new client when it expires.
-`AsyncClient.with_identity` is the same, awaited. The limits and the
+broker. A fixed token stays until it expires; pass `token_provider` instead
+to renew it. `AsyncClient.with_identity` is the same, awaited. The limits and the
 certificate-bound token rules are the Rust client's; see
 [Acting for many users](/clients/rust/#acting-for-many-users).
 

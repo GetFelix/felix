@@ -1,0 +1,1 @@
+- A Python `AsyncClient` `token_provider` is cancelled as an asyncio task when its call passes the 30 second fetch timeout and when the client goes away; the cancellation counts as a failed fetch. A blocking `Client` provider cannot be cancelled, so it is joined: the next operation waits on the outstanding call instead of starting another.
