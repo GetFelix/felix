@@ -14,7 +14,10 @@ set -euo pipefail
 
 tag="$1"
 rid="$2"
-out="$3"
+# Resolved before anything changes directory: a relative <outdir> means the
+# caller's working directory, not the source tree the build runs in.
+mkdir -p "$3"
+out="$(cd "$3" && pwd)"
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 src="$(cd "${4:-$repo}" && pwd)"
 crate="$src/crates/sdk/felix-capi"
@@ -108,8 +111,6 @@ cp "$repo/crates/sdk/felix-capi/tests/c/archive_smoke.c" "$stage/$root/app.c"
 )
 rm "$stage/$root/app.c"
 
-mkdir -p "$out"
-out="$(cd "$out" && pwd)"
 case "$rid" in
   win-*) archive="$root.zip";    ( cd "$stage" && 7z a -tzip -bso0 "$out/$archive" "$root" ) ;;
   *)     archive="$root.tar.gz"; tar -C "$stage" -czf "$out/$archive" "$root" ;;
