@@ -14,7 +14,9 @@ import io
 import json
 import pathlib
 import re
+import sys
 import threading
+import types
 import time
 import urllib.error
 
@@ -532,20 +534,27 @@ class FakeControlPlane:
         self.serial = 0
         self.refreshes = 0
 
-    def urlopen(self, request, timeout=None):
-        body = json.loads(request.data)
-        if request.full_url.endswith("/token/exchange"):
-            assert request.get_header("Authorization") == "Bearer oidc"
-            used = None
+    def handle(self, url, body, authorization):
+        """Return the reply, or raise PermissionError for a spent token."""
+        if url.endswith("/token/exchange"):
+            assert authorization == "Bearer oidc"
         else:
             used = body["refresh_token"]
             if used not in self.live:
-                raise urllib.error.HTTPError(request.full_url, 403, "Forbidden", {}, None)
+                raise PermissionError(403)
             self.live.discard(used)
             self.refreshes += 1
         self.serial += 1
         self.live.add(f"rt{self.serial}")
-        reply = {"felix_token": f"ft{self.serial}", "refresh_token": f"rt{self.serial}"}
+        return {"felix_token": f"ft{self.serial}", "refresh_token": f"rt{self.serial}"}
+
+    def urlopen(self, request, timeout=None):
+        try:
+            reply = self.handle(
+                request.full_url, json.loads(request.data), request.get_header("Authorization")
+            )
+        except PermissionError:
+            raise urllib.error.HTTPError(request.full_url, 403, "Forbidden", {}, None)
 
         class Response(io.BytesIO):
             def __enter__(self):
@@ -556,12 +565,55 @@ class FakeControlPlane:
 
         return Response(json.dumps(reply).encode())
 
+    def aiohttp_module(self):
+        """A minimal aiohttp: ClientSession.post and ClientResponseError."""
+        plane = self
+
+        class ClientResponseError(Exception):
+            def __init__(self, status):
+                super().__init__(f"{status}, message='Forbidden'")
+                self.status = status
+
+        class Response:
+            def __init__(self, reply):
+                self.reply = reply
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def json(self):
+                return self.reply
+
+        class ClientSession:
+            def __init__(self, raise_for_status=False, **kwargs):
+                assert raise_for_status is True
+                self.closed = False
+
+            def post(self, url, json=None, headers=None):
+                try:
+                    reply = plane.handle(url, json, (headers or {}).get("Authorization"))
+                except PermissionError:
+                    raise ClientResponseError(403) from None
+                return Response(reply)
+
+            async def close(self):
+                self.closed = True
+
+        return types.SimpleNamespace(
+            ClientSession=ClientSession, ClientResponseError=ClientResponseError
+        )
+
 
 def test_the_documented_example_rotates_the_refresh_token(monkeypatch):
     import urllib.request
 
     plane = FakeControlPlane()
+    fake_aiohttp = plane.aiohttp_module()
     monkeypatch.setattr(urllib.request, "urlopen", plane.urlopen)
+    monkeypatch.setitem(sys.modules, "aiohttp", fake_aiohttp)
     built = {}
 
     class FakeClient:
@@ -583,7 +635,7 @@ def test_the_documented_example_rotates_the_refresh_token(monkeypatch):
         exec(compile(snippet, "python.md", "exec"), namespace)  # noqa: S102
 
     namespace["connect"]("oidc")
-    asyncio.run(namespace["connect_async"]("oidc"))
+    _client, session = asyncio.run(namespace["connect_async"]("oidc"))
 
     sync = built["client"]
     assert sync["token"] == "ft1"
@@ -595,3 +647,11 @@ def test_the_documented_example_rotates_the_refresh_token(monkeypatch):
     assert asyncio.run(fetch()) == "ft6"
     assert asyncio.run(fetch()) == "ft7"
     assert plane.refreshes == 5
+    assert "to_thread" not in "".join(snippets)
+
+    # The provider's session raises on a spent refresh token.
+    async def replay():
+        await session.post("/token/refresh", json={"refresh_token": "rt1"})
+
+    with pytest.raises(fake_aiohttp.ClientResponseError, match="403"):
+        asyncio.run(replay())
