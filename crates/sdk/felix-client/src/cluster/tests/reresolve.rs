@@ -412,3 +412,62 @@ async fn a_hung_system_lookup_is_shared_and_blocks_no_other_name() {
     drop(release);
     assert!(dns.lookup(HUNG).await.is_err());
 }
+
+/// **A reconnect whose token cannot be fetched ends there.** Every address
+/// would fail the same way, so the names are not resolved and the provider is
+/// not asked a second time (each ask can cost a refresh-token rotation).
+#[tokio::test]
+async fn a_failed_token_fetch_ends_the_reconnect_without_a_second_fetch() -> Result<()> {
+    use std::sync::atomic::AtomicBool;
+
+    struct Flaky {
+        fetches: Arc<AtomicUsize>,
+        failing: Arc<AtomicBool>,
+    }
+    impl crate::TokenProvider for Flaky {
+        fn token(&self) -> crate::TokenFuture<'_> {
+            self.fetches.fetch_add(1, Ordering::SeqCst);
+            let failing = self.failing.load(Ordering::SeqCst);
+            Box::pin(async move {
+                if failing {
+                    anyhow::bail!("the control plane is down")
+                }
+                Ok("test-token".to_string())
+            })
+        }
+    }
+
+    let (server_config, cert) = build_server_config()?;
+    let old = StubBroker::start_with(server_config.clone(), publish_ok)?;
+    let dns = Arc::new(FakeDns::default());
+    dns.point(NAME, vec![old.addr]);
+    let fetches = Arc::new(AtomicUsize::new(0));
+    let failing = Arc::new(AtomicBool::new(false));
+    let mut config = default_config(cert)?;
+    config.token_provider = Some(Arc::new(Flaky {
+        fetches: Arc::clone(&fetches),
+        failing: Arc::clone(&failing),
+    }));
+    let cluster = ClusterClient::connect_resolving(
+        &[NAME.parse()?],
+        "localhost",
+        config,
+        policy(),
+        Arc::clone(&dns) as Arc<dyn Lookup>,
+    )
+    .await?;
+
+    let new = StubBroker::start_with(server_config, publish_ok)?;
+    dns.point(NAME, vec![new.addr]);
+    tokio::time::sleep(RESOLVE_AGAIN_AFTER).await;
+    failing.store(true, Ordering::SeqCst);
+    let before = fetches.load(Ordering::SeqCst);
+    let failed = cluster.client().await;
+    let err = cluster.reconnect(&failed).await.unwrap_err();
+    assert!(
+        format!("{err:#}").contains("the control plane is down"),
+        "{err:#}"
+    );
+    assert_eq!(fetches.load(Ordering::SeqCst), before + 1, "fetched twice");
+    Ok(())
+}

@@ -1,0 +1,1 @@
+A token every broker refuses at connect is now an auth error rather than "no broker answered", and the connect timeout no longer includes the token provider's fetch, which is cut off at 30 s whatever the provider. A token refused mid-handshake is refetched within the connect timeout.

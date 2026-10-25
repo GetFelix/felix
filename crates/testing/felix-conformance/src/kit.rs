@@ -374,6 +374,12 @@ pub struct Fixture {
     /// fixture whose brokers do not, and a suite then expects none.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub records_publishers: bool,
+    /// Brokers that answer `auth` and advertise no optional features, so no
+    /// `commit` or `state_get`. A client must refuse both against them without
+    /// sending anything. Absent from a fixture that has none, and a suite then
+    /// skips the scenarios that need one rather than claiming them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub no_commit_addrs: Vec<String>,
     /// The catalogue's fault scenarios, so a suite that cannot read TOML gets
     /// the steps without hard-coding them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

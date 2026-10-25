@@ -22,6 +22,8 @@ struct TokenCheckingServer {
     cert: CertificateDer<'static>,
     accepted: Arc<std::sync::Mutex<String>>,
     presented: Arc<std::sync::Mutex<Vec<String>>>,
+    /// The code a refusal carries; `None` is the code-less refusal.
+    refusal: Arc<std::sync::Mutex<Option<felix_wire::ErrorCode>>>,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -36,11 +38,14 @@ impl TokenCheckingServer {
         let addr = server.local_addr()?;
         let accepted = Arc::new(std::sync::Mutex::new(accepted.to_string()));
         let presented = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let refusal = Arc::new(std::sync::Mutex::new(None));
         let (server_accepted, server_presented) = (Arc::clone(&accepted), Arc::clone(&presented));
+        let server_refusal = Arc::clone(&refusal);
         let task = tokio::spawn(async move {
             while let Ok(connection) = server.accept().await {
                 let (accepted, presented) =
                     (Arc::clone(&server_accepted), Arc::clone(&server_presented));
+                let refusal = Arc::clone(&server_refusal);
                 tokio::spawn(async move {
                     while let Ok((send, recv)) = connection.accept_bi().await {
                         tokio::spawn(Self::serve_stream(
@@ -49,6 +54,7 @@ impl TokenCheckingServer {
                             recv,
                             Arc::clone(&accepted),
                             Arc::clone(&presented),
+                            Arc::clone(&refusal),
                         ));
                     }
                 });
@@ -59,6 +65,7 @@ impl TokenCheckingServer {
             cert,
             accepted,
             presented,
+            refusal,
             task,
         })
     }
@@ -69,6 +76,7 @@ impl TokenCheckingServer {
         mut recv: quinn::RecvStream,
         accepted: Arc<std::sync::Mutex<String>>,
         presented: Arc<std::sync::Mutex<Vec<String>>>,
+        refusal: Arc<std::sync::Mutex<Option<felix_wire::ErrorCode>>>,
     ) -> Result<()> {
         let mut scratch = BytesMut::with_capacity(64 * 1024);
         let Some(Message::Auth { token, .. }) = read_message(&mut recv, &mut scratch).await? else {
@@ -76,7 +84,14 @@ impl TokenCheckingServer {
         };
         presented.lock().unwrap().push(token.clone());
         if token != *accepted.lock().unwrap() {
-            write_message(&mut send, Message::error("auth failed")).await?;
+            let code = refusal.lock().unwrap().clone();
+            let reply = Message::Error {
+                message: "auth failed".to_string(),
+                code,
+                retry: None,
+                detail: None,
+            };
+            write_message(&mut send, reply).await?;
             let _ = send.finish();
             return Ok(());
         }
@@ -193,5 +208,64 @@ async fn a_fixed_token_that_is_refused_is_not_retried() -> Result<()> {
     };
     assert!(format!("{err:#}").contains("auth rejected"), "{err:#}");
     assert_eq!(server.presented().len(), before + 1);
+    Ok(())
+}
+
+/// Refuse the next auth with `code`, subscribe, and count the tokens the
+/// provider minted.
+async fn refused_with(code: Option<felix_wire::ErrorCode>) -> Result<usize> {
+    let server = TokenCheckingServer::start("token-1")?;
+    let minted = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&minted);
+    let mut config = build_client_config(server.cert.clone())?;
+    config.auth_token = None;
+    config.token_provider = Some(Arc::new(RefreshingToken::new(move || {
+        let n = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        async move { Ok(format!("token-{n}")) }
+    })));
+    let client = timeout(
+        Duration::from_secs(5),
+        Client::connect_with_transport(
+            server.addr,
+            "localhost",
+            config,
+            TransportConfig::default(),
+        ),
+    )
+    .await??;
+    server.expire_current_token("other");
+    *server.refusal.lock().unwrap() = code;
+    let _ = timeout(
+        Duration::from_secs(5),
+        client.subscribe("t1", "default", "updates"),
+    )
+    .await?;
+    Ok(minted.load(std::sync::atomic::Ordering::SeqCst))
+}
+
+/// A draining or overloaded broker says nothing about the token: it is kept,
+/// and the provider is not asked again (each ask can rotate a refresh token).
+#[tokio::test]
+#[serial_test::serial]
+async fn a_draining_or_overloaded_refusal_keeps_the_token() -> Result<()> {
+    use felix_wire::ErrorCode;
+    for code in [ErrorCode::Draining, ErrorCode::Overloaded] {
+        assert_eq!(refused_with(Some(code.clone())).await?, 1, "{code:?}");
+    }
+    Ok(())
+}
+
+/// A refusal of the credential itself, coded or not, fetches a fresh token.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_credential_refusal_fetches_a_fresh_token() -> Result<()> {
+    use felix_wire::ErrorCode;
+    for code in [
+        Some(ErrorCode::Unauthenticated),
+        Some(ErrorCode::Forbidden),
+        None,
+    ] {
+        assert_eq!(refused_with(code.clone()).await?, 2, "{code:?}");
+    }
     Ok(())
 }

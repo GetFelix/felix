@@ -1,0 +1,1 @@
+- The C ABI can refresh a token: `FelixConnectOptions` gained `token_fetch`, `token_user_data` and `token_release`, and a fetch completes its `FelixTokenReply` with `felix_token_reply_ok` or `felix_token_reply_err` from any thread. The connect `token` may be `NULL` when a fetch is set. `FelixConnectOptions` grew, so regenerate bindings from `felix.h`.

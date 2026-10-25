@@ -15,6 +15,7 @@ mod sharded_lag;
 mod stale_width;
 mod stub_broker;
 mod timeouts;
+mod token_fetch;
 
 use std::time::Duration;
 
