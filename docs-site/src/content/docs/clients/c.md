@@ -12,7 +12,33 @@ one client instead of reimplementing it.
 
 It is a base for bindings: any language with a C FFI can bind to it, C# included. You can also call it from C directly.
 
-## Building and linking
+## Install
+
+Each GitHub release attaches `libfelix-<tag>-<rid>.tar.gz` (`.zip` on Windows)
+for `linux-x64`, `linux-arm64`, `osx-x64`, `osx-arm64`, `win-x64` and
+`win-arm64`, with a `.sha256` beside it. Download the one for your platform and
+unpack it:
+
+```text
+libfelix-<tag>-<rid>/
+  include/felix.h
+  lib/            shared and static library (and felix.dll.lib on Windows)
+  LINKING.txt     the link commands and this platform's static-link libraries
+  LICENSE
+```
+
+Include `felix.h` and link dynamically or statically; `LINKING.txt` has the
+exact command for your platform. On Linux and macOS it looks like this:
+
+```bash
+cc -I include app.c -L lib -lfelix -Wl,-rpath,"$PWD/lib"                  # shared
+cc -I include app.c lib/libfelix.a <system libraries from LINKING.txt>    # static
+```
+
+## Building from source
+
+The archives are built from the repository with the commands below, which are
+the alternative when no archive fits your platform.
 
 ```bash
 cargo build --release -p felix-capi
