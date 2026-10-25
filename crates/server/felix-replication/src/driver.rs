@@ -30,7 +30,7 @@ use super::{MoveThrottle, RebuildPolicy, Rebuilds, metrics};
 use crate::peer::PeerRequester;
 pub(crate) use shard::watch_key;
 use shard::{AuxCursors, ShardCursors, ShardPass, Stragglers, replicate_shard};
-use shards::{Context, Event, Shards};
+use shards::{Context, Event, Shards, WakeKind};
 
 /// How many shards a pass ships at the same time.
 ///
@@ -207,9 +207,9 @@ pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
             };
             let event = tokio::select! {
                 _ = shutdown.cancelled() => return,
-                _ = ticker.tick() => Event::Wake { appended: false },
-                _ = woken => Event::Wake { appended: true },
-                _ = routes_changed.notified() => Event::Wake { appended: false },
+                _ = ticker.tick() => Event::Wake(WakeKind::Tick),
+                _ = woken => Event::Wake(WakeKind::Append),
+                _ = routes_changed.notified() => Event::Wake(WakeKind::Routes),
                 _ = retry => Event::Retry,
                 Some((scan, pass)) = shards.passes.next(), if !shards.passes.is_empty() => {
                     Event::Passed(scan, Box::new(pass))
@@ -225,8 +225,8 @@ pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
                 }
             };
             match event {
-                Event::Wake { appended } => {
-                    shards.scan(appended);
+                Event::Wake(kind) => {
+                    shards.scan(kind);
                     seen.send_modify(|seen| seen.scan = shards.scan);
                 }
                 Event::Retry => shards.retry(),

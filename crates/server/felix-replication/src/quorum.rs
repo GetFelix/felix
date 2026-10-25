@@ -250,12 +250,17 @@ impl QuorumMarks {
                             f.confirmed,
                             f.next_offset,
                             f.state,
-                            if f.busy { ", busy" } else { "" },
+                            match f.busy_at {
+                                Some(at) => format!(", busy since {at}"),
+                                None if f.busy => ", busy".to_string(),
+                                None => String::new(),
+                            },
                         )
                     })
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        let live = self.status.get().and_then(|board| board.live_report(key));
         tracing::warn!(
             stream = %key.stream,
             shard = key.shard,
@@ -264,6 +269,12 @@ impl QuorumMarks {
             mark = ?self.offset(key, generation),
             tail = ?status.and_then(|status| status.tail),
             status_age_ms = ?aged.as_ref().map(|(_, age)| age.as_millis()),
+            passes_since_mark = ?live.as_ref().map(|live| live.passes_since_mark),
+            last_wake = ?live.as_ref().and_then(|live| live.last_wake),
+            driver_scan = ?live.as_ref().map(|live| live.driver_scan),
+            shard_last_scan = ?live.as_ref().and_then(|live| live.last_scan),
+            pass_running = ?live.as_ref().and_then(|live| live.pass),
+            launched = ?live.as_ref().map(|live| &live.launched),
             followers = ?followers,
             "quorum wait timed out"
         );

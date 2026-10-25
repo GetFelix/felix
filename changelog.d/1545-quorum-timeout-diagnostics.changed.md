@@ -1,0 +1,1 @@
+- The quorum-timeout warning and the shard status now show live pass state (#1545): the pass under way and how long it has run, each unanswered exchange with the offset and time it went out, the driver's current scan against the shard's last finished scan, passes since the mark last moved, and what last woke the shard. Followers still busy from earlier passes are listed as busy.
