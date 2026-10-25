@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792914082432,
+  "lastUpdate": 1792914360805,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -36400,6 +36400,58 @@ window.BENCHMARK_DATA = {
             "range": "22986.08",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1593701.70\nmean: 1602860.88\nstdev: 22986.08\ncv: 1.43%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "16a9ebe04b064eecf1cf84876ea622a037614a7a",
+          "message": "ci(coverage): fail when show-env fails instead of running the harness uninstrumented (#1548)\n\nscripts/ci/coverage-capi.sh sourced cargo llvm-cov show-env through process\nsubstitution, so a failing show-env did not stop the script and the harness\nwould run uninstrumented. The env is captured first and evaluated.",
+          "timestamp": "2026-10-25T07:36:36Z",
+          "tree_id": "26725cd497588e219ddd9361d63f8ae9eb3d21a1",
+          "url": "https://github.com/GetFelix/felix/commit/16a9ebe04b064eecf1cf84876ea622a037614a7a"
+        },
+        "date": 1792914360112,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 497121.79,
+            "range": "39132.85",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 497121.79\nmean: 497153.00\nstdev: 39132.85\ncv: 7.87%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 497121.79,
+            "range": "39132.85",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 497121.79\nmean: 497153.00\nstdev: 39132.85\ncv: 7.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 123247.2,
+            "range": "1293.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 123247.20\nmean: 123545.27\nstdev: 1293.46\ncv: 1.05%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1232471.97,
+            "range": "12934.63",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1232471.97\nmean: 1235452.72\nstdev: 12934.63\ncv: 1.05%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
