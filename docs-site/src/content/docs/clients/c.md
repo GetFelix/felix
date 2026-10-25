@@ -41,6 +41,7 @@ standard headers they use.
 ```c
 static void on_published(void *user_data, FelixStatus status, const char *message,
                          bool has_offset, uint64_t offset) {
+    (void)user_data;
     /* Runs on a library thread. message is null for statuses below 10. */
     if (status != FELIX_STATUS_OK) {
         fprintf(stderr, "publish failed (%d): %s\n", (int)status, message ? message : "");
@@ -434,6 +435,8 @@ static void on_subscribe(void *user_data, FelixStatus status, const char *messag
 }
 static void on_publish(void *user_data, FelixStatus status, const char *message,
                        bool has_offset, uint64_t offset) {
+    (void)has_offset;
+    (void)offset;
     finish(user_data, status, message, NULL);
 }
 static void on_event(void *user_data, FelixStatus status, const char *message,
@@ -534,6 +537,7 @@ lengths:
 ```c
 static void on_batch(void *user_data, FelixStatus status, const char *message,
                      const FelixRecordResult *results, size_t count) {
+    (void)user_data;
     if (status == FELIX_STATUS_OK) return;
     if (count == 0) { /* cancelled or panicked: no record has its own outcome */
         fprintf(stderr, "batch failed (%d): %s\n", (int)status, message ? message : "");
@@ -649,6 +653,7 @@ struct worker {
 };
 
 static void on_acked(void *user_data, FelixStatus status, const char *message) {
+    (void)user_data;
     if (status != FELIX_STATUS_OK) {
         fprintf(stderr, "ack failed (%d): %s\n", (int)status, message ? message : "");
     }
@@ -852,6 +857,7 @@ broker that does not serve commits completes the call with
 ```c
 static void on_commit(void *user_data, FelixStatus status, const char *message,
                       uint64_t offset) {
+    (void)user_data;
     if (status == FELIX_STATUS_OK) {
         printf("committed at offset %" PRIu64 "\n", offset);
     } else {
@@ -946,6 +952,7 @@ one `host:port` or several separated by commas:
 
 ```c
 static FelixStatus connect_to_cluster(const char *token, void *state) {
+    (void)state;
     FelixStatus status = felix_client_connect_with(
         "felix-0:5000,felix-1:5000,felix-2:5000", "t1", token, NULL, NULL, NULL,
         NULL, on_connect, NULL);
