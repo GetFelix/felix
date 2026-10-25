@@ -5,6 +5,8 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use felix_client::{ClientConfig, ClusterClient, ReconnectPolicy};
+use napi::JsFunction;
+use napi::JsObject;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
@@ -14,6 +16,7 @@ use crate::errors::{classify, invalid};
 use crate::sharded_subscription::ShardedSubscriptionHandle;
 use crate::subscription::SubscriptionHandle;
 use crate::tls;
+use crate::token;
 use crate::types::{GroupDelivery, GroupRecord};
 
 /// A connected Felix client.
@@ -53,15 +56,24 @@ impl Client {
     /// `offerAlpn` offers the `felix/1` ALPN. A broker with
     /// `FELIX_TLS_REQUIRE_ALPN=true` serves only clients that do; a broker
     /// older than ALPN support refuses them, which is why it is off by default.
-    #[napi(factory)]
-    pub async fn connect(
+    ///
+    /// Pass `token`, a `tokenProvider`, or both. `tokenProvider` is called on
+    /// the JS thread, lazily and one call at a time, and `token` is what the
+    /// client starts with.
+    #[napi(
+        ts_args_type = "addrs: string | string[], tenantId: string, token?: string | null, serverName?: string, caFile?: string, offerAlpn?: boolean, tokenProvider?: (signal: AbortSignal) => Promise<string>",
+        ts_return_type = "Promise<Client>"
+    )]
+    pub fn connect(
+        env: Env,
         addrs: Either<String, Vec<String>>,
         tenant_id: String,
-        token: String,
+        token: Option<String>,
         server_name: Option<String>,
         ca_file: Option<String>,
         offer_alpn: Option<bool>,
-    ) -> Result<Client> {
+        token_provider: Option<JsFunction>,
+    ) -> Result<JsObject> {
         let addrs = match addrs {
             Either::A(one) => vec![one],
             Either::B(many) => many,
@@ -73,35 +85,84 @@ impl Client {
         let quinn = tls::client_config(ca_file.as_deref(), offer_alpn.unwrap_or(false))?;
         let mut config = ClientConfig::optimized_defaults(quinn);
         config.auth_tenant_id = Some(tenant_id);
-        config.auth_token = Some(token);
+        match token_provider {
+            Some(callback) => {
+                let fetch = token::fetch_from(&env, &callback)?;
+                config.token_provider = Some(token::provider(&fetch, token));
+            }
+            None => {
+                config.auth_token = Some(
+                    token
+                        .filter(|token| !token.is_empty())
+                        .ok_or_else(|| invalid("a token or a tokenProvider is required"))?,
+                );
+            }
+        }
 
         let server_name = server_name.unwrap_or_else(|| "localhost".to_string());
-        let inner =
-            ClusterClient::connect_seeds(&seeds, &server_name, config, ReconnectPolicy::default())
+        env.execute_tokio_future(
+            async move {
+                let inner = ClusterClient::connect_seeds(
+                    &seeds,
+                    &server_name,
+                    config,
+                    ReconnectPolicy::default(),
+                )
                 .await
                 .map_err(classify)?;
-        Ok(Client {
-            inner: std::sync::Mutex::new(Some(Arc::new(inner))),
-        })
+                Ok(inner)
+            },
+            |_, inner| {
+                Ok(Client {
+                    inner: std::sync::Mutex::new(Some(Arc::new(inner))),
+                })
+            },
+        )
     }
 
     /// A client that acts as another user over this client's connections.
     ///
-    /// Every stream it opens authenticates with `tenantId` and `token`, and
-    /// the broker checks its requests against that token's grants alone. It
-    /// follows shards and failovers as this client does, reaching each broker
-    /// over this client's connection to it. The token is fixed: build a new
-    /// one when it expires. A refused token fails here.
-    #[napi]
-    pub async fn with_identity(&self, tenant_id: String, token: String) -> Result<Client> {
-        let identity = self
-            .cluster()?
-            .with_identity_token(tenant_id, token)
-            .await
-            .map_err(classify)?;
-        Ok(Client {
-            inner: std::sync::Mutex::new(Some(Arc::new(identity))),
-        })
+    /// Every stream it opens authenticates with `tenantId` and a token: the
+    /// fixed `token`, or what `tokenProvider` returns (called as for
+    /// `connect`; `token` then only seeds it). The broker checks its requests
+    /// against that token's grants alone. It follows shards and failovers as
+    /// this client does, reaching each broker over this client's connection to
+    /// it. A refused token fails here.
+    #[napi(
+        ts_args_type = "tenantId: string, token?: string | null, tokenProvider?: (signal: AbortSignal) => Promise<string>",
+        ts_return_type = "Promise<Client>"
+    )]
+    pub fn with_identity(
+        &self,
+        env: Env,
+        tenant_id: String,
+        token: Option<String>,
+        token_provider: Option<JsFunction>,
+    ) -> Result<JsObject> {
+        let cluster = self.cluster()?;
+        let tokens = match token_provider {
+            Some(callback) => {
+                let fetch = token::fetch_from(&env, &callback)?;
+                Ok(token::provider(&fetch, token))
+            }
+            None => Err(token
+                .filter(|token| !token.is_empty())
+                .ok_or_else(|| invalid("a token or a tokenProvider is required"))?),
+        };
+        env.execute_tokio_future(
+            async move {
+                match tokens {
+                    Ok(provider) => cluster.with_identity(tenant_id, provider).await,
+                    Err(fixed) => cluster.with_identity_token(tenant_id, fixed).await,
+                }
+                .map_err(classify)
+            },
+            |_, identity| {
+                Ok(Client {
+                    inner: std::sync::Mutex::new(Some(Arc::new(identity))),
+                })
+            },
+        )
     }
 
     /// Release the client. Idempotent.

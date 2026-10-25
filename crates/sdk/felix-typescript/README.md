@@ -34,7 +34,7 @@ publish is in flight.
 ```ts
 import { Client } from "felix-client";
 
-const client = await Client.connect("127.0.0.1:5000", "t1", token, "localhost", caFile);
+const client = await Client.connect("127.0.0.1:5000", "t1", { token, caFile });
 
 await client.publish("t1", "default", "events", Buffer.from("hello"));
 
@@ -46,6 +46,26 @@ for (;;) {
 }
 await events.close();
 ```
+
+## Tokens that expire
+
+A token lasts 15 minutes by default. Give `connect` a `tokenProvider` and the
+client asks it for a fresh one when it needs one, never in the background, one
+call at a time:
+
+```ts
+const client = await Client.connect(addr, "t1", {
+  token: firstToken,
+  caFile,
+  tokenProvider: async (signal) => (await refresh(signal)).felix_token,
+});
+```
+
+The `signal` aborts at the 30 s fetch timeout, and once the last handle using the token (the client, its
+`withIdentity` clients, open subscriptions) is released; pass it to
+`fetch`. A failure keeps the held token while it is valid and otherwise reaches you as an
+`AuthError` with your message. `withIdentity` takes one too. See
+https://docs.getfelix.dev/clients/typescript/#getting-and-refreshing-a-token.
 
 ## What it wraps
 

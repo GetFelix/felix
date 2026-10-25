@@ -306,11 +306,13 @@ client reopens after losing its connection to a broker. A client that holds one
 fixed token presents that same token every time, so once it has expired those
 are refused. Revoking a principal is how you end streams that are already open.
 
-The Rust client and the C ABI can replace the token while the client runs: the
-Rust client through a token provider, C through the `token_fetch` callback, and C# through
-`FelixClientOptions.TokenProvider`, which is built on that callback. The
-other clients hold the token they connected with, so build a new client with a
-fresh token before the old one expires. Each client's page has an example.
+The Rust client, the C ABI, the TypeScript client and the C# client can replace
+the token while the client runs: the Rust client through a token provider, C
+through the `token_fetch` callback, TypeScript through a `tokenProvider`
+function, and C# through `FelixClientOptions.TokenProvider`, which is built on
+that callback. The other clients hold the token they connected with, so build a
+new client with a fresh token before the old one expires. Each client's page has
+an example.
 
 ## The clients
 

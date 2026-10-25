@@ -78,6 +78,14 @@ The same API in every client:
 `NotLeaderError`. `ClusterClient::commit` follows the redirect to the leader.
 A commit is never forwarded between brokers.
 
+`ClusterClient::commit`, `publish_if` and `state_get` also ask the entry broker
+again when a broker answers a coded `not_leader`. The broker checks that it
+leads the shard before applying anything, so nothing was written and the retry
+is safe. The retries use the cluster reconnect policy: up to 5 attempts, with
+a wait of up to 200 ms that doubles to a 2 s ceiling, and no overall deadline
+unless the caller sets one. A broker that keeps answering `not_leader` makes
+the call sit through that backoff before it fails with the error.
+
 `state_get(tenant, namespace, stream, entity_key, key)` answers with the
 value, the `version` (the offset of the commit that wrote it) and `as_of`,
 the offset of the last commit the answer reflects. Every commit at or below

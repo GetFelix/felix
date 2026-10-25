@@ -232,7 +232,10 @@ impl Client {
                 .visibility
                 .map_or(0, |visibility| (visibility.as_millis() as u64).max(1)),
         };
-        match self.group_round_trip(message, request_id).await? {
+        match self
+            .group_round_trip(message, request_id, "group poll refused")
+            .await?
+        {
             Message::GroupRecords { records, .. } => Ok(records),
             other => Err(anyhow::anyhow!(
                 "unexpected answer to a group poll: {other:?}"
@@ -397,7 +400,10 @@ impl Client {
             extend_ms: (extend.as_millis() as u64).max(1),
             request_id,
         };
-        match self.group_round_trip(message, request_id).await? {
+        match self
+            .group_round_trip(message, request_id, "group extend refused")
+            .await?
+        {
             Message::GroupExtended { visible_ms, .. } => {
                 Ok(std::time::Duration::from_millis(visible_ms))
             }
@@ -439,7 +445,10 @@ impl Client {
             group: group.to_string(),
             request_id,
         };
-        match self.group_round_trip(message, request_id).await? {
+        match self
+            .group_round_trip(message, request_id, "group dead letters refused")
+            .await?
+        {
             Message::GroupDeadLetterList { offsets, .. } => Ok(offsets),
             other => Err(anyhow::anyhow!(
                 "unexpected answer to a dead-letter list: {other:?}"
@@ -539,7 +548,10 @@ impl Client {
             group: group.to_string(),
             request_id,
         };
-        match self.group_round_trip(message, request_id).await? {
+        match self
+            .group_round_trip(message, request_id, "group describe refused")
+            .await?
+        {
             Message::GroupInfo {
                 committed,
                 tail,
@@ -582,7 +594,10 @@ impl Client {
             group: group.to_string(),
             request_id,
         };
-        match self.group_round_trip(message, request_id).await? {
+        match self
+            .group_round_trip(message, request_id, "group delete refused")
+            .await?
+        {
             Message::GroupDeleted { existed, .. } => Ok(existed),
             other => Err(anyhow::anyhow!(
                 "unexpected answer to a group delete: {other:?}"
@@ -620,7 +635,10 @@ impl Client {
             if_new,
             request_id,
         };
-        match self.group_round_trip(message, request_id).await? {
+        match self
+            .group_round_trip(message, request_id, "group seek refused")
+            .await?
+        {
             Message::GroupPosition { offset, moved, .. } => Ok(GroupPosition { offset, moved }),
             other => Err(anyhow::anyhow!(
                 "unexpected answer to a group seek: {other:?}"
@@ -634,10 +652,14 @@ impl Client {
     /// shape that is always `CacheValue` or `CacheOk`, and a `GroupRecords`
     /// arriving there would be matched against the wrong request. Same reason
     /// `topology` opens its own.
+    ///
+    /// `operation` leads the text of a refusal, so the caller names what it
+    /// asked for.
     pub(super) async fn group_round_trip(
         &self,
         message: Message,
         request_id: u64,
+        operation: &'static str,
     ) -> Result<Message> {
         let OpenedStream {
             mut send,
@@ -647,7 +669,7 @@ impl Client {
         } = self.open_event_stream().await?;
         write_message(&mut send, message)
             .await
-            .context("send group request")?;
+            .with_context(|| format!("send {} request", operation.trim_end_matches(" refused")))?;
         let mut scratch = BytesMut::with_capacity(64 * 1024);
         let answer =
             read_message_with_limit(&mut recv, &mut scratch, self.runtime_config.max_frame_bytes)
@@ -660,11 +682,7 @@ impl Client {
                 retry,
                 detail,
             }) => Err(crate::error::refused(
-                "group request refused",
-                message,
-                code,
-                retry,
-                detail,
+                operation, message, code, retry, detail,
             )),
             // Typed, so a caller can follow it: only the shard's leader holds
             // its groups, and this names which broker that is.
@@ -750,7 +768,10 @@ impl Client {
             stream.to_string(),
             group.to_string(),
         );
-        match self.group_round_trip(message, request_id).await? {
+        match self
+            .group_round_trip(message, request_id, "group settle refused")
+            .await?
+        {
             Message::CacheOk { .. } => Ok(()),
             other => Err(anyhow::anyhow!(
                 "unexpected answer to a group settle: {other:?}"
@@ -792,7 +813,10 @@ impl Client {
                 request_id,
             }
         };
-        match self.group_round_trip(message, request_id).await? {
+        match self
+            .group_round_trip(message, request_id, "group dead letter refused")
+            .await?
+        {
             Message::CacheOk { .. } => Ok(()),
             other => Err(anyhow::anyhow!(
                 "unexpected answer to a dead-letter change: {other:?}"
