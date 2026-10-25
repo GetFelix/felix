@@ -1,1 +1,0 @@
-- A refusal of `publish_if`, `commit`, `state_get` and the other requests that share the group round trip now names the operation (`publish_if refused: ...`) instead of reading `group request refused` (#1531).

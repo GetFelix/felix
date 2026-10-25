@@ -28,8 +28,11 @@ flowchart TB
         direction LR
         PY["Python<br/><small>felix-python (PyO3)</small>"]
         TS["TypeScript<br/><small>felix-typescript (napi-rs)</small>"]
-        GO["Go<br/><small>planned</small>"]
+        CS["C#<br/><small>Felix.Client (P/Invoke)</small>"]
+        GO["Go<br/><small>not started</small>"]
     end
+
+    CABI["C ABI<br/><small>felix-capi: libfelix + felix.h</small>"]
 
     CORE["felix-client<br/><small>reconnect · redirects · retry classification · offsets</small>"]
     WIRE["felix-wire + felix-transport<br/><small>framing, QUIC, TLS 1.3</small>"]
@@ -37,14 +40,16 @@ flowchart TB
 
     PY --> CORE
     TS --> CORE
-    GO -.-> CORE
+    CS --> CABI
+    CABI --> CORE
+    GO -.-> CABI
     CORE --> WIRE
     WIRE -->|QUIC| BROKER
 
     classDef planned fill:#fdf0e3,stroke:#b07d3a,color:#3d2a12
     classDef core fill:#e8f0fe,stroke:#4a6fa5,color:#1a2b40
     class GO planned
-    class CORE,WIRE core
+    class CORE,WIRE,CABI core
 ```
 
 Most systems write a native client per language, each speaking the wire
@@ -325,8 +330,15 @@ are refused. Revoking a principal is how you end streams that are already open.
 Every client can replace the token while it runs: the Rust client through a
 token provider, C through the `token_fetch` callback, Python through
 `token_provider`, TypeScript through a `tokenProvider` function, and C# through
-`FelixClientOptions.TokenProvider`, which is built on that callback. Each
-client's page has an example.
+`FelixClientOptions.TokenProvider`, which is built on that callback. They share
+one set of rules. The provider is called lazily, when a stream is about to
+authenticate and no token is held, the held one has passed two thirds of its
+life, or a broker refused it. It is never called concurrently, so rotating a
+refresh token inside it is safe. A call that takes longer than 30 seconds fails
+the operations waiting on it but keeps running, and a late answer is used. A
+failure keeps a still-valid token and retries about five seconds later,
+otherwise it fails the operation with an auth error carrying the provider's
+message. Each client's page has an example that rotates the refresh token.
 
 ## The clients
 
@@ -338,8 +350,8 @@ worth writing code for.
 | **[Rust](/clients/rust/)** | `felix-client` on crates.io | The reference client, and the one the others are built from. Applications use `ClusterClient`; `connect_with_policy` tunes its reconnect attempts, deadline and backoff. |
 | **[Python](/clients/python/)** | `felix-client` on PyPI | A PyO3 binding, with a synchronous and an asyncio surface over the same Rust client. `Client([...])` takes a list of seeds, and the cluster behaviour is the Rust client's. |
 | **[TypeScript](/clients/typescript/)** | `felix-client` on npm | A napi-rs addon. One asynchronous surface, because blocking Node's event loop is not something a library may do. `Client.connect([...])` takes an array of seeds, with the Rust client's cluster behaviour. |
-| **[C](/clients/c/)** | `libfelix` and `felix.h`, built from the repository | A C ABI over the Rust client, asynchronous through callbacks. `felix_client_connect_with` takes comma-separated seeds and builds a `ClusterClient`. The base for the C# SDK; not on a registry. |
-| **[C#](/clients/csharp/)** | `Felix.Client`, built from `sdks/dotnet` | A P/Invoke binding over the C ABI, so `FelixClientOptions.Addrs` is a list of seeds for a `ClusterClient`. Every `felix.h` function is bound, including a token provider that renews the token: publish, subscribe to a shard or every shard, consumer groups, caches, counters and cache watches, atomic commits, idempotent producers, and publisher and timestamp metadata. Not on NuGet yet. |
+| **[C](/clients/c/)** | `libfelix` and `felix.h`, built from the repository | A C ABI over the Rust client, asynchronous through callbacks. `felix_client_connect_with` takes comma-separated seeds and builds a `ClusterClient`. The base for the C# SDK; build it from the repository. |
+| **[C#](/clients/csharp/)** | `Felix.Client` on NuGet | A P/Invoke binding over the C ABI, so `FelixClientOptions.Addrs` is a list of seeds for a `ClusterClient`. Every `felix.h` function is bound, including a token provider that renews the token: publish, subscribe to a shard or every shard, consumer groups, caches, counters and cache watches, atomic commits, idempotent producers, and publisher and timestamp metadata. The package bundles the native library for Linux, macOS and Windows on x64 and arm64. |
 
 ### Which client to use
 
@@ -354,9 +366,9 @@ MB/s of payload, broker CPU up 34%) and durable quorum-acked throughput 4.4×
 TypeScript clients, and the C ABI that C# binds, are built on `ClusterClient`
 and have no other kind. See [Every client is a cluster client](#every-client-is-a-cluster-client).
 
-Python and TypeScript both pass every required scenario in the catalogue, and
-CI is gated on both. That includes the `commit.*` scenarios: all three clients
-offer [atomic commits](/features/atomic-commits/) with the same typed
+Python, TypeScript, the C ABI (driven from C) and C# all pass every required
+scenario in the catalogue, and CI is gated on each. That includes the `commit.*`
+scenarios: every client offers [atomic commits](/features/atomic-commits/) with the same typed
 refusals. Each leaves a couple of optional scenarios unclaimed
 rather than passing over them in silence; their pages say which.
 

@@ -212,10 +212,9 @@ early to keep p99/p999 predictable.
   (`FELIX_DURABLE_RETENTION_BYTES` / `_SECONDS`) and is off unless set, so by
   default a log grows until the disk does
 - Tiered storage, cross-region bridges, encryption at rest, and audit logging
-- Clients beyond Rust, Python and TypeScript. All three wrap the same
-  implementation and publish under the same name (`felix-client` on
-  crates.io, PyPI and npm). The next language has to pass the conformance
-  catalogue first
+- Go and mobile clients. Python, TypeScript and the C ABI wrap the Rust
+  client, and the C# SDK binds the C ABI, so none reimplements it. The next
+  language has to pass the conformance catalogue first
 
 The [status table](https://docs.getfelix.dev/getting-started/what-felix-is-for/)
 is kept current per capability. Trust it when another page disagrees.
@@ -249,7 +248,7 @@ cargo run -p felix-conformance
 With no arguments the conformance runner drives a real broker over QUIC and
 checks publish, subscribe and cache behaviour against the protocol. With
 `verify <results.json>` it checks a client's results against the scenario
-catalogue every Felix client is held to, which is how the Python and TypeScript
+catalogue every Felix client is held to, which is how the Python, TypeScript, C and C#
 clients prove they behave like the Rust one.
 
 Felix runs as a cluster of brokers over a control plane, and as a single broker for development.
@@ -293,7 +292,7 @@ site is the authority.
 ## License
 
 Felix uses a split license: the wire protocol (`felix-wire`), transport layer
-(`felix-transport`), client SDK (`felix-client` and its Python and TypeScript
+(`felix-transport`), client SDK (`felix-client` and its Python, TypeScript, C ABI and C#
 bindings), and the shapes the services share (`felix-common`) are Apache-2.0. The broker,
 the control-plane server components and the test tooling (including the
 conformance kit, which links the broker) are AGPL-3.0:

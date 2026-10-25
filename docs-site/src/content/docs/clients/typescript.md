@@ -54,8 +54,11 @@ while a publish is in flight.
 import { Client } from "felix-client";
 
 const client = await Client.connect("127.0.0.1:5000", "t1", { token, caFile });
-await client.publish("t1", "default", "events", Buffer.from("hello"));
-client.close();
+try {
+  await client.publish("t1", "default", "events", Buffer.from("hello"));
+} finally {
+  client.close();
+}
 ```
 
 `token` is a Felix token; [Getting and refreshing a
@@ -68,58 +71,63 @@ A token lasts 15 minutes by default, and the broker checks it each time a stream
 authenticates, including the streams a reconnect opens. [Getting a
 token](/clients/overview/#getting-a-token) covers where one comes from. A
 process that outlives one gives `connect` a `tokenProvider`, and the client asks
-it for a token when it needs one. The Rust client's `RefreshingToken` does the
-timing: it asks once two thirds of the held token's life has passed, or when the
-broker refused it. If a fetch fails while the held token is still valid, the
-client keeps using that one and asks again a few seconds later. If the broker
-refuses a token and the provider returns a different one, the client retries
-once with it.
+it for a token when it needs one. It asks lazily: when no token is held, when
+the held one has passed two thirds of its life, or when a broker has just
+refused it (one refetch per refused stream, retried only if the provider returns a different token, then the operation fails with the auth error). If a fetch fails while the held token is still valid, the client
+keeps using that one and asks again about five seconds later.
 
-The provider has the shape `(signal: AbortSignal) => string | Promise<string>`. Pass it as the
-`tokenProvider` option of `Client.connect` and of `withIdentity`. Leave out
-`token` to have the first connect call it, or pass a token you already hold to
-use that first. An empty string counts as no token.
+The provider is a `(signal: AbortSignal) => string | Promise<string>`, passed as
+the `tokenProvider` option of `Client.connect` or `withIdentity`. `token` is then
+optional: leave it out to have the first connect call the provider (an empty
+string counts as none), or pass a token you already hold to use that first.
 
 **When it is called.** When a stream is about to authenticate and the client
-holds no token, the held one is due for replacement, or the broker just refused
-it. An idle client makes no calls. The client never runs two fetches at once:
-streams that open together wait on one and share its token. That is also what
-makes it safe to rotate a refresh token inside the function.
+holds no token, the held one is due for replacement, or a broker just refused
+it. An idle client makes no calls, and there is no timer. The client never runs
+two calls at once: streams that open together wait on one and share its token.
+That is also what makes it safe to rotate a refresh token inside the provider.
 
 **Threading.** The client calls it on the JavaScript thread, like any callback,
 so do not block in it. A returned promise is awaited, so a slow answer does not
-hold up the event loop. The provider does not keep the Node process alive, and
-the client releases it once nothing uses the token any more.
+hold up the event loop. The provider does not keep the Node process alive.
 
-**Failure.** A throw, a rejected promise, a result that is not a non-empty
-string, or no answer within 30 seconds counts as a failed fetch. The message you
-throw reaches the call that needed the token unchanged, in an `AuthError`, once
-no valid token is held to fall back on. A provider failure is final for that operation: it is not retried, because each call can rotate a refresh token. The next operation asks the provider again. After a timeout the calls waiting on the
-token fail, but the client does not call the provider again until the pending
-call settles, and a late answer is used.
+**Failure.** The provider fails when it throws or rejects, returns something
+that is not a non-empty string, or does not answer within 30 seconds. While the
+held token is still valid the client keeps it and asks again about five seconds
+later. Otherwise the operation that needed the token fails with `AuthError`
+carrying the provider's message unchanged. A provider failure is final for that
+operation: it is not retried, because each call can rotate a refresh token. The
+next operation asks again. The 30 second timeout fails the operations waiting on
+the call, but the call itself keeps running: the client never starts a second
+one while it is outstanding, the next refresh joins it, and a late answer is
+used.
 
-**Cancellation.** The `signal` argument aborts when the client stops waiting
-(the 30 seconds) and once the last handle using the token is released: the
-client, its `withIdentity` clients and its open subscriptions. Closing a client
-while a subscription or a call is still using the token does not abort it. Pass it to `fetch`, as the
-example does, so a hung request is cut off instead of left running. A provider
-that ignores the signal still works: it is not called again while it is
-pending, and its late answer is used.
+**Cancellation.** The `signal` fires at the 30 second timeout and when the
+client, its `withIdentity` clients and its open subscriptions and in-flight
+calls are all gone; closing a client while a subscription or call still uses
+the token source does not cancel it. A provider that ignores it still works: it
+is not called again while pending, and its late answer is used. Pass it to
+`fetch`, as the example does, so a hung request is cut off instead of left
+running.
 
 **Async variant.** `async` functions are the usual case, as in the example. A
 plain function that returns the string works too.
 
-The example below does the control plane call with `fetch` (Node 18 or later)
-and keeps the rotating refresh token. The refresh token works once: every
-refresh returns a replacement, so the provider stores it before it answers. A
-`403` means the refresh token expired or was revoked and the exchange has to be
-run again; the provider fails with that message, and the client keeps the last
-token until it expires. Run a new login, then connect a new client.
+The example does the control plane calls with `fetch` (Node 18 or later). The
+refresh token works once: every refresh returns a replacement, so the provider
+stores it before it returns. A 403 means the refresh token expired or was
+revoked: run the exchange again (fresh OIDC login) and connect a new client; the
+client keeps the last token until it expires.
 
 ```ts
 const CONTROLPLANE = "https://controlplane:8443/v1/tenants/t1";
 
-async function post(path: string, body: unknown, bearer?: string, signal?: AbortSignal) {
+interface Minted {
+  felix_token: string;
+  refresh_token: string;
+}
+
+async function mint(path: string, body: unknown, signal: AbortSignal, bearer?: string): Promise<Minted> {
   const res = await fetch(CONTROLPLANE + path, {
     method: "POST",
     headers: {
@@ -127,31 +135,36 @@ async function post(path: string, body: unknown, bearer?: string, signal?: Abort
       ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
     },
     body: JSON.stringify(body),
-    signal, // aborts at 30 s, or when the last handle using the token is released
+    signal,
   });
   if (!res.ok) throw new Error(`${path}: ${res.status}`); // 403: sign in again
-  return res.json();
+  return (await res.json()) as Minted;
 }
 
-const exchanged = await post(
+const exchanged = await mint(
   "/token/exchange",
   { requested: ["stream.publish"], resources: ["stream:t1/default/*"] },
+  AbortSignal.timeout(10_000),
   oidcToken,
 );
 
-// The refresh token works once, so keep the newest. The client never runs
-// this twice at the same time, so no lock is needed.
-let refreshToken: string = exchanged.refresh_token;
+// The client never runs the provider twice at once, so no lock is needed.
+let refreshToken = exchanged.refresh_token;
 
 const client = await Client.connect("127.0.0.1:5000", "t1", {
   token: exchanged.felix_token,
   caFile,
   tokenProvider: async (signal) => {
-    const minted = await post("/token/refresh", { refresh_token: refreshToken }, undefined, signal);
+    const minted = await mint("/token/refresh", { refresh_token: refreshToken }, signal);
     refreshToken = minted.refresh_token;
     return minted.felix_token;
   },
 });
+try {
+  await client.publish("t1", "default", "events", Buffer.from("hello"));
+} finally {
+  client.close();
+}
 ```
 
 `client.withIdentity("t1", { tokenProvider })` takes the same kind of function for
@@ -161,7 +174,7 @@ at a time and keep the newest refresh token.
 ## Connecting
 
 ```ts
-Client.connect(
+const client = await Client.connect(
   addrs,        // "host:port", or an array of them
   tenantId,
   {
@@ -171,7 +184,7 @@ Client.connect(
     caFile,         // trust a specific CA; omit for the system trust store
     offerAlpn,      // offer the felix/1 ALPN; defaults to false
   },
-)
+);
 ```
 
 An option the client does not know, or an extra positional argument, throws a
@@ -208,7 +221,11 @@ that shares its connections:
 
 ```ts
 const alice = await client.withIdentity("t1", { token: aliceToken });
-await alice.publish("t1", "app", "alice-feed", Buffer.from("hello"));
+try {
+  await alice.publish("t1", "app", "alice-feed", Buffer.from("hello"));
+} finally {
+  alice.close();
+}
 ```
 
 Every stream `alice` opens authenticates with her token, so the broker checks
@@ -347,7 +364,7 @@ try {
   for (;;) {
     const event = await events.nextEvent();
     if (event === null) break;          // the subscription ended
-    handle(event.payload);
+    await handle(event.payload);
   }
 } finally {
   await events.close();
@@ -371,13 +388,25 @@ next record**, so keep the promise and await it again rather than calling
 `nextEvent` afresh, or you will drop the record it was about to hand you.
 
 ```ts
-let pending = null;
-async function next(timeoutMs) {
+import { setTimeout as sleep } from "node:timers/promises";
+
+const TIMED_OUT = Symbol("timed out");
+let pending: Promise<Event | null> | null = null;
+
+// The next event, null once the subscription ends, or TIMED_OUT.
+async function nextWithin(timeoutMs: number) {
   pending ??= events.nextEvent();
-  const item = await Promise.race([pending, timer(timeoutMs)]);
-  if (item === TIMED_OUT) return null;   // pending is kept for next time
-  pending = null;
-  return item;
+  const timer = new AbortController();
+  try {
+    const item = await Promise.race([pending, sleep(timeoutMs, TIMED_OUT, { signal: timer.signal })]);
+    if (item !== TIMED_OUT) pending = null;   // after a timeout, pending is kept for next time
+    return item;
+  } catch (err) {
+    pending = null;
+    throw err;
+  } finally {
+    timer.abort();
+  }
 }
 ```
 :::
@@ -398,35 +427,49 @@ a new leader's generation-start record, which takes an offset; the next event
 reports it in `skippedBefore`:
 
 ```ts
-let expected = null;
+let expected: bigint | null = null;
 for (;;) {
   const event = await events.nextEvent();
   if (event === null) break;
-  const from = event.offset - event.skippedBefore;
-  if (expected !== null && from !== expected) {
-    console.warn(`dropped ${from - expected} records`);
+  if (event.offset !== null) {          // null on an in-memory stream
+    const from = event.offset - event.skippedBefore;
+    if (expected !== null && from !== expected) {
+      console.warn(`dropped ${from - expected} records`);
+    }
+    expected = event.offset + 1n;
   }
-  expected = event.offset + 1n;
-  handle(event.payload);
+  await handle(event.payload);
 }
 ```
 
 ### A consumer that survives a restart
 
 ```ts
-async function run(client, checkpoint) {
-  let start = await checkpoint.load();           // null on a cold start
-  start = start === null ? "earliest" : start + 1n;
+import { setTimeout as sleep } from "node:timers/promises";
+
+interface Checkpoint {
+  load(): Promise<bigint | null>;                // null on a cold start
+  save(offset: bigint): Promise<void>;
+}
+
+async function run(client: Client, checkpoint: Checkpoint) {
+  const saved = await checkpoint.load();
+  let start: StartPosition = saved === null ? "earliest" : saved + 1n;
 
   for (;;) {
-    const events = await client.subscribe("t1", "default", "events", start);
     try {
-      for (;;) {
-        const event = await events.nextEvent();
-        if (event === null) break;
-        await handle(event.payload);
-        await checkpoint.save(event.offset);
-        start = event.offset + 1n;
+      const events = await client.subscribe("t1", "default", "events", start);
+      try {
+        for (;;) {
+          const event = await events.nextEvent();
+          if (event === null) break;
+          if (event.offset === null) throw new Error("events is not a durable stream");
+          await handle(event.payload);
+          await checkpoint.save(event.offset);
+          start = event.offset + 1n;
+        }
+      } finally {
+        await events.close();
       }
     } catch (err) {
       if (err instanceof ConnectionError) {
@@ -439,8 +482,6 @@ async function run(client, checkpoint) {
       } else {
         throw err;
       }
-    } finally {
-      await events.close();
     }
   }
 }
@@ -449,21 +490,15 @@ async function run(client, checkpoint) {
 ## Errors you can act on
 
 ```ts
-import {
-  AuthError,
-  ConnectionError,
-  NotFoundError,
-  OutcomeUnknownError,
-  ShardUnavailableError,
-} from "felix-client";
+import { AuthError, FelixError, NotFoundError, OutcomeUnknownError } from "felix-client";
 
 try {
   await client.publish("t1", "default", "orders", payload);
 } catch (err) {
-  if (err instanceof OutcomeUnknownError) reconcile();  // it may have been written
-  else if (err.retryable) retry();                      // nothing was written
-  else if (err instanceof AuthError) giveUp();          // retrying grants no permission
-  else if (err instanceof NotFoundError) createStream();
+  if (err instanceof OutcomeUnknownError) await reconcile();          // it may have been written
+  else if (err instanceof FelixError && err.retryable) await retry(); // nothing was written
+  else if (err instanceof AuthError) await giveUp();                  // retrying grants no permission
+  else if (err instanceof NotFoundError) await createStream();
   else throw err;
 }
 ```
@@ -520,11 +555,13 @@ for (;;) {
   for (const record of records) {
     try {
       await charge(record.payload);
-      await client.groupAck("t1", "default", "orders", shard, "billing", record.offset);
-    } catch {
+    } catch (err) {
+      console.error(`order at ${record.offset} failed:`, err);
       // Back to the queue now, rather than after the visibility timeout.
       await client.groupNack("t1", "default", "orders", shard, "billing", record);
+      continue;
     }
+    await client.groupAck("t1", "default", "orders", shard, "billing", record.offset);
   }
 }
 ```
@@ -541,7 +578,8 @@ anything expensive or side-effecting:
 ```ts
 if (record.attempts > 3) {
   await quarantine(record);
-  await client.groupAck(...);     // settle it; it is not coming back
+  // Settle it; it is not coming back.
+  await client.groupAck("t1", "default", "orders", shard, "billing", record.offset);
 }
 ```
 
@@ -601,45 +639,46 @@ Watches can resume by offset and report loss explicitly, which makes the cache
 usable for state synchronisation.
 
 ```ts
-const watch = await client.watchCache(
-  "t1", "default", "sessions",
-  undefined,        // key, or a prefix (below)
-  "room:42:",       // prefix
-  undefined,        // start offset
-  true,             // retained
-);
+function apply(roster: Map<string, Buffer>, { key, value }: CacheChange) {
+  if (value === null) roster.delete(key);   // a delete is a change with no value
+  else roster.set(key, value);
+}
 
-const roster = new Map();
-try {
-  // Retained values arrive first, and the count says exactly how many. 0n is a
-  // definite answer (the prefix is empty), not a silence to wait through.
-  for (let i = 0n; i < watch.retainedCount; i++) {
-    const { change } = await watch.recv();
-    roster.set(change.key, change.value);
-  }
+// Mirrors the room into `roster`. Resolves to the offset to watch again from
+// after a lag, or null once the watch ends.
+async function mirror(roster: Map<string, Buffer>): Promise<bigint | null> {
+  const watch = await client.watchCache(
+    "t1", "default", "sessions",
+    undefined,        // key, or a prefix (below)
+    "room:42:",       // prefix
+    undefined,        // start offset
+    true,             // retained
+  );
+  try {
+    // Retained values arrive first, and the count says exactly how many. 0n is a
+    // definite answer (the prefix is empty), not a silence to wait through.
+    for (let i = 0n; i < (watch.retainedCount ?? 0n); i++) {
+      const item = await watch.recv();
+      if (item?.change == null) throw new Error("the watch ended before its retained values");
+      apply(roster, item.change);
+    }
 
-  // State is now complete. Everything after this is live.
-  for (;;) {
-    const item = await watch.recv();
-    if (item === null) break;
-    if (item.laggedResumeFrom !== null) {
-      // Not an error: the watch did its job by saying so. Offsets on a filtered
-      // watch are sparse, so loss cannot be inferred the way a stream
-      // subscriber infers it. This is the only signal.
-      return resumeFrom(item.laggedResumeFrom);
+    // State is now complete. Everything after this is live.
+    for (;;) {
+      const item = await watch.recv();
+      if (item === null) return null;
+      if (item.laggedResumeFrom !== null) {
+        // Not an error: the watch did its job by saying so. Offsets on a filtered
+        // watch are sparse, so loss cannot be inferred the way a stream
+        // subscriber infers it. This is the only signal.
+        return item.laggedResumeFrom;
+      }
+      // Otherwise shardMoved: the watch follows the shard to its new broker.
+      if (item.change !== null) apply(roster, item.change);
     }
-    if (item.shardMoved !== null) {
-      // The shard moved to another broker; the watch follows it there.
-      continue;
-    }
-    if (item.change.value === null) {
-      roster.delete(item.change.key);   // a delete is a change with no value
-    } else {
-      roster.set(item.change.key, item.change.value);
-    }
+  } finally {
+    await watch.close();
   }
-} finally {
-  await watch.close();
 }
 ```
 
@@ -720,35 +759,39 @@ A subscription reads one shard. `subscribeSharded` opens one per shard, follows
 each shard's own owner, and merges them:
 
 ```ts
-const stream = await client.subscribeSharded("t1", "default", "orders");
-console.log(`${stream.shards} shards`);
+const sharded = await client.subscribeSharded("t1", "default", "orders");
+console.log(`${sharded.shards} shards`);
 
-for (;;) {
-  const item = await stream.nextEvent();
-  if (item === null) break;
-  if (item.event) {
-    handle(item.event.payload);
-  } else if (item.lostError) {
-    // Surfaced rather than swallowed: the other shards carry on, so a consumer
-    // that ignored this would be reading part of the stream while believing it
-    // read all of it.
-    alert(item.shard, item.lostError);
-  } else if (item.recovered) {
-    console.log(`shard ${item.shard} back`);
-  } else if (item.shardMoved) {
-    // Followed to its new owner; its records carry on from there.
-    console.log(`shard ${item.shard} moved to ${item.shardMoved.nodeId}`);
-  } else if (item.streamDeleted) {
-    // The stream is gone; this shard is not reopened.
-    console.log(`shard ${item.shard}: stream deleted`);
+try {
+  for (;;) {
+    const item = await sharded.nextEvent();
+    if (item === null) break;
+    if (item.event) {
+      await handle(item.event.payload);
+    } else if (item.lostError) {
+      // Surfaced rather than swallowed: the other shards carry on, so a consumer
+      // that ignored this would be reading part of the stream while believing it
+      // read all of it.
+      console.error(`shard ${item.shard} lost: ${item.lostError}`);
+    } else if (item.recovered) {
+      console.log(`shard ${item.shard} back`);
+    } else if (item.shardMoved) {
+      // Followed to its new owner; its records carry on from there.
+      console.log(`shard ${item.shard} moved to ${item.shardMoved.nodeId}`);
+    } else if (item.streamDeleted) {
+      // The stream is gone; this shard is not reopened.
+      console.log(`shard ${item.shard}: stream deleted`);
+    }
   }
+} finally {
+  await sharded.close();
 }
 ```
 
 Resuming is a **map**, not a number, because offsets are per shard:
 
 ```ts
-const positions = await stream.positions();   // { "0": 41n, "1": 12n, ... }
+const positions = await sharded.positions();  // { "0": 41n, "1": 12n, ... }
 // ... later, after a restart
 const resumed = await client.subscribeSharded(
   "t1", "default", "orders", undefined, positions,
@@ -775,7 +818,8 @@ Payloads and cache values come back as real `Buffer`s, not wrappers. `equals`,
 `toString`, `Buffer.concat` and `deepStrictEqual` all behave:
 
 ```ts
-if (event.payload.equals(expected)) { /* ... */ }
+const event = await events.nextEvent();
+if (event?.payload.equals(expected)) { /* ... */ }
 ```
 
 Stream offsets, group offsets and cache-watch offsets are `bigint`. Mixing

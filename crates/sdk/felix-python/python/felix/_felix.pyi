@@ -392,7 +392,7 @@ class AsyncClient:
 
         It is awaited on the loop running this call, which must stay open for the life of the client and its ``with_identity`` handles.
 
-        The provider's task is cancelled (it sees ``asyncio.CancelledError``) when a call passes the 30 s fetch timeout and when the client and its handles are gone."""
+        The provider's task is cancelled (it sees ``asyncio.CancelledError``) when a call passes the 30 s fetch timeout and when the client, its handles, its open subscriptions and its in-flight calls are all gone."""
     async def with_identity(
         self,
         tenant_id: str,

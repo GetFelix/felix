@@ -20,7 +20,7 @@ Not yet: it's pre-1.0, so APIs can still change between releases, and it hasn't
 had an external security review. Quite a lot works: multi-broker clusters, durable replicated
 streams, quorum acknowledgement, failover, consumer groups, the log-backed
 cache, and OIDC auth with RBAC. It is tested hard, including fault-injection
-suites. Releases are tagged (the newest is v0.6.1) and publish container images, but
+suites. Releases are tagged (the newest is v0.6.2) and publish container images, but
 there is no second implementation of anything, and the faults it is proven
 against are the ones a single machine can produce.
 It's ready for evaluation, prototyping and benchmarking.
@@ -197,10 +197,11 @@ role permissions:
 
 ## Will there be clients for other languages?
 
-Rust, Python and TypeScript ship today, the latter two as bindings over the
-Rust client rather than reimplementations. Both pass every required scenario in
+Rust, Python, TypeScript, C and C# ship today. Python and TypeScript are
+bindings over the Rust client, and the C# SDK (`sdks/dotnet`) binds the C ABI,
+rather than reimplementing anything. Each passes every required scenario in
 the client conformance catalogue, and CI is gated on it. Go is not
-started, and the C# SDK binds the same ABI from `sdks/dotnet`. `felix-capi`, the [C ABI](/clients/c/) they will bind to, covers connect,
+started; it would bind the C ABI too. `felix-capi`, the [C ABI](/clients/c/), covers connect,
 publishes, subscriptions, consumer groups on a shard, caches, counters and
 watches, atomic commits, conditional publishes and idempotent producers, all
 asynchronous through callbacks. It also has the sharded group, the group stream admin calls, and the record publisher and timestamp fields.

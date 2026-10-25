@@ -46,11 +46,14 @@ with felix.Client("127.0.0.1:5000", tenant_id="t1", token=tok) as client:
 ```
 
 ```python
-client = await felix.AsyncClient.connect(
-    "127.0.0.1:5000", tenant_id="t1", token=tok
-)
-async with client:
-    await client.publish("t1", "default", "events", b"hello")
+import felix
+
+
+async def main(tok):
+    async with await felix.AsyncClient.connect(
+        "127.0.0.1:5000", tenant_id="t1", token=tok
+    ) as client:
+        await client.publish("t1", "default", "events", b"hello")
 ```
 
 `tok` is a Felix token; [Getting and refreshing a
@@ -66,24 +69,23 @@ authenticates, including the streams a reconnect opens. [Getting a
 token](/clients/overview/#getting-a-token) covers where one comes from. A
 process that outlives one gives `Client`, `AsyncClient.connect` and
 `with_identity` a `token_provider`, and the client asks it for a token when it
-needs one. The Rust client's `RefreshingToken` does the timing: it asks once two
-thirds of the held token's life has passed, or when the broker refused it. If a
-fetch fails while the held token is still valid, the client keeps using that one
-and asks again a few seconds later. If the broker refuses a token and the
-provider returns a different one, the client retries once with it.
+needs one. It asks lazily: when no token is held, when the held one has passed
+two thirds of its life, or when a broker has just refused it (one refetch per refused stream, retried only if the provider returns a different token, then the operation fails with the auth error). If a fetch fails
+while the held token is still valid, the client keeps using that one and
+asks again about five seconds later.
 
 The provider is a callable that takes no arguments and returns the token as a
-`str`. Pass it as `token_provider=`. `token=` is then optional: leave it out
-(or pass `None` or `""`) to have the first connect call the provider, or pass a
-token you already hold to use that first.
+`str`, passed as `token_provider=`; `token=` is then optional, so leave it out
+to have the first connect call the provider (`None` or `""` counts as none), or
+pass a token you already hold to have it used first.
 
 **When it is called.** When a stream is about to authenticate and the client
-holds no token, the held one is due for replacement, or the broker just refused
-it. `with_identity` authenticates its streams before it returns, so it calls
-the provider when no valid token is held. An idle client makes no calls, and
-there is no timer. The client never runs two calls at once: streams that open
-together wait on one and share its token. That is also what makes it safe to
-rotate a refresh token inside the provider.
+holds no token, the held one is due for replacement, or a broker just refused
+it. An idle client makes no calls, and there is no timer. The client never runs
+two calls at once: streams that open together wait on one and share its token.
+That is also what makes it safe to rotate a refresh token inside the provider.
+`with_identity` authenticates its streams before it returns, so it calls the
+provider when no valid token is held.
 
 **Threading.** On `Client`, a plain function runs on a Felix worker thread, with
 the GIL, and never on a thread that is waiting on the broker. Blocking in it is
@@ -94,26 +96,31 @@ The provider can be called while your own event loop is blocked in a synchronous
 call, because it does not depend on that loop.
 
 **Failure.** The provider fails when it raises, returns something that is not a
-non-empty `str` (a `str` that is not valid UTF-8 counts). While the held token
-is still valid the client keeps it, logs a warning and asks again a few seconds
-later. Otherwise the call that needed the token raises `AuthError` with the
-exception's message in its text. A provider failure is final for that operation: it is not retried, because each call can rotate a refresh token. The next operation asks the provider again. A provider that has not answered after 30
-seconds fails the operations waiting on it, but the call itself is not
-abandoned: the next operation that needs a token waits on that same call (up to
-30 seconds again) and uses its answer if it arrives, so the provider is not
-called a second time while one is outstanding.
+non-empty string, or does not answer within 30 seconds. While the held token is
+still valid the client keeps it and asks again about five seconds
+later. Otherwise the operation that needed the token fails with
+`AuthError` carrying the provider's message unchanged. A provider failure is
+final for that operation: it is not retried, because each call can rotate a
+refresh token. The next operation asks again. The 30 second timeout fails the
+operations waiting on the call, but the call itself keeps running: the client
+never starts a second one while it is outstanding, the next refresh joins it,
+and a late answer is used. The message is the exception's `str()`, or its type
+name when that is empty. A `str` that is not valid UTF-8 counts as not a string.
 
-**Cancellation.** On `AsyncClient` the provider's task is cancelled on its loop
-when the 30 seconds pass and when the client and all its `with_identity` handles
-are gone (operations still in flight keep the client alive). Your provider sees
-an `asyncio.CancelledError` at its current `await`, so a `finally` block can
-release a connection. Let it propagate: the cancelled call counts as a failed
-fetch, and the next fetch calls the provider again. If the loop is already
-closed there is nothing to cancel. On `Client` the provider is a thread running
-your Python code and cannot be stopped, so it is left to finish, and an `async
-def` run there with `asyncio.run` is left to finish the same way. Give a
-blocking provider its own timeout (`urllib.request.urlopen(..., timeout=10)`) so
-it returns before the client gives up on it.
+**Cancellation.** On `AsyncClient` the provider's task is cancelled at the 30
+second timeout and when the client, its `with_identity` handles and its open
+subscriptions and in-flight calls are all gone; closing a client while a
+subscription or call still uses the token source does not cancel it. A provider
+that ignores it still works: it is not called again while pending, and its late
+answer is used. The provider sees an `asyncio.CancelledError` at its current
+`await`, so a `finally` block can release a connection. Let it propagate: the
+cancelled call counts as a failed fetch, and the next fetch calls the provider
+again. If the loop is already closed there is nothing to cancel. On `Client`
+the provider is your Python code running on a thread and cannot be cancelled,
+so it is joined, and an `async def` run there with `asyncio.run` is joined the
+same way. Give a blocking provider its own timeout
+(`urllib.request.urlopen(..., timeout=20)`) so it returns before the client
+gives up on it.
 
 **Async variant.** `AsyncClient` takes an `async def`, or any callable that
 returns an awaitable (a lambda or decorator around one). Whatever the provider
@@ -121,18 +128,19 @@ returns is awaited; a `str` returned directly is a failure (`AuthError`), since
 a plain function belongs on `Client`. A non-callable raises `TypeError` at
 `connect` or `with_identity`. The coroutine is awaited on the event loop that
 was running at `connect` or `with_identity`, so a session bound to that loop
-works. That loop is captured once and must outlive the client and every
-`with_identity` handle; after it closes, calls that need a token fail with "the
-event loop the token provider was bound to is closed". While that loop is
-blocked, for instance in a synchronous call, the provider cannot run and the
-stream waits for it, up to the 30 seconds.
+works. That loop is captured once and must outlive the client, every
+`with_identity` handle and their subscriptions; after it closes, calls that need
+a token fail with "the event loop the token provider was bound to is closed".
+While that loop is blocked, for instance in a synchronous call, the provider
+cannot run and the stream waits for it, up to the 30 seconds.
 
 The example below does the control plane calls with `urllib` and keeps the
 rotating refresh token. The refresh token works once: every refresh returns a
-replacement, so the provider stores it before it returns. A `403` means the
-refresh token expired or was revoked and the exchange has to be run again; the
-provider raises (`urllib` puts the status in the message) and the client keeps
-the last token until it expires. Run a new login, then connect a new client.
+replacement, so the provider stores it before it returns. A 403 means the
+refresh token expired or was revoked: run the exchange again (fresh OIDC login)
+and connect a new client; the client keeps the last token until it expires.
+`urllib` raises `HTTPError` with the status in its message, so that is what the
+provider's failure says.
 
 ```python
 import json
@@ -143,19 +151,20 @@ import felix
 CONTROLPLANE = "https://controlplane:8443/v1/tenants/t1"
 
 
-def post(path, body, bearer=None):
+def post_json(path, body, bearer=None):
     headers = {"Content-Type": "application/json"}
     if bearer:
         headers["Authorization"] = f"Bearer {bearer}"
     request = urllib.request.Request(
         CONTROLPLANE + path, data=json.dumps(body).encode(), headers=headers
     )
+    # Under the client's 30 s, so a hung request fails as itself.
     with urllib.request.urlopen(request, timeout=20) as response:
         return json.load(response)
 
 
 def connect(oidc_token):
-    minted = post(
+    minted = post_json(
         "/token/exchange",
         {"requested": ["stream.publish"], "resources": ["stream:t1/default/*"]},
         bearer=oidc_token,
@@ -164,7 +173,7 @@ def connect(oidc_token):
 
     def fetch_token():
         nonlocal refresh_token
-        minted = post("/token/refresh", {"refresh_token": refresh_token})
+        minted = post_json("/token/refresh", {"refresh_token": refresh_token})
         refresh_token = minted["refresh_token"]
         return minted["felix_token"]
 
@@ -178,31 +187,36 @@ def connect(oidc_token):
 
 With `AsyncClient` the provider is an `async def`. Use an async HTTP client
 such as `aiohttp` for it. The loop stays free without a thread, and when the
-client cancels the provider, at the 30 second timeout or on close, the request
-stops with it. A blocking call moved to `asyncio.to_thread` would keep running
-after the cancel.
+client cancels the provider the request stops with it. A blocking call moved to
+`asyncio.to_thread` would keep running after the cancel.
 
-The session must stay open as long as the client and every `with_identity`
-handle that uses the same provider, so the example returns both. Create it
-inside the coroutine, so it belongs to the loop the provider runs on, and close
-it after the client and those handles are done. `raise_for_status=True` makes a `403`
-raise with the status in the message.
+The `aiohttp` session has to outlive everything that can call the provider, so
+the example is an async context manager that closes the session after the
+client block, on every path. Open subscriptions and `with_identity` handles
+inside that block: one that outlives it keeps the provider alive with a closed
+session. `raise_for_status=True` makes a 403 raise with the status in the
+message, and the session timeout stays under the client's 30 seconds.
 
 ```python
+import contextlib
+
 import aiohttp
 
+import felix
 
+CONTROLPLANE = "https://controlplane:8443/v1/tenants/t1"
+
+
+@contextlib.asynccontextmanager
 async def connect_async(oidc_token):
-    session = aiohttp.ClientSession(raise_for_status=True)
+    timeout = aiohttp.ClientTimeout(total=20)
+    async with aiohttp.ClientSession(raise_for_status=True, timeout=timeout) as session:
 
-    async def post_json(path, body, bearer=None):
-        headers = {"Authorization": f"Bearer {bearer}"} if bearer else {}
-        async with session.post(
-            CONTROLPLANE + path, json=body, headers=headers
-        ) as response:
-            return await response.json()
+        async def post_json(path, body, bearer=None):
+            headers = {"Authorization": f"Bearer {bearer}"} if bearer else {}
+            async with session.post(CONTROLPLANE + path, json=body, headers=headers) as response:
+                return await response.json()
 
-    try:
         minted = await post_json(
             "/token/exchange",
             {"requested": ["stream.publish"], "resources": ["stream:t1/default/*"]},
@@ -216,16 +230,18 @@ async def connect_async(oidc_token):
             refresh_token = minted["refresh_token"]
             return minted["felix_token"]
 
-        client = await felix.AsyncClient.connect(
+        async with await felix.AsyncClient.connect(
             "127.0.0.1:5000",
             tenant_id="t1",
             token=minted["felix_token"],
             token_provider=fetch_token,
-        )
-        return client, session  # close the session after the client is done
-    except BaseException:
-        await session.close()
-        raise
+        ) as client:
+            yield client
+
+
+async def main(oidc_token):
+    async with connect_async(oidc_token) as client:
+        await client.publish("t1", "default", "events", b"hello")
 ```
 
 `with_identity` takes the same argument, so a gateway can give each user a
@@ -233,13 +249,11 @@ handle that renews its own token: `client.with_identity("t1",
 token_provider=fetch_token)`. A handle with no `token` calls the provider for
 its first stream.
 
-The synchronous surface releases the GIL while it blocks, so threads run in
-parallel. A `concurrent.futures.ThreadPoolExecutor` over one shared client is a
-reasonable design, not a queue behind a lock.
-
 ## Connecting
 
 ```python
+import felix
+
 felix.Client(
     addrs,                    # "host:port", or a list of them
     tenant_id="t1",
@@ -276,8 +290,8 @@ A gateway serving many users can hold one client and give each user a client
 that shares its connections:
 
 ```python
-alice = client.with_identity("t1", alice_token)
-alice.publish("t1", "app", "alice-feed", b"hello")
+with client.with_identity("t1", alice_token) as alice:
+    alice.publish("t1", "app", "alice-feed", b"hello")
 ```
 
 Every stream `alice` opens authenticates with her token, so the broker checks
@@ -294,11 +308,14 @@ In every language the client is a cluster client; see
 [Choosing a Client](/clients/overview/#every-client-is-a-cluster-client).
 
 ```python
-client = felix.Client(
+import felix
+
+with felix.Client(
     ["felix-0:5000", "felix-1:5000", "felix-2:5000"],
     tenant_id="t1",
     token=tok,
-)
+) as client:
+    client.publish("t1", "default", "events", b"hello")
 ```
 
 `AsyncClient.connect` takes the same list. These are seeds: the client asks
@@ -347,7 +364,7 @@ The Rust page covers [clusters](/clients/rust/#clusters) in full.
 ```python
 client.publish("t1", "default", "orders", payload)                      # acked
 client.publish("t1", "default", "orders", payload, ack="none")          # fire and forget
-client.publish("t1", "default", "orders", payload, key=customer_id)     # routed
+client.publish("t1", "default", "orders", payload, key=customer_id.encode())  # routed
 ```
 
 `ack` selects what the broker must have done before the call returns:
@@ -368,11 +385,13 @@ behaves like a single-shard one. If you created a stream with several shards to
 get throughput, and you are not passing a key, you are not getting it.
 
 ```python
+import json
+
 for order in orders:
     client.publish(
         "t1", "default", "orders",
-        order.encode(),
-        key=order.customer_id.encode(),
+        json.dumps(order).encode(),
+        key=order["customer_id"].encode(),
     )
 ```
 
@@ -436,6 +455,10 @@ exception is a new leader's generation-start record, which takes an offset; the
 next event reports it in `skipped_before`:
 
 ```python
+import logging
+
+log = logging.getLogger(__name__)
+
 expected = None
 with client.subscribe("t1", "default", "events") as events:
     for event in events:
@@ -455,9 +478,17 @@ The pattern the offset semantics exist for: checkpoint what you handled, and
 resume at the next one.
 
 ```python
-def run(client, checkpoint):
-    start = checkpoint.load()            # None on a cold start
-    start = start + 1 if start is not None else "earliest"
+import logging
+import time
+
+import felix
+
+log = logging.getLogger(__name__)
+
+
+def run(client, checkpoint, handle):
+    last = checkpoint.load()             # None on a cold start
+    start = last + 1 if last is not None else "earliest"
 
     while True:
         try:
@@ -466,9 +497,11 @@ def run(client, checkpoint):
                     handle(event.payload)
                     checkpoint.save(event.offset)
                     start = event.offset + 1
+            return                       # the broker ended the stream
         except felix.ConnectionError:
             # Worth retrying, and the client has already tried other brokers.
             # Resuming from `start` is what makes it lossless.
+            log.warning("subscription lost; resuming at %s", start, exc_info=True)
             time.sleep(1)
         except felix.CursorError:
             # Retention discarded the offset. The only recovery is to accept
@@ -478,12 +511,15 @@ def run(client, checkpoint):
             start = "earliest"
 ```
 
-The two `except` clauses do different things. The recovery differs, so the
-error types differ.
+`handle` runs before the checkpoint is saved, so a crash between the two
+repeats one record rather than losing it. The two `except` clauses do
+different things. The recovery differs, so the error types differ.
 
 ## Errors you can act on
 
 ```python
+import felix
+
 try:
     client.publish("t1", "default", "orders", payload)
 except felix.ShardUnavailableError:
@@ -547,7 +583,7 @@ while True:
         try:
             charge(record.payload)
             client.group_ack("t1", "default", "orders", shard, "billing", record.offset)
-        except Retryable:
+        except RetryableError:
             # Back to the queue now, rather than after the visibility timeout.
             client.group_nack("t1", "default", "orders", shard, "billing", record)
 ```
@@ -562,11 +598,14 @@ from a first try, which is worth branching on before doing anything expensive or
 side-effecting:
 
 ```python
-if record.attempts > 3:
-    quarantine(record)
-    client.group_ack(...)      # settle it; it is not coming back
-else:
-    process(record)
+for record in records:
+    if record.attempts > 3:
+        quarantine(record)
+        # Settle it, so it is not delivered again.
+        client.group_ack("t1", "default", "orders", shard, "billing", record.offset)
+        continue
+    charge(record.payload)
+    client.group_ack("t1", "default", "orders", shard, "billing", record.offset)
 ```
 
 **A group is bound to one shard.** Consuming a multi-shard stream means polling
@@ -626,41 +665,51 @@ Watches can resume by offset and report loss explicitly, which makes the cache
 usable for state synchronisation.
 
 ```python
-roster = {}
-resume_from = None
-while True:
-    with client.watch_cache(
-        "t1", "default", "sessions",
-        felix.CacheWatchFilter.prefix("room:42:"),
-        start=resume_from,
-        retained=resume_from is None,
-    ) as watch:
-        if resume_from is None:
-            # Retained values arrive first, and the count says exactly how many.
-            # Zero is a definite answer (the prefix is empty), not a silence to
-            # wait through.
-            for _ in range(watch.retained_count):
-                change = watch.recv()
-                roster[change.key] = change.value
-        resume_from = None
+import felix
 
-        # State is now complete. Everything after this is live.
-        for item in watch:
-            if isinstance(item, felix.CacheWatchLagged):
-                # Not an error: the watch did its job by saying so. Offsets on a
-                # filtered watch are sparse, so loss cannot be inferred the way a
-                # stream subscriber infers it. This is the only signal.
-                resume_from = item.resume_from
-                break
-            if isinstance(item, felix.CacheWatchShardMoved):
-                # The shard moved to another broker; the watch follows it there.
+def mirror(client, roster):
+    """Keep `roster` equal to the room's entries until the broker ends the watch."""
+    resume_from = None
+    while True:
+        with client.watch_cache(
+            "t1", "default", "sessions",
+            felix.CacheWatchFilter.prefix("room:42:"),
+            start=resume_from,
+            retained=resume_from is None,
+        ) as watch:
+            if resume_from is None:
+                # Retained values arrive first, and the count says exactly how
+                # many. Zero is a definite answer (the prefix is empty), not a
+                # silence to wait through.
+                roster.clear()
+                for _ in range(watch.retained_count):
+                    change = watch.recv()
+                    roster[change.key] = change.value
+            elif watch.resnapshot:
+                # Compaction passed resume_from, so deletes since then are gone.
+                # Start over from current state.
+                resume_from = None
                 continue
-            if item.value is None:
-                roster.pop(item.key, None)     # a delete is a change with no value
-            else:
-                roster[item.key] = item.value
-    if resume_from is None:
-        break                                  # the broker ended the watch
+            resume_from = None
+
+            # State is now complete. Everything after this is live.
+            for item in watch:
+                if isinstance(item, felix.CacheWatchLagged):
+                    # Not an error: the watch did its job by saying so. Offsets
+                    # on a filtered watch are sparse, so loss cannot be inferred
+                    # the way a stream subscriber infers it. This is the only
+                    # signal.
+                    resume_from = item.resume_from
+                    break
+                if isinstance(item, felix.CacheWatchShardMoved):
+                    # The shard moved to another broker; the watch follows it.
+                    continue
+                if item.value is None:
+                    roster.pop(item.key, None)   # a delete is a change with no value
+                else:
+                    roster[item.key] = item.value
+        if resume_from is None:
+            return                               # the broker ended the watch
 ```
 
 Three things in that example matter:
@@ -702,8 +751,7 @@ receipt = client.commit(
 print(receipt.offset)  # where the event is read, and the state's version
 
 state = client.state_get("acme", "orders", stream, b"order-42", "order-42")
-assert state.version == receipt.offset
-print(state.value, state.as_of)
+print(state.value, state.version)  # the version is receipt.offset
 ```
 
 `AsyncClient` has the same two methods, awaited.
@@ -718,20 +766,28 @@ print(state.value, state.as_of)
 A commit is refused before anything is sent when it cannot be one record:
 
 ```python
+import logging
+
+import felix
+
+log = logging.getLogger(__name__)
+
 try:
     client.commit("acme", "orders", b"order-42", [
         felix.CommitOp.publish("order-events", b"placed"),
         felix.CommitOp.put("inventory", "sku-1", b"3"),   # another stream
     ])
 except felix.NotOnOwningShardError as err:
-    print(err.index, err.stream, err.owner)   # 1 inventory order-events
+    # err.index == 1, err.stream == "inventory", err.owner == "order-events"
+    log.error("op %d writes %s, not %s", err.index, err.stream, err.owner)
+    raise
 except felix.EventCountError as err:
-    print(err.count)                          # not exactly one event
-except felix.CommitError:
-    ...                                       # the broker does not support commits
+    log.error("a commit needs exactly one event, not %d", err.count)
+    raise
 ```
 
-Both are subclasses of `CommitError`, itself a `FelixError`. Failures after the
+Both are mistakes in the ops, so the example logs and re-raises rather than
+retrying. Both are subclasses of `CommitError`, itself a `FelixError`. Failures after the
 commit was sent are the ordinary classes above; note that a commit is **not
 idempotent**, so an `OutcomeUnknownError` means it may already be written.
 
@@ -749,6 +805,12 @@ A subscription reads one shard. `subscribe_sharded` opens one per shard,
 follows each shard's own owner, and merges them:
 
 ```python
+import logging
+
+import felix
+
+log = logging.getLogger(__name__)
+
 with client.subscribe_sharded("t1", "default", "orders") as stream:
     for item in stream:
         if isinstance(item, felix.ShardRecord):
@@ -768,13 +830,23 @@ with client.subscribe_sharded("t1", "default", "orders") as stream:
             log.info("shard %d: stream deleted", item.shard)
 ```
 
-Resuming is a **map**, not a number, because offsets are per shard:
+Resuming is a **map**, not a number, because offsets are per shard.
+`positions()` returns `{shard: last offset handled}`; pass it back as `resume=`
+and each listed shard continues after its offset:
 
 ```python
-positions = stream.positions()     # {shard: last offset handled}
-# ... later, after a restart
-resumed = client.subscribe_sharded("t1", "default", "orders", resume=positions)
+import felix
+
+resume = checkpoint.load()             # None on a cold start
+with client.subscribe_sharded("t1", "default", "orders", resume=resume) as stream:
+    for item in stream:
+        if isinstance(item, felix.ShardRecord):
+            handle(item.event.payload)
+            checkpoint.save(stream.positions())
 ```
+
+Read `positions()` while the subscription is open: a closed one returns an
+empty map.
 
 A single offset carried across shards would replay on every shard but one.
 
@@ -792,8 +864,16 @@ One client is meant to be shared. The synchronous surface blocks with the GIL
 released, so a thread pool over one client runs in parallel:
 
 ```python
+import concurrent.futures
+
+
+def publish(payload):
+    return client.publish("t1", "default", "events", payload)
+
+
 with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-    pool.map(lambda p: client.publish("t1", "default", "events", p), payloads)
+    # Reading the results re-raises the first failed publish.
+    offsets = list(pool.map(publish, payloads))
 ```
 
 Creating a client per thread is the thing to avoid: each is a QUIC endpoint

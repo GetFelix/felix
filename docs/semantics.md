@@ -301,7 +301,7 @@ what a client sees.
   past `FELIX_SHARD_MOVE_HOLD_MS` or `FELIX_SHARD_MOVE_HOLD_MAX`. Cache and
   counter operations are held and forwarded the same way. Consumer-group
   operations are held and then redirected to the new owner, which
-  `ClusterClient`'s group calls (and the Python and TypeScript clients') follow.
+  `ClusterClient`'s group calls (and the Python, TypeScript, C and C# clients') follow.
 - **Subscriptions follow.** The old leader ends each after the writes in
   flight have fanned out, and sends `shard_moved` with the offset to resume
   from. A `ClusterClient` subscription resumes on the new owner at

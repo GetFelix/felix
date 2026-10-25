@@ -35,18 +35,32 @@ so your program needs no async runtime of its own.
 Every call that talks to the broker is asynchronous. It returns at once and
 reports its result to a callback. Each takes a callback, a `void *user_data`
 that is passed back untouched, and an optional `FelixCancelToken` (pass `NULL`
-for none).
+for none). The fragments on this page leave out `#include "felix.h"` and the
+standard headers they use.
 
 ```c
 static void on_published(void *user_data, FelixStatus status, const char *message,
                          bool has_offset, uint64_t offset) {
-    /* runs on a library thread */
+    /* Runs on a library thread. message is null for statuses below 10. */
+    if (status != FELIX_STATUS_OK) {
+        fprintf(stderr, "publish failed (%d): %s\n", (int)status, message ? message : "");
+    } else if (has_offset) {
+        printf("published at offset %" PRIu64 "\n", offset);
+    }
 }
 
-felix_client_publish(client, "t1", "default", "events",
-                     (const uint8_t *)"hello", 5, NULL, 0,
-                     FELIX_ACK_PER_MESSAGE, FELIX_DELIVERY_AT_MOST_ONCE,
-                     NULL, on_published, my_state);
+static FelixStatus publish_hello(const FelixClient *client, void *state) {
+    static const uint8_t payload[] = "hello";
+    FelixStatus status = felix_client_publish(
+        client, "t1", "default", "events", payload, sizeof payload - 1,
+        NULL, 0, FELIX_ACK_PER_MESSAGE, FELIX_DELIVERY_AT_MOST_ONCE,
+        NULL /* no cancel token */, on_published, state);
+    if (status != FELIX_STATUS_OK) {
+        /* Refused before it started: on_published will not run. */
+        fprintf(stderr, "publish refused: %s\n", felix_last_error_message());
+    }
+    return status;
+}
 ```
 
 ```mermaid
@@ -130,220 +144,228 @@ A token lasts 15 minutes by default, and the broker checks it each time a stream
 authenticates, including the streams a reconnect opens. [Getting a
 token](/clients/overview/#getting-a-token) covers where one comes from. A
 process that outlives one gives `FelixConnectOptions` a fetch function, and the
-library asks it for a token when it needs one. The Rust client's
-`RefreshingToken` does the timing: it asks once two thirds of the held token's
-life has passed, or when the broker refused it. If a fetch fails while the held
-token is still valid, the client keeps using that one and asks again a few
-seconds later. If the broker refuses a token and the fetch returns a different
-one, the client retries once with it.
+client asks it for a token when it needs one. It asks lazily: when no token is
+held, when the held one has passed two thirds of its life, or when a broker has
+just refused it (one refetch per refused stream, retried only if the provider returns a different token, then the operation fails with the auth error). If a fetch fails while the held token is still valid, the
+client keeps using that one and asks again about five seconds later.
 
-The fetch function has the shape `void fetch(void *user_data, FelixTokenReply
-*reply)`. Set it as `token_fetch`, with `token_user_data` and an optional
-`token_release`, and pass `NULL` as the `token` argument to
-`felix_client_connect_with` to have the first connect call it, or pass a token
-you already hold to use that first. An empty string counts as no token.
+The fetch function is `void fetch(void *user_data, FelixTokenReply *reply)`. Set
+it as `token_fetch` in the `FelixConnectOptions` passed to
+`felix_client_connect_with`, with `token_user_data` and an optional
+`token_release`. The `token` argument is then optional: pass `NULL` to have the
+first connect call the fetch function. An empty string counts as none.
 
-**When it is called.** On a library thread, when a stream is about to
-authenticate and the library holds no token, the held one is due for
-replacement, or the broker just refused it. An idle client makes no calls. The
-library never runs two fetches at once: streams that open together wait on one
-and share its token. That is also what makes it safe to rotate a refresh token
-inside the function.
+**When it is called.** When a stream is about to authenticate and the client
+holds no token, the held one is due for replacement, or a broker just refused
+it. An idle client makes no calls, and there is no timer. The client never runs
+two calls at once: streams that open together wait on one and share its token.
+That is also what makes it safe to rotate a refresh token inside the fetch
+function.
 
-**Threading.** Do not block in the function; start the work and return. The
-reply may be completed from any thread, now or later, with
-`felix_token_reply_ok(reply, token)` (the string is copied) or
-`felix_token_reply_err(reply, message)`. C has no async variant of the fetch,
-so the reply is how a slow answer is returned.
+**Threading.** The function is called on a library thread and must not block:
+start the work and return. Complete the reply exactly once, from any thread, now
+or later, with `felix_token_reply_ok(reply, token)` (the string is copied) or
+`felix_token_reply_err(reply, message)`.
 
-**Failure.** A blank token (whitespace only) fails the fetch like an error reply; an empty one is refused by `felix_token_reply_ok`. The `message` you give reaches the call that needed the token
-unchanged, once no valid token is held to fall back on. A provider failure is final for that operation: it is not retried, because each call can rotate a refresh token. The next operation asks the provider again. A caller waits at most
-30 seconds for a fetch and then counts it as failed, but the fetch is not
-abandoned: the library does not call the function again while a reply is
-unanswered, the next refresh waits on the same reply, and an answer that arrives
-late returns `FELIX_STATUS_OK` and its token is used. Answer every reply, even
-late and even after the client is freed: a freed client waits on no one, and
-discards the token. A null, empty or non-UTF-8 `token` returns
-`FELIX_STATUS_INVALID_ARGUMENT` and leaves the reply open to be answered.
+**Failure.** The fetch fails when it answers with `felix_token_reply_err`, or
+does not answer within 30 seconds. A null, empty or non-UTF-8 token is not an
+answer: `felix_token_reply_ok` returns `FELIX_STATUS_INVALID_ARGUMENT` and the
+reply stays open. A blank (whitespace-only) token is accepted as the answer and
+fails the fetch like an error reply. While the held token is still valid the client keeps it and
+asks again about five seconds later. Otherwise the operation that needed the
+token fails with `FELIX_STATUS_AUTH`, and its message contains the fetch's
+message unchanged. A provider failure is final for that operation: it is not
+retried, because each call can rotate a refresh token. The next operation asks
+again. The 30 second timeout fails the operations waiting on the call, but the
+call itself keeps running: the client never starts a second one while it is
+outstanding, the next refresh joins it, and a late answer is used.
 
-**Lifetime.** The first `felix_token_reply_ok` or `felix_token_reply_err` call
-that is not refused for a bad argument consumes the reply, and the library
-frees it once the fetch is over. Using it again is undefined behaviour, as for
-any freed handle. `token_release` is how you free what `token_user_data`
-points to. It never runs while a reply is unanswered, so a fetch thread that
-outlives `felix_client_free` can still use that data until it answers; an app
-that never answers a reply leaks its data:
+**Cancellation.** A fetch cannot be cancelled: nothing tells the function to
+stop. Answer every reply, even late and even after the client is freed. Once the
+client and every handle made from it are freed, operations no longer wait on the
+fetch, and the token it returns is discarded.
+
+**Async variant.** There is none, because the reply already makes every fetch
+asynchronous. An app that has the token at hand answers inside the function.
+
+The first `felix_token_reply_ok` or `felix_token_reply_err` call that is not
+refused for a bad argument consumes the reply; using it again is undefined
+behaviour. `token_release` frees what `token_user_data` points to:
 
 - If `felix_client_connect_with` returns anything but `FELIX_STATUS_OK`, the
-  fetch is never used, `token_release` never runs, and the data is still yours.
-- If it returns `FELIX_STATUS_OK`, `token_release` runs exactly once later,
-  after the client is freed and the last reply has been answered (from any
-  thread, before or after the free), including when the connect then reports
-  failure through `on_connect`. It runs on whichever thread gets there last:
-  inside `felix_client_free`, or inside the answering
-  `felix_token_reply_ok`/`_err` call. So don't hold a lock that
+  fetch function is never used, `token_release` never runs, and the data is
+  still yours.
+- If it returns `FELIX_STATUS_OK`, `token_release` runs exactly once, after the
+  client and every handle made from it are freed and the last reply is
+  answered, including when the connect then fails through its callback. It runs
+  on whichever thread gets there last, inside a `*_free` call or inside the
+  answering `felix_token_reply_ok` or `_err`. So don't hold a lock that
   `token_release` takes while you answer, and don't touch the data after
-  answering.
+  answering. A reply never answered leaks the data.
 
-The example below does the control plane call with libcurl and keeps the
-rotating refresh token. The refresh token works once: every refresh returns a
-replacement, so the fetch function stores it before it answers. A `403` means
-the refresh token expired or was revoked and the exchange has to be run again;
-the fetch fails with that message, and the client keeps the last token until it
-expires. Run a new login, then connect a new client.
+The example below calls the control plane with libcurl. It needs
+`curl_global_init` to have run in `main` before any thread starts. The refresh
+token works once: every refresh returns a replacement, so the fetch function
+stores it before it answers. A 403 means the refresh token expired or was
+revoked: run the exchange again (fresh OIDC login) and connect a new client; the
+client keeps the last token until it expires.
 
 ```c
 #include <curl/curl.h>
 #include <pthread.h>
+#include <stdbool.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
 #include "felix.h"
 
+#define REFRESH_URL "https://controlplane:8443/v1/tenants/t1/token/refresh"
+
+/* No lock: the library runs one fetch at a time, so the refresh token is
+   never read and rotated at once. */
 struct session {
-  pthread_mutex_t mu;
-  char refresh_token[256]; /* the newest one; guarded by mu */
+    char refresh_token[512];
 };
 
 struct body {
-  char data[4096];
-  size_t len;
+    char data[4096];
+    size_t len;
 };
 
 static size_t collect(char *chunk, size_t size, size_t n, void *out) {
-  struct body *body = out;
-  size_t bytes = size * n;
-  if (body->len + bytes >= sizeof body->data) return 0; /* curl fails the call */
-  memcpy(body->data + body->len, chunk, bytes);
-  body->len += bytes;
-  body->data[body->len] = '\0';
-  return bytes;
+    struct body *body = out;
+    size_t bytes = size * n;
+    if (bytes >= sizeof body->data - body->len) return 0; /* curl fails the call */
+    memcpy(body->data + body->len, chunk, bytes);
+    body->len += bytes;
+    body->data[body->len] = '\0';
+    return bytes;
 }
 
-/* Copies a string value out of a flat JSON object. Use a JSON parser in real code. */
+/* Copies a non-empty string value out of a flat JSON object. Use a JSON
+   parser in real code. */
 static bool json_string(const char *json, const char *key, char *out, size_t cap) {
-  char needle[64];
-  snprintf(needle, sizeof needle, "\"%s\":\"", key);
-  const char *start = strstr(json, needle);
-  if (!start) return false;
-  start += strlen(needle);
-  const char *end = strchr(start, '"');
-  if (!end || (size_t)(end - start) >= cap) return false;
-  memcpy(out, start, (size_t)(end - start));
-  out[end - start] = '\0';
-  return true;
+    char needle[64];
+    snprintf(needle, sizeof needle, "\"%s\":\"", key);
+    const char *start = strstr(json, needle);
+    if (!start) return false;
+    start += strlen(needle);
+    const char *end = strchr(start, '"');
+    if (!end || end == start || (size_t)(end - start) >= cap) return false;
+    memcpy(out, start, (size_t)(end - start));
+    out[end - start] = '\0';
+    return true;
 }
 
-/* Spends the refresh token for a new access token and stores the
-   replacement, because every refresh token works once. */
+/* Spends the refresh token for an access token and stores the replacement. */
 static bool refresh(struct session *s, char *token, size_t cap, char *error,
                     size_t error_cap) {
-  char request[400];
-  pthread_mutex_lock(&s->mu);
-  snprintf(request, sizeof request, "{\"refresh_token\":\"%s\"}", s->refresh_token);
-  pthread_mutex_unlock(&s->mu);
+    char request[sizeof s->refresh_token + 32];
+    snprintf(request, sizeof request, "{\"refresh_token\":\"%s\"}", s->refresh_token);
 
-  struct body body = {.len = 0};
-  CURL *curl = curl_easy_init();
-  if (!curl) {
-    snprintf(error, error_cap, "could not start curl");
-    return false;
-  }
-  struct curl_slist *headers = curl_slist_append(NULL, "Content-Type: application/json");
-  curl_easy_setopt(curl, CURLOPT_URL, "https://controlplane:8443/v1/tenants/t1/token/refresh");
-  curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-  curl_easy_setopt(curl, CURLOPT_POSTFIELDS, request);
-  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, collect);
-  curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
-  curl_easy_setopt(curl, CURLOPT_TIMEOUT, 20L); /* the library gives up at 30 s */
-  CURLcode rc = curl_easy_perform(curl);
-  long status = 0;
-  curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
-  curl_slist_free_all(headers);
-  curl_easy_cleanup(curl);
+    struct body body = {.len = 0};
+    CURL *curl = curl_easy_init();
+    struct curl_slist *headers = curl_slist_append(NULL, "Content-Type: application/json");
+    if (!curl || !headers) {
+        curl_slist_free_all(headers);
+        curl_easy_cleanup(curl);
+        snprintf(error, error_cap, "could not start curl");
+        return false;
+    }
+    curl_easy_setopt(curl, CURLOPT_URL, REFRESH_URL);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, request);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, collect);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 20L); /* under the library's 30 s */
+    CURLcode rc = curl_easy_perform(curl);
+    long status = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
 
-  if (rc != CURLE_OK) {
-    snprintf(error, error_cap, "control plane unreachable: %s", curl_easy_strerror(rc));
-    return false;
-  }
-  if (status != 200) {
-    snprintf(error, error_cap, "token refresh answered %ld", status); /* 403: sign in again */
-    return false;
-  }
-  char next[sizeof s->refresh_token];
-  if (!json_string(body.data, "felix_token", token, cap) ||
-      !json_string(body.data, "refresh_token", next, sizeof next)) {
-    snprintf(error, error_cap, "token refresh answered something unexpected");
-    return false;
-  }
-  pthread_mutex_lock(&s->mu);
-  memcpy(s->refresh_token, next, sizeof next);
-  pthread_mutex_unlock(&s->mu);
-  return true;
+    if (rc != CURLE_OK) {
+        snprintf(error, error_cap, "control plane unreachable: %s", curl_easy_strerror(rc));
+        return false;
+    }
+    if (status != 200) {
+        snprintf(error, error_cap, "token refresh answered %ld", status); /* 403: sign in again */
+        return false;
+    }
+    char next[sizeof s->refresh_token];
+    if (!json_string(body.data, "felix_token", token, cap) ||
+        !json_string(body.data, "refresh_token", next, sizeof next)) {
+        snprintf(error, error_cap, "token refresh answered something unexpected");
+        return false;
+    }
+    memcpy(s->refresh_token, next, sizeof next);
+    return true;
 }
 
 struct fetch_job {
-  struct session *session;
-  FelixTokenReply *reply;
+    struct session *session;
+    FelixTokenReply *reply;
 };
 
-/* This thread outlives felix_client_free, and that is safe: the library keeps
- * the session until every reply has been answered, then calls release_session.
- * So use the session only before answering, and answer on every path. */
+/* May outlive felix_client_free: the session stays until every reply is
+   answered. Use it only before answering, and answer on every path. */
 static void *answer(void *arg) {
-  struct fetch_job *job = arg;
-  char token[2048], error[160];
-  if (refresh(job->session, token, sizeof token, error, sizeof error)) {
-    felix_token_reply_ok(job->reply, token); /* the string is copied */
-  } else {
-    felix_token_reply_err(job->reply, error); /* reaches your caller unchanged */
-  }
-  free(job); /* the reply is consumed: do not touch it again */
-  return NULL;
+    struct fetch_job *job = arg;
+    char token[2048], error[160];
+    bool fetched = refresh(job->session, token, sizeof token, error, sizeof error);
+    /* A refused token leaves the reply open, so fail it instead. */
+    if (!fetched || felix_token_reply_ok(job->reply, token) != FELIX_STATUS_OK) {
+        felix_token_reply_err(job->reply, fetched ? "the control plane sent an unusable token" : error);
+    }
+    free(job); /* the reply is consumed: do not touch it again */
+    return NULL;
 }
 
 /* Called on a library thread: start the work and return. */
 static void fetch_token(void *user_data, FelixTokenReply *reply) {
-  struct fetch_job *job = malloc(sizeof *job);
-  pthread_t thread;
-  if (!job) {
-    felix_token_reply_err(reply, "out of memory");
-    return;
-  }
-  job->session = user_data;
-  job->reply = reply;
-  if (pthread_create(&thread, NULL, answer, job) != 0) {
-    free(job);
-    felix_token_reply_err(reply, "could not start a thread");
-    return;
-  }
-  pthread_detach(thread);
+    struct fetch_job *job = malloc(sizeof *job);
+    if (!job) {
+        felix_token_reply_err(reply, "out of memory");
+        return;
+    }
+    job->session = user_data;
+    job->reply = reply;
+    pthread_t thread;
+    if (pthread_create(&thread, NULL, answer, job) != 0) {
+        free(job);
+        felix_token_reply_err(reply, "could not start a thread");
+        return;
+    }
+    pthread_detach(thread);
 }
 
 static void release_session(void *user_data) {
-  struct session *s = user_data;
-  pthread_mutex_destroy(&s->mu);
-  free(s);
+    free(user_data);
 }
 
-/* Connects with no token in hand: the first connect calls fetch_token. */
+/* Connects with no token in hand, so the first connect calls fetch_token. */
 static FelixStatus connect_with_refresh(const char *addrs, const char *ca_file,
                                         const char *refresh_token,
                                         FelixConnectCallback on_connect,
                                         void *connect_data) {
-  struct session *s = calloc(1, sizeof *s);
-  if (!s) return FELIX_STATUS_INVALID_ARGUMENT;
-  pthread_mutex_init(&s->mu, NULL);
-  snprintf(s->refresh_token, sizeof s->refresh_token, "%s", refresh_token);
+    struct session *s = calloc(1, sizeof *s);
+    if (!s) return FELIX_STATUS_ERROR;
+    int len = snprintf(s->refresh_token, sizeof s->refresh_token, "%s", refresh_token);
+    if (len <= 0 || (size_t)len >= sizeof s->refresh_token) {
+        free(s);
+        return FELIX_STATUS_INVALID_ARGUMENT;
+    }
 
-  FelixConnectOptions options = {.size = sizeof options,
-                                 .token_fetch = fetch_token,
-                                 .token_user_data = s,
-                                 .token_release = release_session};
-  FelixStatus status = felix_client_connect_with(
-      addrs, "t1", NULL /* first fetch gets it */, NULL, ca_file, &options,
-      NULL, on_connect, connect_data);
-  if (status != FELIX_STATUS_OK) release_session(s); /* refused: still ours */
-  return status;
+    FelixConnectOptions options = {.size = sizeof options,
+                                   .token_fetch = fetch_token,
+                                   .token_user_data = s,
+                                   .token_release = release_session};
+    FelixStatus status = felix_client_connect_with(
+        addrs, "t1", NULL /* the first fetch gets it */, NULL, ca_file, &options,
+        NULL, on_connect, connect_data);
+    if (status != FELIX_STATUS_OK) release_session(s); /* refused: still ours */
+    return status;
 }
 ```
 
@@ -356,105 +378,141 @@ function, so the client holds it until it expires: streams opened after expiry,
 including the ones a reconnect opens, are refused with `FELIX_STATUS_AUTH`.
 
 Connect, publish one record, subscribe to shard 0 and read one event. A small
-`waiter` turns each async call into a blocking one.
+`waiter` turns each async call into a blocking one. The token comes from the
+environment, so it is never in the source or the output.
 
 ```c
 #include <pthread.h>
+#include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
 #include "felix.h"
 
 struct waiter {
     pthread_mutex_t mu;
     pthread_cond_t cv;
-    int done;
+    bool done;
     FelixStatus status;
-    void *handle; /* the new client, subscription or event */
+    void *handle;      /* the new client, subscription or event */
+    char message[256]; /* copied: the callback's message dies with the callback */
 };
 
-static void finish(struct waiter *w, FelixStatus status, void *handle) {
+static void finish(struct waiter *w, FelixStatus status, const char *message, void *handle) {
     pthread_mutex_lock(&w->mu);
-    w->done = 1;
+    w->done = true;
     w->status = status;
     w->handle = handle;
+    snprintf(w->message, sizeof w->message, "%s", message ? message : "");
     pthread_cond_signal(&w->cv);
     pthread_mutex_unlock(&w->mu);
 }
 
-static FelixStatus wait_for(struct waiter *w) {
+/* Waits for the callback of a call that returned `started`. A refused call
+   never runs its callback, so its error is taken from the thread instead. */
+static FelixStatus wait_for(struct waiter *w, FelixStatus started) {
+    if (started != FELIX_STATUS_OK) {
+        snprintf(w->message, sizeof w->message, "%s", felix_last_error_message());
+        return started;
+    }
     pthread_mutex_lock(&w->mu);
     while (!w->done) pthread_cond_wait(&w->cv, &w->mu);
+    w->done = false;
+    FelixStatus status = w->status;
     pthread_mutex_unlock(&w->mu);
-    return w->status;
+    return status;
 }
 
-static void on_connect(void *ud, FelixStatus s, const char *msg, FelixClient *c) {
-    finish(ud, s, c);
+static void on_connect(void *user_data, FelixStatus status, const char *message,
+                       FelixClient *client) {
+    finish(user_data, status, message, client);
 }
-static void on_publish(void *ud, FelixStatus s, const char *msg, bool has, uint64_t off) {
-    finish(ud, s, NULL);
+static void on_subscribe(void *user_data, FelixStatus status, const char *message,
+                         FelixSubscription *subscription) {
+    finish(user_data, status, message, subscription);
 }
-static void on_subscribe(void *ud, FelixStatus s, const char *msg, FelixSubscription *sub) {
-    finish(ud, s, sub);
+static void on_publish(void *user_data, FelixStatus status, const char *message,
+                       bool has_offset, uint64_t offset) {
+    finish(user_data, status, message, NULL);
 }
-static void on_event(void *ud, FelixStatus s, const char *msg, FelixEvent *e) {
-    finish(ud, s, e);
-}
-
-static void waiter_reset(struct waiter *w) {
-    w->done = 0;
-    w->handle = NULL;
+static void on_event(void *user_data, FelixStatus status, const char *message,
+                     FelixEvent *event) {
+    finish(user_data, status, message, event);
 }
 
 int main(void) {
-    struct waiter w;
-    pthread_mutex_init(&w.mu, NULL);
-    pthread_cond_init(&w.cv, NULL);
-    waiter_reset(&w);
-    if (felix_client_connect("127.0.0.1:5000", "t1", "my-token", "localhost",
-                             NULL, NULL, on_connect, &w) != FELIX_STATUS_OK ||
-        wait_for(&w) != FELIX_STATUS_OK) {
-        fprintf(stderr, "connect failed: %s\n", felix_last_error_message());
+    const char *token = getenv("FELIX_TOKEN");
+    if (!token || !*token) {
+        fprintf(stderr, "set FELIX_TOKEN\n");
         return 1;
     }
-    FelixClient *client = w.handle;
+
+    struct waiter w = {.done = false};
+    pthread_mutex_init(&w.mu, NULL);
+    pthread_cond_init(&w.cv, NULL);
+    FelixClient *client = NULL;
+    FelixSubscription *sub = NULL;
+    FelixEvent *event = NULL;
+    const uint8_t *data = NULL;
+    size_t len = 0;
+    int exit_code = 1;
+    FelixStatus status;
+
+    status = felix_client_connect("127.0.0.1:5000", "t1", token, "localhost",
+                                  NULL /* system CAs */, NULL, on_connect, &w);
+    if (wait_for(&w, status) != FELIX_STATUS_OK) {
+        fprintf(stderr, "connect: %s\n", w.message);
+        goto cleanup;
+    }
+    client = w.handle;
 
     /* Subscribe first, so the publish below is not missed. */
-    waiter_reset(&w);
-    felix_client_subscribe(client, "t1", "default", "events", 0,
-                           FELIX_START_LATEST, 0, NULL, on_subscribe, &w);
-    if (wait_for(&w) != FELIX_STATUS_OK) return 1;
-    FelixSubscription *sub = w.handle;
+    status = felix_client_subscribe(client, "t1", "default", "events", 0,
+                                    FELIX_START_LATEST, 0, NULL, on_subscribe, &w);
+    if (wait_for(&w, status) != FELIX_STATUS_OK) {
+        fprintf(stderr, "subscribe: %s\n", w.message);
+        goto cleanup;
+    }
+    sub = w.handle;
 
-    waiter_reset(&w);
-    felix_client_publish(client, "t1", "default", "events",
-                         (const uint8_t *)"hello", 5, NULL, 0,
-                         FELIX_ACK_PER_MESSAGE, FELIX_DELIVERY_AT_MOST_ONCE,
-                         NULL, on_publish, &w);
-    if (wait_for(&w) != FELIX_STATUS_OK) return 1;
-
-    waiter_reset(&w);
-    felix_subscription_next(sub, 5000 /* ms */, NULL, on_event, &w);
-    if (wait_for(&w) == FELIX_STATUS_OK) {
-        FelixEvent *event = w.handle;
-        const uint8_t *data;
-        size_t len;
-        felix_event_payload(event, &data, &len);
-        printf("%.*s\n", (int)len, (const char *)data);
-        felix_event_free(event);
+    static const uint8_t payload[] = "hello";
+    status = felix_client_publish(client, "t1", "default", "events", payload,
+                                  sizeof payload - 1, NULL, 0, FELIX_ACK_PER_MESSAGE,
+                                  FELIX_DELIVERY_AT_MOST_ONCE, NULL, on_publish, &w);
+    if (wait_for(&w, status) != FELIX_STATUS_OK) {
+        fprintf(stderr, "publish: %s\n", w.message);
+        goto cleanup;
     }
 
+    status = felix_subscription_next(sub, 5000 /* ms */, NULL, on_event, &w);
+    status = wait_for(&w, status);
+    if (status != FELIX_STATUS_OK) {
+        fprintf(stderr, "read: %s\n", status == FELIX_STATUS_TIMEOUT ? "timed out" : w.message);
+        goto cleanup;
+    }
+    event = w.handle;
+    if (felix_event_payload(event, &data, &len) != FELIX_STATUS_OK) {
+        fprintf(stderr, "payload: %s\n", felix_last_error_message());
+        goto cleanup;
+    }
+    printf("%.*s\n", (int)len, (const char *)data);
+    exit_code = 0;
+
+cleanup:
+    /* Every call has completed by here, so no callback still holds &w. */
+    felix_event_free(event);
     felix_subscription_free(sub);
     felix_client_free(client);
-    return 0;
+    pthread_cond_destroy(&w.cv);
+    pthread_mutex_destroy(&w.mu);
+    return exit_code;
 }
 ```
 
-The example skips the call status of the subscribe, publish and read; a real
-caller checks it, because a refused call never runs its callback and the wait
-would not end. TLS is always on. `server_name` is the name the broker's
-certificate carries (`"localhost"` when null), and `ca_file` is a PEM file of CAs
-to trust, or null for the system store. `addrs` is a `host:port` string.
+TLS is always on. `server_name` is the name the broker's certificate carries
+(`"localhost"` when null), and `ca_file` is a PEM file of CAs to trust, or null
+for the system store. `addrs` is a `host:port` string.
 
 ## Publishing
 
@@ -474,10 +532,32 @@ The batch calls take the payloads end to end in one buffer, with an array of
 lengths:
 
 ```c
-const uint8_t data[] = "onetwothree";
-const size_t lens[] = {3, 3, 5};
-felix_client_publish_batch(client, "t1", "default", "events", data, lens, 3,
-                           NULL, 0, FELIX_ACK_PER_BATCH, NULL, on_batch, my_state);
+static void on_batch(void *user_data, FelixStatus status, const char *message,
+                     const FelixRecordResult *results, size_t count) {
+    if (status == FELIX_STATUS_OK) return;
+    if (count == 0) { /* cancelled or panicked: no record has its own outcome */
+        fprintf(stderr, "batch failed (%d): %s\n", (int)status, message ? message : "");
+        return;
+    }
+    for (size_t i = 0; i < count; i++) {
+        if (results[i].status != FELIX_STATUS_OK) {
+            fprintf(stderr, "record %zu failed: %s\n", i,
+                    results[i].message ? results[i].message : "");
+        }
+    }
+}
+
+static FelixStatus publish_three(const FelixClient *client, void *state) {
+    static const uint8_t data[] = "onetwothree";
+    static const size_t lens[] = {3, 3, 5};
+    FelixStatus status = felix_client_publish_batch(
+        client, "t1", "default", "events", data, lens, sizeof lens / sizeof lens[0],
+        NULL, 0, FELIX_ACK_PER_BATCH, NULL, on_batch, state);
+    if (status != FELIX_STATUS_OK) {
+        fprintf(stderr, "batch refused: %s\n", felix_last_error_message());
+    }
+    return status;
+}
 ```
 
 `felix_client_publish_batch` sends the batch to one shard, by key or to shard 0.
@@ -562,10 +642,47 @@ a move. `felix_client_stream_shards` gives the shard count, so a caller can run 
 group per shard, or open a sharded group over all of them (below).
 
 ```c
-felix_client_group_poll(client, "t1", "default", "orders", shard, "billing",
-                        32 /* max_records */, 5000 /* wait_ms */,
-                        0 /* visibility_ms: broker default */,
-                        "worker-1", false /* reclaim */, NULL, on_poll, state);
+/* Must outlive every call it is passed to. */
+struct worker {
+    const FelixClient *client;
+    uint32_t shard;
+};
+
+static void on_acked(void *user_data, FelixStatus status, const char *message) {
+    if (status != FELIX_STATUS_OK) {
+        fprintf(stderr, "ack failed (%d): %s\n", (int)status, message ? message : "");
+    }
+}
+
+/* The records are borrowed: handle or copy each before returning. */
+static void on_poll(void *user_data, FelixStatus status, const char *message,
+                    const FelixGroupRecord *records, size_t count) {
+    struct worker *worker = user_data;
+    if (status != FELIX_STATUS_OK) {
+        fprintf(stderr, "poll failed (%d): %s\n", (int)status, message ? message : "");
+        return;
+    }
+    for (size_t i = 0; i < count; i++) {
+        printf("order: %.*s\n", (int)records[i].payload_len,
+               (const char *)records[i].payload);
+        if (felix_client_group_ack(worker->client, "t1", "default", "orders",
+                                   worker->shard, "billing", records[i].offset,
+                                   NULL, on_acked, NULL) != FELIX_STATUS_OK) {
+            fprintf(stderr, "ack refused: %s\n", felix_last_error_message());
+        }
+    }
+}
+
+static FelixStatus poll_orders(struct worker *worker) {
+    FelixStatus status = felix_client_group_poll(
+        worker->client, "t1", "default", "orders", worker->shard, "billing",
+        32 /* max_records */, 5000 /* wait_ms */, 0 /* visibility_ms: broker default */,
+        "worker-1", false /* reclaim */, NULL, on_poll, worker);
+    if (status != FELIX_STATUS_OK) {
+        fprintf(stderr, "poll refused: %s\n", felix_last_error_message());
+    }
+    return status;
+}
 ```
 
 - `felix_client_group_create` and `felix_client_group_seek` take a
@@ -640,10 +757,18 @@ is off. A null `options` is the defaults, which is what `felix_client_connect`
 uses.
 
 ```c
-FelixConnectOptions options = {
-    .size = sizeof options, .publishers = true, .timestamps = true};
-felix_client_connect_with("127.0.0.1:5000", "t1", "my-token", "localhost", NULL,
-                          &options, NULL, on_connect, state);
+/* on_connect is the callback from the minimal example. */
+static FelixStatus connect_with_metadata(const char *token, void *state) {
+    FelixConnectOptions options = {
+        .size = sizeof options, .publishers = true, .timestamps = true};
+    FelixStatus status = felix_client_connect_with(
+        "127.0.0.1:5000", "t1", token, "localhost", NULL, &options, NULL,
+        on_connect, state);
+    if (status != FELIX_STATUS_OK) {
+        fprintf(stderr, "connect refused: %s\n", felix_last_error_message());
+    }
+    return status;
+}
 ```
 
 `publishers` asks brokers to say who published each event, which adds the
@@ -725,13 +850,32 @@ broker that does not serve commits completes the call with
 `FELIX_STATUS_UNSUPPORTED`.
 
 ```c
-FelixCommitOp ops[] = {
-    { FELIX_COMMIT_ENQUEUE, "order-events", NULL, (const uint8_t *)"placed", 6 },
-    { FELIX_COMMIT_PUT, "order-events", "order-42", (const uint8_t *)"{...}", 5 },
-    { FELIX_COMMIT_DELETE, "order-events", "cart-42", NULL, 0 },
-};
-felix_client_commit(client, "acme", "orders", (const uint8_t *)"order-42", 8,
-                    ops, 3, NULL, on_commit, state);
+static void on_commit(void *user_data, FelixStatus status, const char *message,
+                      uint64_t offset) {
+    if (status == FELIX_STATUS_OK) {
+        printf("committed at offset %" PRIu64 "\n", offset);
+    } else {
+        fprintf(stderr, "commit failed (%d): %s\n", (int)status, message ? message : "");
+    }
+}
+
+static FelixStatus place_order(const FelixClient *client, void *state) {
+    static const char entity[] = "order-42";
+    static const char event[] = "placed";
+    static const char order[] = "{\"total\":42}";
+    const FelixCommitOp ops[] = {
+        {FELIX_COMMIT_ENQUEUE, "order-events", NULL, (const uint8_t *)event, strlen(event)},
+        {FELIX_COMMIT_PUT, "order-events", entity, (const uint8_t *)order, strlen(order)},
+        {FELIX_COMMIT_DELETE, "order-events", "cart-42", NULL, 0},
+    };
+    FelixStatus status = felix_client_commit(
+        client, "acme", "orders", (const uint8_t *)entity, strlen(entity), ops,
+        sizeof ops / sizeof ops[0], NULL, on_commit, state);
+    if (status != FELIX_STATUS_OK) {
+        fprintf(stderr, "commit refused: %s\n", felix_last_error_message());
+    }
+    return status;
+}
 ```
 
 An operation's `key` is read only for a put or delete, and its `data` only for a
@@ -801,9 +945,15 @@ In every language the client is a cluster client; see
 one `host:port` or several separated by commas:
 
 ```c
-felix_client_connect_with("felix-0:5000,felix-1:5000,felix-2:5000",
-                          "t1", token, NULL, NULL, NULL, NULL,
-                          on_connected, my_state);
+static FelixStatus connect_to_cluster(const char *token, void *state) {
+    FelixStatus status = felix_client_connect_with(
+        "felix-0:5000,felix-1:5000,felix-2:5000", "t1", token, NULL, NULL, NULL,
+        NULL, on_connect, state);
+    if (status != FELIX_STATUS_OK) {
+        fprintf(stderr, "connect refused: %s\n", felix_last_error_message());
+    }
+    return status;
+}
 ```
 
 These are seeds: the client asks whichever answers which brokers exist and adds

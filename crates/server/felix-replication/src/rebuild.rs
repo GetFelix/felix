@@ -197,6 +197,7 @@ pub(super) async fn offer_bootstrap<R: PeerRequester>(
         Err(err) => {
             // Unreachable, not unwilling. The offer stands and goes again.
             metrics::record_shipped(unreachable_outcome(&err));
+            cursor.stalled = true;
             return Progress::Retry;
         }
     };

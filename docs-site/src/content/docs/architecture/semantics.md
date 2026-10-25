@@ -750,7 +750,7 @@ and clients see less of it than of one:
   (2 s) refuses one, as `shard_unavailable` with reason `moving`, unwritten.
 - **Cache and counter operations are held and forwarded** the same way.
   Consumer-group operations are held and then redirected to the new owner,
-  which `ClusterClient`'s group calls (and the Python and TypeScript clients')
+  which `ClusterClient`'s group calls (and the Python, TypeScript, C and C# clients')
   follow.
 - **Subscriptions follow.** The old leader delivers what it committed, then
   ends each subscription with `shard_moved`. A `ClusterClient` subscription

@@ -1,1 +1,0 @@
-- The old "Real-Network Performance (Azure)" page is retired. Its address redirects to the v0.6.0 performance page, and the two use-case claims that rested on it now describe the mechanism without numbers.

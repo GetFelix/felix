@@ -222,7 +222,7 @@ plane's database. Durable log segments are plaintext on disk, and there is no
 per-tenant encryption or audit log. The broker sees plaintext payloads.
 Publisher identity is recorded only when enabled, and the Python and
 TypeScript bindings do not expose it yet. Client certificates are not
-available from the Python and TypeScript bindings.
+available from the Python, TypeScript, C or C# clients.
 
 ## Related
 

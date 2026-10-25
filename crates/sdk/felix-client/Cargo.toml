@@ -25,8 +25,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 base64 = { workspace = true }
 serde-saphyr = { workspace = true, features = ["deserialize"] }
-felix-transport = { path = "../../protocol/felix-transport", version = "0.6.1" }
-felix-wire = { path = "../../protocol/felix-wire", version = "0.6.1" }
+felix-transport = { path = "../../protocol/felix-transport", version = "0.6.2" }
+felix-wire = { path = "../../protocol/felix-wire", version = "0.6.2" }
 quinn = { workspace = true }
 rustls = { workspace = true }
 rustls-platform-verifier = { workspace = true }
@@ -37,6 +37,8 @@ telemetry = []
 
 [dev-dependencies]
 rcgen = { workspace = true }
+# The token example in docs-site/.../clients/rust.md, compiled by tests/docs_examples.rs.
+reqwest = { workspace = true }
 serial_test = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }

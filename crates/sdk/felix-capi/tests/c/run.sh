@@ -42,10 +42,8 @@ case "$(uname -s)" in
   Darwin) shared="$target/libfelix.dylib" ;;
   *) shared="$target/libfelix.so" ;;
 esac
-# The token example in the C docs, compiled only (it needs libcurl's header).
-if echo '#include <curl/curl.h>' | cc -E -x c - >/dev/null 2>&1; then
-  cc "${cflags[@]}" -c "$crate/tests/c/token_example.c" -o "$work/token_example.o"
-fi
+# Every C example on the client docs page, compiled against the header.
+cargo test --locked -q -p felix-capi --test doc_examples
 cc "${cflags[@]}" "$crate/tests/c/pubsub.c" "$shared" -Wl,-rpath,"$target" -o "$work/pubsub-shared"
 # shellcheck disable=SC2086 # the native library list is meant to split
 cc "${cflags[@]}" "$crate/tests/c/pubsub.c" "$target/libfelix.a" $native -o "$work/pubsub-static"
