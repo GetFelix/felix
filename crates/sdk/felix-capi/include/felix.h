@@ -2325,7 +2325,8 @@ void felix_subscription_free(struct FelixSubscription *subscription);
 // Returns `FELIX_STATUS_INVALID_ARGUMENT` if `token` is null, empty or not
 // UTF-8 (the reply stays open and can still be completed). Otherwise it
 // returns `FELIX_STATUS_OK` and consumes the reply, including when the
-// library had already given up on the fetch; the late token is discarded.
+// library had stopped waiting on the fetch; a late token is still used, and
+// the fetch is not called again while a reply is outstanding.
 //
 // # Safety
 //

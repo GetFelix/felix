@@ -355,10 +355,10 @@ async fn a_refused_argument_leaves_the_reply_open() {
     assert_eq!(waiting.await.unwrap(), "good");
 }
 
-/// The core gives up on a fetch after its timeout. An answer that arrives
-/// later is accepted and ignored, and frees the reply.
+/// The core stops waiting on a fetch after its timeout but not the fetch. An
+/// answer that arrives later is used, with no second call to the app.
 #[tokio::test(start_paused = true)]
-async fn a_reply_after_the_fetch_timed_out_is_a_harmless_no_op() {
+async fn a_reply_after_the_fetch_timed_out_is_used() {
     use felix_client::TokenProvider;
     let probe = Probe::new(Answer::Hold);
     let source = probe.source();
@@ -377,7 +377,7 @@ async fn a_reply_after_the_fetch_timed_out_is_a_harmless_no_op() {
         );
     }
     assert_eq!(source.held(), 0);
-    // The late token was not kept: the next fetch is a new one.
-    assert!(tokens.token().await.is_err());
-    assert_eq!(probe.fetches.load(Ordering::SeqCst), 2);
+    tokio::task::yield_now().await;
+    assert_eq!(tokens.token().await.unwrap(), "late");
+    assert_eq!(probe.fetches.load(Ordering::SeqCst), 1);
 }

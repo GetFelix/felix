@@ -239,13 +239,14 @@ For a C# binding, copy the poll's records inside the callback and keep
 threads when a stream needs a token, and the app completes `reply` once, from
 any thread, with `felix_token_reply_ok` or `felix_token_reply_err`. The Rust
 client's `RefreshingToken` does the timing: refresh at two thirds of a token's
-life, keep the old token if a fetch fails or takes over 30 s, retry a refused
+life, keep the old token if a fetch fails or a caller has waited 30 s, retry a refused
 token once. The `token` argument to connect may be `NULL` (or empty) when a
 fetch is set. A reply never completed is held until the client is freed, so answer each one, even late.
 
 The first reply call that is not refused for a bad argument consumes the reply,
 including an answer that arrives after the 30 s timeout (it returns
-`FELIX_STATUS_OK` and the token is discarded). Using the reply again is
+`FELIX_STATUS_OK` and the token is used; the library does not call the fetch
+again while a reply is outstanding). Using the reply again is
 undefined behaviour. `token_release`: if `felix_client_connect_with` returns
 anything but `FELIX_STATUS_OK` it never runs and the caller keeps
 `token_user_data`; if it returns `FELIX_STATUS_OK` it runs exactly once later,

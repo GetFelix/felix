@@ -7,17 +7,21 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
+use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 
 /// Delay before retrying a failed fetch, so every stream open doesn't trigger
 /// one.
 const RETRY_AFTER: Duration = Duration::from_secs(5);
 
-/// How long one fetch may take before it counts as failed, so a provider that
-/// never answers cannot hold every stream open behind it.
+/// How long a caller waits on one fetch before it counts as failed, so a
+/// provider that never answers cannot hold every stream open behind it. The
+/// fetch itself keeps running and the next refresh waits on it again; see
+/// [`RefreshingToken`].
 pub const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The future a [`TokenProvider`] answers with.
@@ -52,7 +56,17 @@ impl TokenProvider for StaticToken {
     }
 }
 
-type Fetch = Box<dyn Fn() -> TokenFuture<'static> + Send + Sync>;
+type Fetch = Box<dyn Fn(CancellationToken) -> TokenFuture<'static> + Send + Sync>;
+
+/// One provider call that has not finished. Later refreshes join it instead of
+/// calling the provider again.
+struct Flight {
+    answer: watch::Receiver<Option<Result<String, String>>>,
+    cancel: CancellationToken,
+}
+
+type State = Arc<Mutex<Option<Held>>>;
+type Flights = Arc<Mutex<Option<Flight>>>;
 
 /// A [`TokenProvider`] that replaces its token before it expires.
 ///
@@ -61,14 +75,26 @@ type Fetch = Box<dyn Fn() -> TokenFuture<'static> + Send + Sync>;
 /// current token's life has passed, going by its `exp` claim. A token without
 /// a readable `exp` is kept until the broker refuses it.
 ///
-/// If a fetch fails while the current token is still valid, the current token
-/// is returned and the fetch is tried again a few seconds later. A fetch that
-/// takes longer than [`FETCH_TIMEOUT`] counts as failed. Concurrent callers
-/// wait on the same fetch.
+/// The provider is never called while an earlier call is still running, so
+/// rotating a refresh token inside it is safe. Concurrent callers wait on the
+/// same call.
+///
+/// A call that takes longer than [`FETCH_TIMEOUT`] fails the callers waiting
+/// on it, not the call: it keeps running, the next refresh joins it (waiting
+/// up to [`FETCH_TIMEOUT`] again), and an answer that arrives late is used as
+/// the held token. The cancellation token given to
+/// [`RefreshingToken::new_cancellable`] fires on that timeout and when the
+/// `RefreshingToken` is dropped, for providers that can stop early. The call
+/// runs on a spawned task, so it needs a Tokio runtime.
+///
+/// If a call fails while the current token is still valid, the current token
+/// is returned and the call is tried again a few seconds later.
 pub struct RefreshingToken {
     fetch: Fetch,
-    state: Mutex<Option<Held>>,
-    fetching: tokio::sync::Mutex<()>,
+    state: State,
+    flight: Flights,
+    /// Parent of every call's cancellation token; fires on drop.
+    closed: CancellationToken,
 }
 
 impl RefreshingToken {
@@ -78,10 +104,23 @@ impl RefreshingToken {
         F: Fn() -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<String>> + Send + 'static,
     {
+        Self::new_cancellable(move |_| fetch())
+    }
+
+    /// Like [`new`](Self::new), for a `fetch` that can stop early. The token
+    /// it receives is cancelled when the call outlives [`FETCH_TIMEOUT`] and
+    /// when this `RefreshingToken` is dropped. Cancelling does not end the
+    /// call; the future still decides what to return.
+    pub fn new_cancellable<F, Fut>(fetch: F) -> Self
+    where
+        F: Fn(CancellationToken) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<String>> + Send + 'static,
+    {
         Self {
-            fetch: Box::new(move || Box::pin(fetch())),
-            state: Mutex::new(None),
-            fetching: tokio::sync::Mutex::new(()),
+            fetch: Box::new(move |cancel| Box::pin(fetch(cancel))),
+            state: Arc::new(Mutex::new(None)),
+            flight: Arc::new(Mutex::new(None)),
+            closed: CancellationToken::new(),
         }
     }
 
@@ -92,7 +131,17 @@ impl RefreshingToken {
         F: Fn() -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<String>> + Send + 'static,
     {
-        let token = Self::new(fetch);
+        Self::with_initial_cancellable(initial, move |_| fetch())
+    }
+
+    /// [`with_initial`](Self::with_initial) with a cancellable `fetch`, as for
+    /// [`new_cancellable`](Self::new_cancellable).
+    pub fn with_initial_cancellable<F, Fut>(initial: impl Into<String>, fetch: F) -> Self
+    where
+        F: Fn(CancellationToken) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<String>> + Send + 'static,
+    {
+        let token = Self::new_cancellable(fetch);
         *token.state.lock().expect("token state poisoned") = Some(Held::new(initial.into()));
         token
     }
@@ -107,27 +156,74 @@ impl RefreshingToken {
         }
     }
 
+    /// Join the call in flight, or start one. `Err` carries a token that
+    /// turned out fresh.
+    fn join(&self) -> Result<Flight, String> {
+        let mut flight = self.flight.lock().expect("token flight poisoned");
+        if let Some(flight) = flight.as_ref() {
+            return Ok(Flight {
+                answer: flight.answer.clone(),
+                cancel: flight.cancel.clone(),
+            });
+        }
+        // The task stores its token before clearing `flight`, so with none in
+        // flight the state is current.
+        if let Some(token) = self.fresh(now_secs()) {
+            return Err(token);
+        }
+        let cancel = self.closed.child_token();
+        let (sender, answer) = watch::channel(None);
+        let call = (self.fetch)(cancel.clone());
+        let guard = FlightGuard(Arc::clone(&self.flight));
+        let state = Arc::clone(&self.state);
+        tokio::spawn(async move {
+            let result = call.await.map_err(|err| format!("{err:#}"));
+            if let Ok(token) = &result {
+                *state.lock().expect("token state poisoned") = Some(Held::new(token.clone()));
+            }
+            sender.send_replace(Some(result));
+            drop(guard);
+        });
+        let started = Flight {
+            answer,
+            cancel: cancel.clone(),
+        };
+        *flight = Some(Flight {
+            answer: started.answer.clone(),
+            cancel,
+        });
+        Ok(started)
+    }
+
     async fn current(&self) -> Result<String> {
         if let Some(token) = self.fresh(now_secs()) {
             return Ok(token);
         }
-        let _fetching = self.fetching.lock().await;
-        // Another caller may have fetched while this one waited.
-        if let Some(token) = self.fresh(now_secs()) {
-            return Ok(token);
-        }
-        let fetched = match tokio::time::timeout(FETCH_TIMEOUT, (self.fetch)()).await {
-            Ok(fetched) => fetched,
-            Err(_) => Err(anyhow::anyhow!(
-                "the token fetch took longer than {}s",
-                FETCH_TIMEOUT.as_secs()
-            )),
+        let mut flight = match self.join() {
+            Ok(flight) => flight,
+            Err(token) => return Ok(token),
+        };
+        let waited = tokio::time::timeout(
+            FETCH_TIMEOUT,
+            flight.answer.wait_for(|answer| answer.is_some()),
+        )
+        .await;
+        let fetched: Result<String> = match waited {
+            Ok(Ok(answer)) => answer
+                .clone()
+                .expect("waited for an answer")
+                .map_err(anyhow::Error::msg),
+            Ok(Err(_)) => Err(anyhow::anyhow!("the token fetch ended without an answer")),
+            Err(_) => {
+                flight.cancel.cancel();
+                Err(anyhow::anyhow!(
+                    "the token fetch took longer than {}s",
+                    FETCH_TIMEOUT.as_secs()
+                ))
+            }
         };
         match fetched {
-            Ok(token) => {
-                *self.state.lock().expect("token state poisoned") = Some(Held::new(token.clone()));
-                Ok(token)
-            }
+            Ok(token) => Ok(token),
             Err(err) => {
                 let now = now_secs();
                 let mut state = self.state.lock().expect("token state poisoned");
@@ -144,6 +240,24 @@ impl RefreshingToken {
                     _ => Err(err.context("fetch client token")),
                 }
             }
+        }
+    }
+}
+
+impl Drop for RefreshingToken {
+    fn drop(&mut self) {
+        self.closed.cancel();
+    }
+}
+
+/// Clears the flight when its task ends, including by panic, so a later
+/// refresh is not stuck joining a call that is gone.
+struct FlightGuard(Flights);
+
+impl Drop for FlightGuard {
+    fn drop(&mut self) {
+        if let Ok(mut flight) = self.0.lock() {
+            *flight = None;
         }
     }
 }

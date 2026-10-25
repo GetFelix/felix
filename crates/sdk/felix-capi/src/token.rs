@@ -47,7 +47,7 @@ impl FelixTokenReply {
             .take()
             .ok_or_else(|| Failure::invalid("the token reply was already completed"))?;
         // The receiver is gone when the fetch was abandoned (the client was
-        // freed, or the fetch timed out); that is not the app's mistake.
+        // freed); that is not the app's mistake.
         let _ = sender.send(answer);
         // Last, because this may free `self`.
         let key = std::ptr::from_ref(self) as usize;
@@ -65,7 +65,8 @@ impl FelixTokenReply {
 /// Returns `FELIX_STATUS_INVALID_ARGUMENT` if `token` is null, empty or not
 /// UTF-8 (the reply stays open and can still be completed). Otherwise it
 /// returns `FELIX_STATUS_OK` and consumes the reply, including when the
-/// library had already given up on the fetch; the late token is discarded.
+/// library had stopped waiting on the fetch; a late token is still used, and
+/// the fetch is not called again while a reply is outstanding.
 ///
 /// # Safety
 ///

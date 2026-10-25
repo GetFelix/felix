@@ -133,3 +133,124 @@ async fn a_fetch_that_never_answers_times_out_and_keeps_a_valid_token() -> Resul
     assert!(format!("{err:#}").contains("took longer"), "{err:#}");
     Ok(())
 }
+
+/// A provider that records how many calls started and how many ran at once,
+/// and answers only when told to.
+struct Gated {
+    calls: Arc<AtomicUsize>,
+    running: Arc<AtomicUsize>,
+    peak: Arc<AtomicUsize>,
+    open: Arc<tokio::sync::Notify>,
+    cancels: Arc<Mutex<Vec<CancellationToken>>>,
+    provider: RefreshingToken,
+}
+
+fn gated(answer: String) -> Gated {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let running = Arc::new(AtomicUsize::new(0));
+    let peak = Arc::new(AtomicUsize::new(0));
+    let open = Arc::new(tokio::sync::Notify::new());
+    let cancels = Arc::new(Mutex::new(Vec::new()));
+    let (c, r, p, o, k) = (
+        Arc::clone(&calls),
+        Arc::clone(&running),
+        Arc::clone(&peak),
+        Arc::clone(&open),
+        Arc::clone(&cancels),
+    );
+    let provider = RefreshingToken::new_cancellable(move |cancel| {
+        c.fetch_add(1, Ordering::SeqCst);
+        k.lock().unwrap().push(cancel);
+        let (r, p, o, answer) = (
+            Arc::clone(&r),
+            Arc::clone(&p),
+            Arc::clone(&o),
+            answer.clone(),
+        );
+        async move {
+            let now = r.fetch_add(1, Ordering::SeqCst) + 1;
+            p.fetch_max(now, Ordering::SeqCst);
+            o.notified().await;
+            r.fetch_sub(1, Ordering::SeqCst);
+            Ok(answer)
+        }
+    });
+    Gated {
+        calls,
+        running,
+        peak,
+        open,
+        cancels,
+        provider,
+    }
+}
+
+/// A call that outlives the timeout fails its waiter at the timeout, and the
+/// next refresh joins it rather than calling the provider again.
+#[tokio::test(start_paused = true)]
+async fn a_hung_fetch_fails_the_waiter_and_is_joined_not_repeated() {
+    let g = gated("late".into());
+    let started = tokio::time::Instant::now();
+    let err = g.provider.token().await.unwrap_err();
+    assert!(format!("{err:#}").contains("took longer"), "{err:#}");
+    assert_eq!(started.elapsed(), FETCH_TIMEOUT);
+
+    let err = g.provider.token().await.unwrap_err();
+    assert!(format!("{err:#}").contains("took longer"), "{err:#}");
+    assert_eq!(started.elapsed(), FETCH_TIMEOUT * 2);
+    assert_eq!(g.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(g.peak.load(Ordering::SeqCst), 1);
+    assert_eq!(g.running.load(Ordering::SeqCst), 1);
+}
+
+/// The answer to a call whose waiters timed out is used, with no second call.
+#[tokio::test(start_paused = true)]
+async fn a_late_answer_is_used_without_a_second_call() -> Result<()> {
+    let g = gated("late-token".into());
+    assert!(g.provider.token().await.is_err());
+    g.open.notify_one();
+    tokio::task::yield_now().await;
+    assert_eq!(g.provider.token().await?, "late-token");
+    assert_eq!(g.calls.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+/// A late answer is used even when nobody is waiting when it lands.
+#[tokio::test(start_paused = true)]
+async fn a_late_answer_joined_by_a_second_waiter_is_returned() -> Result<()> {
+    let g = gated("joined".into());
+    assert!(g.provider.token().await.is_err());
+    let open = Arc::clone(&g.open);
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        open.notify_one();
+    });
+    assert_eq!(g.provider.token().await?, "joined");
+    assert_eq!(g.calls.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_cancellation_token_fires_on_timeout() {
+    let g = gated("x".into());
+    assert!(g.provider.token().await.is_err());
+    assert!(g.cancels.lock().unwrap()[0].is_cancelled());
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_cancellation_token_fires_on_drop() {
+    let g = gated("x".into());
+    let waiter = tokio::spawn({
+        let provider = Arc::new(g.provider);
+        let held = Arc::clone(&provider);
+        async move {
+            let _ = held.token().await;
+        }
+    });
+    tokio::task::yield_now().await;
+    let cancel = g.cancels.lock().unwrap()[0].clone();
+    assert!(!cancel.is_cancelled());
+    waiter.abort();
+    let _ = waiter.await;
+    assert!(cancel.is_cancelled());
+}
