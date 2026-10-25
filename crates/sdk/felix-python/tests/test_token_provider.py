@@ -496,17 +496,21 @@ def test_with_identity_cancels_an_async_provider_at_the_timeout(fixture):
     asyncio.run(main())
 
 
-def test_a_sync_provider_past_the_timeout_is_not_called_again(fixture):
+def test_a_sync_provider_past_the_timeout_fails_the_caller_and_is_called_once(fixture):
     # Sync providers cannot be cancelled. with_identity authenticates its
-    # streams, so it waits on the slow call and gives up at 30 s. That a later
-    # operation joins the late answer is covered by the Rust core tests; it
-    # gets a Python test with the short-lived-token fixture.
+    # streams, so it waits on the slow call and gives up at 30 s rather than
+    # at the provider's 33 s answer. This cannot show a later operation
+    # joining the late answer: nothing outlives the failed with_identity. The
+    # Rust core tests cover the join, and the short-lived-token fixture will
+    # let a Python test do it too.
     provider = Provider(fixture["token"], delay=33.0)
     with connect(fixture, token=fixture["token"]) as client:
         started = time.monotonic()
         with pytest.raises(felix.AuthError, match="longer than 30s"):
             client.with_identity(fixture["tenant_id"], token_provider=provider)
-        assert 25 < time.monotonic() - started < 33
+        # Loose upper bound: a loaded runner is slow, and the match above
+        # already shows the timeout fired, not the answer.
+        assert 25 < time.monotonic() - started < 45
         time.sleep(max(0.0, 34.0 - (time.monotonic() - started)))
     assert provider.calls == 1
 

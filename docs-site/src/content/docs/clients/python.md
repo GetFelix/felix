@@ -79,9 +79,11 @@ token you already hold to use that first.
 
 **When it is called.** When a stream is about to authenticate and the client
 holds no token, the held one is due for replacement, or the broker just refused
-it. `with_identity` authenticates its streams before it returns, so it calls the provider when no valid token is held. An idle client makes no calls, and there is no timer. The client never runs
-two calls at once: streams that open together wait on one and share its token.
-That is also what makes it safe to rotate a refresh token inside the provider.
+it. `with_identity` authenticates its streams before it returns, so it calls
+the provider when no valid token is held. An idle client makes no calls, and
+there is no timer. The client never runs two calls at once: streams that open
+together wait on one and share its token. That is also what makes it safe to
+rotate a refresh token inside the provider.
 
 **Threading.** On `Client`, a plain function runs on a Felix worker thread, with
 the GIL, and never on a thread that is waiting on the broker. Blocking in it is
