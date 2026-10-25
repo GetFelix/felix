@@ -592,3 +592,66 @@ fn the_fence_backoff_doubles_to_its_cap() {
     assert_eq!(waits[6], FENCE_RETRY_MAX);
     assert_eq!(fence_backoff(u32::MAX), FENCE_RETRY_MAX);
 }
+
+/// Time from `since` until the mark for `shard` reaches `offset`, polled every
+/// 5 ms, or `None` past `within`.
+async fn mark_time(
+    marks: &QuorumMarks,
+    offset: u64,
+    since: tokio::time::Instant,
+    within: Duration,
+) -> Option<Duration> {
+    let watched = watch_key(&key());
+    tokio::time::timeout(within, async {
+        while marks.offset(&watched, 4) < Some(offset) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .ok()?;
+    Some(since.elapsed())
+}
+
+/// **A wake that is not an append does not cut a waiting pass short.** b is
+/// still answering an earlier pass when a record lands, and c, the only
+/// follower the next pass ships to, takes a round trip. A route change
+/// mid-pass is not new data: the pass must keep waiting for c, not give up
+/// without a majority and ask again a round trip later.
+#[tokio::test(start_paused = true)]
+async fn a_route_change_does_not_cut_a_waiting_pass_short() {
+    let (broker, _dir) = super::quorum::quorum_leader(3, 4).await;
+    let router = router(LOCAL, &["broker-b", "broker-c"], 4);
+    let marks = Arc::new(QuorumMarks::new());
+    let peers = Arc::new(ShiftingPeer::default());
+    let routes_changed = Arc::new(tokio::sync::Notify::new());
+    let driver = driver_with(
+        Arc::clone(&peers),
+        &broker,
+        &router,
+        &marks,
+        &routes_changed,
+    );
+    assert!(prompt(&marks, 0, 4, 3).await, "the first mark waited");
+
+    let rtt = Duration::from_millis(400);
+    // c answers the first pass at once; b stays busy for a round trip.
+    peers.delay("broker-b", rtt);
+    append(&broker, 0).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(marks.offset(&watch_key(&key()), 4), Some(4));
+
+    // The next pass ships to c alone, which now takes a round trip too.
+    peers.delay("broker-c", rtt);
+    let since = tokio::time::Instant::now();
+    append(&broker, 0).await;
+    tokio::time::sleep(rtt / 4).await;
+    routes_changed.notify_one();
+
+    let took = mark_time(&marks, 5, since, Duration::from_secs(5)).await;
+    let took = took.expect("the mark never moved");
+    assert!(
+        took <= rtt + rtt / 2,
+        "a route change cost a round trip: the mark took {took:?}",
+    );
+    driver.stop().await;
+}

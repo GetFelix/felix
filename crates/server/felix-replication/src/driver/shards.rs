@@ -62,7 +62,8 @@ impl<R> Copy for Context<'_, R> {}
 /// What woke the driver.
 pub(super) enum Event<'a> {
     /// An append, a route change, or the tick: every shard gets a pass.
-    Wake,
+    /// Only an append cuts a pass under way short.
+    Wake { appended: bool },
     /// Shards fenced here and not yet drained, and shards promoted here and
     /// not yet opened, get another pass.
     Retry,
@@ -259,7 +260,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
     }
 
     /// Give every shard led here a pass, and forget the ones that are not.
-    pub(super) fn scan(&mut self) {
+    pub(super) fn scan(&mut self, appended: bool) {
         self.scan += 1;
         let table = self.cx.router.snapshot();
         let live: Vec<ShardKey> = table
@@ -281,7 +282,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             self.probe(key, route);
         }
         for key in &live {
-            self.start(key);
+            self.start(key, appended);
         }
 
         // A shard this broker no longer leads keeps no cursors: they would be
@@ -371,12 +372,15 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             .map(|(key, _)| key.clone())
             .collect();
         for key in waiting {
-            self.start(&key);
+            self.start(&key, false);
         }
     }
 
     /// Start a pass for `key`, or ask for one once the pass under way ends.
-    fn start(&mut self, key: &ShardKey) {
+    /// `cuts` is whether a pass under way should stop waiting for it: only
+    /// new data does. A tick or route change cut in would end the wait with
+    /// no majority, and the next pass would ask the same followers again.
+    fn start(&mut self, key: &ShardKey, cuts: bool) {
         let table = self.cx.router.snapshot();
         let Some(route) = table.get(key).filter(|route| self.leads(key, route)) else {
             return;
@@ -384,7 +388,9 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         let state = self.states.entry(key.clone()).or_default();
         if let Some(next) = &state.running {
             state.again = true;
-            next.wanted.notify_one();
+            if cuts {
+                next.wanted.notify_one();
+            }
             return;
         }
         if self.passes.len() + self.fences.len() >= SHARD_CONCURRENCY {
@@ -676,7 +682,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         }
 
         if again {
-            self.start(&key);
+            self.start(&key, false);
         }
         // Shards turned away while too many passes were under way.
         let waiting: Vec<ShardKey> = self
@@ -686,7 +692,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             .map(|(key, _)| key.clone())
             .collect();
         for key in waiting {
-            self.start(&key);
+            self.start(&key, false);
         }
     }
 
@@ -744,7 +750,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             },
         );
         if opened || std::mem::take(&mut state.again) {
-            self.start(&key);
+            self.start(&key, false);
         }
     }
 
@@ -769,7 +775,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             return;
         }
         if self.merge(answered) {
-            self.start(&key);
+            self.start(&key, false);
         }
     }
 
