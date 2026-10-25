@@ -113,9 +113,7 @@ export async function connect(fixture, { addrs, token } = {}) {
   return Client.connect(
     addrs ?? fixture.addrs,
     fixture.tenant_id,
-    token ?? fixture.token,
-    undefined,
-    fixture.ca_file,
+    { token: token ?? fixture.token, caFile: fixture.ca_file },
   );
 }
 

@@ -288,6 +288,7 @@ dependencies = [
  "felix-wire",
  "pyo3",
  "pyo3-async-runtimes",
+ "pyo3-build-config",
  "quinn",
  "rustls",
  "tokio",

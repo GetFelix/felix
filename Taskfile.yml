@@ -596,7 +596,7 @@ tasks:
     desc: Run the Node conformance suite against a fixture cluster it starts itself.
     dir: crates/sdk/felix-typescript
     cmds:
-      - node --test test/errors.test.mjs
+      - node --test test/errors.test.mjs test/token.test.mjs
       - node --test test/conformance.test.mjs {{.CLI_ARGS}}
   ts:conformance:
     desc: Build what the Node suite needs, run it, and check the verdict against the catalogue.

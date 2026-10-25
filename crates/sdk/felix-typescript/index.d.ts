@@ -312,6 +312,38 @@ export declare class CacheWatchHandle {
   [Symbol.asyncDispose](): Promise<void>;
 }
 
+/**
+ * Returns a fresh Felix token, or a promise of one. See `Client.connect` for
+ * when it is called and what counts as a failure.
+ *
+ * `signal` aborts when the client gives up waiting (30 s) and once the last
+ * handle using the token is released: the client, its `withIdentity` clients and
+ * open subscriptions. Pass it to `fetch` or anything else that takes one to stop the work.
+ * A provider that ignores it still works: the client does not call it again
+ * while the call is pending, and a late answer is used.
+ */
+export type TokenProvider = (signal: AbortSignal) => string | Promise<string>;
+
+/** Options for `Client.connect`. Unknown keys throw a `TypeError`. */
+export interface ConnectOptions {
+  /** The token the client starts with. Required unless `tokenProvider` is set. */
+  token?: string | null;
+  /** Returns fresh tokens; see `Client.connect`. */
+  tokenProvider?: TokenProvider;
+  /** The TLS server name to check the broker's certificate against. Default `localhost`. */
+  serverName?: string;
+  /** A CA file to trust instead of the operating system's store. */
+  caFile?: string;
+  /** Offer the `felix/1` ALPN. */
+  offerAlpn?: boolean;
+}
+
+/** Options for `Client.withIdentity`. Unknown keys throw a `TypeError`. */
+export interface IdentityOptions {
+  token?: string | null;
+  tokenProvider?: TokenProvider;
+}
+
 /** A connected Felix client. */
 export declare class Client {
   /**
@@ -324,30 +356,45 @@ export declare class Client {
    * a specific CA (what a self-signed development broker needs), or omit it to
    * use the operating system's trust store.
    *
-   * `offerAlpn` offers the `felix/1` ALPN. A broker with
+   * The options go in the last argument: `{ token, tokenProvider, serverName,
+   * caFile, offerAlpn }`. `offerAlpn` offers the `felix/1` ALPN. A broker with
    * `FELIX_TLS_REQUIRE_ALPN=true` serves only clients that do; a broker older
    * than ALPN support refuses them, which is why it is off by default.
+   *
+   * Pass `token`, a `tokenProvider`, or both. A client with a `tokenProvider`
+   * asks it for a token only when a stream is about to authenticate and the
+   * client holds none, or one past two thirds of its life (its JWT `exp`), or
+   * one the broker just refused. An idle client makes no calls. It is called
+   * on the JS thread, one call at a time; return the token or a promise of it.
+   * A throw, a rejection, a result that is not a non-empty string, or no
+   * answer within 30 s is a failed fetch: the client keeps a token that is
+   * still valid and retries a few seconds later, and otherwise the call fails
+   * with an `AuthError` carrying your message. After a timeout the provider is
+   * not called again until the pending call settles; a late answer is used. The
+   * provider receives an `AbortSignal` that aborts at that timeout and once
+   * the last handle using the token is released (the client, its `withIdentity`
+   * clients, open subscriptions); pass it to `fetch` to stop the request. `token`
+   * is what the client starts with; without it the first stream authentication calls the
+   * provider. The provider does not keep the Node process alive.
    */
   static connect(
     addrs: string | string[],
     tenantId: string,
-    token: string,
-    serverName?: string,
-    caFile?: string,
-    offerAlpn?: boolean,
+    options?: ConnectOptions,
   ): Promise<Client>;
 
   /**
    * A client that acts as another user over this client's connections.
    *
-   * Every stream it opens authenticates with `tenantId` and `token`, and the
+   * Every stream it opens authenticates with `tenantId` and `options.token`, and the
    * broker checks its requests against that token's grants alone. It follows
    * shards and failovers as this client does, reaching each broker over this
    * client's connection to it, so a gateway serving many users holds one
-   * connection per broker. The token is fixed: build a new one when it
-   * expires. A refused token rejects here.
+   * connection per broker. Pass a fixed `options.token`, or an `options.tokenProvider` that
+   * behaves as for `connect` (`token` then only seeds it). A refused token
+   * rejects here.
    */
-  withIdentity(tenantId: string, token: string): Promise<Client>;
+  withIdentity(tenantId: string, options?: IdentityOptions): Promise<Client>;
 
   /**
    * Publish one record.

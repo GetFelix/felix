@@ -8,6 +8,7 @@ const { existsSync } = require("node:fs");
 const { join } = require("node:path");
 
 const errors = require("./errors.js");
+const { connectArgs, withIdentityArgs } = require("./token.js");
 
 const { typed } = errors;
 
@@ -138,6 +139,14 @@ function wrap(value) {
       if (typeof member !== "function") return member;
       return function called(...args) {
         try {
+          if (prop === "withIdentity") {
+            // A promise-returning method rejects on bad arguments, never throws.
+            try {
+              args = withIdentityArgs(args);
+            } catch (err) {
+              return Promise.reject(typed(err));
+            }
+          }
           const out = member.apply(target, args);
           if (out && typeof out.then === "function") {
             return out.then(wrap, (err) => Promise.reject(typed(err)));
@@ -164,10 +173,9 @@ const CommitOp = {
 
 /** The public `Client`: a façade over the native one that types its errors. */
 const Client = {
-  async connect(addrs, tenantId, token, serverName, caFile, offerAlpn) {
+  async connect(...args) {
     try {
-      const client = await native.Client.connect(addrs, tenantId, token, serverName, caFile, offerAlpn);
-      return wrap(client);
+      return wrap(await native.Client.connect(...connectArgs(args)));
     } catch (err) {
       throw typed(err);
     }

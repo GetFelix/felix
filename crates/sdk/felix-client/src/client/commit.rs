@@ -156,7 +156,8 @@ impl Client {
             expected_offset,
             shard,
         };
-        self.group_round_trip(message, request_id).await
+        self.group_round_trip(message, request_id, "commit refused")
+            .await
     }
 
     /// Append `payloads` to the shard `key` routes to (shard 0 without one),
@@ -257,7 +258,10 @@ impl Client {
             expected_offset,
             request_id,
         };
-        match self.group_round_trip(message, request_id).await? {
+        match self
+            .group_round_trip(message, request_id, "publish_if refused")
+            .await?
+        {
             Message::PublishOk {
                 offset: Some(offset),
                 ..
@@ -318,7 +322,10 @@ impl Client {
             request_id,
             shard,
         };
-        match self.group_round_trip(message, request_id).await? {
+        match self
+            .group_round_trip(message, request_id, "state_get refused")
+            .await?
+        {
             Message::StateValue {
                 value,
                 version,

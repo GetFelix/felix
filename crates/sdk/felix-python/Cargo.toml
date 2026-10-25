@@ -26,6 +26,9 @@ categories = ["api-bindings", "network-programming"]
 name = "_felix"
 crate-type = ["cdylib", "rlib"]
 
+[build-dependencies]
+pyo3-build-config = "0.29"
+
 [dependencies]
 felix-client = { path = "../felix-client", version = "0.6.1" }
 felix-wire = { path = "../../protocol/felix-wire", version = "0.6.1" }

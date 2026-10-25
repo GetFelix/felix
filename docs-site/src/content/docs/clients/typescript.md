@@ -53,26 +53,73 @@ while a publish is in flight.
 ```ts
 import { Client } from "felix-client";
 
-const client = await Client.connect("127.0.0.1:5000", "t1", token, "localhost", caFile);
+const client = await Client.connect("127.0.0.1:5000", "t1", { token, caFile });
 await client.publish("t1", "default", "events", Buffer.from("hello"));
 client.close();
 ```
 
-`token` is a Felix token; [Getting a token](/clients/overview/#getting-a-token)
-covers where it comes from. The client holds it fixed, for `connect` as well as
-`withIdentity`, so build a new client with a fresh token before it expires.
-Streams opened after expiry, including the ones a reconnect opens, are
-refused.
+`token` is a Felix token; [Getting and refreshing a
+token](#getting-and-refreshing-a-token) covers where it comes from and how a
+long-running client keeps it fresh.
 
 ### Getting and refreshing a token
 
-The client does not call the control plane, so use `fetch` (Node 18 or later).
-The refresh token rotates on every use, so keep the newest one:
+A token lasts 15 minutes by default, and the broker checks it each time a stream
+authenticates, including the streams a reconnect opens. [Getting a
+token](/clients/overview/#getting-a-token) covers where one comes from. A
+process that outlives one gives `connect` a `tokenProvider`, and the client asks
+it for a token when it needs one. The Rust client's `RefreshingToken` does the
+timing: it asks once two thirds of the held token's life has passed, or when the
+broker refused it. If a fetch fails while the held token is still valid, the
+client keeps using that one and asks again a few seconds later. If the broker
+refuses a token and the provider returns a different one, the client retries
+once with it.
+
+The provider has the shape `(signal: AbortSignal) => string | Promise<string>`. Pass it as the
+`tokenProvider` option of `Client.connect` and of `withIdentity`. Leave out
+`token` to have the first connect call it, or pass a token you already hold to
+use that first. An empty string counts as no token.
+
+**When it is called.** When a stream is about to authenticate and the client
+holds no token, the held one is due for replacement, or the broker just refused
+it. An idle client makes no calls. The client never runs two fetches at once:
+streams that open together wait on one and share its token. That is also what
+makes it safe to rotate a refresh token inside the function.
+
+**Threading.** The client calls it on the JavaScript thread, like any callback,
+so do not block in it. A returned promise is awaited, so a slow answer does not
+hold up the event loop. The provider does not keep the Node process alive, and
+the client releases it once nothing uses the token any more.
+
+**Failure.** A throw, a rejected promise, a result that is not a non-empty
+string, or no answer within 30 seconds counts as a failed fetch. The message you
+throw reaches the call that needed the token unchanged, in an `AuthError`, once
+no valid token is held to fall back on. After a timeout the calls waiting on the
+token fail, but the client does not call the provider again until the pending
+call settles, and a late answer is used.
+
+**Cancellation.** The `signal` argument aborts when the client stops waiting
+(the 30 seconds) and once the last handle using the token is released: the
+client, its `withIdentity` clients and its open subscriptions. Closing a client
+while a subscription or a call is still using the token does not abort it. Pass it to `fetch`, as the
+example does, so a hung request is cut off instead of left running. A provider
+that ignores the signal still works: it is not called again while it is
+pending, and its late answer is used.
+
+**Async variant.** `async` functions are the usual case, as in the example. A
+plain function that returns the string works too.
+
+The example below does the control plane call with `fetch` (Node 18 or later)
+and keeps the rotating refresh token. The refresh token works once: every
+refresh returns a replacement, so the provider stores it before it answers. A
+`403` means the refresh token expired or was revoked and the exchange has to be
+run again; the provider fails with that message, and the client keeps the last
+token until it expires. Run a new login, then connect a new client.
 
 ```ts
 const CONTROLPLANE = "https://controlplane:8443/v1/tenants/t1";
 
-async function post(path: string, body: unknown, bearer?: string) {
+async function post(path: string, body: unknown, bearer?: string, signal?: AbortSignal) {
   const res = await fetch(CONTROLPLANE + path, {
     method: "POST",
     headers: {
@@ -80,28 +127,36 @@ async function post(path: string, body: unknown, bearer?: string) {
       ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
     },
     body: JSON.stringify(body),
+    signal, // aborts at 30 s, or when the last handle using the token is released
   });
-  if (!res.ok) throw new Error(`${path}: ${res.status}`);
+  if (!res.ok) throw new Error(`${path}: ${res.status}`); // 403: sign in again
   return res.json();
 }
 
-let minted = await post(
+const exchanged = await post(
   "/token/exchange",
   { requested: ["stream.publish"], resources: ["stream:t1/default/*"] },
   oidcToken,
 );
-let client = await Client.connect("127.0.0.1:5000", "t1", minted.felix_token, "localhost", caFile);
 
-// Later, before minted.expires_in seconds pass (say after two thirds of it):
-minted = await post("/token/refresh", { refresh_token: minted.refresh_token });
+// The refresh token works once, so keep the newest. The client never runs
+// this twice at the same time, so no lock is needed.
+let refreshToken: string = exchanged.refresh_token;
+
+const client = await Client.connect("127.0.0.1:5000", "t1", {
+  token: exchanged.felix_token,
+  caFile,
+  tokenProvider: async (signal) => {
+    const minted = await post("/token/refresh", { refresh_token: refreshToken }, undefined, signal);
+    refreshToken = minted.refresh_token;
+    return minted.felix_token;
+  },
+});
 ```
 
-A client cannot swap its token. After a refresh, connect a new client with the
-new `felix_token` and move your work to it, or call
-`client.withIdentity("t1", minted.felix_token)` for a handle that shares the
-first client's connections and authenticates with the new token. Handles
-already in use keep the token they started with. A refresh that answers `403`
-means the refresh token expired or was revoked: run the exchange again.
+`client.withIdentity("t1", { tokenProvider })` takes the same kind of function for
+one user, with that user's own refresh token. Refresh each chain from one place
+at a time and keep the newest refresh token.
 
 ## Connecting
 
@@ -109,12 +164,18 @@ means the refresh token expired or was revoked: run the exchange again.
 Client.connect(
   addrs,        // "host:port", or an array of them
   tenantId,
-  token,
-  serverName,   // the name the broker's certificate carries; defaults to "localhost"
-  caFile,       // trust a specific CA; omit for the system trust store
-  offerAlpn,    // offer the felix/1 ALPN; defaults to false
+  {
+    token,          // a Felix token; optional when tokenProvider is set
+    tokenProvider,  // (signal: AbortSignal) => string | Promise<string>; see above
+    serverName,     // the name the broker's certificate carries; defaults to "localhost"
+    caFile,         // trust a specific CA; omit for the system trust store
+    offerAlpn,      // offer the felix/1 ALPN; defaults to false
+  },
 )
 ```
+
+An option the client does not know, or an extra positional argument, throws a
+`TypeError` instead of being ignored.
 
 One reachable address is enough. The client discovers the rest of the cluster
 and will use brokers it was never told about. It is built on the Rust
@@ -131,13 +192,13 @@ TLS is always on. QUIC has no unencrypted mode, so there are two trust
 choices: the platform trust store, or an explicit `caFile` for a self-signed
 development broker. There is no "skip verification" switch.
 
-Passing `true` as `offerAlpn` makes the client offer the `felix/1` ALPN, which
+Passing `offerAlpn: true` makes the client offer the `felix/1` ALPN, which
 a broker running with `FELIX_TLS_REQUIRE_ALPN=true` insists on. It is off by
 default because a broker older than ALPN support refuses a client that offers
 it.
 
 ```ts
-const client = await Client.connect(addrs, "t1", token, "localhost", caFile, true);
+const client = await Client.connect(addrs, "t1", { token, caFile, offerAlpn: true });
 ```
 
 ### Acting for many users
@@ -146,15 +207,15 @@ A gateway serving many users can hold one client and give each user a client
 that shares its connections:
 
 ```ts
-const alice = await client.withIdentity("t1", aliceToken);
+const alice = await client.withIdentity("t1", { token: aliceToken });
 await alice.publish("t1", "app", "alice-feed", Buffer.from("hello"));
 ```
 
 Every stream `alice` opens authenticates with her token, so the broker checks
 her requests against her grants, not the gateway's. She follows moved shards
 and failed brokers like any client, over the gateway's connection to each
-broker. The token is fixed, so build a new client when it expires. Closing
-`alice` leaves the gateway's connections open. The limits and the
+broker. Give `withIdentity` a fixed `token`, or a `tokenProvider` as above for a
+long-lived handle. Closing `alice` leaves the gateway's connections open. The limits and the
 certificate-bound token rules are the Rust client's; see
 [Acting for many users](/clients/rust/#acting-for-many-users).
 
@@ -167,7 +228,7 @@ In every language the client is a cluster client; see
 const client = await Client.connect(
   ["felix-0:5000", "felix-1:5000", "felix-2:5000"],
   "t1",
-  token,
+  { token },
 );
 ```
 

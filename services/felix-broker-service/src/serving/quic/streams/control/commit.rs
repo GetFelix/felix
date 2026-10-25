@@ -69,7 +69,8 @@ pub(super) async fn commit(
         .await
         {
             Ok(offset) => Message::CommitOk { request_id, offset },
-            Err(err) => not_written(err, request_id, "commit not served"),
+            Err(err) => moved(&err, cx, session.peer_features, &target)
+                .unwrap_or_else(|| not_written(err, request_id, "commit not served")),
         },
     };
     responder(cx).send(answer).await?;
@@ -123,11 +124,25 @@ pub(super) async fn publish_if(
                 request_id,
                 offset: Some(offset),
             },
-            Err(err) => not_written(err, request_id, "publish not served"),
+            Err(err) => moved(&err, cx, session.peer_features, &target)
+                .unwrap_or_else(|| not_written(err, request_id, "publish not served")),
         },
     };
     responder(cx).send(answer).await?;
     Ok(Step::Next)
+}
+
+/// The typed redirect for a request refused `not_leader` after [`redirect`]
+/// saw the shard as local, because leadership moved in between. Nothing was
+/// applied: the owner check comes before any write. `None` when the shard
+/// still looks local, so the coded refusal stands.
+fn moved(err: &NotWritten, cx: &Ctx<'_>, peer_features: u32, target: &Target) -> Option<Message> {
+    match err {
+        NotWritten::Refused(err) if *err.code() == felix_wire::ErrorCode::NotLeader => {
+            redirect(cx.publish_ctx, peer_features, target)
+        }
+        _ => None,
+    }
 }
 
 /// A conditional write's refusal names the tail; any other failure is the
@@ -183,7 +198,13 @@ pub(super) async fn state_get(
                 as_of: read.as_of,
                 request_id,
             },
-            Err(err) => err.prefixed("state read not served").into_message(),
+            Err(err) => moved(
+                &NotWritten::Refused(err.clone()),
+                cx,
+                session.peer_features,
+                &target,
+            )
+            .unwrap_or_else(|| err.prefixed("state read not served").into_message()),
         },
     };
     responder(cx).send(answer).await?;

@@ -271,7 +271,10 @@ impl Client {
             at_micros,
             request_id,
         };
-        match self.group_round_trip(message, request_id).await? {
+        match self
+            .group_round_trip(message, request_id, "offset_for_time refused")
+            .await?
+        {
             Message::OffsetValue { offset, .. } => Ok(offset),
             other => Err(anyhow::anyhow!(
                 "unexpected answer to offset_for_time: {other:?}"
@@ -322,7 +325,10 @@ impl Client {
             max_bytes: 0,
             request_id,
         };
-        match self.group_round_trip(message, request_id).await? {
+        match self
+            .group_round_trip(message, request_id, "read refused")
+            .await?
+        {
             Message::StreamRecords {
                 records,
                 next_offset,
