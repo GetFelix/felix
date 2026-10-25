@@ -29,7 +29,7 @@ flowchart TB
         PY["Python<br/><small>felix-python (PyO3)</small>"]
         TS["TypeScript<br/><small>felix-typescript (napi-rs)</small>"]
         CS["C#<br/><small>Felix.Client (P/Invoke)</small>"]
-        GO["Go<br/><small>planned</small>"]
+        GO["Go<br/><small>not started</small>"]
     end
 
     CABI["C ABI<br/><small>felix-capi: libfelix + felix.h</small>"]
