@@ -45,6 +45,9 @@ The [Quickstart](https://docs.getfelix.dev/getting-started/quickstart/) goes fur
   <a href="https://www.npmjs.com/package/felix-client">
     <img src="https://img.shields.io/npm/v/felix-client?label=npm" alt="felix-client on npm" />
   </a>
+  <a href="https://www.nuget.org/packages/Felix.Client">
+    <img src="https://img.shields.io/nuget/v/Felix.Client?label=NuGet" alt="Felix.Client on NuGet" />
+  </a>
   <a href="https://github.com/GetFelix/felix/blob/main/LICENSING.md">
     <img src="https://img.shields.io/badge/license-AGPL--3.0%20%2B%20Apache--2.0-blue.svg" alt="License: AGPL-3.0 + Apache-2.0 (split, see LICENSING.md)" />
   </a>
