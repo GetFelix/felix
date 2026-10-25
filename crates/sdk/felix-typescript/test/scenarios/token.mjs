@@ -84,7 +84,7 @@ export default function register(ctx) {
     }));
 
   it("without a token the first authentication calls the provider once, and streams opened together share it", () =>
-    scenario(["token.lazy", "token.single_flight"], async () => {
+    scenario("token.single_flight", async () => {
       const { fixture } = ctx;
       const { state, provider } = counting(async () => fixture.token, 150);
       const client = await connectWith(provider);
@@ -116,7 +116,7 @@ export default function register(ctx) {
     }));
 
   it("a token refused twice fails with an AuthError after one retry, not more", () =>
-    scenario("token.refused_retry_once", async () => {
+    scenario([], async () => {
       const { state, provider } = counting(async () => REFUSED);
       // One broker: each broker's refusal is its own authentication with its own
       // retry, so a multi-broker connect would count every broker's pair.
@@ -137,14 +137,14 @@ export default function register(ctx) {
     }));
 
   it("a rejected promise reaches the caller with the app's message", () =>
-    scenario("token.failure_message", async () => {
+    scenario([], async () => {
       const caught = await failure(connectWith(async () => Promise.reject(new Error("refresh answered 403"))));
       assert.ok(caught instanceof ctx.felix.AuthError, `got ${caught}`);
       assert.match(caught.message, /refresh answered 403/);
     }));
 
   it("a result that is not a string fails the call and says so", () =>
-    scenario("token.failure_message", async () => {
+    scenario([], async () => {
       const caught = await failure(connectWith(async () => ({ felix_token: ctx.fixture.token })));
       assert.ok(caught instanceof ctx.felix.AuthError, `got ${caught}`);
       assert.match(caught.message, /non-empty string/);
@@ -178,7 +178,7 @@ export default function register(ctx) {
     }));
 
   it("a live-looking token the broker refuses is replaced once", () =>
-    scenario("token.refused_retry_once", async () => {
+    scenario([], async () => {
       const { fixture } = ctx;
       const { state, provider } = counting(async () => fixture.token);
       // Signed with a key no broker trusts but not expired, so only the
@@ -304,7 +304,7 @@ export default function register(ctx) {
   });
 
   it("the app's message arrives unchanged, whatever the provider threw", () =>
-    scenario("token.failure_message", async () => {
+    scenario([], async () => {
       const cases = [
         ["a thrown Error", () => { throw new Error("vault is sealed: code 7"); }, "vault is sealed: code 7"],
         ["a rejected Error", () => Promise.reject(new Error("refresh answered 403")), "refresh answered 403"],

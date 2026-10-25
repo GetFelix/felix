@@ -116,7 +116,6 @@ def test_an_idle_client_makes_no_calls(fixture, key):
     assert provider.calls == 0
 
 
-@pytest.mark.scenario("token.lazy")
 @pytest.mark.parametrize("initial", [None, ""])
 def test_without_an_initial_token_the_first_connect_calls_the_provider(fixture, initial):
     provider = Provider(fixture["token"])
@@ -176,7 +175,6 @@ def test_a_refused_token_costs_one_fetch_and_one_retry(fixture):
     assert provider.calls == 1
 
 
-@pytest.mark.scenario("token.refused_retry_once")
 def test_a_live_looking_token_the_broker_refuses_is_replaced_once(fixture):
     # Signed with a key no broker trusts but not expired, so only the broker's
     # refusal can tell the client to fetch.
@@ -187,7 +185,6 @@ def test_a_live_looking_token_the_broker_refuses_is_replaced_once(fixture):
     assert provider.calls == 1
 
 
-@pytest.mark.scenario("token.refused_retry_once")
 def test_a_provider_returning_the_refused_token_is_not_retried(fixture):
     # One broker: each broker's refusal is its own authentication, so a
     # cluster client would fetch once per broker it tries.
@@ -231,7 +228,6 @@ def test_the_provider_is_called_with_no_arguments(fixture):
     assert seen == [((), {})]
 
 
-@pytest.mark.scenario("token.failure_message")
 def test_a_custom_exception_message_passes_through_unchanged(fixture):
     class IdpError(Exception):
         pass
@@ -405,7 +401,6 @@ def test_the_provider_runs_while_another_task_is_busy(fixture):
     asyncio.run(main())
 
 
-@pytest.mark.scenario("token.failure_message")
 def test_async_client_failure_reaches_the_caller(fixture):
     async def provider():
         raise RuntimeError("idp is down")

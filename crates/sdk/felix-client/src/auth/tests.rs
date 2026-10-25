@@ -189,7 +189,6 @@ fn gated(answer: String) -> Gated {
     }
 }
 
-// Scenario token.timeout_joins.
 // Scenario token.single_flight.
 /// Refreshes that overlap share one provider call, and all get its token.
 #[tokio::test(start_paused = true)]

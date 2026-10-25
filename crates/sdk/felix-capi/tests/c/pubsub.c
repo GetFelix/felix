@@ -5389,7 +5389,7 @@ static void token_scenarios(const struct fixture *f) {
   SCENARIO_END("token.keep_valid_on_failure");
 
   /* A token the broker refuses though it has not expired costs one fetch. */
-  SCENARIO_BEGIN("token.refused_retry_once");
+  /* A forged token (not expired, refused by the broker) costs one fetch. */
   if (!mint_token(f, 60, true, tok, sizeof tok)) {
     CHECK(0, "the fixture would not mint a forged token");
   } else {
@@ -5409,7 +5409,6 @@ static void token_scenarios(const struct fixture *f) {
     CHECK(released_once(&app), "token_release ran %d times",
           atomic_load(&app.released));
   }
-  SCENARIO_END("token.refused_retry_once");
 
   /* A fetch past the 30 s timeout fails the stream waiting on it, with no
      retry, and the next open joins that call instead of starting another. */
