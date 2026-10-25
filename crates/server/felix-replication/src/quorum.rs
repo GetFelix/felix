@@ -260,6 +260,7 @@ impl QuorumMarks {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        let live = self.status.get().and_then(|board| board.live_report(key));
         tracing::warn!(
             stream = %key.stream,
             shard = key.shard,
@@ -270,6 +271,10 @@ impl QuorumMarks {
             status_age_ms = ?aged.as_ref().map(|(_, age)| age.as_millis()),
             passes_since_mark = ?status.map(|status| status.passes_since_mark),
             last_wake = ?status.and_then(|status| status.last_wake),
+            driver_scan = ?live.as_ref().map(|live| live.driver_scan),
+            shard_last_scan = ?live.as_ref().and_then(|live| live.last_scan),
+            pass_running = ?live.as_ref().and_then(|live| live.pass),
+            launched = ?live.as_ref().map(|live| &live.launched),
             followers = ?followers,
             "quorum wait timed out"
         );

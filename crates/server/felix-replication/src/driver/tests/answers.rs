@@ -73,46 +73,6 @@ async fn settled(rig: &Rig) -> Shards<'_, AcceptingFollower> {
     shards
 }
 
-/// **A checked answer below the tail starts a pass.** The follower answered
-/// the pass's own question and is still short of the tail that pass read, so
-/// the wake that read it may have gone to a pass that launched nobody.
-#[tokio::test(start_paused = true)]
-async fn a_checked_answer_below_the_tail_starts_a_pass() {
-    let rig = Rig::new().await;
-    let mut shards = settled(&rig).await;
-    let answer = shards.answer_from(&key(), "broker-b", TAIL - 1, true);
-    shards.apply(answer);
-    assert_eq!(shards.passes.len(), 1, "no pass owed to the follower");
-}
-
-/// **An answer at the tail starts nothing.** Applied over and over, as a
-/// follower that keeps answering level would, it must not become a loop.
-#[tokio::test(start_paused = true)]
-async fn an_answer_at_the_tail_starts_no_pass() {
-    let rig = Rig::new().await;
-    let mut shards = settled(&rig).await;
-    for _ in 0..20 {
-        let answer = shards.answer_from(&key(), "broker-b", TAIL, true);
-        shards.apply(answer);
-    }
-    assert_eq!(shards.passes.len(), 0);
-}
-
-/// An answer the pass could not vouch for, or from a halted follower, is left
-/// for the next wake: a peer that fails fast would be dialled in a loop.
-#[tokio::test(start_paused = true)]
-async fn an_unchecked_or_halted_answer_below_the_tail_starts_no_pass() {
-    let rig = Rig::new().await;
-    let mut shards = settled(&rig).await;
-    let unchecked = shards.answer_from(&key(), "broker-b", TAIL - 1, false);
-    shards.apply(unchecked);
-    assert_eq!(shards.passes.len(), 0, "an unchecked answer started a pass");
-
-    let halted = shards.halted_answer_from(&key(), "broker-c", TAIL - 1);
-    shards.apply(halted);
-    assert_eq!(shards.passes.len(), 0, "a halted follower started a pass");
-}
-
 /// **The status counts followers busy from earlier passes.** b's exchange
 /// outlives the pass that launched it; the next pass launches c alone and
 /// must still show b as busy, and where its exchange started.
@@ -178,4 +138,62 @@ async fn the_status_names_the_last_wake() {
     let (scan, ended) = shards.passes.next().await.expect("a pass");
     shards.fold(scan, ended);
     assert_eq!(rig.status().last_wake, Some("busy answer"));
+}
+
+/// **The live state follows the pass and its exchanges, not the fold.** A
+/// pass that never ends still shows that it is running, how long, and which
+/// exchanges are out and since when.
+#[tokio::test(start_paused = true)]
+async fn the_live_state_shows_a_pass_that_has_not_ended() {
+    let rig = Rig::new().await;
+    let mut shards = settled(&rig).await;
+    let watched = watch_key(&key());
+    let report = rig.status.live_report(&watched).expect("report");
+    assert_eq!(report.pass, None, "a folded pass is not running");
+    assert_eq!(report.last_scan, Some(1));
+    assert_eq!(report.driver_scan, 1);
+    assert!(report.launched.is_empty(), "{:?}", report.launched);
+
+    // A pass starts and is never polled to its end: the stuck-pass case.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    shards.scan(WakeKind::Tick);
+    tokio::time::sleep(Duration::from_millis(4900)).await;
+    let report = rig.status.live_report(&watched).expect("report");
+    assert_eq!(report.driver_scan, 2);
+    assert_eq!(report.last_scan, Some(1), "no pass has ended since");
+    assert_eq!(report.pass, Some((2, 4900)));
+    assert_eq!(
+        report.launched,
+        vec![
+            format!("broker-b@{TAIL} sent 4900ms ago"),
+            format!("broker-c@{TAIL} sent 4900ms ago"),
+        ],
+    );
+}
+
+/// An exchange stays listed from the pass that launched it until its answer,
+/// across the pass folding, and keeps its first launch time when a later
+/// pass does not launch it again.
+#[tokio::test(start_paused = true)]
+async fn the_live_state_keeps_an_exchange_until_it_is_answered() {
+    let rig = Rig::new().await;
+    let mut shards = settled(&rig).await;
+    let watched = watch_key(&key());
+    shards.hold_busy(&key(), "broker-b");
+    // `hold_busy` stands in for a pass's straggler, so list its launch.
+    rig.status
+        .pass_started(&watched, 1, vec![("broker-b".to_string(), TAIL)]);
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    pass(&mut shards, WakeKind::Tick).await;
+    let report = rig.status.live_report(&watched).expect("report");
+    assert_eq!(report.pass, None);
+    assert_eq!(
+        report.launched,
+        vec![format!("broker-b@{TAIL} sent 1000ms ago")]
+    );
+
+    let answer = shards.answer_from(&key(), "broker-b", TAIL, true);
+    shards.apply(answer);
+    let report = rig.status.live_report(&watched).expect("report");
+    assert!(report.launched.is_empty(), "{:?}", report.launched);
 }

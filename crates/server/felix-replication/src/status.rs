@@ -77,6 +77,36 @@ pub struct FenceStatus {
 pub struct ShardStatusBoard {
     /// Each entry with when it was written.
     shards: RwLock<HashMap<ShardKey, (tokio::time::Instant, ShardStatus)>>,
+    /// What each shard's pass is doing right now, written when a pass starts
+    /// and ends and when an exchange ends, not when a pass folds.
+    live: RwLock<HashMap<ShardKey, LiveShard>>,
+    /// The driver's latest scan, which stops advancing if its loop is blocked.
+    driver_scan: std::sync::atomic::AtomicU64,
+}
+
+/// A shard's pass and unanswered exchanges as they stand, for reading why a
+/// mark is stuck while no pass has ended to say.
+#[derive(Debug, Default)]
+struct LiveShard {
+    /// The scan and start time of the pass under way, if one is.
+    pass: Option<(u64, tokio::time::Instant)>,
+    /// The scan of the last pass to end.
+    last_scan: Option<u64>,
+    /// Each exchange launched and not yet answered: the follower, the offset
+    /// its cursor was at, and when it went out.
+    exchanges: Vec<(String, u64, tokio::time::Instant)>,
+}
+
+/// [`LiveShard`] with its ages worked out, as the quorum-timeout warning
+/// prints it.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct LiveReport {
+    pub(crate) driver_scan: u64,
+    pub(crate) last_scan: Option<u64>,
+    /// The scan of the pass under way and how long it has run, in ms.
+    pub(crate) pass: Option<(u64, u128)>,
+    /// `node@offset sent Nms ago`, for each unanswered exchange.
+    pub(crate) launched: Vec<String>,
 }
 
 impl ShardStatusBoard {
@@ -101,6 +131,71 @@ impl ShardStatusBoard {
         Some((status.clone(), at.elapsed()))
     }
 
+    pub(crate) fn pass_started(&self, key: &ShardKey, scan: u64, launched: Vec<(String, u64)>) {
+        let now = tokio::time::Instant::now();
+        let mut live = self.live.write();
+        let shard = live.entry(key.clone()).or_default();
+        shard.pass = Some((scan, now));
+        // A follower still busy keeps its original launch.
+        for (node, at) in launched {
+            if !shard.exchanges.iter().any(|(held, _, _)| *held == node) {
+                shard.exchanges.push((node, at, now));
+            }
+        }
+    }
+
+    /// A pass ended; `outstanding` are the exchanges still unanswered, which
+    /// are all that remain of it. Those it finished itself are dropped.
+    pub(crate) fn pass_ended(&self, key: &ShardKey, scan: u64, outstanding: Vec<(String, u64)>) {
+        let mut live = self.live.write();
+        let shard = live.entry(key.clone()).or_default();
+        let started = shard
+            .pass
+            .take()
+            .map_or_else(tokio::time::Instant::now, |(_, at)| at);
+        shard.last_scan = Some(scan);
+        shard
+            .exchanges
+            .retain(|(node, _, _)| outstanding.iter().any(|(held, _)| held == node));
+        for (node, at) in outstanding {
+            if !shard.exchanges.iter().any(|(held, _, _)| *held == node) {
+                shard.exchanges.push((node, at, started));
+            }
+        }
+    }
+
+    pub(crate) fn exchange_ended(&self, key: &ShardKey, node: &str) {
+        if let Some(shard) = self.live.write().get_mut(key) {
+            shard.exchanges.retain(|(held, _, _)| held != node);
+        }
+    }
+
+    pub(crate) fn scanned(&self, scan: u64) {
+        self.driver_scan
+            .store(scan, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub(crate) fn driver_scan(&self) -> u64 {
+        self.driver_scan.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub(crate) fn live_report(&self, key: &ShardKey) -> Option<LiveReport> {
+        let now = tokio::time::Instant::now();
+        let ago = |at: tokio::time::Instant| now.saturating_duration_since(at).as_millis();
+        let live = self.live.read();
+        let shard = live.get(key)?;
+        Some(LiveReport {
+            driver_scan: self.driver_scan(),
+            last_scan: shard.last_scan,
+            pass: shard.pass.map(|(scan, at)| (scan, ago(at))),
+            launched: shard
+                .exchanges
+                .iter()
+                .map(|(node, offset, at)| format!("{node}@{offset} sent {}ms ago", ago(*at)))
+                .collect(),
+        })
+    }
+
     /// Record what last woke `key` without touching the rest of its line or
     /// when it was written.
     pub(crate) fn note_wake(&self, key: &ShardKey, wake: &'static str) {
@@ -118,6 +213,7 @@ impl ShardStatusBoard {
     /// Keep only the shards `led` says this broker still leads.
     pub(crate) fn retain(&self, led: impl Fn(&ShardKey) -> bool) {
         self.shards.write().retain(|key, _| led(key));
+        self.live.write().retain(|key, _| led(key));
     }
 }
 

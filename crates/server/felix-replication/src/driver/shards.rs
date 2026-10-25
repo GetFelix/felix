@@ -212,9 +212,6 @@ struct ShardState {
 /// What a shard's last pass left, for the driver's summary.
 struct LastPass {
     scan: u64,
-    /// The tail the pass read. A checked answer that leaves a follower below
-    /// it is a pass's worth of shipping owed to that follower.
-    tail: Option<u64>,
     halted: Vec<HaltedReplica>,
     lag: Option<u64>,
     behind: bool,
@@ -226,7 +223,6 @@ impl LastPass {
     fn idle(scan: u64) -> Self {
         Self {
             scan,
-            tail: None,
             halted: Vec::new(),
             lag: None,
             behind: false,
@@ -292,6 +288,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
     pub(super) fn scan(&mut self, wake: WakeKind) {
         let appended = matches!(wake, WakeKind::Append);
         self.scan += 1;
+        self.cx.status.scanned(self.scan);
         let table = self.cx.router.snapshot();
         let live: Vec<ShardKey> = table
             .iter()
@@ -509,6 +506,15 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             .get(key)
             .map(|nodes| nodes.keys().cloned().collect())
             .unwrap_or_default();
+        let launched = entry
+            .followers
+            .iter()
+            .filter(|cursor| !busy.contains(&cursor.node_id))
+            .map(|cursor| (cursor.node_id.clone(), cursor.next_offset))
+            .collect();
+        self.cx
+            .status
+            .pass_started(&watch_key(key), self.scan, launched);
         self.passes
             .push(self.pass(key.clone(), route.clone(), entry, aux, busy, next));
     }
@@ -644,11 +650,17 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             .get(&key)
             .is_some_and(|route| self.leads(&key, route));
         if !self.states.contains_key(&key) {
+            self.cx
+                .status
+                .pass_ended(&watch_key(&key), scan, Vec::new());
             return;
         }
         if !led {
             // Lost while the pass ran. Its exchanges go with it.
             self.states.remove(&key);
+            self.cx
+                .status
+                .pass_ended(&watch_key(&key), scan, Vec::new());
             return;
         }
         let ShardPass {
@@ -690,6 +702,15 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                 }
             })
             .collect();
+        let outstanding = cursors
+            .followers
+            .iter()
+            .filter(|cursor| unanswered(&cursor.node_id))
+            .map(|cursor| (cursor.node_id.clone(), cursor.next_offset))
+            .collect();
+        self.cx
+            .status
+            .pass_ended(&watch_key(&key), scan, outstanding);
         let mark = self
             .cx
             .marks
@@ -725,7 +746,6 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         }
         state.last = Some(LastPass {
             scan,
-            tail,
             halted,
             lag,
             behind,
@@ -855,28 +875,6 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         }
     }
 
-    /// [`Self::answer_from`], from a follower that has since halted.
-    #[cfg(test)]
-    pub(super) fn halted_answer_from(
-        &mut self,
-        key: &ShardKey,
-        node: &str,
-        next_offset: u64,
-    ) -> Answered {
-        let mut answer = self.answer_from(key, node, next_offset, true);
-        answer.cursor.halted = Some(crate::Halt::Diverged);
-        // Already halted when the exchange was launched: the answer moves
-        // nothing.
-        if let Some(slot) = self
-            .streams
-            .get_mut(key)
-            .and_then(|entry| entry.followers.iter_mut().find(|c| c.node_id == node))
-        {
-            slot.halted = answer.cursor.halted;
-        }
-        answer
-    }
-
     /// Mark `node` as having an exchange from an earlier pass under way.
     #[cfg(test)]
     pub(super) fn hold_busy(&mut self, key: &ShardKey, node: &str) {
@@ -889,6 +887,9 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
     /// An exchange a pass handed back has ended: put its cursor back, and
     /// pass again if it moved.
     pub(super) fn apply(&mut self, answered: Answered) {
+        self.cx
+            .status
+            .exchange_ended(&watch_key(&answered.key), &answered.cursor.node_id);
         if let Some(nodes) = self.busy.get_mut(&answered.key) {
             nodes.remove(&answered.cursor.node_id);
             if nodes.is_empty() {
@@ -922,14 +923,8 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
     /// rather than at the next wake. A follower that did not answer is left
     /// for the next wake, or a peer that fails fast would be dialled in a loop.
     ///
-    /// Also a checked answer from a follower that is still short of the tail
-    /// the last pass read and is not stalled: the wake that read it may have
-    /// been spent on a pass that launched nobody, because this follower was
-    /// busy. The pass this starts ships to it, so the next answer moves its
-    /// cursor, or the follower is level with the tail and this stops.
-    ///
-    /// Last, a level follower asked again for an answer the mark can count,
-    /// which moves no cursor. Only a pass counts an answer, and
+    /// The last case is a level follower asked again for an answer the mark
+    /// can count, which moves no cursor. Only a pass counts an answer, and
     /// with every publisher waiting on the mark no append is coming to start
     /// one.
     fn merge(&mut self, answered: Answered) -> bool {
@@ -948,17 +943,8 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             .offset_at(&watch_key(&key), incarnation, generation)
             .unwrap_or(0);
         let counts_for_more = checked && cursor.halted.is_none() && cursor.confirmed > mark;
-        let owed = checked
-            && cursor.halted.is_none()
-            && !cursor.stalled
-            && self
-                .states
-                .get(&key)
-                .and_then(|state| state.last.as_ref())
-                .and_then(|last| last.tail)
-                .is_some_and(|tail| cursor.next_offset < tail);
         let at = (generation, incarnation);
-        let mut moved = put_back(self.streams.get_mut(&key), at, cursor) || counts_for_more || owed;
+        let mut moved = put_back(self.streams.get_mut(&key), at, cursor) || counts_for_more;
         for (entries, cursor) in [
             (&mut self.group, rode.group),
             (&mut self.dead_letters, rode.dead_letters),
