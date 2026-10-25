@@ -62,7 +62,8 @@ impl<R> Copy for Context<'_, R> {}
 /// What woke the driver.
 pub(super) enum Event<'a> {
     /// An append, a route change, or the tick: every shard gets a pass.
-    Wake,
+    /// Only an append cuts a pass under way short.
+    Wake { appended: bool },
     /// Shards fenced here and not yet drained, and shards promoted here and
     /// not yet opened, get another pass.
     Retry,
@@ -126,6 +127,8 @@ pub(super) struct Answered {
 #[derive(Default)]
 pub(super) struct NextPass {
     pub(super) wanted: tokio::sync::Notify,
+    /// An append woke the driver since the pass last looked.
+    pub(super) appended: std::sync::atomic::AtomicBool,
     answered: parking_lot::Mutex<Vec<Answered>>,
 }
 
@@ -259,7 +262,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
     }
 
     /// Give every shard led here a pass, and forget the ones that are not.
-    pub(super) fn scan(&mut self) {
+    pub(super) fn scan(&mut self, appended: bool) {
         self.scan += 1;
         let table = self.cx.router.snapshot();
         let live: Vec<ShardKey> = table
@@ -281,7 +284,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             self.probe(key, route);
         }
         for key in &live {
-            self.start(key);
+            self.start(key, appended);
         }
 
         // A shard this broker no longer leads keeps no cursors: they would be
@@ -371,12 +374,14 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             .map(|(key, _)| key.clone())
             .collect();
         for key in waiting {
-            self.start(&key);
+            self.start(&key, false);
         }
     }
 
     /// Start a pass for `key`, or ask for one once the pass under way ends.
-    fn start(&mut self, key: &ShardKey) {
+    /// `cuts` is whether the wake may be new data for the pass under way to
+    /// stop waiting for; the pass checks this shard's tail before it does.
+    fn start(&mut self, key: &ShardKey, cuts: bool) {
         let table = self.cx.router.snapshot();
         let Some(route) = table.get(key).filter(|route| self.leads(key, route)) else {
             return;
@@ -384,6 +389,10 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         let state = self.states.entry(key.clone()).or_default();
         if let Some(next) = &state.running {
             state.again = true;
+            if cuts {
+                next.appended
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
             next.wanted.notify_one();
             return;
         }
@@ -676,7 +685,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         }
 
         if again {
-            self.start(&key);
+            self.start(&key, false);
         }
         // Shards turned away while too many passes were under way.
         let waiting: Vec<ShardKey> = self
@@ -686,7 +695,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             .map(|(key, _)| key.clone())
             .collect();
         for key in waiting {
-            self.start(&key);
+            self.start(&key, false);
         }
     }
 
@@ -744,7 +753,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             },
         );
         if opened || std::mem::take(&mut state.again) {
-            self.start(&key);
+            self.start(&key, false);
         }
     }
 
@@ -769,7 +778,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             return;
         }
         if self.merge(answered) {
-            self.start(&key);
+            self.start(&key, false);
         }
     }
 

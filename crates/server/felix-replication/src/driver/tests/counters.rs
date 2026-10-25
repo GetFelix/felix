@@ -550,3 +550,67 @@ async fn a_counter_catch_up_is_reported_a_slice_at_a_time() {
     );
     assert_eq!(reported.last(), Some(&Some(counters_tail)));
 }
+
+/// **A counter write on this shard cuts a pass waiting on a majority.** The
+/// cache log does not move, only the counter log: with b busy and d slow, the
+/// pass waits on d, and the add must reach the free follower c now.
+#[tokio::test(start_paused = true)]
+async fn a_counter_write_on_this_shard_cuts_a_waiting_pass_short() {
+    use super::stragglers::{Recording, SOON};
+    let (broker, router, _dir) = quorum_cache().await;
+    let nodes = nodes();
+    router.publish(
+        RoutingTable::build(
+            [(
+                cache_key(),
+                LOCAL.to_string(),
+                ["broker-b", "broker-c", "broker-d"]
+                    .map(str::to_string)
+                    .to_vec(),
+                GENERATION,
+            )],
+            &nodes,
+        ),
+        &nodes,
+    );
+    let peers = Arc::new(Recording::default());
+    let marks = by_followers(&broker).await;
+    let (driver, marks) = self::driver(Arc::clone(&peers), &broker, &router, marks);
+    let tails = write(&broker, 0).await;
+    assert!(prompt(&marks, tails).await, "the first marks waited");
+
+    // b stays busy; c and d make the majority.
+    let rtt = Duration::from_millis(400);
+    peers.delay("broker-b", rtt);
+    let tails = write(&broker, 1).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(prompt(&marks, tails).await, "the majority waited");
+
+    // Now d is slow and the next pass waits on it.
+    peers.delay("broker-c", Duration::from_millis(20));
+    peers.delay("broker-d", rtt);
+    write(&broker, 2).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let landed = tokio::time::Instant::now();
+    let adding = Arc::clone(&broker);
+    let runtime = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || {
+        runtime
+            .block_on(
+                adding
+                    .counters()
+                    .expect("counters")
+                    .add(TENANT, NAMESPACE, STREAM, 0, "hits", 1),
+            )
+            .expect("add");
+    })
+    .await
+    .expect("add task");
+    broker.appended().notify_one();
+    tokio::time::sleep(SOON).await;
+    assert!(
+        peers.sent_between("broker-c", landed, tokio::time::Instant::now()),
+        "the counter add waited for the pass to end before it was shipped to a free follower",
+    );
+    driver.stop().await;
+}
