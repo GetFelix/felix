@@ -7,6 +7,7 @@ mod error_codes;
 mod explicit_shard;
 mod identity;
 mod keyed_producer;
+mod not_leader_retry;
 mod offsets;
 mod reconnect;
 mod reresolve;
