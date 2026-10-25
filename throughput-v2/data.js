@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792906783075,
+  "lastUpdate": 1792907363764,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -36088,6 +36088,58 @@ window.BENCHMARK_DATA = {
             "range": "3168.12",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 797949.15\nmean: 798529.08\nstdev: 3168.12\ncv: 0.40%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0bda1cd8cdee197633ea2c9a54d29feba2303033",
+          "message": "fix(replication): only this shard's appends or a busy answer cut a waiting pass (#1532) (#1541)\n\nA replication pass waiting on a busy follower before it has a majority was cut\nshort by any wake: the 2 s tick, a route change, or an append on any shard of\nthe broker (Broker::appended is broker-wide). The cut pass's exchanges became\nstragglers and the next pass re-pinged, one more round trip each time; under a\n400 ms link delay a publish missed its 1.5 s quorum timeout (#1532).\n\nBefore a majority, a wake now cuts the pass only when a busy follower answered\nor this shard's own log or counter log grew past what the pass ships. Every\nwake still ends the wait after the majority, so a drain or move starts at once.\nDeterministic driver tests (paused time) cover a route change, the tick and\nanother shard's append not cutting, this shard's append and a counter write\ncutting, and a route change ending a pass waiting on a dead follower; each\nfails with its part of the fix reverted (785 ms vs 405 ms for the original).\n\nFixes #1532.\n\nSpec-Unaffected: the quorum mark still moves only on a real majority; this changes when a waiting replication pass is cut short, which the formal model does not represent.",
+          "timestamp": "2026-10-24T22:45:55-07:00",
+          "tree_id": "3a57875066474736374e1b45dbeb9295fb4eebdb",
+          "url": "https://github.com/GetFelix/felix/commit/0bda1cd8cdee197633ea2c9a54d29feba2303033"
+        },
+        "date": 1792907363163,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 615982.46,
+            "range": "72785.55",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 615982.46\nmean: 603223.87\nstdev: 72785.55\ncv: 12.07%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 615982.46,
+            "range": "72785.55",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 615982.46\nmean: 603223.87\nstdev: 72785.55\ncv: 12.07%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 159859.6,
+            "range": "959.09",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 159859.60\nmean: 159573.21\nstdev: 959.09\ncv: 0.60%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1598596.01,
+            "range": "9590.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1598596.01\nmean: 1595732.13\nstdev: 9590.88\ncv: 0.60%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
