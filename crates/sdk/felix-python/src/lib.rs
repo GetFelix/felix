@@ -28,6 +28,7 @@ mod commit;
 mod errors;
 mod runtime;
 mod tls;
+mod token;
 mod types;
 
 use pyo3::prelude::*;

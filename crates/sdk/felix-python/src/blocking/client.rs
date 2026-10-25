@@ -14,6 +14,7 @@ use crate::args::{owned4, parse_ack, parse_addrs, parse_start};
 use crate::errors::to_py_err;
 use crate::runtime::block_on;
 use crate::tls;
+use crate::token::{Flavor, Tokens, resolve};
 use crate::types::{CacheWatchFilter, GroupRecord, OwnedGroupRecord};
 
 /// A connection to a Felix cluster.
@@ -35,6 +36,17 @@ impl Client {
     /// enough, and the client discovers the rest. A name is resolved again
     /// whenever no broker the client knows answers, so prefer one to an IP. A
     /// name that does not resolve now raises `ValueError`.
+    /// Pass `token`, a fixed token, or `token_provider`, a callable returning a
+    /// fresh one; `token` is then optional, and without it the first stream to
+    /// authenticate calls the provider. A plain callable runs on a Felix worker
+    /// thread with the GIL; an `async def` is run there with `asyncio.run`, so
+    /// it must not use objects bound to another event loop. The provider is
+    /// called lazily (never on a timer), one call at a time, when the held
+    /// token is missing, past two thirds of its life, or refused by the
+    /// broker. If it raises, returns a non-`str`, or takes over 30 seconds, the
+    /// client keeps a token that is still valid and otherwise raises
+    /// `AuthError` with the provider's message.
+    ///
     /// `server_name` is the name the broker's certificate is expected to
     /// carry.
     ///
@@ -50,7 +62,8 @@ impl Client {
         addrs,
         *,
         tenant_id,
-        token,
+        token=None,
+        token_provider=None,
         server_name="localhost",
         ca_file=None,
         offer_alpn=false,
@@ -59,7 +72,8 @@ impl Client {
         py: Python<'_>,
         addrs: Py<PyAny>,
         tenant_id: &str,
-        token: &str,
+        token: Option<&str>,
+        token_provider: Option<Py<PyAny>>,
         server_name: &str,
         ca_file: Option<&str>,
         offer_alpn: bool,
@@ -73,7 +87,10 @@ impl Client {
         let quinn = tls::client_config(ca_file, offer_alpn)?;
         let mut config = ClientConfig::optimized_defaults(quinn);
         config.auth_tenant_id = Some(tenant_id.to_string());
-        config.auth_token = Some(token.to_string());
+        match resolve(py, token, token_provider, Flavor::Blocking)? {
+            Tokens::Fixed(token) => config.auth_token = Some(token),
+            Tokens::Provider(provider) => config.token_provider = Some(provider),
+        }
 
         let server_name = server_name.to_string();
         let inner = block_on(py, async move {
@@ -92,16 +109,26 @@ impl Client {
     /// the broker checks its requests against that token's grants alone. It
     /// follows shards and failovers as this client does, reaching each broker
     /// over this client's connection to it, so a gateway serving many users
-    /// holds one connection per broker. The token is fixed: build a new one
-    /// when it expires. A refused token fails here.
-    fn with_identity(&self, py: Python<'_>, tenant_id: &str, token: &str) -> PyResult<Self> {
+    /// holds one connection per broker. Pass `token`, fixed for the identity's
+    /// life, or `token_provider` as for `Client(...)`. A refused token fails
+    /// here.
+    #[pyo3(signature = (tenant_id, token=None, *, token_provider=None))]
+    fn with_identity(
+        &self,
+        py: Python<'_>,
+        tenant_id: &str,
+        token: Option<&str>,
+        token_provider: Option<Py<PyAny>>,
+    ) -> PyResult<Self> {
+        let tokens = resolve(py, token, token_provider, Flavor::Blocking)?;
         let inner = Arc::clone(&self.inner);
-        let (tenant_id, token) = (tenant_id.to_string(), token.to_string());
+        let tenant_id = tenant_id.to_string();
         let identity = block_on(py, async move {
-            inner
-                .with_identity_token(tenant_id, token)
-                .await
-                .map_err(to_py_err)
+            match tokens {
+                Tokens::Fixed(token) => inner.with_identity_token(tenant_id, token).await,
+                Tokens::Provider(provider) => inner.with_identity(tenant_id, provider).await,
+            }
+            .map_err(to_py_err)
         })?;
         Ok(Self {
             inner: Arc::new(identity),

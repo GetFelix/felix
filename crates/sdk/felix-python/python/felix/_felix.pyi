@@ -5,7 +5,7 @@ so a signature cannot drift here without a test noticing.
 """
 
 from types import TracebackType
-from typing import AsyncIterator, Awaitable, Iterator, Literal, Sequence
+from typing import AsyncIterator, Awaitable, Callable, Iterator, Literal, Sequence
 
 __version__: str
 
@@ -229,12 +229,24 @@ class Client:
         addrs: str | Sequence[str],
         *,
         tenant_id: str,
-        token: str,
+        token: str | None = None,
+        token_provider: Callable[[], str | Awaitable[str]] | None = None,
         server_name: str = "localhost",
         ca_file: str | None = None,
         offer_alpn: bool = False,
-    ) -> None: ...
-    def with_identity(self, tenant_id: str, token: str) -> "Client": ...
+    ) -> None:
+        """Pass ``token``, ``token_provider``, or both (``token`` is then the first token).
+
+        A plain provider runs on a Felix worker thread with the GIL; an
+        ``async def`` is run there with ``asyncio.run``.
+        """
+    def with_identity(
+        self,
+        tenant_id: str,
+        token: str | None = None,
+        *,
+        token_provider: Callable[[], str | Awaitable[str]] | None = None,
+    ) -> "Client": ...
     def publish(
         self,
         tenant_id: str,
@@ -364,12 +376,20 @@ class AsyncClient:
         addrs: str | Sequence[str],
         *,
         tenant_id: str,
-        token: str,
+        token: str | None = None,
+        token_provider: Callable[[], Awaitable[str]] | None = None,
         server_name: str = "localhost",
         ca_file: str | None = None,
         offer_alpn: bool = False,
+    ) -> "AsyncClient":
+        """``token_provider`` must be an ``async def``; a plain callable is a ``TypeError``."""
+    async def with_identity(
+        self,
+        tenant_id: str,
+        token: str | None = None,
+        *,
+        token_provider: Callable[[], Awaitable[str]] | None = None,
     ) -> "AsyncClient": ...
-    async def with_identity(self, tenant_id: str, token: str) -> "AsyncClient": ...
     async def publish(
         self,
         tenant_id: str,
