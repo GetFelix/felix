@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792940309938,
+  "lastUpdate": 1792940595415,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -36816,6 +36816,58 @@ window.BENCHMARK_DATA = {
             "range": "40472.13",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1657344.20\nmean: 1666488.22\nstdev: 40472.13\ncv: 2.43%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3092e06b4ef4219a8dfa4ce56cf811cab1405980",
+          "message": "ci(coverage): always upload lcov and show which files a PR's coverage moved (#1557)\n\n* ci(coverage): always upload lcov and show which files a PR's coverage moved\n\n* ci(coverage): a missing or unreadable file summary never fails the gate; run its tests\n\n* ci(coverage): allow a 0.3 point drop; the C harness makes runs vary by about 0.2",
+          "timestamp": "2026-10-25T07:55:09-07:00",
+          "tree_id": "2ce7176dc29095c4210034aa5eac8bb09b8d845f",
+          "url": "https://github.com/GetFelix/felix/commit/3092e06b4ef4219a8dfa4ce56cf811cab1405980"
+        },
+        "date": 1792940594836,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 343491.01,
+            "range": "15109.87",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 343491.01\nmean: 340131.56\nstdev: 15109.87\ncv: 4.44%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 343491.01,
+            "range": "15109.87",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 343491.01\nmean: 340131.56\nstdev: 15109.87\ncv: 4.44%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80545.73,
+            "range": "749.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80545.73\nmean: 80601.58\nstdev: 749.38\ncv: 0.93%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 805457.34,
+            "range": "7493.80",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 805457.34\nmean: 806015.79\nstdev: 7493.80\ncv: 0.93%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
