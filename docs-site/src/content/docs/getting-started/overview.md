@@ -108,7 +108,7 @@ flowchart TB
   over pooled connections, with reconnection and redirect-following in the
   cluster client. Python (`crates/sdk/felix-python`) and TypeScript
   (`crates/sdk/felix-typescript`) ship too, both as bindings over this client
-  rather than reimplementations; Go and C# are not started.
+  rather than reimplementations. A C# SDK (`sdks/dotnet`) binds the C ABI over the same client; Go is not started.
 - **The control plane** (`services/felix-controlplane-service`) holds metadata (tenants,
   namespaces, streams, caches, nodes) behind a REST API, and assigns every
   shard to a broker. Brokers watch its assignment feed. It is not on the data

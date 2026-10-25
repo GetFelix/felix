@@ -40,6 +40,23 @@ internal sealed class FelixSubscriptionHandle : SafeHandle
     }
 }
 
+internal sealed class FelixShardedSubscriptionHandle : SafeHandle
+{
+    internal FelixShardedSubscriptionHandle(nint handle)
+        : base(0, true)
+    {
+        SetHandle(handle);
+    }
+
+    public override bool IsInvalid => handle == 0;
+
+    protected override bool ReleaseHandle()
+    {
+        NativeMethods.felix_sharded_subscription_free(handle);
+        return true;
+    }
+}
+
 internal sealed class FelixEventHandle : SafeHandle
 {
     internal FelixEventHandle(nint handle)
