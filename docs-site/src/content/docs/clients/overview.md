@@ -186,7 +186,8 @@ curl -s -X POST "https://controlplane:8443/v1/tenants/t1/token/exchange" \
   "felix_token": "<jwt>",
   "expires_in": 900,
   "token_type": "Bearer",
-  "refresh_token": "<opaque>"
+  "refresh_token": "<opaque>",
+  "refresh_expires_in": 2592000
 }
 ```
 
@@ -217,9 +218,11 @@ See [Development tokens](/features/security/#development-tokens).
 
 ### Lifetime and refreshing
 
-A token lasts 900 seconds unless the control plane sets
-`FELIX_EXCHANGE_TOKEN_TTL_SECONDS`. The refresh token that comes with it lasts
-30 days and buys a new token without going back to the identity provider:
+`felix_token` is the access token, and `expires_in` is its life in seconds: 900
+unless the control plane sets `FELIX_EXCHANGE_TOKEN_TTL_SECONDS`. The
+`refresh_token` lasts `refresh_expires_in` seconds, 30 days by default
+(`FELIX_REFRESH_TOKEN_TTL_SECONDS`), and buys a new access token without going
+back to the identity provider:
 
 ```bash
 curl -s -X POST "https://controlplane:8443/v1/tenants/t1/token/refresh" \
@@ -227,8 +230,36 @@ curl -s -X POST "https://controlplane:8443/v1/tenants/t1/token/refresh" \
   -d '{"refresh_token": "<opaque>"}'
 ```
 
-A refresh token is single-use. Each refresh returns its replacement, and you
-keep only the newest.
+```json
+{
+  "felix_token": "<jwt>",
+  "expires_in": 900,
+  "token_type": "Bearer",
+  "refresh_token": "<the replacement>",
+  "refresh_expires_in": 2592000
+}
+```
+
+Refresh tokens rotate. Every refresh spends the token you sent and returns its
+replacement, so store the new one each time and discard the old. The new access
+token is minted from the principal's current grants, so an RBAC change takes
+effect at the next refresh. Send `audience` only if you also sent it on the
+exchange; a different one is a `400`.
+
+Presenting a spent token again is treated as theft and ends the whole chain.
+The exception is a short grace window (`FELIX_REFRESH_REUSE_GRACE_SECONDS`, 30
+by default) that covers a retry after a lost answer and two refreshes racing
+each other. So refresh from one place at a time.
+
+An expired, revoked or unknown refresh token all get the same `403`. There is
+nothing to repair: exchange a fresh identity-provider token again. An
+administrator ends a principal's chains and broker tokens with
+[`POST /v1/tenants/{tenant_id}/refresh-tokens/revoke`](/api/control-plane-api/#admin-api-refresh-token-revocation-and-signing-keys);
+after that the app has to sign in again too.
+
+A long-running app therefore refreshes before `expires_in` runs out, say after
+two thirds of it, persists the replacement refresh token, and falls back to a
+new exchange when a refresh answers `403`.
 
 ### When a token expires on an open connection
 
@@ -240,9 +271,9 @@ client reopens after losing its connection to a broker. A client that holds one
 fixed token presents that same token every time, so once it has expired those
 are refused. Revoking a principal is how you end streams that are already open.
 
-Only the Rust client can replace its token while it runs. The others hold the
-token they connected with, so build a new client with a fresh token before the
-old one expires. Each client's page says exactly what it offers.
+Only the Rust client can replace its token while it runs, through a token
+provider. The others hold the token they connected with, so build a new client
+with a fresh token before the old one expires. Each client's page has an example.
 
 ## The clients
 

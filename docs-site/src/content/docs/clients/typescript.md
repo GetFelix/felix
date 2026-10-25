@@ -64,6 +64,45 @@ covers where it comes from. The client holds it fixed, for `connect` as well as
 Streams opened after expiry, including the ones a reconnect opens, are
 refused.
 
+### Getting and refreshing a token
+
+The client does not call the control plane, so use `fetch` (Node 18 or later).
+The refresh token rotates on every use, so keep the newest one:
+
+```ts
+const CONTROLPLANE = "https://controlplane:8443/v1/tenants/t1";
+
+async function post(path: string, body: unknown, bearer?: string) {
+  const res = await fetch(CONTROLPLANE + path, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`${path}: ${res.status}`);
+  return res.json();
+}
+
+let minted = await post(
+  "/token/exchange",
+  { requested: ["stream.publish"], resources: ["stream:t1/orders/*"] },
+  oidcToken,
+);
+let client = await Client.connect("127.0.0.1:5000", "t1", minted.felix_token, "localhost", caFile);
+
+// Later, before minted.expires_in seconds pass (say after two thirds of it):
+minted = await post("/token/refresh", { refresh_token: minted.refresh_token });
+```
+
+A client cannot swap its token. After a refresh, connect a new client with the
+new `felix_token` and move your work to it, or call
+`client.withIdentity("t1", minted.felix_token)` for a handle that shares the
+first client's connections and authenticates with the new token. Handles
+already in use keep the token they started with. A refresh that answers `403`
+means the refresh token expired or was revoked: run the exchange again.
+
 ## Connecting
 
 ```ts

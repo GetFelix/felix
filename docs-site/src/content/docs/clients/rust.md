@@ -123,14 +123,63 @@ has passed. If a fetch fails while the current token is still valid, it keeps
 using that one and tries again a few seconds later. If the broker refuses a
 token and the provider has a different one, the client retries once with it.
 
-```rust
-use felix_client::RefreshingToken;
+### Getting and refreshing a token
 
-config.token_provider = Some(Arc::new(RefreshingToken::with_initial(
-    first_token,
-    move || fetch_felix_token(), // async fn returning Result<String>
-)));
+The client has no HTTP code of its own, so the exchange and refresh calls are
+yours. This sketch uses `reqwest` (with its `json` feature) and `serde`. The
+refresh token rotates on every use, so the callback keeps the newest one:
+
+```rust
+use std::sync::{Arc, Mutex};
+use felix_client::RefreshingToken;
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+struct Minted {
+    felix_token: String,
+    refresh_token: String,
+}
+
+const CONTROLPLANE: &str = "https://controlplane:8443/v1/tenants/t1";
+
+async fn exchange(http: &reqwest::Client, oidc: &str) -> anyhow::Result<Minted> {
+    Ok(http
+        .post(format!("{CONTROLPLANE}/token/exchange"))
+        .bearer_auth(oidc)
+        .json(&serde_json::json!({
+            "requested": ["stream.publish", "stream.subscribe"],
+            "resources": ["stream:t1/orders/*"],
+        }))
+        .send().await?.error_for_status()?.json().await?)
+}
+
+let http = reqwest::Client::new();
+let first = exchange(&http, &oidc_token).await?;
+let refresh = Arc::new(Mutex::new(first.refresh_token));
+
+let tokens = RefreshingToken::with_initial(first.felix_token, {
+    let (http, refresh) = (http.clone(), Arc::clone(&refresh));
+    move || {
+        let (http, refresh) = (http.clone(), Arc::clone(&refresh));
+        async move {
+            let current = refresh.lock().unwrap().clone();
+            let minted: Minted = http
+                .post(format!("{CONTROLPLANE}/token/refresh"))
+                .json(&serde_json::json!({ "refresh_token": current }))
+                .send().await?.error_for_status()?.json().await?;
+            *refresh.lock().unwrap() = minted.refresh_token;
+            Ok(minted.felix_token)
+        }
+    }
+});
+config.token_provider = Some(Arc::new(tokens));
 ```
+
+`RefreshingToken` calls the closure once two thirds of the token's life has
+passed, so a client left running for days picks up new tokens by itself. If the
+refresh token itself has expired or been revoked, the call fails with a `403`
+and the client keeps the last token until it expires. Run `exchange` again and
+build a new client from the result.
 
 The `FELIX_AUTH_TENANT` and `FELIX_AUTH_TOKEN` variables fill `auth_tenant_id`
 and `auth_token` when you build the config with `ClientConfig::from_env_or_yaml`.

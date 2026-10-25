@@ -59,6 +59,42 @@ well as `with_identity`, so build a new client with a fresh token before it
 expires. Streams opened after expiry, including the ones a reconnect opens, are
 refused.
 
+### Getting and refreshing a token
+
+The client does not call the control plane, so use any HTTP library. The refresh
+token rotates on every use, so keep the newest one:
+
+```python
+import json, urllib.request
+
+CONTROLPLANE = "https://controlplane:8443/v1/tenants/t1"
+
+def post(path, body, bearer=None):
+    req = urllib.request.Request(
+        CONTROLPLANE + path,
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json",
+                 **({"Authorization": f"Bearer {bearer}"} if bearer else {})},
+    )
+    with urllib.request.urlopen(req) as resp:
+        return json.load(resp)
+
+minted = post("/token/exchange",
+              {"requested": ["stream.publish"], "resources": ["stream:t1/orders/*"]},
+              bearer=oidc_token)
+client = felix.Client("127.0.0.1:5000", tenant_id="t1", token=minted["felix_token"])
+
+# Later, before minted["expires_in"] runs out (say after two thirds of it):
+minted = post("/token/refresh", {"refresh_token": minted["refresh_token"]})
+```
+
+A client cannot swap its token. After a refresh, connect a new client with the
+new `felix_token` and move your work to it, or call
+`client.with_identity("t1", minted["felix_token"])` for a handle that shares the
+first client's connections and authenticates with the new token. Handles already
+in use keep the token they started with. A refresh that answers `403` means the
+refresh token expired or was revoked: run the exchange again.
+
 The synchronous surface releases the GIL while it blocks, so threads run in
 parallel. A `concurrent.futures.ThreadPoolExecutor` over one shared client is a
 reasonable design, not a queue behind a lock.
