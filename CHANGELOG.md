@@ -19,8 +19,9 @@ requires its `token.*` scenarios. The C# SDK, `Felix.Client`, is a complete bind
 C ABI and ships as a NuGet package carrying the native library for six
 platforms; this is its first NuGet release. A token provider failure is now a
 final, typed `AuthError` instead of a retried string match. Replication fixes: a
-pass waiting on a majority is no longer cut short (#1532), and the quorum
-timeout diagnostics show live pass state (#1545). `ClusterClient` re-routes
+pass waiting on a majority is no longer cut short (#1532), and a publish no
+longer stalls until its quorum timeout when a follower's answer arrives behind
+new records (#1545). `ClusterClient` re-routes
 conditional publishes, commits and state reads after `not_leader` (#1530).
 Docs examples are compiled in CI, and coverage counts the C harness.
 
@@ -154,9 +155,10 @@ Docs examples are compiled in CI, and coverage counts the C harness.
 - The release workflow now sends a `felix-release` dispatch to the companion repos listed in `.github/companions.txt`, so each can open a bump PR.
 
 ### Fixed
-A token every broker refuses at connect is now an auth error rather than "no broker answered", and the connect timeout no longer includes the token provider's fetch, which is cut off at 30 s whatever the provider. A token refused mid-handshake is refetched within the connect timeout.
+- A token every broker refuses at connect is now an auth error rather than "no broker answered", and the connect timeout no longer includes the token provider's fetch, which is cut off at 30 s whatever the provider. A token refused mid-handshake is refetched within the connect timeout.
 - `ClusterClient::publish_if`, `commit` and `state_get` (and their `_on_shard` and `commit_if` forms) now ask again after a coded `not_leader`, with the client's reconnect backoff and attempt bound, as a plain publish does (#1530). A `not_leader` is refused before anything is applied, so the retry cannot write twice; other refusals, including `leadership_lost` and `quorum_timeout`, are still returned as they came. The broker answers these requests with the typed `NotLeader` redirect when leadership moves between its routing check and the write.
-A replication pass waiting on a majority is no longer cut short by the tick, a route change or another shard's append, which made the next pass ask the same followers again and could push a quorum publish past its timeout on a slow link. Only this shard's new records or a busy follower's answer end the wait.
+- A replication pass waiting on a majority is no longer cut short by the tick, a route change or another shard's append, which made the next pass ask the same followers again and could push a quorum publish past its timeout on a slow link. Only this shard's new records or a busy follower's answer end the wait.
+- A publish no longer waits for its quorum timeout when both followers were still answering an earlier pass as a record landed (#1545): an answer from a follower behind the tail the last pass read, checked or not, now starts the pass that ships the record. A follower whose read or bootstrap offer fails is marked stalled, so it cannot start pass after pass.
 - A token provider failure is final for the operation that asked (#1533). A subscribe open used to retry it up to five times, calling the provider each time (a rotation of the refresh token per call, or five 30 s waits for a hung one), depending on the message text. It now fails once with the new `felix_client::AuthError`, carrying the provider's message, and a hung provider fails the open at the 30 s fetch limit instead of the 10 s open timer. A broker's credential refusal is an `AuthError` too. The Python, TypeScript and C bindings classify auth failures by this type; the substring checks for "token" and "forbidden" are gone, so an untyped error that merely mentions a token is no longer reported as auth.
 - An empty or whitespace-only token from a token provider now fails the fetch with an `AuthError` of kind `Token` ("the token provider returned an empty token"), instead of being held and presented to the broker. A still-valid held token is kept, as for any provider failure (#1554).
 - The macOS release build of `libfelix.dylib` loads again: rustc's post-link `strip` left the library's LINKEDIT string pool misaligned and dyld rejected it. `felix-capi` now skips that pass, and CI loads the release library on every platform.

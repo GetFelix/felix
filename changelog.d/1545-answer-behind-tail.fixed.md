@@ -1,1 +1,0 @@
-A publish no longer waits for the replication tick when both followers were still answering an earlier pass as a record landed: an answer from a follower behind the tail the last pass read now starts the pass that ships the record.
