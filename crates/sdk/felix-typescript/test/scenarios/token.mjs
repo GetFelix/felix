@@ -37,10 +37,10 @@ export default function register(ctx) {
     return { state, provider };
   }
 
-  function connectWith(provider, token) {
+  function connectWith(provider, token, addrs = ctx.fixture.addrs) {
     const { fixture } = ctx;
     return ctx.felix.Client.connect(
-      fixture.addrs,
+      addrs,
       fixture.tenant_id,
       { token, caFile: fixture.ca_file, tokenProvider: provider },
     );
@@ -103,7 +103,9 @@ export default function register(ctx) {
 
   it("a token refused twice fails with an AuthError after one retry, not more", async () => {
     const { state, provider } = counting(async () => REFUSED);
-    const caught = await failure(connectWith(provider));
+    // One broker: each broker's refusal is its own authentication with its own
+    // retry, so a multi-broker connect would count every broker's pair.
+    const caught = await failure(connectWith(provider, undefined, ctx.fixture.addrs.slice(0, 1)));
     assert.ok(caught instanceof ctx.felix.AuthError, `got ${caught}`);
     assert.equal(state.calls, 2);
   });
@@ -172,6 +174,9 @@ export default function register(ctx) {
     };
     const caught = await failure(connectWith(listening));
     assert.ok(caught instanceof ctx.felix.AuthError, `got ${caught}`);
+    // The abort is queued to the JS thread beside the rejection, so it can land
+    // just after the connect settles.
+    for (let i = 0; i < 100 && abortedAfter === null; i++) await sleep(50);
     assert.ok(abortedAfter !== null, "the signal was never aborted");
     assert.ok(abortedAfter >= 25_000 && abortedAfter < 60_000, `aborted after ${abortedAfter} ms`);
     assert.equal(calls, 1);
