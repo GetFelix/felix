@@ -250,8 +250,8 @@ impl Nodes {
         match &self.source {
             Source::Dial { config, .. } => fetch_token(config).await,
             Source::Identity { base, tokens, .. } => {
-                Box::pin(base.prefetch()).await?;
-                fetch_from(tokens.as_ref()).await
+                // Together, so a slow pair costs one fetch timeout, not two.
+                tokio::try_join!(Box::pin(base.prefetch()), fetch_from(tokens.as_ref())).map(drop)
             }
         }
     }
@@ -316,6 +316,17 @@ impl Nodes {
             ));
         }
         self.prefetch().await?;
+        self.connect_any_prefetched(addrs).await
+    }
+
+    /// [`connect_any`](Self::connect_any) for a caller that has just run
+    /// [`prefetch`](Self::prefetch).
+    pub(super) async fn connect_any_prefetched(&self, addrs: &[SocketAddr]) -> Result<Arc<Client>> {
+        if addrs.is_empty() {
+            return Err(anyhow::anyhow!(
+                "no broker addresses were given to connect to"
+            ));
+        }
         let mut refusals = Vec::with_capacity(addrs.len());
         for addr in addrs {
             match self.connect_to(*addr).await {

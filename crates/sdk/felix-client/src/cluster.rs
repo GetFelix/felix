@@ -397,7 +397,10 @@ impl ClusterClient {
         self.nodes.forget(failed).await;
         let failed_addr = failed.dialled();
         endpoints.sort_by_key(|addr| *addr == failed_addr);
-        match self.nodes.connect_any(&endpoints).await {
+        // A token that cannot be fetched fails every address alike, so it ends
+        // the turn here instead of being tried again by name.
+        self.nodes.prefetch().await?;
+        match self.nodes.connect_any_prefetched(&endpoints).await {
             Ok(client) => *self.client.write().await = client,
             Err(err) => self.reconnect_by_name(&endpoints, err).await?,
         }
@@ -426,9 +429,13 @@ impl ClusterClient {
         if fresh.is_empty() {
             return Err(err);
         }
-        let client = self.nodes.connect_any(&fresh).await.map_err(|by_name| {
-            anyhow::anyhow!("{err:#}; nor did the names resolved again ({by_name:#})")
-        })?;
+        let client = self
+            .nodes
+            .connect_any_prefetched(&fresh)
+            .await
+            .map_err(|by_name| {
+                anyhow::anyhow!("{err:#}; nor did the names resolved again ({by_name:#})")
+            })?;
         *self.client.write().await = client;
         // Every address tried just failed, so only the new ones and the
         // configured seeds are kept. Discovery adds the rest back.
@@ -486,10 +493,14 @@ impl Owner {
     async fn connect(&self, nodes: &nodes::Nodes) -> Result<Arc<Client>> {
         self.client
             .get_or_try_init(|| async {
-                nodes.prefetch().await?;
-                tokio::time::timeout(discovery::CONNECT_TIMEOUT, nodes.connect_to(self.addr))
-                    .await
-                    .map_err(|_| anyhow::anyhow!("connecting to {} timed out", self.addr))?
+                // The fetch is inside the timer: this runs on the publish
+                // path, and a slow provider must not hold an ack.
+                tokio::time::timeout(discovery::CONNECT_TIMEOUT, async {
+                    nodes.prefetch().await?;
+                    nodes.connect_to(self.addr).await
+                })
+                .await
+                .map_err(|_| anyhow::anyhow!("connecting to {} timed out", self.addr))?
             })
             .await
             .cloned()

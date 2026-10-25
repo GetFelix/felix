@@ -1,5 +1,4 @@
-//! A slow token provider is bounded by its own timeout, not by the short
-//! timer around a connect to a shard owner.
+//! A slow token provider cannot hold a publish's ack through owner learning.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -32,11 +31,12 @@ impl TokenProvider for SlowOnce {
     }
 }
 
-/// **A provider slower than the owner-connect timer still lets the owner be
-/// learned.** The fetch runs before that timer, so the connect is not
-/// reported as a timeout and the owner is cached.
+/// **A provider slower than the owner-connect timer costs the route, not the
+/// publish.** Learning an owner runs before a publish's ack is returned, so
+/// the fetch is inside the connect timer: `remember_owner` gives up at that
+/// timer without caching the owner, and a later report learns it.
 #[tokio::test]
-async fn a_slow_provider_does_not_fail_the_owner_connect() -> Result<()> {
+async fn a_slow_provider_does_not_hold_owner_learning() -> Result<()> {
     let (server_config, cert) = build_server_config()?;
     let a = StubBroker::start_with(server_config.clone(), |_| felix_wire::Message::Ok)?;
     let b = StubBroker::start_with(server_config, |_| felix_wire::Message::Ok)?;
@@ -54,17 +54,22 @@ async fn a_slow_provider_does_not_fail_the_owner_connect() -> Result<()> {
         "orders".to_string(),
         0,
     );
-    cluster
-        .remember_owner(
-            key.clone(),
-            PublishOwner {
-                node_id: "b".to_string(),
-                addr: Some(b.addr.to_string()),
-                generation: 1,
-            },
-            None,
-        )
-        .await;
+    let owner = || PublishOwner {
+        node_id: "b".to_string(),
+        addr: Some(b.addr.to_string()),
+        generation: 1,
+    };
+
+    let started = std::time::Instant::now();
+    cluster.remember_owner(key.clone(), owner(), None).await;
+    assert!(
+        started.elapsed() < discovery::CONNECT_TIMEOUT + Duration::from_millis(400),
+        "the slow provider held owner learning: {:?}",
+        started.elapsed()
+    );
+    assert!(!cluster.owners.read().await.contains_key(&key));
+
+    cluster.remember_owner(key.clone(), owner(), None).await;
     assert!(cluster.owners.read().await.contains_key(&key));
     Ok(())
 }

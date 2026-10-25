@@ -80,16 +80,16 @@ impl ClusterClient {
             return;
         }
 
-        // Outside the connect timer: a slow provider is bounded by
-        // `FETCH_TIMEOUT` and must not read as an unreachable broker.
-        let connected = match self.nodes_prefetch().await {
-            Ok(()) => {
-                tokio::time::timeout(super::discovery::CONNECT_TIMEOUT, self.connect_to(addr))
-                    .await
-                    .unwrap_or_else(|_| Err(anyhow::anyhow!("connecting timed out")))
-            }
-            Err(err) => Err(err),
-        };
+        // Learning an owner is an optimisation and runs before the publish's
+        // ack is returned, so the token fetch is inside the timer too: a slow
+        // provider costs this route, not the publish. The fetch itself keeps
+        // running for the next caller.
+        let connected = tokio::time::timeout(super::discovery::CONNECT_TIMEOUT, async {
+            self.nodes_prefetch().await?;
+            self.connect_to(addr).await
+        })
+        .await
+        .unwrap_or_else(|_| Err(anyhow::anyhow!("connecting timed out")));
         match connected {
             Ok(client) => {
                 let mut owners = self.owners.write().await;

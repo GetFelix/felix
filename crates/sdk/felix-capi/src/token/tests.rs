@@ -210,21 +210,14 @@ async fn release_waits_for_the_last_answer() {
     let answered = std::thread::spawn(move || {
         let token = CString::new("late").unwrap();
         // SAFETY: the reply is live until this call consumes it.
-        let status =
-            unsafe { felix_token_reply_ok(reply as *const FelixTokenReply, token.as_ptr()) };
-        // The release ran by the time the answer returned, not before it.
-        status
+        unsafe { felix_token_reply_ok(reply as *const FelixTokenReply, token.as_ptr()) }
     })
     .join()
     .unwrap();
-    assert_eq!(status_ok(answered), true);
+    assert_eq!(answered, FELIX_STATUS_OK);
     assert_eq!(probe.released.load(Ordering::SeqCst), 1);
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(probe.released.load(Ordering::SeqCst), 1);
-}
-
-fn status_ok(status: crate::status::FelixStatus) -> bool {
-    status == FELIX_STATUS_OK
 }
 
 /// With every reply answered before the client is freed, the free releases.

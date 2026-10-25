@@ -131,7 +131,7 @@ pub struct ClientConfig {
     /// the token happens in the handshake and is. Default 10 s;
     /// `FELIX_CONNECT_TIMEOUT_MS`. A cluster client dials one address after
     /// another, so a reconnect over `n` dead addresses takes up to `n` times
-    /// this.
+    /// this, plus one [`crate::FETCH_TIMEOUT`] for the token fetch.
     pub connect_timeout: Duration,
     /// Longest [`crate::Publisher::finish`] waits for queued publishes to be
     /// written and acknowledged and for the broker to close its side of the
