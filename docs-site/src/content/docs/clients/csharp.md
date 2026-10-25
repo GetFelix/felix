@@ -11,7 +11,8 @@ publish or read.
 It binds every function in `felix.h`: connect (with a token provider that renews the token), publish (single, batch, keyed records and named-shard), subscribe to one shard or
 to all of them, consumer groups, caches, counters and cache watches, atomic commits and state
 reads, conditional publishes, idempotent producers, endpoints, offset lookup by time, and the
-publisher and timestamp fields. It is not on NuGet yet.
+publisher and timestamp fields. It is not on NuGet yet: the `Felix.Client` package is
+published at the next release.
 
 ## Supported platforms
 
@@ -25,8 +26,9 @@ It targets net8.0 and net10.0. CI builds it and runs the unit tests, including a
 of the native library and a call into it, natively on each row above. The scenarios
 against a broker run on Linux x64 only.
 
-The native libraries will ship inside the NuGet package in a later release. Until then,
-build `felix-capi` yourself and set `FELIX_NATIVE_LIB`, as below.
+The package will carry the native library for each row above, built for glibc, so Alpine
+and other musl systems need their own build. Until it is published, build `felix-capi`
+yourself and set `FELIX_NATIVE_LIB`, as below.
 
 ## Building
 
@@ -35,33 +37,33 @@ the repository:
 
 ```bash
 cargo build --release -p felix-capi
-export FELIX_NATIVE_LIB="$PWD/target/release/libfelix.so"
+export FELIX_NATIVE_LIB="$PWD/target/release/libfelix.so"   # .dylib on macOS, felix.dll on Windows
 dotnet test sdks/dotnet/Felix.sln
 ```
 
-The library is found at `FELIX_NATIVE_LIB`, next to `Felix.Client.dll`, or under
-`runtimes/<rid>/native/` (for example `runtimes/linux-x64/native/`).
+`FELIX_NATIVE_LIB` wins when set. Otherwise the library is found next to
+`Felix.Client.dll`, then under `runtimes/<rid>/native/` (for example
+`runtimes/linux-x64/native/`), which is where the package puts it.
 
 ## Getting and refreshing a token
 
 A token lasts 15 minutes by default, and the broker checks it each time a stream
 authenticates, including the streams a reconnect opens. [Getting a
 token](/clients/overview/#getting-a-token) covers where one comes from. A process
-that outlives one sets `FelixClientOptions.TokenProvider`, and the client asks it
-for a token when it needs one. The Rust client's `RefreshingToken` does the
-timing: it asks once two thirds of the held token's life has passed, or when the
-broker refused it. If a fetch fails while the held token is still valid, the
-client keeps using that one and asks again a few seconds later. If the broker
-refuses a token and the provider returns a different one, the client retries once
-with it.
+that outlives one gives `FelixClientOptions` a `TokenProvider`, and the client asks
+it for a token when it needs one. It asks lazily: when no token is held, when the
+held one has passed two thirds of its life, or when a broker has just refused it
+(one refetch per refused stream, retried only if the provider returns a different token, then the operation fails with the auth error). If
+a fetch fails while the held token is still valid, the client keeps using that one
+and asks again about five seconds later.
 
-The provider is a `Func<CancellationToken, ValueTask<string>>` that returns the
-token. `Token` is then optional: leave it out (or pass `null` or `""`) to have
-the first connect call the provider, or pass a token you already hold to use that
-first. A connect with neither throws `ArgumentException`.
+The provider is a `Func<CancellationToken, ValueTask<string>>`, set as
+`FelixClientOptions.TokenProvider`. `Token` is then optional: leave it out (or pass
+`null` or `""`) to have the first connect call the provider, or pass a token you
+already hold to use that first. A connect with neither throws `ArgumentException`.
 
 **When it is called.** When a stream is about to authenticate and the client
-holds no token, the held one is due for replacement, or the broker just refused
+holds no token, the held one is due for replacement, or a broker just refused
 it. An idle client makes no calls, and there is no timer. The client never runs
 two calls at once: streams that open together wait on one and share its token.
 That is also what makes it safe to rotate a refresh token inside the provider.
@@ -71,49 +73,52 @@ thread and never on a thread that is waiting on the broker, so it may block,
 though that delays the streams waiting for the token. It has no synchronization
 context.
 
-**Failure.** The provider fails when it throws, returns `null` or an empty
-string, returns a string the library cannot take (one with a NUL character or
-that is not valid UTF-8), or has not answered after 30 seconds. While the held
-token is still valid the client keeps it, logs a warning and asks again a few
-seconds later. Otherwise the call that needed the token throws a
-`FelixException` with status `Auth` and the exception's message in its text. A provider failure is final for that operation: it is not retried, because each call can rotate a refresh token. The next operation asks the provider again. A
-provider that has not answered after 30 seconds fails the operations waiting on
-it, but the call itself is not abandoned: the next operation that needs a token
-waits on that same call (up to 30 seconds again) and uses its answer if it
-arrives, so the provider is not called a second time while one is outstanding.
+**Failure.** The provider fails when it throws, returns something that is not a
+non-empty string, or does not answer within 30 seconds. A string the library
+cannot take (one with a NUL character or an unpaired surrogate) fails the same way.
+While the held token is still valid the client keeps it and asks again about five
+seconds later. Otherwise the operation that needed the token fails with a
+`FelixException` with status `Auth` carrying the provider's message unchanged. A
+provider failure is final for that operation: it is not retried, because each call
+can rotate a refresh token. The next operation asks again. The 30 second timeout
+fails the operations waiting on the call, but the call itself keeps running: the
+client never starts a second one while it is outstanding, the next refresh joins
+it, and a late answer is used.
 
-**Cancellation.** The `CancellationToken` the provider receives is cancelled at the
-30 second timeout, when the connect fails or is cancelled, or once the client and every
-subscription, sharded subscription, sharded group, cache watch and producer made from it
-have been disposed. Those handles share the client's connections and
-token, so one that is still open keeps a fetch running even after `Dispose` on the
-client: cancelling it would lose a refresh token the control plane already
-rotated. Pass the token to your `HttpClient` calls and let the
-`OperationCanceledException` propagate: the cancelled call counts as a failed
-fetch, and the next fetch calls the provider again. A provider that ignores the
-token is left to finish and its late answer is still used. Disposing does not wait
-for a provider that is running.
+**Cancellation.** The provider's `CancellationToken` fires at the 30 second
+timeout, when the connect fails or is cancelled, and when the client and every
+subscription, sharded subscription, sharded group, cache watch and producer made
+from it are all disposed; disposing a client while one of those, or a call on one,
+still uses the token source does not cancel it. A provider that ignores it still
+works: it is not called again while pending, and its late answer is used. Pass the
+token to your `HttpClient` calls and let the `OperationCanceledException`
+propagate: the cancelled call counts as a failed fetch. Disposing does not wait for
+a provider that is running.
 
 **Async variant.** The provider is already asynchronous: return a `ValueTask`
 from an `async` lambda, or `new ValueTask<string>(token)` when you hold the token
 already. There is no separate synchronous form.
 
-The example below does the control plane calls with `HttpClient` and keeps the
-rotating refresh token. The refresh token works once: every refresh returns a
-replacement, so the provider stores it before it returns. A `403` means the
-refresh token expired or was revoked and the exchange has to be run again; the
-provider throws (`EnsureSuccessStatusCode` puts the status in the message) and
-the client keeps the last token until it expires. Run a new login, then connect a
-new client.
+The example does the control plane calls with `HttpClient`. The refresh token
+works once: every refresh returns a replacement, so the provider stores it before
+it returns. A 403 means the refresh token expired or was revoked: run the exchange
+again (fresh OIDC login) and connect a new client; the client keeps the last token
+until it expires. `EnsureSuccessStatusCode` puts the status in the message the
+failing operation reports.
 
 ```csharp
 using System.Net.Http.Json;
 using System.Text.Json.Serialization;
 using Felix;
 
-var http = new HttpClient { BaseAddress = new Uri("https://controlplane:8443/v1/tenants/t1/") };
+// Disposed after the client: the provider uses it for every refresh.
+using var http = new HttpClient
+{
+    BaseAddress = new Uri("https://controlplane:8443/v1/tenants/t1/"),
+    Timeout = TimeSpan.FromSeconds(10),
+};
 
-var exchange = new HttpRequestMessage(HttpMethod.Post, "token/exchange")
+using var exchange = new HttpRequestMessage(HttpMethod.Post, "token/exchange")
 {
     Content = JsonContent.Create(new
     {
@@ -134,7 +139,7 @@ await using var client = await FelixClient.ConnectAsync(new FelixClientOptions
     Token = minted.FelixToken,
     TokenProvider = async ct =>
     {
-        var refreshed = await http.PostAsJsonAsync("token/refresh", new { refresh_token = refreshToken }, ct);
+        using var refreshed = await http.PostAsJsonAsync("token/refresh", new { refresh_token = refreshToken }, ct);
         var next = await refreshed.EnsureSuccessStatusCode().Content.ReadFromJsonAsync<Minted>(ct)
             ?? throw new InvalidOperationException("the control plane returned no token");
         refreshToken = next.RefreshToken;
@@ -145,7 +150,6 @@ await using var client = await FelixClient.ConnectAsync(new FelixClientOptions
 // Type declarations go after top-level statements.
 record Minted(
     [property: JsonPropertyName("felix_token")] string FelixToken,
-    [property: JsonPropertyName("expires_in")] int ExpiresIn,
     [property: JsonPropertyName("refresh_token")] string RefreshToken);
 ```
 
@@ -165,7 +169,7 @@ await using var client = await FelixClient.ConnectAsync(new FelixClientOptions
 {
     Addrs = ["127.0.0.1:5000"],
     TenantId = "t1",
-    Token = "my-token",
+    Token = token,
 });
 
 // Subscribe first, so the publish below is not missed.
@@ -308,12 +312,14 @@ foreach (var record in await group.PollAsync(maxRecords: 32, wait: TimeSpan.From
     try
     {
         Handle(record.Payload.Span);
-        await group.AckAsync(record);
     }
-    catch
+    catch (Exception e)
     {
+        Console.Error.WriteLine($"order at {record.Offset} failed: {e.Message}");
         await group.NackAsync(record, delay: TimeSpan.FromSeconds(30));
+        continue;
     }
+    await group.AckAsync(record);
 }
 ```
 
@@ -498,9 +504,9 @@ await producer.PublishBatchesAsync("t1", "default", "orders", [[payloadA, payloa
 Brokers send a record's publisher and append time only when asked:
 
 ```csharp
-var client = await FelixClient.ConnectAsync(new FelixClientOptions
+await using var client = await FelixClient.ConnectAsync(new FelixClientOptions
 {
-    Addrs = ["127.0.0.1:5000"], TenantId = "t1", Token = "my-token",
+    Addrs = ["127.0.0.1:5000"], TenantId = "t1", Token = token,
     Publishers = true, Timestamps = true,
 });
 ```

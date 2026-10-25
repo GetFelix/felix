@@ -156,13 +156,39 @@ npm install felix-gateway-client
 ```
 
 ```ts
-import { GatewayClient } from "felix-gateway-client";
+import { GatewayClient, GatewayError } from "felix-gateway-client";
 
-const client = await GatewayClient.connect("wss://example.com/ws", { room: "lobby", token });
-client.onEvent = (event) => console.log(event.stream, event.offset, event.payload);
+// idToken is the ID token from the sign-in above.
+const client = await GatewayClient.connect("wss://example.com/ws", { room: "lobby", token: idToken });
+
+let next: number | "live" = "live";
+client.onEvent = (event) => {
+  render(event.payload);
+  if (event.offset !== null) next = event.offset + 1;
+};
+client.onError = (error, stream) => {
+  if (stream === "ops" && error.code === "subscription_ended") {
+    client.subscribe("ops", next);
+  } else {
+    console.error(`gateway error ${error.code}: ${error.message}`);
+  }
+};
+client.onClose = () => showDisconnected();
 client.subscribe("ops", "live");
-await client.publish("ops", new TextEncoder().encode("hello"));
+
+try {
+  await client.publish("ops", new TextEncoder().encode("hello"));
+} catch (error) {
+  // A publish_failed may still have landed, so only the app can decide to retry.
+  if (!(error instanceof GatewayError)) throw error;
+  showPublishFailed(error);
+}
 ```
+
+`connect` resolves once the socket is open and the join is sent, before
+`hello`. A refused join arrives as one `onError` call and then `onClose`.
+Callbacks set straight after `connect`, as above, are in place before the first
+message arrives. `client.close()` ends the session.
 
 `felix-gateway-client/fake` has an in-memory stand-in with the same shape, for
 tests that should not need a gateway or a broker.

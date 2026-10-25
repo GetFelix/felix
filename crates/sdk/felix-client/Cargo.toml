@@ -37,6 +37,8 @@ telemetry = []
 
 [dev-dependencies]
 rcgen = { workspace = true }
+# The token example in docs-site/.../clients/rust.md, compiled by tests/docs_examples.rs.
+reqwest = { workspace = true }
 serial_test = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }

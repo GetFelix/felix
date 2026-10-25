@@ -53,7 +53,8 @@ jobs:
         uses: ./.github/actions/code-changed
         with:
           ignore: '^docs/|^docs-site/|\.md$'
-          keep: '^docs/formal/'
+          # The C page's examples are compiled by a felix-capi test.
+          keep: '^docs/formal/|^docs-site/src/content/docs/clients/c\.md$'
       # TLC reads only the spec, so only a change to it (or to how it is
       # checked) can change the model check's result.
       - id: formal
@@ -68,14 +69,14 @@ jobs:
         uses: ./.github/actions/code-changed
         with:
           ignore: '.*'
-          keep: '^sdks/dotnet/|^scripts/check_csharp_bindings\.py$|^crates/(sdk/felix-capi|sdk/felix-client|protocol/felix-transport|protocol/felix-wire)/|^Cargo\.(toml|lock)$|^rust-toolchain(\.toml)?$|^\.github/workflows/ci\.yml$'
+          keep: '^sdks/dotnet/|^docs-site/src/content/docs/clients/csharp\.md$|^scripts/check_csharp_bindings\.py$|^crates/(sdk/felix-capi|sdk/felix-client|protocol/felix-transport|protocol/felix-wire)/|^Cargo\.(toml|lock)$|^rust-toolchain(\.toml)?$|^\.github/workflows/ci\.yml$'
 
       # The docs checks need only Python, so a docs-only change runs them too.
       - id: docs
         uses: ./.github/actions/code-changed
         with:
           ignore: '.*'
-          keep: '^docs/|^docs-site/|\.md$|^scripts/check_|^scripts/test_check_'
+          keep: '^docs/|^docs-site/|\.md$|^scripts/check_|^scripts/test_check_|^crates/sdk/felix-typescript/(index\.d\.ts|tsconfig\.json|test/)'
 
   # `checks` runs docs:evidence on a code change; this is the same check for a
   # change that is docs alone, which `checks` skips. A cited test or a table
@@ -152,6 +153,16 @@ jobs:
 
       - name: Build documentation
         run: npm run build --prefix docs-site
+
+      # Every ts block on the TypeScript page, checked against index.d.ts. It
+      # needs no addon build, so it runs here, where a page edit lands.
+      # Installed without touching package.json or the lockfile.
+      - name: Type-check the TypeScript page's examples
+        working-directory: crates/sdk/felix-typescript
+        run: |
+          npm i --no-save --no-package-lock typescript@5.9.3 @types/node@22.20.3
+          node test/doc-examples.mjs
+          npx tsc -p tsconfig.json
 
   # The Dockerfiles, built on every change that could break them.
   #
@@ -674,7 +685,14 @@ jobs:
         if: ${{ !cancelled() && steps.harness.outcome == 'success' }}
         env:
           FELIX_CONFORMANCE_RESULTS: ${{ github.workspace }}/c-conformance.json
-        run: crates/sdk/felix-capi/tests/c/run.sh fixture
+          # The C page's token example includes libcurl; skipping it here
+          # would leave it unchecked.
+          FELIX_CAPI_DOCS_REQUIRE_CURL: '1'
+        run: |
+          if ! echo '#include <curl/curl.h>' | cc -E -x c - >/dev/null 2>&1; then
+            sudo apt-get update -q && sudo apt-get install -y -q libcurl4-openssl-dev
+          fi
+          crates/sdk/felix-capi/tests/c/run.sh fixture
 
       # Gates like the Python and TypeScript verdicts: a required scenario the C
       # harness failed, skipped or never recorded fails the job.
@@ -733,14 +751,6 @@ jobs:
 
       - name: Error mapping
         run: cd crates/sdk/felix-typescript && node --test test/errors.test.mjs test/token.test.mjs
-
-      # The documented example, checked against index.d.ts. Installed without
-      # touching package.json or the lockfile.
-      - name: Type-check the token example
-        working-directory: crates/sdk/felix-typescript
-        run: |
-          npm i --no-save --no-package-lock typescript@5.9.3 @types/node@22.20.3
-          npx tsc -p tsconfig.json
 
       - name: Run the conformance suite
         env:

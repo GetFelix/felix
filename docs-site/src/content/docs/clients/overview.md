@@ -323,8 +323,15 @@ are refused. Revoking a principal is how you end streams that are already open.
 Every client can replace the token while it runs: the Rust client through a
 token provider, C through the `token_fetch` callback, Python through
 `token_provider`, TypeScript through a `tokenProvider` function, and C# through
-`FelixClientOptions.TokenProvider`, which is built on that callback. Each
-client's page has an example.
+`FelixClientOptions.TokenProvider`, which is built on that callback. They share
+one set of rules. The provider is called lazily, when a stream is about to
+authenticate and no token is held, the held one has passed two thirds of its
+life, or a broker refused it. It is never called concurrently, so rotating a
+refresh token inside it is safe. A call that takes longer than 30 seconds fails
+the operations waiting on it but keeps running, and a late answer is used. A
+failure keeps a still-valid token and retries about five seconds later,
+otherwise it fails the operation with an auth error carrying the provider's
+message. Each client's page has an example that rotates the refresh token.
 
 ## The clients
 
