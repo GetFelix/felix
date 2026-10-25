@@ -11,6 +11,7 @@ mod frames;
 mod raw;
 mod sdk;
 mod shard_move;
+mod token;
 
 use std::sync::Arc;
 
@@ -31,6 +32,7 @@ use fixture::{
 use raw::{run_cache, run_pubsub};
 use sdk::{run_client_cache, run_client_pubsub};
 use shard_move::{DELETED_STREAM, MOVED_STREAM, run_shard_move, run_stream_deleted};
+use token::run_client_token;
 
 pub(crate) const MAX_TEST_FRAME_BYTES: usize = 64 * 1024;
 
@@ -106,6 +108,7 @@ pub(crate) async fn run_protocol_suite() -> Result<()> {
     run_cache(&connection, &auth).await?;
     run_client_pubsub(addr, cert.clone(), &auth).await?;
     run_client_cache(addr, cert.clone(), &auth).await?;
+    run_client_token(addr, cert.clone(), &auth).await?;
     run_commit(&connection, &auth).await?;
     run_client_commit(addr, cert.clone(), &auth).await?;
     run_explicit_shard(&connection, &auth).await?;

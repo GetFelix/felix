@@ -187,6 +187,20 @@ without sending anything: `commit.negotiated`. The count of requests it
 received is at `GET <control_url>/no-commit/requests`. A fixture without the key
 has no such broker, and a suite skips the scenario rather than claiming it.
 
+### Short-lived tokens
+
+The `token.*` scenarios check a client's token provider against real brokers,
+so the fixture mints tokens with a life of the suite's choosing. `POST
+<control_url>/tokens` with `{"ttl_secs": 6}` answers `{"token", "ttl_secs"}`: a
+token for the fixture tenant with the same grants as `token`, from 1 to 3600
+seconds. With `"forged": true` it is signed with a key no broker trusts, so it
+looks live to the client and every broker refuses it.
+
+Brokers accept a token for 60 s past its expiry, so "expires" here is the
+client's own reading of `exp`: a 6 s token is due for replacement at 4 s, and
+the scenarios check that the next stream calls the provider then. They are
+optional until every client passes them.
+
 ### Licensing of the kit
 
 The conformance kit is **AGPL-3.0**, like the broker it links to run its suite.

@@ -4,7 +4,8 @@ The timing rules (refresh at two thirds of a token's life, keep a still-valid
 token when a fetch fails, 30 s timeout) belong to the Rust client and are
 tested there. These tests cover what the binding adds: when the Python callable
 is called, on which thread and loop, and how its failures reach the caller.
-The fixture mints only hour-long tokens, so none of these wait for an expiry.
+Tests tagged `token.*` are catalogue scenarios. The ones about expiry take a
+short-lived token from the fixture's `POST /tokens` and wait for it.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ import threading
 import types
 import time
 import urllib.error
+import urllib.request
 
 import pytest
 
@@ -56,6 +58,20 @@ class Provider:
                 self.running -= 1
 
 
+def mint(fixture, ttl_secs, forged=False):
+    """A token for the fixture tenant that lives `ttl_secs`, from the fixture."""
+    if not fixture.get("control_url"):
+        pytest.skip("the fixture file has no control_url to mint tokens from")
+    request = urllib.request.Request(
+        fixture["control_url"] + "/tokens",
+        data=json.dumps({"ttl_secs": ttl_secs, "forged": forged}).encode(),
+        method="POST",
+        headers={"content-type": "application/json"},
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return json.loads(response.read())["token"]
+
+
 def connect(fixture, addrs=None, **kwargs):
     return felix.Client(
         fixture["addrs"] if addrs is None else addrs,
@@ -91,6 +107,7 @@ def test_async_client_rejects_a_non_callable():
 # --- Contract points, against the fixture ------------------------------------
 
 
+@pytest.mark.scenario("token.lazy")
 def test_an_idle_client_makes_no_calls(fixture, key):
     provider = Provider(fixture["token"])
     with connect(fixture, token=fixture["token"], token_provider=provider) as client:
@@ -110,6 +127,7 @@ def test_without_an_initial_token_the_first_connect_calls_the_provider(fixture, 
     assert provider.calls == 1
 
 
+@pytest.mark.scenario("token.single_flight")
 def test_the_provider_is_never_called_concurrently(fixture):
     """A publisher and a subscriber opened together both need the token, so
     without single-flight the provider would run twice at once."""
@@ -149,9 +167,20 @@ def test_the_provider_is_never_called_concurrently(fixture):
     assert provider.max_running == 1
 
 
+@pytest.mark.scenario("token.refused_retry_once")
 def test_a_refused_token_costs_one_fetch_and_one_retry(fixture):
     provider = Provider(fixture["token"])
     with connect(fixture, token="not-a-token", token_provider=provider) as client:
+        client.publish(fixture["tenant_id"], fixture["namespace"], fixture["durable_stream"], b"a")
+    assert provider.calls == 1
+
+
+def test_a_live_looking_token_the_broker_refuses_is_replaced_once(fixture):
+    # Signed with a key no broker trusts but not expired, so only the broker's
+    # refusal can tell the client to fetch.
+    provider = Provider(fixture["token"])
+    forged = mint(fixture, 60, forged=True)
+    with connect(fixture, fixture["addrs"][:1], token=forged, token_provider=provider) as client:
         client.publish(fixture["tenant_id"], fixture["namespace"], fixture["durable_stream"], b"a")
     assert provider.calls == 1
 
@@ -170,6 +199,7 @@ def test_a_provider_returning_the_refused_token_is_not_retried(fixture):
     assert provider.calls == 1
 
 
+@pytest.mark.scenario("token.failure_message")
 def test_a_failure_with_no_token_held_reaches_the_caller(fixture):
     def provider():
         raise RuntimeError("the refresh token was revoked")
@@ -387,6 +417,71 @@ def test_async_client_failure_reaches_the_caller(fixture):
     asyncio.run(main())
 
 
+# --- Expiry, against short-lived tokens from the fixture -----------------------
+
+
+@pytest.mark.scenario("token.expiry_refresh")
+def test_a_stream_opened_after_two_thirds_of_a_tokens_life_gets_a_fresh_one(fixture, key):
+    tenant, namespace, stream = (
+        fixture["tenant_id"],
+        fixture["namespace"],
+        fixture["durable_stream"],
+    )
+    provider = Provider(fixture["token"])
+    payload = f"{key}-after-refresh".encode()
+    with connect(fixture, token=mint(fixture, 6), token_provider=provider) as client:
+        with client.subscribe(tenant, namespace, stream):
+            pass
+        assert provider.calls == 0, "the token still had most of its life"
+        time.sleep(4.5)
+        with client.subscribe(tenant, namespace, stream) as events:
+            client.publish(tenant, namespace, stream, payload)
+            received = []
+            for _ in range(200):
+                event = events.next_event(timeout=15.0)
+                if event is None or event.payload == payload:
+                    received.append(event)
+                    break
+    assert provider.calls == 1
+    assert received and received[0] is not None, "the refreshed stream got nothing"
+
+
+@pytest.mark.scenario("token.keep_valid_on_failure")
+def test_a_failed_refresh_keeps_the_token_and_is_retried_later(fixture):
+    tenant, namespace, stream = (
+        fixture["tenant_id"],
+        fixture["namespace"],
+        fixture["durable_stream"],
+    )
+    calls = []
+    healthy = threading.Event()
+
+    def provider():
+        calls.append(time.monotonic())
+        if not healthy.is_set():
+            raise RuntimeError("idp is down")
+        return fixture["token"]
+
+    # Refresh is due at 16 s and the token expires at 24 s, so the retry about
+    # 5 s after the failure still finds the held token valid.
+    with connect(fixture, token=mint(fixture, 24), token_provider=provider) as client:
+        time.sleep(16.5)
+        with client.subscribe(tenant, namespace, stream):
+            pass  # the held token is still valid, so this works
+        assert len(calls) == 1
+        with client.subscribe(tenant, namespace, stream):
+            pass
+        assert len(calls) == 1, "a failed refresh must not be retried on every open"
+
+        # Past the retry delay, with the held token still valid: the provider
+        # is asked again and answers, and nothing failed on the way.
+        healthy.set()
+        time.sleep(max(0.0, calls[0] + 5.5 - time.monotonic()))
+        with client.subscribe(tenant, namespace, stream):
+            pass
+    assert len(calls) == 2
+
+
 # --- Timeout and cancellation -------------------------------------------------
 #
 # The 30 s fetch timeout is the Rust client's constant and is not exposed, so
@@ -498,23 +593,35 @@ def test_with_identity_cancels_an_async_provider_at_the_timeout(fixture):
     asyncio.run(main())
 
 
-def test_a_sync_provider_past_the_timeout_fails_the_caller_and_is_called_once(fixture):
-    # Sync providers cannot be cancelled. with_identity authenticates its
-    # streams, so it waits on the slow call and gives up at 30 s rather than
-    # at the provider's 33 s answer. This cannot show a later operation
-    # joining the late answer: nothing outlives the failed with_identity. The
-    # Rust core tests cover the join, and the short-lived-token fixture will
-    # let a Python test do it too.
+@pytest.mark.scenario("token.timeout_joins")
+def test_a_sync_provider_past_the_timeout_fails_the_waiter_and_the_next_open_joins_it(fixture):
+    # The held token expires at 6 s, so there is nothing to fall back on. The
+    # provider answers 33 s after it is called: the first stream gives up at
+    # 30 s, with no retry, and the second joins the same call and gets its
+    # answer. Sync providers cannot be cancelled, so joining is the only way
+    # the provider stays single-flight.
     provider = Provider(fixture["token"], delay=33.0)
-    with connect(fixture, token=fixture["token"]) as client:
+    tenant, namespace, stream = (
+        fixture["tenant_id"],
+        fixture["namespace"],
+        fixture["durable_stream"],
+    )
+    with connect(
+        fixture, fixture["addrs"][:1], token=mint(fixture, 6), token_provider=provider
+    ) as client:
+        time.sleep(6.5)
         started = time.monotonic()
         with pytest.raises(felix.AuthError, match="longer than 30s"):
-            client.with_identity(fixture["tenant_id"], token_provider=provider)
+            with client.subscribe(tenant, namespace, stream):
+                pass
         # Loose upper bound: a loaded runner is slow, and the match above
         # already shows the timeout fired, not the answer.
         assert 25 < time.monotonic() - started < 45
-        time.sleep(max(0.0, 34.0 - (time.monotonic() - started)))
-    assert provider.calls == 1
+        assert provider.calls == 1
+        with client.subscribe(tenant, namespace, stream):
+            pass
+        assert provider.calls == 1, "the second open started another call"
+        assert provider.max_running == 1
 
 
 # --- The documentation example -----------------------------------------------
