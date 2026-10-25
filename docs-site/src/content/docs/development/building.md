@@ -200,6 +200,14 @@ docs and `compose.yaml` pin (`scripts/check_release_version.py`), and its releas
   them into one `Felix.Client` NuGet package (failing if any of the six is
   missing) and pushes it to nuget.org when `PUBLISH_NUGET` is `true`, skipping
   a version already there;
+- attaches `libfelix-<tag>-<rid>.tar.gz` (`.zip` on Windows) and a `.sha256`
+  for `linux-x64`, `linux-arm64`, `osx-x64`, `osx-arm64`, `win-x64` and
+  `win-arm64`, from the same builds. Each holds `lib/` (shared and static
+  library, plus the import library on Windows), `include/felix.h`, `LICENSE`
+  and `LINKING.txt` with the platform's static-link system libraries and the
+  link commands. Before an archive is kept, `scripts/package_libfelix.sh`
+  compiles a C program against its header and links and runs it both ways, so
+  a dry run exercises every platform and attaches nothing;
 - after both conformance suites, packages `felix-transport`, `felix-wire`,
   `felix-client`, `felix-loadgen` and `felixctl` together, then publishes them
   to crates.io in that order (`PUBLISH_CRATES`), skipping any version already
