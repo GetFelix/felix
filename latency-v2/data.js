@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792914079285,
+  "lastUpdate": 1792914357431,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -46200,6 +46200,72 @@ window.BENCHMARK_DATA = {
             "range": "863.84",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1292.00\nmean: 1264.20\nstdev: 863.84\ncv: 68.33%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "16a9ebe04b064eecf1cf84876ea622a037614a7a",
+          "message": "ci(coverage): fail when show-env fails instead of running the harness uninstrumented (#1548)\n\nscripts/ci/coverage-capi.sh sourced cargo llvm-cov show-env through process\nsubstitution, so a failing show-env did not stop the script and the harness\nwould run uninstrumented. The env is captured first and evaluated.",
+          "timestamp": "2026-10-25T07:36:36Z",
+          "tree_id": "26725cd497588e219ddd9361d63f8ae9eb3d21a1",
+          "url": "https://github.com/GetFelix/felix/commit/16a9ebe04b064eecf1cf84876ea622a037614a7a"
+        },
+        "date": 1792914352508,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 108,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 108.00\nmean: 107.80\nstdev: 0.45\ncv: 0.41%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 145,
+            "range": "2.28",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 145.00\nmean: 144.80\nstdev: 2.28\ncv: 1.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 188,
+            "range": "5.59",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 188.00\nmean: 191.40\nstdev: 5.59\ncv: 2.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 142,
+            "range": "9.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 142.00\nmean: 145.80\nstdev: 9.07\ncv: 6.22%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 290,
+            "range": "418.59",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 290.00\nmean: 486.00\nstdev: 418.59\ncv: 86.13%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1550,
+            "range": "787.47",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1550.00\nmean: 1531.80\nstdev: 787.47\ncv: 51.41%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
