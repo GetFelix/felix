@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792896503854,
+  "lastUpdate": 1792896711370,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -35620,6 +35620,58 @@ window.BENCHMARK_DATA = {
             "range": "14517.50",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1200216.33\nmean: 1201754.36\nstdev: 14517.50\ncv: 1.21%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "838399b795ec4d944d4cf386495e9bd9438b477e",
+          "message": "test(sdk): a broker that advertises no commits, so commit.negotiated is real (#1526)\n\nMakes commit.negotiated a real check (#1493): every broker advertises atomic commits unconditionally, so the client fixture runs a stub broker that advertises no features.\n\n- felix-cluster client-fixture: fixture/bare_broker.rs, a small QUIC server (self-signed localhost cert prepended to the fixture CA bundle) that answers Auth with an AuthOk carrying no features and counts Commit/StateGet frames. fixture.json gains no_commit_addrs; GET <control_url>/no-commit/requests returns the count.\n- C, Python and TypeScript: commit and state_get against the stub fail with the binding's unsupported error and the stub saw 0 requests; each owns the commit.negotiated tag (moved off the positive commit test) and skips when the keys are absent.\n- Stub tests: the client refuses commit/state_get (fails if the stub advertises the bit); raw Commit/StateGet frames are counted.\n- Docs: the fixture key in clients/overview.md.",
+          "timestamp": "2026-10-24T19:44:05-07:00",
+          "tree_id": "7eed1c270b716f2e75c6ebd5afb25c7dc8add360",
+          "url": "https://github.com/GetFelix/felix/commit/838399b795ec4d944d4cf386495e9bd9438b477e"
+        },
+        "date": 1792896710754,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 646562.14,
+            "range": "41999.32",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 646562.14\nmean: 670462.16\nstdev: 41999.32\ncv: 6.26%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 646562.14,
+            "range": "41999.32",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 646562.14\nmean: 670462.16\nstdev: 41999.32\ncv: 6.26%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 167505.34,
+            "range": "967.28",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 167505.34\nmean: 167681.15\nstdev: 967.28\ncv: 0.58%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1675053.42,
+            "range": "9672.78",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1675053.42\nmean: 1676811.50\nstdev: 9672.78\ncv: 0.58%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
