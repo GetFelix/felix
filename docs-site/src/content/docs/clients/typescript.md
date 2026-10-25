@@ -89,7 +89,7 @@ makes it safe to rotate a refresh token inside the function.
 **Threading.** The client calls it on the JavaScript thread, like any callback,
 so do not block in it. A returned promise is awaited, so a slow answer does not
 hold up the event loop. The provider does not keep the Node process alive, and
-the client releases it when the client is closed.
+the client releases it once nothing uses the token any more.
 
 **Failure.** A throw, a rejected promise, a result that is not a non-empty
 string, or no answer within 30 seconds counts as a failed fetch. The message you
@@ -99,7 +99,9 @@ token fail, but the client does not call the provider again until the pending
 call settles, and a late answer is used.
 
 **Cancellation.** The `signal` argument aborts when the client stops waiting
-(the 30 seconds) and when the client is closed. Pass it to `fetch`, as the
+(the 30 seconds) and once the last handle using the token is released: the
+client, its `withIdentity` clients and its open subscriptions. Closing a client
+while a subscription or a call is still using the token does not abort it. Pass it to `fetch`, as the
 example does, so a hung request is cut off instead of left running. A provider
 that ignores the signal still works: it is not called again while it is
 pending, and its late answer is used.
@@ -125,7 +127,7 @@ async function post(path: string, body: unknown, bearer?: string, signal?: Abort
       ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
     },
     body: JSON.stringify(body),
-    signal, // aborts when the client gives up at 30 s or is closed
+    signal, // aborts at 30 s, or when the last handle using the token is released
   });
   if (!res.ok) throw new Error(`${path}: ${res.status}`); // 403: sign in again
   return res.json();

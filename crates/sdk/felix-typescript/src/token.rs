@@ -67,7 +67,8 @@ pub(crate) fn provider(fetch: &Arc<Fetch>, initial: Option<String>) -> Arc<Refre
         let fetch = Arc::clone(&fetch);
         async move {
             let id = fetch.next_id.fetch_add(1, Ordering::Relaxed);
-            // The fetch call is queued before the watch can queue an abort.
+            // The fetch is only queued when first polled, so an abort can run
+            // before it; the JS side keeps such an early abort for its id.
             let reply = fetch.function.call_async::<Promise<String>>((id, false));
             let watcher = Arc::clone(&fetch);
             let _watch = AbortWatch(tokio::spawn(async move {

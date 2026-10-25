@@ -13,7 +13,8 @@
  * passes on unchanged.
  *
  * The native side aborts when the call outlives the 30 s fetch timeout and
- * when the client is closed. A provider that ignores the signal is still
+ * once the last handle using the
+ * token is released (the client, its withIdentity clients, open subscriptions). A provider that ignores the signal is still
  * joined, not called again.
  */
 function fetchFrom(tokenProvider) {
@@ -22,8 +23,16 @@ function fetchFrom(tokenProvider) {
     throw new TypeError("tokenProvider must be a function returning a string or a Promise of one");
   }
   const running = new Map();
+  // Aborts that arrived before their fetch started. Ids only grow, so an abort
+  // for an id above `started` is one that has not run yet; anything at or below
+  // it already settled and is ignored.
+  const early = new Set();
+  let started = 0;
   async function fetchToken(id) {
     const controller = new AbortController();
+    started = Math.max(started, id);
+    if (early.delete(id)) controller.abort();
+    for (const stale of early) if (stale < id) early.delete(stale);
     running.set(id, controller);
     let token;
     try {
@@ -41,7 +50,9 @@ function fetchFrom(tokenProvider) {
   }
   return function call(id, abort) {
     if (!abort) return fetchToken(id);
-    running.get(id)?.abort();
+    const controller = running.get(id);
+    if (controller) controller.abort();
+    else if (id > started) early.add(id);
     return undefined;
   };
 }

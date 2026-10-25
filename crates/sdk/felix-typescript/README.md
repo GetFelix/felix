@@ -61,7 +61,8 @@ const client = await Client.connect(addr, "t1", {
 });
 ```
 
-The `signal` aborts when the client stops waiting (30 s) or is closed; pass it to
+The `signal` aborts at the 30 s fetch timeout, and once the last handle using the token (the client, its
+`withIdentity` clients, open subscriptions) is released; pass it to
 `fetch`. A failure keeps the held token while it is valid and otherwise reaches you as an
 `AuthError` with your message. `withIdentity` takes one too. See
 https://docs.getfelix.dev/clients/typescript/#getting-and-refreshing-a-token.

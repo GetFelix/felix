@@ -316,8 +316,9 @@ export declare class CacheWatchHandle {
  * Returns a fresh Felix token, or a promise of one. See `Client.connect` for
  * when it is called and what counts as a failure.
  *
- * `signal` aborts when the client gives up waiting (30 s) and when the client is
- * closed. Pass it to `fetch` or anything else that takes one to stop the work.
+ * `signal` aborts when the client gives up waiting (30 s) and once the last
+ * handle using the token is released: the client, its `withIdentity` clients and
+ * open subscriptions. Pass it to `fetch` or anything else that takes one to stop the work.
  * A provider that ignores it still works: the client does not call it again
  * while the call is pending, and a late answer is used.
  */
@@ -370,9 +371,10 @@ export declare class Client {
    * still valid and retries a few seconds later, and otherwise the call fails
    * with an `AuthError` carrying your message. After a timeout the provider is
    * not called again until the pending call settles; a late answer is used. The
-   * provider receives an `AbortSignal` that aborts at that timeout and when the
-   * client is closed; pass it to `fetch` to stop the request. `token` is what the client
-   * starts with; without it the first stream authentication calls the
+   * provider receives an `AbortSignal` that aborts at that timeout and once
+   * the last handle using the token is released (the client, its `withIdentity`
+   * clients, open subscriptions); pass it to `fetch` to stop the request. `token`
+   * is what the client starts with; without it the first stream authentication calls the
    * provider. The provider does not keep the Node process alive.
    */
   static connect(

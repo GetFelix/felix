@@ -102,6 +102,22 @@ test("aborting one fetch leaves another's signal alone, and an unknown or settle
   assert.equal(signals[3].aborted, false);
 });
 
+test("an abort that arrives before its fetch starts still aborts that fetch's signal", async () => {
+  const seen = [];
+  const call = fetchFrom((signal) => {
+    seen.push(signal);
+    return "t";
+  });
+  assert.equal(call(5, true), undefined);
+  await call(5, false);
+  assert.equal(seen[0].aborted, true);
+  await call(6, false); // the record was used up: a later fetch starts clean
+  assert.equal(seen[1].aborted, false);
+  call(5, true); // settled id: ignored, not kept
+  call(7, false);
+  assert.equal(seen[2].aborted, false);
+});
+
 test("a provider that ignores the signal still completes after an abort", async () => {
   let release;
   const call = fetchFrom(() => new Promise((resolve) => (release = resolve)));
