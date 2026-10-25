@@ -167,6 +167,7 @@ async fn an_unreachable_follower_keeps_its_offer_open() {
         timeout: std::time::Duration::from_secs(5),
     })]);
     let mut cursor = cursor(0);
+    cursor.stalled = false;
 
     let progress = ship_once(
         &follower,
@@ -181,6 +182,8 @@ async fn an_unreachable_follower_keeps_its_offer_open() {
 
     assert_eq!(progress, Progress::Retry);
     assert!(cursor.halted.is_none(), "a timeout halted replication");
+    // An unstalled follower that cannot progress would get a pass per answer.
+    assert!(cursor.stalled, "a failed offer left the cursor unstalled");
 }
 
 /// **A follower still being offered a bootstrap counts toward no quorum.**
