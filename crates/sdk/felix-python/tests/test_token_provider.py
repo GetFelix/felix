@@ -465,9 +465,10 @@ def test_a_failed_refresh_keeps_the_token_and_is_retried_later(fixture):
             raise RuntimeError("idp is down")
         return fixture["token"]
 
-    # Refresh is due at 6 s; the token expires at 9 s.
-    with connect(fixture, token=mint(fixture, 9), token_provider=provider) as client:
-        time.sleep(6.5)
+    # Refresh is due at 16 s and the token expires at 24 s, so the retry about
+    # 5 s after the failure still finds the held token valid.
+    with connect(fixture, token=mint(fixture, 24), token_provider=provider) as client:
+        time.sleep(16.5)
         with client.subscribe(tenant, namespace, stream):
             pass  # the held token is still valid, so this works
         assert len(calls) == 1
@@ -475,10 +476,10 @@ def test_a_failed_refresh_keeps_the_token_and_is_retried_later(fixture):
             pass
         assert len(calls) == 1, "a failed refresh must not be retried on every open"
 
-        # Past the retry delay and past the token's expiry: the provider is
-        # asked again, now answers, and its token is used.
+        # Past the retry delay, with the held token still valid: the provider
+        # is asked again and answers, and nothing failed on the way.
         healthy.set()
-        time.sleep(max(0.0, calls[0] + 9.5 - time.monotonic()))
+        time.sleep(max(0.0, calls[0] + 5.5 - time.monotonic()))
         with client.subscribe(tenant, namespace, stream):
             pass
     assert len(calls) == 2
@@ -596,13 +597,12 @@ def test_with_identity_cancels_an_async_provider_at_the_timeout(fixture):
 
 
 @pytest.mark.scenario("token.timeout_joins")
-def test_a_sync_provider_past_the_timeout_is_joined_by_the_retry(fixture):
+def test_a_sync_provider_past_the_timeout_fails_the_waiter_and_the_next_open_joins_it(fixture):
     # The held token expires at 6 s, so there is nothing to fall back on. The
-    # provider answers 33 s after it is called. The wait on it fails at 30 s,
-    # the cluster client retries the open (a fetch timeout carries no broker
-    # code, so it is retried), and the retry joins the call still running and
-    # gets its late answer. Sync providers cannot be cancelled, so joining is
-    # the only way the provider stays single-flight.
+    # provider answers 33 s after it is called: the first stream gives up at
+    # 30 s, with no retry, and the second joins the same call and gets its
+    # answer. Sync providers cannot be cancelled, so joining is the only way
+    # the provider stays single-flight.
     provider = Provider(fixture["token"], delay=33.0)
     tenant, namespace, stream = (
         fixture["tenant_id"],
@@ -614,14 +614,16 @@ def test_a_sync_provider_past_the_timeout_is_joined_by_the_retry(fixture):
     ) as client:
         time.sleep(6.5)
         started = time.monotonic()
+        with pytest.raises(felix.AuthError, match="longer than 30s"):
+            with client.subscribe(tenant, namespace, stream):
+                pass
+        # Loose upper bound: a loaded runner is slow, and the match above
+        # already shows the timeout fired, not the answer.
+        assert 25 < time.monotonic() - started < 45
+        assert provider.calls == 1
         with client.subscribe(tenant, namespace, stream):
             pass
-        # Loose upper bound: a loaded runner is slow.
-        assert 30 < time.monotonic() - started < 60
-        assert provider.calls == 1, "the retry started another call"
-        with client.subscribe(tenant, namespace, stream):
-            pass
-        assert provider.calls == 1, "the late answer was not held"
+        assert provider.calls == 1, "the second open started another call"
         assert provider.max_running == 1
 
 

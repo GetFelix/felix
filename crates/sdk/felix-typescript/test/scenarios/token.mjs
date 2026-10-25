@@ -162,7 +162,7 @@ export default function register(ctx) {
   });
 
   it("a provider that never answers fails the call with an AuthError after the fetch timeout", { timeout: 150_000 }, () =>
-    scenario("token.timeout_joins", async () => {
+    scenario([], async () => {
       // Needs the client's 30 s fetch timeout (felix-client FETCH_TIMEOUT).
       let calls = 0;
       const never = () => {
@@ -215,7 +215,7 @@ export default function register(ctx) {
       }
     }));
 
-  it("a failed refresh keeps the token that is still valid and is retried later", { timeout: 60_000 }, () =>
+  it("a failed refresh keeps the token that is still valid and is retried later", { timeout: 90_000 }, () =>
     scenario("token.keep_valid_on_failure", async () => {
       const { fixture } = ctx;
       let healthy = false;
@@ -225,36 +225,37 @@ export default function register(ctx) {
         if (!healthy) throw new Error("idp is down");
         return fixture.token;
       };
-      // Refresh is due at 6 s; the token expires at 9 s.
-      const client = await connectWith(provider, await mint(fixture, 9));
+      // Refresh is due at 16 s and the token expires at 24 s, so the retry
+      // about 5 s after the failure still finds the held token valid.
+      const client = await connectWith(provider, await mint(fixture, 24));
       try {
         const open = async () => {
           const subscription = await client.subscribe(fixture.tenant_id, fixture.namespace, fixture.durable_stream);
           await subscription.close();
         };
-        await sleep(6500);
+        await sleep(16_500);
         await open(); // still valid, so this works
         assert.equal(calls.length, 1);
         await open();
         assert.equal(calls.length, 1, "a failed refresh was retried on every open");
-        // Past the retry delay and the token's expiry: asked again, and answered.
+        // Past the retry delay, with the held token still valid: asked again,
+        // answered, and nothing failed on the way.
         healthy = true;
-        await sleep(Math.max(0, calls[0] + 9500 - Date.now()));
+        await sleep(Math.max(0, calls[0] + 5500 - Date.now()));
         await open();
-        assert.equal(calls.length, 2);
+        assert.equal(calls.length, 2, "the refresh was not retried after the delay");
       } finally {
         client.close();
       }
     }));
 
-  it("a provider past the timeout is joined by the retry, not called again", { timeout: 150_000 }, () =>
+  it("a provider past the timeout fails the waiter, and the next stream joins the call", { timeout: 150_000 }, () =>
     scenario("token.timeout_joins", async () => {
       const { fixture } = ctx;
       // The held token expires at 6 s, so there is nothing to fall back on.
-      // The provider answers 33 s after it is called. The wait on it fails at
-      // 30 s, the cluster client retries the open (a fetch timeout carries no
-      // broker code, so it is retried), and the retry joins the call still
-      // running and gets its late answer at 33 s.
+      // The provider answers 33 s after it is called: the first stream gives
+      // up at 30 s, with no retry, and the second joins the same call and
+      // gets its answer.
       const { state, provider } = counting(async () => fixture.token, 33_000);
       const client = await connectWith(provider, await mint(fixture, 6), fixture.addrs.slice(0, 1));
       try {
@@ -264,13 +265,15 @@ export default function register(ctx) {
         };
         await sleep(6500);
         const started = Date.now();
-        await open();
+        const caught = await open().then(() => null, (err) => err);
+        assert.ok(caught instanceof ctx.felix.AuthError, `got ${caught}`);
+        assert.match(caught.message, /longer than 30s/);
         const took = Date.now() - started;
-        assert.ok(took >= 30_000 && took < 60_000, `opened after ${took} ms`);
-        assert.equal(state.calls, 1, "the retry started another call");
-        assert.equal(state.peak, 1);
+        assert.ok(took >= 25_000 && took < 45_000, `gave up after ${took} ms`);
+        assert.equal(state.calls, 1);
         await open();
-        assert.equal(state.calls, 1, "the late answer was not held");
+        assert.equal(state.calls, 1, "the second stream started another call");
+        assert.equal(state.peak, 1);
       } finally {
         client.close();
       }

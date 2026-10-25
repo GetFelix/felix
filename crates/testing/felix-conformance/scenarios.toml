@@ -925,8 +925,8 @@ title = "A failed refresh keeps a token that is still valid"
 detail = """
 Past two thirds of its life but not expired, the held token is refreshed on
 the next stream open. If the provider fails then, the client logs it, keeps
-the token, the operation succeeds, and the refresh is tried again a few
-seconds later rather than on every open.
+the token, the operation succeeds, and the refresh is tried again about five
+seconds later, while the token is still valid, rather than on every open.
 """
 
 [[scenario]]
@@ -954,11 +954,11 @@ error carrying the provider's own message, unchanged.
 [[scenario]]
 id = "token.timeout_joins"
 required = false
-title = "A provider past the 30 s timeout is joined, not called again"
+title = "A provider past the 30 s timeout fails the waiter, and is joined"
 detail = """
-The timeout fails whoever is waiting, not the call. The provider is not
-called again while that call is outstanding, and a later wait joins it and
-uses its late answer. A client that retries an uncoded failure (the cluster
-clients do) therefore opens its stream once the late answer arrives, with one
-provider call; a hanging provider still runs once at a time.
+The timeout fails whoever is waiting with the client's auth error ("took longer
+than 30s"), not the call, and the failure is final: the open is not retried and
+the provider is called once. It is not called again while that call is
+outstanding, and a later operation joins it and uses its late answer. A
+provider that hangs therefore still runs once at a time.
 """

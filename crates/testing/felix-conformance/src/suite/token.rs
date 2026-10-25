@@ -50,9 +50,11 @@ pub(crate) async fn run_client_token(
     // still valid keeps it, and is tried again later, not on every open.
     calls.store(0, Ordering::SeqCst);
     failing.store(true, Ordering::SeqCst);
-    let medium = auth.token_living(Duration::from_secs(9))?;
+    // Refresh is due at 16 s and the token expires at 24 s, so the retry about
+    // 5 s after the failure still finds the held token valid.
+    let medium = auth.token_living(Duration::from_secs(24))?;
     let client = connect(addr, &cert, auth, medium, &calls, &failing).await?;
-    tokio::time::sleep(Duration::from_millis(6500)).await;
+    tokio::time::sleep(Duration::from_millis(16_500)).await;
     let failed_at = Instant::now();
     open_stream(&client).await?;
     open_stream(&client).await?;
@@ -62,7 +64,7 @@ pub(crate) async fn run_client_token(
         calls.load(Ordering::SeqCst)
     );
     failing.store(false, Ordering::SeqCst);
-    tokio::time::sleep(Duration::from_millis(9500).saturating_sub(failed_at.elapsed())).await;
+    tokio::time::sleep(Duration::from_millis(5500).saturating_sub(failed_at.elapsed())).await;
     open_stream(&client).await?;
     ensure!(
         calls.load(Ordering::SeqCst) == 2,
