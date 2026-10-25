@@ -39,6 +39,30 @@ The operating system has a proposed name, NineLives, under
 [discussion](https://github.com/GetFelix/felixd/discussions/42). It is not
 decided, and felixd would stay the name of the agent on each node.
 
+## Why WebAssembly first
+
+felixd's guarantees rest on one property: a workload given the same input
+records produces the same outputs and the same state, every time, on any node.
+Failover is a second node running the same inputs from the last offset handled.
+Exactly-once output holds because a stale owner that writes after a takeover
+writes exactly what the new owner would have, so the new owner skips past it.
+Replay rebuilds a past state by running the recorded inputs again. A program
+that could behave differently the second time breaks all three.
+
+WebAssembly is how felixd enforces that rather than asks for it. A workload gets
+no WASI imports, so it has no clock, randomness, files or network, and anything
+it needs from outside, the current time included, arrives as an input record.
+Wasm floating point is deterministic apart from NaN bit patterns, which the
+runtime canonicalizes. Each step runs under fuel and memory limits, and the
+same module runs on any CPU in the cluster.
+
+Wasm is where felixd starts, not the only kind of program the design runs.
+Programs that need the outside world come later, with every response recorded
+as an input so they replay exactly, at the cost of a round trip through the
+log per effect. Existing native binaries, databases and GPU work come last:
+they can't be replayed, so they get checkpoint and restart, with their input
+and output recorded.
+
 ## How it uses Felix
 
 A workload is a Wasm component with no clock, randomness, files or network. It
