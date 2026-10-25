@@ -11,6 +11,164 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-10-25
+
+0.6.2 is the last 0.6 release. Every client now takes a token provider with one
+contract (Rust, C, Python, TypeScript and C#), and the conformance catalogue
+requires its `token.*` scenarios. The C# SDK, `Felix.Client`, is a complete binding of the
+C ABI and ships as a NuGet package carrying the native library for six
+platforms; this is its first NuGet release. A token provider failure is now a
+final, typed `AuthError` instead of a retried string match. Replication fixes: a
+pass waiting on a majority is no longer cut short (#1532), and a publish no
+longer stalls until its quorum timeout when a follower's answer arrives behind
+new records (#1545). `ClusterClient` re-routes
+conditional publishes, commits and state reads after `not_leader` (#1530).
+Docs examples are compiled in CI, and coverage counts the C harness.
+
+### Added
+- The C ABI (`crates/sdk/felix-capi`) runs caches, counters and cache watches (#1493): `felix_client_cache_put`,
+  `_get`, `_get_versioned`, `_delete`, `_put_if` and `_delete_if`, `felix_client_counter_add` and `_get`, and
+  watches on a key or prefix of one shard (`felix_client_watch_cache`) or across every shard
+  (`felix_client_watch_cache_sharded`), both optionally retained, read with `felix_cache_watch_next` and
+  resumed from `felix_cache_watch_resume_offsets`.
+- The C ABI (`crates/sdk/felix-capi`) runs atomic commits, conditional publishes and state reads (#1493):
+  `felix_client_commit`, `_commit_on_shard`, `_commit_if` and `_commit_if_on_shard`, `felix_client_publish_if` and
+  `_publish_if_on_shard`, and `felix_client_state_get` and `_state_get_on_shard`. A commit that does not hold exactly
+  one event on one stream is refused at the call. A new status, `FELIX_STATUS_UNSUPPORTED`, reports a broker that
+  does not serve commits.
+- The C ABI test (`crates/sdk/felix-capi/tests/c/pubsub.c`) is now a conformance harness (#1493): it tags the
+  `felix-conformance` catalogue scenarios it demonstrates, records a reason for each one it skips, and `run.sh fixture`
+  merges the shared and static builds into a results document at `$FELIX_CONFORMANCE_RESULTS` that
+  `felix-conformance verify` reads. CI reports the verdict without gating on it until the fault scenarios land.
+- The C ABI gains `felix_client_endpoints` (#1493), which lists the brokers a client would try, seeds included, so a
+  caller can see that one seed was enough to discover the cluster. The C conformance harness now covers the
+  connection-fault scenarios and the broker-loss ones, and CI's C verdict gates.
+- The C ABI (`crates/sdk/felix-capi`) runs consumer groups on a shard (#1493): `felix_client_group_poll`
+  with a named consumer, visibility timeout and reclaim, the settles `_ack`, `_nack` (with a delay),
+  `_extend`, `_dead_letter`, `_discard` and `_redrive`, and `_create`, `_seek`, `_describe`, `_delete`
+  and `_dead_letters`. `felix_client_stream_shards` returns a stream's shard count so a caller can run
+  one group per shard.
+- The C ABI (`crates/sdk/felix-capi`) covers the rest of the Rust client surface (#1493): `felix_client_group_sharded`
+  with `felix_sharded_group_poll` for a consumer group across every shard, the stream-wide
+  `felix_client_group_create_stream`, `_seek_stream`, `_describe_stream` and `_delete_stream`, and
+  `felix_client_connect_with` with `FelixConnectOptions` so a client can ask for each record's publisher and append time,
+  read with `felix_event_publisher`, `felix_event_timestamp` and the new `FelixGroupRecord` fields. `FelixGroupRecord`
+  grew four fields, which changes its layout; regenerate bindings from `felix.h`.
+- The C ABI (`crates/sdk/felix-capi`) runs idempotent producers (#1493): `felix_client_idempotent_producer` makes a
+  `FelixProducer`, and `felix_producer_publish` and `_publish_batches` send batches that land once however many times
+  they are sent, `_abandon_in_doubt` gives up on a stream's batches in doubt, `_id` and `_id_for` read the producer
+  id, and `_close` drains and stops it. A producer used after `_close` reports `FELIX_STATUS_CLOSED`.
+- The C ABI (`crates/sdk/felix-capi`) publishes everything the Rust cluster client does apart from
+  idempotent and conditional writes (#1493). `felix_client_publish` takes an optional routing key
+  and a `FelixDelivery` (`FELIX_DELIVERY_AT_LEAST_ONCE` resends after a reconnect, keyed or not).
+  `felix_client_publish_batch` sends a batch to one shard, unkeyed or by key,
+  `felix_client_publish_on_shard` to a shard the caller names, and `felix_client_publish_records`
+  takes a key per record and sends each shard its share. Batch payloads are passed end to end in
+  one buffer with an array of lengths, and the callback gets a `FelixRecordResult` per record with
+  its status and log offset.
+- The C ABI (`crates/sdk/felix-capi`) subscribes to a named shard and to every shard of a stream
+  (#1493). `felix_client_subscribe_sharded` and `felix_client_resubscribe_sharded` return a
+  `FelixShardedSubscription` read with `felix_sharded_next`, which delivers records and
+  lost, recovered, moved and stream-deleted notices per shard; `felix_sharded_positions` gives the
+  offsets to resume from. `felix_client_offset_for_time` finds the offset for a time,
+  `felix_subscription_close_reason` tells an ended stream from a deleted one, and
+  `felix_subscription_start_offset` returns where a subscription began.
+- The C ABI can refresh a token: `FelixConnectOptions` gained `token_fetch`, `token_user_data` and `token_release`, and a fetch completes its `FelixTokenReply` with `felix_token_reply_ok` or `felix_token_reply_err` from any thread. The connect `token` may be `NULL` when a fetch is set. `FelixConnectOptions` grew, so regenerate bindings from `felix.h`.
+- C# SDK (`sdks/dotnet`): `Felix.Client` is a NuGet package that carries `libfelix` for Linux, macOS and Windows on
+  x64 and arm64, so `dotnet add package Felix.Client` needs no separate native build; `FELIX_NATIVE_LIB` still
+  overrides it. The release workflow builds the six libraries, packs them (failing if one is missing) and pushes
+  the package when `PUBLISH_NUGET` is `true`, through nuget.org trusted publishing. CI installs the packed package
+  into a throwaway app on each platform with `FELIX_NATIVE_LIB` unset.
+- C# SDK, `Felix.Client` (`sdks/dotnet`): connect, publish (single and batch) and subscribe to a
+  shard, bound to the C ABI over the Rust client. Targets net8.0 and net10.0 on Linux, macOS and
+  Windows, each on x64 and arm64. The native libraries will ship in the NuGet package in a later
+  release; until then, build `felix-capi` and set `FELIX_NATIVE_LIB`. Failures are typed `FelixException`s with the C ABI's retry classes, and
+  cancellation tokens cancel the native call. A `dotnet` CI job builds and tests it natively on all
+  six platform and architecture pairs and runs the fixture scenarios on Linux x64. It is not packaged or released yet.
+- C# SDK (`sdks/dotnet`): consumer groups. `FelixClient.JoinGroup` gives a `FelixGroup` for one shard
+  (poll with a named consumer, visibility and reclaim; ack, nack, extend, dead-letter, discard, redrive;
+  create, seek, describe, delete), `OpenShardedGroupAsync` a `FelixShardedGroup` over every shard, and
+  `GetShardCountAsync` and the `*StreamGroupAsync` calls run the group admin across a stream.
+  `FelixClientOptions.Publishers` and `.Timestamps` ask brokers for each record's publisher and append
+  time, set on `FelixEvent` and `GroupRecord`. Tests tag conformance scenarios with `[Scenario]` and
+  write the `FELIX_CONFORMANCE_RESULTS` document; CI runs the verdict for C# without blocking on it.
+- C# SDK (`sdks/dotnet`): caches, counters and cache watches. `FelixClient.Cache` gives a `FelixCache` with
+  put (with a TTL), get, versioned get, delete, `PutIfAbsentAsync`, `PutIfVersionAsync`, `DeleteIfVersionAsync`
+  and counter add and get. `WatchKeyAsync`, `WatchPrefixAsync` and `WatchShardedAsync` open a
+  `FelixCacheWatch`, an `IAsyncEnumerable<WatchItem>` that surfaces lag, shard moves and
+  state-complete as items, with `RetainedCount`, `fromOffset` and `ResumeOffsets()` for resuming.
+  Fixture tests tag the cache, counter and watch conformance scenarios.
+- C# SDK (`sdks/dotnet`): atomic commits, conditional publishes and idempotent producers.
+  `FelixClient.CommitAsync` writes an event and state changes (`CommitOp.Publish`, `Enqueue`, `Put`,
+  `Delete`) as one record, `CommitIfAsync` and `PublishIfAsync` write only at an expected offset and
+  answer a refusal as `ConditionalWrite` with the tail, and `GetStateAsync` reads a key's value, version
+  and as-of offset; each takes `shard:` to name a shard. `CreateProducerAsync` returns a `FelixProducer`
+  whose `PublishAsync`, `PublishBatchAsync` and `PublishBatchesAsync` cannot land twice, with
+  `AbandonInDoubtAsync`, `GetId`, `CloseAsync(timeout)` and `DisposeAsync` (a graceful close) or
+  `Dispose` (frees without waiting). Fixture tests tag the commit, conditional-publish and
+  named-shard commit conformance scenarios.
+- C# SDK (`sdks/dotnet`): parity with the C ABI, except the token provider. `SubscribeShardedAsync`
+  and `ResubscribeShardedAsync` open every shard as a `FelixShardedSubscription` that reports
+  records and shard changes (`ShardItem`) and gives `Positions()` to resume from; `PublishOnShardAsync`,
+  `PublishRecordsAsync` (a `PublishResult` per record), `OffsetForTimeAsync` and `GetEndpointsAsync`
+  bind the remaining exports. `scripts/check_csharp_bindings.py` fails CI when an export of
+  `felix.h` is unbound and not allowlisted with a reason, and the C# conformance verdict now blocks.
+- C# SDK (`sdks/dotnet`): `FelixClientOptions.TokenProvider`, a `Func<CancellationToken, ValueTask<string>>`
+  over the C ABI's token fetch callback, so a client outlives its first token. `Token` becomes optional
+  when a provider is set. The library keeps the timing (lazy, refresh at two thirds of a token's life, one
+  retry after a refusal, one call at a time, a 30 s wait); the provider's `CancellationToken` fires after
+  30 s and on dispose, and its exception message reaches the caller's `FelixException` (`Auth`). The SDK
+  now binds every export of `felix.h`.
+- A Python `AsyncClient` `token_provider` is cancelled as an asyncio task when its call passes the 30 second fetch timeout and when the client goes away; the cancellation counts as a failed fetch. A blocking `Client` provider cannot be cancelled, so it is joined: the next operation waits on the outstanding call instead of starting another.
+- The Python client takes `token_provider=` on `Client`, `AsyncClient.connect` and `with_identity`: a function (or, for `AsyncClient`, an `async def`) that returns a fresh Felix token. It wraps the Rust client's `RefreshingToken`, so the client refreshes at two thirds of a token's life, keeps a still-valid token when a fetch fails, retries a refused token once, and never runs two fetches at once. `token` is optional when a provider is set.
+- The client fixture mints tokens with a chosen life (`POST <control_url>/tokens`, optionally forged), and the catalogue
+  has seven optional `token.*` scenarios (lazy, single flight, refused retry once, keep a valid token on failure, expiry
+  refresh, failure message, timeout joins), tested in Rust, C, Python and TypeScript.
+- The TypeScript client takes a `tokenProvider` in `Client.connect` and `withIdentity`: a function
+  `(signal: AbortSignal) => string | Promise<string>`. The signal aborts at the 30 s fetch timeout and
+  once the last handle using the token is released (the client, its `withIdentity` clients, open
+  subscriptions); a provider that ignores it is joined, not called again. The client calls it lazily, one call at a time, when
+  a stream authenticates without a valid token, and keeps a still-valid token if a fetch fails. It
+  is the Rust `RefreshingToken` underneath, and `token` is now optional when a provider is set.
+  Breaking: `Client.connect(addrs, tenantId, { token, tokenProvider, serverName, caFile, offerAlpn })`
+  and `client.withIdentity(tenantId, { token, tokenProvider })` now take an options object in place
+  of the positional `token`, `serverName`, `caFile` and `offerAlpn`. An unknown option or an extra
+  positional argument throws a `TypeError`.
+
+### Changed
+- The C ABI (`crates/sdk/felix-capi`) is asynchronous (#1493). `felix_client_connect`,
+  `felix_client_publish`, `felix_client_subscribe` and `felix_subscription_next` (which replaces
+  `felix_subscription_next_event`) return at once and report their result to a callback, exactly
+  once, with the failure's message passed to the callback instead of the per-thread last error.
+  Each takes an optional `FelixCancelToken`; a cancelled call, or one pending when its handle is
+  freed, completes with the new `FELIX_STATUS_CANCELLED`, and a publish that may already have
+  been sent with `FELIX_STATUS_OUTCOME_UNKNOWN`. The blocking forms are gone. A subscription
+  allows one pending read at a time.
+- `felix_client_publish` in the C ABI takes `key`, `key_len` and `delivery` after the payload
+  (#1493). Pass `NULL, 0, FELIX_DELIVERY_AT_MOST_ONCE` for the previous behaviour.
+- `felix_client_subscribe` in the C ABI takes a `shard` before `start` (#1493). Pass `0` for the
+  previous behaviour.
+- A refusal of `publish_if`, `commit`, `state_get` and the other requests that share the group round trip now names the operation (`publish_if refused: ...`) instead of reading `group request refused` (#1531).
+- The quorum-timeout warning and the shard status now show live pass state (#1545): the pass under way and how long it has run, each unanswered exchange with the offset and time it went out, the driver's current scan against the shard's last finished scan, passes since the mark last moved, and what last woke the shard. Followers still busy from earlier passes are listed as busy.
+- `RefreshingToken` treats a fetch that takes longer than `FETCH_TIMEOUT` (30 s) as failed, so it keeps a still-valid token instead of waiting on the provider forever.
+- The seven `token.*` conformance scenarios are required. C# now tests them against the fixture with short-lived tokens, so every client passes them.
+- The release workflow now sends a `felix-release` dispatch to the companion repos listed in `.github/companions.txt`, so each can open a bump PR.
+
+### Fixed
+- A token every broker refuses at connect is now an auth error rather than "no broker answered", and the connect timeout no longer includes the token provider's fetch, which is cut off at 30 s whatever the provider. A token refused mid-handshake is refetched within the connect timeout.
+- `ClusterClient::publish_if`, `commit` and `state_get` (and their `_on_shard` and `commit_if` forms) now ask again after a coded `not_leader`, with the client's reconnect backoff and attempt bound, as a plain publish does (#1530). A `not_leader` is refused before anything is applied, so the retry cannot write twice; other refusals, including `leadership_lost` and `quorum_timeout`, are still returned as they came. The broker answers these requests with the typed `NotLeader` redirect when leadership moves between its routing check and the write.
+- A replication pass waiting on a majority is no longer cut short by the tick, a route change or another shard's append, which made the next pass ask the same followers again and could push a quorum publish past its timeout on a slow link. Only this shard's new records or a busy follower's answer end the wait.
+- A publish no longer waits for its quorum timeout when both followers were still answering an earlier pass as a record landed (#1545): an answer from a follower behind the tail the last pass read, checked or not, now starts the pass that ships the record. A follower whose read or bootstrap offer fails is marked stalled, so it cannot start pass after pass.
+- A token provider failure is final for the operation that asked (#1533). A subscribe open used to retry it up to five times, calling the provider each time (a rotation of the refresh token per call, or five 30 s waits for a hung one), depending on the message text. It now fails once with the new `felix_client::AuthError`, carrying the provider's message, and a hung provider fails the open at the 30 s fetch limit instead of the 10 s open timer. A broker's credential refusal is an `AuthError` too. The Python, TypeScript and C bindings classify auth failures by this type; the substring checks for "token" and "forbidden" are gone, so an untyped error that merely mentions a token is no longer reported as auth.
+- An empty or whitespace-only token from a token provider now fails the fetch with an `AuthError` of kind `Token` ("the token provider returned an empty token"), instead of being held and presented to the broker. A still-valid held token is kept, as for any provider failure (#1554).
+- The macOS release build of `libfelix.dylib` loads again: rustc's post-link `strip` left the library's LINKEDIT string pool misaligned and dyld rejected it. `felix-capi` now skips that pass, and CI loads the release library on every platform.
+
+### Documentation
+- New C client page in the docs site: building and linking `libfelix`, the callback model, each feature area, the status codes, and what the C ABI does not cover yet. The C ABI lines in the client overview, FAQ and status table now match the code.
+- The client pages say where a token comes from and how each client handles expiry. Choosing a Client now has a "Getting a token" section covering token exchange, development tokens, refresh, and what an expired token does to an open connection.
+- The v0.6.0 performance page now says that the two largest Felix-vs-NATS ratios (14.8x and 9.5x) are partly publisher window differences, not yet measured apart, and points at the matched-window rerun (#1507).
+- The old "Real-Network Performance (Azure)" page is retired. Its address redirects to the v0.6.0 performance page, and the two use-case claims that rested on it now describe the mechanism without numbers.
+
 ## [0.6.1] - 2026-10-24
 
 0.6.1 fixes a stall in `Quorum` publishes. A fresh 0.6.0 cluster finalizes

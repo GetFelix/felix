@@ -1,1 +1,0 @@
-A replication pass waiting on a majority is no longer cut short by the tick, a route change or another shard's append, which made the next pass ask the same followers again and could push a quorum publish past its timeout on a slow link. Only this shard's new records or a busy follower's answer end the wait.

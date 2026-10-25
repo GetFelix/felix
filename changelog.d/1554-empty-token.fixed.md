@@ -1,1 +1,0 @@
-- An empty or whitespace-only token from a token provider now fails the fetch with an `AuthError` of kind `Token` ("the token provider returned an empty token"), instead of being held and presented to the broker. A still-valid held token is kept, as for any provider failure (#1554).

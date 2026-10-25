@@ -256,7 +256,7 @@ dependencies = [
 
 [[package]]
 name = "felix-client"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "ahash",
  "anyhow",
@@ -280,7 +280,7 @@ dependencies = [
 
 [[package]]
 name = "felix-python"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "anyhow",
  "bytes",
@@ -297,7 +297,7 @@ dependencies = [
 
 [[package]]
 name = "felix-transport"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "anyhow",
  "libc",
@@ -311,7 +311,7 @@ dependencies = [
 
 [[package]]
 name = "felix-wire"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "base64",
  "bytes",

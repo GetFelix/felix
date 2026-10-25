@@ -1,1 +1,0 @@
-- New C client page in the docs site: building and linking `libfelix`, the callback model, each feature area, the status codes, and what the C ABI does not cover yet. The C ABI lines in the client overview, FAQ and status table now match the code.
