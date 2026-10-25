@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792955675787,
+  "lastUpdate": 1792957096634,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -47322,6 +47322,72 @@ window.BENCHMARK_DATA = {
             "range": "59.06",
             "unit": "us",
             "extra": "trials: 5\nmedian: 667.00\nmean: 649.00\nstdev: 59.06\ncv: 9.10%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e5d76502279d224a25375774969752be44f4f89b",
+          "message": "docs(c): every C example compiles with -Wextra -Werror (#1570)\n\nThe C doc-example test passed -Wno-unused-parameter, which hid unused callback\nparameters in six c.md examples. It now compiles every C block with\n-Wall -Wextra -Werror, and the examples mark their unused parameters.",
+          "timestamp": "2026-10-25T19:34:39Z",
+          "tree_id": "d4e535687abe4c811a4c8e6d8cc58f4cb3c706f2",
+          "url": "https://github.com/GetFelix/felix/commit/e5d76502279d224a25375774969752be44f4f89b"
+        },
+        "date": 1792957092361,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 75,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 75.00\nmean: 75.00\nstdev: 0.71\ncv: 0.94%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 97,
+            "range": "5.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 97.00\nmean: 100.20\nstdev: 5.45\ncv: 5.44%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 124,
+            "range": "8.87",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 124.00\nmean: 125.20\nstdev: 8.87\ncv: 7.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 94,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 94.00\nmean: 93.60\nstdev: 0.55\ncv: 0.59%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 227,
+            "range": "13.94",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 227.00\nmean: 230.60\nstdev: 13.94\ncv: 6.04%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1000,
+            "range": "816.02",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1000.00\nmean: 1246.20\nstdev: 816.02\ncv: 65.48%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
