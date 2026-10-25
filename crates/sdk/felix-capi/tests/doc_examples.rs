@@ -11,15 +11,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Callbacks take parameters they don't use.
-const CFLAGS: &[&str] = &[
-    "-std=c11",
-    "-pthread",
-    "-Wall",
-    "-Wextra",
-    "-Werror",
-    "-Wno-unused-parameter",
-];
+const CFLAGS: &[&str] = &["-std=c11", "-pthread", "-Wall", "-Wextra", "-Werror"];
 
 struct Block {
     line: usize,
