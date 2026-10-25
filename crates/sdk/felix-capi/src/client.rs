@@ -258,7 +258,9 @@ pub struct FelixConnectOptions {
     /// `token_user_data` is still the caller's. When it returns
     /// `FELIX_STATUS_OK`, `token_release` runs exactly once later, including
     /// when the connect then reports failure through its callback.
-    /// It runs after the client is freed and every reply is answered.
+    /// It runs after the client is freed and the last outstanding reply is
+    /// answered: inside `felix_client_free` if none is outstanding, otherwise
+    /// inside the answering `felix_token_reply_ok`/`_err` call.
     pub token_fetch: FelixTokenFetch,
     /// Passed to `token_fetch` and `token_release`, from any thread.
     pub token_user_data: *mut c_void,

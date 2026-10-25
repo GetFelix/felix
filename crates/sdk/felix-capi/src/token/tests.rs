@@ -385,6 +385,29 @@ async fn a_refused_argument_leaves_the_reply_open() {
     assert_eq!(waiting.await.unwrap(), "good");
 }
 
+/// Whitespace passes the reply but the core fails the fetch with it.
+#[tokio::test]
+async fn a_blank_token_reply_fails_the_fetch() {
+    use felix_client::TokenProvider;
+    let probe = Probe::new(Answer::Hold);
+    let tokens = Arc::new(provider(&probe.source(), None));
+    let held = Arc::clone(&tokens);
+    let waiting = tokio::spawn(async move { held.token().await });
+    wait_for("the fetch", || probe.fetches.load(Ordering::SeqCst) == 1).await;
+    // SAFETY: a live reply and a NUL-terminated string.
+    unsafe {
+        assert_eq!(
+            felix_token_reply_ok(probe.reply(0), c"  ".as_ptr()),
+            FELIX_STATUS_OK
+        );
+    }
+    let err = waiting.await.unwrap().unwrap_err();
+    assert!(
+        format!("{err:#}").contains("the token provider returned an empty token"),
+        "{err:#}"
+    );
+}
+
 /// The core stops waiting on a fetch after its timeout but not the fetch. An
 /// answer that arrives later is used, with no second call to the app.
 #[tokio::test(start_paused = true)]

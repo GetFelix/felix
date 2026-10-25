@@ -212,6 +212,35 @@ async fn overlapping_refreshes_share_one_call() -> Result<()> {
 }
 
 // Scenario token.failure_message.
+/// A blank token is a failed fetch: typed `Token`, never held or handed out.
+#[tokio::test]
+async fn an_empty_or_blank_token_fails_the_fetch() {
+    for blank in ["", "   ", "\t\n"] {
+        let (provider, _) = counting(move |_| Ok(blank.to_string()));
+        let err = provider.token().await.unwrap_err();
+        let auth = err.downcast_ref::<AuthError>().expect("typed AuthError");
+        assert_eq!(auth.kind, crate::AuthErrorKind::Token);
+        assert!(
+            format!("{err:#}").contains("the token provider returned an empty token"),
+            "{err:#}"
+        );
+        assert!(provider.held().is_none(), "a blank token must not be held");
+    }
+}
+
+/// A blank answer is handled as any failure: the valid token stays and the
+/// retry waits out `RETRY_AFTER`.
+#[tokio::test]
+async fn a_blank_token_keeps_a_valid_held_one() -> Result<()> {
+    let (provider, calls) = counting(|_| Ok("  ".to_string()));
+    let held = jwt(now_secs() + 60);
+    *provider.state.lock().unwrap() = Some(due(held.clone()));
+    assert_eq!(provider.token().await?, held);
+    assert_eq!(provider.token().await?, held);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
 /// With nothing valid held, the provider's own text is in the error.
 #[tokio::test]
 async fn a_failed_fetch_carries_the_providers_message() {

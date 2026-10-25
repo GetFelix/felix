@@ -209,7 +209,15 @@ impl RefreshingToken {
         let call = (self.fetch)(flight.cancel.clone());
         let state = Arc::clone(&self.state);
         runtime.spawn(async move {
-            let result = call.await.map_err(|err| format!("{err:#}"));
+            // A blank token is a failed fetch, not a token the broker will
+            // refuse later.
+            let result = match call.await {
+                Ok(token) if token.trim().is_empty() => {
+                    Err("the token provider returned an empty token".to_string())
+                }
+                Ok(token) => Ok(token),
+                Err(err) => Err(format!("{err:#}")),
+            };
             guard.finish(&state, &sender, result);
         });
         Ok(flight)
