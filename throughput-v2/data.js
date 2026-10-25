@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792896711370,
+  "lastUpdate": 1792899158263,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -35672,6 +35672,58 @@ window.BENCHMARK_DATA = {
             "range": "9672.78",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1675053.42\nmean: 1676811.50\nstdev: 9672.78\ncv: 0.58%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "75b604a31874b5a57635e4356be13012b91a505a",
+          "message": "fix(python): link the extension on macOS with a plain cargo build (#1535)\n\ntask python:check ran cargo build, which failed on macOS with the Python\nsymbols unresolved: the extension leaves them to the interpreter, and only\nmaturin passed -undefined dynamic_lookup. A build script now adds it through\npyo3_build_config::add_extension_module_link_args() (a no-op off macOS).",
+          "timestamp": "2026-10-25T03:25:45Z",
+          "tree_id": "a354fc9008c40bf0e4bc3f206a522adb1da03333",
+          "url": "https://github.com/GetFelix/felix/commit/75b604a31874b5a57635e4356be13012b91a505a"
+        },
+        "date": 1792899157575,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 410023.14,
+            "range": "15546.16",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 410023.14\nmean: 404433.18\nstdev: 15546.16\ncv: 3.84%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 410023.14,
+            "range": "15546.16",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 410023.14\nmean: 404433.18\nstdev: 15546.16\ncv: 3.84%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 97792.94,
+            "range": "1653.94",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 97792.94\nmean: 97384.29\nstdev: 1653.94\ncv: 1.70%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 977929.44,
+            "range": "16539.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 977929.44\nmean: 973842.94\nstdev: 16539.38\ncv: 1.70%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
