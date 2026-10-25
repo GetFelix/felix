@@ -250,7 +250,11 @@ impl QuorumMarks {
                             f.confirmed,
                             f.next_offset,
                             f.state,
-                            if f.busy { ", busy" } else { "" },
+                            match f.busy_at {
+                                Some(at) => format!(", busy since {at}"),
+                                None if f.busy => ", busy".to_string(),
+                                None => String::new(),
+                            },
                         )
                     })
                     .collect::<Vec<_>>()
@@ -264,6 +268,8 @@ impl QuorumMarks {
             mark = ?self.offset(key, generation),
             tail = ?status.and_then(|status| status.tail),
             status_age_ms = ?aged.as_ref().map(|(_, age)| age.as_millis()),
+            passes_since_mark = ?status.map(|status| status.passes_since_mark),
+            last_wake = ?status.and_then(|status| status.last_wake),
             followers = ?followers,
             "quorum wait timed out"
         );

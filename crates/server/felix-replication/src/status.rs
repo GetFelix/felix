@@ -28,6 +28,13 @@ pub struct ShardStatus {
     pub drain_pending: bool,
     /// No follower that could still catch up holds the whole log.
     pub behind: bool,
+    /// Passes started since the quorum mark last moved. A mark that is stuck
+    /// while this grows is being asked for; one that is stuck while it stays
+    /// put is not.
+    pub passes_since_mark: u32,
+    /// What last woke the shard: `append`, `tick`, `routes`, `busy answer` or
+    /// `straggler answer`.
+    pub last_wake: Option<&'static str>,
 }
 
 /// One follower's cursor, as the last pass left it.
@@ -41,6 +48,8 @@ pub struct FollowerStatus {
     pub confirmed: u64,
     /// An exchange with it from an earlier pass is still unanswered.
     pub busy: bool,
+    /// The offset that unanswered exchange was launched at.
+    pub busy_at: Option<u64>,
     /// Records behind the tail the pass read.
     pub lag: Option<u64>,
     /// `halted`, `rebuilding`, `copying`, `stalled` or `shipping`.
@@ -92,6 +101,14 @@ impl ShardStatusBoard {
         Some((status.clone(), at.elapsed()))
     }
 
+    /// Record what last woke `key` without touching the rest of its line or
+    /// when it was written.
+    pub(crate) fn note_wake(&self, key: &ShardKey, wake: &'static str) {
+        if let Some((_, status)) = self.shards.write().get_mut(key) {
+            status.last_wake = Some(wake);
+        }
+    }
+
     pub(crate) fn put(&self, key: ShardKey, status: ShardStatus) {
         self.shards
             .write()
@@ -127,6 +144,7 @@ pub(crate) fn follower_status(
         next_offset: cursor.next_offset,
         confirmed: cursor.confirmed,
         busy: false,
+        busy_at: None,
         lag: tail.map(|tail| tail.saturating_sub(cursor.next_offset)),
         state,
         halted: cursor.halted.map(|halt| crate::halted::describe(halt).0),

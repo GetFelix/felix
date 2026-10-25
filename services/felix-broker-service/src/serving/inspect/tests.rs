@@ -156,6 +156,8 @@ fn a_leader_stuck_fencing_names_who_took_it() {
         }),
         drain_pending: false,
         behind: false,
+        passes_since_mark: 0,
+        last_wake: None,
     });
     observed.fence_retry_in = Some(Duration::from_secs(2));
     let view = build(observed);
@@ -199,6 +201,8 @@ fn a_fence_from_another_generation_is_not_reported() {
         }),
         drain_pending: false,
         behind: false,
+        passes_since_mark: 0,
+        last_wake: None,
     });
     let view = build(observed);
     assert_eq!(view.fence, None);
@@ -222,6 +226,7 @@ fn an_active_leader_lists_its_followers() {
                 next_offset: 1_048_510,
                 confirmed: 1_048_510,
                 busy: false,
+                busy_at: None,
                 lag: Some(66),
                 state: "shipping",
                 halted: None,
@@ -232,6 +237,7 @@ fn an_active_leader_lists_its_followers() {
                 next_offset: 901_223,
                 confirmed: 901_223,
                 busy: false,
+                busy_at: None,
                 lag: Some(147_353),
                 state: "copying",
                 halted: None,
@@ -240,6 +246,8 @@ fn an_active_leader_lists_its_followers() {
         fence: None,
         drain_pending: false,
         behind: false,
+        passes_since_mark: 0,
+        last_wake: None,
     });
     let view = build(observed);
     assert_eq!(view.tail, Some(1_048_576));
@@ -289,6 +297,8 @@ fn a_fence_stopped_by_a_newer_generation_says_why() {
         }),
         drain_pending: false,
         behind: false,
+        passes_since_mark: 0,
+        last_wake: None,
     });
     assert_eq!(
         build(observed).detail.as_deref(),
