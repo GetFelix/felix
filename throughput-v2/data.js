@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792952733620,
+  "lastUpdate": 1792953008900,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -37180,6 +37180,58 @@ window.BENCHMARK_DATA = {
             "range": "44487.24",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 813653.58\nmean: 795382.02\nstdev: 44487.24\ncv: 5.59%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b888423e28757395402d963c020837076fb388e4",
+          "message": "fix(release): link the Windows libfelix smoke against the dynamic CRT (#1569)\n\nfelix.lib is built for the dynamic C runtime, but the smoke program compiled\nwith cl's default static runtime and passed rustc's /defaultlib:msvcrt to cl,\nwhich ignores it, so the static link left __imp__wassert and friends\nunresolved. Compile with /MD (as LINKING.txt now tells users to) and drop the\n/defaultlib entries, which /MD already implies.",
+          "timestamp": "2026-10-25T11:23:08-07:00",
+          "tree_id": "e0dde127606852c838a946eb6776bc084fa7cbba",
+          "url": "https://github.com/GetFelix/felix/commit/b888423e28757395402d963c020837076fb388e4"
+        },
+        "date": 1792953008188,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 340673.46,
+            "range": "12470.86",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 340673.46\nmean: 339541.73\nstdev: 12470.86\ncv: 3.67%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 340673.46,
+            "range": "12470.86",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 340673.46\nmean: 339541.73\nstdev: 12470.86\ncv: 3.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81419.2,
+            "range": "503.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81419.20\nmean: 81553.01\nstdev: 503.00\ncv: 0.62%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 814192.04,
+            "range": "5029.98",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 814192.04\nmean: 815530.13\nstdev: 5029.98\ncv: 0.62%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
