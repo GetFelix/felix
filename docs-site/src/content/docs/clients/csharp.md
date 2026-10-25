@@ -11,7 +11,11 @@ publish or read.
 It binds every function in `felix.h`: connect (with a token provider that renews the token), publish (single, batch, keyed records and named-shard), subscribe to one shard or
 to all of them, consumer groups, caches, counters and cache watches, atomic commits and state
 reads, conditional publishes, idempotent producers, endpoints, offset lookup by time, and the
-publisher and timestamp fields. It is not on NuGet yet.
+publisher and timestamp fields. It ships on NuGet as `Felix.Client`.
+
+```bash
+dotnet add package Felix.Client
+```
 
 ## Supported platforms
 
@@ -25,13 +29,14 @@ It targets net8.0 and net10.0. CI builds it and runs the unit tests, including a
 of the native library and a call into it, natively on each row above. The scenarios
 against a broker run on Linux x64 only.
 
-The native libraries will ship inside the NuGet package in a later release. Until then,
-build `felix-capi` yourself and set `FELIX_NATIVE_LIB`, as below.
+The package carries `libfelix` for all six rows under `runtimes/<rid>/native/`, so
+there is nothing else to install. On a platform not listed, or to run a library you
+built, set `FELIX_NATIVE_LIB` to its path (below).
 
-## Building
+## Building from source
 
-The SDK needs `libfelix` (`libfelix.so`, `libfelix.dylib` or `felix.dll`), built from
-the repository:
+The SDK needs `libfelix` (`libfelix.so`, `libfelix.dylib` or `felix.dll`). Build it
+from the repository to develop the SDK or to use a platform the package does not carry:
 
 ```bash
 cargo build --release -p felix-capi
@@ -39,8 +44,9 @@ export FELIX_NATIVE_LIB="$PWD/target/release/libfelix.so"
 dotnet test sdks/dotnet/Felix.sln
 ```
 
-The library is found at `FELIX_NATIVE_LIB`, next to `Felix.Client.dll`, or under
-`runtimes/<rid>/native/` (for example `runtimes/linux-x64/native/`).
+`FELIX_NATIVE_LIB` wins when set. Otherwise the library is found next to `Felix.Client.dll`,
+then under `runtimes/<rid>/native/` (for example `runtimes/linux-x64/native/`), which is
+where the package puts it.
 
 ## Getting and refreshing a token
 

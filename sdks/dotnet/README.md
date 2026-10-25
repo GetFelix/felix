@@ -3,7 +3,12 @@
 The C# client for Felix. It binds the C ABI in `crates/sdk/felix-capi`, which wraps the Rust
 client, so reconnection, redirects and error classes are the Rust client's. Targets net8.0 and
 net10.0 on Linux, macOS and Windows, each on x64 and arm64; CI tests every one of those natively
-(the broker scenarios on Linux x64 only). The native libraries will ship inside the NuGet package in a later release. Until then, build `felix-capi` and set `FELIX_NATIVE_LIB`.
+(the broker scenarios on Linux x64 only). The NuGet package carries the native library for all six, so
+there is nothing else to install.
+
+```bash
+dotnet add package Felix.Client
+```
 
 It binds every function in `felix.h`: connect (with a token provider that renews the token), publish
 (single, batch, keyed records and named-shard), subscribe to one shard or every shard and resume
@@ -13,7 +18,7 @@ sharded, retained, resumable), atomic commits with state reads and conditional p
 (`CommitAsync`, `CommitIfAsync`, `PublishIfAsync`, `GetStateAsync`), idempotent producers
 (`CreateProducerAsync`), endpoints, offset lookup by time, and the publisher and timestamp
 metadata. `python3 scripts/check_csharp_bindings.py` fails if an export of `felix.h` is not bound.
-Not packaged or released yet. See [the C# page](../../docs-site/src/content/docs/clients/csharp.md).
+See [the C# page](../../docs-site/src/content/docs/clients/csharp.md).
 
 ```csharp
 await using var client = await FelixClient.ConnectAsync(new FelixClientOptions
@@ -33,14 +38,16 @@ failure and cancellation.
 
 ## Build and test
 
+To build the native library yourself, for a platform the package does not carry or to develop the SDK:
+
 ```bash
 cargo build --release -p felix-capi
 export FELIX_NATIVE_LIB="$PWD/target/release/libfelix.so"   # .dylib on macOS, felix.dll on Windows
 dotnet test sdks/dotnet/Felix.sln
 ```
 
-The native library is found at `FELIX_NATIVE_LIB`, next to `Felix.Client.dll`, or under
-`runtimes/<rid>/native/`. Scenario tests against a broker are skipped unless `FELIX_FIXTURE` names
+`FELIX_NATIVE_LIB` wins when set; otherwise the library is found next to `Felix.Client.dll`, then under
+`runtimes/<rid>/native/`, where the package puts it. Scenario tests against a broker are skipped unless `FELIX_FIXTURE` names
 the file written by `felix-cluster client-fixture --out FILE --ca-file CA.PEM`. The version comes
 from the workspace `Cargo.toml`; pass `-p:Version=...` to override it.
 

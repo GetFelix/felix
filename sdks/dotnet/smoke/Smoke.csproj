@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Installs Felix.Client from a local package folder the way a user would, with no
+       FELIX_NATIVE_LIB, so the native library has to come out of the package.
+       CI passes -p:FelixVersion=<the packed version> and -p:RestoreSources=<folder>. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <UseAppHost>false</UseAppHost>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Felix.Client" Version="$(FelixVersion)" />
+  </ItemGroup>
+</Project>
