@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792907363764,
+  "lastUpdate": 1792908519510,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -36140,6 +36140,58 @@ window.BENCHMARK_DATA = {
             "range": "9590.88",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1598596.01\nmean: 1595732.13\nstdev: 9590.88\ncv: 0.60%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4587807954a0a07f49262eb1d5f29caa955aff73",
+          "message": "fix(capi): a release libfelix that macOS can load (#1543)\n\ncargo's default release strip = \"debuginfo\" makes rustc run Apple's strip after\nlinking libfelix.dylib. With the macOS 27 linker that leaves the LINKEDIT\nstring pool 4-byte aligned and dlopen refuses the library (\"mis-aligned LINKEDIT\nstring pool\"); strip = \"symbols\" fails the same way, and a manual strip -S/-x of\nan unstripped dylib loads. felix-capi's release profile now uses strip = \"none\"\n(about 120 KB larger on macOS); the rest of the workspace is unchanged.\n\nThe C# job loads the release library with ctypes on all six OS entries before\nthe tests reach for it.",
+          "timestamp": "2026-10-25T06:04:14Z",
+          "tree_id": "2dcb8bfba938c010f0096adf921ebdd0a8a77f23",
+          "url": "https://github.com/GetFelix/felix/commit/4587807954a0a07f49262eb1d5f29caa955aff73"
+        },
+        "date": 1792908518937,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 340347.67,
+            "range": "5870.50",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 340347.67\nmean: 339680.29\nstdev: 5870.50\ncv: 1.73%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 340347.67,
+            "range": "5870.50",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 340347.67\nmean: 339680.29\nstdev: 5870.50\ncv: 1.73%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79782.2,
+            "range": "695.39",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79782.20\nmean: 79751.35\nstdev: 695.39\ncv: 0.87%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 797821.98,
+            "range": "6953.84",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 797821.98\nmean: 797513.52\nstdev: 6953.84\ncv: 0.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
