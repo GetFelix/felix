@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792911418567,
+  "lastUpdate": 1792914082432,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -36348,6 +36348,58 @@ window.BENCHMARK_DATA = {
             "range": "20146.75",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1220583.91\nmean: 1212230.49\nstdev: 20146.75\ncv: 1.66%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ff6c0c7a9ad3251d0ad5144ed7b454218e2c4d8d",
+          "message": "fix(client): a token fetch failure is final, not retried; bindings classify auth by type (#1533) (#1546)\n\nA token source failure (provider error, bad result, panic, the 30 s fetch\ntimeout) and a broker's credential refusal (unauthenticated, forbidden, or an\nuncoded refusal) are now a typed felix_client::AuthError carrying the message\nunchanged. Every retry classifier treats it as final: a subscribe, sharded\nsubscribe or group open called a failing provider up to five times and could\nblock about 5 x 30 s on a hung one, depending on whether the message happened\nto contain \"forbidden\". Draining and overloaded refusals are not auth errors and\nbehave as before. Token fetches for subscribe, topology and stream routing now\nrun before the 10 s open timer, so a hung provider fails once at 30 s with the\ntyped error. connect stops at the first token failure and still moves on after\na refusal from one broker.\n\nThe C ABI, Python and TypeScript bindings classify auth errors by type instead\nof matching \"token\" or \"forbidden\" in the text (#1533). Client pages say a\nprovider failure is final for that operation.\n\nFixes #1533.",
+          "timestamp": "2026-10-25T07:36:30Z",
+          "tree_id": "ead1cde2b2e5591b4dd23cabec706d6fd816ce35",
+          "url": "https://github.com/GetFelix/felix/commit/ff6c0c7a9ad3251d0ad5144ed7b454218e2c4d8d"
+        },
+        "date": 1792914081774,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 619822.13,
+            "range": "54075.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 619822.13\nmean: 639051.65\nstdev: 54075.93\ncv: 8.46%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 619822.13,
+            "range": "54075.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 619822.13\nmean: 639051.65\nstdev: 54075.93\ncv: 8.46%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 159370.17,
+            "range": "2298.61",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 159370.17\nmean: 160286.09\nstdev: 2298.61\ncv: 1.43%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1593701.7,
+            "range": "22986.08",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1593701.70\nmean: 1602860.88\nstdev: 22986.08\ncv: 1.43%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
