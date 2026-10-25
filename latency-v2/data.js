@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792896501167,
+  "lastUpdate": 1792896709195,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -45210,6 +45210,72 @@ window.BENCHMARK_DATA = {
             "range": "621.18",
             "unit": "us",
             "extra": "trials: 5\nmedian: 385.00\nmean: 694.20\nstdev: 621.18\ncv: 89.48%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "838399b795ec4d944d4cf386495e9bd9438b477e",
+          "message": "test(sdk): a broker that advertises no commits, so commit.negotiated is real (#1526)\n\nMakes commit.negotiated a real check (#1493): every broker advertises atomic commits unconditionally, so the client fixture runs a stub broker that advertises no features.\n\n- felix-cluster client-fixture: fixture/bare_broker.rs, a small QUIC server (self-signed localhost cert prepended to the fixture CA bundle) that answers Auth with an AuthOk carrying no features and counts Commit/StateGet frames. fixture.json gains no_commit_addrs; GET <control_url>/no-commit/requests returns the count.\n- C, Python and TypeScript: commit and state_get against the stub fail with the binding's unsupported error and the stub saw 0 requests; each owns the commit.negotiated tag (moved off the positive commit test) and skips when the keys are absent.\n- Stub tests: the client refuses commit/state_get (fails if the stub advertises the bit); raw Commit/StateGet frames are counted.\n- Docs: the fixture key in clients/overview.md.",
+          "timestamp": "2026-10-24T19:44:05-07:00",
+          "tree_id": "7eed1c270b716f2e75c6ebd5afb25c7dc8add360",
+          "url": "https://github.com/GetFelix/felix/commit/838399b795ec4d944d4cf386495e9bd9438b477e"
+        },
+        "date": 1792896705124,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 69,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 69.00\nmean: 68.80\nstdev: 0.45\ncv: 0.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 92,
+            "range": "1.67",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 92.00\nmean: 91.60\nstdev: 1.67\ncv: 1.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 121,
+            "range": "139.42",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 121.00\nmean: 182.60\nstdev: 139.42\ncv: 76.36%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 86,
+            "range": "2.74",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 86.00\nmean: 88.00\nstdev: 2.74\ncv: 3.11%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 207,
+            "range": "13.37",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 207.00\nmean: 209.80\nstdev: 13.37\ncv: 6.37%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 321,
+            "range": "537.47",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 321.00\nmean: 603.20\nstdev: 537.47\ncv: 89.10%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
