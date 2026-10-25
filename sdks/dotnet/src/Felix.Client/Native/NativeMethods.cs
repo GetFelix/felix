@@ -19,6 +19,9 @@ internal struct NativeConnectOptions
     public nuint Size;
     public byte Publishers;
     public byte Timestamps;
+    public nint TokenFetch;
+    public nint TokenUserData;
+    public nint TokenRelease;
 }
 
 /// <summary><c>FelixGroupRecord</c>, borrowed for the length of a callback.</summary>
@@ -206,13 +209,19 @@ internal static unsafe partial class NativeMethods
     internal static partial int felix_client_connect_with(
         string addrs,
         string tenantId,
-        string token,
+        string? token,
         string? serverName,
         string? caFile,
         NativeConnectOptions* options,
         nint cancel,
         delegate* unmanaged[Cdecl]<nint, int, byte*, nint, void> callback,
         nint userData);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial int felix_token_reply_ok(nint reply, string? token);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial int felix_token_reply_err(nint reply, string? message);
 
     [LibraryImport(Lib)]
     internal static partial int felix_event_publisher(nint ev, byte** outData, nuint* outLen);

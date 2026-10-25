@@ -12,10 +12,12 @@ namespace Felix;
 public sealed partial class FelixClient : IAsyncDisposable, IDisposable
 {
     private readonly FelixClientHandle handle;
+    private readonly TokenSource? tokens;
 
-    internal FelixClient(FelixClientHandle handle)
+    internal FelixClient(FelixClientHandle handle, TokenSource? tokens = null)
     {
         this.handle = handle;
+        this.tokens = tokens;
     }
 
     /// <summary>Connects to a cluster.</summary>
@@ -26,7 +28,12 @@ public sealed partial class FelixClient : IAsyncDisposable, IDisposable
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(options.Addrs);
         Arg.Text(options.TenantId, nameof(options.TenantId));
-        Arg.Text(options.Token, nameof(options.Token));
+        Arg.OptionalText(options.Token, nameof(options.Token));
+        if (string.IsNullOrEmpty(options.Token) && options.TokenProvider is null)
+        {
+            throw new ArgumentException("a token or a TokenProvider is required", nameof(options));
+        }
+
         Arg.OptionalText(options.ServerName, nameof(options.ServerName));
         Arg.OptionalText(options.CaFile, nameof(options.CaFile));
         foreach (var addr in options.Addrs)
@@ -41,6 +48,7 @@ public sealed partial class FelixClient : IAsyncDisposable, IDisposable
 
         cancellationToken.ThrowIfCancellationRequested();
         var state = new CallState<FelixClientHandle>(cancellationToken);
+        var tokens = options.TokenProvider is { } provider ? new TokenSource(provider) : null;
         int status;
         string? error;
         try
@@ -53,13 +61,20 @@ public sealed partial class FelixClient : IAsyncDisposable, IDisposable
                 Publishers = options.Publishers ? (byte)1 : (byte)0,
                 Timestamps = options.Timestamps ? (byte)1 : (byte)0,
             };
+            if (tokens is not null)
+            {
+                native.TokenFetch = (nint)(delegate* unmanaged[Cdecl]<nint, nint, void>)&Callbacks.OnTokenFetch;
+                native.TokenUserData = tokens.Pin();
+                native.TokenRelease = (nint)(delegate* unmanaged[Cdecl]<nint, void>)&Callbacks.OnTokenRelease;
+            }
+
             status = NativeMethods.felix_client_connect_with(
                 string.Join(',', options.Addrs),
                 options.TenantId,
                 options.Token,
                 options.ServerName,
                 options.CaFile,
-                options.Publishers || options.Timestamps ? &native : null,
+                options.Publishers || options.Timestamps || tokens is not null ? &native : null,
                 state.Cancel.Pointer,
                 &Callbacks.OnConnect,
                 userData);
@@ -67,16 +82,20 @@ public sealed partial class FelixClient : IAsyncDisposable, IDisposable
         }
         catch
         {
+            // The call did not start, so token_release will never run.
+            tokens?.Abandon();
             state.Abandon();
             throw;
         }
 
         if (status != 0)
         {
+            // Not OK: the library did not keep the token source, so token_release never runs.
+            tokens?.Abandon();
             return Refused<FelixClient>(state, status, error);
         }
 
-        return ConnectedAsync(state);
+        return ConnectedAsync(state, tokens);
     }
 
     /// <summary>
@@ -270,16 +289,35 @@ public sealed partial class FelixClient : IAsyncDisposable, IDisposable
     }
 
     /// <summary>Frees the client, cancelling its pending calls.</summary>
-    public void Dispose() => handle.Dispose();
+    public void Dispose()
+    {
+        tokens?.Cancel();
+        handle.Dispose();
+    }
 
     /// <summary>
     /// As <see cref="Dispose"/>, off the calling thread: freeing the last handle on the
     /// client's runtime can wait a few seconds for pending calls to report.
     /// </summary>
-    public ValueTask DisposeAsync() => new(Task.Run(handle.Dispose));
+    public ValueTask DisposeAsync()
+    {
+        tokens?.Cancel();
+        return new(Task.Run(handle.Dispose));
+    }
 
-    private static async Task<FelixClient> ConnectedAsync(CallState<FelixClientHandle> state) =>
-        new(await state.WaitAsync().ConfigureAwait(false));
+    private static async Task<FelixClient> ConnectedAsync(CallState<FelixClientHandle> state, TokenSource? tokens)
+    {
+        try
+        {
+            return new(await state.WaitAsync().ConfigureAwait(false), tokens);
+        }
+        catch
+        {
+            // No client will be handed out, so a provider still running has no one to serve.
+            tokens?.Cancel();
+            throw;
+        }
+    }
 
     private static async Task<FelixSubscription> SubscribedAsync(CallState<FelixSubscriptionHandle> state) =>
         new(await state.WaitAsync().ConfigureAwait(false));

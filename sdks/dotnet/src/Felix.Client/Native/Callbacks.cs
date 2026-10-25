@@ -49,6 +49,35 @@ internal static unsafe partial class Callbacks
         }
     }
 
+    /// <summary>The library wants a token: starts the provider and returns at once.</summary>
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    internal static void OnTokenFetch(nint userData, nint reply)
+    {
+        try
+        {
+            TokenSource.FromHandle(userData)!.Fetch(reply);
+        }
+        catch
+        {
+            // The reply must still be answered, or the library waits on it for good.
+            TryFree(() => NativeMethods.felix_token_reply_err(reply, "the token provider could not be started"));
+        }
+    }
+
+    /// <summary>The library is done with the source: after the client is freed and every reply answered.</summary>
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    internal static void OnTokenRelease(nint userData)
+    {
+        try
+        {
+            TokenSource.FromHandle(userData)?.Release();
+        }
+        catch
+        {
+            // A callback must not throw.
+        }
+    }
+
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     internal static void OnPublish(nint userData, int status, byte* message, byte hasOffset, ulong offset)
     {

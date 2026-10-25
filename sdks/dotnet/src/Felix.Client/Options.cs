@@ -63,8 +63,24 @@ public sealed class FelixClientOptions
     /// <summary>The tenant to authenticate as.</summary>
     public required string TenantId { get; init; }
 
-    /// <summary>The tenant's token.</summary>
-    public required string Token { get; init; }
+    /// <summary>
+    /// The tenant's token. Optional when <see cref="TokenProvider"/> is set: leave it null (or
+    /// empty) and the first connect calls the provider. With a provider this is only the first
+    /// token. Without one it is the only token, and the client cannot refresh it.
+    /// </summary>
+    public string? Token { get; init; }
+
+    /// <summary>
+    /// Returns a fresh Felix token, usually from a closure over the refresh token. The client
+    /// calls it when a stream is about to authenticate and it holds no token, the held one is
+    /// past two thirds of its life, or the broker just refused it; an idle client makes no
+    /// calls. It is never called concurrently, and a failure (an exception, a null or empty
+    /// result, or no answer within 30 seconds) keeps a still-valid token or fails the operation
+    /// with a <see cref="FelixException"/> of status <see cref="FelixStatus.Auth"/> carrying the
+    /// exception's message. The <see cref="CancellationToken"/> fires after 30 seconds and when
+    /// the client is disposed. At least one of <see cref="Token"/> and this is required.
+    /// </summary>
+    public Func<CancellationToken, ValueTask<string>>? TokenProvider { get; init; }
 
     /// <summary>The name the broker certificate must carry; <c>localhost</c> when null.</summary>
     public string? ServerName { get; init; }

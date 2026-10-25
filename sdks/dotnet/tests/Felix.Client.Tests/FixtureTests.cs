@@ -19,6 +19,15 @@ public class FixtureFactAttribute : FactAttribute
     }
 }
 
+/// <summary>As <see cref="FixtureFactAttribute"/>, for a theory.</summary>
+public sealed class FixtureTheoryAttribute : TheoryAttribute
+{
+    public FixtureTheoryAttribute()
+    {
+        Skip = new FixtureFactAttribute().Skip;
+    }
+}
+
 /// <summary>As <see cref="FixtureFactAttribute"/>, and skips when the fixture has no group operator token.</summary>
 public sealed class GroupFixtureFactAttribute : FixtureFactAttribute
 {

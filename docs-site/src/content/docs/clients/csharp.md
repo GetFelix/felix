@@ -1,6 +1,6 @@
 ---
 title: "C# Client"
-description: "Using the Felix C# client: supported platforms, connecting, publishing, subscribing, sharded subscriptions, consumer groups, caches, counters and watches, atomic commits, conditional publishes, idempotent producers, publisher and timestamp metadata, typed errors, cancellation and threading."
+description: "Using the Felix C# client: supported platforms, connecting, token refresh, publishing, subscribing, sharded subscriptions, consumer groups, caches, counters and watches, atomic commits, conditional publishes, idempotent producers, publisher and timestamp metadata, typed errors, cancellation and threading."
 ---
 
 `Felix.Client` is the C# client, in `sdks/dotnet`. It binds the [C ABI](/clients/c/)
@@ -8,8 +8,7 @@ over the Rust client with P/Invoke, so reconnection, redirect-following and erro
 classes are the Rust client's. Every call is a `Task`; no thread waits on a pending
 publish or read.
 
-It binds every function in `felix.h` except the token provider, which follows once the C ABI has
-it: connect, publish (single, batch, keyed records and named-shard), subscribe to one shard or
+It binds every function in `felix.h`: connect (with a token provider that renews the token), publish (single, batch, keyed records and named-shard), subscribe to one shard or
 to all of them, consumer groups, caches, counters and cache watches, atomic commits and state
 reads, conditional publishes, idempotent producers, endpoints, offset lookup by time, and the
 publisher and timestamp fields. It is not on NuGet yet.
@@ -45,12 +44,69 @@ The library is found at `FELIX_NATIVE_LIB`, next to `Felix.Client.dll`, or under
 
 ## Getting and refreshing a token
 
-The SDK does not call the control plane. Use `HttpClient`; the refresh token
-rotates on every use, so keep the newest one:
+A token lasts 15 minutes by default, and the broker checks it each time a stream
+authenticates, including the streams a reconnect opens. [Getting a
+token](/clients/overview/#getting-a-token) covers where one comes from. A process
+that outlives one sets `FelixClientOptions.TokenProvider`, and the client asks it
+for a token when it needs one. The Rust client's `RefreshingToken` does the
+timing: it asks once two thirds of the held token's life has passed, or when the
+broker refused it. If a fetch fails while the held token is still valid, the
+client keeps using that one and asks again a few seconds later. If the broker
+refuses a token and the provider returns a different one, the client retries once
+with it.
+
+The provider is a `Func<CancellationToken, ValueTask<string>>` that returns the
+token. `Token` is then optional: leave it out (or pass `null` or `""`) to have
+the first connect call the provider, or pass a token you already hold to use that
+first. A connect with neither throws `ArgumentException`.
+
+**When it is called.** When a stream is about to authenticate and the client
+holds no token, the held one is due for replacement, or the broker just refused
+it. An idle client makes no calls, and there is no timer. The client never runs
+two calls at once: streams that open together wait on one and share its token.
+That is also what makes it safe to rotate a refresh token inside the provider.
+
+**Threading.** The provider runs on a thread-pool thread, never on the library's
+thread and never on a thread that is waiting on the broker, so it may block,
+though that delays the streams waiting for the token. It has no synchronization
+context.
+
+**Failure.** The provider fails when it throws, returns `null` or an empty
+string, returns a string the library cannot take (one with a NUL character or
+that is not valid UTF-8), or has not answered after 30 seconds. While the held
+token is still valid the client keeps it, logs a warning and asks again a few
+seconds later. Otherwise the call that needed the token throws a
+`FelixException` with status `Auth` and the exception's message in its text. A
+provider that has not answered after 30 seconds fails the operations waiting on
+it, but the call itself is not abandoned: the next operation that needs a token
+waits on that same call (up to 30 seconds again) and uses its answer if it
+arrives, so the provider is not called a second time while one is outstanding.
+
+**Cancellation.** The `CancellationToken` the provider receives is cancelled when
+the 30 seconds pass and when the client is disposed (`Dispose` or `DisposeAsync`),
+or when a connect that has not finished fails or is cancelled. Pass it to your
+`HttpClient` calls. Let the `OperationCanceledException` propagate: the cancelled
+call counts as a failed fetch, and the next fetch calls the provider again. A
+provider that ignores the token is left to finish and its late answer is still
+used. A subscription can outlive the client it came from, and its later fetches
+get a fresh token. Disposing does not wait for a provider that is running.
+
+**Async variant.** The provider is already asynchronous: return a `ValueTask`
+from an `async` lambda, or `new ValueTask<string>(token)` when you hold the token
+already. There is no separate synchronous form.
+
+The example below does the control plane calls with `HttpClient` and keeps the
+rotating refresh token. The refresh token works once: every refresh returns a
+replacement, so the provider stores it before it returns. A `403` means the
+refresh token expired or was revoked and the exchange has to be run again; the
+provider throws (`EnsureSuccessStatusCode` puts the status in the message) and
+the client keeps the last token until it expires. Run a new login, then connect a
+new client.
 
 ```csharp
 using System.Net.Http.Json;
 using System.Text.Json.Serialization;
+using Felix;
 
 var http = new HttpClient { BaseAddress = new Uri("https://controlplane:8443/v1/tenants/t1/") };
 
@@ -63,13 +119,25 @@ var exchange = new HttpRequestMessage(HttpMethod.Post, "token/exchange")
     }),
 };
 exchange.Headers.Authorization = new("Bearer", oidcToken);
-var minted = await (await http.SendAsync(exchange)).EnsureSuccessStatusCode()
-    .Content.ReadFromJsonAsync<Minted>();
+using var response = await http.SendAsync(exchange);
+var minted = await response.EnsureSuccessStatusCode().Content.ReadFromJsonAsync<Minted>()
+    ?? throw new InvalidOperationException("the control plane returned no token");
+var refreshToken = minted.RefreshToken;
 
-// Before minted.ExpiresIn seconds pass (say after two thirds of it):
-var refreshed = await http.PostAsJsonAsync("token/refresh",
-    new { refresh_token = minted!.RefreshToken });
-minted = await refreshed.EnsureSuccessStatusCode().Content.ReadFromJsonAsync<Minted>();
+await using var client = await FelixClient.ConnectAsync(new FelixClientOptions
+{
+    Addrs = ["127.0.0.1:5000"],
+    TenantId = "t1",
+    Token = minted.FelixToken,
+    TokenProvider = async ct =>
+    {
+        var refreshed = await http.PostAsJsonAsync("token/refresh", new { refresh_token = refreshToken }, ct);
+        var next = await refreshed.EnsureSuccessStatusCode().Content.ReadFromJsonAsync<Minted>(ct)
+            ?? throw new InvalidOperationException("the control plane returned no token");
+        refreshToken = next.RefreshToken;
+        return next.FelixToken;
+    },
+});
 
 // Type declarations go after top-level statements.
 record Minted(
@@ -78,18 +146,14 @@ record Minted(
     [property: JsonPropertyName("refresh_token")] string RefreshToken);
 ```
 
-`FelixClientOptions.Token` cannot change on a live client. After a refresh,
-connect a new `FelixClient` with `minted.FelixToken`, move your work to it, and
-dispose the old one. A refresh that answers `403` means the refresh token
-expired or was revoked: run the exchange again.
-
 ## Connect, publish, subscribe
 
 `Token` is a Felix token; [Getting a token](/clients/overview/#getting-a-token)
-covers where it comes from. `FelixClientOptions.Token` is a fixed string and the
-client cannot refresh it, so dispose the client and connect a new one with a
-fresh token before it expires. Streams opened after expiry, including the ones a
-reconnect opens, are refused.
+covers where it comes from. Without a `TokenProvider` it is a fixed string the
+client cannot refresh, so dispose the client and connect a new one with a fresh
+token before it expires: streams opened after expiry, including the ones a
+reconnect opens, are refused. [Getting and refreshing a
+token](#getting-and-refreshing-a-token) has the provider that renews it.
 
 ```csharp
 using Felix;
