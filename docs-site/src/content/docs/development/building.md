@@ -196,6 +196,10 @@ docs and `compose.yaml` pin (`scripts/check_release_version.py`), and its releas
 - after the Python and Node conformance suites pass, attaches the wheels and
   Node addons and publishes them to PyPI (`PUBLISH_PYPI`) and npm
   (`PUBLISH_NPM`);
+- builds `libfelix` natively on Linux, macOS and Windows, x64 and arm64, packs
+  them into one `Felix.Client` NuGet package (failing if any of the six is
+  missing) and pushes it to nuget.org when `PUBLISH_NUGET` is `true`, skipping
+  a version already there;
 - after both conformance suites, packages `felix-transport`, `felix-wire`,
   `felix-client`, `felix-loadgen` and `felixctl` together, then publishes them
   to crates.io in that order (`PUBLISH_CRATES`), skipping any version already
@@ -306,6 +310,21 @@ release you can, optionally:
    `GetFelix/felix`, workflow `release.yml`, environment `crates-io`.
 2. Once every crate has one, run `gh secret delete CARGO_REGISTRY_TOKEN` and
    revoke the token. Later releases then publish with no stored credential.
+
+### NuGet credentials
+
+The NuGet job holds no API key. It trades the workflow's OIDC identity for a
+short-lived key through nuget.org trusted publishing. To turn it on:
+
+1. On nuget.org, under the `GetFelix` account, add a trusted publishing policy:
+   repository `GetFelix/felix`, workflow `release.yml`, environment `dotnet`.
+   While the package is new the policy is pending, and the first push creates
+   `Felix.Client` under that account.
+2. Create the `dotnet` environment on the repository.
+3. Set the repository variable `PUBLISH_NUGET` to `true`, and `NUGET_USER` to
+   the nuget.org account name if it is not `GetFelix`.
+
+A dry run packs the nupkg and checks its contents without pushing.
 
 npm has the same limit with no token fallback, so a new npm package name is
 published once by hand with `scripts/npm_first_publish.sh`.

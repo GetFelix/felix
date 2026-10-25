@@ -828,6 +828,32 @@ jobs:
           export FELIX_NATIVE_LIB="$PWD/target/release/$lib"
           dotnet test sdks/dotnet/Felix.sln -c Release
 
+      # What a user gets from NuGet: the package holds this runner's own library, and a
+      # throwaway app restores it from that folder with FELIX_NATIVE_LIB unset.
+      - name: Pack Felix.Client with this platform's library
+        run: |
+          case "$RUNNER_OS-$RUNNER_ARCH" in
+            Linux-X64) rid=linux-x64; lib=libfelix.so ;;
+            Linux-ARM64) rid=linux-arm64; lib=libfelix.so ;;
+            macOS-X64) rid=osx-x64; lib=libfelix.dylib ;;
+            macOS-ARM64) rid=osx-arm64; lib=libfelix.dylib ;;
+            Windows-X64) rid=win-x64; lib=felix.dll ;;
+            Windows-ARM64) rid=win-arm64; lib=felix.dll ;;
+            *) echo "unsupported runner $RUNNER_OS-$RUNNER_ARCH" >&2; exit 1 ;;
+          esac
+          mkdir -p "sdks/dotnet/runtimes/$rid"
+          cp "target/release/$lib" "sdks/dotnet/runtimes/$rid/"
+          dotnet pack sdks/dotnet/src/Felix.Client -c Release -p:Version=0.0.0-ci -o nupkg-smoke
+          unzip -Z1 nupkg-smoke/Felix.Client.0.0.0-ci.nupkg | grep -x "runtimes/$rid/native/$lib"
+
+      # The fixture only runs on Linux x64, which round-trips a record in the scenarios step.
+      - name: Package smoke test (native library loads from the package)
+        if: matrix.os != 'ubuntu-latest'
+        run: |
+          unset FELIX_NATIVE_LIB
+          feed="$(cd nupkg-smoke && { pwd -W 2>/dev/null || pwd; })"
+          dotnet run --project sdks/dotnet/smoke -c Release -p:FelixVersion=0.0.0-ci -p:RestoreSources="$feed"
+
       # The fixture runs on Linux x64 only.
       - name: Build the broker and cluster harness
         if: matrix.os == 'ubuntu-latest'
@@ -863,6 +889,11 @@ jobs:
           for tfm in net8.0 net10.0; do
             dotnet test sdks/dotnet/Felix.sln -c Release --no-build --framework "$tfm"
           done
+
+          # The packaged library, not FELIX_NATIVE_LIB, against the same broker.
+          unset FELIX_NATIVE_LIB
+          dotnet run --project sdks/dotnet/smoke -c Release \
+            -p:FelixVersion=0.0.0-ci -p:RestoreSources="$PWD/nupkg-smoke" -- "$FELIX_FIXTURE"
 
       # Gates like the Python, C and TypeScript verdicts: a required scenario a
       # framework failed, skipped or never recorded fails the job.

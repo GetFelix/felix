@@ -755,7 +755,7 @@ jobs:
   # is actually available first — it is unrelated to the crate name.
   python-release-assets:
     name: Attach wheels to the release
-    needs: [python-wheels, python-sdist]
+    needs: [python-wheels, python-sdist, linux-x86_64]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -933,7 +933,7 @@ jobs:
 
   typescript-release-assets:
     name: Attach the Node addons to the release
-    needs: typescript-addon
+    needs: [typescript-addon, linux-x86_64]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -995,7 +995,7 @@ jobs:
   # `npm_stage` remains for staging a version of a package that already exists.
   typescript-publish:
     name: Publish to npm
-    needs: typescript-release-assets
+    needs: [typescript-release-assets, linux-x86_64]
     if: vars.PUBLISH_NPM == 'true' && !inputs.dry_run && !inputs.nightly
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -1131,8 +1131,10 @@ jobs:
 
   python-publish:
     name: Publish to PyPI
-    needs: python-release-assets
+    needs: [python-release-assets, linux-x86_64]
     # Off until Felix is meant to be publicly installable. See the note above.
+    # linux-x86_64 holds the release gates (ref only on a dry run, tag matches the tree,
+    # changelog assembled), so nothing is published without them.
     if: vars.PUBLISH_PYPI == 'true' && !inputs.dry_run && !inputs.nightly
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -1157,6 +1159,187 @@ jobs:
         with:
           packages-dir: dist
           skip-existing: true
+
+  # --- NuGet ---------------------------------------------------------------
+  #
+  # Felix.Client carries libfelix for the six platforms it supports, so the
+  # package is built from six native builds. The native jobs run for every
+  # release, dry runs and nightlies included, so a platform that stops
+  # building shows up before a tag. Only the push is gated.
+  #
+  # To turn the push on: set the repository variable PUBLISH_NUGET to "true"
+  # (and NUGET_USER if the nuget.org account is not GetFelix), and add a
+  # trusted publishing policy on nuget.org for this repository with workflow
+  # release.yml and environment dotnet. No API key is stored.
+  dotnet-native:
+    name: libfelix (${{ matrix.rid }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-latest, rid: linux-x64, lib: libfelix.so }
+          - { runner: ubuntu-24.04-arm, rid: linux-arm64, lib: libfelix.so }
+          - { runner: macos-latest, rid: osx-arm64, lib: libfelix.dylib }
+          - { runner: macos-15-intel, rid: osx-x64, lib: libfelix.dylib }
+          - { runner: windows-latest, rid: win-x64, lib: felix.dll }
+          - { runner: windows-11-arm, rid: win-arm64, lib: felix.dll }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ env.SOURCE_REF }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.97.1"
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Build the native library
+        run: cargo build --locked --release -p felix-capi
+
+      # The release link ends in strip/linker post-processing that can leave a library
+      # the OS loader rejects; a package must not ship one.
+      - name: Release library loads
+        run: python3 -I -c 'import ctypes, sys; ctypes.CDLL(sys.argv[1])' "$PWD/target/release/${{ matrix.lib }}"
+
+      - name: Upload the library
+        uses: actions/upload-artifact@v7
+        with:
+          name: dotnet-native-${{ matrix.rid }}
+          path: target/release/${{ matrix.lib }}
+          if-no-files-found: error
+
+  dotnet-package:
+    name: Pack Felix.Client
+    needs: dotnet-native
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ env.SOURCE_REF }}
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: dotnet-native-*
+          path: natives
+
+      # The package project packs sdks/dotnet/runtimes/<rid>/<library>.
+      - name: Lay the libraries out by platform
+        run: |
+          set -euo pipefail
+          for dir in natives/dotnet-native-*; do
+            rid="${dir#natives/dotnet-native-}"
+            mkdir -p "sdks/dotnet/runtimes/${rid}"
+            cp "${dir}"/* "sdks/dotnet/runtimes/${rid}/"
+          done
+          find sdks/dotnet/runtimes -type f
+
+      - name: Pack
+        run: |
+          set -euo pipefail
+          # A release tag is the package version. Nightly and rehearsal tags are not
+          # valid NuGet versions and are never pushed, so they keep the workspace version.
+          version=()
+          if [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            version=("-p:Version=${RELEASE_TAG#v}")
+          fi
+          dotnet pack sdks/dotnet/src/Felix.Client -c Release "${version[@]}" -o nupkg
+
+      # The project packs whichever libraries exist, so a missing platform
+      # would otherwise ship as a package that fails to load there.
+      - name: The package carries all six libraries
+        run: |
+          set -euo pipefail
+          listing=$(unzip -Z1 nupkg/Felix.Client.*.nupkg)
+          missing=0
+          for entry in \
+            runtimes/linux-x64/native/libfelix.so \
+            runtimes/linux-arm64/native/libfelix.so \
+            runtimes/osx-x64/native/libfelix.dylib \
+            runtimes/osx-arm64/native/libfelix.dylib \
+            runtimes/win-x64/native/felix.dll \
+            runtimes/win-arm64/native/felix.dll; do
+            if ! grep -qxF "$entry" <<<"$listing"; then
+              echo "::error::the package is missing ${entry}"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      # Install the packed package into an app, as a user would, and call into the library.
+      - name: The packed package loads on Linux x64
+        run: |
+          set -euo pipefail
+          unset FELIX_NATIVE_LIB
+          feed="$PWD/nupkg"
+          version=$(basename nupkg/Felix.Client.*.nupkg .nupkg)
+          version="${version#Felix.Client.}"
+          dotnet run --project sdks/dotnet/smoke -c Release \
+            -p:FelixVersion="$version" -p:RestoreSources="$feed"
+
+      - name: Upload the package
+        uses: actions/upload-artifact@v7
+        with:
+          name: nupkg
+          path: nupkg/*.nupkg
+          if-no-files-found: error
+
+  dotnet-publish:
+    name: Publish to NuGet
+    needs: [dotnet-package, linux-x86_64]
+    # Off until the nuget.org policy and PUBLISH_NUGET are in place. See the note above.
+    if: vars.PUBLISH_NUGET == 'true' && !inputs.dry_run && !inputs.nightly
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: dotnet
+    permissions:
+      # Trusted publishing: nuget.org trades this workflow's OIDC identity
+      # for a short-lived API key.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: nupkg
+          path: nupkg
+
+      - name: What is about to be published
+        run: ls -la nupkg
+
+      - name: Get a short-lived API key
+        id: login
+        uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
+        with:
+          user: ${{ vars.NUGET_USER || 'GetFelix' }}
+
+      # A rerun must not fail on a version a previous attempt already pushed.
+      - name: Push
+        env:
+          NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
+        run: |
+          dotnet nuget push "nupkg/*.nupkg" \
+            --api-key "$NUGET_API_KEY" \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate
 
   # --- crates.io -----------------------------------------------------------
   #
@@ -1295,7 +1478,7 @@ jobs:
     name: Ask getfelix.dev to show this release
     needs:
       [linux-x86_64, felixctl-release-assets, homebrew-tap, images-merge,
-       python-publish, typescript-publish, crates-publish]
+       python-publish, typescript-publish, dotnet-publish, crates-publish]
     if: ${{ always() && !inputs.nightly && !inputs.dry_run && needs.linux-x86_64.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -1319,7 +1502,7 @@ jobs:
     name: Tell companion repos about this release
     needs:
       [linux-x86_64, felixctl-release-assets, homebrew-tap, images-merge,
-       python-publish, typescript-publish, crates-publish]
+       python-publish, typescript-publish, dotnet-publish, crates-publish]
     if: ${{ always() && !inputs.nightly && !inputs.dry_run && needs.linux-x86_64.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
