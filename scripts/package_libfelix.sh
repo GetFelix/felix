@@ -60,6 +60,20 @@ stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
 mkdir -p "$stage/$root/lib" "$stage/$root/include"
 cp "$release/$shared" "$release/$static" "$stage/$root/lib/"
+case "$rid" in
+  osx-*)
+    # The linker records a dylib's install name in every program linked
+    # against it; rustc leaves the build machine's absolute path there, so a
+    # program would look for target/release/deps/libfelix.dylib and never use
+    # its rpath. Changing the id invalidates the signature, so re-sign ad hoc.
+    install_name_tool -id @rpath/libfelix.dylib "$stage/$root/lib/libfelix.dylib"
+    codesign --force --sign - "$stage/$root/lib/libfelix.dylib"
+    id="$(otool -D "$stage/$root/lib/libfelix.dylib" | sed -n 2p)"
+    if [ "$id" != "@rpath/libfelix.dylib" ]; then
+      echo "libfelix.dylib install name is $id, expected @rpath/libfelix.dylib" >&2
+      exit 1
+    fi ;;
+esac
 if [ -n "$import" ] && [ -f "$release/$import" ]; then
   cp "$release/$import" "$stage/$root/lib/"
 fi
