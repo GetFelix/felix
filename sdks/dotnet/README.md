@@ -7,8 +7,9 @@ net10.0 on Linux, macOS and Windows, each on x64 and arm64; CI tests every one o
 
 It covers connect, publish (single and batch), subscribe to one shard, consumer groups (on a
 shard and across every shard, with the stream-wide admin calls), caches, counters and cache watches
-(single and sharded, retained, resumable), and the publisher and timestamp metadata. Commits,
-producers and multi-shard subscribe follow. Not packaged or released yet. See [the C# page](../../docs-site/src/content/docs/clients/csharp.md).
+(single and sharded, retained, resumable), atomic commits with state reads and conditional
+publishes (`CommitAsync`, `CommitIfAsync`, `PublishIfAsync`, `GetStateAsync`), idempotent producers
+(`CreateProducerAsync`), and the publisher and timestamp metadata. Multi-shard subscribe follows. Not packaged or released yet. See [the C# page](../../docs-site/src/content/docs/clients/csharp.md).
 
 ```csharp
 await using var client = await FelixClient.ConnectAsync(new FelixClientOptions

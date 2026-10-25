@@ -290,7 +290,7 @@ worth writing code for.
 | **[Python](/clients/python/)** | `felix-client` on PyPI | A PyO3 binding, with a synchronous and an asyncio surface over the same Rust client. |
 | **[TypeScript](/clients/typescript/)** | `felix-client` on npm | A napi-rs addon. One asynchronous surface, because blocking Node's event loop is not something a library may do. |
 | **[C](/clients/c/)** | `libfelix` and `felix.h`, built from the repository | A C ABI over the Rust client, asynchronous through callbacks. The base for the C# SDK; not on a registry. |
-| **[C#](/clients/csharp/)** | `Felix.Client`, built from `sdks/dotnet` | A P/Invoke binding over the C ABI: connect, publish, subscribe to a shard, consumer groups, caches, counters and cache watches, and publisher and timestamp metadata so far. Not on NuGet yet. |
+| **[C#](/clients/csharp/)** | `Felix.Client`, built from `sdks/dotnet` | A P/Invoke binding over the C ABI: connect, publish, subscribe to a shard, consumer groups, caches, counters and cache watches, atomic commits and conditional publishes, idempotent producers, and publisher and timestamp metadata so far. Not on NuGet yet. |
 
 ### Which client to use
 
