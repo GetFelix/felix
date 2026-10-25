@@ -1250,8 +1250,13 @@ jobs:
       - name: Pack
         run: |
           set -euo pipefail
-          dotnet pack sdks/dotnet/src/Felix.Client -c Release \
-            -p:Version="${RELEASE_TAG#v}" -o nupkg
+          # A release tag is the package version. Nightly and rehearsal tags are not
+          # valid NuGet versions and are never pushed, so they keep the workspace version.
+          version=()
+          if [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            version=("-p:Version=${RELEASE_TAG#v}")
+          fi
+          dotnet pack sdks/dotnet/src/Felix.Client -c Release "${version[@]}" -o nupkg
 
       # The project packs whichever libraries exist, so a missing platform
       # would otherwise ship as a package that fails to load there.
