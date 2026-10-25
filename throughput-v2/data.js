@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792900063269,
+  "lastUpdate": 1792900344710,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -35776,6 +35776,58 @@ window.BENCHMARK_DATA = {
             "range": "20712.29",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 980799.58\nmean: 971952.01\nstdev: 20712.29\ncv: 2.13%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "984e13d054d1c80b84752aaf0bc34cfa47288f92",
+          "message": "feat(typescript): token provider, connect options object (#1527)\n\nconnect(addrs, tenant, { token, tokenProvider, serverName, caFile, offerAlpn })\nand withIdentity(tenant, { token, tokenProvider }) take an options object\n(breaking; the package is alpha). tokenProvider is () => string | Promise<string>,\ncalled on the JS thread through a ThreadsafeFunction and wrapped in the Rust\nclient's RefreshingToken: lazy, single-flight, refreshed at two thirds of a\ntoken's life or after a refusal (one refetch per refusing broker), with the\ncore's 30 s fetch timeout failing the waiters while the call is joined, never\nrepeated.\n\nThe provider gets an AbortSignal that fires at the fetch timeout, or when the\nlast handle using the token goes; an abort that beats its fetch is kept. A\nthrow or rejection reaches the caller's AuthError with the app's message. The\nTypeScript page's token section replaces the manual refresh-and-reconnect\npattern; the doc example is type-checked in CI.",
+          "timestamp": "2026-10-24T20:48:00-07:00",
+          "tree_id": "7851875d9081c75e2ae2fdf0762609cfe1862804",
+          "url": "https://github.com/GetFelix/felix/commit/984e13d054d1c80b84752aaf0bc34cfa47288f92"
+        },
+        "date": 1792900343837,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 552826.67,
+            "range": "35583.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 552826.67\nmean: 543031.50\nstdev: 35583.59\ncv: 6.55%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 552826.67,
+            "range": "35583.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 552826.67\nmean: 543031.50\nstdev: 35583.59\ncv: 6.55%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 124876.23,
+            "range": "1240.72",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 124876.23\nmean: 124288.76\nstdev: 1240.72\ncv: 1.00%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1248762.27,
+            "range": "12407.21",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1248762.27\nmean: 1242887.63\nstdev: 12407.21\ncv: 1.00%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
