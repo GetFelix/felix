@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792903134920,
+  "lastUpdate": 1792906780238,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -45738,6 +45738,72 @@ window.BENCHMARK_DATA = {
             "range": "197.82",
             "unit": "us",
             "extra": "trials: 5\nmedian: 653.00\nmean: 751.60\nstdev: 197.82\ncv: 26.32%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1d8ca7fd48da619a5eb9723bc225820eda8492da",
+          "message": "feat(csharp): TokenProvider over the C ABI token fetch (step 5b) (#1538)\n\nFelixClientOptions.TokenProvider, a Func<CancellationToken, ValueTask<string>>,\nover the C ABI's token_fetch callback. The Rust core owns the timing (lazy,\nsingle-flight, two-thirds-of-life refresh, one refetch per refusal, 30 s fetch\ntimeout that joins the call); C# adds no refresh logic or timer.\n\nThe provider runs on the thread pool; every reply is answered exactly once\n(success, throw, cancellation, null/empty, NUL or invalid UTF-8, refused ok\nthen err), the app's message reaches FelixException unchanged, and nothing\nescapes into native code. The GCHandle is freed in token_release or on the\nconnect-failure paths.\n\nEach fetch's CancellationToken fires at 30 s, when connect fails, or once the\nclient and every subscription, sharded subscription, sharded group, cache watch\nand producer made from it are disposed: those handles hold the native shared\nstate, so TokenSource is reference-counted, with the reference taken before the\nnative call that creates a handle.\n\ncsharp.md token section in the shared structure, overview and status table,\nREADME, changelog. check_csharp_bindings.py drops the temporary allowlist\nentries; the C# conformance verdict runs only when the scenario step ran.",
+          "timestamp": "2026-10-25T05:34:58Z",
+          "tree_id": "9df9ce3363d9a429aeaf0fcd1535a1c90406e350",
+          "url": "https://github.com/GetFelix/felix/commit/1d8ca7fd48da619a5eb9723bc225820eda8492da"
+        },
+        "date": 1792906774543,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 182,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 182.00\nmean: 181.60\nstdev: 1.14\ncv: 0.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 245,
+            "range": "1.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 245.00\nmean: 245.80\nstdev: 1.92\ncv: 0.78%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 314,
+            "range": "15.73",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 314.00\nmean: 316.40\nstdev: 15.73\ncv: 4.97%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 219,
+            "range": "7.13",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 219.00\nmean: 222.40\nstdev: 7.13\ncv: 3.20%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 442,
+            "range": "78.97",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 442.00\nmean: 478.60\nstdev: 78.97\ncv: 16.50%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 649,
+            "range": "580.63",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 649.00\nmean: 885.40\nstdev: 580.63\ncv: 65.58%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
