@@ -82,6 +82,30 @@ internal unsafe struct NativeWatchItem
     public ulong ResumeFrom;
 }
 
+/// <summary><c>FelixCommitOp</c>; the pointers are owned by <see cref="NativeCommitOps"/>.</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal unsafe struct NativeCommitOp
+{
+    public int Kind;
+    public byte* Stream;
+    public byte* Key;
+    public byte* Data;
+    public nuint DataLen;
+}
+
+/// <summary><c>FelixStateValue</c>, borrowed for the length of a callback.</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal unsafe struct NativeStateValue
+{
+    public byte HasValue;
+    public byte* Value;
+    public nuint ValueLen;
+    public byte HasVersion;
+    public ulong Version;
+    public byte HasAsOf;
+    public ulong AsOf;
+}
+
 /// <summary>The C ABI of <c>felix.h</c>. Callbacks are unmanaged function pointers.</summary>
 internal static unsafe partial class NativeMethods
 {
@@ -597,6 +621,182 @@ internal static unsafe partial class NativeMethods
 
     [LibraryImport(Lib)]
     internal static partial void felix_cache_watch_free(nint watch);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial int felix_client_commit(
+        nint client,
+        string tenantId,
+        string ns,
+        byte* entityKey,
+        nuint entityKeyLen,
+        NativeCommitOp* ops,
+        nuint count,
+        nint cancel,
+        delegate* unmanaged[Cdecl]<nint, int, byte*, ulong, void> callback,
+        nint userData);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial int felix_client_commit_on_shard(
+        nint client,
+        string tenantId,
+        string ns,
+        uint shard,
+        byte* entityKey,
+        nuint entityKeyLen,
+        NativeCommitOp* ops,
+        nuint count,
+        nint cancel,
+        delegate* unmanaged[Cdecl]<nint, int, byte*, ulong, void> callback,
+        nint userData);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial int felix_client_commit_if(
+        nint client,
+        string tenantId,
+        string ns,
+        byte* entityKey,
+        nuint entityKeyLen,
+        NativeCommitOp* ops,
+        nuint count,
+        ulong expectedOffset,
+        nint cancel,
+        delegate* unmanaged[Cdecl]<nint, int, byte*, byte, ulong, void> callback,
+        nint userData);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial int felix_client_commit_if_on_shard(
+        nint client,
+        string tenantId,
+        string ns,
+        uint shard,
+        byte* entityKey,
+        nuint entityKeyLen,
+        NativeCommitOp* ops,
+        nuint count,
+        ulong expectedOffset,
+        nint cancel,
+        delegate* unmanaged[Cdecl]<nint, int, byte*, byte, ulong, void> callback,
+        nint userData);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial int felix_client_publish_if(
+        nint client,
+        string tenantId,
+        string ns,
+        string stream,
+        byte* key,
+        nuint keyLen,
+        byte* data,
+        nuint* lens,
+        nuint count,
+        ulong expectedOffset,
+        nint cancel,
+        delegate* unmanaged[Cdecl]<nint, int, byte*, byte, ulong, void> callback,
+        nint userData);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial int felix_client_publish_if_on_shard(
+        nint client,
+        string tenantId,
+        string ns,
+        string stream,
+        uint shard,
+        byte* data,
+        nuint* lens,
+        nuint count,
+        ulong expectedOffset,
+        nint cancel,
+        delegate* unmanaged[Cdecl]<nint, int, byte*, byte, ulong, void> callback,
+        nint userData);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial int felix_client_state_get(
+        nint client,
+        string tenantId,
+        string ns,
+        string stream,
+        byte* entityKey,
+        nuint entityKeyLen,
+        string key,
+        nint cancel,
+        delegate* unmanaged[Cdecl]<nint, int, byte*, NativeStateValue*, void> callback,
+        nint userData);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial int felix_client_state_get_on_shard(
+        nint client,
+        string tenantId,
+        string ns,
+        string stream,
+        uint shard,
+        string key,
+        nint cancel,
+        delegate* unmanaged[Cdecl]<nint, int, byte*, NativeStateValue*, void> callback,
+        nint userData);
+
+    [LibraryImport(Lib)]
+    internal static partial int felix_client_idempotent_producer(
+        nint client,
+        nint cancel,
+        delegate* unmanaged[Cdecl]<nint, int, byte*, nint, void> callback,
+        nint userData);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial int felix_producer_publish(
+        nint producer,
+        string tenantId,
+        string ns,
+        string stream,
+        byte* data,
+        nuint* lens,
+        nuint count,
+        byte* key,
+        nuint keyLen,
+        nint cancel,
+        delegate* unmanaged[Cdecl]<nint, int, byte*, byte, ulong, void> callback,
+        nint userData);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial int felix_producer_publish_batches(
+        nint producer,
+        string tenantId,
+        string ns,
+        string stream,
+        byte* data,
+        nuint* lens,
+        nuint count,
+        nuint* batchSizes,
+        nuint batchCount,
+        nint cancel,
+        delegate* unmanaged[Cdecl]<nint, int, byte*, void> callback,
+        nint userData);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial int felix_producer_abandon_in_doubt(
+        nint producer,
+        string tenantId,
+        string ns,
+        string stream,
+        nint cancel,
+        delegate* unmanaged[Cdecl]<nint, int, byte*, void> callback,
+        nint userData);
+
+    [LibraryImport(Lib)]
+    internal static partial int felix_producer_id(nint producer, ulong* id);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial int felix_producer_id_for(nint producer, string tenantId, string ns, string stream, ulong* id);
+
+    [LibraryImport(Lib)]
+    internal static partial int felix_producer_close(
+        nint producer,
+        long timeoutMs,
+        nint cancel,
+        delegate* unmanaged[Cdecl]<nint, int, byte*, void> callback,
+        nint userData);
+
+    [LibraryImport(Lib)]
+    internal static partial void felix_producer_free(nint producer);
 
     /// <summary>The library's message for the last failed call on this thread, copied.</summary>
     internal static string? LastError()
