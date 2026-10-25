@@ -127,6 +127,8 @@ pub(super) struct Answered {
 #[derive(Default)]
 pub(super) struct NextPass {
     pub(super) wanted: tokio::sync::Notify,
+    /// An append woke the driver since the pass last looked.
+    pub(super) appended: std::sync::atomic::AtomicBool,
     answered: parking_lot::Mutex<Vec<Answered>>,
 }
 
@@ -377,9 +379,8 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
     }
 
     /// Start a pass for `key`, or ask for one once the pass under way ends.
-    /// `cuts` is whether a pass under way should stop waiting for it: only
-    /// new data does. A tick or route change cut in would end the wait with
-    /// no majority, and the next pass would ask the same followers again.
+    /// `cuts` is whether the wake may be new data for the pass under way to
+    /// stop waiting for; the pass checks this shard's tail before it does.
     fn start(&mut self, key: &ShardKey, cuts: bool) {
         let table = self.cx.router.snapshot();
         let Some(route) = table.get(key).filter(|route| self.leads(key, route)) else {
@@ -389,8 +390,10 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         if let Some(next) = &state.running {
             state.again = true;
             if cuts {
-                next.wanted.notify_one();
+                next.appended
+                    .store(true, std::sync::atomic::Ordering::Release);
             }
+            next.wanted.notify_one();
             return;
         }
         if self.passes.len() + self.fences.len() >= SHARD_CONCURRENCY {

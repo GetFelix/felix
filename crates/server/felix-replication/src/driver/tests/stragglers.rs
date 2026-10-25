@@ -97,6 +97,25 @@ fn driver_with<R: PeerRequester + Send + Sync + 'static>(
     marks: &Arc<QuorumMarks>,
     routes_changed: &Arc<tokio::sync::Notify>,
 ) -> Replication {
+    // Reaching the tick would mean nothing else woke the driver.
+    driver_ticking(
+        requester,
+        broker,
+        router,
+        marks,
+        routes_changed,
+        Duration::from_secs(300),
+    )
+}
+
+fn driver_ticking<R: PeerRequester + Send + Sync + 'static>(
+    requester: Arc<R>,
+    broker: &Arc<Broker>,
+    router: &Arc<ShardRouter>,
+    marks: &Arc<QuorumMarks>,
+    routes_changed: &Arc<tokio::sync::Notify>,
+    tick: Duration,
+) -> Replication {
     spawn(
         requester,
         Arc::clone(broker),
@@ -109,8 +128,7 @@ fn driver_with<R: PeerRequester + Send + Sync + 'static>(
             status: Arc::default(),
         },
         None,
-        // Reaching the tick would mean nothing else woke the driver.
-        Duration::from_secs(300),
+        tick,
         Arc::clone(routes_changed),
         RebuildPolicy::default(),
         MoveThrottle::unlimited(),
@@ -612,46 +630,123 @@ async fn mark_time(
     Some(since.elapsed())
 }
 
-/// **A wake that is not an append does not cut a waiting pass short.** b is
-/// still answering an earlier pass when a record lands, and c, the only
-/// follower the next pass ships to, takes a round trip. A route change
-/// mid-pass is not new data: the pass must keep waiting for c, not give up
-/// without a majority and ask again a round trip later.
-#[tokio::test(start_paused = true)]
-async fn a_route_change_does_not_cut_a_waiting_pass_short() {
-    let (broker, _dir) = super::quorum::quorum_leader(3, 4).await;
-    let router = router(LOCAL, &["broker-b", "broker-c"], 4);
+/// One round trip of the follower the pass waits on.
+const RTT: Duration = Duration::from_millis(400);
+
+/// A three-replica `Quorum` leader whose next pass waits on c alone: b is
+/// still answering the pass before it. Returns when the next record has been
+/// appended; the clock then reads [`RTT`] from c's answer.
+struct WaitingPass {
+    broker: Arc<Broker>,
+    marks: Arc<QuorumMarks>,
+    routes_changed: Arc<tokio::sync::Notify>,
+    since: tokio::time::Instant,
+    driver: Replication,
+    _dir: TempDir,
+}
+
+async fn waiting_pass(shards: u32, tick: Duration) -> WaitingPass {
+    let (broker, dir) = super::quorum::quorum_leader(3, 4).await;
+    let router = router_over_shards(LOCAL, &["broker-b", "broker-c"], 4, shards);
     let marks = Arc::new(QuorumMarks::new());
     let peers = Arc::new(ShiftingPeer::default());
     let routes_changed = Arc::new(tokio::sync::Notify::new());
-    let driver = driver_with(
+    let started = tokio::time::Instant::now();
+    let driver = driver_ticking(
         Arc::clone(&peers),
         &broker,
         &router,
         &marks,
         &routes_changed,
+        tick,
     );
     assert!(prompt(&marks, 0, 4, 3).await, "the first mark waited");
+    // Land so the next tick falls inside c's round trip.
+    tokio::time::sleep_until(started + tick * 2 - Duration::from_millis(350)).await;
 
-    let rtt = Duration::from_millis(400);
-    // c answers the first pass at once; b stays busy for a round trip.
-    peers.delay("broker-b", rtt);
+    peers.delay("broker-b", RTT);
     append(&broker, 0).await;
     tokio::time::sleep(Duration::from_millis(20)).await;
     assert_eq!(marks.offset(&watch_key(&key()), 4), Some(4));
 
-    // The next pass ships to c alone, which now takes a round trip too.
-    peers.delay("broker-c", rtt);
+    peers.delay("broker-c", RTT);
     let since = tokio::time::Instant::now();
     append(&broker, 0).await;
-    tokio::time::sleep(rtt / 4).await;
-    routes_changed.notify_one();
+    tokio::time::sleep(RTT / 10).await;
+    WaitingPass {
+        broker,
+        marks,
+        routes_changed,
+        since,
+        driver,
+        _dir: dir,
+    }
+}
 
-    let took = mark_time(&marks, 5, since, Duration::from_secs(5)).await;
-    let took = took.expect("the mark never moved");
+impl WaitingPass {
+    /// Stops the driver, failing if the next mark took more than a round trip
+    /// and a half: a cut pass pings again, which costs another.
+    async fn finish(self) {
+        let took = mark_time(&self.marks, 5, self.since, Duration::from_secs(5))
+            .await
+            .expect("the mark never moved");
+        assert!(
+            took <= RTT + RTT / 2,
+            "the waiting pass was cut short: the mark took {took:?}",
+        );
+        self.driver.stop().await;
+    }
+}
+
+/// **A route change does not cut a waiting pass short.** b is still answering
+/// an earlier pass when a record lands, and c, the only follower the next pass
+/// ships to, takes a round trip. A route change mid-pass is not new data: the
+/// pass keeps waiting for c instead of giving up without a majority and
+/// asking again a round trip later.
+#[tokio::test(start_paused = true)]
+async fn a_route_change_does_not_cut_a_waiting_pass_short() {
+    let wait = waiting_pass(1, Duration::from_secs(300)).await;
+    wait.routes_changed.notify_one();
+    wait.finish().await;
+}
+
+/// **The tick does not cut a waiting pass short.**
+#[tokio::test(start_paused = true)]
+async fn the_tick_does_not_cut_a_waiting_pass_short() {
+    // The tick lands 300 ms after the record, inside c's round trip.
+    let wait = waiting_pass(1, Duration::from_secs(1)).await;
+    wait.finish().await;
+}
+
+/// **Another shard's append does not cut a waiting pass short.** The append
+/// wake is broker-wide, but only records this shard has not shipped are a
+/// reason to give up on the majority it is waiting for.
+#[tokio::test(start_paused = true)]
+async fn another_shards_append_does_not_cut_a_waiting_pass_short() {
+    let wait = waiting_pass(2, Duration::from_secs(300)).await;
+    append(&wait.broker, 1).await;
+    wait.finish().await;
+}
+
+/// **A route change ends the wait on a follower that is gone.** The pass has
+/// its majority and the mark is out, but c does not answer. A new route
+/// (here a higher generation) must get its pass at once, not once c's
+/// request times out.
+#[tokio::test(start_paused = true)]
+async fn a_route_change_ends_a_pass_waiting_on_a_dead_follower() {
+    let (broker, _dir) = super::quorum::quorum_leader(3, 4).await;
+    let router = router(LOCAL, &["broker-b", "broker-c"], 4);
+    let marks = Arc::new(QuorumMarks::new());
+    let routes_changed = Arc::new(tokio::sync::Notify::new());
+    let driver = driver("broker-c", &broker, &router, &marks, &routes_changed);
+    assert!(prompt(&marks, 0, 4, 3).await, "the first mark waited");
+
+    // The pass holding generation 4 now has its majority and waits on c.
+    publish_move(&router, &["broker-b", "broker-c"], None, 5);
+    routes_changed.notify_one();
     assert!(
-        took <= rtt + rtt / 2,
-        "a route change cost a round trip: the mark took {took:?}",
+        prompt(&marks, 0, 5, 3).await,
+        "the new route waited on the follower that is gone",
     );
     driver.stop().await;
 }

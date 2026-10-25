@@ -879,12 +879,19 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         _ => None,
     };
     let wanted_from = next_pass.clone();
-    let mut wanted = std::pin::pin!(async move {
-        match wanted_from {
-            Some(next) => next.wanted.notified().await,
-            None => std::future::pending().await,
-        }
-    });
+    let arm = move || {
+        let wanted_from = wanted_from.clone();
+        Box::pin(async move {
+            match wanted_from {
+                Some(next) => next.wanted.notified().await,
+                None => std::future::pending().await,
+            }
+        })
+    };
+    let mut wanted: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> = arm();
+    // A wake that did not cut the wait short. The post-majority wait below
+    // still ends on it: a route change must not sit behind a dead follower.
+    let mut woken = false;
     let busy_counts = positions
         .iter()
         .any(|cursor| busy.contains(&cursor.node_id) && counts(&cursor.node_id));
@@ -897,7 +904,6 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 biased;
                 next = in_flight.next() => next.map(|shipped| vec![(shipped, true)]),
                 () = &mut wanted => {
-                    cut_short = true;
                     // Uncounted, a busy follower's answer that moves no
                     // cursor starts no pass either, and the mark waits for
                     // the tick.
@@ -906,8 +912,22 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                         .map(|next| next.take(route.generation, incarnation))
                         .unwrap_or_default();
                     if busy_answers.is_empty() {
-                        break;
+                        // Only records this pass is not shipping justify
+                        // giving up without a majority; a tick, a route
+                        // change or another shard's append would just make
+                        // the next pass ask the same followers again.
+                        let appended = next_pass
+                            .as_ref()
+                            .is_some_and(|next| next.appended.swap(false, std::sync::atomic::Ordering::AcqRel));
+                        if appended && log.tail_offset().await.is_ok_and(|now| now > tail) {
+                            cut_short = true;
+                            break;
+                        }
+                        woken = true;
+                        wanted = arm();
+                        continue;
                     }
+                    cut_short = true;
                     Some(busy_answers.into_iter().map(|shipped| (shipped, false)).collect())
                 }
             }
@@ -1054,7 +1074,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
             };
             // Then the rest, until the next pass is wanted: a follower that
             // has not answered by then is the driver's to wait for.
-            while !in_flight.is_empty() && !cut_short {
+            while !in_flight.is_empty() && !cut_short && !woken {
                 tokio::select! {
                     biased;
                     Some(finished) = in_flight.next() => rest.push(finished),
