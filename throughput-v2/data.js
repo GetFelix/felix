@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792901459610,
+  "lastUpdate": 1792902514706,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -35880,6 +35880,58 @@ window.BENCHMARK_DATA = {
             "range": "9072.03",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1240746.68\nmean: 1237531.95\nstdev: 9072.03\ncv: 0.73%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d2f36ed26872de2e0270425ccf9ece10afa4ec50",
+          "message": "feat(csharp): sharded subscribe, endpoints, remaining exports, blocking conformance gate (step 5) (#1524)\n\nC# SDK step 5: the rest of the C ABI surface and a blocking conformance gate.\n\n- Binds the remaining felix.h exports: sharded subscribe/resubscribe/positions (FelixShardedSubscription, ShardItem, ShardPosition), GetEndpointsAsync, PublishOnShardAsync, PublishRecordsAsync (a PublishResult per record, kept on partial failure), OffsetForTimeAsync.\n- scripts/check_csharp_bindings.py diffs felix.h exports against NativeMethods in the CI dotnet job (allowlist: felix_client_connect).\n- Conformance scenario tests for every required scenario; felix-conformance verify is blocking for net8.0 and net10.0. Environment-bound cases skip at run time like the C harness.\n- Docs: csharp.md (every shard, shards/records/time, connecting to a cluster), README, clients overview, status pages, changelog.",
+          "timestamp": "2026-10-25T04:25:14Z",
+          "tree_id": "a36c54d55dfcf8f172c0b0be6ebb6145e178fded",
+          "url": "https://github.com/GetFelix/felix/commit/d2f36ed26872de2e0270425ccf9ece10afa4ec50"
+        },
+        "date": 1792902514051,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 678233.18,
+            "range": "66084.99",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 678233.18\nmean: 685293.14\nstdev: 66084.99\ncv: 9.64%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 678233.18,
+            "range": "66084.99",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 678233.18\nmean: 685293.14\nstdev: 66084.99\ncv: 9.64%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 172040.42,
+            "range": "4694.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 172040.42\nmean: 170835.36\nstdev: 4694.05\ncv: 2.75%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1720404.24,
+            "range": "46940.53",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1720404.24\nmean: 1708353.56\nstdev: 46940.53\ncv: 2.75%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
