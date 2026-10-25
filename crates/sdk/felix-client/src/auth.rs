@@ -16,6 +16,10 @@ use anyhow::Result;
 /// one.
 const RETRY_AFTER: Duration = Duration::from_secs(5);
 
+/// How long one fetch may take before it counts as failed, so a provider that
+/// never answers cannot hold every stream open behind it.
+pub const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// The future a [`TokenProvider`] answers with.
 pub type TokenFuture<'a> = Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>>;
 
@@ -58,8 +62,9 @@ type Fetch = Box<dyn Fn() -> TokenFuture<'static> + Send + Sync>;
 /// a readable `exp` is kept until the broker refuses it.
 ///
 /// If a fetch fails while the current token is still valid, the current token
-/// is returned and the fetch is tried again a few seconds later. Concurrent
-/// callers wait on the same fetch.
+/// is returned and the fetch is tried again a few seconds later. A fetch that
+/// takes longer than [`FETCH_TIMEOUT`] counts as failed. Concurrent callers
+/// wait on the same fetch.
 pub struct RefreshingToken {
     fetch: Fetch,
     state: Mutex<Option<Held>>,
@@ -111,7 +116,14 @@ impl RefreshingToken {
         if let Some(token) = self.fresh(now_secs()) {
             return Ok(token);
         }
-        match (self.fetch)().await {
+        let fetched = match tokio::time::timeout(FETCH_TIMEOUT, (self.fetch)()).await {
+            Ok(fetched) => fetched,
+            Err(_) => Err(anyhow::anyhow!(
+                "the token fetch took longer than {}s",
+                FETCH_TIMEOUT.as_secs()
+            )),
+        };
+        match fetched {
             Ok(token) => {
                 *self.state.lock().expect("token state poisoned") = Some(Held::new(token.clone()));
                 Ok(token)

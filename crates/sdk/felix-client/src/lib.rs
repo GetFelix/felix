@@ -68,7 +68,7 @@ mod tls;
 
 pub mod timings;
 
-pub use auth::{RefreshingToken, TokenFuture, TokenProvider};
+pub use auth::{FETCH_TIMEOUT, RefreshingToken, TokenFuture, TokenProvider};
 pub use cache::{
     CacheChange, CacheConditionResult, CacheWatch, CacheWatchFilter, CacheWatchItem, VersionedValue,
 };
