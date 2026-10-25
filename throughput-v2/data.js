@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792955678486,
+  "lastUpdate": 1792957099787,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -37284,6 +37284,58 @@ window.BENCHMARK_DATA = {
             "range": "3149.07",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 816831.01\nmean: 815733.24\nstdev: 3149.07\ncv: 0.39%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e5d76502279d224a25375774969752be44f4f89b",
+          "message": "docs(c): every C example compiles with -Wextra -Werror (#1570)\n\nThe C doc-example test passed -Wno-unused-parameter, which hid unused callback\nparameters in six c.md examples. It now compiles every C block with\n-Wall -Wextra -Werror, and the examples mark their unused parameters.",
+          "timestamp": "2026-10-25T19:34:39Z",
+          "tree_id": "d4e535687abe4c811a4c8e6d8cc58f4cb3c706f2",
+          "url": "https://github.com/GetFelix/felix/commit/e5d76502279d224a25375774969752be44f4f89b"
+        },
+        "date": 1792957099102,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 696004.2,
+            "range": "52234.15",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 696004.20\nmean: 682577.21\nstdev: 52234.15\ncv: 7.65%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 696004.2,
+            "range": "52234.15",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 696004.20\nmean: 682577.21\nstdev: 52234.15\ncv: 7.65%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 160514.56,
+            "range": "2576.36",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 160514.56\nmean: 159552.43\nstdev: 2576.36\ncv: 1.61%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1605145.64,
+            "range": "25763.63",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1605145.64\nmean: 1595524.31\nstdev: 25763.63\ncv: 1.61%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
