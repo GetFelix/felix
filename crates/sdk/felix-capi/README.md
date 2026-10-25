@@ -1,6 +1,6 @@
 # felix-capi
 
-A C ABI over the Felix Rust client, and the base the C# SDK will bind to. Like the Python and Node bindings it wraps `felix-client`, so
+A C ABI over the Felix Rust client, and the base the C# SDK binds. Like the Python and Node bindings it wraps `felix-client`, so
 reconnection, redirect-following and error classification are the Rust
 client's.
 

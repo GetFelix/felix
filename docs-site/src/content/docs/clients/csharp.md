@@ -11,8 +11,7 @@ publish or read.
 It binds every function in `felix.h`: connect (with a token provider that renews the token), publish (single, batch, keyed records and named-shard), subscribe to one shard or
 to all of them, consumer groups, caches, counters and cache watches, atomic commits and state
 reads, conditional publishes, idempotent producers, endpoints, offset lookup by time, and the
-publisher and timestamp fields. It is not on NuGet yet: the `Felix.Client` package is
-published at the next release.
+publisher and timestamp fields. It ships on NuGet, the same name as on PyPI and npm.
 
 ## Supported platforms
 
@@ -26,14 +25,20 @@ It targets net8.0 and net10.0. CI builds it and runs the unit tests, including a
 of the native library and a call into it, natively on each row above. The scenarios
 against a broker run on Linux x64 only.
 
-The package will carry the native library for each row above, built for glibc, so Alpine
-and other musl systems need their own build. Until it is published, build `felix-capi`
-yourself and set `FELIX_NATIVE_LIB`, as below.
+## Install
 
-## Building
+```bash
+dotnet add package Felix.Client
+```
 
-The SDK needs `libfelix` (`libfelix.so`, `libfelix.dylib` or `felix.dll`), built from
-the repository:
+The package carries the native library for each row above, built for glibc, and finds it
+automatically. Alpine and other musl systems get a clear error; build `felix-capi` yourself
+and set `FELIX_NATIVE_LIB`, as below.
+
+## Building the native library yourself
+
+For a platform the package does not carry, or to develop the SDK, build `libfelix`
+(`libfelix.so`, `libfelix.dylib` or `felix.dll`) from the repository:
 
 ```bash
 cargo build --release -p felix-capi
@@ -41,7 +46,7 @@ export FELIX_NATIVE_LIB="$PWD/target/release/libfelix.so"   # .dylib on macOS, f
 dotnet test sdks/dotnet/Felix.sln
 ```
 
-`FELIX_NATIVE_LIB` wins when set. Otherwise the library is found next to
+`FELIX_NATIVE_LIB` overrides the bundled library when set. Otherwise the library is found next to
 `Felix.Client.dll`, then under `runtimes/<rid>/native/` (for example
 `runtimes/linux-x64/native/`), which is where the package puts it.
 
