@@ -53,6 +53,12 @@ impl Rig {
         })
     }
 
+    fn live(&self) -> crate::status::LiveReport {
+        self.status
+            .live_report(&watch_key(&key()))
+            .expect("live state")
+    }
+
     fn status(&self) -> crate::status::ShardStatus {
         self.status.get(&watch_key(&key())).expect("status")
     }
@@ -105,10 +111,10 @@ async fn the_status_lists_followers_busy_from_an_earlier_pass() {
 async fn the_status_counts_passes_since_the_mark_moved() {
     let rig = Rig::new().await;
     let mut shards = settled(&rig).await;
-    assert_eq!(rig.status().passes_since_mark, 0);
+    assert_eq!(rig.live().passes_since_mark, 0);
     pass(&mut shards, WakeKind::Tick).await;
     pass(&mut shards, WakeKind::Tick).await;
-    assert_eq!(rig.status().passes_since_mark, 2);
+    assert_eq!(rig.live().passes_since_mark, 2);
 }
 
 /// **The status says what woke the shard last.**
@@ -122,14 +128,14 @@ async fn the_status_names_the_last_wake() {
         (WakeKind::Tick, "tick"),
     ] {
         pass(&mut shards, wake).await;
-        assert_eq!(rig.status().last_wake, Some(name));
+        assert_eq!(rig.live().last_wake, Some(name));
     }
 
     // An answer after the pass ended is written at once: no pass is coming
     // to carry it.
     let answer = shards.answer_from(&key(), "broker-b", TAIL, true);
     shards.apply(answer);
-    assert_eq!(rig.status().last_wake, Some("straggler answer"));
+    assert_eq!(rig.live().last_wake, Some("straggler answer"));
 
     // One handed to a pass under way shows when that pass ends.
     let answer = shards.answer_from(&key(), "broker-b", TAIL, true);
@@ -137,7 +143,7 @@ async fn the_status_names_the_last_wake() {
     shards.apply(answer);
     let (scan, ended) = shards.passes.next().await.expect("a pass");
     shards.fold(scan, ended);
-    assert_eq!(rig.status().last_wake, Some("busy answer"));
+    assert_eq!(rig.live().last_wake, Some("busy answer"));
 }
 
 /// **The live state follows the pass and its exchanges, not the fold.** A
@@ -181,8 +187,12 @@ async fn the_live_state_keeps_an_exchange_until_it_is_answered() {
     let watched = watch_key(&key());
     shards.hold_busy(&key(), "broker-b");
     // `hold_busy` stands in for a pass's straggler, so list its launch.
-    rig.status
-        .pass_started(&watched, 1, vec![("broker-b".to_string(), TAIL)]);
+    rig.status.pass_started(
+        &watched,
+        1,
+        Some(TAIL),
+        vec![("broker-b".to_string(), TAIL)],
+    );
     tokio::time::sleep(Duration::from_millis(1000)).await;
     pass(&mut shards, WakeKind::Tick).await;
     let report = rig.status.live_report(&watched).expect("report");
@@ -196,4 +206,35 @@ async fn the_live_state_keeps_an_exchange_until_it_is_answered() {
     shards.apply(answer);
     let report = rig.status.live_report(&watched).expect("report");
     assert!(report.launched.is_empty(), "{:?}", report.launched);
+}
+
+/// **The wake and pass count are live.** A pass that has not ended already
+/// shows what woke it and that it counts, so a stuck pass is not described by
+/// the previous fold.
+#[tokio::test(start_paused = true)]
+async fn the_wake_and_pass_count_are_live_while_a_pass_runs() {
+    let rig = Rig::new().await;
+    let mut shards = settled(&rig).await;
+    assert_eq!(rig.live().passes_since_mark, 0);
+    shards.scan(WakeKind::Append);
+    let live = rig.live();
+    assert!(live.pass.is_some());
+    assert_eq!(live.last_wake, Some("append"));
+    assert_eq!(live.passes_since_mark, 1);
+    // The next wake lands on the running pass and is still shown.
+    shards.scan(WakeKind::Routes);
+    assert_eq!(rig.live().last_wake, Some("routes"));
+}
+
+/// A pass that ends on a shard no longer led leaves no live state behind.
+#[tokio::test(start_paused = true)]
+async fn a_pass_ending_on_a_lost_shard_leaves_no_live_state() {
+    let rig = Rig::new().await;
+    let mut shards = rig.shards();
+    shards.scan(WakeKind::Tick);
+    assert!(rig.status.live_report(&watch_key(&key())).is_some());
+    publish(&rig.router, "broker-b", &["broker-c"], 5);
+    let (scan, ended) = shards.passes.next().await.expect("a pass");
+    shards.fold(scan, ended);
+    assert!(rig.status.live_report(&watch_key(&key())).is_none());
 }

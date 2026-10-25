@@ -53,8 +53,6 @@ fn the_board_keeps_only_what_is_still_led() {
         fence: None,
         drain_pending: false,
         behind: false,
-        passes_since_mark: 0,
-        last_wake: None,
     };
     board.put(key(0), status.clone());
     board.put(key(1), status.clone());

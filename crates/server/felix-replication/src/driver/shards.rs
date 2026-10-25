@@ -202,11 +202,6 @@ struct ShardState {
     fence_failures: (u64, u32),
     /// What its last pass left.
     last: Option<LastPass>,
-    /// What last woke the shard, for the status a stalled mark is read from.
-    last_wake: Option<&'static str>,
-    /// Passes started since the mark last moved, and the mark that was.
-    passes_since_mark: u32,
-    mark_seen: Option<u64>,
 }
 
 /// What a shard's last pass left, for the driver's summary.
@@ -310,9 +305,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         }
         for key in &live {
             self.start(key, appended);
-            if let Some(state) = self.states.get_mut(key) {
-                state.last_wake = Some(wake.name());
-            }
+            self.cx.status.note_wake(&watch_key(key), wake.name());
         }
 
         // A shard this broker no longer leads keeps no cursors: they would be
@@ -490,8 +483,6 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                     fence: None,
                     drain_pending: false,
                     behind: false,
-                    passes_since_mark: 0,
-                    last_wake: None,
                 },
             );
             return;
@@ -500,7 +491,6 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         let next = Arc::new(NextPass::default());
         let state = self.states.entry(key.clone()).or_default();
         state.running = Some(Arc::clone(&next));
-        state.passes_since_mark = state.passes_since_mark.saturating_add(1);
         let busy: HashSet<String> = self
             .busy
             .get(key)
@@ -512,9 +502,14 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             .filter(|cursor| !busy.contains(&cursor.node_id))
             .map(|cursor| (cursor.node_id.clone(), cursor.next_offset))
             .collect();
+        let mark = self.cx.marks.offset_at(
+            &watch_key(key),
+            crate::incarnation::of(self.cx.broker, key),
+            route.generation,
+        );
         self.cx
             .status
-            .pass_started(&watch_key(key), self.scan, launched);
+            .pass_started(&watch_key(key), self.scan, mark, launched);
         self.passes
             .push(self.pass(key.clone(), route.clone(), entry, aux, busy, next));
     }
@@ -650,17 +645,13 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             .get(&key)
             .is_some_and(|route| self.leads(&key, route));
         if !self.states.contains_key(&key) {
-            self.cx
-                .status
-                .pass_ended(&watch_key(&key), scan, Vec::new());
+            self.cx.status.forget(&watch_key(&key));
             return;
         }
         if !led {
             // Lost while the pass ran. Its exchanges go with it.
             self.states.remove(&key);
-            self.cx
-                .status
-                .pass_ended(&watch_key(&key), scan, Vec::new());
+            self.cx.status.forget(&watch_key(&key));
             return;
         }
         let ShardPass {
@@ -708,21 +699,13 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             .filter(|cursor| unanswered(&cursor.node_id))
             .map(|cursor| (cursor.node_id.clone(), cursor.next_offset))
             .collect();
-        self.cx
-            .status
-            .pass_ended(&watch_key(&key), scan, outstanding);
         let mark = self
             .cx
             .marks
             .offset_at(&watch_key(&key), incarnation, generation);
-        let (passes_since_mark, last_wake) = {
-            let state = self.states.get_mut(&key).expect("checked above");
-            if state.mark_seen != mark {
-                state.mark_seen = mark;
-                state.passes_since_mark = 0;
-            }
-            (state.passes_since_mark, state.last_wake)
-        };
+        self.cx
+            .status
+            .pass_ended(&watch_key(&key), scan, mark, outstanding);
         self.cx.status.put(
             watch_key(&key),
             ShardStatus {
@@ -732,8 +715,6 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                 fence: None,
                 drain_pending,
                 behind,
-                passes_since_mark,
-                last_wake,
             },
         );
         self.streams.insert(key.clone(), cursors);
@@ -834,8 +815,6 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                 fence,
                 drain_pending: false,
                 behind: false,
-                passes_since_mark: 0,
-                last_wake: None,
             },
         );
         if opened || std::mem::take(&mut state.again) {
@@ -903,12 +882,11 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         if let Some(next) = &state.running {
             // The pass under way may be waiting for a majority this answer
             // completes, and counts it; see the wait in `replicate_shard`.
-            state.last_wake = Some("busy answer");
+            self.cx.status.note_wake(&watch_key(&key), "busy answer");
             next.answered.lock().push(answered);
             next.wanted.notify_one();
             return;
         }
-        state.last_wake = Some("straggler answer");
         self.cx
             .status
             .note_wake(&watch_key(&key), "straggler answer");
