@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792922794763,
+  "lastUpdate": 1792923030674,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -46398,6 +46398,72 @@ window.BENCHMARK_DATA = {
             "range": "699.77",
             "unit": "us",
             "extra": "trials: 5\nmedian: 594.00\nmean: 899.80\nstdev: 699.77\ncv: 77.77%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "293dfef8e85a0ed27675dd3d38c990143af9ca6e",
+          "message": "feat(csharp): NuGet package with native libraries for six platforms (#1550)\n\nFelix.Client packs as a NuGet package with the release libfelix for\nlinux-x64/arm64, osx-x64/arm64 and win-x64/arm64 under runtimes/<rid>/native;\nNativeLoader finds it by default (FELIX_NATIVE_LIB still overrides) and refuses\nmusl/Alpine with a clear error.\n\nrelease.yml builds the six natives, load-tests each, packs and smoke-tests the\nnupkg, and publishes to nuget.org with trusted publishing (environment dotnet,\nNuGet/login as GetFelix) only when PUBLISH_NUGET is true and the run is not a\ndry run or a nightly. Nightly and rehearsal tags pack with the workspace\nversion. Every registry publish job (NuGet, PyPI, npm) and the Python and\nTypeScript release-asset jobs now wait on linux-x86_64's release gates (ref,\nversion, changelog.d), which PyPI and npm previously did not.\n\nCI packs each runner's own native and runs a smoke app restored from the local\npackage. Docs keep \"not on NuGet yet\" until the first release publishes it.",
+          "timestamp": "2026-10-25T10:05:40Z",
+          "tree_id": "cc8dd01406c9a28d0547cc6d5435115024f47e6b",
+          "url": "https://github.com/GetFelix/felix/commit/293dfef8e85a0ed27675dd3d38c990143af9ca6e"
+        },
+        "date": 1792923025100,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 107,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 107.00\nmean: 106.80\nstdev: 0.45\ncv: 0.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 141,
+            "range": "2.41",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 141.00\nmean: 140.40\nstdev: 2.41\ncv: 1.72%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 197,
+            "range": "64.79",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 197.00\nmean: 219.60\nstdev: 64.79\ncv: 29.51%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 142,
+            "range": "3.39",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 142.00\nmean: 143.00\nstdev: 3.39\ncv: 2.37%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 279,
+            "range": "417.36",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 279.00\nmean: 465.40\nstdev: 417.36\ncv: 89.68%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 403,
+            "range": "1242.79",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 403.00\nmean: 984.00\nstdev: 1242.79\ncv: 126.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
