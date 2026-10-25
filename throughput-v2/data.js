@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792932155932,
+  "lastUpdate": 1792940309938,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -36764,6 +36764,58 @@ window.BENCHMARK_DATA = {
             "range": "2462.69",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 797827.26\nmean: 798540.75\nstdev: 2462.69\ncv: 0.31%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "eb3f06072c489d64f63337c2e1293359f16a670b",
+          "message": "docs(clients): every client example reviewed and compiled; token sections aligned; why sdks/ is separate (#1553)\n\nEvery code example on the Rust, C, Python, TypeScript, C# and browser client\npages was reviewed as production code and fixed: several did not compile or\nparse, others swallowed errors, leaked handles, skipped C status checks,\nhard-coded tokens, lacked timeouts or dropped results. Each page's examples are\nnow compiled from the page itself in CI, so they cannot drift: Rust doc tests,\nC against felix.h with -Werror, Python bound against _felix.pyi with undefined\nnames caught, TypeScript through tsc, C# through Roslyn. The browser example is\nchecked by hand against felix-gateway-client 0.7.0.\n\nThe token sections share one structure and wording across the five pages, with\nonly true per-language differences, and overview.md has the matching rules.\nCONTRIBUTING says why SDKs built by their own toolchain live under sdks/\nrather than crates/.",
+          "timestamp": "2026-10-25T07:53:43-07:00",
+          "tree_id": "b5b1e7aa6f7ab966b2bc12ae2cf30b5e96ff64e6",
+          "url": "https://github.com/GetFelix/felix/commit/eb3f06072c489d64f63337c2e1293359f16a670b"
+        },
+        "date": 1792940309262,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 603253.87,
+            "range": "78223.96",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 603253.87\nmean: 618496.43\nstdev: 78223.96\ncv: 12.65%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 603253.87,
+            "range": "78223.96",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 603253.87\nmean: 618496.43\nstdev: 78223.96\ncv: 12.65%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 165734.42,
+            "range": "4047.21",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 165734.42\nmean: 166648.82\nstdev: 4047.21\ncv: 2.43%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1657344.2,
+            "range": "40472.13",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1657344.20\nmean: 1666488.22\nstdev: 40472.13\ncv: 2.43%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
