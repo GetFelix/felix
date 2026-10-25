@@ -241,7 +241,7 @@ any thread, with `felix_token_reply_ok` or `felix_token_reply_err`. The Rust
 client's `RefreshingToken` does the timing: refresh at two thirds of a token's
 life, keep the old token if a fetch fails or takes over 30 s, retry a refused
 token once. The `token` argument to connect may be `NULL` (or empty) when a
-fetch is set. A reply never completed fails when the client is freed.
+fetch is set. A reply never completed is held until the client is freed, so answer each one, even late.
 
 The first reply call that is not refused for a bad argument consumes the reply,
 including an answer that arrives after the 30 s timeout (it returns

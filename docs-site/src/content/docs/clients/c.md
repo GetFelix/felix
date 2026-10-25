@@ -159,8 +159,9 @@ so the reply is how a slow answer is returned.
 **Failure.** The `message` you give reaches the call that needed the token
 unchanged, once no valid token is held to fall back on. A fetch not answered
 within 30 seconds counts as failed; an answer that arrives later returns
-`FELIX_STATUS_OK` and the token is discarded. A reply still unanswered when the
-client is freed counts as a failure. A null, empty or non-UTF-8 `token` returns
+`FELIX_STATUS_OK` and the token is discarded. The library holds every unanswered
+reply until the client is freed, when it counts as a failure, so answer each
+one, even late. A null, empty or non-UTF-8 `token` returns
 `FELIX_STATUS_INVALID_ARGUMENT` and leaves the reply open to be answered.
 
 **Lifetime.** The first `felix_token_reply_ok` or `felix_token_reply_err` call
