@@ -131,7 +131,7 @@ impl StubBroker {
         self.seen.batches.lock().unwrap().clone()
     }
 
-    /// Every JSON `publish_batch` and `commit` it was sent, with the shard
+    /// Every JSON `publish_batch`, `commit`, `publish_if` and `state_get` it was sent, with the shard
     /// each named, in arrival order.
     pub(super) fn named(&self) -> Vec<Named> {
         self.seen.named.lock().unwrap().clone()
@@ -445,6 +445,7 @@ async fn serve_stream(
                             | felix_wire::FEATURE_SHARD_OWNERS
                             | felix_wire::FEATURE_RECORD_TIMESTAMPS
                             | felix_wire::FEATURE_ATOMIC_COMMIT
+                            | felix_wire::FEATURE_PUBLISH_CONDITIONAL
                             | extended,
                     ),
                     server_features_hi: (features_hi != 0).then_some(features_hi),
@@ -500,6 +501,47 @@ async fn serve_stream(
                     _ => Message::CommitOk {
                         request_id,
                         offset: 7,
+                    },
+                };
+                write_message(&mut *send.lock().await, answer).await?;
+            }
+            // The script's `not_leader` or error is the answer; anything else
+            // writes at offset 7.
+            Message::PublishIf {
+                payloads,
+                shard,
+                request_id,
+                ..
+            } => {
+                seen.named
+                    .lock()
+                    .unwrap()
+                    .push(("publish_if", shard, payloads));
+                let answer = match script(request_id) {
+                    refusal @ (Message::NotLeader { .. } | Message::Error { .. }) => refusal,
+                    _ => Message::PublishOk {
+                        request_id,
+                        offset: Some(7),
+                    },
+                };
+                write_message(&mut *send.lock().await, answer).await?;
+            }
+            // The script's `not_leader` or error is the answer; anything else
+            // is an empty value.
+            Message::StateGet {
+                shard, request_id, ..
+            } => {
+                seen.named
+                    .lock()
+                    .unwrap()
+                    .push(("state_get", shard, vec![]));
+                let answer = match script(request_id) {
+                    refusal @ (Message::NotLeader { .. } | Message::Error { .. }) => refusal,
+                    _ => Message::StateValue {
+                        value: None,
+                        version: None,
+                        as_of: Some(7),
+                        request_id,
                     },
                 };
                 write_message(&mut *send.lock().await, answer).await?;

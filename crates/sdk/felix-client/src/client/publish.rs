@@ -59,7 +59,11 @@ impl Client {
         static REQUEST_IDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let request_id = REQUEST_IDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         match self
-            .group_round_trip(Message::ProducerInit { request_id }, request_id)
+            .group_round_trip(
+                Message::ProducerInit { request_id },
+                request_id,
+                "producer_init refused",
+            )
             .await?
         {
             Message::ProducerInitOk { producer_id, .. } => Ok(producer_id),
