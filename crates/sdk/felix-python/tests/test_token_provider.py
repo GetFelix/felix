@@ -54,9 +54,9 @@ class Provider:
                 self.running -= 1
 
 
-def connect(fixture, **kwargs):
+def connect(fixture, addrs=None, **kwargs):
     return felix.Client(
-        fixture["addrs"],
+        fixture["addrs"] if addrs is None else addrs,
         tenant_id=fixture["tenant_id"],
         ca_file=fixture["ca_file"],
         **kwargs,
@@ -155,9 +155,16 @@ def test_a_refused_token_costs_one_fetch_and_one_retry(fixture):
 
 
 def test_a_provider_returning_the_refused_token_is_not_retried(fixture):
+    # One broker: each broker's refusal is its own authentication, so a
+    # cluster client would fetch once per broker it tries.
     provider = Provider("not-a-token")
     with pytest.raises(felix.AuthError):
-        connect(fixture, token="not-a-token", token_provider=provider)
+        connect(
+            fixture,
+            fixture["addrs"][:1],
+            token="not-a-token",
+            token_provider=provider,
+        )
     assert provider.calls == 1
 
 
@@ -430,22 +437,17 @@ def test_async_provider_is_cancelled_when_the_client_is_gone(fixture):
             token=fixture["token"],
             ca_file=fixture["ca_file"],
         )
-        identity = await client.with_identity(
-            fixture["tenant_id"], token_provider=provider
-        )
-        publish = asyncio.ensure_future(
-            identity.publish(
-                fixture["tenant_id"], fixture["namespace"], fixture["durable_stream"], b"a"
-            )
+        # with_identity authenticates its streams, so it calls the provider.
+        pending = asyncio.ensure_future(
+            client.with_identity(fixture["tenant_id"], token_provider=provider)
         )
         while not started.is_set():
             await asyncio.sleep(0.05)
-        # An operation in flight keeps the token source alive; drop it, then
-        # the handle and the client.
-        publish.cancel()
+        # Abandon the call, then the client: nothing uses the token source.
+        pending.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await publish
-        del identity, publish
+            await pending
+        del pending
         await client.close()
         del client
         gc.collect()
@@ -458,19 +460,43 @@ def test_async_provider_is_cancelled_when_the_client_is_gone(fixture):
     asyncio.run(main())
 
 
-def test_a_sync_provider_past_the_timeout_is_joined_not_called_again(fixture):
-    # Sync providers cannot be cancelled: the second publish waits on the call
-    # the first one gave up on, and uses its late answer.
+def test_with_identity_cancels_an_async_provider_at_the_timeout(fixture):
+    cancelled = threading.Event()
+
+    async def provider():
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    async def main():
+        client = await felix.AsyncClient.connect(
+            fixture["addrs"],
+            tenant_id=fixture["tenant_id"],
+            token=fixture["token"],
+            ca_file=fixture["ca_file"],
+        )
+        async with client:
+            with pytest.raises(felix.AuthError, match="longer than 30s"):
+                await client.with_identity(fixture["tenant_id"], token_provider=provider)
+            assert cancelled.wait(10), "the provider's task was not cancelled"
+
+    asyncio.run(main())
+
+
+def test_a_sync_provider_past_the_timeout_is_not_called_again(fixture):
+    # Sync providers cannot be cancelled. with_identity authenticates its
+    # streams, so it waits on the slow call and gives up at 30 s. That a later
+    # operation joins the late answer is covered by the Rust core tests; it
+    # gets a Python test with the short-lived-token fixture.
     provider = Provider(fixture["token"], delay=33.0)
     with connect(fixture, token=fixture["token"]) as client:
-        identity = client.with_identity(fixture["tenant_id"], token_provider=provider)
-        with pytest.raises(felix.AuthError, match="took longer than"):
-            identity.publish(
-                fixture["tenant_id"], fixture["namespace"], fixture["durable_stream"], b"a"
-            )
-        identity.publish(
-            fixture["tenant_id"], fixture["namespace"], fixture["durable_stream"], b"b"
-        )
+        started = time.monotonic()
+        with pytest.raises(felix.AuthError, match="longer than 30s"):
+            client.with_identity(fixture["tenant_id"], token_provider=provider)
+        assert 25 < time.monotonic() - started < 33
+        time.sleep(max(0.0, 34.0 - (time.monotonic() - started)))
     assert provider.calls == 1
 
 
