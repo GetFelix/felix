@@ -382,7 +382,9 @@ class AsyncClient:
         ca_file: str | None = None,
         offer_alpn: bool = False,
     ) -> "AsyncClient":
-        """``token_provider`` must be an ``async def``; a plain callable is a ``TypeError``."""
+        """``token_provider`` must be an ``async def`` (or return an awaitable); one returning a ``str`` fails with ``AuthError``.
+
+        It is awaited on the loop running this call, which must stay open for the life of the client and its ``with_identity`` handles."""
     async def with_identity(
         self,
         tenant_id: str,

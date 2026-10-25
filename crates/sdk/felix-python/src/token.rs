@@ -5,8 +5,9 @@
 //!
 //! The GIL is never held across a wait on the broker. A blocking `Client` runs
 //! the callable on a Tokio blocking-pool thread, which takes the GIL only for
-//! the call. An `AsyncClient` hands the coroutine to the client's own event
-//! loop and awaits the result without the GIL.
+//! the call. An `AsyncClient` hands the coroutine to the event loop that was
+//! running at connect / `with_identity` (captured once, so it must outlive the
+//! client and its handles) and awaits the result without the GIL.
 
 use std::sync::Arc;
 
@@ -14,6 +15,7 @@ use anyhow::{Result, anyhow};
 use felix_client::RefreshingToken;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
+use pyo3::types::PyString;
 use pyo3_async_runtimes::{TaskLocals, into_future_with_locals};
 
 /// Where streams get their token from.
@@ -26,7 +28,7 @@ pub(crate) enum Tokens {
 pub(crate) enum Flavor {
     /// A plain callable, or an `async def` run with `asyncio.run`.
     Blocking,
-    /// An `async def`, awaited on this loop.
+    /// Any callable returning an awaitable, awaited on this loop.
     Asyncio(TaskLocals),
 }
 
@@ -65,12 +67,6 @@ pub(crate) fn resolve(
     if !callable.is_callable() {
         return Err(PyTypeError::new_err("token_provider must be callable"));
     }
-    if matches!(flavor, Flavor::Asyncio(_)) && !is_async_callable(callable)? {
-        return Err(PyTypeError::new_err(
-            "AsyncClient token_provider must be an `async def` function; a plain \
-             callable would block the event loop. Use Client for a plain callable.",
-        ));
-    }
 
     let provider = Arc::new(provider);
     let initial = token.filter(|token| !token.is_empty()).map(str::to_string);
@@ -93,22 +89,6 @@ pub(crate) fn resolve(
         None => RefreshingToken::new(fetch),
     };
     Ok(Tokens::Provider(Arc::new(source)))
-}
-
-/// True for `async def` functions, partials of them, and objects whose
-/// `__call__` is one.
-fn is_async_callable(callable: &Bound<'_, PyAny>) -> PyResult<bool> {
-    let inspect = callable.py().import("inspect")?;
-    if inspect
-        .call_method1("iscoroutinefunction", (callable,))?
-        .is_truthy()?
-    {
-        return Ok(true);
-    }
-    let call = callable.get_type().getattr("__call__")?;
-    inspect
-        .call_method1("iscoroutinefunction", (call,))?
-        .is_truthy()
 }
 
 /// Run the callable on a blocking-pool thread, holding the GIL only while it
@@ -139,27 +119,80 @@ async fn fetch_blocking(provider: Arc<Py<PyAny>>) -> Result<String> {
     .map_err(|err| anyhow!("the token provider thread failed: {err}"))?
 }
 
-/// Create the coroutine, then await it on the client's loop with the GIL
+/// Call the provider, then await its result on the client's loop with the GIL
 /// released while waiting.
+///
+/// Any callable is accepted, because a lambda or decorator around an `async
+/// def` cannot be told apart from a plain function without calling it. The
+/// result decides: an awaitable is awaited, anything else is an error.
 async fn fetch_on_loop(provider: Arc<Py<PyAny>>, locals: TaskLocals) -> Result<String> {
     let pending = Python::attach(|py| -> Result<_> {
-        let coroutine = provider.call0(py).map_err(|err| failure(py, &err))?;
-        into_future_with_locals(&locals, coroutine.into_bound(py)).map_err(|err| failure(py, &err))
+        ensure_loop_open(py, &locals)?;
+        let result = provider.call0(py).map_err(|err| failure(py, &err))?;
+        let result = result.into_bound(py);
+        let awaitable = py
+            .import("inspect")
+            .and_then(|inspect| inspect.call_method1("isawaitable", (&result,)))
+            .and_then(|answer| answer.is_truthy())
+            .map_err(|err| failure(py, &err))?;
+        if !awaitable {
+            return Err(anyhow!(
+                "AsyncClient token_provider must be an `async def` function (or return an \
+                 awaitable), not return {}; use Client for a plain callable",
+                type_name(&result)
+            ));
+        }
+        into_future_with_locals(&locals, result).map_err(|err| loop_or_failure(py, &locals, &err))
     })?;
     let value = pending
         .await
-        .map_err(|err| Python::attach(|py| failure(py, &err)))?;
+        .map_err(|err| Python::attach(|py| loop_or_failure(py, &locals, &err)))?;
     Python::attach(|py| as_token(value.bind(py)))
+}
+
+const LOOP_CLOSED: &str = "the event loop the token provider was bound to is closed";
+
+/// The provider's loop is the one running at connect / `with_identity`; once it
+/// is closed no provider call can run, which must not read as a bad token.
+fn ensure_loop_open(py: Python<'_>, locals: &TaskLocals) -> Result<()> {
+    if loop_closed(py, locals) {
+        return Err(anyhow!(LOOP_CLOSED));
+    }
+    Ok(())
+}
+
+fn loop_closed(py: Python<'_>, locals: &TaskLocals) -> bool {
+    locals
+        .event_loop(py)
+        .call_method0("is_closed")
+        .and_then(|closed| closed.is_truthy())
+        .unwrap_or(false)
+}
+
+fn loop_or_failure(py: Python<'_>, locals: &TaskLocals, err: &PyErr) -> anyhow::Error {
+    if loop_closed(py, locals) {
+        anyhow!(LOOP_CLOSED)
+    } else {
+        failure(py, err)
+    }
+}
+
+fn type_name(value: &Bound<'_, PyAny>) -> String {
+    value
+        .get_type()
+        .name()
+        .map_or_else(|_| "an unknown type".to_string(), |name| name.to_string())
 }
 
 /// The provider's result as a token: a non-empty `str`, or a failure.
 fn as_token(value: &Bound<'_, PyAny>) -> Result<String> {
     let token = value.extract::<String>().map_err(|_| {
-        let kind = value
-            .get_type()
-            .name()
-            .map_or_else(|_| "an unknown type".to_string(), |name| name.to_string());
-        anyhow!("token_provider must return a str, not {kind}")
+        if value.is_instance_of::<PyString>() {
+            // A str holding lone surrogates cannot be encoded as UTF-8.
+            anyhow!("token_provider returned a str that is not valid UTF-8")
+        } else {
+            anyhow!("token_provider must return a str, not {}", type_name(value))
+        }
     })?;
     if token.is_empty() {
         return Err(anyhow!("token_provider returned an empty token"));

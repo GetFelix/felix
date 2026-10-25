@@ -92,16 +92,24 @@ The provider can be called while your own event loop is blocked in a synchronous
 call, because it does not depend on that loop.
 
 **Failure.** The provider fails when it raises, returns something that is not a
-non-empty `str`, or has not answered after 30 seconds. While the held token is
-still valid the client keeps it, logs a warning and asks again a few seconds
+non-empty `str` (a `str` that is not valid UTF-8 counts). While the held token
+is still valid the client keeps it, logs a warning and asks again a few seconds
 later. Otherwise the call that needed the token raises `AuthError` with the
-exception's message in its text.
+exception's message in its text. A provider that has not answered after 30
+seconds fails the operations waiting on it; it is not called again until it
+returns.
 
-**Async variant.** `AsyncClient` takes an `async def` only, and passing a plain
-callable raises `TypeError` when you call `connect` or `with_identity`. The
-coroutine is awaited on the event loop that made the call, so a session bound to
-that loop works. While that loop is blocked, for instance in a synchronous call,
-the provider cannot run and the stream waits for it, up to the 30 seconds.
+**Async variant.** `AsyncClient` takes an `async def`, or any callable that
+returns an awaitable (a lambda or decorator around one). Whatever the provider
+returns is awaited; a `str` returned directly is a failure (`AuthError`), since
+a plain function belongs on `Client`. A non-callable raises `TypeError` at
+`connect` or `with_identity`. The coroutine is awaited on the event loop that
+was running at `connect` or `with_identity`, so a session bound to that loop
+works. That loop is captured once and must outlive the client and every
+`with_identity` handle; after it closes, calls that need a token fail with "the
+event loop the token provider was bound to is closed". While that loop is
+blocked, for instance in a synchronous call, the provider cannot run and the
+stream waits for it, up to the 30 seconds.
 
 The example below does the control plane calls with `urllib` and keeps the
 rotating refresh token. The refresh token works once: every refresh returns a

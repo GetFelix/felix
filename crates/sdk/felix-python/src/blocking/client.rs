@@ -43,9 +43,11 @@ impl Client {
     /// it must not use objects bound to another event loop. The provider is
     /// called lazily (never on a timer), one call at a time, when the held
     /// token is missing, past two thirds of its life, or refused by the
-    /// broker. If it raises, returns a non-`str`, or takes over 30 seconds, the
-    /// client keeps a token that is still valid and otherwise raises
-    /// `AuthError` with the provider's message.
+    /// broker. If it raises or returns a non-`str`, the client keeps a token
+    /// that is still valid and otherwise raises `AuthError` with the
+    /// provider's message. A provider that has not answered after 30 seconds
+    /// fails the operations waiting on it; it is not called again until it
+    /// returns.
     ///
     /// `server_name` is the name the broker's certificate is expected to
     /// carry.

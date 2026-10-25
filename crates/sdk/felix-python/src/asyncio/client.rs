@@ -26,8 +26,12 @@ pub struct AsyncClient {
 #[pymethods]
 impl AsyncClient {
     /// Connect to a cluster. Arguments are those of `Client(...)`, except that
-    /// `token_provider` must be an `async def` function (a plain callable is a
-    /// `TypeError`). It is awaited on the event loop running this call.
+    /// `token_provider` must be an `async def` function, or any callable
+    /// returning an awaitable; one that returns a `str` fails with `AuthError`
+    /// when first called. It is awaited on the event loop running this call,
+    /// which must stay open for the life of the client and every
+    /// `with_identity` handle; once it is closed the provider fails with "the
+    /// event loop the token provider was bound to is closed".
     #[staticmethod]
     #[pyo3(signature = (
         addrs,
