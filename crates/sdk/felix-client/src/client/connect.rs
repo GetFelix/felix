@@ -12,6 +12,7 @@ use tracing::debug;
 
 use super::Client;
 use super::discovery::ask_stream_routing;
+use crate::auth::{FETCH_TIMEOUT, TokenProvider};
 use crate::cache::{CacheWorker, run_cache_worker_with_limit};
 use crate::config::{
     CACHE_WORKER_QUEUE_DEPTH, ClientConfig, ClientRuntimeConfig, cache_transport_config,
@@ -22,6 +23,49 @@ use crate::publish::{
     LearnWidth, OpenWorker, PublishAdmission, PublishWorker, ShardStreams, StreamWidths,
     run_publisher_writer_with_limit,
 };
+
+/// Ask the token source for the current token, so a fetch happens once per
+/// connect rather than inside each broker's handshake timer.
+pub(crate) async fn fetch_token(config: &ClientConfig) -> Result<()> {
+    fetch_from(config.tokens()?.as_ref()).await
+}
+
+/// One fetch from `tokens`, cut off at [`FETCH_TIMEOUT`] with the error
+/// [`crate::RefreshingToken`] gives, so a custom provider that never answers
+/// cannot hold a connect forever. A provider that bounds its own fetch is not
+/// given a second timer: the outer one could fire first and skip the
+/// provider's fallback to a still-valid token.
+pub(crate) async fn fetch_from(tokens: &dyn TokenProvider) -> Result<()> {
+    if tokens.bounds_its_own_fetch() {
+        return tokens.token().await.map(drop);
+    }
+    match tokio::time::timeout(FETCH_TIMEOUT, tokens.token()).await {
+        Ok(token) => token.map(drop),
+        Err(_) => Err(anyhow::anyhow!(
+            "the token fetch took longer than {}s",
+            FETCH_TIMEOUT.as_secs()
+        )),
+    }
+}
+
+/// The error for a connect that every address refused. When each refusal was
+/// the broker rejecting the token (see `is_auth_refusal`), that stays the error's type and cause, so a
+/// caller sees an auth failure and not an unreachable cluster.
+pub(crate) fn no_broker_answered(refusals: Vec<(SocketAddr, anyhow::Error)>) -> anyhow::Error {
+    let detail = refusals
+        .iter()
+        .map(|(addr, err)| format!("{addr}: {err:#}"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let all_rejected = !refusals.is_empty()
+        && refusals
+            .iter()
+            .all(|(_, err)| crate::connection::is_auth_refusal(err));
+    if all_rejected && let Some((_, first)) = refusals.into_iter().next() {
+        return first.context(format!("no broker accepted the token ({detail})"));
+    }
+    anyhow::anyhow!("no broker answered ({detail})")
+}
 
 impl Client {
     /// Connect to the broker at `addr` with default transport settings.
@@ -80,6 +124,7 @@ impl Client {
                 "no broker addresses were given to connect to"
             ));
         }
+        fetch_token(&client_config).await?;
         let mut refusals = Vec::with_capacity(addrs.len());
         for addr in addrs {
             match Self::connect_with_transport(
@@ -91,13 +136,10 @@ impl Client {
             .await
             {
                 Ok(client) => return Ok(client),
-                Err(err) => refusals.push(format!("{addr}: {err:#}")),
+                Err(err) => refusals.push((*addr, err)),
             }
         }
-        Err(anyhow::anyhow!(
-            "no broker answered ({})",
-            refusals.join("; ")
-        ))
+        Err(no_broker_answered(refusals))
     }
 
     /// [`Client::connect`] with an explicit transport configuration.
@@ -128,8 +170,11 @@ impl Client {
         .await
     }
 
-    /// Bounded by `connect_timeout`: a broker that accepts the handshake but
-    /// never grants stream credit would otherwise hold the caller forever.
+    /// The handshake is bounded by `connect_timeout`: a broker that accepts it
+    /// but never grants stream credit would otherwise hold the caller forever.
+    /// The up-front token fetch is not part of it; `FETCH_TIMEOUT` bounds that.
+    /// A refetch after a broker refuses the token happens inside the handshake
+    /// and does count against it.
     async fn build(
         addr: SocketAddr,
         server_name: &str,
@@ -137,6 +182,10 @@ impl Client {
         transport: TransportConfig,
         layout: Layout,
     ) -> Result<Self> {
+        // Before the timer starts, so a slow provider is bounded by its own
+        // timeout and reports its own error. The provider caches, so the
+        // handshake below finds the token held.
+        fetch_token(&client_config).await?;
         let limit = client_config.connect_timeout;
         tokio::time::timeout(
             limit,
@@ -646,3 +695,6 @@ fn dedup<'a>(nodes: &[&'a Arc<NodeConnections>]) -> Vec<&'a Arc<NodeConnections>
     }
     distinct
 }
+
+#[cfg(test)]
+mod tests;

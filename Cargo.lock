@@ -1148,6 +1148,7 @@ name = "felix-capi"
 version = "0.6.1"
 dependencies = [
  "anyhow",
+ "base64 0.23.1",
  "bytes",
  "cbindgen",
  "felix-client",
@@ -1178,6 +1179,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
 ]
@@ -1194,6 +1196,7 @@ dependencies = [
  "felix-conformance",
  "felix-controlplane-service",
  "felix-storage",
+ "felix-transport",
  "felix-wire",
  "kafka-protocol",
  "libc",

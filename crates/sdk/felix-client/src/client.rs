@@ -12,6 +12,7 @@ mod cache_watch;
 mod commit;
 pub use commit::ConditionalWrite;
 mod connect;
+pub(crate) use connect::{fetch_from, fetch_token, no_broker_answered};
 pub(crate) mod discovery;
 mod groups;
 mod identity;

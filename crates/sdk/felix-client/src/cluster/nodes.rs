@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 
 use crate::auth::TokenProvider;
-use crate::client::Client;
+use crate::client::{Client, fetch_from, fetch_token, no_broker_answered};
 use crate::config::ClientConfig;
 
 use super::seeds::{LOOKUP_TIMEOUT, Lookup};
@@ -243,6 +243,19 @@ impl Nodes {
         clients
     }
 
+    /// Fetch the tokens a connect will present, bounded by `FETCH_TIMEOUT`.
+    /// Callers that wrap [`connect_to`](Self::connect_to) in a short timer run
+    /// this first, so the timer covers the handshake and not the provider.
+    pub(super) async fn prefetch(&self) -> Result<()> {
+        match &self.source {
+            Source::Dial { config, .. } => fetch_token(config).await,
+            Source::Identity { base, tokens, .. } => {
+                // Together, so a slow pair costs one fetch timeout, not two.
+                tokio::try_join!(Box::pin(base.prefetch()), fetch_from(tokens.as_ref())).map(drop)
+            }
+        }
+    }
+
     /// The client for the broker at `addr`, connecting only when there is no
     /// usable one.
     ///
@@ -302,17 +315,26 @@ impl Nodes {
                 "no broker addresses were given to connect to"
             ));
         }
+        self.prefetch().await?;
+        self.connect_any_prefetched(addrs).await
+    }
+
+    /// [`connect_any`](Self::connect_any) for a caller that has just run
+    /// [`prefetch`](Self::prefetch).
+    pub(super) async fn connect_any_prefetched(&self, addrs: &[SocketAddr]) -> Result<Arc<Client>> {
+        if addrs.is_empty() {
+            return Err(anyhow::anyhow!(
+                "no broker addresses were given to connect to"
+            ));
+        }
         let mut refusals = Vec::with_capacity(addrs.len());
         for addr in addrs {
             match self.connect_to(*addr).await {
                 Ok(client) => return Ok(client),
-                Err(err) => refusals.push(format!("{addr}: {err:#}")),
+                Err(err) => refusals.push((*addr, err)),
             }
         }
-        Err(anyhow::anyhow!(
-            "no broker answered ({})",
-            refusals.join("; ")
-        ))
+        Err(no_broker_answered(refusals))
     }
 
     /// Stop handing out `client`, so the next caller for its broker gets a

@@ -18,6 +18,7 @@ bytes = { workspace = true }
 ahash = { workspace = true }
 hashbrown = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 tracing = { workspace = true }
 metrics = { workspace = true }
 serde = { workspace = true }
@@ -38,6 +39,7 @@ telemetry = []
 rcgen = { workspace = true }
 serial_test = { workspace = true }
 tempfile = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true }
 
 [package.metadata.docs.rs]

@@ -232,6 +232,27 @@ uses a second client with the fixture's group operator token for the former.
 For a C# binding, copy the poll's records inside the callback and keep
 `(offset, attempts)` as a plain struct to settle with.
 
+### Refreshing a token
+
+`FelixConnectOptions` also takes `token_fetch`, `token_user_data` and
+`token_release`. The library calls `token_fetch(user_data, reply)` on one of its
+threads when a stream needs a token, and the app completes `reply` once, from
+any thread, with `felix_token_reply_ok` or `felix_token_reply_err`. The Rust
+client's `RefreshingToken` does the timing: refresh at two thirds of a token's
+life, keep the old token if a fetch fails or a caller has waited 30 s, retry a refused
+token once. The `token` argument to connect may be `NULL` (or empty) when a
+fetch is set. Answer every reply, even late and even after the client is freed: `token_release` waits for the last one, and an app that never answers leaks its `user_data`. It runs on whichever thread gets there last, inside `felix_client_free` or inside the answering reply call, so don't hold a lock it takes while answering.
+
+The first reply call that is not refused for a bad argument consumes the reply,
+including an answer that arrives after the 30 s timeout (it returns
+`FELIX_STATUS_OK` and the token is used; the library does not call the fetch
+again while a reply is outstanding). Using the reply again is
+undefined behaviour. `token_release`: if `felix_client_connect_with` returns
+anything but `FELIX_STATUS_OK` it never runs and the caller keeps
+`token_user_data`; if it returns `FELIX_STATUS_OK` it runs exactly once later,
+after the client is freed and the last reply is answered, including when the
+connect then fails through `on_connect`. See `docs-site/src/content/docs/clients/c.md`.
+
 ### Caches, counters and watches
 
 Keys and filters are UTF-8 C strings; values are a pointer and a length, copied

@@ -170,9 +170,10 @@ An option the client does not know, or an extra positional argument, throws a
 `TypeError` instead of being ignored.
 
 One reachable address is enough. The client discovers the rest of the cluster
-and will use brokers it was never told about. Passing several only helps the
-*first* connection. It is built on the Rust `ClusterClient`, so each record goes straight to the
-broker that leads its shard, and it works the same against a single broker.
+and will use brokers it was never told about. It is built on the Rust
+`ClusterClient`, so it works the same against a single broker.
+[Connecting to a cluster](#connecting-to-a-cluster) says what it does with
+several.
 
 Give a name rather than an IP where you can. The client resolves a name again
 whenever no broker it knows answers, which is how it gets back in after a
@@ -209,6 +210,41 @@ broker. Give `withIdentity` a fixed `token`, or a `tokenProvider` as above for a
 long-lived handle. Closing `alice` leaves the gateway's connections open. The limits and the
 certificate-bound token rules are the Rust client's; see
 [Acting for many users](/clients/rust/#acting-for-many-users).
+
+## Connecting to a cluster
+
+In every language the client is a cluster client; see
+[Choosing a Client](/clients/overview/#every-client-is-a-cluster-client).
+
+```ts
+const client = await Client.connect(
+  ["felix-0:5000", "felix-1:5000", "felix-2:5000"],
+  "t1",
+  token,
+);
+```
+
+These are seeds: the client asks whichever answers which brokers exist and adds
+them, and it keeps your seeds whatever the answer, so a stale one cannot leave
+it worse off. List more than one so the first connection survives a seed being
+down.
+
+- **A broker fails.** A publish waiting on it fails once the connection has been
+  silent for the idle timeout (6 s by default), with the connection already
+  rebuilt from the brokers that remain. `publish` rejects; the next call goes to
+  a live broker. An at-least-once publish resends instead, and may duplicate
+  ([At-least-once may duplicate](#at-least-once-may-duplicate)).
+- **A shard moves.** Publishes go to the broker that now leads it, and a
+  subscription follows it ([Subscribing](#subscribing)).
+- **A subscription's broker fails.** On a durable stream it resubscribes from
+  the offset after the last one it delivered, and where it cannot it rejects
+  rather than ending as though the stream had finished.
+- **Knobs.** None. The client uses the Rust default `ReconnectPolicy` (5
+  attempts, backing off from 200 ms to 2 s) and the binding has no option to
+  change it. `await client.endpoints()` lists the brokers it would try, discovered
+  ones included.
+
+The Rust page covers [clusters](/clients/rust/#clusters) in full.
 
 ## Disposal
 
