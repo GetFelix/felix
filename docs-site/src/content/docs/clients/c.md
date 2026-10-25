@@ -124,7 +124,39 @@ that exits with handles still live gets no callbacks for its pending calls.
 A panic inside the library becomes `FELIX_STATUS_PANIC`, from the call or
 through the callback.
 
+## Getting and refreshing a token
+
+`felix_client_connect` takes the token as a string and the library cannot
+replace it later. The pattern is to refresh on a timer, connect a new client
+with the new token, move your work over, then free the old client. The control
+plane call is plain HTTP with a JSON body, which any HTTP library can make.
+With libcurl it is a POST of
+`{"refresh_token": "..."}` to `/v1/tenants/t1/token/refresh`:
+
+```c
+CURL *curl = curl_easy_init();
+struct curl_slist *h = curl_slist_append(NULL, "Content-Type: application/json");
+curl_easy_setopt(curl, CURLOPT_URL, "https://controlplane:8443/v1/tenants/t1/token/refresh");
+curl_easy_setopt(curl, CURLOPT_HTTPHEADER, h);
+curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);            /* {"refresh_token":"..."} */
+curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, collect_body); /* your callback */
+curl_easy_perform(curl);
+/* parse felix_token and the replacement refresh_token from the JSON answer */
+```
+
+The answer carries `felix_token`, `expires_in`, a new `refresh_token` and
+`refresh_expires_in`. The refresh token rotates, so store the new one. A `403`
+means the refresh token expired or was revoked and the exchange has to be run
+again; see [Getting a token](/clients/overview/#getting-a-token).
+
 ## A minimal example
+
+The token argument is a Felix token; [Getting a
+token](/clients/overview/#getting-a-token) covers where it comes from. The
+library keeps the string it was given and cannot refresh it, so free the client
+and connect again with a fresh token before it expires. Streams opened after
+expiry, including the ones a reconnect opens, are refused with
+`FELIX_STATUS_AUTH`.
 
 Connect, publish one record, subscribe to shard 0 and read one event. A small
 `waiter` turns each async call into a blocking one.

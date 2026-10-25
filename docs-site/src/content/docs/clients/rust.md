@@ -39,7 +39,9 @@ use felix_client::{AckMode, ClientConfig, ClusterClient};
 #[tokio::main]
 async fn main() -> Result<()> {
     let quinn = quinn::ClientConfig::with_platform_verifier();
-    let config = ClientConfig::optimized_defaults(quinn);
+    let mut config = ClientConfig::optimized_defaults(quinn);
+    config.auth_tenant_id = Some("acme".into());
+    config.auth_token = Some(token); // a Felix token; see below
 
     // One broker is enough. The rest of a cluster is discovered from it.
     let seeds: Vec<SocketAddr> = vec!["127.0.0.1:5000".parse()?];
@@ -110,6 +112,77 @@ through `Client` instead of straight to the owner cut in-memory throughput
 (256 B records, batches of 64) 2.4×, from 2,034 to 864 MB/s of payload with
 34% more broker CPU, and durable quorum-acked throughput 4.4×, from 475 to 107
 MB/s. See [v0.6.0 performance](/features/v060-performance/).
+
+`auth_token` is fixed, which suits a short job. [Getting a
+token](/clients/overview/#getting-a-token) covers where a token comes from. A
+process that outlives one, 15 minutes by default, sets `token_provider` instead.
+The client asks it for the token each time a stream authenticates, including
+the streams a reconnect opens. `RefreshingToken` wraps a fetch function, usually
+a call to `/token/refresh`, and replaces its token once two thirds of its life
+has passed. If a fetch fails while the current token is still valid, it keeps
+using that one and tries again a few seconds later. If the broker refuses a
+token and the provider has a different one, the client retries once with it.
+
+### Getting and refreshing a token
+
+The client has no HTTP code of its own, so the exchange and refresh calls are
+yours. This sketch uses `reqwest` (with its `json` feature) and `serde`. The
+refresh token rotates on every use, so the callback keeps the newest one:
+
+```rust
+use std::sync::{Arc, Mutex};
+use felix_client::RefreshingToken;
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+struct Minted {
+    felix_token: String,
+    refresh_token: String,
+}
+
+const CONTROLPLANE: &str = "https://controlplane:8443/v1/tenants/acme";
+
+async fn exchange(http: &reqwest::Client, oidc: &str) -> anyhow::Result<Minted> {
+    Ok(http
+        .post(format!("{CONTROLPLANE}/token/exchange"))
+        .bearer_auth(oidc)
+        .json(&serde_json::json!({
+            "requested": ["stream.publish", "stream.subscribe"],
+            "resources": ["stream:acme/prod/*"],
+        }))
+        .send().await?.error_for_status()?.json().await?)
+}
+
+let http = reqwest::Client::new();
+let first = exchange(&http, &oidc_token).await?;
+let refresh = Arc::new(Mutex::new(first.refresh_token));
+
+let tokens = RefreshingToken::with_initial(first.felix_token, {
+    let (http, refresh) = (http.clone(), Arc::clone(&refresh));
+    move || {
+        let (http, refresh) = (http.clone(), Arc::clone(&refresh));
+        async move {
+            let current = refresh.lock().unwrap().clone();
+            let minted: Minted = http
+                .post(format!("{CONTROLPLANE}/token/refresh"))
+                .json(&serde_json::json!({ "refresh_token": current }))
+                .send().await?.error_for_status()?.json().await?;
+            *refresh.lock().unwrap() = minted.refresh_token;
+            Ok::<_, anyhow::Error>(minted.felix_token)
+        }
+    }
+});
+config.token_provider = Some(Arc::new(tokens));
+```
+
+`RefreshingToken` calls the closure once two thirds of the token's life has
+passed, so a client left running for days picks up new tokens by itself. If the
+refresh token itself has expired or been revoked, the call fails with a `403`
+and the client keeps the last token until it expires. Run `exchange` again and
+build a new client from the result.
+
+The `FELIX_AUTH_TENANT` and `FELIX_AUTH_TOKEN` variables fill `auth_tenant_id`
+and `auth_token` when you build the config with `ClientConfig::from_env_or_yaml`.
 
 ## Client Configuration
 

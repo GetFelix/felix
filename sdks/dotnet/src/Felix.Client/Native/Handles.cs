@@ -91,6 +91,23 @@ internal sealed class FelixCacheWatchHandle : SafeHandle
     }
 }
 
+internal sealed class FelixProducerHandle : SafeHandle
+{
+    internal FelixProducerHandle(nint handle)
+        : base(0, true)
+    {
+        SetHandle(handle);
+    }
+
+    public override bool IsInvalid => handle == 0;
+
+    protected override bool ReleaseHandle()
+    {
+        NativeMethods.felix_producer_free(handle);
+        return true;
+    }
+}
+
 /// <summary>Holds a SafeHandle's reference for the span of one native call.</summary>
 internal readonly struct HandleLease : IDisposable
 {

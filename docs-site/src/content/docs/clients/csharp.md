@@ -1,6 +1,6 @@
 ---
 title: "C# Client"
-description: "Using the Felix C# client: supported platforms, connecting, publishing, subscribing, consumer groups, caches, counters and watches, publisher and timestamp metadata, typed errors, cancellation and threading."
+description: "Using the Felix C# client: supported platforms, connecting, publishing, subscribing, consumer groups, caches, counters and watches, atomic commits, conditional publishes, idempotent producers, publisher and timestamp metadata, typed errors, cancellation and threading."
 ---
 
 `Felix.Client` is the C# client, in `sdks/dotnet`. It binds the [C ABI](/clients/c/)
@@ -9,9 +9,9 @@ classes are the Rust client's. Every call is a `Task`; no thread waits on a pend
 publish or read.
 
 It covers connect, publish (single and batch), subscribe to one shard, consumer groups
-(on a shard and across every shard), caches, counters and cache watches, and the publisher
-and timestamp fields. Commits, producers and multi-shard subscribe are bound in later
-steps, and it is not on NuGet yet.
+(on a shard and across every shard), caches, counters and cache watches, atomic commits and
+state reads, conditional publishes, idempotent producers, and the publisher and timestamp
+fields. Multi-shard subscribe is bound in a later step, and it is not on NuGet yet.
 
 ## Supported platforms
 
@@ -42,7 +42,53 @@ dotnet test sdks/dotnet/Felix.sln
 The library is found at `FELIX_NATIVE_LIB`, next to `Felix.Client.dll`, or under
 `runtimes/<rid>/native/` (for example `runtimes/linux-x64/native/`).
 
+## Getting and refreshing a token
+
+The SDK does not call the control plane. Use `HttpClient`; the refresh token
+rotates on every use, so keep the newest one:
+
+```csharp
+using System.Net.Http.Json;
+using System.Text.Json.Serialization;
+
+var http = new HttpClient { BaseAddress = new Uri("https://controlplane:8443/v1/tenants/t1/") };
+
+var exchange = new HttpRequestMessage(HttpMethod.Post, "token/exchange")
+{
+    Content = JsonContent.Create(new
+    {
+        requested = new[] { "stream.publish", "stream.subscribe" },
+        resources = new[] { "stream:t1/default/*" },
+    }),
+};
+exchange.Headers.Authorization = new("Bearer", oidcToken);
+var minted = await (await http.SendAsync(exchange)).EnsureSuccessStatusCode()
+    .Content.ReadFromJsonAsync<Minted>();
+
+// Before minted.ExpiresIn seconds pass (say after two thirds of it):
+var refreshed = await http.PostAsJsonAsync("token/refresh",
+    new { refresh_token = minted!.RefreshToken });
+minted = await refreshed.EnsureSuccessStatusCode().Content.ReadFromJsonAsync<Minted>();
+
+// Type declarations go after top-level statements.
+record Minted(
+    [property: JsonPropertyName("felix_token")] string FelixToken,
+    [property: JsonPropertyName("expires_in")] int ExpiresIn,
+    [property: JsonPropertyName("refresh_token")] string RefreshToken);
+```
+
+`FelixClientOptions.Token` cannot change on a live client. After a refresh,
+connect a new `FelixClient` with `minted.FelixToken`, move your work to it, and
+dispose the old one. A refresh that answers `403` means the refresh token
+expired or was revoked: run the exchange again.
+
 ## Connect, publish, subscribe
+
+`Token` is a Felix token; [Getting a token](/clients/overview/#getting-a-token)
+covers where it comes from. `FelixClientOptions.Token` is a fixed string and the
+client cannot refresh it, so dispose the client and connect a new one with a
+fresh token before it expires. Streams opened after expiry, including the ones a
+reconnect opens, are refused.
 
 ```csharp
 using Felix;
@@ -212,6 +258,75 @@ await foreach (var item in watch)
   what reads have handed out. `ResumeOffsets` fails with `InvalidArgument` on a single watch, and a
   retained watch takes no offsets.
 
+## Atomic commits and conditional writes
+
+A commit writes an event and the state it changes as one record on the shard an entity key routes to.
+Build it from `CommitOp`s: `Publish` or `Enqueue` for the event, `Put` and `Delete` for state. It must
+hold exactly one event, and every operation must name that event's stream.
+
+```csharp
+long offset = await client.CommitAsync(
+    "t1", "default", entityKey: "order-42"u8.ToArray(),
+    [
+        CommitOp.Publish("orders", "placed"u8.ToArray()),
+        CommitOp.Put("orders", "order-42", "{...}"u8.ToArray()),
+        CommitOp.Delete("orders", "cart-42"),
+    ]);
+
+StateValue state = await client.GetStateAsync(
+    "t1", "default", "orders", "order-42", entityKey: "order-42"u8.ToArray());
+// state.Value is the bytes (null if never written or deleted), state.Version == offset
+```
+
+- `CommitAsync` returns the offset the event is read at, which is also the version of every key it wrote.
+  Pass `shard:` to commit to a named shard instead of the one the entity key hashes to, and read the
+  state back with `GetStateAsync(..., shard:)`, which takes no entity key.
+- A commit with no event, two events or two streams fails with `InvalidArgument` before anything is
+  sent. A broker that does not serve commits fails with `Unsupported`. A commit is a write: cancelled
+  after it may have been sent it fails with `OutcomeUnknown`, and is not sent again.
+- `GetStateAsync` returns a `StateValue` with `Value`, `Version` (the offset of the commit that wrote it)
+  and `AsOf` (the last commit the answer reflects). A key never written or deleted has a null `Value`,
+  which an empty value is not.
+- `CommitIfAsync` and `PublishIfAsync` write only if the shard's next offset is `expectedOffset`, a
+  compare-and-set on the whole shard. They return a `ConditionalWrite`. A refusal is `Written` false
+  with the shard's tail in `Offset`, not an exception; nothing was written. `PublishIfAsync` takes at
+  least one payload and routes by `key` (null is shard 0) or by `shard:`, not both.
+
+## Idempotent producers
+
+`client.CreateProducerAsync()` asks the broker for a producer id and returns a `FelixProducer`.
+Its batches are numbered per shard, and the shard's leader answers a number it already holds without
+appending again, so a batch that got no answer can be sent again and cannot land twice.
+
+```csharp
+await using var producer = await client.CreateProducerAsync();
+
+long? first = await producer.PublishAsync("t1", "default", "orders", "a"u8.ToArray());
+await producer.PublishBatchAsync("t1", "default", "orders", [payloadA, payloadB], key: orderKey);
+await producer.PublishBatchesAsync("t1", "default", "orders", [[payloadA, payloadB], [payloadC]]);
+```
+
+- `PublishAsync` and `PublishBatchAsync` take one sequence whatever the batch size and return the first
+  record's offset (null when the broker reported none). `PublishBatchesAsync` sends several batches,
+  under consecutive sequences, to shard 0.
+- A failure other than a broker refusal leaves the batch in doubt: the sequence has not advanced and
+  the batch may have landed. **Call again with the same payloads and key** to settle it. A different
+  batch is refused without being sent until then. A cancel after the batch was handed over fails with
+  `OutcomeUnknown` and the batch is still sent, so settle it the same way.
+- A refusal (for example, the shard forgot the producer) ends the producer on that stream and the
+  message says why. `AbandonInDoubtAsync` numbers the stream afresh under a new id; a batch given up
+  that way may land twice. `GetId()` and `GetIdFor(...)` read the ids.
+- Calls on one producer reach the broker in the order they were made, so start them from one thread or
+  under a lock; they do not wait for each other's answers.
+- `CloseAsync(timeout)` waits for what was handed over, then stops the producer; a null timeout waits as
+  long as it takes. After it, every call, a second close included, fails with `Closed`. A close that
+  times out fails with `Timeout` and the producer stays closed; batches already handed over may still
+  be sent. A cancelled close fails as cancelled and the producer is closed all the same.
+- `await using` calls `DisposeAsync`, which closes the producer (waiting up to 30 seconds), swallows a
+  failed close and frees it; call `CloseAsync` first to see a failure. `Dispose` only frees it: it does
+  not wait, pending calls fail as cancelled, and batches already handed over may still be sent. Both are
+  safe to call more than once. A producer keeps working after its client is disposed, until it is disposed.
+
 ## Publisher and timestamp
 
 Brokers send a record's publisher and append time only when asked:
@@ -235,7 +350,7 @@ error.
 Fixture tests carry `[Scenario("id")]` for the scenarios of the client conformance catalogue
 they cover. With `FELIX_CONFORMANCE_RESULTS` set, the test run writes the results document
 `felix-conformance verify` reads. CI runs that verdict for C#, but it does not block yet: the SDK
-still lacks the scenarios for commits, producers and multi-shard subscribe.
+still lacks the scenarios for multi-shard subscribe.
 
 ## Errors
 
@@ -249,7 +364,7 @@ it is idempotent. Cancellation is an `OperationCanceledException`, not a
 ## Cancellation
 
 Each call takes a `CancellationToken`, which cancels the native call. A cancelled
-connect or subscribe hands out nothing, even if the native call finished as you cancelled. A publish cancelled after it may have been
+connect or subscribe hands out nothing, even if the native call finished as you cancelled. A publish, commit or producer publish cancelled after it may have been
 sent fails with `OutcomeUnknown`, because it may have landed.
 
 ## Threading

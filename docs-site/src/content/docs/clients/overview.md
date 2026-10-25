@@ -164,6 +164,121 @@ results file your client produced, and nothing from the kit is linked into what
 you ship. The specification itself is Apache-2.0: the wire protocol in
 `felix-wire`, its byte-level test vectors, and `docs/protocol.md`.
 
+## Getting a token
+
+Every client connects with a tenant id and a Felix token. A Felix token is a
+short-lived JWT the control plane mints for one tenant; the broker checks every
+request against the permissions inside it. The client pages use a placeholder
+for it. This is where it comes from.
+
+In production, exchange a token from your identity provider at the control
+plane:
+
+```bash
+curl -s -X POST "https://controlplane:8443/v1/tenants/t1/token/exchange" \
+  -H "Authorization: Bearer $OIDC_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"requested": ["stream.publish", "stream.subscribe"], "resources": ["stream:t1/default/*"]}'
+```
+
+```json
+{
+  "felix_token": "<jwt>",
+  "expires_in": 900,
+  "token_type": "Bearer",
+  "refresh_token": "<opaque>",
+  "refresh_expires_in": 2592000
+}
+```
+
+Pass `felix_token` to the client. The control plane works out what RBAC grants
+your principal, and the body can only narrow that: `requested` keeps the listed
+actions, `resources` keeps the listed objects, and the token gets every kept
+action on every kept resource. Leave both out and it carries everything the
+principal has, which a service that only publishes to one stream should not
+hold. [Token Exchange](/features/security/#token-exchange-oidc--felix) covers
+`permissions`, for different actions on different resources, and
+[the API reference](/api/control-plane-api/) lists every field.
+
+For a local stack or CI there is no identity provider to exchange with. Start
+the control plane with `FELIX_BOOTSTRAP_DEV_TOKENS=true` and it mints a token
+for any principal of an initialized tenant:
+
+```bash
+curl -sS -X POST http://127.0.0.1:9095/internal/bootstrap/tenants/t1/dev-token \
+  -H 'X-Felix-Bootstrap-Token: change-me' \
+  -H 'Content-Type: application/json' \
+  -d '{ "principal": "p:dev" }'
+```
+
+The answer has the same shape as an exchange. It works only with bootstrap
+enabled on a loopback address, and anyone holding the bootstrap token can act
+as any principal, so never turn it on for a shared or production control plane.
+See [Development tokens](/features/security/#development-tokens).
+
+### Lifetime and refreshing
+
+`felix_token` is the access token, and `expires_in` is its life in seconds: 900
+unless the control plane sets `FELIX_EXCHANGE_TOKEN_TTL_SECONDS`. The
+`refresh_token` lasts `refresh_expires_in` seconds, 30 days by default
+(`FELIX_REFRESH_TOKEN_TTL_SECONDS`), and buys a new access token without going
+back to the identity provider:
+
+```bash
+curl -s -X POST "https://controlplane:8443/v1/tenants/t1/token/refresh" \
+  -H "Content-Type: application/json" \
+  -d '{"refresh_token": "<opaque>"}'
+```
+
+```json
+{
+  "felix_token": "<jwt>",
+  "expires_in": 900,
+  "token_type": "Bearer",
+  "refresh_token": "<the replacement>",
+  "refresh_expires_in": 2592000
+}
+```
+
+Refresh tokens rotate. Every refresh spends the token you sent and returns its
+replacement, so store the new one each time and discard the old. The new access
+token is minted from the principal's current grants, so an RBAC change takes
+effect at the next refresh. Send `audience` only if you also sent it on the
+exchange; a different one is a `400`.
+
+Presenting a spent token again is treated as theft and ends the whole chain.
+The exception is a short grace window (`FELIX_REFRESH_REUSE_GRACE_SECONDS`, 30
+by default) that covers a retry after a lost answer and two refreshes racing
+each other. So refresh from one place at a time.
+
+An expired, revoked or unknown refresh token all get the same `403`, as does
+a refresh for a principal whose RBAC grants have all been removed (that also
+ends the chain). There is
+nothing to repair: exchange a fresh identity-provider token again. An
+administrator ends a principal's chains and broker tokens with
+[`POST /v1/tenants/{tenant_id}/refresh-tokens/revoke`](/api/control-plane-api/#admin-api-refresh-token-revocation-and-signing-keys);
+after that the app has to sign in again too.
+
+A long-running app therefore refreshes before `expires_in` runs out, say after
+two thirds of it, persists the replacement refresh token, and falls back to a
+new exchange when a refresh answers `403`.
+
+### When a token expires on an open connection
+
+The broker checks a token when a stream authenticates, and not again while the
+stream is open. A subscription or publish stream that is already running keeps
+working after its token expires, with one exception: a publish forwarded
+through a broker that does not own the shard is checked again by the owner,
+which rejects it once the token has expired or been revoked. What fails is anything that authenticates
+afterwards: a new subscription, a cache or group request, or the streams a
+client reopens after losing its connection to a broker. A client that holds one
+fixed token presents that same token every time, so once it has expired those
+are refused. Revoking a principal is how you end streams that are already open.
+
+Only the Rust client can replace its token while it runs, through a token
+provider. The others hold the token they connected with, so build a new client
+with a fresh token before the old one expires. Each client's page has an example.
+
 ## The clients
 
 Each has its own page: what to install, the surface, and the failure modes
@@ -175,7 +290,7 @@ worth writing code for.
 | **[Python](/clients/python/)** | `felix-client` on PyPI | A PyO3 binding, with a synchronous and an asyncio surface over the same Rust client. |
 | **[TypeScript](/clients/typescript/)** | `felix-client` on npm | A napi-rs addon. One asynchronous surface, because blocking Node's event loop is not something a library may do. |
 | **[C](/clients/c/)** | `libfelix` and `felix.h`, built from the repository | A C ABI over the Rust client, asynchronous through callbacks. The base for the C# SDK; not on a registry. |
-| **[C#](/clients/csharp/)** | `Felix.Client`, built from `sdks/dotnet` | A P/Invoke binding over the C ABI: connect, publish, subscribe to a shard, consumer groups, caches, counters and cache watches, and publisher and timestamp metadata so far. Not on NuGet yet. |
+| **[C#](/clients/csharp/)** | `Felix.Client`, built from `sdks/dotnet` | A P/Invoke binding over the C ABI: connect, publish, subscribe to a shard, consumer groups, caches, counters and cache watches, atomic commits and conditional publishes, idempotent producers, and publisher and timestamp metadata so far. Not on NuGet yet. |
 
 ### Which client to use
 
