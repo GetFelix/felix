@@ -238,3 +238,165 @@ async fn a_pass_ending_on_a_lost_shard_leaves_no_live_state() {
     shards.fold(scan, ended);
     assert!(rig.status.live_report(&watch_key(&key())).is_none());
 }
+
+/// **A busy follower's answer starts the pass its append was owed.** Both
+/// followers are busy when a record lands, so the append's pass ships
+/// nobody. Their answers move no cursor and count for nothing more, yet the
+/// record past them still has to go: with no pass started here, the mark
+/// waits for the tick and every publish on it times out (#1545).
+#[tokio::test(start_paused = true)]
+async fn a_busy_answer_behind_the_tail_starts_a_pass() {
+    let rig = Rig::new().await;
+    let mut shards = settled(&rig).await;
+    shards.hold_busy(&key(), "broker-b");
+    shards.hold_busy(&key(), "broker-c");
+    let log = rig
+        .broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    let runtime = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || {
+        runtime
+            .block_on(log.append(&[Bytes::from_static(b"late")]))
+            .expect("append")
+    })
+    .await
+    .expect("append task");
+    let sent = rig.peers.batches().len();
+    pass(&mut shards, WakeKind::Append).await;
+    assert_eq!(
+        rig.peers.batches().len(),
+        sent,
+        "a busy follower was shipped to"
+    );
+
+    // Answers for the exchanges launched at the old tail, the follower level
+    // with it, as a reship of the last record leaves it.
+    let answers = [
+        shards.answer_from(&key(), "broker-b", TAIL, true),
+        shards.answer_from(&key(), "broker-c", TAIL, true),
+    ];
+    for answer in answers {
+        shards.apply(answer);
+    }
+    assert!(!shards.passes.is_empty(), "no pass started");
+    drain(&mut shards).await;
+    assert_eq!(rig.marks.offset(&watch_key(&key()), 4), Some(TAIL + 1));
+}
+
+/// Run passes and apply exchange answers until neither is left.
+async fn drain(shards: &mut Shards<'_, AcceptingFollower>) {
+    loop {
+        tokio::select! {
+            Some((scan, ended)) = shards.passes.next() => shards.fold(scan, ended),
+            Some(answer) = shards.exchanges.next() => shards.apply(answer),
+            else => break,
+        }
+    }
+}
+
+/// Leave both followers busy and a record appended, with the append's pass
+/// ended: the state a level answer lands in.
+async fn appended_behind_busy(rig: &Rig) -> Shards<'_, AcceptingFollower> {
+    let mut shards = settled(rig).await;
+    shards.hold_busy(&key(), "broker-b");
+    shards.hold_busy(&key(), "broker-c");
+    let log = rig
+        .broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    let runtime = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || {
+        runtime
+            .block_on(log.append(&[Bytes::from_static(b"late")]))
+            .expect("append")
+    })
+    .await
+    .expect("append task");
+    pass(&mut shards, WakeKind::Append).await;
+    shards
+}
+
+/// **An answer at the tail owes nothing.** The pass an answer behind the
+/// tail starts ends with the followers at the tail, and answers there start
+/// no pass, so the answers cannot feed each other.
+#[tokio::test(start_paused = true)]
+async fn an_answer_at_the_tail_starts_no_pass() {
+    let rig = Rig::new().await;
+    let mut shards = appended_behind_busy(&rig).await;
+    let answers = [
+        shards.answer_from(&key(), "broker-b", TAIL, true),
+        shards.answer_from(&key(), "broker-c", TAIL, true),
+    ];
+    for answer in answers {
+        shards.apply(answer);
+    }
+    // The pass those started, run to its end.
+    assert!(!shards.passes.is_empty(), "no pass started");
+    drain(&mut shards).await;
+    assert_eq!(rig.marks.offset(&watch_key(&key()), 4), Some(TAIL + 1));
+    for _ in 0..20 {
+        let answers = [
+            shards.answer_from(&key(), "broker-b", TAIL + 1, true),
+            shards.answer_from(&key(), "broker-c", TAIL + 1, true),
+        ];
+        for answer in answers {
+            shards.apply(answer);
+        }
+    }
+    assert!(
+        shards.passes.is_empty(),
+        "an answer at the tail started a pass"
+    );
+}
+
+/// **Only a checked answer from a follower still taking records is owed a
+/// pass.** A halted follower's answer moves nothing the pass could ship.
+#[tokio::test(start_paused = true)]
+async fn an_unchecked_halted_or_stalled_answer_starts_no_pass() {
+    let rig = Rig::new().await;
+    let mut shards = appended_behind_busy(&rig).await;
+    let unchecked = shards.answer_from(&key(), "broker-b", TAIL, false);
+    let mut stalled = shards.answer_from(&key(), "broker-c", TAIL, true);
+    stalled.cursor.stalled = true;
+    shards.apply(unchecked);
+    shards.apply(stalled);
+    assert!(
+        shards.passes.is_empty(),
+        "an answer that is not owed started a pass"
+    );
+
+    let mut halted = shards.answer_from(&key(), "broker-b", TAIL, true);
+    halted.cursor.halted = Some(crate::follower::Halt::Diverged);
+    halted.cursor.confirmed = 0;
+    shards.halt_follower(&key(), "broker-b");
+    shards.apply(halted);
+    assert!(shards.passes.is_empty(), "a halted answer started a pass");
+}
+
+/// **An answer from another incarnation or generation is not this shard's
+/// debt.** Its cursor is dropped, so it must not start a pass either.
+#[tokio::test(start_paused = true)]
+async fn a_stale_incarnation_answer_starts_no_pass() {
+    let rig = Rig::new().await;
+    let mut shards = appended_behind_busy(&rig).await;
+    let mut other = shards.answer_from(&key(), "broker-b", TAIL, true);
+    other.incarnation += 1;
+    let mut older = shards.answer_from(&key(), "broker-c", TAIL, true);
+    older.generation += 1;
+    // Nothing for the "counts for more" case to fire on.
+    other.cursor.confirmed = 0;
+    older.cursor.confirmed = 0;
+    shards.apply(other);
+    assert!(
+        shards.passes.is_empty(),
+        "a stale incarnation started a pass"
+    );
+    shards.apply(older);
+    assert!(
+        shards.passes.is_empty(),
+        "a stale generation started a pass"
+    );
+}
