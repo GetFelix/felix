@@ -42,7 +42,53 @@ dotnet test sdks/dotnet/Felix.sln
 The library is found at `FELIX_NATIVE_LIB`, next to `Felix.Client.dll`, or under
 `runtimes/<rid>/native/` (for example `runtimes/linux-x64/native/`).
 
+## Getting and refreshing a token
+
+The SDK does not call the control plane. Use `HttpClient`; the refresh token
+rotates on every use, so keep the newest one:
+
+```csharp
+using System.Net.Http.Json;
+using System.Text.Json.Serialization;
+
+var http = new HttpClient { BaseAddress = new Uri("https://controlplane:8443/v1/tenants/t1/") };
+
+var exchange = new HttpRequestMessage(HttpMethod.Post, "token/exchange")
+{
+    Content = JsonContent.Create(new
+    {
+        requested = new[] { "stream.publish", "stream.subscribe" },
+        resources = new[] { "stream:t1/default/*" },
+    }),
+};
+exchange.Headers.Authorization = new("Bearer", oidcToken);
+var minted = await (await http.SendAsync(exchange)).EnsureSuccessStatusCode()
+    .Content.ReadFromJsonAsync<Minted>();
+
+// Before minted.ExpiresIn seconds pass (say after two thirds of it):
+var refreshed = await http.PostAsJsonAsync("token/refresh",
+    new { refresh_token = minted!.RefreshToken });
+minted = await refreshed.EnsureSuccessStatusCode().Content.ReadFromJsonAsync<Minted>();
+
+// Type declarations go after top-level statements.
+record Minted(
+    [property: JsonPropertyName("felix_token")] string FelixToken,
+    [property: JsonPropertyName("expires_in")] int ExpiresIn,
+    [property: JsonPropertyName("refresh_token")] string RefreshToken);
+```
+
+`FelixClientOptions.Token` cannot change on a live client. After a refresh,
+connect a new `FelixClient` with `minted.FelixToken`, move your work to it, and
+dispose the old one. A refresh that answers `403` means the refresh token
+expired or was revoked: run the exchange again.
+
 ## Connect, publish, subscribe
+
+`Token` is a Felix token; [Getting a token](/clients/overview/#getting-a-token)
+covers where it comes from. `FelixClientOptions.Token` is a fixed string and the
+client cannot refresh it, so dispose the client and connect a new one with a
+fresh token before it expires. Streams opened after expiry, including the ones a
+reconnect opens, are refused.
 
 ```csharp
 using Felix;
