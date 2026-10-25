@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792957096634,
+  "lastUpdate": 1792964805520,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -47388,6 +47388,72 @@ window.BENCHMARK_DATA = {
             "range": "816.02",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1000.00\nmean: 1246.20\nstdev: 816.02\ncv: 65.48%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f20b4e12afd5d2964a981ff3de4dcf4db0297a53",
+          "message": "test(cluster): wait for a restarted broker's new registration (#1575) (#1576)\n\nCluster::restart_node returned before the restarted broker had registered. A broker registers when its initial sync is applied, the same moment /ready flips, and the old registration's heartbeat is still fresh after a kill, so await_placeable passed on the old process. wiped::a_crashed_leader_that_comes_back_is_replaced then read the old storage id.\n\nrestart_node now notes the node's registered incarnation before spawning and, once the broker is placeable, waits for a higher one. The startup lookup is read-only, so only the new process's registration can raise it. With no record or no control plane before the restart, the wait is skipped as before.\n\nFixes #1575.",
+          "timestamp": "2026-10-25T14:42:20-07:00",
+          "tree_id": "fdd4b5db4d95db968153aeb5b2aa534dfc4c7603",
+          "url": "https://github.com/GetFelix/felix/commit/f20b4e12afd5d2964a981ff3de4dcf4db0297a53"
+        },
+        "date": 1792964799382,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 181,
+            "range": "1.82",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 181.00\nmean: 180.60\nstdev: 1.82\ncv: 1.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 251,
+            "range": "26.27",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 251.00\nmean: 265.20\nstdev: 26.27\ncv: 9.91%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 377,
+            "range": "1324.98",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 377.00\nmean: 1294.00\nstdev: 1324.98\ncv: 102.39%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 221,
+            "range": "1.95",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 221.00\nmean: 220.40\nstdev: 1.95\ncv: 0.88%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 516,
+            "range": "47.03",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 516.00\nmean: 531.40\nstdev: 47.03\ncv: 8.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 2114,
+            "range": "387.27",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 2114.00\nmean: 2157.40\nstdev: 387.27\ncv: 17.95%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
