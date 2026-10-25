@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792915527746,
+  "lastUpdate": 1792922797181,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -36504,6 +36504,58 @@ window.BENCHMARK_DATA = {
             "range": "8853.39",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 798985.58\nmean: 798722.48\nstdev: 8853.39\ncv: 1.11%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5cd0084d416776af1c6cecd078bf087c8214a93e",
+          "message": "test(sdk): short-lived tokens in the client fixture, token scenarios in the catalogue (#1542)\n\nThe client fixture mints tokens on request: POST <control_url>/tokens with\n{\"ttl_secs\": 1..3600, \"forged\": bool} returns a real token for the fixture\ntenant with the same grants (signed with the cluster's tenant key), or one\nsigned with a key no broker trusts.\n\nSeven token scenarios join the conformance catalogue, optional until every SDK\ntags them: token.lazy, single_flight, refused_retry_once,\nkeep_valid_on_failure, expiry_refresh, failure_message and timeout_joins\n(a provider past the 30 s timeout fails the waiting open with the auth error, is\nnot called again while outstanding, and a later open uses its late answer).\nThey are tested against the fixture in Rust, C, Python and TypeScript, one\ntagged test per scenario per SDK. C# tags them in a follow-up.",
+          "timestamp": "2026-10-25T03:00:00-07:00",
+          "tree_id": "1eb1117ef678fce95c6b82761caaeaad3cc6db1f",
+          "url": "https://github.com/GetFelix/felix/commit/5cd0084d416776af1c6cecd078bf087c8214a93e"
+        },
+        "date": 1792922796659,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 345245.37,
+            "range": "13161.13",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 345245.37\nmean: 343786.59\nstdev: 13161.13\ncv: 3.83%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 345245.37,
+            "range": "13161.13",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 345245.37\nmean: 343786.59\nstdev: 13161.13\ncv: 3.83%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80703.57,
+            "range": "3859.49",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80703.57\nmean: 79737.66\nstdev: 3859.49\ncv: 4.84%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 807035.75,
+            "range": "38594.96",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 807035.75\nmean: 797376.56\nstdev: 38594.96\ncv: 4.84%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
