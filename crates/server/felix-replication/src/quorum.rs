@@ -45,7 +45,16 @@ pub struct QuorumMarks {
     /// only a mark measured on the log it wrote to. Set by the replication
     /// driver; unset, every stream reads as incarnation 0.
     incarnations: std::sync::OnceLock<Incarnations>,
+    /// What the driver last saw of each shard's followers, read only to explain
+    /// a timed-out wait. Set by the replication driver.
+    status: std::sync::OnceLock<Arc<crate::status::ShardStatusBoard>>,
+    /// When each shard's timeout was last logged.
+    timeout_logged: Mutex<HashMap<ShardKey, tokio::time::Instant>>,
 }
+
+/// A shard's timed-out publishes are logged at most this often: under a stall
+/// every publish in flight times out together.
+const TIMEOUT_LOG_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// The broker whose registered incarnations stream marks are checked against.
 struct Incarnations(Arc<felix_broker::Broker>);
@@ -198,6 +207,69 @@ impl QuorumMarks {
         }
     }
 
+    /// Read follower positions for [`Self::log_timeout`] from `board` from here
+    /// on. Only the first call counts.
+    pub(crate) fn track_status(&self, board: &Arc<crate::status::ShardStatusBoard>) {
+        let _ = self.status.set(Arc::clone(board));
+    }
+
+    /// Whether a timeout on `key` should be logged now, and if so start its
+    /// window.
+    fn timeout_log_due(&self, key: &ShardKey) -> bool {
+        let now = tokio::time::Instant::now();
+        let mut logged = self.timeout_logged.lock();
+        match logged.get(key) {
+            Some(last) if now.duration_since(*last) < TIMEOUT_LOG_EVERY => false,
+            _ => {
+                logged.insert(key.clone(), now);
+                true
+            }
+        }
+    }
+
+    /// Log why a wait for `batch_end` on `key` timed out: the mark, the tail
+    /// and each follower as the driver last saw them. Rate limited per shard,
+    /// and only ever runs after a timeout. `status_age_ms` says how stale the
+    /// follower lines are: the driver writes them when a pass ends. Returns
+    /// whether it logged.
+    fn log_timeout(&self, key: &ShardKey, generation: u64, batch_end: u64) -> bool {
+        if !self.timeout_log_due(key) {
+            return false;
+        }
+        let aged = self.status.get().and_then(|board| board.get_aged(key));
+        let status = aged.as_ref().map(|(status, _)| status);
+        let followers = status
+            .map(|status| {
+                status
+                    .followers
+                    .iter()
+                    .map(|f| {
+                        format!(
+                            "{}: confirmed {}, next {}, {}{}",
+                            f.node_id,
+                            f.confirmed,
+                            f.next_offset,
+                            f.state,
+                            if f.busy { ", busy" } else { "" },
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        tracing::warn!(
+            stream = %key.stream,
+            shard = key.shard,
+            generation,
+            batch_end,
+            mark = ?self.offset(key, generation),
+            tail = ?status.and_then(|status| status.tail),
+            status_age_ms = ?aged.as_ref().map(|(_, age)| age.as_millis()),
+            followers = ?followers,
+            "quorum wait timed out"
+        );
+        true
+    }
+
     /// The incarnation `key`'s logs open at here now, which a mark must have
     /// been measured at to answer a wait.
     ///
@@ -285,12 +357,16 @@ impl QuorumMarks {
     pub fn forget(&self, key: &ShardKey) {
         self.shards.forget(key);
         self.counters.forget(key);
+        self.timeout_logged.lock().remove(key);
     }
 
     /// Keep only the shards named, in both tables.
     pub fn retain(&self, live: &[ShardKey]) {
         self.shards.retain(live);
         self.counters.retain(live);
+        self.timeout_logged
+            .lock()
+            .retain(|key, _| live.contains(key));
     }
 
     /// See [`MarkTable::offset`], for the incarnation `key` is registered at
@@ -728,6 +804,7 @@ pub async fn await_quorum<S: ShardServing + ?Sized>(
         crate::quorum::QuorumWait::Reached => release(ingress, "batch"),
         crate::quorum::QuorumWait::TimedOut => {
             crate::metrics::record_quorum(crate::metrics::QUORUM_TIMED_OUT);
+            let _ = marks.log_timeout(shard, waited_at.load(Ordering::Relaxed), last_offset + 1);
             Err(QuorumError::TimedOut {
                 what: "batch",
                 timeout,

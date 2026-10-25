@@ -586,3 +586,54 @@ async fn cache_and_counter_acks_skip_the_lease_where_followers_decide_the_mark()
         assert_eq!(add.is_ok(), by_followers, "add: {add:?}");
     }
 }
+
+/// **A stall logs once per shard per window, not once per publish.** Every
+/// publish in flight times out together, so an unbounded log would bury the
+/// one line that explains it.
+#[tokio::test(start_paused = true)]
+async fn a_timeout_is_logged_once_per_shard_per_window() {
+    let marks = QuorumMarks::new();
+    assert!(
+        marks.log_timeout(&key("orders"), 4, 10),
+        "the first is logged"
+    );
+    for _ in 0..50 {
+        assert!(
+            !marks.log_timeout(&key("orders"), 4, 10),
+            "repeat in window"
+        );
+    }
+    assert!(
+        marks.log_timeout(&key("billing"), 4, 10),
+        "another shard has its own window"
+    );
+
+    tokio::time::sleep(TIMEOUT_LOG_EVERY - Duration::from_millis(1)).await;
+    assert!(
+        !marks.log_timeout(&key("orders"), 4, 10),
+        "window still open"
+    );
+    tokio::time::sleep(Duration::from_millis(1)).await;
+    assert!(marks.log_timeout(&key("orders"), 4, 10), "window passed");
+    assert!(
+        !marks.log_timeout(&key("orders"), 4, 10),
+        "and starts again"
+    );
+}
+
+/// A shard this broker stops leading drops its log window, so the table does
+/// not grow with every shard ever led.
+#[tokio::test(start_paused = true)]
+async fn forgetting_a_shard_drops_its_timeout_window() {
+    let marks = QuorumMarks::new();
+    for name in ["orders", "billing"] {
+        assert!(marks.log_timeout(&key(name), 4, 10));
+    }
+    marks.forget(&key("orders"));
+    marks.retain(&[key("orders")]);
+    assert!(marks.timeout_logged.lock().is_empty());
+    assert!(
+        marks.log_timeout(&key("billing"), 4, 10),
+        "window was dropped"
+    );
+}

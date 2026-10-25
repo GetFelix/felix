@@ -37,6 +37,10 @@ pub struct FollowerStatus {
     /// A move's destination still copying, left out of the quorum.
     pub learner: bool,
     pub next_offset: u64,
+    /// How far the follower has answered that its log is this leader's.
+    pub confirmed: u64,
+    /// An exchange with it from an earlier pass is still unanswered.
+    pub busy: bool,
     /// Records behind the tail the pass read.
     pub lag: Option<u64>,
     /// `halted`, `rebuilding`, `copying`, `stalled` or `shipping`.
@@ -62,7 +66,8 @@ pub struct FenceStatus {
 /// Every shard the driver leads, keyed as the quorum marks are.
 #[derive(Debug, Default)]
 pub struct ShardStatusBoard {
-    shards: RwLock<HashMap<ShardKey, ShardStatus>>,
+    /// Each entry with when it was written.
+    shards: RwLock<HashMap<ShardKey, (tokio::time::Instant, ShardStatus)>>,
 }
 
 impl ShardStatusBoard {
@@ -73,11 +78,24 @@ impl ShardStatusBoard {
     /// What the driver last recorded for `key`. `None` for a shard this broker
     /// does not lead, or one no pass has reached yet.
     pub fn get(&self, key: &ShardKey) -> Option<ShardStatus> {
-        self.shards.read().get(key).cloned()
+        self.shards
+            .read()
+            .get(key)
+            .map(|(_, status)| status.clone())
+    }
+
+    /// [`Self::get`], with how long ago the driver wrote it. A pass stuck on a
+    /// straggler leaves the entry its previous pass wrote.
+    pub(crate) fn get_aged(&self, key: &ShardKey) -> Option<(ShardStatus, std::time::Duration)> {
+        let shards = self.shards.read();
+        let (at, status) = shards.get(key)?;
+        Some((status.clone(), at.elapsed()))
     }
 
     pub(crate) fn put(&self, key: ShardKey, status: ShardStatus) {
-        self.shards.write().insert(key, status);
+        self.shards
+            .write()
+            .insert(key, (tokio::time::Instant::now(), status));
     }
 
     /// Keep only the shards `led` says this broker still leads.
@@ -107,6 +125,8 @@ pub(crate) fn follower_status(
         node_id: cursor.node_id.clone(),
         learner,
         next_offset: cursor.next_offset,
+        confirmed: cursor.confirmed,
+        busy: false,
         lag: tail.map(|tail| tail.saturating_sub(cursor.next_offset)),
         state,
         halted: cursor.halted.map(|halt| crate::halted::describe(halt).0),

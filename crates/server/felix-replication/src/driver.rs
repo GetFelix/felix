@@ -179,6 +179,7 @@ pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
         // auxiliary logs, and the replica report, none of which a wake
         // signals.
         let appended = broker.appended();
+        published.marks.track_status(&published.status);
         let mut shards = Shards::new(Context {
             requester: requester.as_ref(),
             broker: &broker,
