@@ -596,12 +596,11 @@ def test_with_identity_cancels_an_async_provider_at_the_timeout(fixture):
 
 
 @pytest.mark.scenario("token.timeout_joins")
-def test_a_sync_provider_past_the_timeout_fails_the_waiter_and_the_next_call_joins_it(fixture):
-    # One broker: with several, the client fails over after the timeout and
-    # the next broker's auth joins the same call. The held token expires at
-    # 6 s, so there is nothing to fall back on. The
-    # provider answers 33 s after it is called: the first stream gives up at
-    # 30 s, the second joins the same call instead of starting another, and
+def test_a_sync_provider_past_the_timeout_is_joined_by_the_retry(fixture):
+    # The held token expires at 6 s, so there is nothing to fall back on. The
+    # provider answers 33 s after it is called. The wait on it fails at 30 s,
+    # the cluster client retries the open (a fetch timeout carries no broker
+    # code, so it is retried), and the retry joins the call still running and
     # gets its late answer. Sync providers cannot be cancelled, so joining is
     # the only way the provider stays single-flight.
     provider = Provider(fixture["token"], delay=33.0)
@@ -615,16 +614,14 @@ def test_a_sync_provider_past_the_timeout_fails_the_waiter_and_the_next_call_joi
     ) as client:
         time.sleep(6.5)
         started = time.monotonic()
-        with pytest.raises(felix.AuthError, match="longer than 30s"):
-            with client.subscribe(tenant, namespace, stream):
-                pass
-        # Loose upper bound: a loaded runner is slow, and the match above
-        # already shows the timeout fired, not the answer.
-        assert 25 < time.monotonic() - started < 45
-        assert provider.calls == 1
         with client.subscribe(tenant, namespace, stream):
             pass
-        assert provider.calls == 1
+        # Loose upper bound: a loaded runner is slow.
+        assert 30 < time.monotonic() - started < 60
+        assert provider.calls == 1, "the retry started another call"
+        with client.subscribe(tenant, namespace, stream):
+            pass
+        assert provider.calls == 1, "the late answer was not held"
         assert provider.max_running == 1
 
 

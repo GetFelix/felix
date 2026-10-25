@@ -954,10 +954,11 @@ error carrying the provider's own message, unchanged.
 [[scenario]]
 id = "token.timeout_joins"
 required = false
-title = "A provider past the 30 s timeout fails the waiters, and is joined"
+title = "A provider past the 30 s timeout is joined, not called again"
 detail = """
 The timeout fails whoever is waiting, not the call. The provider is not
-called again while that call is outstanding, and a later operation joins it
-and uses its late answer. A provider that hangs therefore still runs once at
-a time.
+called again while that call is outstanding, and a later wait joins it and
+uses its late answer. A client that retries an uncoded failure (the cluster
+clients do) therefore opens its stream once the late answer arrives, with one
+provider call; a hanging provider still runs once at a time.
 """

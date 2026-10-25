@@ -247,14 +247,14 @@ export default function register(ctx) {
       }
     }));
 
-  it("a provider past the timeout fails the waiter, and the next stream joins the call", { timeout: 150_000 }, () =>
+  it("a provider past the timeout is joined by the retry, not called again", { timeout: 150_000 }, () =>
     scenario("token.timeout_joins", async () => {
       const { fixture } = ctx;
-      // One broker: with several, the client fails over to the next broker
-      // after the timeout, which joins the same call and succeeds. The held
-      // token expires at 6 s, so there is nothing to fall back on.
-      // The provider answers 33 s after it is called: the first stream gives
-      // up at 30 s and the second joins the same call and gets its answer.
+      // The held token expires at 6 s, so there is nothing to fall back on.
+      // The provider answers 33 s after it is called. The wait on it fails at
+      // 30 s, the cluster client retries the open (a fetch timeout carries no
+      // broker code, so it is retried), and the retry joins the call still
+      // running and gets its late answer at 33 s.
       const { state, provider } = counting(async () => fixture.token, 33_000);
       const client = await connectWith(provider, await mint(fixture, 6), fixture.addrs.slice(0, 1));
       try {
@@ -264,14 +264,13 @@ export default function register(ctx) {
         };
         await sleep(6500);
         const started = Date.now();
-        const caught = await open().then(() => null, (err) => err);
-        assert.ok(caught instanceof ctx.felix.AuthError, `got ${caught}`);
-        const took = Date.now() - started;
-        assert.ok(took >= 25_000 && took < 60_000, `gave up after ${took} ms`);
-        assert.equal(state.calls, 1);
         await open();
-        assert.equal(state.calls, 1, "the second stream started another call");
+        const took = Date.now() - started;
+        assert.ok(took >= 30_000 && took < 60_000, `opened after ${took} ms`);
+        assert.equal(state.calls, 1, "the retry started another call");
         assert.equal(state.peak, 1);
+        await open();
+        assert.equal(state.calls, 1, "the late answer was not held");
       } finally {
         client.close();
       }

@@ -5409,8 +5409,7 @@ static void token_scenarios(const struct fixture *f) {
   }
   SCENARIO_END("token.refused_retry_once");
 
-  /* A fetch past the 30 s timeout fails the stream waiting on it, and the next
-     open joins that call instead of starting another. */
+  /* A fetch past the 30 s timeout is joined by the retry, not called again. */
   SCENARIO_BEGIN("token.timeout_joins");
   if (!mint_token(f, 6, false, tok, sizeof tok)) {
     CHECK(0, "the fixture would not mint a 6 s token");
@@ -5424,20 +5423,23 @@ static void token_scenarios(const struct fixture *f) {
           (int)status);
     if (status == FELIX_STATUS_OK) {
       pause_ms(6500); /* expired: nothing to fall back on */
+      /* The wait on the fetch fails at 30 s, the cluster client retries the
+         open (a fetch timeout carries no broker code), and the retry joins
+         the call still running and gets its late answer. */
       long started = monotonic_ms();
       status = open_stream(client, f, 60000, message, sizeof message);
       long took = monotonic_ms() - started;
-      CHECK(status != FELIX_STATUS_OK, "an open past the timeout succeeded");
-      CHECK(took >= 25000 && took < 60000, "gave up after %ld ms", took);
-      CHECK(atomic_load(&app.fetches) == 1, "the fetch ran %d times",
-            atomic_load(&app.fetches));
-      status = open_stream(client, f, 60000, message, sizeof message);
-      CHECK(status == FELIX_STATUS_OK,
-            "the open joining the late answer: %d %s", (int)status, message);
-      CHECK(atomic_load(&app.fetches) == 1, "the second open started call %d",
+      CHECK(status == FELIX_STATUS_OK, "the open joining the late answer: %d %s",
+            (int)status, message);
+      CHECK(took >= 30000 && took < 60000, "opened after %ld ms", took);
+      CHECK(atomic_load(&app.fetches) == 1, "the retry started call %d",
             atomic_load(&app.fetches));
       CHECK(atomic_load(&app.peak) == 1, "the fetch ran %d at once",
             atomic_load(&app.peak));
+      status = open_stream(client, f, WAIT_MS, message, sizeof message);
+      CHECK(status == FELIX_STATUS_OK && atomic_load(&app.fetches) == 1,
+            "the late answer was not held: %d, %d fetches", (int)status,
+            atomic_load(&app.fetches));
       felix_client_free(client);
     }
     CHECK(released_once(&app), "token_release ran %d times",
