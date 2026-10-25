@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792922797181,
+  "lastUpdate": 1792923033420,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -36556,6 +36556,58 @@ window.BENCHMARK_DATA = {
             "range": "38594.96",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 807035.75\nmean: 797376.56\nstdev: 38594.96\ncv: 4.84%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "293dfef8e85a0ed27675dd3d38c990143af9ca6e",
+          "message": "feat(csharp): NuGet package with native libraries for six platforms (#1550)\n\nFelix.Client packs as a NuGet package with the release libfelix for\nlinux-x64/arm64, osx-x64/arm64 and win-x64/arm64 under runtimes/<rid>/native;\nNativeLoader finds it by default (FELIX_NATIVE_LIB still overrides) and refuses\nmusl/Alpine with a clear error.\n\nrelease.yml builds the six natives, load-tests each, packs and smoke-tests the\nnupkg, and publishes to nuget.org with trusted publishing (environment dotnet,\nNuGet/login as GetFelix) only when PUBLISH_NUGET is true and the run is not a\ndry run or a nightly. Nightly and rehearsal tags pack with the workspace\nversion. Every registry publish job (NuGet, PyPI, npm) and the Python and\nTypeScript release-asset jobs now wait on linux-x86_64's release gates (ref,\nversion, changelog.d), which PyPI and npm previously did not.\n\nCI packs each runner's own native and runs a smoke app restored from the local\npackage. Docs keep \"not on NuGet yet\" until the first release publishes it.",
+          "timestamp": "2026-10-25T10:05:40Z",
+          "tree_id": "cc8dd01406c9a28d0547cc6d5435115024f47e6b",
+          "url": "https://github.com/GetFelix/felix/commit/293dfef8e85a0ed27675dd3d38c990143af9ca6e"
+        },
+        "date": 1792923032570,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 522221.26,
+            "range": "30423.80",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 522221.26\nmean: 523061.38\nstdev: 30423.80\ncv: 5.82%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 522221.26,
+            "range": "30423.80",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 522221.26\nmean: 523061.38\nstdev: 30423.80\ncv: 5.82%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 125333.97,
+            "range": "1005.95",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 125333.97\nmean: 125363.25\nstdev: 1005.95\ncv: 0.80%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1253339.72,
+            "range": "10059.48",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1253339.72\nmean: 1253632.47\nstdev: 10059.48\ncv: 0.80%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
