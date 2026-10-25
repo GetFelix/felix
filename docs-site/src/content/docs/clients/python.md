@@ -176,36 +176,56 @@ def connect(oidc_token):
     )
 ```
 
-With `AsyncClient` the provider is an `async def`. This one runs the blocking
-`post` on a thread so it does not stall the loop:
+With `AsyncClient` the provider is an `async def`. Use an async HTTP client
+such as `aiohttp` for it. The loop stays free without a thread, and when the
+client cancels the provider, at the 30 second timeout or on close, the request
+stops with it. A blocking call moved to `asyncio.to_thread` would keep running
+after the cancel.
+
+The session must stay open as long as the client and every `with_identity`
+handle that uses the same provider, so the example returns both. Create it
+inside the coroutine, so it belongs to the loop the provider runs on, and close
+it after the client and those handles are done. `raise_for_status=True` makes a `403`
+raise with the status in the message.
 
 ```python
-import asyncio
+import aiohttp
 
 
 async def connect_async(oidc_token):
-    minted = await asyncio.to_thread(
-        post,
-        "/token/exchange",
-        {"requested": ["stream.publish"], "resources": ["stream:t1/default/*"]},
-        oidc_token,
-    )
-    refresh_token = minted["refresh_token"]
+    session = aiohttp.ClientSession(raise_for_status=True)
 
-    async def fetch_token():
-        nonlocal refresh_token
-        minted = await asyncio.to_thread(
-            post, "/token/refresh", {"refresh_token": refresh_token}
+    async def post_json(path, body, bearer=None):
+        headers = {"Authorization": f"Bearer {bearer}"} if bearer else {}
+        async with session.post(
+            CONTROLPLANE + path, json=body, headers=headers
+        ) as response:
+            return await response.json()
+
+    try:
+        minted = await post_json(
+            "/token/exchange",
+            {"requested": ["stream.publish"], "resources": ["stream:t1/default/*"]},
+            bearer=oidc_token,
         )
         refresh_token = minted["refresh_token"]
-        return minted["felix_token"]
 
-    return await felix.AsyncClient.connect(
-        "127.0.0.1:5000",
-        tenant_id="t1",
-        token=minted["felix_token"],
-        token_provider=fetch_token,
-    )
+        async def fetch_token():
+            nonlocal refresh_token
+            minted = await post_json("/token/refresh", {"refresh_token": refresh_token})
+            refresh_token = minted["refresh_token"]
+            return minted["felix_token"]
+
+        client = await felix.AsyncClient.connect(
+            "127.0.0.1:5000",
+            tenant_id="t1",
+            token=minted["felix_token"],
+            token_provider=fetch_token,
+        )
+        return client, session  # close the session after the client is done
+    except BaseException:
+        await session.close()
+        raise
 ```
 
 `with_identity` takes the same argument, so a gateway can give each user a
