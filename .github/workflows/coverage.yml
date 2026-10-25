@@ -130,7 +130,10 @@ jobs:
             git show FETCH_HEAD:coverage-lines.txt > "$RUNNER_TEMP/baseline.txt"; then
             # The per-file summary is newer than the badge; absent, the gate
             # just skips the breakdown.
-            git show FETCH_HEAD:coverage-files.json > "$RUNNER_TEMP/baseline-files.json" 2>/dev/null || true
+            # A failed redirect leaves an empty file behind; remove it.
+            if ! git show FETCH_HEAD:coverage-files.json > "$RUNNER_TEMP/baseline-files.json" 2>/dev/null; then
+              rm -f "$RUNNER_TEMP/baseline-files.json"
+            fi
             python3 scripts/ci/coverage_gate.py check lcov.info "$RUNNER_TEMP/baseline.txt" \
               --tolerance 0.1 --baseline-files "$RUNNER_TEMP/baseline-files.json"
           else

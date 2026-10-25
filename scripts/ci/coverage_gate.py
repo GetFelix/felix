@@ -10,7 +10,6 @@ does not depend on how any summary table rounds.
 """
 import argparse
 import json
-import os
 import sys
 
 
@@ -40,6 +39,17 @@ def per_file(path):
             elif current is not None and line.startswith("LH:"):
                 current[1] += int(line[3:])
     return files
+
+
+def load_files(path):
+    """The baseline summary, or None when absent, empty or unreadable: the
+    breakdown is a diagnostic and must never fail the gate."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (TypeError, OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def explain(base, now, top=15):
@@ -98,9 +108,8 @@ def main():
         base = float(baseline.read().strip())
     print(f"line coverage: {now:.2f}% (main: {base:.2f}%, allowed drop: {args.tolerance} points)")
     # Printed on a pass too, so a slow slide shows up before it trips the gate.
-    if args.baseline_files and os.path.exists(args.baseline_files):
-        with open(args.baseline_files, encoding="utf-8") as f:
-            base_files = json.load(f)
+    base_files = load_files(args.baseline_files)
+    if base_files is not None:
         print("::group::files that moved against main")
         print("\n".join(explain(base_files, per_file(args.lcov))))
         print("::endgroup::")

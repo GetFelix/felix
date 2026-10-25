@@ -79,6 +79,15 @@ class GateTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertNotIn("::group::", out)
 
+    def test_empty_or_invalid_baseline_files_is_quiet(self):
+        lcov_path = self.write("lcov.info", lcov({"a.rs": (10, 10)}))
+        pct = self.write("base.txt", "100.00\n")
+        for name, text in (("empty.json", ""), ("bad.json", "{not json")):
+            files = self.write(name, text)
+            code, out = self.main("check", lcov_path, pct, "--baseline-files", files)
+            self.assertEqual(code, 0)
+            self.assertNotIn("::group::", out)
+
 
 if __name__ == "__main__":
     unittest.main()
