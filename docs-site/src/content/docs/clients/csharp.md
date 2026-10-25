@@ -187,6 +187,45 @@ leading broker's clock, or null when nothing is that recent. Subscribe with
 the client would try, the seeds and the ones it learned from them; a client given one seed that
 lists more has discovered the cluster.
 
+## Connecting to a cluster
+
+In every language the client is a cluster client; see
+[Choosing a Client](/clients/overview/#every-client-is-a-cluster-client).
+`FelixClientOptions.Addrs` is a list, and `ConnectAsync` passes it to the C ABI's
+`felix_client_connect_with`, which builds a `ClusterClient`:
+
+```csharp
+await using var client = await FelixClient.ConnectAsync(new FelixClientOptions
+{
+    Addrs = ["felix-0:5000", "felix-1:5000", "felix-2:5000"],
+    TenantId = "t1",
+    Token = token,
+});
+```
+
+These are seeds: the client asks whichever answers which brokers exist and adds
+them, and it keeps your seeds whatever the answer, so a stale one cannot leave
+it worse off. List more than one so the first connection survives a seed being
+down. An empty list throws `ArgumentException`.
+
+- **A broker fails.** A call waiting on it fails once the connection has been
+  silent for the idle timeout (6 s by default), with the connection already
+  rebuilt from the brokers that remain. It throws a `FelixException` with
+  `Status` `Connection` (or `OutcomeUnknown` for a write that may have landed),
+  and the next call goes to a live broker. `Delivery.AtLeastOnce` resends
+  instead, and may duplicate.
+- **A shard moves.** Publishes go to the broker that now leads it, and a
+  subscription follows it.
+- **A subscription's broker fails.** On a durable stream it resubscribes from
+  the offset after the last one it delivered, and where it cannot it throws
+  rather than ending the enumeration as though the stream had finished.
+- **Knobs.** None. The client uses the Rust default `ReconnectPolicy` (5
+  attempts, backing off from 200 ms to 2 s) and the options have no field to
+  change it. `GetEndpointsAsync` lists the brokers it would try, discovered ones
+  included.
+
+The Rust page covers [clusters](/clients/rust/#clusters) in full.
+
 ## Consumer groups
 
 `client.JoinGroup(tenant, ns, stream, shard, group, consumer)` returns a `FelixGroup` for one

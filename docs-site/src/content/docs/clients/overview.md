@@ -3,7 +3,7 @@ title: "Choosing a Client"
 description: "Why Felix has one client implementation with bindings over it, what the conformance suite checks, and which client to reach for."
 ---
 
-Felix has three clients today: Rust, Python, and TypeScript, a C ABI over the Rust client that other language SDKs bind to, and a C# SDK on that ABI. This page covers
+Felix has Rust, Python and TypeScript clients, a C ABI over the Rust client that other language SDKs bind to, and a C# SDK on that ABI. Every one of them is a cluster client. This page covers
 how they relate to each other, which is worth understanding before you depend
 on one. Each client's own page covers using it.
 
@@ -57,6 +57,28 @@ The cost is that a binding needs a Rust toolchain to build (though not to
 *install*, since wheels and their equivalents ship compiled), and a language
 with poor FFI support is harder to serve. In return, when reconnection is
 improved every language gets the improvement, and no language can drift.
+
+## Every client is a cluster client
+
+The Rust `ClusterClient` is the client; each binding is built on it, and the C
+ABI builds one in `felix_client_connect_with`, so C# gets the same. In every
+language that means the client:
+
+- takes several broker addresses (seeds), discovers the other brokers from
+  them, and keeps the seeds it was given;
+- sends each record straight to the broker that leads its shard;
+- follows a shard that moves, for publishes and subscriptions alike;
+- rebuilds its connection from the brokers that remain when one fails, and
+  resolves names again when none of them answers;
+- resumes a subscription on a durable stream from the offset after the last one
+  it delivered, or reports the loss, and never ends it as though the stream had
+  finished.
+
+No binding exposes the reconnect backoff: each uses the Rust default. The
+[Rust page](/clients/rust/#clusters) and
+[Multi-node client](https://github.com/GetFelix/felix/blob/main/docs/multi-node-client.md)
+cover the behaviour in full, and each client's page has a "Connecting to a
+cluster" section with its connect call.
 
 ## The conformance suite
 
@@ -286,11 +308,11 @@ worth writing code for.
 
 | | | |
 | --- | --- | --- |
-| **[Rust](/clients/rust/)** | `felix-client` on crates.io | The reference client, and the one the others are built from. Applications use `ClusterClient`. |
-| **[Python](/clients/python/)** | `felix-client` on PyPI | A PyO3 binding, with a synchronous and an asyncio surface over the same Rust client. |
-| **[TypeScript](/clients/typescript/)** | `felix-client` on npm | A napi-rs addon. One asynchronous surface, because blocking Node's event loop is not something a library may do. |
-| **[C](/clients/c/)** | `libfelix` and `felix.h`, built from the repository | A C ABI over the Rust client, asynchronous through callbacks. The base for the C# SDK; not on a registry. |
-| **[C#](/clients/csharp/)** | `Felix.Client`, built from `sdks/dotnet` | A P/Invoke binding over the C ABI, with every `felix.h` function bound except the token provider, which follows: publish, subscribe to a shard or every shard, consumer groups, caches, counters and cache watches, atomic commits, idempotent producers, and publisher and timestamp metadata. Not on NuGet yet. |
+| **[Rust](/clients/rust/)** | `felix-client` on crates.io | The reference client, and the one the others are built from. Applications use `ClusterClient`; `connect_with_policy` tunes its reconnect backoff. |
+| **[Python](/clients/python/)** | `felix-client` on PyPI | A PyO3 binding, with a synchronous and an asyncio surface over the same Rust client. `Client([...])` takes a list of seeds, and the cluster behaviour is the Rust client's. |
+| **[TypeScript](/clients/typescript/)** | `felix-client` on npm | A napi-rs addon. One asynchronous surface, because blocking Node's event loop is not something a library may do. `Client.connect([...])` takes an array of seeds, with the Rust client's cluster behaviour. |
+| **[C](/clients/c/)** | `libfelix` and `felix.h`, built from the repository | A C ABI over the Rust client, asynchronous through callbacks. `felix_client_connect_with` takes comma-separated seeds and builds a `ClusterClient`. The base for the C# SDK; not on a registry. |
+| **[C#](/clients/csharp/)** | `Felix.Client`, built from `sdks/dotnet` | A P/Invoke binding over the C ABI, so `FelixClientOptions.Addrs` is a list of seeds for a `ClusterClient`. Every `felix.h` function is bound except the token provider, which follows: publish, subscribe to a shard or every shard, consumer groups, caches, counters and cache watches, atomic commits, idempotent producers, and publisher and timestamp metadata. Not on NuGet yet. |
 
 ### Which client to use
 
@@ -302,7 +324,8 @@ does not lead are forwarded. In the v0.6.0 three-node, three-replica run that
 hop cut in-memory throughput 2.4× (256 B records, batches of 64: 2,034 to 864
 MB/s of payload, broker CPU up 34%) and durable quorum-acked throughput 4.4×
 (475 to 107 MB/s of payload). See [v0.6.0 performance](/features/v060-performance/). The Python and
-TypeScript clients are built on `ClusterClient` and have no other kind.
+TypeScript clients, and the C ABI that C# binds, are built on `ClusterClient`
+and have no other kind. See [Every client is a cluster client](#every-client-is-a-cluster-client).
 
 Python and TypeScript both pass every required scenario in the catalogue, and
 CI is gated on both. That includes the `commit.*` scenarios: all three clients
