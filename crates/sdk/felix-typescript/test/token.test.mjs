@@ -19,20 +19,20 @@ test("a provider that is not a function is refused up front", () => {
 });
 
 test("a string, or a promise of one, comes back as a promise of it", async () => {
-  assert.equal(await fetchFrom(() => "sync")(), "sync");
-  assert.equal(await fetchFrom(async () => "async")(), "async");
+  assert.equal(await fetchFrom(() => "sync")(1), "sync");
+  assert.equal(await fetchFrom(async () => "async")(1), "async");
 });
 
 test("a synchronous throw becomes a rejection with the same message", async () => {
   const fetch = fetchFrom(() => {
     throw new Error("vault is sealed");
   });
-  await assert.rejects(fetch(), { message: "vault is sealed" });
+  await assert.rejects(fetch(1), { message: "vault is sealed" });
 });
 
 test("a rejection keeps its message, and a non-Error rejection gets one", async () => {
-  await assert.rejects(fetchFrom(async () => Promise.reject(new Error("403")))(), { message: "403" });
-  await assert.rejects(fetchFrom(async () => Promise.reject("plain string"))(), {
+  await assert.rejects(fetchFrom(async () => Promise.reject(new Error("403")))(1), { message: "403" });
+  await assert.rejects(fetchFrom(async () => Promise.reject("plain string"))(1), {
     message: "plain string",
   });
 });
@@ -45,7 +45,7 @@ test("a result that is not a non-empty string is a failure", async () => {
     [{ felix_token: "x" }, "object"],
     ["", "empty string"],
   ]) {
-    await assert.rejects(fetchFrom(async () => value)(), (err) => {
+    await assert.rejects(fetchFrom(async () => value)(1), (err) => {
       assert.ok(err instanceof Error);
       assert.match(err.message, /non-empty string/);
       assert.match(err.message, new RegExp(word));
@@ -58,7 +58,7 @@ test("connect options become the addon's positional arguments", async () => {
   const provider = () => "t";
   const args = connectArgs(["h:1", "t1", { token: "tok", serverName: "s", caFile: "ca", offerAlpn: true, tokenProvider: provider }]);
   assert.deepEqual(args.slice(0, 6), ["h:1", "t1", "tok", "s", "ca", true]);
-  assert.equal(await args[6](), "t");
+  assert.equal(await args[6](1), "t");
   assert.deepEqual(connectArgs(["h:1", "t1"]), ["h:1", "t1", undefined, undefined, undefined, undefined, undefined]);
   assert.deepEqual(withIdentityArgs(["t1", { token: "tok" }]), ["t1", "tok", undefined]);
 });
@@ -69,4 +69,44 @@ test("an unknown option, an extra argument or a non-object is a TypeError", () =
   assert.throws(() => connectArgs(["h:1", "t1", "tok"]), TypeError);
   assert.throws(() => withIdentityArgs(["t1", "tok"]), TypeError);
   assert.throws(() => withIdentityArgs(["t1", { serverName: "s" }]), /unknown option serverName/);
+});
+
+test("the provider gets an AbortSignal that the native abort call fires", async () => {
+  let seen;
+  const call = fetchFrom((signal) => {
+    seen = signal;
+    return new Promise((_, reject) => signal.addEventListener("abort", () => reject(new Error("aborted"))));
+  });
+  const pending = call(7, false);
+  assert.equal(seen.aborted, false);
+  assert.equal(call(7, true), undefined);
+  assert.equal(seen.aborted, true);
+  await assert.rejects(pending, { message: "aborted" });
+});
+
+test("aborting one fetch leaves another's signal alone, and an unknown or settled id is ignored", async () => {
+  const signals = {};
+  const call = fetchFrom((signal) => {
+    const id = Object.keys(signals).length + 1;
+    signals[id] = signal;
+    return id === 1 ? "done" : new Promise(() => {});
+  });
+  await call(1, false);
+  call(1, true); // already settled
+  call(99, true); // never started
+  assert.equal(signals[1].aborted, false);
+  call(2, false);
+  call(3, false);
+  call(2, true);
+  assert.equal(signals[2].aborted, true);
+  assert.equal(signals[3].aborted, false);
+});
+
+test("a provider that ignores the signal still completes after an abort", async () => {
+  let release;
+  const call = fetchFrom(() => new Promise((resolve) => (release = resolve)));
+  const pending = call(1, false);
+  call(1, true);
+  release("late-token");
+  assert.equal(await pending, "late-token");
 });

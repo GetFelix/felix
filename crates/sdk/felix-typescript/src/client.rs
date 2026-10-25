@@ -61,7 +61,7 @@ impl Client {
     /// the JS thread, lazily and one call at a time, and `token` is what the
     /// client starts with.
     #[napi(
-        ts_args_type = "addrs: string | string[], tenantId: string, token?: string | null, serverName?: string, caFile?: string, offerAlpn?: boolean, tokenProvider?: () => Promise<string>",
+        ts_args_type = "addrs: string | string[], tenantId: string, token?: string | null, serverName?: string, caFile?: string, offerAlpn?: boolean, tokenProvider?: (signal: AbortSignal) => Promise<string>",
         ts_return_type = "Promise<Client>"
     )]
     pub fn connect(
@@ -129,7 +129,7 @@ impl Client {
     /// this client does, reaching each broker over this client's connection to
     /// it. A refused token fails here.
     #[napi(
-        ts_args_type = "tenantId: string, token?: string | null, tokenProvider?: () => Promise<string>",
+        ts_args_type = "tenantId: string, token?: string | null, tokenProvider?: (signal: AbortSignal) => Promise<string>",
         ts_return_type = "Promise<Client>"
     )]
     pub fn with_identity(

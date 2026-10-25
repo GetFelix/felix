@@ -9,7 +9,7 @@ declare const caFile: string;
 // <example>
 const CONTROLPLANE = "https://controlplane:8443/v1/tenants/t1";
 
-async function post(path: string, body: unknown, bearer?: string) {
+async function post(path: string, body: unknown, bearer?: string, signal?: AbortSignal) {
   const res = await fetch(CONTROLPLANE + path, {
     method: "POST",
     headers: {
@@ -17,7 +17,7 @@ async function post(path: string, body: unknown, bearer?: string) {
       ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
     },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(20_000), // the client gives up at 30 s
+    signal, // aborts when the client gives up at 30 s or is closed
   });
   if (!res.ok) throw new Error(`${path}: ${res.status}`); // 403: sign in again
   return res.json();
@@ -36,8 +36,8 @@ let refreshToken: string = exchanged.refresh_token;
 const client = await Client.connect("127.0.0.1:5000", "t1", {
   token: exchanged.felix_token,
   caFile,
-  tokenProvider: async () => {
-    const minted = await post("/token/refresh", { refresh_token: refreshToken });
+  tokenProvider: async (signal) => {
+    const minted = await post("/token/refresh", { refresh_token: refreshToken }, undefined, signal);
     refreshToken = minted.refresh_token;
     return minted.felix_token;
   },

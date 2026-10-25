@@ -4,29 +4,45 @@
 "use strict";
 
 /**
- * Wrap the app's `tokenProvider` so the native side always gets a promise that
- * resolves with a non-empty string or rejects with an `Error`. A synchronous
+ * Wrap the app's `tokenProvider` for the native side, which calls the result
+ * two ways: `(id, false)` starts fetch number `id` and gets a promise that
+ * resolves with a non-empty string or rejects with an `Error`; `(id, true)`
+ * aborts the `AbortSignal` that fetch's provider was given. A synchronous
  * throw, a rejection of something that is not an `Error`, and a result that is
  * not a string all become the same kind of failure, with a message the client
  * passes on unchanged.
+ *
+ * The native side aborts when the call outlives the 30 s fetch timeout and
+ * when the client is closed. A provider that ignores the signal is still
+ * joined, not called again.
  */
 function fetchFrom(tokenProvider) {
   if (tokenProvider === undefined || tokenProvider === null) return undefined;
   if (typeof tokenProvider !== "function") {
     throw new TypeError("tokenProvider must be a function returning a string or a Promise of one");
   }
-  return async function fetchToken() {
+  const running = new Map();
+  async function fetchToken(id) {
+    const controller = new AbortController();
+    running.set(id, controller);
     let token;
     try {
-      token = await tokenProvider();
+      token = await tokenProvider(controller.signal);
     } catch (err) {
       throw err instanceof Error ? err : new Error(String(err));
+    } finally {
+      running.delete(id);
     }
     if (typeof token !== "string" || token === "") {
       const got = typeof token === "string" ? "an empty string" : typeof token;
       throw new Error(`tokenProvider must return a non-empty string, got ${got}`);
     }
     return token;
+  }
+  return function call(id, abort) {
+    if (!abort) return fetchToken(id);
+    running.get(id)?.abort();
+    return undefined;
   };
 }
 

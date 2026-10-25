@@ -156,6 +156,27 @@ export default function register(ctx) {
     assert.equal(calls, 1, "the provider was called again while its first call was pending");
   });
 
+  it("a provider that listens to its signal is aborted at the fetch timeout, and called once", { timeout: 150_000 }, async () => {
+    // Needs the client's 30 s fetch timeout (felix-client FETCH_TIMEOUT).
+    let calls = 0;
+    let abortedAfter = null;
+    const started = Date.now();
+    const listening = (signal) => {
+      calls += 1;
+      return new Promise((_, reject) => {
+        signal.addEventListener("abort", () => {
+          abortedAfter = Date.now() - started;
+          reject(new Error("fetch stopped by the client"));
+        });
+      });
+    };
+    const caught = await failure(connectWith(listening));
+    assert.ok(caught instanceof ctx.felix.AuthError, `got ${caught}`);
+    assert.ok(abortedAfter !== null, "the signal was never aborted");
+    assert.ok(abortedAfter >= 25_000 && abortedAfter < 60_000, `aborted after ${abortedAfter} ms`);
+    assert.equal(calls, 1);
+  });
+
   it("the app's message arrives unchanged, whatever the provider threw", async () => {
     const cases = [
       ["a thrown Error", () => { throw new Error("vault is sealed: code 7"); }, "vault is sealed: code 7"],

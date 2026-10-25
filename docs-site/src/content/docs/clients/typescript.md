@@ -75,7 +75,7 @@ client keeps using that one and asks again a few seconds later. If the broker
 refuses a token and the provider returns a different one, the client retries
 once with it.
 
-The provider has the shape `() => string | Promise<string>`. Pass it as the
+The provider has the shape `(signal: AbortSignal) => string | Promise<string>`. Pass it as the
 `tokenProvider` option of `Client.connect` and of `withIdentity`. Leave out
 `token` to have the first connect call it, or pass a token you already hold to
 use that first. An empty string counts as no token.
@@ -98,6 +98,12 @@ no valid token is held to fall back on. After a timeout the calls waiting on the
 token fail, but the client does not call the provider again until the pending
 call settles, and a late answer is used.
 
+**Cancellation.** The `signal` argument aborts when the client stops waiting
+(the 30 seconds) and when the client is closed. Pass it to `fetch`, as the
+example does, so a hung request is cut off instead of left running. A provider
+that ignores the signal still works: it is not called again while it is
+pending, and its late answer is used.
+
 **Async variant.** `async` functions are the usual case, as in the example. A
 plain function that returns the string works too.
 
@@ -111,7 +117,7 @@ token until it expires. Run a new login, then connect a new client.
 ```ts
 const CONTROLPLANE = "https://controlplane:8443/v1/tenants/t1";
 
-async function post(path: string, body: unknown, bearer?: string) {
+async function post(path: string, body: unknown, bearer?: string, signal?: AbortSignal) {
   const res = await fetch(CONTROLPLANE + path, {
     method: "POST",
     headers: {
@@ -119,7 +125,7 @@ async function post(path: string, body: unknown, bearer?: string) {
       ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
     },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(20_000), // the client gives up at 30 s
+    signal, // aborts when the client gives up at 30 s or is closed
   });
   if (!res.ok) throw new Error(`${path}: ${res.status}`); // 403: sign in again
   return res.json();
@@ -138,8 +144,8 @@ let refreshToken: string = exchanged.refresh_token;
 const client = await Client.connect("127.0.0.1:5000", "t1", {
   token: exchanged.felix_token,
   caFile,
-  tokenProvider: async () => {
-    const minted = await post("/token/refresh", { refresh_token: refreshToken });
+  tokenProvider: async (signal) => {
+    const minted = await post("/token/refresh", { refresh_token: refreshToken }, undefined, signal);
     refreshToken = minted.refresh_token;
     return minted.felix_token;
   },
@@ -158,7 +164,7 @@ Client.connect(
   tenantId,
   {
     token,          // a Felix token; optional when tokenProvider is set
-    tokenProvider,  // () => string | Promise<string>; see above
+    tokenProvider,  // (signal: AbortSignal) => string | Promise<string>; see above
     serverName,     // the name the broker's certificate carries; defaults to "localhost"
     caFile,         // trust a specific CA; omit for the system trust store
     offerAlpn,      // offer the felix/1 ALPN; defaults to false
@@ -220,7 +226,7 @@ In every language the client is a cluster client; see
 const client = await Client.connect(
   ["felix-0:5000", "felix-1:5000", "felix-2:5000"],
   "t1",
-  token,
+  { token },
 );
 ```
 

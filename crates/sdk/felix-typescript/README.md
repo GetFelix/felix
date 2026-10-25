@@ -57,11 +57,12 @@ call at a time:
 const client = await Client.connect(addr, "t1", {
   token: firstToken,
   caFile,
-  tokenProvider: async () => (await refresh()).felix_token,
+  tokenProvider: async (signal) => (await refresh(signal)).felix_token,
 });
 ```
 
-A failure keeps the held token while it is valid and otherwise reaches you as an
+The `signal` aborts when the client stops waiting (30 s) or is closed; pass it to
+`fetch`. A failure keeps the held token while it is valid and otherwise reaches you as an
 `AuthError` with your message. `withIdentity` takes one too. See
 https://docs.getfelix.dev/clients/typescript/#getting-and-refreshing-a-token.
 
