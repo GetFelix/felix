@@ -190,7 +190,7 @@ public class CommitFixtureTests
     }
 
     [FixtureFact]
-    [Scenario("commit.returns_the_offset", "commit.negotiated")]
+    [Scenario("commit.returns_the_offset")]
     public async Task AnEntityKeyedCommitsEventIsReadBackAtTheReturnedOffset()
     {
         var f = Fixture.Load();
@@ -239,6 +239,33 @@ public class CommitFixtureTests
 
             await DeleteState(client, f, entity, null, entity);
         }
+    }
+
+    /// <summary>
+    /// A client sends a commit or a state read only to a broker that advertised atomic commits. Against
+    /// a stub that advertised nothing both fail at the call with <see cref="FelixStatus.Unsupported"/>,
+    /// and the stub's own counter shows nothing reached it.
+    /// </summary>
+    [NoCommitFixtureFact]
+    [Scenario("commit.negotiated")]
+    public async Task ACommitAndAStateReadAreRefusedByABrokerThatAdvertisedNoCommits()
+    {
+        var f = FaultFixture.Load();
+        var entity = $"cn-{Run()}";
+        await using (var client = await f.ConnectAsync(f.NoCommitAddrs))
+        {
+            var commit = await Assert.ThrowsAsync<FelixException>(() =>
+                client.CommitAsync(f.Tenant, f.Namespace, Bytes(entity), [CommitOp.Publish(f.Stream, Bytes("x"))]));
+            Assert.Equal(FelixStatus.Unsupported, commit.Status);
+
+            var state = await Assert.ThrowsAsync<FelixException>(() =>
+                client.GetStateAsync(f.Tenant, f.Namespace, f.Stream, entity, Bytes(entity)));
+            Assert.Equal(FelixStatus.Unsupported, state.Status);
+        }
+
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+        var sent = await http.GetStringAsync(f.ControlUrl + "/no-commit/requests");
+        Assert.Equal(0, int.Parse(sent.Trim(), System.Globalization.CultureInfo.InvariantCulture));
     }
 
     [FixtureFact]
