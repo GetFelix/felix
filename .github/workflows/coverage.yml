@@ -110,6 +110,16 @@ jobs:
           set -euxo pipefail
           task coverage
 
+      # Before the gate, and even when coverage failed, so a drop can be
+      # inspected from the artifact.
+      - name: Upload coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: lcov-info
+          path: lcov.info
+          if-no-files-found: warn
+
       # An unchanged tree varies about +-0.05 points, hence 0.1. No baseline yet
       # (first run after this lands) passes.
       - name: Gate on main's line coverage
@@ -118,7 +128,11 @@ jobs:
           set -euo pipefail
           if git fetch --quiet --depth=1 origin badges &&
             git show FETCH_HEAD:coverage-lines.txt > "$RUNNER_TEMP/baseline.txt"; then
-            python3 scripts/ci/coverage_gate.py check lcov.info "$RUNNER_TEMP/baseline.txt" --tolerance 0.1
+            # The per-file summary is newer than the badge; absent, the gate
+            # just skips the breakdown.
+            git show FETCH_HEAD:coverage-files.json > "$RUNNER_TEMP/baseline-files.json" 2>/dev/null || true
+            python3 scripts/ci/coverage_gate.py check lcov.info "$RUNNER_TEMP/baseline.txt" \
+              --tolerance 0.1 --baseline-files "$RUNNER_TEMP/baseline-files.json"
           else
             echo "::notice::no coverage baseline on the badges branch yet; skipping the gate"
             python3 scripts/ci/coverage_gate.py percent lcov.info
@@ -128,12 +142,6 @@ jobs:
         uses: ImBIOS/lcov-coverage-badge@da3d9b94a6e70935409f4e021384216a80dd0762 # v1.0.1
         with:
           file: ./lcov.info
-
-      - name: Upload coverage artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: lcov-info
-          path: lcov.info
 
       - name: Prepare publish dir (hard fail if badge missing)
         run: |
@@ -158,6 +166,7 @@ jobs:
           fi
 
           python3 scripts/ci/coverage_gate.py percent lcov.info > publish/coverage-lines.txt
+          python3 scripts/ci/coverage_gate.py files lcov.info > publish/coverage-files.json
 
           echo "Publish dir contents:"
           ls -la publish
