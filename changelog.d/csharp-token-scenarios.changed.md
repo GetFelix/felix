@@ -1,0 +1,1 @@
+- The seven `token.*` conformance scenarios are required. C# now tests them against the fixture with short-lived tokens, so every client passes them.

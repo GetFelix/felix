@@ -882,13 +882,12 @@ shard's next offset is unchanged afterwards.
 # A client given a function that returns a fresh Felix token, instead of one
 # fixed token. The fixture mints tokens with a chosen life (`POST /tokens` on
 # `control_url`, see the fixture's control endpoint), so these run against
-# real brokers. Optional until every client exposes a provider and passes them
-# all; a client with no provider skips them with a reason.
+# real brokers. Required: every client exposes a provider and passes them.
 # ---------------------------------------------------------------------------
 
 [[scenario]]
 id = "token.lazy"
-required = false
+required = true
 title = "The provider is called only when a stream is about to authenticate"
 detail = """
 No background timer. A client holding a token with life left makes no provider
@@ -898,7 +897,7 @@ token. With no initial token the first authentication makes the one call.
 
 [[scenario]]
 id = "token.single_flight"
-required = false
+required = true
 title = "Concurrent stream opens share one provider call"
 detail = """
 Stream opens that each need a token while a call is in flight wait on that
@@ -908,7 +907,7 @@ inside it is safe.
 
 [[scenario]]
 id = "token.refused_retry_once"
-required = false
+required = true
 title = "A refused token costs one refetch and one retry"
 detail = """
 When the broker refuses the held token, the client drops it, fetches once and
@@ -920,7 +919,7 @@ because each broker authenticates for itself.
 
 [[scenario]]
 id = "token.keep_valid_on_failure"
-required = false
+required = true
 title = "A failed refresh keeps a token that is still valid"
 detail = """
 Past two thirds of its life but not expired, the held token is refreshed on
@@ -931,7 +930,7 @@ seconds later, while the token is still valid, rather than on every open.
 
 [[scenario]]
 id = "token.expiry_refresh"
-required = false
+required = true
 title = "A short-lived token is replaced mid-run on a live client"
 detail = """
 Hold a token minted with a life of a few seconds. Once two thirds of it have
@@ -943,7 +942,7 @@ token's own `exp`, not that a broker refused it.
 
 [[scenario]]
 id = "token.failure_message"
-required = false
+required = true
 title = "The provider's error text reaches the caller's auth error"
 detail = """
 With no valid token held, a provider that fails (error, exception, rejection,
@@ -953,7 +952,7 @@ error carrying the provider's own message, unchanged.
 
 [[scenario]]
 id = "token.timeout_joins"
-required = false
+required = true
 title = "A provider past the 30 s timeout fails the waiter, and is joined"
 detail = """
 The timeout fails whoever is waiting with the client's auth error ("took longer

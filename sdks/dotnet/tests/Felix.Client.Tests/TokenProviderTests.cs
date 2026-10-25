@@ -1,3 +1,8 @@
+using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Net.Http.Json;
+using System.Text;
+using System.Text.Json.Serialization;
 using Felix.Native;
 using Xunit;
 
@@ -7,8 +12,9 @@ namespace Felix.Client.Tests;
 /// <see cref="FelixClientOptions.TokenProvider"/>. The library owns the timing rules (lazy fetch,
 /// two-thirds refresh, one retry after a refusal, one call at a time, the 30 s wait) and tests them in
 /// Rust. These cover what the binding adds: how the provider is started and cancelled, that every
-/// reply is answered once, and that failures reach the caller. The fixture mints only hour-long
-/// tokens, so none of them waits for an expiry. One class, so the counters below see one test at a time.
+/// reply is answered once, and that failures reach the caller. The tests tagged <c>token.*</c> are
+/// catalogue scenarios; the ones about expiry take a short-lived token from the fixture's
+/// <c>POST /tokens</c> and wait for it. One class, so the counters below see one test at a time.
 /// </summary>
 public class TokenProviderTests
 {
@@ -391,7 +397,34 @@ public class TokenProviderTests
         };
     }
 
+    private static readonly HttpClient Control = new() { Timeout = TimeSpan.FromSeconds(30) };
+
+    /// <summary>A token for the fixture tenant that lives <paramref name="ttlSecs"/>, from the fixture's control endpoint.</summary>
+    private static async Task<string> MintAsync(int ttlSecs, bool forged = false)
+    {
+        var url = FaultFixture.Load().ControlUrl + "/tokens";
+        using var response = await Control.PostAsJsonAsync(url, new { ttl_secs = ttlSecs, forged });
+        var minted = await response.EnsureSuccessStatusCode().Content.ReadFromJsonAsync<MintedToken>()
+            ?? throw new InvalidOperationException("the fixture returned no token");
+        return minted.Token;
+    }
+
+    private sealed record MintedToken([property: JsonPropertyName("token")] string Token);
+
+    /// <summary>Skips unless the fixture file has the control endpoint that mints short-lived tokens.</summary>
+    public sealed class TokenFixtureFactAttribute : FixtureFactAttribute
+    {
+        public TokenFixtureFactAttribute()
+        {
+            if (Skip is null && FaultFixture.Load().ControlUrl is null)
+            {
+                Skip = "the fixture file has no control_url to mint tokens from";
+            }
+        }
+    }
+
     [FixtureFact]
+    [Scenario("token.single_flight")]
     public async Task WithoutAnInitialTokenTheFirstConnectCallsTheProviderOnceWhateverOpensTogether()
     {
         var f = Fixture.Load();
@@ -427,6 +460,7 @@ public class TokenProviderTests
     }
 
     [FixtureFact]
+    [Scenario("token.lazy")]
     public async Task AnIdleClientWithAValidTokenMakesNoCalls()
     {
         var f = Fixture.Load();
@@ -442,6 +476,7 @@ public class TokenProviderTests
     }
 
     [FixtureFact]
+    [Scenario("token.failure_message")]
     public async Task AProviderFailureReachesTheCallerUnchanged()
     {
         var f = Fixture.Load();
@@ -465,6 +500,7 @@ public class TokenProviderTests
     }
 
     [FixtureFact]
+    [Scenario("token.refused_retry_once")]
     public async Task ARefusedTokenCostsOneFetchAndOneRetry()
     {
         var f = Fixture.Load();
@@ -603,6 +639,142 @@ public class TokenProviderTests
         await watch.DisposeAsync();
         Assert.Equal(0, source.Holders);
         Assert.True(source.IsCancelled);
+    }
+
+    [TokenFixtureFact]
+    public async Task AForgedTokenTheBrokerRefusesIsReplacedOnce()
+    {
+        // Signed with a key no broker trusts but not expired, so only the broker's refusal can
+        // tell the client to fetch.
+        var f = Fixture.Load();
+        var provider = new Provider(_ => Task.FromResult(f.Token));
+        var forged = await MintAsync(60, forged: true);
+        await using var client = await FelixClient.ConnectAsync(Options(f, forged, provider.Fetch, oneBroker: true));
+        await client.PublishAsync(f.Tenant, f.Namespace, f.Stream, "a"u8.ToArray());
+        Assert.Equal(1, provider.Calls);
+    }
+
+    [TokenFixtureFact]
+    [Scenario("token.expiry_refresh")]
+    public async Task AStreamOpenedAfterTwoThirdsOfATokensLifeGetsAFreshOne()
+    {
+        var f = Fixture.Load();
+        var payload = Encoding.UTF8.GetBytes($"after-refresh-{Guid.NewGuid():N}");
+        var provider = new Provider(_ => Task.FromResult(f.Token));
+        await using var client = await FelixClient.ConnectAsync(Options(f, await MintAsync(6), provider.Fetch));
+
+        await using (await client.SubscribeAsync(f.Tenant, f.Namespace, f.Stream, 0, StartPosition.Latest))
+        {
+        }
+
+        Assert.Equal(0, provider.Calls); // the token still had most of its life
+        await Task.Delay(TimeSpan.FromSeconds(4.5)); // refresh is due at 4 s
+
+        await using var sub = await client.SubscribeAsync(f.Tenant, f.Namespace, f.Stream, 0, StartPosition.Latest);
+        await client.PublishAsync(f.Tenant, f.Namespace, f.Stream, payload);
+        Assert.True(await ReadUntilAsync(sub, payload), "the refreshed stream got nothing");
+        Assert.Equal(1, provider.Calls);
+    }
+
+    [TokenFixtureFact]
+    [Scenario("token.keep_valid_on_failure")]
+    public async Task AFailedRefreshKeepsTheTokenAndIsRetriedLater()
+    {
+        var f = Fixture.Load();
+        var healthy = false;
+        var failedAt = new ConcurrentQueue<long>();
+        var provider = new Provider(_ =>
+        {
+            failedAt.Enqueue(Stopwatch.GetTimestamp());
+            return Volatile.Read(ref healthy) ? Task.FromResult(f.Token) : throw new InvalidOperationException("idp is down");
+        });
+
+        // Refresh is due at 16 s and the token expires at 24 s, so the retry about 5 s after the
+        // failure still finds the held token valid.
+        await using var client = await FelixClient.ConnectAsync(Options(f, await MintAsync(24), provider.Fetch));
+        await Task.Delay(TimeSpan.FromSeconds(16.5));
+
+        await using (await client.SubscribeAsync(f.Tenant, f.Namespace, f.Stream, 0, StartPosition.Latest))
+        {
+        } // the held token is still valid, so this works
+
+        Assert.Equal(1, provider.Calls);
+        await using (await client.SubscribeAsync(f.Tenant, f.Namespace, f.Stream, 0, StartPosition.Latest))
+        {
+        }
+
+        Assert.Equal(1, provider.Calls); // a failed refresh is not retried on every open
+
+        // Past the retry delay, with the held token still valid: the provider is asked again.
+        Volatile.Write(ref healthy, true);
+        Assert.True(failedAt.TryPeek(out var first));
+        var retryAt = TimeSpan.FromSeconds(5.5) - Stopwatch.GetElapsedTime(first);
+        if (retryAt > TimeSpan.Zero)
+        {
+            await Task.Delay(retryAt);
+        }
+
+        await using (await client.SubscribeAsync(f.Tenant, f.Namespace, f.Stream, 0, StartPosition.Latest))
+        {
+        }
+
+        Assert.Equal(2, provider.Calls);
+    }
+
+    [TokenFixtureFact]
+    [Scenario("token.timeout_joins")]
+    public async Task AProviderPastTheTimeoutFailsTheWaiterAndTheNextOpenJoinsIt()
+    {
+        // The held token expires at 6 s, so there is nothing to fall back on. The provider answers
+        // 33 s after it is called: the first open gives up at 30 s with no retry, and the second
+        // joins the same call and gets its answer.
+        var f = Fixture.Load();
+        var provider = new Provider(async _ =>
+        {
+            // Ignores its cancellation token (fired at 30 s) so the answer arrives late, as
+            // a provider that cannot be interrupted would.
+            await Task.Delay(TimeSpan.FromSeconds(33));
+            return f.Token;
+        });
+        await using var client = await FelixClient.ConnectAsync(Options(f, await MintAsync(6), provider.Fetch, oneBroker: true));
+        await Task.Delay(TimeSpan.FromSeconds(6.5));
+
+        var started = Stopwatch.StartNew();
+        var error = await Assert.ThrowsAsync<FelixException>(
+            () => client.SubscribeAsync(f.Tenant, f.Namespace, f.Stream, 0, StartPosition.Latest));
+
+        Assert.Equal(FelixStatus.Auth, error.Status);
+        Assert.Contains("longer than 30s", error.Message);
+        // A loose upper bound: a loaded runner is slow, and the message already shows the timeout fired.
+        Assert.InRange(started.Elapsed, TimeSpan.FromSeconds(25), TimeSpan.FromSeconds(45));
+        Assert.Equal(1, provider.Calls);
+
+        await using (await client.SubscribeAsync(f.Tenant, f.Namespace, f.Stream, 0, StartPosition.Latest))
+        {
+        }
+
+        Assert.Equal(1, provider.Calls); // the second open joined the running call
+        Assert.Equal(1, provider.MaxRunning);
+    }
+
+    /// <summary>Reads until an event carries <paramref name="payload"/>; false if the feed goes quiet first.</summary>
+    private static async Task<bool> ReadUntilAsync(FelixSubscription sub, byte[] payload)
+    {
+        for (var i = 0; i < 200; i++)
+        {
+            var ev = await sub.ReadAsync(TimeSpan.FromSeconds(15));
+            if (ev is null)
+            {
+                return false;
+            }
+
+            if (ev.Payload.Span.SequenceEqual(payload))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     [FixtureFact]
