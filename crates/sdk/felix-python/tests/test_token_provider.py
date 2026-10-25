@@ -411,6 +411,11 @@ def test_async_provider_is_cancelled_at_the_timeout(fixture):
                 ca_file=fixture["ca_file"],
             )
         assert 25 < time.monotonic() - started < 45
+        # The cancel is delivered on the provider's loop, just after the error.
+        for _ in range(100):
+            if cancelled:
+                break
+            await asyncio.sleep(0.05)
         assert cancelled, "the provider's task was not cancelled at the timeout"
 
     asyncio.run(main())
@@ -448,7 +453,7 @@ def test_async_provider_is_cancelled_when_the_client_is_gone(fixture):
         with pytest.raises(asyncio.CancelledError):
             await pending
         del pending
-        await client.close()
+        await client.__aexit__(None, None, None)
         del client
         gc.collect()
         for _ in range(200):
