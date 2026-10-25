@@ -1,6 +1,6 @@
 ---
 title: "C# Client"
-description: "Using the Felix C# client: supported platforms, connecting, publishing, subscribing, consumer groups, caches, counters and watches, atomic commits, conditional publishes, idempotent producers, publisher and timestamp metadata, typed errors, cancellation and threading."
+description: "Using the Felix C# client: supported platforms, connecting, publishing, subscribing, sharded subscriptions, consumer groups, caches, counters and watches, atomic commits, conditional publishes, idempotent producers, publisher and timestamp metadata, typed errors, cancellation and threading."
 ---
 
 `Felix.Client` is the C# client, in `sdks/dotnet`. It binds the [C ABI](/clients/c/)
@@ -8,10 +8,11 @@ over the Rust client with P/Invoke, so reconnection, redirect-following and erro
 classes are the Rust client's. Every call is a `Task`; no thread waits on a pending
 publish or read.
 
-It covers connect, publish (single and batch), subscribe to one shard, consumer groups
-(on a shard and across every shard), caches, counters and cache watches, atomic commits and
-state reads, conditional publishes, idempotent producers, and the publisher and timestamp
-fields. Multi-shard subscribe is bound in a later step, and it is not on NuGet yet.
+It binds every function in `felix.h` except the token provider, which follows once the C ABI has
+it: connect, publish (single, batch, keyed records and named-shard), subscribe to one shard or
+to all of them, consumer groups, caches, counters and cache watches, atomic commits and state
+reads, conditional publishes, idempotent producers, endpoints, offset lookup by time, and the
+publisher and timestamp fields. It is not on NuGet yet.
 
 ## Supported platforms
 
@@ -126,6 +127,65 @@ reads until the broker ends the stream, and `CloseReason` then says whether the 
 ended or was deleted. Only one read may be pending at a time. A `FelixEvent` holds a
 copy of the payload, so it stays valid after the next read. `StartOffset` is where
 the subscription began.
+
+### Every shard
+
+`SubscribeShardedAsync` opens every shard of a stream as one `FelixShardedSubscription`. It fails
+if any shard cannot be opened, so a subscription never quietly covers fewer shards than the
+stream has. Order holds within a shard and nowhere across shards.
+
+```csharp
+await using var all = await client.SubscribeShardedAsync(
+    "t1", "default", "events", StartPosition.Latest);
+
+await foreach (var item in all)
+{
+    switch (item.Kind)
+    {
+        case ShardItemKind.Record:
+            Console.WriteLine($"shard {item.Shard} @ {item.Event!.Offset}");
+            break;
+        case ShardItemKind.Lost:
+            Console.WriteLine($"shard {item.Shard} lost: {item.Message}");
+            break;
+    }
+}
+```
+
+A read returns a `ShardItem`: a record, or a change in one shard's feed (`Lost`, `Recovered`,
+`Moved`, `StreamDeleted`). Check the kind: a shard reported lost keeps its place while the
+others deliver, and ignoring the item leaves you reading part of the stream while believing you
+read all of it. `ReadAsync(timeout)`, cancellation and the one-read-at-a-time rule are as for a
+single shard, and enumeration ends once every shard's feed has.
+
+`Positions()` reports the offset of the last record delivered on each shard that has delivered
+one, and it is safe to call while a read is pending. Pass them to `ResubscribeShardedAsync` to
+resume: each listed shard continues just after its offset, and any other shard starts at the
+`StartPosition` you give, which is what a shard that delivered nothing should do. Listing a shard
+twice is an `InvalidArgument` error.
+
+```csharp
+var positions = all.Positions();
+// ... later, on a new subscription
+await using var resumed = await client.ResubscribeShardedAsync(
+    "t1", "default", "events", positions, StartPosition.Earliest);
+```
+
+### Shards, records and time
+
+`PublishOnShardAsync` sends a batch to a shard you name, for a producer that does its own
+partitioning; a shard the stream does not have is refused and nothing is written.
+`PublishRecordsAsync` sends records that each carry a key. They are split by shard and each
+shard's records go as one batch, in the order given, with no order between shards. A refused
+shard does not stop the others, so it returns a `PublishResult` per record with its `Offset`,
+`Status` and `Message`; check `Accepted`. With `Delivery.AtLeastOnce` a batch whose outcome is
+in doubt is sent again, which can write it twice.
+
+`OffsetForTimeAsync` gives the first offset on a shard appended at or after a time, by the
+leading broker's clock, or null when nothing is that recent. Subscribe with
+`StartPosition.FromOffset` at it to replay from a time. `GetEndpointsAsync` lists the brokers
+the client would try, the seeds and the ones it learned from them; a client given one seed that
+lists more has discovered the cluster.
 
 ## Consumer groups
 
@@ -349,8 +409,10 @@ error.
 
 Fixture tests carry `[Scenario("id")]` for the scenarios of the client conformance catalogue
 they cover. With `FELIX_CONFORMANCE_RESULTS` set, the test run writes the results document
-`felix-conformance verify` reads. CI runs that verdict for C#, but it does not block yet: the SDK
-still lacks the scenarios for multi-shard subscribe.
+`felix-conformance verify` reads. CI runs that verdict for each target framework and it blocks:
+a required scenario that fails, is skipped or is never recorded fails the job. A second CI step
+checks that every function `felix.h` exports is declared in the binding, with a short allowlist
+(`scripts/check_csharp_bindings.py`) that gives a reason for each exception.
 
 ## Errors
 
