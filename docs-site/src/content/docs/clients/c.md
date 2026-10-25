@@ -596,7 +596,42 @@ returned, and they do not wait for each other's answers.
   for a send that may be out), and batches already handed over may still be
   sent.
 
-## Brokers the client knows
+## Connecting to a cluster
+
+In every language the client is a cluster client; see
+[Choosing a Client](/clients/overview/#every-client-is-a-cluster-client).
+`felix_client_connect_with` builds a `ClusterClient` from `addrs`, which holds
+one `host:port` or several separated by commas:
+
+```c
+felix_client_connect_with("felix-0:5000,felix-1:5000,felix-2:5000",
+                          "t1", token, NULL, NULL, NULL, NULL,
+                          on_connected, my_state);
+```
+
+These are seeds: the client asks whichever answers which brokers exist and adds
+them, and it keeps your seeds whatever the answer, so a stale one cannot leave
+it worse off. List more than one so the first connection survives a seed being
+down.
+
+- **A broker fails.** A call waiting on it fails once the connection has been
+  silent for the idle timeout (6 s by default), with the connection already
+  rebuilt from the brokers that remain. It completes with
+  `FELIX_STATUS_CONNECTION` (or `FELIX_STATUS_OUTCOME_UNKNOWN` for a write that
+  may have landed); the next call goes to a live broker.
+  `FELIX_DELIVERY_AT_LEAST_ONCE` resends instead, and may duplicate.
+- **A shard moves.** Publishes go to the broker that now leads it, and a
+  subscription follows it ([Subscribing](#subscribing)).
+- **A subscription's broker fails.** On a durable stream it resubscribes from
+  the offset after the last one it delivered, and where it cannot the read
+  completes with an error rather than `FELIX_STATUS_CLOSED`.
+- **Knobs.** None. The client uses the Rust default `ReconnectPolicy` (5
+  attempts, backing off from 200 ms to 2 s) and the ABI has no option to change
+  it.
+
+The Rust page covers [clusters](/clients/rust/#clusters) in full.
+
+### Brokers the client knows
 
 `felix_client_endpoints` reports the `host:port` of every broker the client
 would try, including the ones it discovered from its seeds. The strings are
