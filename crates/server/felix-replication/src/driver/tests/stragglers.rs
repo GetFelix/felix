@@ -848,3 +848,77 @@ async fn an_append_to_this_shard_cuts_a_waiting_pass_short() {
     );
     driver.stop().await;
 }
+
+/// How long the mark for shard 0 may take to reach its tail while shard 1 keeps
+/// appending.
+const SIBLING_BOUND: Duration = Duration::from_millis(100);
+
+/// Shard 0 takes one append while its followers answer slowly and shard 1, led
+/// by the same broker, appends every millisecond. Returns how long shard 0's
+/// mark took to reach the tail, or `None` past [`SIBLING_BOUND`].
+async fn sibling_appends(b_delay: Duration, c_delay: Duration) -> Option<Duration> {
+    let (broker, _dir) = super::quorum::quorum_leader(3, 4).await;
+    let router = router_over_shards(LOCAL, &["broker-b", "broker-c"], 4, 2);
+    let marks = Arc::new(QuorumMarks::new());
+    let peers = Arc::new(ShiftingPeer::default());
+    let driver = driver_with(
+        Arc::clone(&peers),
+        &broker,
+        &router,
+        &marks,
+        &Arc::default(),
+    );
+    assert!(prompt(&marks, 0, 4, 3).await, "the first mark waited");
+
+    peers.delay("broker-b", b_delay);
+    peers.delay("broker-c", c_delay);
+    let since = tokio::time::Instant::now();
+    append(&broker, 0).await;
+    let watched = watch_key(&key());
+    let waiter = {
+        let marks = Arc::clone(&marks);
+        tokio::spawn(async move {
+            tokio::time::timeout(SIBLING_BOUND, async {
+                while marks.offset(&watched, 4) < Some(4) {
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            })
+            .await
+            .ok()
+            .map(|()| since.elapsed())
+        })
+    };
+    // Shard 1 appends until shard 0's mark has settled or the bound passed.
+    while !waiter.is_finished() {
+        append(&broker, 1).await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    let took = waiter.await.expect("waiter");
+    driver.stop().await;
+    took
+}
+
+/// **A sibling shard's appends do not stall a shard's quorum mark.** Both
+/// shards are led here. Shard 0 has one record to confirm and a follower that
+/// is slow to answer; shard 1 appends every millisecond. Each of those appends
+/// wakes every running pass, and none of them is a reason to give up shard 0's
+/// wait or to drop a straggler's answer.
+#[tokio::test(start_paused = true)]
+async fn sibling_appends_do_not_stall_a_shards_mark() {
+    let took = sibling_appends(Duration::from_millis(40), Duration::from_millis(5)).await;
+    assert!(
+        took.is_some(),
+        "shard 0's mark stalled behind shard 1's appends"
+    );
+}
+
+/// The same with both followers busy when the record lands, so a pass has
+/// nobody to ask and only the stragglers' answers can move the mark.
+#[tokio::test(start_paused = true)]
+async fn sibling_appends_do_not_stall_a_mark_waiting_on_two_busy_followers() {
+    let took = sibling_appends(Duration::from_millis(40), Duration::from_millis(30)).await;
+    assert!(
+        took.is_some(),
+        "shard 0's mark stalled behind shard 1's appends"
+    );
+}
