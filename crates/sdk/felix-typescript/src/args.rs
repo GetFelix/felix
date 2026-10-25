@@ -4,7 +4,9 @@
 use std::collections::{BTreeMap, HashMap};
 use std::net::ToSocketAddrs;
 
-use felix_client::Seed;
+use std::time::Duration;
+
+use felix_client::{ReconnectPolicy, Seed};
 use felix_wire::{AckMode, StartPosition};
 use napi::bindgen_prelude::*;
 
@@ -30,6 +32,38 @@ pub(crate) fn seeds(addrs: Vec<String>) -> Result<Vec<Seed>> {
         seeds.push(seed);
     }
     Ok(seeds)
+}
+
+/// The default reconnect policy with the caller's attempts and deadline (ms).
+///
+/// Numbers arrive as `f64` so a fraction or `NaN` is refused instead of being
+/// truncated into something the caller did not ask for.
+pub(crate) fn reconnect_policy(
+    attempts: Option<f64>,
+    deadline_ms: Option<f64>,
+) -> Result<ReconnectPolicy> {
+    let mut policy = ReconnectPolicy::default();
+    if let Some(attempts) = attempts {
+        if !(attempts.is_finite() && attempts.fract() == 0.0 && (1.0..=1e9).contains(&attempts)) {
+            return Err(invalid(format!(
+                "reconnectAttempts must be a whole number of at least 1, not {attempts}"
+            )));
+        }
+        policy.attempts = attempts as usize;
+    }
+    if let Some(ms) = deadline_ms {
+        // Rejects NaN, infinity, negatives and overflow along with zero.
+        let deadline = Duration::try_from_secs_f64(ms / 1000.0)
+            .ok()
+            .filter(|d| !d.is_zero())
+            .ok_or_else(|| {
+                invalid(format!(
+                    "reconnectDeadline must be a positive number of milliseconds, not {ms}"
+                ))
+            })?;
+        policy.deadline = Some(deadline);
+    }
+    Ok(policy)
 }
 
 /// How much the broker must have done before a publish resolves.

@@ -317,3 +317,48 @@ async fn a_chosen_shard_follows_its_own_redirect() -> Result<()> {
     assert_eq!(subscription.client().dialled(), owner.addr);
     Ok(())
 }
+
+/// **A deadline stops a client that still has attempts left.** The stub
+/// refuses every publish with a retryable code, so only the deadline ends the
+/// loop. This is `retry.deadline_bounds_an_operation` from the conformance
+/// catalogue, against stub brokers.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_deadline_ends_retries_that_the_attempt_budget_would_allow() -> Result<()> {
+    let (entry, cert) =
+        StubBroker::start(|id| publish_error(id, ErrorCode::ShardUnavailable, Some("fenced")))?;
+    let policy = ReconnectPolicy {
+        attempts: 10_000,
+        backoff: Duration::from_millis(50),
+        max_backoff: Duration::from_millis(100),
+        deadline: Some(Duration::from_millis(600)),
+    };
+    let cluster = ClusterClient::connect_with_policy(
+        &[entry.addr],
+        "localhost",
+        build_client_config_with_overrides(cert, 0)?,
+        policy,
+    )
+    .await?;
+
+    let started = std::time::Instant::now();
+    let err = cluster
+        .publish_at_least_once(
+            "t1",
+            "default",
+            "orders",
+            b"x".to_vec(),
+            AckMode::PerMessage,
+        )
+        .await
+        .expect_err("every attempt is refused");
+
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "took {:?}: the deadline did not stop the retries",
+        started.elapsed()
+    );
+    assert!(entry.publishes() > 1, "the deadline left room to retry");
+    assert!(err.downcast_ref::<BrokerError>().is_some() || format!("{err:#}").contains("refused"));
+    Ok(())
+}

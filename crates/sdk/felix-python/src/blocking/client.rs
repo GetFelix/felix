@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use felix_client::{ClientConfig, ClusterClient, ReconnectPolicy};
+use felix_client::{ClientConfig, ClusterClient};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -59,6 +59,13 @@ impl Client {
     /// `offer_alpn=True` offers the `felix/1` ALPN. A broker with
     /// `FELIX_TLS_REQUIRE_ALPN=true` serves only clients that do; a broker
     /// older than ALPN support refuses them, which is why it is off by default.
+    ///
+    /// `reconnect_attempts` (default 5, at least 1) is how many times a call
+    /// tries to reach a broker before it gives up. `reconnect_deadline`
+    /// (seconds, default none) bounds one call across every attempt and wait.
+    /// A deadline shorter than one attempt's own timeout leaves the call a
+    /// single attempt. Both apply to `with_identity` handles too. A bad value
+    /// raises `ValueError`.
     #[new]
     #[pyo3(signature = (
         addrs,
@@ -69,6 +76,8 @@ impl Client {
         server_name="localhost",
         ca_file=None,
         offer_alpn=false,
+        reconnect_attempts=None,
+        reconnect_deadline=None,
     ))]
     fn new(
         py: Python<'_>,
@@ -79,6 +88,8 @@ impl Client {
         server_name: &str,
         ca_file: Option<&str>,
         offer_alpn: bool,
+        reconnect_attempts: Option<i64>,
+        reconnect_deadline: Option<f64>,
     ) -> PyResult<Self> {
         let seeds = parse_addrs(py, &addrs)?;
         if seeds.is_empty() {
@@ -86,6 +97,7 @@ impl Client {
                 "at least one broker address is required",
             ));
         }
+        let policy = crate::args::reconnect_policy(reconnect_attempts, reconnect_deadline)?;
         let quinn = tls::client_config(ca_file, offer_alpn)?;
         let mut config = ClientConfig::optimized_defaults(quinn);
         config.auth_tenant_id = Some(tenant_id.to_string());
@@ -96,7 +108,7 @@ impl Client {
 
         let server_name = server_name.to_string();
         let inner = block_on(py, async move {
-            ClusterClient::connect_seeds(&seeds, &server_name, config, ReconnectPolicy::default())
+            ClusterClient::connect_seeds(&seeds, &server_name, config, policy)
                 .await
                 .map_err(to_py_err)
         })?;

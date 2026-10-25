@@ -108,12 +108,12 @@ export async function startFixture() {
 }
 
 /** A connected client for `fixture`, optionally against specific addresses. */
-export async function connect(fixture, { addrs, token } = {}) {
+export async function connect(fixture, { addrs, token, ...rest } = {}) {
   const { Client } = loadClient();
   return Client.connect(
     addrs ?? fixture.addrs,
     fixture.tenant_id,
-    { token: token ?? fixture.token, caFile: fixture.ca_file },
+    { token: token ?? fixture.token, caFile: fixture.ca_file, ...rest },
   );
 }
 

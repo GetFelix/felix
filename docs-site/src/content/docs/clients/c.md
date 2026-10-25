@@ -822,9 +822,28 @@ down.
 - **A subscription's broker fails.** On a durable stream it resubscribes from
   the offset after the last one it delivered, and where it cannot the read
   completes with an error rather than `FELIX_STATUS_CLOSED`.
-- **Knobs.** None. The client uses the Rust default `ReconnectPolicy` (5
-  attempts, backing off from 200 ms to 2 s) and the ABI has no option to change
-  it.
+- **Knobs.** [Reconnecting](#reconnecting) sets the attempt count and a deadline.
+
+### Reconnecting
+
+A call that cannot reach a broker is retried with a backoff. Two options tune that, and both default to the Rust client's own policy, so a client that sets neither behaves as it always did.
+
+- **Attempts** is how many times a call tries to reach a broker before it gives up. Each attempt tries every broker the client knows. The default is 5, and the minimum is 1.
+- **Deadline** is a ceiling on one call across every attempt and every wait between them. It is off by default. Attempt counts alone do not bound time: five attempts against a broker that takes its full publish timeout to answer is minutes.
+
+Set them as `reconnect_attempts` (zero is the default) and `reconnect_deadline_ms` (zero is no deadline) in `FelixConnectOptions`. They follow `token_release` in the struct, so a caller built against an older header gets the defaults.
+
+```c
+FelixConnectOptions options = {
+    .size = sizeof options,
+    .reconnect_attempts = 10,
+    .reconnect_deadline_ms = 30000,
+};
+felix_client_connect_with("felix-0:5000,felix-1:5000", "t1", "my-token",
+                          "localhost", NULL, &options, NULL, on_connect, state);
+```
+
+A deadline shorter than one attempt's own timeout means no retry happens: the first attempt spends the whole budget and the call returns after trying once. Set it to cover at least one attempt plus the backoff you can afford, and leave it off if you would rather wait out a failover.
 
 The Rust page covers [clusters](/clients/rust/#clusters) in full.
 

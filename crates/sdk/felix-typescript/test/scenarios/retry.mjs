@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { it } from "node:test";
 
-import { CRATE_ROOT, scenario, take, unique } from "../harness.mjs";
+import { CRATE_ROOT, scenario, startFixture, take, unique, withClient } from "../harness.mjs";
 
 export default function register(ctx) {
   it("re-sending a publish is opt-in", () =>

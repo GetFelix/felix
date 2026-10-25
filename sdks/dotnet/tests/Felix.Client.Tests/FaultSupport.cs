@@ -93,11 +93,16 @@ internal sealed class FaultFixture
     }
 
     /// <summary>Connects to <paramref name="addrs"/>, or to the fixture's own brokers when none are given.</summary>
-    internal Task<FelixClient> ConnectAsync(params string[] addrs) =>
+    internal Task<FelixClient> ConnectAsync(params string[] addrs) => ConnectAsync(null, null, addrs);
+
+    /// <summary>As <see cref="ConnectAsync(string[])"/>, with the reconnect options set.</summary>
+    internal Task<FelixClient> ConnectAsync(int? attempts, TimeSpan? deadline, params string[] addrs) =>
         FelixClient.ConnectAsync(
             new FelixClientOptions
             {
                 Addrs = addrs.Length > 0 ? addrs : Addrs,
+                ReconnectAttempts = attempts,
+                ReconnectDeadline = deadline,
                 TenantId = Tenant,
                 Token = Token,
                 CaFile = CaFile,

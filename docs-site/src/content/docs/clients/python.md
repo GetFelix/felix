@@ -316,10 +316,29 @@ one so the first connection survives a seed being down.
 - **A subscription's broker fails.** On a durable stream it resubscribes from
   the offset after the last one it delivered, and where it cannot it raises
   rather than ending as though the stream had finished.
-- **Knobs.** None. The client uses the Rust default `ReconnectPolicy` (5
-  attempts, backing off from 200 ms to 2 s) and the binding has no option to
-  change it. `client.endpoints()` (awaited on `AsyncClient`) lists the brokers it would try, discovered
+- **Knobs.** [Reconnecting](#reconnecting) sets the attempt count and a deadline. `client.endpoints()` (awaited on `AsyncClient`) lists the brokers it would try, discovered
   ones included.
+
+### Reconnecting
+
+A call that cannot reach a broker is retried with a backoff. Two options tune that, and both default to the Rust client's own policy, so a client that sets neither behaves as it always did.
+
+- **Attempts** is how many times a call tries to reach a broker before it gives up. Each attempt tries every broker the client knows. The default is 5, and the minimum is 1.
+- **Deadline** is a ceiling on one call across every attempt and every wait between them. It is off by default. Attempt counts alone do not bound time: five attempts against a broker that takes its full publish timeout to answer is minutes.
+
+Pass them as `reconnect_attempts` (an int) and `reconnect_deadline` (seconds, a float) to `Client(...)` or `AsyncClient.connect(...)`. Zero, a negative number, `NaN` or infinity raises `ValueError`.
+
+```python
+client = felix.Client(
+    ["felix-0:5000", "felix-1:5000", "felix-2:5000"],
+    tenant_id="t1",
+    token=tok,
+    reconnect_attempts=10,
+    reconnect_deadline=30.0,
+)
+```
+
+A deadline shorter than one attempt's own timeout means no retry happens: the first attempt spends the whole budget and the call returns after trying once. Set it to cover at least one attempt plus the backoff you can afford, and leave it off if you would rather wait out a failover. A client from `with_identity` inherits both.
 
 The Rust page covers [clusters](/clients/rust/#clusters) in full.
 

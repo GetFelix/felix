@@ -50,6 +50,16 @@ public sealed partial class FelixClient : IAsyncDisposable, IDisposable
             throw new ArgumentException("at least one broker address is required", nameof(options));
         }
 
+        if (options.ReconnectAttempts is < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "ReconnectAttempts must be at least 1");
+        }
+
+        if (options.ReconnectDeadline is { } deadline && deadline < TimeSpan.FromMilliseconds(1))
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "ReconnectDeadline must be at least 1 millisecond");
+        }
+
         cancellationToken.ThrowIfCancellationRequested();
         var state = new CallState<FelixClientHandle>(cancellationToken);
         var tokens = options.TokenProvider is { } provider ? new TokenSource(provider) : null;
@@ -64,6 +74,8 @@ public sealed partial class FelixClient : IAsyncDisposable, IDisposable
                 Size = (nuint)sizeof(NativeConnectOptions),
                 Publishers = options.Publishers ? (byte)1 : (byte)0,
                 Timestamps = options.Timestamps ? (byte)1 : (byte)0,
+                ReconnectAttempts = (uint)(options.ReconnectAttempts ?? 0),
+                ReconnectDeadlineMs = options.ReconnectDeadline is { } window ? (ulong)window.TotalMilliseconds : 0,
             };
             if (tokens is not null)
             {
@@ -78,7 +90,8 @@ public sealed partial class FelixClient : IAsyncDisposable, IDisposable
                 options.Token,
                 options.ServerName,
                 options.CaFile,
-                options.Publishers || options.Timestamps || tokens is not null ? &native : null,
+                options.Publishers || options.Timestamps || tokens is not null
+                    || options.ReconnectAttempts is not null || options.ReconnectDeadline is not null ? &native : null,
                 state.Cancel.Pointer,
                 &Callbacks.OnConnect,
                 userData);

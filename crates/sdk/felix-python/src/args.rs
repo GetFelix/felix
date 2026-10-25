@@ -3,7 +3,9 @@
 
 use std::net::ToSocketAddrs;
 
-use felix_client::Seed;
+use std::time::Duration;
+
+use felix_client::{ReconnectPolicy, Seed};
 use felix_wire::{AckMode, StartPosition};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -39,6 +41,38 @@ pub(crate) fn parse_addrs(py: Python<'_>, addrs: &Py<PyAny>) -> PyResult<Vec<See
         seeds.push(seed);
     }
     Ok(seeds)
+}
+
+/// The default reconnect policy with the caller's attempts and deadline.
+pub(crate) fn reconnect_policy(
+    attempts: Option<i64>,
+    deadline: Option<f64>,
+) -> PyResult<ReconnectPolicy> {
+    let mut policy = ReconnectPolicy::default();
+    if let Some(attempts) = attempts {
+        policy.attempts = usize::try_from(attempts)
+            .ok()
+            .filter(|&n| n >= 1)
+            .ok_or_else(|| {
+                PyValueError::new_err(format!(
+                    "reconnect_attempts must be at least 1, not {attempts}"
+                ))
+            })?;
+    }
+    if let Some(seconds) = deadline {
+        // Rejects NaN, infinity, negatives and overflow along with zero.
+        policy.deadline = Some(
+            Duration::try_from_secs_f64(seconds)
+                .ok()
+                .filter(|d| !d.is_zero())
+                .ok_or_else(|| {
+                    PyValueError::new_err(format!(
+                        "reconnect_deadline must be a positive number of seconds, not {seconds}"
+                    ))
+                })?,
+        );
+    }
+    Ok(policy)
 }
 
 pub(crate) fn parse_ack(ack: &str) -> PyResult<AckMode> {

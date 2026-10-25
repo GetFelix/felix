@@ -16,16 +16,17 @@ public class GroupTests
         if (nint.Size != 8)
         {
             // 8-byte fields align differently on 32-bit targets; the size field and two flags
-            // pad to two pointers on every one, and the three token fields are pointers.
-            Assert.Equal(5 * nint.Size, sizeof(NativeConnectOptions));
+            // pad to two pointers on every one, so only the 64-bit layout is pinned.
             return;
         }
 
-        Assert.Equal(40, sizeof(NativeConnectOptions));
+        Assert.Equal(56, sizeof(NativeConnectOptions));
         Assert.Equal(8, (int)Marshal.OffsetOf<NativeConnectOptions>(nameof(NativeConnectOptions.Publishers)));
         Assert.Equal(16, (int)Marshal.OffsetOf<NativeConnectOptions>(nameof(NativeConnectOptions.TokenFetch)));
         Assert.Equal(24, (int)Marshal.OffsetOf<NativeConnectOptions>(nameof(NativeConnectOptions.TokenUserData)));
         Assert.Equal(32, (int)Marshal.OffsetOf<NativeConnectOptions>(nameof(NativeConnectOptions.TokenRelease)));
+        Assert.Equal(40, (int)Marshal.OffsetOf<NativeConnectOptions>(nameof(NativeConnectOptions.ReconnectAttempts)));
+        Assert.Equal(48, (int)Marshal.OffsetOf<NativeConnectOptions>(nameof(NativeConnectOptions.ReconnectDeadlineMs)));
         Assert.Equal(72, sizeof(NativeGroupRecord));
         Assert.Equal(8, (int)Marshal.OffsetOf<NativeGroupRecord>(nameof(NativeGroupRecord.Attempts)));
         Assert.Equal(16, (int)Marshal.OffsetOf<NativeGroupRecord>(nameof(NativeGroupRecord.SkippedBefore)));

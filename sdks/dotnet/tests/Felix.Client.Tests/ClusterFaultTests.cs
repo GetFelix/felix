@@ -10,7 +10,7 @@ namespace Felix.Client.Tests;
 public class ClusterFaultTests
 {
     [ShardFixtureFact]
-    [Scenario("error.shard_unavailable_is_retryable")]
+    [Scenario("error.shard_unavailable_is_retryable", "retry.deadline_bounds_an_operation")]
     public async Task AFencedShardRefusesAndSaysItIsSafeToRetry()
     {
         var f = FaultFixture.Load();
@@ -31,6 +31,18 @@ public class ClusterFaultTests
                 Assert.True(e.Status == FelixStatus.ShardUnavailable, $"a publish during a move gave {e.Status} ({e.Message})");
                 Assert.True(e.IsRetryable, "a refusal during a move was not marked retryable");
                 Assert.False(e.OutcomeUnknown, "a clean refusal was marked outcome unknown");
+            }
+
+            // A refusal is retryable at once, so only the deadline stops an at-least-once publish with a
+            // large attempt budget.
+            await using (var bounded = await f.ConnectAsync(40, TimeSpan.FromSeconds(2), addr!))
+            {
+                var began = DateTime.UtcNow;
+                var e = await Assert.ThrowsAsync<FelixException>(() =>
+                    bounded.PublishAsync(f.Tenant, f.Namespace, f.MovableStream!, FaultControl.Bytes("bounded"), delivery: Delivery.AtLeastOnce));
+                var took = DateTime.UtcNow - began;
+                Assert.True(e.Status == FelixStatus.ShardUnavailable, $"a bounded publish during a move gave {e.Status} ({e.Message})");
+                Assert.True(took < TimeSpan.FromSeconds(10), $"the publish took {took} against a 2s deadline: it spent its attempts instead");
             }
 
             // Retryable means the same publish lands once the move finishes.
