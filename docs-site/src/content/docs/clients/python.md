@@ -132,6 +132,24 @@ turn a secure deployment insecure, and a CA file covers development without it.
 running with `FELIX_TLS_REQUIRE_ALPN=true` insists on. It is off by default
 because a broker older than ALPN support refuses a client that offers it.
 
+### Acting for many users
+
+A gateway serving many users can hold one client and give each user a client
+that shares its connections:
+
+```python
+alice = client.with_identity("t1", alice_token)
+alice.publish("t1", "app", "alice-feed", b"hello")
+```
+
+Every stream `alice` opens authenticates with her token, so the broker checks
+her requests against her grants, not the gateway's. She follows moved shards
+and failed brokers like any client, over the gateway's connection to each
+broker. The token is fixed, so build a new client when it expires.
+`AsyncClient.with_identity` is the same, awaited. The limits and the
+certificate-bound token rules are the Rust client's; see
+[Acting for many users](/clients/rust/#acting-for-many-users).
+
 ## Connecting to a cluster
 
 In every language the client is a cluster client; see
@@ -162,28 +180,10 @@ one so the first connection survives a seed being down.
   rather than ending as though the stream had finished.
 - **Knobs.** None. The client uses the Rust default `ReconnectPolicy` (5
   attempts, backing off from 200 ms to 2 s) and the binding has no option to
-  change it. `client.endpoints()` lists the brokers it would try, discovered
+  change it. `client.endpoints()` (awaited on `AsyncClient`) lists the brokers it would try, discovered
   ones included.
 
 The Rust page covers [clusters](/clients/rust/#clusters) in full.
-
-### Acting for many users
-
-A gateway serving many users can hold one client and give each user a client
-that shares its connections:
-
-```python
-alice = client.with_identity("t1", alice_token)
-alice.publish("t1", "app", "alice-feed", b"hello")
-```
-
-Every stream `alice` opens authenticates with her token, so the broker checks
-her requests against her grants, not the gateway's. She follows moved shards
-and failed brokers like any client, over the gateway's connection to each
-broker. The token is fixed, so build a new client when it expires.
-`AsyncClient.with_identity` is the same, awaited. The limits and the
-certificate-bound token rules are the Rust client's; see
-[Acting for many users](/clients/rust/#acting-for-many-users).
 
 ## Publishing
 

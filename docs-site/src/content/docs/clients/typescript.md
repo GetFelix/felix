@@ -140,6 +140,24 @@ it.
 const client = await Client.connect(addrs, "t1", token, "localhost", caFile, true);
 ```
 
+### Acting for many users
+
+A gateway serving many users can hold one client and give each user a client
+that shares its connections:
+
+```ts
+const alice = await client.withIdentity("t1", aliceToken);
+await alice.publish("t1", "app", "alice-feed", Buffer.from("hello"));
+```
+
+Every stream `alice` opens authenticates with her token, so the broker checks
+her requests against her grants, not the gateway's. She follows moved shards
+and failed brokers like any client, over the gateway's connection to each
+broker. The token is fixed, so build a new client when it expires. Closing
+`alice` leaves the gateway's connections open. The limits and the
+certificate-bound token rules are the Rust client's; see
+[Acting for many users](/clients/rust/#acting-for-many-users).
+
 ## Connecting to a cluster
 
 In every language the client is a cluster client; see
@@ -170,28 +188,10 @@ down.
   rather than ending as though the stream had finished.
 - **Knobs.** None. The client uses the Rust default `ReconnectPolicy` (5
   attempts, backing off from 200 ms to 2 s) and the binding has no option to
-  change it. `client.endpoints()` lists the brokers it would try, discovered
+  change it. `await client.endpoints()` lists the brokers it would try, discovered
   ones included.
 
 The Rust page covers [clusters](/clients/rust/#clusters) in full.
-
-### Acting for many users
-
-A gateway serving many users can hold one client and give each user a client
-that shares its connections:
-
-```ts
-const alice = await client.withIdentity("t1", aliceToken);
-await alice.publish("t1", "app", "alice-feed", Buffer.from("hello"));
-```
-
-Every stream `alice` opens authenticates with her token, so the broker checks
-her requests against her grants, not the gateway's. She follows moved shards
-and failed brokers like any client, over the gateway's connection to each
-broker. The token is fixed, so build a new client when it expires. Closing
-`alice` leaves the gateway's connections open. The limits and the
-certificate-bound token rules are the Rust client's; see
-[Acting for many users](/clients/rust/#acting-for-many-users).
 
 ## Disposal
 
