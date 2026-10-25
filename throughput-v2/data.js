@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792952359288,
+  "lastUpdate": 1792952733620,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -37128,6 +37128,58 @@ window.BENCHMARK_DATA = {
             "range": "3169.86",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 824762.59\nmean: 822636.51\nstdev: 3169.86\ncv: 0.39%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c914f0a9036610b4860492c74769a614dd12bb70",
+          "message": "feat(bindings): reconnect deadline and attempts in every client (#1559)\n\nEvery binding exposes the two ReconnectPolicy knobs a latency budget needs: a\nreconnect deadline bounding a retried operation across attempts and sleeps, and\nan attempt count. Python reconnect_deadline / reconnect_attempts, TypeScript\nreconnectDeadline / reconnectAttempts, C FelixConnectOptions\nreconnect_deadline_ms / reconnect_attempts (size-versioned, so older callers\nget the defaults), C# FelixClientOptions.ReconnectDeadline / ReconnectAttempts.\nDefaults are unchanged. The deadline is checked between attempts, caps at one\nyear (the core cannot overflow the clock), and covers publish, subscribe opens\nand follows, commit, publish_if and state_get; cache and group calls do not\nread the policy yet (#1565).\n\nA new required conformance scenario, retry.deadline_bounds_an_operation, fences\na shard and checks a retried publish fails within the deadline instead of\nrunning every attempt, in Python, TypeScript, C and C#.",
+          "timestamp": "2026-10-25T11:18:37-07:00",
+          "tree_id": "97439bc156d448d62e3d133169bce203b42bb993",
+          "url": "https://github.com/GetFelix/felix/commit/c914f0a9036610b4860492c74769a614dd12bb70"
+        },
+        "date": 1792952732919,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 341435.2,
+            "range": "13941.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 341435.20\nmean: 350056.00\nstdev: 13941.75\ncv: 3.98%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 341435.2,
+            "range": "13941.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 341435.20\nmean: 350056.00\nstdev: 13941.75\ncv: 3.98%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81365.36,
+            "range": "4448.73",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81365.36\nmean: 79538.20\nstdev: 4448.73\ncv: 5.59%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 813653.58,
+            "range": "44487.24",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 813653.58\nmean: 795382.02\nstdev: 44487.24\ncv: 5.59%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
