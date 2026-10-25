@@ -1,6 +1,6 @@
 ---
 title: "C Client"
-description: "Building and linking libfelix, the asynchronous callback model, and the C ABI for publishing, subscribing, consumer groups, caches, atomic commits and idempotent producers."
+description: "Installing from a release or building, and linking libfelix, the asynchronous callback model, and the C ABI for publishing, subscribing, consumer groups, caches, atomic commits and idempotent producers."
 ---
 
 `libfelix` is a C ABI over the Rust client, built from `crates/sdk/felix-capi`.
@@ -14,31 +14,65 @@ It is a base for bindings: any language with a C FFI can bind to it, C# included
 
 ## Install
 
-Each GitHub release attaches `libfelix-<tag>-<rid>.tar.gz` (`.zip` on Windows)
-for `linux-x64`, `linux-arm64`, `osx-x64`, `osx-arm64`, `win-x64` and
-`win-arm64`, with a `.sha256` beside it. Download the one for your platform and
-unpack it:
+Every GitHub release attaches an archive per platform, with a `.sha256` beside
+it: `libfelix-v0.6.2-<rid>.tar.gz` for `linux-x64`, `linux-arm64`, `osx-x64` and
+`osx-arm64`, and `libfelix-v0.6.2-<rid>.zip` for `win-x64` and `win-arm64`.
+Later releases follow the same naming with their own tag. With the GitHub CLI:
+
+```bash
+gh release download -R GetFelix/felix -p 'libfelix-*-linux-x64.*'
+```
+
+Or with a plain URL, here for v0.6.2 on Linux x64:
+
+```bash
+curl -fLO https://github.com/GetFelix/felix/releases/download/v0.6.2/libfelix-v0.6.2-linux-x64.tar.gz
+curl -fLO https://github.com/GetFelix/felix/releases/download/v0.6.2/libfelix-v0.6.2-linux-x64.tar.gz.sha256
+```
+
+Check the checksum, then unpack (on macOS use `shasum -a 256 -c`; on Windows
+compare `Get-FileHash` with the `.sha256` file and use `Expand-Archive`):
+
+```bash
+sha256sum -c libfelix-v0.6.2-linux-x64.tar.gz.sha256
+tar xzf libfelix-v0.6.2-linux-x64.tar.gz
+cd libfelix-v0.6.2-linux-x64
+```
+
+The archive holds:
 
 ```text
-libfelix-<tag>-<rid>/
+libfelix-v0.6.2-linux-x64/
   include/felix.h
-  lib/            shared and static library (and felix.dll.lib on Windows)
+  lib/            libfelix.so and libfelix.a (.dylib on macOS; felix.dll,
+                  felix.dll.lib and felix.lib on Windows)
   LINKING.txt     the link commands and this platform's static-link libraries
   LICENSE
 ```
 
-Include `felix.h` and link dynamically or statically; `LINKING.txt` has the
-exact command for your platform. On Linux and macOS it looks like this:
+Include `felix.h` and link dynamically or statically. `LINKING.txt` has the
+exact commands for your platform. On Linux and macOS, from the unpacked
+directory:
 
 ```bash
 cc -I include app.c -L lib -lfelix -Wl,-rpath,"$PWD/lib"                  # shared
 cc -I include app.c lib/libfelix.a <system libraries from LINKING.txt>    # static
 ```
 
-## Building from source
+The macOS dylib's install name is `@rpath/libfelix.dylib`, so the `-rpath`
+above is what lets the program find it at run time. On Windows, build with
+`cl /MD`: the library uses the dynamic C runtime and `/MT` fails to link. Put
+`felix.dll` next to the program or on `PATH` when it runs.
 
-The archives are built from the repository with the commands below, which are
-the alternative when no archive fits your platform.
+```text
+cl /MD -I include app.c lib\felix.dll.lib                  (shared)
+cl /MD -I include app.c lib\felix.lib <libraries from LINKING.txt>  (static)
+```
+
+## Building the library yourself
+
+The commands below build the same library from the repository, for a platform
+without an archive or a change of your own.
 
 ```bash
 cargo build --release -p felix-capi
