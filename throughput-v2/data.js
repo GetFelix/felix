@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792923033420,
+  "lastUpdate": 1792927303295,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -36608,6 +36608,58 @@ window.BENCHMARK_DATA = {
             "range": "10059.48",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1253339.72\nmean: 1253632.47\nstdev: 10059.48\ncv: 0.80%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f1c233827d96ccf8d2ef00a302b0c01faee76537",
+          "message": "test(csharp): token scenarios; the token scenarios are required (#1552)\n\nC# tags the seven token scenarios, one test each: lazy, single_flight,\nrefused_retry_once and failure_message on existing tests, and new fixture\ntests for expiry_refresh, keep_valid_on_failure and timeout_joins that mint\nshort-lived tokens from the fixture's /tokens endpoint. With every SDK (Rust,\nC, Python, TypeScript, C#) passing them, the token scenarios are required in\nthe conformance catalogue.",
+          "timestamp": "2026-10-25T11:15:01Z",
+          "tree_id": "e57d7894374782cb8342e7eda1258a3cfb03cbe5",
+          "url": "https://github.com/GetFelix/felix/commit/f1c233827d96ccf8d2ef00a302b0c01faee76537"
+        },
+        "date": 1792927302472,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 346218.74,
+            "range": "15651.21",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 346218.74\nmean: 341462.36\nstdev: 15651.21\ncv: 4.58%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 346218.74,
+            "range": "15651.21",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 346218.74\nmean: 341462.36\nstdev: 15651.21\ncv: 4.58%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80303.38,
+            "range": "794.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80303.38\nmean: 80603.62\nstdev: 794.12\ncv: 0.99%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 803033.8,
+            "range": "7941.18",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 803033.80\nmean: 806036.18\nstdev: 7941.18\ncv: 0.99%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
