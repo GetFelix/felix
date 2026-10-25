@@ -831,6 +831,7 @@ jobs:
           [ -s "$work/fixture.json" ] || { cat "$work/fixture.log"; exit 1; }
           export FELIX_FIXTURE="$work/fixture.json"
           export FELIX_NATIVE_LIB="$PWD/target/release/libfelix.so"
+          export FELIX_CLUSTER_BIN="$PWD/target/debug/felix-cluster"
           # Each target framework writes its own file (csharp-conformance-net8.0.json, ...).
           export FELIX_CONFORMANCE_RESULTS="$PWD/csharp-conformance.json"
           # One framework at a time: `dotnet test` on both runs two test hosts at once,
