@@ -180,7 +180,10 @@ typedef void (*FelixWatchItemCallback)(void *user_data,
 typedef void (*FelixTokenFetch)(void *user_data, struct FelixTokenReply *reply);
 
 // Called once when the library is done with `token_user_data`: after the
-// client is freed and every reply handed to the app has been answered.
+// client is freed and every reply handed to the app has been answered. It
+// runs on whichever thread gets there last, inside `felix_client_free` or
+// inside the answering `felix_token_reply_ok`/`_err` call, so don't hold a
+// lock it takes while answering, and don't touch `user_data` after answering.
 typedef void (*FelixTokenRelease)(void *user_data);
 
 // What a client asks of the cluster beyond the defaults.
@@ -2331,7 +2334,8 @@ void felix_subscription_free(struct FelixSubscription *subscription);
 // returns `FELIX_STATUS_OK` and consumes the reply, including when the
 // library had stopped waiting on the fetch or the client was freed; a late
 // token is still used by a live client, and discarded by a freed one. The
-// fetch is not called again while a reply is outstanding.
+// fetch is not called again while a reply is outstanding. After the client
+// is freed, the last answer runs `token_release` before this call returns.
 //
 // # Safety
 //

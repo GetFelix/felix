@@ -179,7 +179,11 @@ that never answers a reply leaks its data:
 - If it returns `FELIX_STATUS_OK`, `token_release` runs exactly once later,
   after the client is freed and the last reply has been answered (from any
   thread, before or after the free), including when the connect then reports
-  failure through `on_connect`.
+  failure through `on_connect`. It runs on whichever thread gets there last:
+  inside `felix_client_free`, or inside the answering
+  `felix_token_reply_ok`/`_err` call. So don't hold a lock that
+  `token_release` takes while you answer, and don't touch the data after
+  answering.
 
 The example below does the control plane call with libcurl and keeps the
 rotating refresh token. The refresh token works once: every refresh returns a
