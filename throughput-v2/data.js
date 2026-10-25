@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792887274286,
+  "lastUpdate": 1792889764501,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -35516,6 +35516,58 @@ window.BENCHMARK_DATA = {
             "range": "4597.24",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 818458.51\nmean: 820795.76\nstdev: 4597.24\ncv: 0.56%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b427d891d57af710134f8f1c8fceb204e4d125e0",
+          "message": "feat(csharp): atomic commits, publish_if and idempotent producers (step 4) (#1522)\n\n* feat(csharp): atomic commits, publish_if and idempotent producers over the C ABI\n* fix(csharp): review findings on step 4 (scenario tags only where the test meets the scenario, entity-keyed commit read-back, race-proof conditional helper, logged cleanup)",
+          "timestamp": "2026-10-24T17:51:30-07:00",
+          "tree_id": "ef355bf86a1e6a2c167625f26861ded9017aec0f",
+          "url": "https://github.com/GetFelix/felix/commit/b427d891d57af710134f8f1c8fceb204e4d125e0"
+        },
+        "date": 1792889763837,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 349447.15,
+            "range": "9817.35",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 349447.15\nmean: 350689.16\nstdev: 9817.35\ncv: 2.80%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 349447.15,
+            "range": "9817.35",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 349447.15\nmean: 350689.16\nstdev: 9817.35\ncv: 2.80%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81374.1,
+            "range": "628.18",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81374.10\nmean: 81237.13\nstdev: 628.18\ncv: 0.77%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 813741.05,
+            "range": "6281.78",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 813741.05\nmean: 812371.29\nstdev: 6281.78\ncv: 0.77%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
