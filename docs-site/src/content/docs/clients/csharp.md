@@ -76,7 +76,7 @@ string, returns a string the library cannot take (one with a NUL character or
 that is not valid UTF-8), or has not answered after 30 seconds. While the held
 token is still valid the client keeps it, logs a warning and asks again a few
 seconds later. Otherwise the call that needed the token throws a
-`FelixException` with status `Auth` and the exception's message in its text. A
+`FelixException` with status `Auth` and the exception's message in its text. A provider failure is final for that operation: it is not retried, because each call can rotate a refresh token. The next operation asks the provider again. A
 provider that has not answered after 30 seconds fails the operations waiting on
 it, but the call itself is not abandoned: the next operation that needs a token
 waits on that same call (up to 30 seconds again) and uses its answer if it

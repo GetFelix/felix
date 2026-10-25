@@ -259,10 +259,19 @@ async fn authenticate_stream(
             retry,
             detail,
         }) => {
-            Err(
-                crate::error::refused("auth rejected", message.clone(), Some(code), retry, detail)
-                    .context(AuthError::refused(message)),
-            )
+            // Only a refusal of the credential is an auth error; a draining or
+            // overloaded broker is retried elsewhere like any coded refusal.
+            let credential = matches!(
+                code,
+                felix_wire::ErrorCode::Unauthenticated | felix_wire::ErrorCode::Forbidden
+            );
+            let err =
+                crate::error::refused("auth rejected", message.clone(), Some(code), retry, detail);
+            Err(if credential {
+                err.context(AuthError::refused(message))
+            } else {
+                err
+            })
         }
         Some(Message::Error { message, .. }) => Err(AuthError::refused(message).into()),
         Some(other) => Err(anyhow::anyhow!("unexpected auth response: {other:?}")),

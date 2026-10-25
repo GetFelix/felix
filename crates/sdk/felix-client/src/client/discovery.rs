@@ -335,6 +335,8 @@ pub(super) async fn ask_stream_routing(
     namespace: &str,
     stream: &str,
 ) -> Result<(u32, felix_wire::routing::ShardRouting)> {
+    // Outside the timer, so a slow provider fails with its own typed error.
+    credentials.fetch().await?;
     let mut opened = tokio::time::timeout(
         runtime_config.connect_timeout,
         event_node.open_as(credentials),

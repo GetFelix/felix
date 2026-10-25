@@ -191,3 +191,68 @@ async fn an_untyped_error_about_a_token_is_retried() -> Result<()> {
     assert_eq!(broker.subscribes(), policy().attempts);
     Ok(())
 }
+
+/// **A sharded subscribe asks the provider once.** The shard-count question
+/// is not retried through a reconnect, which would call the provider again.
+#[tokio::test]
+async fn a_failing_provider_fails_a_sharded_subscribe_after_one_call() -> Result<()> {
+    let p = provider(Then::Fail);
+    let (_broker, cluster) = connected(&p, |_| subscribed()).await?;
+    let cluster = Arc::new(cluster);
+
+    let err = cluster
+        .subscribe_sharded("t1", "default", "orders", None)
+        .await
+        .map(drop)
+        .expect_err("the provider failed");
+
+    assert!(
+        err.is::<AuthError>() || err.chain().any(|e| e.is::<AuthError>()),
+        "{err:#}"
+    );
+    assert!(format!("{err:#}").contains("idp said: no refresh for you"));
+    assert_eq!(p.calls.load(Ordering::SeqCst), 2, "connect's call plus one");
+    Ok(())
+}
+
+/// The same for a sharded group.
+#[tokio::test]
+async fn a_failing_provider_fails_a_sharded_group_after_one_call() -> Result<()> {
+    let p = provider(Then::Fail);
+    let (_broker, cluster) = connected(&p, |_| subscribed()).await?;
+    let cluster = Arc::new(cluster);
+
+    let err = cluster
+        .group_sharded("t1", "default", "orders", "g")
+        .await
+        .map(drop)
+        .expect_err("the provider failed");
+
+    assert!(err.chain().any(|e| e.is::<AuthError>()), "{err:#}");
+    assert_eq!(p.calls.load(Ordering::SeqCst), 2, "connect's call plus one");
+    Ok(())
+}
+
+/// **A hung provider fails the routing question at the fetch timeout**, with
+/// the typed error, not the short open timer's.
+#[tokio::test]
+async fn a_hung_provider_fails_the_routing_question_at_the_fetch_timeout() -> Result<()> {
+    let p = provider(Then::Hang);
+    let (_broker, cluster) = connected(&p, |_| subscribed()).await?;
+    tokio::time::pause();
+
+    let started = tokio::time::Instant::now();
+    let err = cluster
+        .stream_shard_count("t1", "default", "orders")
+        .await
+        .expect_err("the provider hung");
+
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed >= crate::FETCH_TIMEOUT && elapsed < crate::FETCH_TIMEOUT + Duration::from_secs(1),
+        "failed after {elapsed:?}"
+    );
+    assert!(err.chain().any(|e| e.is::<AuthError>()), "{err:#}");
+    assert_eq!(p.calls.load(Ordering::SeqCst), 2, "connect's call plus one");
+    Ok(())
+}

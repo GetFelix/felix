@@ -94,7 +94,7 @@ the client releases it once nothing uses the token any more.
 **Failure.** A throw, a rejected promise, a result that is not a non-empty
 string, or no answer within 30 seconds counts as a failed fetch. The message you
 throw reaches the call that needed the token unchanged, in an `AuthError`, once
-no valid token is held to fall back on. After a timeout the calls waiting on the
+no valid token is held to fall back on. A provider failure is final for that operation: it is not retried, because each call can rotate a refresh token. The next operation asks the provider again. After a timeout the calls waiting on the
 token fail, but the client does not call the provider again until the pending
 call settles, and a late answer is used.
 
