@@ -132,7 +132,7 @@ issued by it, or the handshake is refused.
 - Bearer tokens are still required. This adds a transport factor, it does not
   replace authentication.
 - The Rust client presents a certificate through its `quinn::ClientConfig`.
-  The Python and TypeScript bindings do not offer client certificates yet.
+  The Python, TypeScript, C and C# clients do not offer client certificates yet.
 
 ### `FELIX_TLS_REQUIRE_ALPN`
 

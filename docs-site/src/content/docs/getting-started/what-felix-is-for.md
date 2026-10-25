@@ -464,8 +464,8 @@ does give current state and every change after it.
 
 Felix is the wrong tool if you need long-term event history, tiered storage,
 transactional guarantees, exactly-once processing, or a mature multi-language
-ecosystem. There are three clients, Rust, Python and TypeScript, and the latter
-two wrap the first without covering every surface.
+ecosystem. There are Rust, Python, TypeScript, C and C# clients, and all but
+the first wrap the Rust one without covering every surface.
 
 Two things are not goals at all. Felix does not encrypt payloads end to end:
 TLS protects each hop, but a broker reads payloads in the clear, so a client

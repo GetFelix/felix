@@ -6,7 +6,7 @@ title: "Rust Client SDK"
 and the cluster client, over multiplexed QUIC connections. This page covers
 setup, configuration, and common patterns.
 
-The Python and TypeScript clients bind to it. See [Choosing a Client](/clients/overview/) for those bindings
+The Python and TypeScript clients and the C ABI bind to it, and the C# SDK binds the C ABI. See [Choosing a Client](/clients/overview/) for those bindings
 and for how a new language is gated on a conformance suite.
 
 ## Installation

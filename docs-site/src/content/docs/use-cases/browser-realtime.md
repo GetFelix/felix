@@ -197,11 +197,11 @@ A gateway runs one kind of scope. An app with rooms and also with user inboxes
 runs two gateways. The gateway never retries a publish or a counter add, so a
 counter add repeated by the browser after a lost answer is counted twice.
 
-There is no Felix SDK for iOS or Android, Go is planned, and there are no C# clients.
+There is no Felix SDK for iOS or Android, and no Go client has been started.
 A native mobile app today speaks the gateway's JSON-over-WebSocket protocol
 ([documented in the gateway repository](https://github.com/GetFelix/felix-gateway/blob/main/docs/protocol.md)),
 because the `felix-gateway-client` package targets browsers. Felix clients exist for
-Rust, Python and Node.
+Rust, Python, Node, C and C#.
 
 On a broker that binds tokens to client certificates, a gateway sharing its
 connections would have to delegate each user's token, and the gateway does not do

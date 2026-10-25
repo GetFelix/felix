@@ -494,7 +494,7 @@ Progress: done. `ClusterClient` now has the single-shard group calls
 (`group_poll`, `group_poll_wait`, `group_ack`, `group_nack`,
 `group_dead_letters`, `group_discard`, `group_redrive`), which follow
 `NotLeader` the way `group_sharded` did and remember each shard's leader;
-`group_sharded` uses the same code. The Python and TypeScript clients' group
+`group_sharded` uses the same code. The Python, TypeScript, C and C# clients' group
 calls go through them, so a consumer on either keeps working when its shard
 moves. `consumer_groups::a_cluster_client_follows_a_group_redirect_to_the_leader`
 polls and acks through a broker that does not lead the shard; with the calls
