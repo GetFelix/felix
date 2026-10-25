@@ -7,7 +7,12 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
-# Exports RUSTFLAGS, CARGO_TARGET_DIR and LLVM_PROFILE_FILE. run.sh reads
+# `cargo llvm-cov` builds under <target>/llvm-cov-target and `report` reads
+# profiles and objects only there, but show-env defaults to <target>. Without
+# this the harness builds and profiles would land where the report never looks.
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}/llvm-cov-target"
+
+# Exports RUSTFLAGS and LLVM_PROFILE_FILE. run.sh reads
 # CARGO_TARGET_DIR, and the C programs and the fixture's broker processes
 # inherit LLVM_PROFILE_FILE, so each writes its own profile.
 source <(cargo llvm-cov show-env --sh --no-cfg-coverage)
@@ -17,3 +22,4 @@ cargo build --locked -p felix-broker-service --bin felix-broker
 cargo build --locked -p felix-cluster --bin felix-cluster
 
 crates/sdk/felix-capi/tests/c/run.sh fixture
+
