@@ -995,7 +995,7 @@ jobs:
   # `npm_stage` remains for staging a version of a package that already exists.
   typescript-publish:
     name: Publish to npm
-    needs: typescript-release-assets
+    needs: [typescript-release-assets, linux-x86_64]
     if: vars.PUBLISH_NPM == 'true' && !inputs.dry_run && !inputs.nightly
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -1131,8 +1131,10 @@ jobs:
 
   python-publish:
     name: Publish to PyPI
-    needs: python-release-assets
+    needs: [python-release-assets, linux-x86_64]
     # Off until Felix is meant to be publicly installable. See the note above.
+    # linux-x86_64 holds the release gates (ref only on a dry run, tag matches the tree,
+    # changelog assembled), so nothing is published without them.
     if: vars.PUBLISH_PYPI == 'true' && !inputs.dry_run && !inputs.nightly
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -1203,6 +1205,11 @@ jobs:
 
       - name: Build the native library
         run: cargo build --locked --release -p felix-capi
+
+      # The release link ends in strip/linker post-processing that can leave a library
+      # the OS loader rejects; a package must not ship one.
+      - name: Release library loads
+        run: python3 -I -c 'import ctypes, sys; ctypes.CDLL(sys.argv[1])' "$PWD/target/release/${{ matrix.lib }}"
 
       - name: Upload the library
         uses: actions/upload-artifact@v7
@@ -1279,6 +1286,17 @@ jobs:
           done
           exit "$missing"
 
+      # Install the packed package into an app, as a user would, and call into the library.
+      - name: The packed package loads on Linux x64
+        run: |
+          set -euo pipefail
+          unset FELIX_NATIVE_LIB
+          feed="$PWD/nupkg"
+          version=$(basename nupkg/Felix.Client.*.nupkg .nupkg)
+          version="${version#Felix.Client.}"
+          dotnet run --project sdks/dotnet/smoke -c Release \
+            -p:FelixVersion="$version" -p:RestoreSources="$feed"
+
       - name: Upload the package
         uses: actions/upload-artifact@v7
         with:
@@ -1288,7 +1306,7 @@ jobs:
 
   dotnet-publish:
     name: Publish to NuGet
-    needs: dotnet-package
+    needs: [dotnet-package, linux-x86_64]
     # Off until the nuget.org policy and PUBLISH_NUGET are in place. See the note above.
     if: vars.PUBLISH_NUGET == 'true' && !inputs.dry_run && !inputs.nightly
     runs-on: ubuntu-latest

@@ -40,4 +40,23 @@ public class NativeLoadTests
             new FelixClientOptions { Addrs = ["127.0.0.1:1"], TenantId = "t", Token = "x" }));
         Assert.True(error.Status is FelixStatus.Connection or FelixStatus.Error or FelixStatus.InvalidArgument, error.Status.ToString());
     }
+
+    [Theory]
+    [InlineData("linux-musl-x64")]
+    [InlineData("alpine.3.20-arm64-musl")]
+    public void AMuslRuntimeIsRefusedWithTheSupportedPlatforms(string rid)
+    {
+        var message = NativeLoader.Unsupported(rid);
+
+        Assert.NotNull(message);
+        Assert.Contains("linux-x64", message);
+        Assert.Contains("FELIX_NATIVE_LIB", message);
+    }
+
+    [Theory]
+    [InlineData("linux-x64")]
+    [InlineData("osx-arm64")]
+    [InlineData("win-x64")]
+    public void GlibcMacAndWindowsRuntimesAreNotRefused(string rid) =>
+        Assert.Null(NativeLoader.Unsupported(rid));
 }

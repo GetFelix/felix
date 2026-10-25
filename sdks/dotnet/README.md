@@ -18,7 +18,7 @@ sharded, retained, resumable), atomic commits with state reads and conditional p
 (`CommitAsync`, `CommitIfAsync`, `PublishIfAsync`, `GetStateAsync`), idempotent producers
 (`CreateProducerAsync`), endpoints, offset lookup by time, and the publisher and timestamp
 metadata. `python3 scripts/check_csharp_bindings.py` fails if an export of `felix.h` is not bound.
-See [the C# page](../../docs-site/src/content/docs/clients/csharp.md).
+See [the C# page](https://docs.getfelix.dev/clients/csharp/).
 
 ```csharp
 await using var client = await FelixClient.ConnectAsync(new FelixClientOptions

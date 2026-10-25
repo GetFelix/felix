@@ -43,6 +43,18 @@ internal static class NativeLoader
         return os is null ? null : $"{os}-{arch}";
     }
 
+    /// <summary>
+    /// Why the packaged libraries cannot serve this runtime, or null. The package carries
+    /// glibc builds only, so a musl runtime (Alpine) would otherwise fail with a bare
+    /// <see cref="DllNotFoundException"/>.
+    /// </summary>
+    internal static string? Unsupported(string runtimeIdentifier) =>
+        runtimeIdentifier.Contains("musl", StringComparison.OrdinalIgnoreCase)
+            ? $"Felix.Client's native libraries are built for glibc, and this runtime is {runtimeIdentifier}. " +
+              "The package supports linux-x64, linux-arm64, osx-x64, osx-arm64, win-x64 and win-arm64. " +
+              "Build libfelix with `cargo build --release -p felix-capi` for musl and set FELIX_NATIVE_LIB to its path."
+            : null;
+
     /// <summary>The paths to try, in order. The first that exists wins.</summary>
     internal static IEnumerable<string> Candidates(string? envPath, string baseDirectory)
     {
@@ -68,6 +80,11 @@ internal static class NativeLoader
         }
 
         var env = Environment.GetEnvironmentVariable("FELIX_NATIVE_LIB");
+        if (string.IsNullOrEmpty(env) && Unsupported(RuntimeInformation.RuntimeIdentifier) is { } reason)
+        {
+            throw new PlatformNotSupportedException(reason);
+        }
+
         var directory = Path.GetDirectoryName(assembly.Location);
         foreach (var candidate in Candidates(env, string.IsNullOrEmpty(directory) ? AppContext.BaseDirectory : directory))
         {
