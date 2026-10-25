@@ -53,6 +53,12 @@ async with client:
     await client.publish("t1", "default", "events", b"hello")
 ```
 
+`tok` is a Felix token; [Getting a token](/clients/overview/#getting-a-token)
+covers where it comes from. The client holds it fixed, for the main client as
+well as `with_identity`, so build a new client with a fresh token before it
+expires. Streams opened after expiry, including the ones a reconnect opens, are
+refused.
+
 The synchronous surface releases the GIL while it blocks, so threads run in
 parallel. A `concurrent.futures.ThreadPoolExecutor` over one shared client is a
 reasonable design, not a queue behind a lock.

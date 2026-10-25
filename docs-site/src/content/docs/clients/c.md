@@ -126,6 +126,13 @@ through the callback.
 
 ## A minimal example
 
+The token argument is a Felix token; [Getting a
+token](/clients/overview/#getting-a-token) covers where it comes from. The
+library keeps the string it was given and cannot refresh it, so free the client
+and connect again with a fresh token before it expires. Streams opened after
+expiry, including the ones a reconnect opens, are refused with
+`FELIX_STATUS_AUTH`.
+
 Connect, publish one record, subscribe to shard 0 and read one event. A small
 `waiter` turns each async call into a blocking one.
 

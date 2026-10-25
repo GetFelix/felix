@@ -39,7 +39,9 @@ use felix_client::{AckMode, ClientConfig, ClusterClient};
 #[tokio::main]
 async fn main() -> Result<()> {
     let quinn = quinn::ClientConfig::with_platform_verifier();
-    let config = ClientConfig::optimized_defaults(quinn);
+    let mut config = ClientConfig::optimized_defaults(quinn);
+    config.auth_tenant_id = Some("acme".into());
+    config.auth_token = Some(token); // a Felix token; see below
 
     // One broker is enough. The rest of a cluster is discovered from it.
     let seeds: Vec<SocketAddr> = vec!["127.0.0.1:5000".parse()?];
@@ -110,6 +112,28 @@ through `Client` instead of straight to the owner cut in-memory throughput
 (256 B records, batches of 64) 2.4×, from 2,034 to 864 MB/s of payload with
 34% more broker CPU, and durable quorum-acked throughput 4.4×, from 475 to 107
 MB/s. See [v0.6.0 performance](/features/v060-performance/).
+
+`auth_token` is fixed, which suits a short job. [Getting a
+token](/clients/overview/#getting-a-token) covers where a token comes from. A
+process that outlives one, 15 minutes by default, sets `token_provider` instead.
+The client asks it for the token each time a stream authenticates, including
+the streams a reconnect opens. `RefreshingToken` wraps a fetch function, usually
+a call to `/token/refresh`, and replaces its token once two thirds of its life
+has passed. If a fetch fails while the current token is still valid, it keeps
+using that one and tries again a few seconds later. If the broker refuses a
+token and the provider has a different one, the client retries once with it.
+
+```rust
+use felix_client::RefreshingToken;
+
+config.token_provider = Some(Arc::new(RefreshingToken::with_initial(
+    first_token,
+    move || fetch_felix_token(), // async fn returning Result<String>
+)));
+```
+
+The `FELIX_AUTH_TENANT` and `FELIX_AUTH_TOKEN` variables fill `auth_tenant_id`
+and `auth_token` when you build the config with `ClientConfig::from_env_or_yaml`.
 
 ## Client Configuration
 

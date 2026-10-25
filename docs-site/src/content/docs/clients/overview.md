@@ -164,6 +164,86 @@ results file your client produced, and nothing from the kit is linked into what
 you ship. The specification itself is Apache-2.0: the wire protocol in
 `felix-wire`, its byte-level test vectors, and `docs/protocol.md`.
 
+## Getting a token
+
+Every client connects with a tenant id and a Felix token. A Felix token is a
+short-lived JWT the control plane mints for one tenant; the broker checks every
+request against the permissions inside it. The client pages use a placeholder
+for it. This is where it comes from.
+
+In production, exchange a token from your identity provider at the control
+plane:
+
+```bash
+curl -s -X POST "https://controlplane:8443/v1/tenants/t1/token/exchange" \
+  -H "Authorization: Bearer $OIDC_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"requested": ["stream.publish", "stream.subscribe"], "resources": ["stream:t1/orders/*"]}'
+```
+
+```json
+{
+  "felix_token": "<jwt>",
+  "expires_in": 900,
+  "token_type": "Bearer",
+  "refresh_token": "<opaque>"
+}
+```
+
+Pass `felix_token` to the client. The control plane works out what RBAC grants
+your principal, and the body can only narrow that: `requested` keeps the listed
+actions, `resources` keeps the listed objects, and the token gets every kept
+action on every kept resource. Leave both out and it carries everything the
+principal has, which a service that only publishes to one stream should not
+hold. [Token Exchange](/features/security/#token-exchange-oidc--felix) covers
+`permissions`, for different actions on different resources, and
+[the API reference](/api/control-plane-api/) lists every field.
+
+For a local stack or CI there is no identity provider to exchange with. Start
+the control plane with `FELIX_BOOTSTRAP_DEV_TOKENS=true` and it mints a token
+for any principal of an initialized tenant:
+
+```bash
+curl -sS -X POST http://127.0.0.1:9095/internal/bootstrap/tenants/t1/dev-token \
+  -H 'X-Felix-Bootstrap-Token: change-me' \
+  -H 'Content-Type: application/json' \
+  -d '{ "principal": "p:dev" }'
+```
+
+The answer has the same shape as an exchange. It works only with bootstrap
+enabled on a loopback address, and anyone holding the bootstrap token can act
+as any principal, so never turn it on for a shared or production control plane.
+See [Development tokens](/features/security/#development-tokens).
+
+### Lifetime and refreshing
+
+A token lasts 900 seconds unless the control plane sets
+`FELIX_EXCHANGE_TOKEN_TTL_SECONDS`. The refresh token that comes with it lasts
+30 days and buys a new token without going back to the identity provider:
+
+```bash
+curl -s -X POST "https://controlplane:8443/v1/tenants/t1/token/refresh" \
+  -H "Content-Type: application/json" \
+  -d '{"refresh_token": "<opaque>"}'
+```
+
+A refresh token is single-use. Each refresh returns its replacement, and you
+keep only the newest.
+
+### When a token expires on an open connection
+
+The broker checks a token when a stream authenticates, and not again while the
+stream is open. A subscription or publish stream that is already running keeps
+working after its token expires. What fails is anything that authenticates
+afterwards: a new subscription, a cache or group request, or the streams a
+client reopens after losing its connection to a broker. A client that holds one
+fixed token presents that same token every time, so once it has expired those
+are refused. Revoking a principal is how you end streams that are already open.
+
+Only the Rust client can replace its token while it runs. The others hold the
+token they connected with, so build a new client with a fresh token before the
+old one expires. Each client's page says exactly what it offers.
+
 ## The clients
 
 Each has its own page: what to install, the surface, and the failure modes

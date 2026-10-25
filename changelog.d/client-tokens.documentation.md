@@ -1,0 +1,1 @@
+- The client pages say where a token comes from and how each client handles expiry. Choosing a Client now has a "Getting a token" section covering token exchange, development tokens, refresh, and what an expired token does to an open connection.

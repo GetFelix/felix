@@ -44,6 +44,12 @@ The library is found at `FELIX_NATIVE_LIB`, next to `Felix.Client.dll`, or under
 
 ## Connect, publish, subscribe
 
+`Token` is a Felix token; [Getting a token](/clients/overview/#getting-a-token)
+covers where it comes from. `FelixClientOptions.Token` is a fixed string and the
+client cannot refresh it, so dispose the client and connect a new one with a
+fresh token before it expires. Streams opened after expiry, including the ones a
+reconnect opens, are refused.
+
 ```csharp
 using Felix;
 

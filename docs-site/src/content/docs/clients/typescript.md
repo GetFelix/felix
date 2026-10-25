@@ -58,6 +58,12 @@ await client.publish("t1", "default", "events", Buffer.from("hello"));
 client.close();
 ```
 
+`token` is a Felix token; [Getting a token](/clients/overview/#getting-a-token)
+covers where it comes from. The client holds it fixed, for `connect` as well as
+`withIdentity`, so build a new client with a fresh token before it expires.
+Streams opened after expiry, including the ones a reconnect opens, are
+refused.
+
 ## Connecting
 
 ```ts
