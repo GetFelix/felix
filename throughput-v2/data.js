@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792952077211,
+  "lastUpdate": 1792952359288,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -37076,6 +37076,58 @@ window.BENCHMARK_DATA = {
             "range": "2682.30",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 817436.70\nmean: 817401.21\nstdev: 2682.30\ncv: 0.33%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7f1b5473f1514d613108ce4e277c450991c7c44e",
+          "message": "fix(release): resolve the libfelix archive's outdir before changing directory (#1568)\n\npackage_libfelix.sh made <outdir> absolute only after cd-ing into the source\ntree, so with a separate tag checkout (the backfill path) the archive landed in\nsrc/libfelix-dist while the upload looked in libfelix-dist and found nothing.",
+          "timestamp": "2026-10-25T11:12:21-07:00",
+          "tree_id": "3f5806794e21ec07d0cd87755b0548802aab8c30",
+          "url": "https://github.com/GetFelix/felix/commit/7f1b5473f1514d613108ce4e277c450991c7c44e"
+        },
+        "date": 1792952358752,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 364031.36,
+            "range": "7800.67",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 364031.36\nmean: 361301.82\nstdev: 7800.67\ncv: 2.16%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 364031.36,
+            "range": "7800.67",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 364031.36\nmean: 361301.82\nstdev: 7800.67\ncv: 2.16%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82476.26,
+            "range": "316.99",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82476.26\nmean: 82263.65\nstdev: 316.99\ncv: 0.39%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 824762.59,
+            "range": "3169.86",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 824762.59\nmean: 822636.51\nstdev: 3169.86\ncv: 0.39%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
