@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792914357431,
+  "lastUpdate": 1792915524325,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -46266,6 +46266,72 @@ window.BENCHMARK_DATA = {
             "range": "787.47",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1550.00\nmean: 1531.80\nstdev: 787.47\ncv: 51.41%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "01a34a868bb8af7e9194a71dd80a1434e40f8911",
+          "message": "test(replication): sibling-shard append guards; log follower state on a quorum timeout (#1545) (#1549)\n\n#1545 (a publish quorum timeout in quorum_mark_wake, logs empty) did not\nreproduce in deterministic driver tests on main or on e7030fa4b. Two\npaused-time tests with a sibling shard appending every 1 ms keep a shard's mark\nmoving with one or both followers busy; they guard against dropped straggler\nanswers.\n\nA quorum wait that times out now logs one warn per shard per 10 s with the\nstream, shard, generation, batch end, mark, tail and each follower's confirmed\nand next offset, state and busy flag, plus how old that follower state is (the\nstatus board is written when a pass ends). Nothing runs unless a wait times\nout; the window is dropped when a shard is forgotten.\n\nRefs #1545.\n\nSpec-Unaffected: diagnostics only",
+          "timestamp": "2026-10-25T08:00:45Z",
+          "tree_id": "26e83b4fa6072f0d8d61cd1200b91a8bf0c44a2b",
+          "url": "https://github.com/GetFelix/felix/commit/01a34a868bb8af7e9194a71dd80a1434e40f8911"
+        },
+        "date": 1792915518475,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 180,
+            "range": "1.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 180.00\nmean: 179.80\nstdev: 1.64\ncv: 0.91%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 262,
+            "range": "32.67",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 262.00\nmean: 280.20\nstdev: 32.67\ncv: 11.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 459,
+            "range": "225.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 459.00\nmean: 548.60\nstdev: 225.30\ncv: 41.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 216,
+            "range": "2.51",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 216.00\nmean: 215.40\nstdev: 2.51\ncv: 1.17%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 467,
+            "range": "38.15",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 467.00\nmean: 470.80\nstdev: 38.15\ncv: 8.10%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1143,
+            "range": "716.51",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1143.00\nmean: 1394.60\nstdev: 716.51\ncv: 51.38%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
