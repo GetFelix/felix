@@ -143,8 +143,8 @@ must be `Send + Sync + 'static`, its future `Send + 'static`, and neither may
 block: use an async HTTP client. A `RefreshingToken` asked for a token outside
 a Tokio runtime panics.
 
-**Failure.** The provider fails when it returns an error or does not answer
-within 30 seconds. While the held token is still valid the client keeps it,
+**Failure.** The provider fails when it returns an error, returns an empty or
+blank token, or does not answer within 30 seconds. While the held token is still valid the client keeps it,
 logs a warning and asks again about five seconds later. Otherwise the operation
 that needed the token fails with `felix_client::AuthError` carrying the
 provider's error message and its causes. A provider failure is final for that

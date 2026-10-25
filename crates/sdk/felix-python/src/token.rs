@@ -76,7 +76,7 @@ pub(crate) fn resolve(
     }
 
     let provider = Arc::new(provider);
-    let initial = token.filter(|token| !token.is_empty()).map(str::to_string);
+    let initial = token.filter(|token| !token.trim().is_empty()).map(str::to_string);
     let locals = match flavor {
         Flavor::Blocking => None,
         Flavor::Asyncio(locals) => Some(locals),

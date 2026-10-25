@@ -75,7 +75,9 @@ impl FelixTokenReply {
 /// Complete a fetch with a token. The string is copied.
 ///
 /// Returns `FELIX_STATUS_INVALID_ARGUMENT` if `token` is null, empty or not
-/// UTF-8 (the reply stays open and can still be completed). Otherwise it
+/// UTF-8 (the reply stays open and can still be completed). A token of only
+/// whitespace is consumed like any answer and then fails the fetch, as an
+/// error reply would. Otherwise it
 /// returns `FELIX_STATUS_OK` and consumes the reply, including when the
 /// library had stopped waiting on the fetch or the client was freed; a late
 /// token is still used by a live client, and discarded by a freed one. The
@@ -258,7 +260,7 @@ pub(crate) fn provider(source: &Arc<TokenSource>, initial: Option<&str>) -> Arc<
     let fetch = move || Arc::clone(&source).fetch();
     // An empty string is no token: the first auth fetches instead of sending
     // one the broker will refuse.
-    let initial = initial.filter(|initial| !initial.is_empty());
+    let initial = initial.filter(|initial| !initial.trim().is_empty());
     Arc::new(match initial {
         Some(initial) => RefreshingToken::with_initial(initial, fetch),
         None => RefreshingToken::new(fetch),

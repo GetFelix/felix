@@ -170,7 +170,8 @@ or later, with `felix_token_reply_ok(reply, token)` (the string is copied) or
 **Failure.** The fetch fails when it answers with `felix_token_reply_err`, or
 does not answer within 30 seconds. A null, empty or non-UTF-8 token is not an
 answer: `felix_token_reply_ok` returns `FELIX_STATUS_INVALID_ARGUMENT` and the
-reply stays open. While the held token is still valid the client keeps it and
+reply stays open. A blank (whitespace-only) token is accepted as the answer and
+fails the fetch like an error reply. While the held token is still valid the client keeps it and
 asks again about five seconds later. Otherwise the operation that needed the
 token fails with `FELIX_STATUS_AUTH`, and its message contains the fetch's
 message unchanged. A provider failure is final for that operation: it is not

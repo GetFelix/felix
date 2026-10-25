@@ -209,7 +209,9 @@ typedef struct FelixConnectOptions {
   // `token_user_data` is still the caller's. When it returns
   // `FELIX_STATUS_OK`, `token_release` runs exactly once later, including
   // when the connect then reports failure through its callback.
-  // It runs after the client is freed and every reply is answered.
+  // It runs after the client is freed and the last outstanding reply is
+  // answered: inside `felix_client_free` if none is outstanding, otherwise
+  // inside the answering `felix_token_reply_ok`/`_err` call.
   FelixTokenFetch token_fetch;
   // Passed to `token_fetch` and `token_release`, from any thread.
   void *token_user_data;
@@ -2330,7 +2332,9 @@ void felix_subscription_free(struct FelixSubscription *subscription);
 // Complete a fetch with a token. The string is copied.
 //
 // Returns `FELIX_STATUS_INVALID_ARGUMENT` if `token` is null, empty or not
-// UTF-8 (the reply stays open and can still be completed). Otherwise it
+// UTF-8 (the reply stays open and can still be completed). A token of only
+// whitespace is consumed like any answer and then fails the fetch, as an
+// error reply would. Otherwise it
 // returns `FELIX_STATUS_OK` and consumes the reply, including when the
 // library had stopped waiting on the fetch or the client was freed; a late
 // token is still used by a live client, and discarded by a freed one. The
