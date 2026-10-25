@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792899154871,
+  "lastUpdate": 1792900060002,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -45342,6 +45342,72 @@ window.BENCHMARK_DATA = {
             "range": "958.80",
             "unit": "us",
             "extra": "trials: 5\nmedian: 476.00\nmean: 868.60\nstdev: 958.80\ncv: 110.38%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "903d5a2cf2392474fe5004af624e3fa278956d4d",
+          "message": "fix(client): re-route publish_if, commit and state_get on not_leader; name the operation in refusals (#1534)\n\nOn a coded not_leader with no cached route the cluster client returned the\nerror to the caller, while a plain publish re-routes. publish_if, commit and\nstate_get now ask the entry broker again with the reconnect backoff and\nattempt bound. not_leader is refused before the broker applies anything, so\nthe retry cannot write twice; other refusals are returned as they came. The\nbroker answers with the typed NotLeader redirect when leadership moves between\nits routing check and the write.\n\ngroup_round_trip takes the operation name for its refusal prefix, so a\nconditional publish no longer reads \"group request refused\" (#1531).\ndocs/atomic-commit.md describes the retry and its cost.\n\nFixes #1530, #1531.\n\nSpec-Unaffected: the typed not_leader redirect is only sent where owned() already refused before any apply, so leadership and fence semantics are unchanged.",
+          "timestamp": "2026-10-24T20:40:03-07:00",
+          "tree_id": "efda028bdb1ca70f5921c438ec7ac2c4394e0755",
+          "url": "https://github.com/GetFelix/felix/commit/903d5a2cf2392474fe5004af624e3fa278956d4d"
+        },
+        "date": 1792900054071,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 112,
+            "range": "4.98",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 112.00\nmean: 110.60\nstdev: 4.98\ncv: 4.50%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 166,
+            "range": "8.79",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 166.00\nmean: 162.40\nstdev: 8.79\ncv: 5.41%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 260,
+            "range": "83.83",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 260.00\nmean: 272.40\nstdev: 83.83\ncv: 30.77%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 131,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 131.00\nmean: 130.80\nstdev: 0.45\ncv: 0.34%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 287,
+            "range": "7.46",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 287.00\nmean: 291.20\nstdev: 7.46\ncv: 2.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 478,
+            "range": "291.27",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 478.00\nmean: 591.00\nstdev: 291.27\ncv: 49.28%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
