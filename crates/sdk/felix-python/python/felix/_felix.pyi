@@ -5,7 +5,7 @@ so a signature cannot drift here without a test noticing.
 """
 
 from types import TracebackType
-from typing import AsyncIterator, Awaitable, Iterator, Literal, Sequence
+from typing import AsyncIterator, Awaitable, Callable, Iterator, Literal, Sequence
 
 __version__: str
 
@@ -229,12 +229,26 @@ class Client:
         addrs: str | Sequence[str],
         *,
         tenant_id: str,
-        token: str,
+        token: str | None = None,
+        token_provider: Callable[[], str | Awaitable[str]] | None = None,
         server_name: str = "localhost",
         ca_file: str | None = None,
         offer_alpn: bool = False,
-    ) -> None: ...
-    def with_identity(self, tenant_id: str, token: str) -> "Client": ...
+    ) -> None:
+        """Pass ``token``, ``token_provider``, or both (``token`` is then the first token).
+
+        A plain provider runs on a Felix worker thread with the GIL; an
+        ``async def`` is run there with ``asyncio.run``. It cannot be cancelled: a
+        call that outlives the 30 s fetch timeout fails the waiting operations and is
+        joined by the next one, not repeated.
+        """
+    def with_identity(
+        self,
+        tenant_id: str,
+        token: str | None = None,
+        *,
+        token_provider: Callable[[], str | Awaitable[str]] | None = None,
+    ) -> "Client": ...
     def publish(
         self,
         tenant_id: str,
@@ -364,12 +378,24 @@ class AsyncClient:
         addrs: str | Sequence[str],
         *,
         tenant_id: str,
-        token: str,
+        token: str | None = None,
+        token_provider: Callable[[], Awaitable[str]] | None = None,
         server_name: str = "localhost",
         ca_file: str | None = None,
         offer_alpn: bool = False,
+    ) -> "AsyncClient":
+        """``token_provider`` must be an ``async def`` (or return an awaitable); one returning a ``str`` fails with ``AuthError``.
+
+        It is awaited on the loop running this call, which must stay open for the life of the client and its ``with_identity`` handles.
+
+        The provider's task is cancelled (it sees ``asyncio.CancelledError``) when a call passes the 30 s fetch timeout and when the client and its handles are gone."""
+    async def with_identity(
+        self,
+        tenant_id: str,
+        token: str | None = None,
+        *,
+        token_provider: Callable[[], Awaitable[str]] | None = None,
     ) -> "AsyncClient": ...
-    async def with_identity(self, tenant_id: str, token: str) -> "AsyncClient": ...
     async def publish(
         self,
         tenant_id: str,

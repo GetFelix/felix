@@ -25,11 +25,11 @@ jobs:
 
   # Self-hosted for pushes to main, GitHub-hosted for PRs; see ci.yml's test
   # job.
-  # Only main publishes the badge and nothing on a pull request reads the
-  # numbers, so a pull request skips the second, instrumented run of the suite.
+  # Main publishes the badge and its line percentage; a pull request runs the
+  # same job and fails if it drops coverage by more than the gate allows.
   coverage:
     needs: changes
-    if: github.event_name != 'pull_request' && needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true'
     runs-on: ${{ github.event_name != 'pull_request' && vars.FELIX_SELF_HOSTED_RUNNERS != 'false' && fromJSON('["self-hosted","felix-azure"]') || vars.FELIX_LARGE_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 150
     permissions:
@@ -110,6 +110,20 @@ jobs:
           set -euxo pipefail
           task coverage
 
+      # An unchanged tree varies about +-0.05 points, hence 0.1. No baseline yet
+      # (first run after this lands) passes.
+      - name: Gate on main's line coverage
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          if git fetch --quiet --depth=1 origin badges &&
+            git show FETCH_HEAD:coverage-lines.txt > "$RUNNER_TEMP/baseline.txt"; then
+            python3 scripts/ci/coverage_gate.py check lcov.info "$RUNNER_TEMP/baseline.txt" --tolerance 0.1
+          else
+            echo "::notice::no coverage baseline on the badges branch yet; skipping the gate"
+            python3 scripts/ci/coverage_gate.py percent lcov.info
+          fi
+
       - name: Generate coverage badge (coverage.svg)
         uses: ImBIOS/lcov-coverage-badge@da3d9b94a6e70935409f4e021384216a80dd0762 # v1.0.1
         with:
@@ -142,6 +156,8 @@ jobs:
               cp "$SVG_PATH" publish/coverage.svg
             fi
           fi
+
+          python3 scripts/ci/coverage_gate.py percent lcov.info > publish/coverage-lines.txt
 
           echo "Publish dir contents:"
           ls -la publish

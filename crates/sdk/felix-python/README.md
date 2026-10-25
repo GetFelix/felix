@@ -79,6 +79,20 @@ with that offset as its version. A commit naming a second stream raises
 The [clients page](../../../docs-site/src/content/docs/api/clients.md) has the
 worked examples.
 
+## Tokens that expire
+
+A token lasts 15 minutes by default, and a client that outlives one passes
+`token_provider`, a function that returns a fresh token. The client calls it
+lazily, one call at a time, when a stream is about to authenticate and the held
+token is missing, past two thirds of its life, or was refused. `Client` takes a
+plain function or an `async def`; `AsyncClient` takes an `async def`. `token=`
+is then optional. See [Getting and refreshing a
+token](https://docs.getfelix.dev/clients/python/#getting-and-refreshing-a-token).
+
+```python
+felix.Client(addr, tenant_id="t1", token_provider=fetch_token, ca_file=ca)
+```
+
 ## TLS
 
 QUIC has no unencrypted mode, so there is always a trust decision — and
