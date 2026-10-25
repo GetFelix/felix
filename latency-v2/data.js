@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792900060002,
+  "lastUpdate": 1792900340986,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -45408,6 +45408,72 @@ window.BENCHMARK_DATA = {
             "range": "291.27",
             "unit": "us",
             "extra": "trials: 5\nmedian: 478.00\nmean: 591.00\nstdev: 291.27\ncv: 49.28%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "984e13d054d1c80b84752aaf0bc34cfa47288f92",
+          "message": "feat(typescript): token provider, connect options object (#1527)\n\nconnect(addrs, tenant, { token, tokenProvider, serverName, caFile, offerAlpn })\nand withIdentity(tenant, { token, tokenProvider }) take an options object\n(breaking; the package is alpha). tokenProvider is () => string | Promise<string>,\ncalled on the JS thread through a ThreadsafeFunction and wrapped in the Rust\nclient's RefreshingToken: lazy, single-flight, refreshed at two thirds of a\ntoken's life or after a refusal (one refetch per refusing broker), with the\ncore's 30 s fetch timeout failing the waiters while the call is joined, never\nrepeated.\n\nThe provider gets an AbortSignal that fires at the fetch timeout, or when the\nlast handle using the token goes; an abort that beats its fetch is kept. A\nthrow or rejection reaches the caller's AuthError with the app's message. The\nTypeScript page's token section replaces the manual refresh-and-reconnect\npattern; the doc example is type-checked in CI.",
+          "timestamp": "2026-10-24T20:48:00-07:00",
+          "tree_id": "7851875d9081c75e2ae2fdf0762609cfe1862804",
+          "url": "https://github.com/GetFelix/felix/commit/984e13d054d1c80b84752aaf0bc34cfa47288f92"
+        },
+        "date": 1792900335421,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 107,
+            "range": "0.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 107.00\nmean: 107.00\nstdev: 0.00\ncv: 0.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 142,
+            "range": "1.79",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 142.00\nmean: 140.80\nstdev: 1.79\ncv: 1.27%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 208,
+            "range": "20.27",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 208.00\nmean: 214.40\nstdev: 20.27\ncv: 9.45%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 142,
+            "range": "9.26",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 142.00\nmean: 146.80\nstdev: 9.26\ncv: 6.31%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 301,
+            "range": "348.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 301.00\nmean: 452.80\nstdev: 348.00\ncv: 76.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 954,
+            "range": "887.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 954.00\nmean: 1131.20\nstdev: 887.64\ncv: 78.47%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
