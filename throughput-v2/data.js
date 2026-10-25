@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792903137385,
+  "lastUpdate": 1792906783075,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -36036,6 +36036,58 @@ window.BENCHMARK_DATA = {
             "range": "7067.32",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 810123.42\nmean: 808582.36\nstdev: 7067.32\ncv: 0.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1d8ca7fd48da619a5eb9723bc225820eda8492da",
+          "message": "feat(csharp): TokenProvider over the C ABI token fetch (step 5b) (#1538)\n\nFelixClientOptions.TokenProvider, a Func<CancellationToken, ValueTask<string>>,\nover the C ABI's token_fetch callback. The Rust core owns the timing (lazy,\nsingle-flight, two-thirds-of-life refresh, one refetch per refusal, 30 s fetch\ntimeout that joins the call); C# adds no refresh logic or timer.\n\nThe provider runs on the thread pool; every reply is answered exactly once\n(success, throw, cancellation, null/empty, NUL or invalid UTF-8, refused ok\nthen err), the app's message reaches FelixException unchanged, and nothing\nescapes into native code. The GCHandle is freed in token_release or on the\nconnect-failure paths.\n\nEach fetch's CancellationToken fires at 30 s, when connect fails, or once the\nclient and every subscription, sharded subscription, sharded group, cache watch\nand producer made from it are disposed: those handles hold the native shared\nstate, so TokenSource is reference-counted, with the reference taken before the\nnative call that creates a handle.\n\ncsharp.md token section in the shared structure, overview and status table,\nREADME, changelog. check_csharp_bindings.py drops the temporary allowlist\nentries; the C# conformance verdict runs only when the scenario step ran.",
+          "timestamp": "2026-10-25T05:34:58Z",
+          "tree_id": "9df9ce3363d9a429aeaf0fcd1535a1c90406e350",
+          "url": "https://github.com/GetFelix/felix/commit/1d8ca7fd48da619a5eb9723bc225820eda8492da"
+        },
+        "date": 1792906782231,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 350195.7,
+            "range": "5746.49",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 350195.70\nmean: 347343.38\nstdev: 5746.49\ncv: 1.65%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 350195.7,
+            "range": "5746.49",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 350195.70\nmean: 347343.38\nstdev: 5746.49\ncv: 1.65%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79794.91,
+            "range": "316.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79794.91\nmean: 79852.91\nstdev: 316.81\ncv: 0.40%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 797949.15,
+            "range": "3168.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 797949.15\nmean: 798529.08\nstdev: 3168.12\ncv: 0.40%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
