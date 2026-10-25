@@ -89,8 +89,9 @@ let cfg = ClientConfig::from_env_or_yaml(quinn, Some("client.yml"))?;
   - Sharding mode across publish streams.
   - Values: `rr` or `hash_stream`.
 - `connect_timeout` (env: `FELIX_CONNECT_TIMEOUT_MS`, YAML `connect_timeout_ms`)
-  - Longest one connect to a broker may take before it errors. Default: 10 s. Fetching a token from a
-    `token_provider` is not counted; it is bounded by its own 30 s limit.
+  - Longest one connect to a broker may take before it errors. Default: 10 s. The first token fetch from a
+    `token_provider` is not counted; it is cut off at 30 s. A refetch after a broker refuses the token
+    happens in the handshake and does count.
     A cluster client dials addresses in turn, so a reconnect can take up to
     that many times this, and is capped at three times it in all. The same limit
     bounds each request/response step of topology, shard-count and subscribe

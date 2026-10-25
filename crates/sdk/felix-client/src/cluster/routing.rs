@@ -80,10 +80,16 @@ impl ClusterClient {
             return;
         }
 
-        let connected =
-            tokio::time::timeout(super::discovery::CONNECT_TIMEOUT, self.connect_to(addr))
-                .await
-                .unwrap_or_else(|_| Err(anyhow::anyhow!("connecting timed out")));
+        // Outside the connect timer: a slow provider is bounded by
+        // `FETCH_TIMEOUT` and must not read as an unreachable broker.
+        let connected = match self.nodes_prefetch().await {
+            Ok(()) => {
+                tokio::time::timeout(super::discovery::CONNECT_TIMEOUT, self.connect_to(addr))
+                    .await
+                    .unwrap_or_else(|_| Err(anyhow::anyhow!("connecting timed out")))
+            }
+            Err(err) => Err(err),
+        };
         match connected {
             Ok(client) => {
                 let mut owners = self.owners.write().await;

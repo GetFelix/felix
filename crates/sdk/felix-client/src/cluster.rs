@@ -350,6 +350,11 @@ impl ClusterClient {
         self.nodes.connect_to(addr).await
     }
 
+    /// See `Nodes::prefetch`.
+    pub(crate) async fn nodes_prefetch(&self) -> Result<()> {
+        self.nodes.prefetch().await
+    }
+
     /// Where a broker that advertised `addr`, an address or a name, is
     /// reached now. See `Nodes::resolve`.
     pub(crate) async fn resolve(&self, advertised: &str) -> Option<SocketAddr> {
@@ -481,6 +486,7 @@ impl Owner {
     async fn connect(&self, nodes: &nodes::Nodes) -> Result<Arc<Client>> {
         self.client
             .get_or_try_init(|| async {
+                nodes.prefetch().await?;
                 tokio::time::timeout(discovery::CONNECT_TIMEOUT, nodes.connect_to(self.addr))
                     .await
                     .map_err(|_| anyhow::anyhow!("connecting to {} timed out", self.addr))?

@@ -31,6 +31,10 @@ pub type TokenFuture<'a> = Pin<Box<dyn Future<Output = Result<String>> + Send + 
 ///
 /// Called on every stream open, so implementations should cache.
 /// [`RefreshingToken`] is the usual one.
+///
+/// A connect asks for the token before its handshake and gives up on a
+/// `token()` that has not answered after [`FETCH_TIMEOUT`], so a provider
+/// that hangs fails the connect instead of holding it.
 pub trait TokenProvider: Send + Sync {
     /// The token to present now.
     fn token(&self) -> TokenFuture<'_>;

@@ -179,6 +179,13 @@ pub(crate) struct Negotiated {
 #[error("auth rejected: {0}")]
 pub(crate) struct AuthRejected(String);
 
+#[cfg(test)]
+impl AuthRejected {
+    pub(crate) fn for_test() -> Self {
+        Self("no".to_string())
+    }
+}
+
 /// Authenticate a stream and negotiate capabilities.
 ///
 /// Returns what the broker agreed to: its frame-flag and feature bits, and its

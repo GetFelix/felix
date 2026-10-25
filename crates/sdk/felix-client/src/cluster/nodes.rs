@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 
 use crate::auth::TokenProvider;
-use crate::client::{Client, fetch_token, no_broker_answered};
+use crate::client::{Client, fetch_from, fetch_token, no_broker_answered};
 use crate::config::ClientConfig;
 
 use super::seeds::{LOOKUP_TIMEOUT, Lookup};
@@ -243,6 +243,19 @@ impl Nodes {
         clients
     }
 
+    /// Fetch the tokens a connect will present, bounded by `FETCH_TIMEOUT`.
+    /// Callers that wrap [`connect_to`](Self::connect_to) in a short timer run
+    /// this first, so the timer covers the handshake and not the provider.
+    pub(super) async fn prefetch(&self) -> Result<()> {
+        match &self.source {
+            Source::Dial { config, .. } => fetch_token(config).await,
+            Source::Identity { base, tokens, .. } => {
+                Box::pin(base.prefetch()).await?;
+                fetch_from(tokens.as_ref()).await
+            }
+        }
+    }
+
     /// The client for the broker at `addr`, connecting only when there is no
     /// usable one.
     ///
@@ -302,9 +315,7 @@ impl Nodes {
                 "no broker addresses were given to connect to"
             ));
         }
-        if let Source::Dial { config, .. } = &self.source {
-            fetch_token(config).await?;
-        }
+        self.prefetch().await?;
         let mut refusals = Vec::with_capacity(addrs.len());
         for addr in addrs {
             match self.connect_to(*addr).await {

@@ -122,8 +122,9 @@ a call to `/token/refresh`, and replaces its token once two thirds of its life
 has passed. A fetch that takes longer than 30 seconds fails the callers waiting
 on it but keeps running; the provider is never called again while it is
 outstanding, the next refresh waits on it, and a late answer is used. The
-first fetch at connect is bounded by that limit alone, not by `connect_timeout`,
-and a token every broker refuses surfaces as an auth error.
+first fetch at connect, from any provider, is cut off at that limit and not counted in
+`connect_timeout`; a refetch after a broker refuses the token happens in the handshake and does
+count. A token every broker refuses surfaces as an auth error.
 `RefreshingToken::new_cancellable` and `with_initial_cancellable` pass the fetch
 a `tokio_util::sync::CancellationToken` that fires at that timeout and when the
 `RefreshingToken` is dropped, for a provider that can stop early. If a fetch fails while the current token is still valid, it keeps

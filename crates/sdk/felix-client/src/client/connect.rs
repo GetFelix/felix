@@ -12,12 +12,14 @@ use tracing::debug;
 
 use super::Client;
 use super::discovery::ask_stream_routing;
+use crate::auth::{FETCH_TIMEOUT, TokenProvider};
 use crate::cache::{CacheWorker, run_cache_worker_with_limit};
 use crate::config::{
     CACHE_WORKER_QUEUE_DEPTH, ClientConfig, ClientRuntimeConfig, cache_transport_config,
     event_transport_config, shared_transport_config,
 };
 use crate::connection::{AuthRejected, Credentials, NodeConnections, NodeLimits, OpenedStream};
+use crate::error::BrokerError;
 use crate::publish::{
     LearnWidth, OpenWorker, PublishAdmission, PublishWorker, ShardStreams, StreamWidths,
     run_publisher_writer_with_limit,
@@ -26,12 +28,40 @@ use crate::publish::{
 /// Ask the token source for the current token, so a fetch happens once per
 /// connect rather than inside each broker's handshake timer.
 pub(crate) async fn fetch_token(config: &ClientConfig) -> Result<()> {
-    config.tokens()?.token().await?;
-    Ok(())
+    fetch_from(config.tokens()?.as_ref()).await
+}
+
+/// One fetch from `tokens`, cut off at [`FETCH_TIMEOUT`] with the error
+/// [`crate::RefreshingToken`] gives, so a custom provider that never answers
+/// cannot hold a connect forever.
+pub(crate) async fn fetch_from(tokens: &dyn TokenProvider) -> Result<()> {
+    match tokio::time::timeout(FETCH_TIMEOUT, tokens.token()).await {
+        Ok(token) => token.map(drop),
+        Err(_) => Err(anyhow::anyhow!(
+            "the token fetch took longer than {}s",
+            FETCH_TIMEOUT.as_secs()
+        )),
+    }
+}
+
+/// The broker refused the credential, in the sense the bindings report as an
+/// auth failure: an unauthenticated or forbidden code, or no code at all.
+/// Overloaded, draining and other refusals are not.
+fn is_auth_refusal(err: &anyhow::Error) -> bool {
+    if err.downcast_ref::<AuthRejected>().is_none() {
+        return false;
+    }
+    match err.chain().find_map(|e| e.downcast_ref::<BrokerError>()) {
+        Some(broker) => matches!(
+            broker.code,
+            felix_wire::ErrorCode::Unauthenticated | felix_wire::ErrorCode::Forbidden
+        ),
+        None => true,
+    }
 }
 
 /// The error for a connect that every address refused. When each refusal was
-/// the broker rejecting the token, that stays the error's type and cause, so a
+/// the broker rejecting the token (see `is_auth_refusal`), that stays the error's type and cause, so a
 /// caller sees an auth failure and not an unreachable cluster.
 pub(crate) fn no_broker_answered(refusals: Vec<(SocketAddr, anyhow::Error)>) -> anyhow::Error {
     let detail = refusals
@@ -39,10 +69,7 @@ pub(crate) fn no_broker_answered(refusals: Vec<(SocketAddr, anyhow::Error)>) -> 
         .map(|(addr, err)| format!("{addr}: {err:#}"))
         .collect::<Vec<_>>()
         .join("; ");
-    let all_rejected = !refusals.is_empty()
-        && refusals
-            .iter()
-            .all(|(_, err)| err.downcast_ref::<AuthRejected>().is_some());
+    let all_rejected = !refusals.is_empty() && refusals.iter().all(|(_, err)| is_auth_refusal(err));
     if all_rejected && let Some((_, first)) = refusals.into_iter().next() {
         return first.context(format!("no broker accepted the token ({detail})"));
     }
@@ -154,7 +181,9 @@ impl Client {
 
     /// The handshake is bounded by `connect_timeout`: a broker that accepts it
     /// but never grants stream credit would otherwise hold the caller forever.
-    /// The token fetch is not part of it; `FETCH_TIMEOUT` bounds that.
+    /// The up-front token fetch is not part of it; `FETCH_TIMEOUT` bounds that.
+    /// A refetch after a broker refuses the token happens inside the handshake
+    /// and does count against it.
     async fn build(
         addr: SocketAddr,
         server_name: &str,

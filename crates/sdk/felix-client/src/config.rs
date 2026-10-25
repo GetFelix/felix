@@ -126,8 +126,9 @@ pub struct ClientConfig {
     /// every event. [`crate::Client::offset_for_time`] works either way.
     pub timestamps: bool,
     /// Longest a connect to one broker may take, handshake and stream setup
-    /// included, before it fails with an error. A token fetch is not part of it;
-    /// [`crate::FETCH_TIMEOUT`] bounds that. Default 10 s;
+    /// included, before it fails with an error. The first token fetch is not part of it
+    /// ([`crate::FETCH_TIMEOUT`] bounds that); a refetch after a broker refuses
+    /// the token happens in the handshake and is. Default 10 s;
     /// `FELIX_CONNECT_TIMEOUT_MS`. A cluster client dials one address after
     /// another, so a reconnect over `n` dead addresses takes up to `n` times
     /// this.

@@ -159,3 +159,58 @@ async fn a_silent_token_provider_fails_at_the_fetch_timeout() -> Result<()> {
     assert!(!text.contains("timed out"), "{text}");
     Ok(())
 }
+
+/// A provider that is not a `RefreshingToken` and never answers is still cut
+/// off at the fetch timeout, with the same error.
+#[tokio::test(start_paused = true)]
+async fn a_custom_provider_that_never_answers_fails_at_the_fetch_timeout() -> Result<()> {
+    struct Hung;
+    impl crate::TokenProvider for Hung {
+        fn token(&self) -> crate::TokenFuture<'_> {
+            Box::pin(std::future::pending())
+        }
+    }
+    let (server_config, cert) = build_server_config()?;
+    drop(server_config);
+    let mut config = build_client_config(cert)?;
+    config.token_provider = Some(Arc::new(Hung));
+    let started = tokio::time::Instant::now();
+    let err = Client::connect(silent_addr()?, "localhost", config)
+        .await
+        .err()
+        .expect("the provider never answered");
+    assert_eq!(started.elapsed(), FETCH_TIMEOUT);
+    let text = format!("{err:#}");
+    assert!(text.contains("the token fetch took longer"), "{text}");
+    Ok(())
+}
+
+fn refusal(code: felix_wire::ErrorCode) -> anyhow::Error {
+    crate::error::refused("auth rejected", "no".to_string(), Some(code), None, None)
+        .context(crate::connection::AuthRejected::for_test())
+}
+
+/// Only an unauthenticated or forbidden refusal is an auth failure; an
+/// overloaded broker in the set keeps the connection-style error.
+#[test]
+fn only_auth_refusals_make_the_set_an_auth_error() {
+    use felix_wire::ErrorCode;
+    let a: SocketAddr = "127.0.0.1:1".parse().unwrap();
+    let b: SocketAddr = "127.0.0.1:2".parse().unwrap();
+    let mixed = super::no_broker_answered(vec![
+        (a, refusal(ErrorCode::Overloaded)),
+        (b, refusal(ErrorCode::Unauthenticated)),
+    ]);
+    assert!(
+        format!("{mixed:#}").starts_with("no broker answered"),
+        "{mixed:#}"
+    );
+    let auth = super::no_broker_answered(vec![
+        (a, refusal(ErrorCode::Forbidden)),
+        (b, refusal(ErrorCode::Unauthenticated)),
+    ]);
+    assert!(
+        format!("{auth:#}").contains("no broker accepted the token"),
+        "{auth:#}"
+    );
+}
