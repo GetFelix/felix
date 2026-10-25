@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792896709195,
+  "lastUpdate": 1792899154871,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -45276,6 +45276,72 @@ window.BENCHMARK_DATA = {
             "range": "537.47",
             "unit": "us",
             "extra": "trials: 5\nmedian: 321.00\nmean: 603.20\nstdev: 537.47\ncv: 89.10%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "75b604a31874b5a57635e4356be13012b91a505a",
+          "message": "fix(python): link the extension on macOS with a plain cargo build (#1535)\n\ntask python:check ran cargo build, which failed on macOS with the Python\nsymbols unresolved: the extension leaves them to the interpreter, and only\nmaturin passed -undefined dynamic_lookup. A build script now adds it through\npyo3_build_config::add_extension_module_link_args() (a no-op off macOS).",
+          "timestamp": "2026-10-25T03:25:45Z",
+          "tree_id": "a354fc9008c40bf0e4bc3f206a522adb1da03333",
+          "url": "https://github.com/GetFelix/felix/commit/75b604a31874b5a57635e4356be13012b91a505a"
+        },
+        "date": 1792899148974,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 105,
+            "range": "2.49",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 105.00\nmean: 104.20\nstdev: 2.49\ncv: 2.39%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 142,
+            "range": "10.58",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 142.00\nmean: 147.00\nstdev: 10.58\ncv: 7.20%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 176,
+            "range": "764.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 176.00\nmean: 521.40\nstdev: 764.00\ncv: 146.53%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 133,
+            "range": "0.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 133.00\nmean: 133.00\nstdev: 0.00\ncv: 0.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 295,
+            "range": "31.87",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 295.00\nmean: 305.20\nstdev: 31.87\ncv: 10.44%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 476,
+            "range": "958.80",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 476.00\nmean: 868.60\nstdev: 958.80\ncv: 110.38%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
