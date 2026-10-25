@@ -28,4 +28,5 @@ mod errors;
 mod sharded_subscription;
 mod subscription;
 mod tls;
+mod token;
 mod types;

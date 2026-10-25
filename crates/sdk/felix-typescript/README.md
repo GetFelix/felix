@@ -47,6 +47,22 @@ for (;;) {
 await events.close();
 ```
 
+## Tokens that expire
+
+A token lasts 15 minutes by default. Give `connect` a `tokenProvider` and the
+client asks it for a fresh one when it needs one, never in the background, one
+call at a time:
+
+```ts
+const client = await Client.connect(addr, "t1", firstToken, "localhost", caFile, undefined, async () =>
+  (await refresh()).felix_token,
+);
+```
+
+A failure keeps the held token while it is valid and otherwise reaches you as an
+`AuthError` with your message. `withIdentity` takes one too. See
+https://docs.getfelix.dev/clients/typescript/#getting-and-refreshing-a-token.
+
 ## What it wraps
 
 Everything the Python binding wraps, with one exception noted below.

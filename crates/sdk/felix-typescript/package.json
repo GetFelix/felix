@@ -28,6 +28,7 @@
   "files": [
     "index.js",
     "errors.js",
+    "token.js",
     "index.d.ts",
     "README.md",
     "LICENSE"
@@ -51,7 +52,7 @@
   "scripts": {
     "build": "napi build --platform --release",
     "build:debug": "napi build --platform",
-    "test": "node --test test/errors.test.mjs test/conformance.test.mjs"
+    "test": "node --test test/errors.test.mjs test/token.test.mjs test/conformance.test.mjs"
   },
   "optionalDependencies": {
     "felix-client-darwin-arm64": "0.6.1",

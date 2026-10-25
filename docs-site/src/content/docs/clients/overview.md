@@ -275,9 +275,10 @@ client reopens after losing its connection to a broker. A client that holds one
 fixed token presents that same token every time, so once it has expired those
 are refused. Revoking a principal is how you end streams that are already open.
 
-Only the Rust client can replace its token while it runs, through a token
-provider. The others hold the token they connected with, so build a new client
-with a fresh token before the old one expires. Each client's page has an example.
+The Rust and TypeScript clients can replace the token while the client runs:
+Rust through a token provider, TypeScript through a `tokenProvider` function.
+The others hold the token they connected with, so build a new client with a
+fresh token before the old one expires. Each client's page has an example.
 
 ## The clients
 

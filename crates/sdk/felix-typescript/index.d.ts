@@ -312,6 +312,12 @@ export declare class CacheWatchHandle {
   [Symbol.asyncDispose](): Promise<void>;
 }
 
+/**
+ * Returns a fresh Felix token, or a promise of one. See `Client.connect` for
+ * when it is called and what counts as a failure.
+ */
+export type TokenProvider = () => string | Promise<string>;
+
 /** A connected Felix client. */
 export declare class Client {
   /**
@@ -327,14 +333,27 @@ export declare class Client {
    * `offerAlpn` offers the `felix/1` ALPN. A broker with
    * `FELIX_TLS_REQUIRE_ALPN=true` serves only clients that do; a broker older
    * than ALPN support refuses them, which is why it is off by default.
+   *
+   * Pass `token`, a `tokenProvider`, or both. A client with a `tokenProvider`
+   * asks it for a token only when a stream is about to authenticate and the
+   * client holds none, or one past two thirds of its life (its JWT `exp`), or
+   * one the broker just refused. An idle client makes no calls. It is called
+   * on the JS thread, one call at a time; return the token or a promise of it.
+   * A throw, a rejection, a result that is not a non-empty string, or no
+   * answer within 30 s is a failed fetch: the client keeps a token that is
+   * still valid and retries a few seconds later, and otherwise the call fails
+   * with an `AuthError` carrying your message. `token` is what the client
+   * starts with; without it the first stream authentication calls the
+   * provider. The provider does not keep the Node process alive.
    */
   static connect(
     addrs: string | string[],
     tenantId: string,
-    token: string,
+    token?: string | null,
     serverName?: string,
     caFile?: string,
     offerAlpn?: boolean,
+    tokenProvider?: TokenProvider,
   ): Promise<Client>;
 
   /**
@@ -344,10 +363,11 @@ export declare class Client {
    * broker checks its requests against that token's grants alone. It follows
    * shards and failovers as this client does, reaching each broker over this
    * client's connection to it, so a gateway serving many users holds one
-   * connection per broker. The token is fixed: build a new one when it
-   * expires. A refused token rejects here.
+   * connection per broker. Pass a fixed `token`, or a `tokenProvider` that
+   * behaves as for `connect` (`token` then only seeds it). A refused token
+   * rejects here.
    */
-  withIdentity(tenantId: string, token: string): Promise<Client>;
+  withIdentity(tenantId: string, token?: string | null, tokenProvider?: TokenProvider): Promise<Client>;
 
   /**
    * Publish one record.
