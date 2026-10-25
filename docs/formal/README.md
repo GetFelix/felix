@@ -283,7 +283,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardFencedCrashNamesByRegistration.cfg` | `FelixShardFencedCrash.cfg` with placement naming a replica the report left unnamed by its registered identity while it is at the report's incarnation (`NameByRegistration`), a rule considered and not taken: for a follower the leader had not asked yet that incarnation is stamped as the report arrives, which can follow a crash the report predates | violate `AckedHeldByLeader` |
 | `FelixShardFencedCrashNamesByInheritance.cfg` | `FelixShardFencedCrashUnprobed.cfg` with two promotions on suspicion, every promoted leader blind until it asks, process and machine crashes (`ProcessCrashes`, `KeepIdOnSameBoot`), and a report carrying the identity its leader's own promotion named each replica by, which placement names a replica the report names none for by (`NameByInheritance`, #1574). Nightly | pass (state count and time to be measured in CI) |
 | `FelixShardFencedWipeNamesByInheritance.cfg` | `FelixShardFencedWipe.cfg` with the same two promotions and inherited names. Nightly | pass (state count and time to be measured in CI) |
-| `FelixShardFencedLeaderCrashNamesByInheritance.cfg` | `FelixShardFencedLeaderCrash.cfg` with inherited names and a second promotion on suspicion | pass (state count and time to be measured in CI) |
+| `FelixShardFencedLeaderCrashNamesByInheritance.cfg` | `FelixShardFencedLeaderCrash.cfg` with inherited names and a second promotion on suspicion. Nightly: it did not finish within the per-push hour | pass (state count and time to be measured in CI) |
 | `FelixShardFencedCrashInheritedCounts.cfg` | A witness for the inherited-name configurations: a leader promoted at the second failover opens with a fence answer counted from a replica it named by inheritance | violate `NoInheritedCount` |
 | `FelixShardFencedCrashCountsRotated.cfg` | the same counting the rotated copy, as before #1335: under `Periodic` with three replicas, a record acknowledged on the leader and the follower that lost it is gone once the leader is replaced | violate `AckedHeldByLeader` |
 | `FelixShardFencedLeaderCrash.cfg` | `FelixShardLeaderCrashGivesUp.cfg` on the fenced, follower-acked path, no suspicion: the crashed leader's copy still holds its promise and answers the successor's fence, and only the identity check keeps it out (the model has no `refuse_short_copy`) | pass `AckedHeldByLeader`, `AckedAgree`, `NoTruncationBelowHwm` (state count and time to be measured in CI) |
@@ -1140,7 +1140,7 @@ workflow's dispatch (`tla_configs`) when the change is risky.
 Whether a code change still matches the spec is a separate, quick check on
 every pull request that touches code (`scripts/check_spec_pairing.py`).
 
-Ten configurations are too big for that hour, and run nightly instead, each in
+Eleven configurations are too big for that hour, and run nightly instead, each in
 its own job with a six-hour limit (the `exhaustive` job in
 `.github/workflows/tla-walk.yml`): `FelixShardElectSwap.cfg`,
 `FelixShardElectHandoff.cfg`,
@@ -1148,8 +1148,9 @@ its own job with a six-hour limit (the `exhaustive` job in
 `FelixShardFencedAckTwoPromotions.cfg`, `FelixShardFencedAckSeatLonger.cfg`,
 `FelixShardFencedAckMove.cfg`, `FelixShardFencedAckStagedMove.cfg`,
 `FelixShardFencedAckMoveCancel.cfg`,
-`FelixShardFencedCrashNamesByInheritance.cfg` and
-`FelixShardFencedWipeNamesByInheritance.cfg`. Each must pass; `FelixShardElectSwap.cfg`
+`FelixShardFencedCrashNamesByInheritance.cfg`,
+`FelixShardFencedWipeNamesByInheritance.cfg` and
+`FelixShardFencedLeaderCrashNamesByInheritance.cfg`. Each must pass; `FelixShardElectSwap.cfg`
 has not yet finished a run. A smaller sibling of each
 runs per push. A failure shows the same way a failed walk does, as a failed
 run of that nightly workflow. Either set can also be run on a branch through
