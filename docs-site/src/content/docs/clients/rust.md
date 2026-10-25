@@ -119,7 +119,15 @@ process that outlives one, 15 minutes by default, sets `token_provider` instead.
 The client asks it for the token each time a stream authenticates, including
 the streams a reconnect opens. `RefreshingToken` wraps a fetch function, usually
 a call to `/token/refresh`, and replaces its token once two thirds of its life
-has passed. If a fetch fails while the current token is still valid, it keeps
+has passed. A fetch that takes longer than 30 seconds fails the callers waiting
+on it but keeps running; the provider is never called again while it is
+outstanding, the next refresh waits on it, and a late answer is used. The
+first fetch at connect, from any provider, is cut off at that limit and not counted in
+`connect_timeout`; a refetch after a broker refuses the token happens in the handshake and does
+count. A token every broker refuses surfaces as an auth error.
+`RefreshingToken::new_cancellable` and `with_initial_cancellable` pass the fetch
+a `tokio_util::sync::CancellationToken` that fires at that timeout and when the
+`RefreshingToken` is dropped, for a provider that can stop early. If a fetch fails while the current token is still valid, it keeps
 using that one and tries again a few seconds later. If the broker refuses a
 token and the provider has a different one, the client retries once with it.
 
