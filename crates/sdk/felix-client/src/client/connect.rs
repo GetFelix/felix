@@ -18,8 +18,7 @@ use crate::config::{
     CACHE_WORKER_QUEUE_DEPTH, ClientConfig, ClientRuntimeConfig, cache_transport_config,
     event_transport_config, shared_transport_config,
 };
-use crate::connection::{AuthRejected, Credentials, NodeConnections, NodeLimits, OpenedStream};
-use crate::error::BrokerError;
+use crate::connection::{Credentials, NodeConnections, NodeLimits, OpenedStream};
 use crate::publish::{
     LearnWidth, OpenWorker, PublishAdmission, PublishWorker, ShardStreams, StreamWidths,
     run_publisher_writer_with_limit,
@@ -33,30 +32,19 @@ pub(crate) async fn fetch_token(config: &ClientConfig) -> Result<()> {
 
 /// One fetch from `tokens`, cut off at [`FETCH_TIMEOUT`] with the error
 /// [`crate::RefreshingToken`] gives, so a custom provider that never answers
-/// cannot hold a connect forever.
+/// cannot hold a connect forever. A provider that bounds its own fetch is not
+/// given a second timer: the outer one could fire first and skip the
+/// provider's fallback to a still-valid token.
 pub(crate) async fn fetch_from(tokens: &dyn TokenProvider) -> Result<()> {
+    if tokens.bounds_its_own_fetch() {
+        return tokens.token().await.map(drop);
+    }
     match tokio::time::timeout(FETCH_TIMEOUT, tokens.token()).await {
         Ok(token) => token.map(drop),
         Err(_) => Err(anyhow::anyhow!(
             "the token fetch took longer than {}s",
             FETCH_TIMEOUT.as_secs()
         )),
-    }
-}
-
-/// The broker refused the credential, in the sense the bindings report as an
-/// auth failure: an unauthenticated or forbidden code, or no code at all.
-/// Overloaded, draining and other refusals are not.
-fn is_auth_refusal(err: &anyhow::Error) -> bool {
-    if err.downcast_ref::<AuthRejected>().is_none() {
-        return false;
-    }
-    match err.chain().find_map(|e| e.downcast_ref::<BrokerError>()) {
-        Some(broker) => matches!(
-            broker.code,
-            felix_wire::ErrorCode::Unauthenticated | felix_wire::ErrorCode::Forbidden
-        ),
-        None => true,
     }
 }
 
@@ -69,7 +57,10 @@ pub(crate) fn no_broker_answered(refusals: Vec<(SocketAddr, anyhow::Error)>) -> 
         .map(|(addr, err)| format!("{addr}: {err:#}"))
         .collect::<Vec<_>>()
         .join("; ");
-    let all_rejected = !refusals.is_empty() && refusals.iter().all(|(_, err)| is_auth_refusal(err));
+    let all_rejected = !refusals.is_empty()
+        && refusals
+            .iter()
+            .all(|(_, err)| crate::connection::is_auth_refusal(err));
     if all_rejected && let Some((_, first)) = refusals.into_iter().next() {
         return first.context(format!("no broker accepted the token ({detail})"));
     }

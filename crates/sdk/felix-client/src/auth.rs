@@ -48,6 +48,14 @@ pub trait TokenProvider: Send + Sync {
     fn invalidate(&self, rejected: &str) {
         let _ = rejected;
     }
+
+    /// Whether `token()` already gives up on a fetch after [`FETCH_TIMEOUT`]
+    /// and applies its own fallback, as [`RefreshingToken`] does. A connect
+    /// then adds no timer of its own, which could fire first and skip that
+    /// fallback. Default `false`.
+    fn bounds_its_own_fetch(&self) -> bool {
+        false
+    }
 }
 
 /// The fixed [`crate::ClientConfig::auth_token`].
@@ -329,6 +337,10 @@ fn lock_flights(flights: &Flights) -> std::sync::MutexGuard<'_, Option<Flight>> 
 impl TokenProvider for RefreshingToken {
     fn token(&self) -> TokenFuture<'_> {
         Box::pin(self.current())
+    }
+
+    fn bounds_its_own_fetch(&self) -> bool {
+        true
     }
 
     fn invalidate(&self, rejected: &str) {

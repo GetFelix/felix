@@ -11,6 +11,7 @@ use quinn::{RecvStream, SendStream};
 use tracing::debug;
 
 use crate::auth::TokenProvider;
+use crate::error::BrokerError;
 use crate::frame_io::{read_message_with_limit, write_message};
 
 /// The tenant and token source every stream authenticates with.
@@ -112,7 +113,7 @@ impl Credentials {
             .await
             {
                 Ok(negotiated) => return Ok((send, recv, negotiated)),
-                Err(err) if !retried && err.downcast_ref::<AuthRejected>().is_some() => {
+                Err(err) if !retried && is_auth_refusal(&err) => {
                     self.tokens.invalidate(&token);
                     let fresh = self.tokens.token().await?;
                     if fresh == token {
@@ -272,6 +273,24 @@ async fn authenticate_stream(
         Some(Message::Error { message, .. }) => Err(AuthRejected(message).into()),
         Some(other) => Err(anyhow::anyhow!("unexpected auth response: {other:?}")),
         None => Err(anyhow::anyhow!("auth response missing")),
+    }
+}
+
+/// The broker refused the credential, in the sense the bindings report as an
+/// auth failure: an unauthenticated or forbidden code, or no code at all.
+/// Overloaded and draining refusals say nothing about the token, so they
+/// neither count as auth failures nor invalidate it (which costs a provider
+/// call, a refresh-token rotation, per broker).
+pub(crate) fn is_auth_refusal(err: &anyhow::Error) -> bool {
+    if err.downcast_ref::<AuthRejected>().is_none() {
+        return false;
+    }
+    match err.chain().find_map(|e| e.downcast_ref::<BrokerError>()) {
+        Some(broker) => matches!(
+            broker.code,
+            felix_wire::ErrorCode::Unauthenticated | felix_wire::ErrorCode::Forbidden
+        ),
+        None => true,
     }
 }
 

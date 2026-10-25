@@ -123,17 +123,63 @@ async fn a_refusal_mixed_with_an_unreachable_broker_stays_a_connection_error() -
 async fn a_slow_token_provider_is_not_cut_off_by_the_connect_timeout() -> Result<()> {
     let broker = Broker::start(true)?;
     let mut config = build_client_config(broker.cert.clone())?;
-    config.connect_timeout = Duration::from_millis(400);
+    // Wide margins either side: a loaded runner must not blur "slower than the
+    // timeout" into "too slow to connect at all".
+    config.connect_timeout = Duration::from_secs(3);
     config.token_provider = Some(Arc::new(RefreshingToken::new(|| async {
-        tokio::time::sleep(Duration::from_millis(900)).await;
+        tokio::time::sleep(Duration::from_secs(4)).await;
         Ok("slow-token".to_string())
     })));
     timeout(
-        Duration::from_secs(10),
+        Duration::from_secs(30),
         Client::connect(broker.addr, "localhost", config),
     )
     .await??;
     Ok(())
+}
+
+/// A hung provider that holds a still-valid token connects with it: the
+/// provider's own timeout, not a second one around it, decides that.
+#[tokio::test(start_paused = true)]
+async fn a_hung_refresh_connects_with_the_held_token() {
+    use base64::Engine;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let held = format!(
+        "{}.{}.sig",
+        b64.encode("{}"),
+        b64.encode(format!("{{\"exp\":{}}}", now + 4))
+    );
+    let tokens = RefreshingToken::with_initial(held.clone(), || async {
+        std::future::pending::<()>().await;
+        Ok(String::new())
+    });
+    // Refresh falls due at two thirds of the token's life, on the wall clock
+    // that paused tokio time does not move.
+    std::thread::sleep(Duration::from_millis(2200));
+    // The inner timer starts a tick after the outer one would, as it does when
+    // the provider does a little work first, so the outer would fire first.
+    struct Late(RefreshingToken);
+    impl crate::TokenProvider for Late {
+        fn token(&self) -> crate::TokenFuture<'_> {
+            Box::pin(async {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+                self.0.token().await
+            })
+        }
+        fn bounds_its_own_fetch(&self) -> bool {
+            self.0.bounds_its_own_fetch()
+        }
+    }
+    let tokens = Late(tokens);
+    super::fetch_from(&tokens)
+        .await
+        .expect("the held token is still valid, so the failed refresh is not an error");
+    use crate::TokenProvider;
+    assert_eq!(tokens.0.token().await.unwrap(), held);
 }
 
 /// A provider that never answers fails at the fetch timeout with its own
