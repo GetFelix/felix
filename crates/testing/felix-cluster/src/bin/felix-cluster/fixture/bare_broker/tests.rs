@@ -1,5 +1,10 @@
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+
+use bytes::Bytes;
+use felix_wire::Message;
+use rustls::pki_types::{CertificateDer, pem::PemObject};
 
 use felix_client::{CommitError, CommitOp};
 
@@ -49,4 +54,67 @@ async fn a_client_sends_no_commit_to_a_broker_that_advertised_none() {
     );
 
     assert_eq!(bare.requests.load(Ordering::SeqCst), 0);
+}
+
+/// The stub counts a raw commit and state read, so the zero asserted above
+/// means something.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_stub_counts_commit_and_state_get_frames() {
+    let bare = BareBroker::start().expect("start the bare broker");
+    let mut roots = rustls::RootCertStore::empty();
+    roots
+        .add(CertificateDer::from_pem_slice(bare.cert_pem.as_bytes()).expect("parse cert"))
+        .expect("trust cert");
+    let tls = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::aws_lc_rs::default_provider(),
+    ))
+    .with_protocol_versions(&[&rustls::version::TLS13])
+    .expect("versions")
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    let config = quinn::ClientConfig::new(Arc::new(
+        quinn::crypto::rustls::QuicClientConfig::try_from(tls).expect("client crypto"),
+    ));
+    let mut endpoint = quinn::Endpoint::client("127.0.0.1:0".parse().unwrap()).expect("endpoint");
+    endpoint.set_default_client_config(config);
+    let connection = endpoint
+        .connect(bare.addr, "localhost")
+        .expect("connect")
+        .await
+        .expect("handshake");
+    let (mut send, _recv) = connection.open_bi().await.expect("open stream");
+
+    let commit = Message::Commit {
+        tenant_id: "t1".into(),
+        namespace: "default".into(),
+        stream: "s".into(),
+        entity_key: Bytes::from_static(b"k"),
+        event: Bytes::from_static(b"e"),
+        changes: Vec::new(),
+        request_id: 1,
+        expected_offset: None,
+        shard: None,
+    };
+    let state_get = Message::StateGet {
+        tenant_id: "t1".into(),
+        namespace: "default".into(),
+        stream: "s".into(),
+        entity_key: Bytes::from_static(b"k"),
+        key: "k".into(),
+        request_id: 2,
+        shard: None,
+    };
+    for (message, expected) in [(commit, 1), (state_get, 2)] {
+        let frame = message.encode().expect("encode");
+        send.write_all(&frame.encode()).await.expect("send");
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while bare.requests.load(Ordering::SeqCst) < expected {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "count never reached {expected}"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(bare.requests.load(Ordering::SeqCst), expected);
+    }
 }

@@ -45,8 +45,8 @@ impl BareBroker {
         let config = quinn::ServerConfig::with_crypto(Arc::new(
             quinn::crypto::rustls::QuicServerConfig::try_from(tls).context("bare broker crypto")?,
         ));
-        // The transport a real broker listens with, so a client's handshake
-        // tuning (initial MTU, stream limits) meets what it expects.
+        // The transport settings a real broker listens with (initial MTU,
+        // stream limits), so the client's tuned handshake works against it.
         let server = felix_transport::QuicServer::bind(
             "127.0.0.1:0".parse()?,
             config,
