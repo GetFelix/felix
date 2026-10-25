@@ -240,11 +240,17 @@ threads when a stream needs a token, and the app completes `reply` once, from
 any thread, with `felix_token_reply_ok` or `felix_token_reply_err`. The Rust
 client's `RefreshingToken` does the timing: refresh at two thirds of a token's
 life, keep the old token if a fetch fails or takes over 30 s, retry a refused
-token once. The `token` argument to connect may be `NULL` when a fetch is set.
-A reply never completed fails when the client is freed; a second reply returns
-`FELIX_STATUS_INVALID_ARGUMENT`. `token_release` runs once, after the last
-fetch can run, and not at all when the connect call is refused. See
-`docs-site/src/content/docs/clients/c.md`.
+token once. The `token` argument to connect may be `NULL` (or empty) when a
+fetch is set. A reply never completed fails when the client is freed.
+
+The first reply call that is not refused for a bad argument consumes the reply,
+including an answer that arrives after the 30 s timeout (it returns
+`FELIX_STATUS_OK` and the token is discarded). Using the reply again is
+undefined behaviour. `token_release`: if `felix_client_connect_with` returns
+anything but `FELIX_STATUS_OK` it never runs and the caller keeps
+`token_user_data`; if it returns `FELIX_STATUS_OK` it runs exactly once later,
+after the client is freed and no fetch can run, including when the connect then
+fails through `on_connect`. See `docs-site/src/content/docs/clients/c.md`.
 
 ### Caches, counters and watches
 

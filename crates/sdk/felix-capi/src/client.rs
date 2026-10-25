@@ -252,9 +252,12 @@ pub struct FelixConnectOptions {
     pub timestamps: bool,
     /// Supplies tokens after connect, so a client outlives its first token.
     /// The `token` argument is then only the first one, and may be null; the
-    /// first connect then calls this. See `FelixTokenFetch`. When
-    /// `felix_client_connect_with` returns anything but `FELIX_STATUS_OK`
-    /// this is not used and `token_release` does not run.
+    /// first connect then calls this. An empty `token` counts as none. See
+    /// `FelixTokenFetch`. When `felix_client_connect_with` returns anything
+    /// but `FELIX_STATUS_OK` this is not used, `token_release` never runs and
+    /// `token_user_data` is still the caller's. When it returns
+    /// `FELIX_STATUS_OK`, `token_release` runs exactly once later, including
+    /// when the connect then reports failure through its callback.
     pub token_fetch: FelixTokenFetch,
     /// Passed to `token_fetch` and `token_release`, from any thread.
     pub token_user_data: *mut c_void,

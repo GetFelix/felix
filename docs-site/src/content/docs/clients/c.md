@@ -126,37 +126,222 @@ through the callback.
 
 ## Getting and refreshing a token
 
-`felix_client_connect` takes the token as a string and the library cannot
-replace it later. The pattern is to refresh on a timer, connect a new client
-with the new token, move your work over, then free the old client. The control
-plane call is plain HTTP with a JSON body, which any HTTP library can make.
-With libcurl it is a POST of
-`{"refresh_token": "..."}` to `/v1/tenants/t1/token/refresh`:
+A token lasts 15 minutes by default, and the broker checks it each time a stream
+authenticates, including the streams a reconnect opens. [Getting a
+token](/clients/overview/#getting-a-token) covers where one comes from. A
+process that outlives one gives `FelixConnectOptions` a fetch function, and the
+library asks it for a token when it needs one. The Rust client's
+`RefreshingToken` does the timing: it asks once two thirds of the held token's
+life has passed, or when the broker refused it. If a fetch fails while the held
+token is still valid, the client keeps using that one and asks again a few
+seconds later. If the broker refuses a token and the fetch returns a different
+one, the client retries once with it.
+
+The fetch function has the shape `void fetch(void *user_data, FelixTokenReply
+*reply)`. Set it as `token_fetch`, with `token_user_data` and an optional
+`token_release`, and pass `NULL` as the `token` argument to
+`felix_client_connect_with` to have the first connect call it, or pass a token
+you already hold to use that first. An empty string counts as no token.
+
+**When it is called.** On a library thread, when a stream is about to
+authenticate and the library holds no token, the held one is due for
+replacement, or the broker just refused it. An idle client makes no calls. The
+library never runs two fetches at once: streams that open together wait on one
+and share its token. That is also what makes it safe to rotate a refresh token
+inside the function.
+
+**Threading.** Do not block in the function; start the work and return. The
+reply may be completed from any thread, now or later, with
+`felix_token_reply_ok(reply, token)` (the string is copied) or
+`felix_token_reply_err(reply, message)`. C has no async variant of the fetch,
+so the reply is how a slow answer is returned.
+
+**Failure.** The `message` you give reaches the call that needed the token
+unchanged, once no valid token is held to fall back on. A fetch not answered
+within 30 seconds counts as failed; an answer that arrives later returns
+`FELIX_STATUS_OK` and the token is discarded. A reply still unanswered when the
+client is freed counts as a failure. A null, empty or non-UTF-8 `token` returns
+`FELIX_STATUS_INVALID_ARGUMENT` and leaves the reply open to be answered.
+
+**Lifetime.** The first `felix_token_reply_ok` or `felix_token_reply_err` call
+that is not refused for a bad argument consumes the reply, and the library
+frees it once the fetch is over. Using it again is undefined behaviour, as for
+any freed handle. A reply never answered stays until it is, or until
+`token_release` runs. `token_release` is how you free what `token_user_data`
+points to:
+
+- If `felix_client_connect_with` returns anything but `FELIX_STATUS_OK`, the
+  fetch is never used, `token_release` never runs, and the data is still yours.
+- If it returns `FELIX_STATUS_OK`, `token_release` runs exactly once later,
+  after the client is freed and no fetch can be running, including when the
+  connect then reports failure through `on_connect`.
+
+The example below does the control plane call with libcurl and keeps the
+rotating refresh token. The refresh token works once: every refresh returns a
+replacement, so the fetch function stores it before it answers. A `403` means
+the refresh token expired or was revoked and the exchange has to be run again;
+the fetch fails with that message, and the client keeps the last token until it
+expires. Run a new login, then connect a new client.
 
 ```c
-CURL *curl = curl_easy_init();
-struct curl_slist *h = curl_slist_append(NULL, "Content-Type: application/json");
-curl_easy_setopt(curl, CURLOPT_URL, "https://controlplane:8443/v1/tenants/t1/token/refresh");
-curl_easy_setopt(curl, CURLOPT_HTTPHEADER, h);
-curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);            /* {"refresh_token":"..."} */
-curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, collect_body); /* your callback */
-curl_easy_perform(curl);
-/* parse felix_token and the replacement refresh_token from the JSON answer */
-```
+#include <curl/curl.h>
+#include <pthread.h>
+#include <stdlib.h>
+#include <string.h>
+#include "felix.h"
 
-The answer carries `felix_token`, `expires_in`, a new `refresh_token` and
-`refresh_expires_in`. The refresh token rotates, so store the new one. A `403`
-means the refresh token expired or was revoked and the exchange has to be run
-again; see [Getting a token](/clients/overview/#getting-a-token).
+struct session {
+  pthread_mutex_t mu;
+  char refresh_token[256]; /* the newest one; guarded by mu */
+};
+
+struct body {
+  char data[4096];
+  size_t len;
+};
+
+static size_t collect(char *chunk, size_t size, size_t n, void *out) {
+  struct body *body = out;
+  size_t bytes = size * n;
+  if (body->len + bytes >= sizeof body->data) return 0; /* curl fails the call */
+  memcpy(body->data + body->len, chunk, bytes);
+  body->len += bytes;
+  body->data[body->len] = '\0';
+  return bytes;
+}
+
+/* Copies a string value out of a flat JSON object. Use a JSON parser in real code. */
+static bool json_string(const char *json, const char *key, char *out, size_t cap) {
+  char needle[64];
+  snprintf(needle, sizeof needle, "\"%s\":\"", key);
+  const char *start = strstr(json, needle);
+  if (!start) return false;
+  start += strlen(needle);
+  const char *end = strchr(start, '"');
+  if (!end || (size_t)(end - start) >= cap) return false;
+  memcpy(out, start, (size_t)(end - start));
+  out[end - start] = '\0';
+  return true;
+}
+
+/* Spends the refresh token for a new access token and stores the
+   replacement, because every refresh token works once. */
+static bool refresh(struct session *s, char *token, size_t cap, char *error,
+                    size_t error_cap) {
+  char request[400];
+  pthread_mutex_lock(&s->mu);
+  snprintf(request, sizeof request, "{\"refresh_token\":\"%s\"}", s->refresh_token);
+  pthread_mutex_unlock(&s->mu);
+
+  struct body body = {.len = 0};
+  CURL *curl = curl_easy_init();
+  if (!curl) {
+    snprintf(error, error_cap, "could not start curl");
+    return false;
+  }
+  struct curl_slist *headers = curl_slist_append(NULL, "Content-Type: application/json");
+  curl_easy_setopt(curl, CURLOPT_URL, "https://controlplane:8443/v1/tenants/t1/token/refresh");
+  curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+  curl_easy_setopt(curl, CURLOPT_POSTFIELDS, request);
+  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, collect);
+  curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT, 20L); /* the library gives up at 30 s */
+  CURLcode rc = curl_easy_perform(curl);
+  long status = 0;
+  curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+  curl_slist_free_all(headers);
+  curl_easy_cleanup(curl);
+
+  if (rc != CURLE_OK) {
+    snprintf(error, error_cap, "control plane unreachable: %s", curl_easy_strerror(rc));
+    return false;
+  }
+  if (status != 200) {
+    snprintf(error, error_cap, "token refresh answered %ld", status); /* 403: sign in again */
+    return false;
+  }
+  char next[sizeof s->refresh_token];
+  if (!json_string(body.data, "felix_token", token, cap) ||
+      !json_string(body.data, "refresh_token", next, sizeof next)) {
+    snprintf(error, error_cap, "token refresh answered something unexpected");
+    return false;
+  }
+  pthread_mutex_lock(&s->mu);
+  memcpy(s->refresh_token, next, sizeof next);
+  pthread_mutex_unlock(&s->mu);
+  return true;
+}
+
+struct fetch_job {
+  struct session *session;
+  FelixTokenReply *reply;
+};
+
+static void *answer(void *arg) {
+  struct fetch_job *job = arg;
+  char token[2048], error[160];
+  if (refresh(job->session, token, sizeof token, error, sizeof error)) {
+    felix_token_reply_ok(job->reply, token); /* the string is copied */
+  } else {
+    felix_token_reply_err(job->reply, error); /* reaches your caller unchanged */
+  }
+  free(job); /* the reply is consumed: do not touch it again */
+  return NULL;
+}
+
+/* Called on a library thread: start the work and return. */
+static void fetch_token(void *user_data, FelixTokenReply *reply) {
+  struct fetch_job *job = malloc(sizeof *job);
+  pthread_t thread;
+  if (!job) {
+    felix_token_reply_err(reply, "out of memory");
+    return;
+  }
+  job->session = user_data;
+  job->reply = reply;
+  if (pthread_create(&thread, NULL, answer, job) != 0) {
+    free(job);
+    felix_token_reply_err(reply, "could not start a thread");
+    return;
+  }
+  pthread_detach(thread);
+}
+
+static void release_session(void *user_data) {
+  struct session *s = user_data;
+  pthread_mutex_destroy(&s->mu);
+  free(s);
+}
+
+/* Connects with no token in hand: the first connect calls fetch_token. */
+static FelixStatus connect_with_refresh(const char *addrs, const char *ca_file,
+                                        const char *refresh_token,
+                                        FelixConnectCallback on_connect,
+                                        void *connect_data) {
+  struct session *s = calloc(1, sizeof *s);
+  if (!s) return FELIX_STATUS_INVALID_ARGUMENT;
+  pthread_mutex_init(&s->mu, NULL);
+  snprintf(s->refresh_token, sizeof s->refresh_token, "%s", refresh_token);
+
+  FelixConnectOptions options = {.size = sizeof options,
+                                 .token_fetch = fetch_token,
+                                 .token_user_data = s,
+                                 .token_release = release_session};
+  FelixStatus status = felix_client_connect_with(
+      addrs, "t1", NULL /* first fetch gets it */, NULL, ca_file, &options,
+      NULL, on_connect, connect_data);
+  if (status != FELIX_STATUS_OK) release_session(s); /* refused: still ours */
+  return status;
+}
+```
 
 ## A minimal example
 
-The token argument is a Felix token; [Getting a
-token](/clients/overview/#getting-a-token) covers where it comes from. The
-library keeps the string it was given and cannot refresh it, so free the client
-and connect again with a fresh token before it expires. Streams opened after
-expiry, including the ones a reconnect opens, are refused with
-`FELIX_STATUS_AUTH`.
+The token argument is a Felix token; [Getting and refreshing a
+token](#getting-and-refreshing-a-token) covers where it comes from and how a
+client that outlives it gets the next one. This example passes one and no fetch
+function, so the client holds it until it expires: streams opened after expiry,
+including the ones a reconnect opens, are refused with `FELIX_STATUS_AUTH`.
 
 Connect, publish one record, subscribe to shard 0 and read one event. A small
 `waiter` turns each async call into a blocking one.
@@ -458,51 +643,6 @@ of the broker that led the shard. A `FelixGroupRecord` carries `publisher` and
 `publisher_len` (borrowed, null when absent) and `has_timestamp` with
 `timestamp_micros`. A broker that does not negotiate them, or an in-memory stream
 that stores no time, leaves them absent; that is never an error.
-
-## Refreshing a token
-
-A token lasts minutes, and the broker checks it each time a stream opens, so a
-client that runs longer needs a new one. Give `FelixConnectOptions` a fetch
-function and the library calls it when a stream is about to authenticate and
-the held token is missing, two thirds through its life, or was just refused. An
-idle client makes no calls, and the library never runs two fetches at once, so
-the function can rotate a refresh token safely.
-
-```c
-static void fetch_token(void *user_data, FelixTokenReply *reply) {
-  struct app *app = user_data;
-  /* Start the work and return; do not block here. Any thread may finish it. */
-  app_request_token(app, reply);
-}
-
-/* Later, on whichever thread has the answer: */
-felix_token_reply_ok(reply, token);      /* the string is copied */
-/* or */ felix_token_reply_err(reply, "control plane unreachable");
-
-FelixConnectOptions options = {.size = sizeof options,
-                               .token_fetch = fetch_token,
-                               .token_user_data = app,
-                               .token_release = release_app};
-felix_client_connect_with(addrs, "t1", NULL /* first fetch gets it */, NULL,
-                          ca_file, &options, NULL, on_connect, NULL);
-```
-
-- The `token` argument is the first token and may be `NULL` when a fetch
-  function is set; then the connect asks for it.
-- Complete each reply once. A second call returns
-  `FELIX_STATUS_INVALID_ARGUMENT` and changes nothing; so does an answer that
-  arrives after the library gave up on the fetch, which it does after 30
-  seconds. A reply is valid until `token_release` runs.
-- A failure, or a timeout, keeps the current token while it is still valid and
-  tries again a few seconds later; with no valid token the call that needed one
-  fails with the message you gave.
-- A reply still unanswered when the client is freed counts as a failure.
-- `token_release` runs once, after the client is freed and no fetch can be
-  running. Free what `token_user_data` points to there. If
-  `felix_client_connect_with` does not return `FELIX_STATUS_OK` it does not
-  run, and the data is still yours.
-- When the refresh token itself is spent or revoked, run a new login in the
-  fetch function.
 
 ## Caches, counters and watches
 

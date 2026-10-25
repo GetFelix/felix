@@ -315,6 +315,33 @@ mod tokens {
         assert_eq!(probe.fetches.load(Ordering::SeqCst), 0);
     }
 
+    /// A connect that is accepted and then fails through `on_connect` still
+    /// ends the client, so `token_release` runs once.
+    #[test]
+    fn release_runs_when_an_accepted_connect_fails_asynchronously() {
+        let (sender, receiver) = mpsc::channel();
+        let probe = Probe::new(Answer::Hold);
+        let with = options(probe);
+        let status = connect(
+            c"nonexistent.invalid:1".as_ptr(),
+            c"tok".as_ptr(),
+            &with,
+            &sender,
+            false,
+        );
+        assert_eq!(status, FELIX_STATUS_OK);
+        let reported = receiver.recv_timeout(Duration::from_secs(60)).unwrap();
+        assert_ne!(reported, FELIX_STATUS_OK);
+        for _ in 0..500 {
+            if probe.released.load(Ordering::SeqCst) == 1 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(probe.released.load(Ordering::SeqCst), 1);
+    }
+
     /// Freeing the last handle fails a fetch the app never answered, so
     /// neither the shutdown nor the waiting call hangs.
     #[test]

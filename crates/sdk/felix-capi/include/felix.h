@@ -173,7 +173,9 @@ typedef void (*FelixWatchItemCallback)(void *user_data,
 // needs one; the app must not block in it. It completes `reply` exactly once,
 // from any thread, with `felix_token_reply_ok` or `felix_token_reply_err`.
 //
-// `reply` stays valid until `token_release` runs.
+// `reply` is valid until the first `felix_token_reply_ok` or
+// `felix_token_reply_err` call on it that is not refused for a bad argument,
+// or until `token_release` runs, whichever is first.
 typedef void (*FelixTokenFetch)(void *user_data, struct FelixTokenReply *reply);
 
 // Called once when the library is done with `token_user_data`: after the
@@ -197,9 +199,12 @@ typedef struct FelixConnectOptions {
   bool timestamps;
   // Supplies tokens after connect, so a client outlives its first token.
   // The `token` argument is then only the first one, and may be null; the
-  // first connect then calls this. See `FelixTokenFetch`. When
-  // `felix_client_connect_with` returns anything but `FELIX_STATUS_OK`
-  // this is not used and `token_release` does not run.
+  // first connect then calls this. An empty `token` counts as none. See
+  // `FelixTokenFetch`. When `felix_client_connect_with` returns anything
+  // but `FELIX_STATUS_OK` this is not used, `token_release` never runs and
+  // `token_user_data` is still the caller's. When it returns
+  // `FELIX_STATUS_OK`, `token_release` runs exactly once later, including
+  // when the connect then reports failure through its callback.
   FelixTokenFetch token_fetch;
   // Passed to `token_fetch` and `token_release`, from any thread.
   void *token_user_data;
@@ -2317,22 +2322,25 @@ void felix_subscription_free(struct FelixSubscription *subscription);
 
 // Complete a fetch with a token. The string is copied.
 //
-// Returns `FELIX_STATUS_INVALID_ARGUMENT` if the reply was already
-// completed (this call changes nothing), or if `token` is null, empty or not
-// UTF-8 (the reply stays open and can still be completed).
+// Returns `FELIX_STATUS_INVALID_ARGUMENT` if `token` is null, empty or not
+// UTF-8 (the reply stays open and can still be completed). Otherwise it
+// returns `FELIX_STATUS_OK` and consumes the reply, including when the
+// library had already given up on the fetch; the late token is discarded.
 //
 // # Safety
 //
-// `reply` is a pointer passed to a `FelixTokenFetch` whose `token_release`
-// has not run. `token` is null or NUL-terminated.
+// `reply` is a pointer passed to a `FelixTokenFetch` that no call has
+// consumed yet and whose `token_release` has not run. Using it again after
+// a call that consumed it is undefined behaviour. `token` is null or
+// NUL-terminated.
 FelixStatus felix_token_reply_ok(const struct FelixTokenReply *reply, const char *token);
 
 // Complete a fetch with a failure. The client keeps its current token while
 // that is still valid, and asks again a few seconds later. `message` may be
 // null.
 //
-// Returns `FELIX_STATUS_INVALID_ARGUMENT` if the reply was already
-// completed.
+// Consumes the reply and returns `FELIX_STATUS_OK`, as for
+// `felix_token_reply_ok`.
 //
 // # Safety
 //

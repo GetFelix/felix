@@ -673,7 +673,6 @@ struct token_app {
   const char *token;   /* NULL makes the fetch fail */
   atomic_int fetches;
   atomic_int released;
-  atomic_int second_reply_status; /* what a second reply to one fetch got */
 };
 
 struct token_job {
@@ -684,10 +683,8 @@ struct token_job {
 static void *token_answer(void *arg) {
   struct token_job *job = arg;
   if (job->app->token) {
-    FelixStatus first = felix_token_reply_ok(job->reply, job->app->token);
-    FelixStatus second = felix_token_reply_ok(job->reply, "second");
-    atomic_store(&job->app->second_reply_status,
-                 first == FELIX_STATUS_OK ? (int)second : -1);
+    /* The reply is consumed by this call. */
+    felix_token_reply_ok(job->reply, job->app->token);
   } else {
     felix_token_reply_err(job->reply, "no token for you");
   }
@@ -723,7 +720,6 @@ static void token_app_init(struct token_app *app, const char *token) {
   app->token = token;
   atomic_init(&app->fetches, 0);
   atomic_init(&app->released, 0);
-  atomic_init(&app->second_reply_status, 0);
 }
 
 static FelixConnectOptions token_options(struct token_app *app) {
@@ -986,7 +982,7 @@ static void offline(void) {
         (int)status);
 
   /* Accepted with a fetch function and no token: the connect fails (nothing
-     listens), and the data is released exactly once. */
+     listens) through the callback, and the data is released exactly once. */
   status = felix_client_connect_with("127.0.0.1:1", "t1", NULL, NULL, NULL,
                                      &with_fetch, NULL, on_connect, &w);
   CHECK(status == FELIX_STATUS_OK, "connect with a fetch gave %d", (int)status);
@@ -2498,8 +2494,6 @@ static void token_provider(const struct fixture *f, const char *run) {
   }
   CHECK(released_once(&app), "token_release ran %d times",
         atomic_load(&app.released));
-  CHECK(atomic_load(&app.second_reply_status) == FELIX_STATUS_INVALID_ARGUMENT,
-        "a second reply gave %d", atomic_load(&app.second_reply_status));
 
   /* An initial token that stays valid: the fetch is never asked. */
   struct token_app idle;
@@ -2529,6 +2523,38 @@ static void token_provider(const struct fixture *f, const char *run) {
   }
   CHECK(released_once(&idle), "token_release ran %d times",
         atomic_load(&idle.released));
+
+  /* An initial token the broker refuses is replaced by one fetch, and the
+     stream is retried with it. The fixture mints only hour-long tokens and
+     keeps no signing key, so a short-lived token that expires mid-run cannot
+     be made here; the refresh timing is covered by felix-client's tests. */
+  struct token_app refused;
+  token_app_init(&refused, f->token);
+  options = token_options(&refused);
+  client = NULL;
+  waiter_init(&w);
+  status = felix_client_connect_with(f->addrs, f->tenant, "not-a-felix-token",
+                                     NULL, f->ca_file, &options, NULL,
+                                     on_connect, &w);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&w, WAIT_MS);
+    client = w.handle;
+  }
+  waiter_destroy(&w);
+  CHECK(status == FELIX_STATUS_OK, "connecting with a refused token: %d",
+        (int)status);
+  if (status == FELIX_STATUS_OK) {
+    char message[256];
+    status = publish(client, f, f->stream, "token-refused", NULL, message,
+                     sizeof message);
+    CHECK(status == FELIX_STATUS_OK, "publish after a refused token: %d %s",
+          (int)status, message);
+    CHECK(atomic_load(&refused.fetches) == 1, "the fetch ran %d times",
+          atomic_load(&refused.fetches));
+    felix_client_free(client);
+  }
+  CHECK(released_once(&refused), "token_release ran %d times",
+        atomic_load(&refused.released));
 
   /* A fetch that fails with nothing to fall back on fails the connect. */
   struct token_app failing;

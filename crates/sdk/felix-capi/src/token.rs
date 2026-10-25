@@ -2,8 +2,9 @@
 //! `RefreshingToken`, which keeps the timing (refresh at two thirds of a
 //! token's life, keep the old token if a fetch fails, retry a rejected one).
 
+use std::collections::HashMap;
 use std::ffi::{c_char, c_void};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use anyhow::{Result, anyhow, bail};
 use felix_client::RefreshingToken;
@@ -17,7 +18,9 @@ use crate::status::{FELIX_STATUS_OK, FelixStatus};
 /// needs one; the app must not block in it. It completes `reply` exactly once,
 /// from any thread, with `felix_token_reply_ok` or `felix_token_reply_err`.
 ///
-/// `reply` stays valid until `token_release` runs.
+/// `reply` is valid until the first `felix_token_reply_ok` or
+/// `felix_token_reply_err` call on it that is not refused for a bad argument,
+/// or until `token_release` runs, whichever is first.
 pub type FelixTokenFetch =
     Option<unsafe extern "C" fn(user_data: *mut c_void, reply: *mut FelixTokenReply)>;
 
@@ -28,30 +31,48 @@ pub type FelixTokenRelease = Option<unsafe extern "C" fn(user_data: *mut c_void)
 /// One request for a token, answered once.
 pub struct FelixTokenReply {
     answer: Mutex<Option<oneshot::Sender<Result<String, String>>>>,
+    /// Where this reply is held until it is answered.
+    held: Weak<Held>,
 }
 
+/// The replies handed out and not yet answered, by address.
+#[derive(Default)]
+struct Held(Mutex<HashMap<usize, Arc<FelixTokenReply>>>);
+
 impl FelixTokenReply {
+    /// Consumes the reply: it is freed once answered, so the app must not
+    /// touch it again.
     fn complete(&self, answer: Result<String, String>) -> Result<FelixStatus, Failure> {
         let sender = lock(&self.answer)
             .take()
             .ok_or_else(|| Failure::invalid("the token reply was already completed"))?;
         // The receiver is gone when the fetch was abandoned (the client was
-        // freed); that is not the app's mistake.
+        // freed, or the fetch timed out); that is not the app's mistake.
         let _ = sender.send(answer);
+        // Last, because this may free `self`.
+        let key = std::ptr::from_ref(self) as usize;
+        let freed = self
+            .held
+            .upgrade()
+            .and_then(|held| lock(&held.0).remove(&key));
+        drop(freed);
         Ok(FELIX_STATUS_OK)
     }
 }
 
 /// Complete a fetch with a token. The string is copied.
 ///
-/// Returns `FELIX_STATUS_INVALID_ARGUMENT` if the reply was already
-/// completed (this call changes nothing), or if `token` is null, empty or not
-/// UTF-8 (the reply stays open and can still be completed).
+/// Returns `FELIX_STATUS_INVALID_ARGUMENT` if `token` is null, empty or not
+/// UTF-8 (the reply stays open and can still be completed). Otherwise it
+/// returns `FELIX_STATUS_OK` and consumes the reply, including when the
+/// library had already given up on the fetch; the late token is discarded.
 ///
 /// # Safety
 ///
-/// `reply` is a pointer passed to a `FelixTokenFetch` whose `token_release`
-/// has not run. `token` is null or NUL-terminated.
+/// `reply` is a pointer passed to a `FelixTokenFetch` that no call has
+/// consumed yet and whose `token_release` has not run. Using it again after
+/// a call that consumed it is undefined behaviour. `token` is null or
+/// NUL-terminated.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn felix_token_reply_ok(
     reply: *const FelixTokenReply,
@@ -73,8 +94,8 @@ pub unsafe extern "C" fn felix_token_reply_ok(
 /// that is still valid, and asks again a few seconds later. `message` may be
 /// null.
 ///
-/// Returns `FELIX_STATUS_INVALID_ARGUMENT` if the reply was already
-/// completed.
+/// Consumes the reply and returns `FELIX_STATUS_OK`, as for
+/// `felix_token_reply_ok`.
 ///
 /// # Safety
 ///
@@ -103,9 +124,8 @@ pub(crate) struct TokenSource {
     /// Cancelled when the client is freed, which fails the fetches waiting on
     /// the app.
     closed: CancellationToken,
-    /// Every reply handed out. The app may touch one after completing it, to
-    /// find out it was already completed, so none is freed before the source.
-    replies: Mutex<Vec<Arc<FelixTokenReply>>>,
+    /// Replies the app has not answered yet; answering one frees it.
+    replies: Arc<Held>,
 }
 
 // SAFETY: the library never dereferences `user_data`. The header tells the
@@ -125,8 +145,14 @@ impl TokenSource {
             user_data,
             release,
             closed: CancellationToken::new(),
-            replies: Mutex::new(Vec::new()),
+            replies: Arc::default(),
         }
+    }
+
+    /// Replies handed to the app and not yet answered.
+    #[cfg(test)]
+    pub(crate) fn held(&self) -> usize {
+        lock(&self.replies.0).len()
     }
 
     /// Fail every fetch waiting on the app, and any later one.
@@ -139,12 +165,15 @@ impl TokenSource {
         let (sender, receiver) = oneshot::channel();
         let reply = Arc::new(FelixTokenReply {
             answer: Mutex::new(Some(sender)),
+            held: Arc::downgrade(&self.replies),
         });
         let pointer = Arc::as_ptr(&reply).cast_mut();
-        lock(&self.replies).push(reply);
+        lock(&self.replies.0).insert(pointer as usize, Arc::clone(&reply));
         // SAFETY: the app's function, with the pointer it is documented to
-        // take; the reply lives as long as `self`.
+        // take; `reply` keeps it alive through the call even if the app
+        // answers inside it.
         unsafe { (self.fetch)(self.user_data, pointer) };
+        drop(reply);
         receiver
     }
 
@@ -182,6 +211,9 @@ impl Drop for TokenSource {
 pub(crate) fn provider(source: &Arc<TokenSource>, initial: Option<&str>) -> Arc<RefreshingToken> {
     let source = Arc::clone(source);
     let fetch = move || Arc::clone(&source).fetch();
+    // An empty string is no token: the first auth fetches instead of sending
+    // one the broker will refuse.
+    let initial = initial.filter(|initial| !initial.is_empty());
     Arc::new(match initial {
         Some(initial) => RefreshingToken::with_initial(initial, fetch),
         None => RefreshingToken::new(fetch),

@@ -1,4 +1,4 @@
-use std::ffi::{CStr, CString, c_char, c_void};
+use std::ffi::{CString, c_char, c_void};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -7,7 +7,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use base64::Engine;
 
 use super::{FelixTokenReply, TokenSource, felix_token_reply_err, felix_token_reply_ok, provider};
-use crate::error::felix_last_error_message;
 use crate::status::{FELIX_STATUS_INVALID_ARGUMENT, FELIX_STATUS_OK};
 
 #[derive(Clone, Copy)]
@@ -100,15 +99,6 @@ fn jwt(exp: i64) -> String {
         b64.encode("{}"),
         b64.encode(format!("{{\"exp\":{exp}}}"))
     )
-}
-
-fn last_error() -> String {
-    let message = felix_last_error_message();
-    assert!(!message.is_null());
-    // SAFETY: valid until the next call on this thread.
-    unsafe { CStr::from_ptr(message) }
-        .to_string_lossy()
-        .into_owned()
 }
 
 async fn wait_for(what: &str, condition: impl Fn() -> bool) {
@@ -217,35 +207,121 @@ async fn release_runs_once_after_the_last_fetch() {
     assert_eq!(probe.released.load(Ordering::SeqCst), 1);
 }
 
-/// The second answer is refused and changes nothing; the first one counts.
+/// The first answer counts, and answering frees the reply.
 #[tokio::test]
-async fn a_second_reply_is_an_error_and_the_first_stands() {
+async fn an_answer_consumes_the_reply() {
     use felix_client::TokenProvider;
     let probe = Probe::new(Answer::Hold);
-    let tokens = Arc::new(provider(&probe.source(), None));
+    let source = probe.source();
+    let tokens = Arc::new(provider(&source, None));
     let held = Arc::clone(&tokens);
     let waiting = tokio::spawn(async move { held.token().await.unwrap() });
     wait_for("the fetch", || probe.fetches.load(Ordering::SeqCst) == 1).await;
+    assert_eq!(source.held(), 1);
 
     let first = CString::new("first").unwrap();
-    let second = CString::new("second").unwrap();
-    // SAFETY: a live reply and strings.
-    unsafe {
-        assert_eq!(
-            felix_token_reply_ok(probe.reply(0), first.as_ptr()),
-            FELIX_STATUS_OK
-        );
-        let status = felix_token_reply_ok(probe.reply(0), second.as_ptr());
-        assert_eq!(status, FELIX_STATUS_INVALID_ARGUMENT);
-        assert!(
-            last_error().contains("already completed"),
-            "{}",
-            last_error()
-        );
-        let status = felix_token_reply_err(probe.reply(0), std::ptr::null());
-        assert_eq!(status, FELIX_STATUS_INVALID_ARGUMENT);
-    }
+    // SAFETY: a live reply and string; the reply is not used again.
+    let status = unsafe { felix_token_reply_ok(probe.reply(0), first.as_ptr()) };
+    assert_eq!(status, FELIX_STATUS_OK);
     assert_eq!(waiting.await.unwrap(), "first");
+    assert_eq!(source.held(), 0);
+}
+
+/// Replies that were answered are not kept, however many fetches fail.
+#[tokio::test]
+async fn answered_replies_are_not_retained() {
+    use felix_client::TokenProvider;
+    let probe = Probe::new(Answer::Fail("down"));
+    let source = probe.source();
+    let tokens = provider(&source, None);
+    for _ in 0..20 {
+        assert!(tokens.token().await.is_err());
+    }
+    assert_eq!(probe.fetches.load(Ordering::SeqCst), 20);
+    assert_eq!(source.held(), 0);
+
+    // Answered from another thread after the fetch returned.
+    let probe = Probe::new(Answer::OtherThread("t"));
+    let source = probe.source();
+    let tokens = provider(&source, None);
+    assert_eq!(tokens.token().await.unwrap(), "t");
+    wait_for("the reply to be freed", || source.held() == 0).await;
+}
+
+/// An unanswered reply is held until it is answered or the source goes.
+#[tokio::test]
+async fn an_unanswered_reply_is_held_until_the_source_goes() {
+    use felix_client::TokenProvider;
+    let probe = Probe::new(Answer::Hold);
+    let source = probe.source();
+    let tokens = Arc::new(provider(&source, None));
+    let held = Arc::clone(&tokens);
+    let waiting = tokio::spawn(async move { held.token().await });
+    wait_for("the fetch", || probe.fetches.load(Ordering::SeqCst) == 1).await;
+    source.close();
+    assert!(waiting.await.unwrap().is_err());
+    assert_eq!(source.held(), 1);
+}
+
+/// An empty initial token is no token: the first use fetches.
+#[tokio::test]
+async fn an_empty_initial_token_is_fetched_over() {
+    use felix_client::TokenProvider;
+    let probe = Probe::new(Answer::OtherThread("fetched"));
+    let tokens = provider(&probe.source(), Some(""));
+    assert_eq!(tokens.token().await.unwrap(), "fetched");
+    assert_eq!(probe.fetches.load(Ordering::SeqCst), 1);
+}
+
+/// A client with a valid token that does nothing never asks the app.
+#[tokio::test(start_paused = true)]
+async fn an_idle_client_makes_no_fetch() {
+    use felix_client::TokenProvider;
+    let probe = Probe::new(Answer::OtherThread("never"));
+    let tokens = provider(&probe.source(), Some("opaque-token"));
+    tokio::time::sleep(Duration::from_secs(3600)).await;
+    assert_eq!(probe.fetches.load(Ordering::SeqCst), 0);
+    assert_eq!(tokens.token().await.unwrap(), "opaque-token");
+    assert_eq!(probe.fetches.load(Ordering::SeqCst), 0);
+}
+
+/// Streams opening together share one fetch through the app's callback.
+#[tokio::test]
+async fn concurrent_callers_share_one_fetch() {
+    use felix_client::TokenProvider;
+    let probe = Probe::new(Answer::Hold);
+    let tokens = Arc::new(provider(&probe.source(), None));
+    let callers: Vec<_> = (0..8)
+        .map(|_| {
+            let tokens = Arc::clone(&tokens);
+            tokio::spawn(async move { tokens.token().await.unwrap() })
+        })
+        .collect();
+    wait_for("the fetch", || probe.fetches.load(Ordering::SeqCst) == 1).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(probe.fetches.load(Ordering::SeqCst), 1);
+    let token = CString::new("shared").unwrap();
+    // SAFETY: a live reply and string.
+    unsafe { felix_token_reply_ok(probe.reply(0), token.as_ptr()) };
+    for caller in callers {
+        assert_eq!(caller.await.unwrap(), "shared");
+    }
+    assert_eq!(probe.fetches.load(Ordering::SeqCst), 1);
+}
+
+/// A refused token is dropped; the next ask fetches once, and a late refusal
+/// of the old token does not throw away the new one.
+#[tokio::test]
+async fn a_refused_token_costs_one_fetch() {
+    use felix_client::TokenProvider;
+    let probe = Probe::new(Answer::OtherThread("replacement"));
+    let tokens = provider(&probe.source(), Some("old"));
+    assert_eq!(tokens.token().await.unwrap(), "old");
+    tokens.invalidate("old");
+    assert_eq!(tokens.token().await.unwrap(), "replacement");
+    tokens.invalidate("old");
+    assert_eq!(tokens.token().await.unwrap(), "replacement");
+    assert_eq!(probe.fetches.load(Ordering::SeqCst), 1);
 }
 
 /// A bad argument does not use up the reply.
@@ -280,13 +356,13 @@ async fn a_refused_argument_leaves_the_reply_open() {
 }
 
 /// The core gives up on a fetch after its timeout. An answer that arrives
-/// later is accepted and ignored, and the reply is still there to be refused
-/// the second time.
+/// later is accepted and ignored, and frees the reply.
 #[tokio::test(start_paused = true)]
 async fn a_reply_after_the_fetch_timed_out_is_a_harmless_no_op() {
     use felix_client::TokenProvider;
     let probe = Probe::new(Answer::Hold);
-    let tokens = provider(&probe.source(), None);
+    let source = probe.source();
+    let tokens = provider(&source, None);
     let err = tokens.token().await.unwrap_err();
     assert!(format!("{err:#}").contains("took longer"), "{err:#}");
     assert_eq!(probe.fetches.load(Ordering::SeqCst), 1);
@@ -294,15 +370,13 @@ async fn a_reply_after_the_fetch_timed_out_is_a_harmless_no_op() {
     let late = CString::new("late").unwrap();
     // SAFETY: a live reply and string.
     unsafe {
+        assert_eq!(source.held(), 1);
         assert_eq!(
             felix_token_reply_ok(probe.reply(0), late.as_ptr()),
             FELIX_STATUS_OK
         );
-        assert_eq!(
-            felix_token_reply_ok(probe.reply(0), late.as_ptr()),
-            FELIX_STATUS_INVALID_ARGUMENT
-        );
     }
+    assert_eq!(source.held(), 0);
     // The late token was not kept: the next fetch is a new one.
     assert!(tokens.token().await.is_err());
     assert_eq!(probe.fetches.load(Ordering::SeqCst), 2);
