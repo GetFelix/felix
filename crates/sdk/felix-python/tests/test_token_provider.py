@@ -378,6 +378,102 @@ def test_async_client_failure_reaches_the_caller(fixture):
     asyncio.run(main())
 
 
+# --- Timeout and cancellation -------------------------------------------------
+#
+# The 30 s fetch timeout is the Rust client's constant and is not exposed, so
+# these two wait it out for real.
+
+
+def test_async_provider_is_cancelled_at_the_timeout(fixture):
+    cancelled = []
+
+    async def provider():
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+
+    async def main():
+        started = time.monotonic()
+        with pytest.raises(felix.AuthError, match="took longer than"):
+            await felix.AsyncClient.connect(
+                fixture["addrs"],
+                tenant_id=fixture["tenant_id"],
+                token_provider=provider,
+                ca_file=fixture["ca_file"],
+            )
+        assert 25 < time.monotonic() - started < 45
+        assert cancelled, "the provider's task was not cancelled at the timeout"
+
+    asyncio.run(main())
+
+
+def test_async_provider_is_cancelled_when_the_client_is_gone(fixture):
+    import gc
+
+    started = threading.Event()
+    cancelled = threading.Event()
+
+    async def provider():
+        started.set()
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    async def main():
+        client = await felix.AsyncClient.connect(
+            fixture["addrs"],
+            tenant_id=fixture["tenant_id"],
+            token=fixture["token"],
+            ca_file=fixture["ca_file"],
+        )
+        identity = await client.with_identity(
+            fixture["tenant_id"], token_provider=provider
+        )
+        publish = asyncio.ensure_future(
+            identity.publish(
+                fixture["tenant_id"], fixture["namespace"], fixture["durable_stream"], b"a"
+            )
+        )
+        while not started.is_set():
+            await asyncio.sleep(0.05)
+        # An operation in flight keeps the token source alive; drop it, then
+        # the handle and the client.
+        publish.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await publish
+        del identity, publish
+        await client.close()
+        del client
+        gc.collect()
+        for _ in range(200):
+            if cancelled.is_set():
+                return
+            await asyncio.sleep(0.05)
+        raise AssertionError("the provider's task outlived the client")
+
+    asyncio.run(main())
+
+
+def test_a_sync_provider_past_the_timeout_is_joined_not_called_again(fixture):
+    # Sync providers cannot be cancelled: the second publish waits on the call
+    # the first one gave up on, and uses its late answer.
+    provider = Provider(fixture["token"], delay=33.0)
+    with connect(fixture, token=fixture["token"]) as client:
+        identity = client.with_identity(fixture["tenant_id"], token_provider=provider)
+        with pytest.raises(felix.AuthError, match="took longer than"):
+            identity.publish(
+                fixture["tenant_id"], fixture["namespace"], fixture["durable_stream"], b"a"
+            )
+        identity.publish(
+            fixture["tenant_id"], fixture["namespace"], fixture["durable_stream"], b"b"
+        )
+    assert provider.calls == 1
+
+
 # --- The documentation example -----------------------------------------------
 
 

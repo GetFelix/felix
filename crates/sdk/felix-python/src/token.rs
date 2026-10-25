@@ -8,7 +8,13 @@
 //! the call. An `AsyncClient` hands the coroutine to the event loop that was
 //! running at connect / `with_identity` (captured once, so it must outlive the
 //! client and its handles) and awaits the result without the GIL.
+//!
+//! The Rust client cancels a fetch when it outlives its timeout and when the
+//! client is dropped. An `AsyncClient` provider is cancelled then, as an
+//! asyncio task on its loop. A blocking `Client` provider is a thread running
+//! Python code and cannot be stopped, so it is joined instead.
 
+use std::ffi::CStr;
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
@@ -17,6 +23,7 @@ use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::PyString;
 use pyo3_async_runtimes::{TaskLocals, into_future_with_locals};
+use tokio_util::sync::CancellationToken;
 
 /// Where streams get their token from.
 pub(crate) enum Tokens {
@@ -74,19 +81,19 @@ pub(crate) fn resolve(
         Flavor::Blocking => None,
         Flavor::Asyncio(locals) => Some(locals),
     };
-    let fetch = move || {
+    let fetch = move |cancel: CancellationToken| {
         let provider = Arc::clone(&provider);
         let locals = locals.clone();
         async move {
             match locals {
                 None => fetch_blocking(provider).await,
-                Some(locals) => fetch_on_loop(provider, locals).await,
+                Some(locals) => fetch_on_loop(provider, locals, cancel).await,
             }
         }
     };
     let source = match initial {
-        Some(initial) => RefreshingToken::with_initial(initial, fetch),
-        None => RefreshingToken::new(fetch),
+        Some(initial) => RefreshingToken::with_initial_cancellable(initial, fetch),
+        None => RefreshingToken::new_cancellable(fetch),
     };
     Ok(Tokens::Provider(Arc::new(source)))
 }
@@ -125,8 +132,15 @@ async fn fetch_blocking(provider: Arc<Py<PyAny>>) -> Result<String> {
 /// Any callable is accepted, because a lambda or decorator around an `async
 /// def` cannot be told apart from a plain function without calling it. The
 /// result decides: an awaitable is awaited, anything else is an error.
-async fn fetch_on_loop(provider: Arc<Py<PyAny>>, locals: TaskLocals) -> Result<String> {
-    let pending = Python::attach(|py| -> Result<_> {
+///
+/// When `cancel` fires the provider's task is cancelled on its loop. The
+/// `CancelledError` that comes back is an ordinary fetch failure.
+async fn fetch_on_loop(
+    provider: Arc<Py<PyAny>>,
+    locals: TaskLocals,
+    cancel: CancellationToken,
+) -> Result<String> {
+    let (call, pending) = Python::attach(|py| -> Result<_> {
         ensure_loop_open(py, &locals)?;
         let result = provider.call0(py).map_err(|err| failure(py, &err))?;
         let result = result.into_bound(py);
@@ -142,12 +156,72 @@ async fn fetch_on_loop(provider: Arc<Py<PyAny>>, locals: TaskLocals) -> Result<S
                 type_name(&result)
             ));
         }
-        into_future_with_locals(&locals, result).map_err(|err| loop_or_failure(py, &locals, &err))
+        let call = provider_call(py).map_err(|err| failure(py, &err))?;
+        let wrapped = call
+            .call_method1("run", (result,))
+            .map_err(|err| failure(py, &err))?;
+        let pending = into_future_with_locals(&locals, wrapped)
+            .map_err(|err| loop_or_failure(py, &locals, &err))?;
+        Ok((call.unbind(), pending))
     })?;
-    let value = pending
-        .await
-        .map_err(|err| Python::attach(|py| loop_or_failure(py, &locals, &err)))?;
+    tokio::pin!(pending);
+    let outcome = tokio::select! {
+        outcome = &mut pending => outcome,
+        () = cancel.cancelled() => {
+            cancel_on_loop(&call, &locals);
+            // The task decides what the call returns; it ends at its next await.
+            pending.await
+        }
+    };
+    let value = outcome.map_err(|err| Python::attach(|py| loop_or_failure(py, &locals, &err)))?;
     Python::attach(|py| as_token(value.bind(py)))
+}
+
+/// A provider call as asyncio sees it. `cancel` works whether the task has
+/// started or not, which a bare `Task.cancel` scheduled from outside cannot
+/// promise.
+const CALL_SOURCE: &CStr = c"
+import asyncio
+
+class Call:
+    def __init__(self):
+        self.task = None
+        self.cancelled = False
+
+    async def run(self, awaitable):
+        if self.cancelled:
+            close = getattr(awaitable, 'close', None)
+            if close is not None:
+                close()
+            raise asyncio.CancelledError()
+        self.task = asyncio.current_task()
+        return await awaitable
+
+    def cancel(self):
+        self.cancelled = True
+        if self.task is not None:
+            self.task.cancel()
+";
+
+fn provider_call(py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
+    PyModule::from_code(py, CALL_SOURCE, c"felix_token_call.py", c"felix_token_call")?
+        .getattr("Call")?
+        .call0()
+}
+
+/// Cancel the call's task on its loop. A closed loop has nothing to cancel.
+fn cancel_on_loop(call: &Py<PyAny>, locals: &TaskLocals) {
+    Python::attach(|py| {
+        if loop_closed(py, locals) {
+            return;
+        }
+        let Ok(cancel) = call.bind(py).getattr("cancel") else {
+            return;
+        };
+        let _ = locals
+            .event_loop(py)
+            .call_method1("call_soon_threadsafe", (cancel,));
+    });
 }
 
 const LOOP_CLOSED: &str = "the event loop the token provider was bound to is closed";

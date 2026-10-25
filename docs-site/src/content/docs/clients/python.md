@@ -96,8 +96,22 @@ non-empty `str` (a `str` that is not valid UTF-8 counts). While the held token
 is still valid the client keeps it, logs a warning and asks again a few seconds
 later. Otherwise the call that needed the token raises `AuthError` with the
 exception's message in its text. A provider that has not answered after 30
-seconds fails the operations waiting on it; it is not called again until it
-returns.
+seconds fails the operations waiting on it, but the call itself is not
+abandoned: the next operation that needs a token waits on that same call (up to
+30 seconds again) and uses its answer if it arrives, so the provider is not
+called a second time while one is outstanding.
+
+**Cancellation.** On `AsyncClient` the provider's task is cancelled on its loop
+when the 30 seconds pass and when the client and all its `with_identity` handles
+are gone (operations still in flight keep the client alive). Your provider sees
+an `asyncio.CancelledError` at its current `await`, so a `finally` block can
+release a connection. Let it propagate: the cancelled call counts as a failed
+fetch, and the next fetch calls the provider again. If the loop is already
+closed there is nothing to cancel. On `Client` the provider is a thread running
+your Python code and cannot be stopped, so it is left to finish, and an `async
+def` run there with `asyncio.run` is left to finish the same way. Give a
+blocking provider its own timeout (`urllib.request.urlopen(..., timeout=10)`) so
+it returns before the client gives up on it.
 
 **Async variant.** `AsyncClient` takes an `async def`, or any callable that
 returns an awaitable (a lambda or decorator around one). Whatever the provider

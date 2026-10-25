@@ -238,7 +238,9 @@ class Client:
         """Pass ``token``, ``token_provider``, or both (``token`` is then the first token).
 
         A plain provider runs on a Felix worker thread with the GIL; an
-        ``async def`` is run there with ``asyncio.run``.
+        ``async def`` is run there with ``asyncio.run``. It cannot be cancelled: a
+        call that outlives the 30 s fetch timeout fails the waiting operations and is
+        joined by the next one, not repeated.
         """
     def with_identity(
         self,
@@ -384,7 +386,9 @@ class AsyncClient:
     ) -> "AsyncClient":
         """``token_provider`` must be an ``async def`` (or return an awaitable); one returning a ``str`` fails with ``AuthError``.
 
-        It is awaited on the loop running this call, which must stay open for the life of the client and its ``with_identity`` handles."""
+        It is awaited on the loop running this call, which must stay open for the life of the client and its ``with_identity`` handles.
+
+        The provider's task is cancelled (it sees ``asyncio.CancelledError``) when a call passes the 30 s fetch timeout and when the client and its handles are gone."""
     async def with_identity(
         self,
         tenant_id: str,
