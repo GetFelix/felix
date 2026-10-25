@@ -98,9 +98,13 @@ impl Cluster {
             bail!("{node_id} is still running");
         }
         // Unreadable (no record yet, control plane down) means there is nothing to outwait.
-        let prior_incarnation = match self.registered_node(node_id).await {
-            Ok(node) => Some(node.status.incarnation),
-            Err(_) => None,
+        let prior_incarnation = match &self.control_plane {
+            Some(control_plane) => control_plane
+                .registered_node(node_id)
+                .await
+                .ok()
+                .map(|node| node.status.incarnation),
+            None => None,
         };
         // Kept beside the new one: the old run is usually what a failure is about.
         let log = self.nodes[index].data_dir.join("broker.log");
