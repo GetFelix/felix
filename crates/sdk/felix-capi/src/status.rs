@@ -8,7 +8,8 @@
 //! caller does next: retry, give up, or resend only if idempotent.
 
 use felix_client::{
-    BrokerError, CommitError, NotLeaderError, RetryClass, SubscribeCursorError, SubscriptionLost,
+    AuthError, BrokerError, CommitError, NotLeaderError, RetryClass, SubscribeCursorError,
+    SubscriptionLost,
 };
 
 /// The result of every fallible call. `FELIX_STATUS_OK` is zero; every other
@@ -85,6 +86,12 @@ pub(crate) fn classify(err: &anyhow::Error) -> FelixStatus {
     if err.chain().any(|e| e.is::<SubscriptionLost>()) {
         return FELIX_STATUS_CONNECTION;
     }
+    // Typed, not read from the message: a TLS or config error that mentions a
+    // token is not an auth failure, and a provider's own words may say nothing
+    // about one.
+    if err.is::<AuthError>() {
+        return FELIX_STATUS_AUTH;
+    }
     status_from_text(&format!("{err:#}").to_ascii_lowercase())
 }
 
@@ -107,7 +114,7 @@ pub(crate) fn status_for_code(code: &str, retry: RetryClass) -> FelixStatus {
 /// The fallback for an error without a code, matching the other bindings.
 fn status_from_text(lower: &str) -> FelixStatus {
     let any = |needles: &[&str]| needles.iter().any(|needle| lower.contains(needle));
-    if any(&["unauthorized", "permission", "forbidden", "token"]) {
+    if any(&["unauthorized", "permission"]) {
         FELIX_STATUS_AUTH
     } else if any(&[
         "unknown tenant",

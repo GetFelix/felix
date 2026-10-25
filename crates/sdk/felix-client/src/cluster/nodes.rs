@@ -19,6 +19,7 @@ use anyhow::Result;
 use crate::auth::TokenProvider;
 use crate::client::{Client, fetch_from, fetch_token, no_broker_answered};
 use crate::config::ClientConfig;
+use crate::error::is_token_failure;
 
 use super::seeds::{LOOKUP_TIMEOUT, Lookup};
 
@@ -331,6 +332,8 @@ impl Nodes {
         for addr in addrs {
             match self.connect_to(*addr).await {
                 Ok(client) => return Ok(client),
+                // The next address would ask the token source again.
+                Err(err) if is_token_failure(&err) => return Err(err),
                 Err(err) => refusals.push((*addr, err)),
             }
         }

@@ -533,7 +533,9 @@ time a stream authenticates.
 (normally the `/token/refresh` call above). It fetches a new one when two
 thirds of the current token's lifetime has passed, based on `exp`. If a fetch
 fails it keeps using the current token until that expires. If the broker
-refuses a token, the client asks for a new one and retries once. Keep one
+refuses a token, the client asks for a new one and retries once. A fetch that
+fails with nothing valid held fails the operation with an `AuthError` carrying
+the provider's message, and is not retried. Keep one
 refresh in flight per chain, and keep the newest refresh token: two concurrent
 refreshes both succeed within the reuse grace window, but each spends the
 other's result, so the older one is a replay once the window ends.

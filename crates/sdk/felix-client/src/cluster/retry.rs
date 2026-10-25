@@ -210,6 +210,11 @@ pub(crate) fn route_went_stale(error: &anyhow::Error) -> bool {
 /// shutting down. No code means a dead connection or a peer that predates
 /// codes, and replacing the client is what this wrapper has always done then.
 pub(crate) fn wants_reconnect(error: &anyhow::Error) -> bool {
+    // The broker is fine; a new connection would call the token source again
+    // and fail the same way.
+    if error.is::<crate::AuthError>() {
+        return false;
+    }
     match error.downcast_ref::<BrokerError>() {
         Some(broker) => broker.code == ErrorCode::Draining,
         None => true,
@@ -227,20 +232,18 @@ pub(crate) fn wants_reconnect(error: &anyhow::Error) -> bool {
 /// "stream not found" for the stream it is about to serve, and treating that as
 /// terminal breaks the failover recovery this policy exists for.
 ///
-/// What is left is the credential: a permission the token does not carry fails
-/// the same way on every broker for as long as the token lives.
+/// What is left is authentication: a credential the broker refuses fails the
+/// same way on every broker for as long as the token lives, and a token source
+/// that failed has already been given its chance (a provider call can rotate a
+/// refresh token, so repeating one is not free). Both are marked
+/// [`crate::AuthError`] rather than recognised by their text.
 pub(crate) fn is_terminal(error: &anyhow::Error) -> bool {
     // Terminal by construction rather than by matching prose: the offset asked
     // for is not available, or the broker refused an idempotent batch for a
     // reason a re-send cannot mend.
-    if error
-        .downcast_ref::<crate::SubscribeCursorError>()
-        .is_some()
-        || error.downcast_ref::<crate::PublishRefused>().is_some()
-    {
-        return true;
-    }
-    format!("{error:#}").to_lowercase().contains("forbidden")
+    error.is::<crate::SubscribeCursorError>()
+        || error.is::<crate::PublishRefused>()
+        || error.is::<crate::AuthError>()
 }
 
 /// A uniform fraction in `[0, 1)`, without taking an RNG dependency.

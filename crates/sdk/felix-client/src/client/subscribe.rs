@@ -81,9 +81,7 @@ impl Client {
             mut recv,
             negotiated,
             lease,
-        } = self
-            .bounded("open a stream", self.open_event_stream())
-            .await?;
+        } = self.open_event_stream_bounded().await?;
         let connection_index = lease.slot();
         let server_flags = negotiated.server_flags;
         // Sent only where it will be answered: an older broker ignores it.

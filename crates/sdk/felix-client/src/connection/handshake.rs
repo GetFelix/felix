@@ -11,7 +11,7 @@ use quinn::{RecvStream, SendStream};
 use tracing::debug;
 
 use crate::auth::TokenProvider;
-use crate::error::BrokerError;
+use crate::error::{AuthError, AuthErrorKind, BrokerError, token_failure};
 use crate::frame_io::{read_message_with_limit, write_message};
 
 /// The tenant and token source every stream authenticates with.
@@ -39,6 +39,12 @@ impl Credentials {
                 & !felix_wire::FLAG_EVENT_BATCH_PUBLISHER
                 & !felix_wire::FLAG_EVENT_BATCH_TIMESTAMPS,
         }
+    }
+
+    /// Ask the token source for the current token, so a later stream open
+    /// finds it held. Bounded by [`FETCH_TIMEOUT`](crate::FETCH_TIMEOUT).
+    pub(crate) async fn fetch(&self) -> Result<()> {
+        crate::client::fetch_from(self.tokens.as_ref()).await
     }
 
     /// The same offers, authenticating as a different principal.
@@ -93,7 +99,7 @@ impl Credentials {
         first: (SendStream, RecvStream),
         max_frame_bytes: usize,
     ) -> Result<(SendStream, RecvStream, Negotiated)> {
-        let mut token = self.tokens.token().await?;
+        let mut token = self.tokens.token().await.map_err(token_failure)?;
         let mut retried = false;
         let mut next = Some(first);
         loop {
@@ -115,7 +121,7 @@ impl Credentials {
                 Ok(negotiated) => return Ok((send, recv, negotiated)),
                 Err(err) if !retried && is_auth_refusal(&err) => {
                     self.tokens.invalidate(&token);
-                    let fresh = self.tokens.token().await?;
+                    let fresh = self.tokens.token().await.map_err(token_failure)?;
                     if fresh == token {
                         return Err(err);
                     }
@@ -138,7 +144,7 @@ impl Credentials {
     /// Nothing is read back: a refused token shows up on the first real
     /// stream, which authenticates again.
     pub(crate) async fn announce(&self, connection: &QuicConnection) -> Result<()> {
-        let token = self.tokens.token().await?;
+        let token = self.tokens.token().await.map_err(token_failure)?;
         let mut send = connection.open_uni().await?;
         write_message(
             &mut send,
@@ -173,18 +179,6 @@ pub(crate) struct Negotiated {
     /// How many acknowledged publishes the connection may have unanswered,
     /// with answers in request order. `0` when the broker does not pipeline.
     pub(crate) publish_window: u32,
-}
-
-/// The broker refused a stream's credentials.
-#[derive(Debug, thiserror::Error)]
-#[error("auth rejected: {0}")]
-pub(crate) struct AuthRejected(String);
-
-#[cfg(test)]
-impl AuthRejected {
-    pub(crate) fn for_test() -> Self {
-        Self("no".to_string())
-    }
 }
 
 /// Authenticate a stream and negotiate capabilities.
@@ -267,10 +261,10 @@ async fn authenticate_stream(
         }) => {
             Err(
                 crate::error::refused("auth rejected", message.clone(), Some(code), retry, detail)
-                    .context(AuthRejected(message)),
+                    .context(AuthError::refused(message)),
             )
         }
-        Some(Message::Error { message, .. }) => Err(AuthRejected(message).into()),
+        Some(Message::Error { message, .. }) => Err(AuthError::refused(message).into()),
         Some(other) => Err(anyhow::anyhow!("unexpected auth response: {other:?}")),
         None => Err(anyhow::anyhow!("auth response missing")),
     }
@@ -282,7 +276,10 @@ async fn authenticate_stream(
 /// neither count as auth failures nor invalidate it (which costs a provider
 /// call, a refresh-token rotation, per broker).
 pub(crate) fn is_auth_refusal(err: &anyhow::Error) -> bool {
-    if err.downcast_ref::<AuthRejected>().is_none() {
+    let refused = err
+        .downcast_ref::<AuthError>()
+        .is_some_and(|a| a.kind == AuthErrorKind::Refused);
+    if !refused {
         return false;
     }
     match err.chain().find_map(|e| e.downcast_ref::<BrokerError>()) {

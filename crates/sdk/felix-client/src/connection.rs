@@ -11,8 +11,6 @@ mod handshake;
 mod node;
 
 pub(crate) use event_router::{EventRouterCommand, spawn_event_router_with_config};
-#[cfg(test)]
-pub(crate) use handshake::AuthRejected;
 pub(crate) use handshake::{Credentials, Negotiated, is_auth_refusal};
 pub(crate) use node::{NodeConnections, NodeLimits, OpenedStream, StreamLease};
 

@@ -60,7 +60,9 @@ fn an_unknown_code_is_the_base_class() {
 #[test]
 fn without_a_code_the_message_decides() {
     let cases = [
-        ("publish failed: forbidden", Kind::Auth),
+        // Words that used to mean auth are only words now.
+        ("publish failed: forbidden", Kind::Generic),
+        ("tls: could not load the token file", Kind::Generic),
         ("unknown stream t1/default/nope", Kind::NotFound),
         ("offset trimmed", Kind::Cursor),
         ("connection lost", Kind::Connection),
@@ -109,4 +111,23 @@ fn a_commit_refusal_is_its_own_class() {
     assert_eq!(classify(&count).kind, Kind::EventCount);
     let old = anyhow::Error::new(felix_client::CommitError::Unsupported);
     assert_eq!(classify(&old).kind, Kind::Commit);
+}
+
+/// An auth error is recognised by its type, so a message that says nothing
+/// about tokens or permissions still classes as auth.
+#[test]
+fn a_typed_auth_error_is_auth_whatever_it_says() {
+    for err in [
+        felix_client::AuthError {
+            kind: felix_client::AuthErrorKind::Refused,
+            message: "quota of 3".to_string(),
+        },
+        felix_client::AuthError {
+            kind: felix_client::AuthErrorKind::Token,
+            message: "idp returned 503".to_string(),
+        },
+    ] {
+        let classified = classify(&anyhow::Error::new(err).context("open stream"));
+        assert_eq!(classified.kind, Kind::Auth);
+    }
 }
