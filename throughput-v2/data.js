@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792927603348,
+  "lastUpdate": 1792932155932,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -36712,6 +36712,58 @@ window.BENCHMARK_DATA = {
             "range": "8212.59",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 810099.76\nmean: 809702.15\nstdev: 8212.59\ncv: 1.01%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5705fb1c45217441e6d261a828cb5639e07f42ae",
+          "message": "fix(client): an empty token from the provider fails the fetch (#1554) (#1555)\n\nAn empty or whitespace-only token from a token provider is now a fetch\nfailure (AuthError kind Token, \"the token provider returned an empty token\"),\non the same path as any other provider failure, including keeping a still-valid\ntoken and retrying. A blank initial token is treated as absent, in the core and\nin the C, Python and TypeScript bindings, so the first use calls the provider\ninstead of presenting a blank token. felix_token_reply_ok already refused \"\";\nfelix.h's token_release note is clarified.\n\nFixes #1554.",
+          "timestamp": "2026-10-25T12:35:53Z",
+          "tree_id": "80453c1b81fdf3e73f45dc7357453244b81baab8",
+          "url": "https://github.com/GetFelix/felix/commit/5705fb1c45217441e6d261a828cb5639e07f42ae"
+        },
+        "date": 1792932155294,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 349217.4,
+            "range": "13634.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 349217.40\nmean: 345349.61\nstdev: 13634.79\ncv: 3.95%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 349217.4,
+            "range": "13634.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 349217.40\nmean: 345349.61\nstdev: 13634.79\ncv: 3.95%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79782.73,
+            "range": "246.27",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79782.73\nmean: 79854.07\nstdev: 246.27\ncv: 0.31%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 797827.26,
+            "range": "2462.69",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 797827.26\nmean: 798540.75\nstdev: 2462.69\ncv: 0.31%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
