@@ -10,6 +10,7 @@ namespace Felix.Client.Tests;
 /// runs its client through <c>link_addr</c>, always heals afterwards, and keys its records under a
 /// run-unique prefix.
 /// </summary>
+[Collection(FaultCollection.Name)]
 public class LinkFaultTests
 {
     private static readonly TimeSpan Poll = TimeSpan.FromMilliseconds(250);

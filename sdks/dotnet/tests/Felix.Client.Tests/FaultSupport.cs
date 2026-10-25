@@ -98,6 +98,18 @@ internal sealed class FaultFixture
             });
 }
 
+/// <summary>
+/// The tests that drive the fixture's control endpoint. A fence drains a broker and a partition
+/// isolates a leader for every shard it serves, and /heal undoes every fault, so none of them can run
+/// beside a test using the shared streams or beside each other. xUnit runs this collection alone,
+/// after the parallel ones finish.
+/// </summary>
+[CollectionDefinition(FaultCollection.Name, DisableParallelization = true)]
+public sealed class FaultCollection
+{
+    public const string Name = "fixture faults";
+}
+
 /// <summary>Skips unless the fixture file carries the link interposer and control endpoint.</summary>
 public sealed class LinkFixtureFactAttribute : FixtureFactAttribute
 {

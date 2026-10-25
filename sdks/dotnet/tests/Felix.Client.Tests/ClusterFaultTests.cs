@@ -6,6 +6,7 @@ namespace Felix.Client.Tests;
 /// Faults the fixture's control endpoint produces on the shared cluster: a fenced shard and a leader
 /// cut off from its followers. Both heal afterwards and wait for the stream to take a publish again.
 /// </summary>
+[Collection(FaultCollection.Name)]
 public class ClusterFaultTests
 {
     [ShardFixtureFact]
