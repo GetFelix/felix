@@ -291,7 +291,7 @@ impl ClusterClient {
         shard: u32,
         start: StartPosition,
     ) -> Result<(Arc<Client>, Subscription)> {
-        let deadline = Instant::now() + self.policy.deadline.unwrap_or(FOLLOW_DEADLINE);
+        let deadline = Instant::now() + self.policy.budget(FOLLOW_DEADLINE);
         let mut attempt = 0usize;
         loop {
             // The entry broker may be the dead one, and after a failed attempt
@@ -362,7 +362,7 @@ impl ClusterClient {
         F: Fn(Arc<Client>) -> Fut,
         Fut: Future<Output = Result<T>>,
     {
-        let deadline = Instant::now() + self.policy.deadline.unwrap_or(FOLLOW_DEADLINE);
+        let deadline = Instant::now() + self.policy.budget(FOLLOW_DEADLINE);
         let mut hint: Option<SocketAddr> = match moved.addr.as_deref() {
             Some(addr) => self.resolve(addr).await,
             None => None,

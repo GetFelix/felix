@@ -234,6 +234,8 @@ class Client:
         server_name: str = "localhost",
         ca_file: str | None = None,
         offer_alpn: bool = False,
+        reconnect_attempts: int | None = None,
+        reconnect_deadline: float | None = None,
     ) -> None:
         """Pass ``token``, ``token_provider``, or both (``token`` is then the first token).
 
@@ -383,6 +385,8 @@ class AsyncClient:
         server_name: str = "localhost",
         ca_file: str | None = None,
         offer_alpn: bool = False,
+        reconnect_attempts: int | None = None,
+        reconnect_deadline: float | None = None,
     ) -> "AsyncClient":
         """``token_provider`` must be an ``async def`` (or return an awaitable); one returning a ``str`` fails with ``AuthError``.
 

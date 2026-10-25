@@ -102,6 +102,20 @@ public sealed class FelixClientOptions
     /// and <see cref="GroupRecord.Timestamp"/>. Adds eight bytes per event.
     /// </summary>
     public bool Timestamps { get; init; }
+
+    /// <summary>
+    /// A ceiling on one retried call, across every attempt and every wait between them. Null,
+    /// the default, is no ceiling. A deadline shorter than one attempt's own timeout leaves the
+    /// call a single attempt, since that attempt spends the whole budget. Whole milliseconds,
+    /// at least one.
+    /// </summary>
+    public TimeSpan? ReconnectDeadline { get; init; }
+
+    /// <summary>
+    /// How many times a retried call tries to reach a broker before it gives up; each attempt
+    /// tries every known endpoint. Null is the default, 5. At least 1.
+    /// </summary>
+    public int? ReconnectAttempts { get; init; }
 }
 
 /// <summary>One record delivered to a subscription, copied out of the native event.</summary>

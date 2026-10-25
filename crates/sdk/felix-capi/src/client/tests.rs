@@ -130,6 +130,8 @@ fn a_field_is_read_only_when_size_covers_it() {
         token_fetch: None,
         token_user_data: std::ptr::null_mut(),
         token_release: None,
+        reconnect_attempts: 0,
+        reconnect_deadline_ms: 0,
     };
     let options = read(&full);
     assert!(options.publishers && options.timestamps);
@@ -151,6 +153,45 @@ fn a_field_is_read_only_when_size_covers_it() {
 }
 
 #[test]
+fn reconnect_options_default_and_apply() {
+    let full = FelixConnectOptions {
+        size: size_of::<FelixConnectOptions>(),
+        publishers: false,
+        timestamps: false,
+        token_fetch: None,
+        token_user_data: std::ptr::null_mut(),
+        token_release: None,
+        reconnect_attempts: 0,
+        reconnect_deadline_ms: 0,
+    };
+    let policy = read(&full).reconnect_policy();
+    let default = felix_client::ReconnectPolicy::default();
+    assert_eq!(policy.attempts, default.attempts);
+    assert_eq!(policy.deadline, None);
+
+    let set = FelixConnectOptions {
+        reconnect_attempts: 2,
+        reconnect_deadline_ms: 1500,
+        ..full
+    };
+    let policy = read(&set).reconnect_policy();
+    assert_eq!(policy.attempts, 2);
+    assert_eq!(
+        policy.deadline,
+        Some(std::time::Duration::from_millis(1500))
+    );
+
+    // A caller built before the fields existed gets the defaults.
+    let older = FelixConnectOptions {
+        size: std::mem::offset_of!(FelixConnectOptions, reconnect_attempts),
+        ..set
+    };
+    let policy = read(&older).reconnect_policy();
+    assert_eq!(policy.attempts, default.attempts);
+    assert_eq!(policy.deadline, None);
+}
+
+#[test]
 fn a_size_smaller_than_the_size_field_is_refused() {
     let bad = FelixConnectOptions {
         size: 0,
@@ -159,6 +200,8 @@ fn a_size_smaller_than_the_size_field_is_refused() {
         token_fetch: None,
         token_user_data: std::ptr::null_mut(),
         token_release: None,
+        reconnect_attempts: 0,
+        reconnect_deadline_ms: 0,
     };
     // SAFETY: a live struct.
     let failure = unsafe { ConnectOptions::read(&bad) }.unwrap_err();
@@ -192,6 +235,8 @@ mod tokens {
             token_fetch: Some(fetch),
             token_user_data: probe.data(),
             token_release: Some(release),
+            reconnect_attempts: 0,
+            reconnect_deadline_ms: 0,
         }
     }
 

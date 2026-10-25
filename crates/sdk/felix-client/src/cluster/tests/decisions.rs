@@ -255,3 +255,18 @@ fn only_draining_or_silence_replaces_the_client() {
         assert!(!wants_reconnect(&coded(code.clone())), "{code}");
     }
 }
+
+/// A deadline too large to add to an `Instant` must not panic; it is capped.
+#[test]
+fn an_enormous_deadline_does_not_overflow_the_clock() {
+    use crate::cluster::ReconnectPolicy;
+    let policy = ReconnectPolicy {
+        deadline: Some(Duration::MAX),
+        ..ReconnectPolicy::default()
+    };
+    let budget = policy.budget(Duration::from_secs(30));
+    assert!(budget >= Duration::from_secs(24 * 3600));
+    let _ = std::time::Instant::now() + budget;
+    let none = ReconnectPolicy::default().budget(Duration::from_secs(30));
+    assert_eq!(none, Duration::from_secs(30));
+}

@@ -1931,6 +1931,31 @@ all at once, each bounded to 2 s, and without holding the lock operations
 read the client through. A name has at most one system lookup running, so one
 that hangs does not stop the others resolving. See `docs/multi-node-client.md`.
 
+### Reconnecting
+
+Publishes, opening and following subscriptions, commits, `publish_if` and state reads retry with a backoff when no broker can be reached. Cache and consumer-group calls are not bounded by these options yet. Two options tune the retrying, and both default to the Rust client's own policy, so a client that sets neither behaves as it always did.
+
+- **Attempts** is how many times a call tries to reach a broker before it gives up. Each attempt tries every broker the client knows. The default is 5, and the minimum is 1.
+- **Deadline** is a ceiling on one call across every attempt and every wait between them. It is off by default, and it is checked between attempts, before each backoff sleep, so a call can last the deadline plus one attempt's own timeout. Attempt counts alone do not bound time: five attempts against a broker that takes its full publish timeout to answer is minutes.
+
+`ClusterClient::connect_with_policy` takes them as the `attempts` and `deadline` fields of a `ReconnectPolicy`; the other fields are the backoff, which no other client exposes.
+
+```rust
+let policy = ReconnectPolicy {
+    attempts: 10,
+    deadline: Some(Duration::from_secs(30)),
+    ..ReconnectPolicy::default()
+};
+let client = ClusterClient::connect_with_policy(&seeds, "localhost", config, policy).await?;
+
+// Stops retrying once 30 s have passed, checked between attempts, and reports the last error.
+client
+    .publish_at_least_once("t1", "default", "orders", b"hello".to_vec(), AckMode::PerMessage)
+    .await?;
+```
+
+A deadline shorter than one attempt's own timeout means no retry happens: the first attempt spends the whole budget and the call returns after trying once. Set it to cover at least one attempt plus the backoff you can afford, and leave it off if you would rather wait out a failover. A client from `with_identity` inherits the policy.
+
 ## Telemetry
 
 ### Enabling Telemetry

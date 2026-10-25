@@ -750,7 +750,7 @@ jobs:
         run: cargo build --locked
 
       - name: Error mapping
-        run: cd crates/sdk/felix-typescript && node --test test/errors.test.mjs test/token.test.mjs
+        run: cd crates/sdk/felix-typescript && node --test test/errors.test.mjs test/token.test.mjs test/reconnect.test.mjs
 
       - name: Run the conformance suite
         env:

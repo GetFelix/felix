@@ -336,6 +336,18 @@ export interface ConnectOptions {
   caFile?: string;
   /** Offer the `felix/1` ALPN. */
   offerAlpn?: boolean;
+  /**
+   * How many times a call tries to reach a broker before it gives up; each
+   * attempt tries every known endpoint. A whole number of at least 1. Default 5.
+   */
+  reconnectAttempts?: number;
+  /**
+   * A ceiling in milliseconds on one call, across every attempt and every wait
+   * between them. Default none. A deadline shorter than one attempt's own
+   * timeout leaves the call a single attempt, since that attempt spends the
+   * whole budget. `withIdentity` clients inherit it.
+   */
+  reconnectDeadline?: number;
 }
 
 /** Options for `Client.withIdentity`. Unknown keys throw a `TypeError`. */
@@ -357,7 +369,7 @@ export declare class Client {
    * use the operating system's trust store.
    *
    * The options go in the last argument: `{ token, tokenProvider, serverName,
-   * caFile, offerAlpn }`. `offerAlpn` offers the `felix/1` ALPN. A broker with
+   * caFile, offerAlpn, reconnectAttempts, reconnectDeadline }`. `offerAlpn` offers the `felix/1` ALPN. A broker with
    * `FELIX_TLS_REQUIRE_ALPN=true` serves only clients that do; a broker older
    * than ALPN support refuses them, which is why it is off by default.
    *

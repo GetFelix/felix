@@ -269,6 +269,14 @@ pub struct FelixConnectOptions {
     /// An app that never answers a reply leaks it. Used only with
     /// `token_fetch`.
     pub token_release: FelixTokenRelease,
+    /// How many times a retried call tries to reach a broker before it gives
+    /// up. Zero is the default, 5. Each attempt tries every known endpoint.
+    pub reconnect_attempts: u32,
+    /// A ceiling in milliseconds on one retried call, across every attempt and
+    /// every wait between them. Zero is no ceiling, the default. A ceiling
+    /// shorter than one attempt's own timeout leaves the call a single attempt,
+    /// since that attempt spends the whole budget.
+    pub reconnect_deadline_ms: u64,
 }
 
 /// The options a connect applies, read out of [`FelixConnectOptions`].
@@ -279,6 +287,20 @@ struct ConnectOptions {
     token_fetch: FelixTokenFetch,
     token_user_data: *mut c_void,
     token_release: FelixTokenRelease,
+    reconnect_attempts: Option<usize>,
+    reconnect_deadline: Option<Duration>,
+}
+
+impl ConnectOptions {
+    /// The default policy with the caller's attempts and deadline applied.
+    fn reconnect_policy(&self) -> ReconnectPolicy {
+        let mut policy = ReconnectPolicy::default();
+        if let Some(attempts) = self.reconnect_attempts {
+            policy.attempts = attempts;
+        }
+        policy.deadline = self.reconnect_deadline;
+        policy
+    }
 }
 
 impl Default for ConnectOptions {
@@ -289,6 +311,8 @@ impl Default for ConnectOptions {
             token_fetch: None,
             token_user_data: ptr::null_mut(),
             token_release: None,
+            reconnect_attempts: None,
+            reconnect_deadline: None,
         }
     }
 }
@@ -322,6 +346,8 @@ impl ConnectOptions {
         let fetch = std::mem::offset_of!(FelixConnectOptions, token_fetch);
         let data = std::mem::offset_of!(FelixConnectOptions, token_user_data);
         let release = std::mem::offset_of!(FelixConnectOptions, token_release);
+        let attempts = std::mem::offset_of!(FelixConnectOptions, reconnect_attempts);
+        let deadline = std::mem::offset_of!(FelixConnectOptions, reconnect_deadline_ms);
         Ok(Self {
             publishers: flag(std::mem::offset_of!(FelixConnectOptions, publishers)),
             timestamps: flag(std::mem::offset_of!(FelixConnectOptions, timestamps)),
@@ -335,6 +361,14 @@ impl ConnectOptions {
                 }),
             token_release: at(release, size_of::<FelixTokenRelease>())
                 .and_then(|p| unsafe { p.cast::<FelixTokenRelease>().read_unaligned() }),
+            reconnect_attempts: at(attempts, size_of::<u32>())
+                .map(|p| unsafe { p.cast::<u32>().read_unaligned() })
+                .filter(|&n| n != 0)
+                .map(|n| n as usize),
+            reconnect_deadline: at(deadline, size_of::<u64>())
+                .map(|p| unsafe { p.cast::<u64>().read_unaligned() })
+                .filter(|&ms| ms != 0)
+                .map(Duration::from_millis),
         })
     }
 }
@@ -434,19 +468,15 @@ pub unsafe extern "C" fn felix_client_connect_with(
         if let Some(tokens) = &tokens {
             config.token_provider = Some(provider(tokens, token));
         }
+        let policy = options.reconnect_policy();
         let shared = Arc::new(Shared::new(runtime).with_tokens(tokens));
         let task_shared = Arc::clone(&shared);
         shared.spawn(done, move |done| async move {
             let connect = async {
                 resolve_names(&seeds).await?;
-                ClusterClient::connect_seeds(
-                    &seeds,
-                    &server_name,
-                    config,
-                    ReconnectPolicy::default(),
-                )
-                .await
-                .map_err(Failure::from)
+                ClusterClient::connect_seeds(&seeds, &server_name, config, policy)
+                    .await
+                    .map_err(Failure::from)
             };
             let outcome = tokio::select! {
                 biased;

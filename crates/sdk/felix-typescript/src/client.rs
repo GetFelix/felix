@@ -4,13 +4,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use felix_client::{ClientConfig, ClusterClient, ReconnectPolicy};
+use felix_client::{ClientConfig, ClusterClient};
 use napi::JsFunction;
 use napi::JsObject;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
-use crate::args::{parse_ack, parse_positions, parse_start, seeds, u64_of};
+use crate::args::{parse_ack, parse_positions, parse_start, reconnect_policy, seeds, u64_of};
 use crate::cache_watch::CacheWatchHandle;
 use crate::errors::{classify, invalid};
 use crate::sharded_subscription::ShardedSubscriptionHandle;
@@ -60,8 +60,15 @@ impl Client {
     /// Pass `token`, a `tokenProvider`, or both. `tokenProvider` is called on
     /// the JS thread, lazily and one call at a time, and `token` is what the
     /// client starts with.
+    ///
+    /// `reconnectAttempts` (default 5, a whole number of at least 1) is how
+    /// many times a call tries to reach a broker before it gives up.
+    /// `reconnectDeadline` (milliseconds, default none) bounds one call across
+    /// every attempt and wait. A deadline shorter than one attempt's own
+    /// timeout leaves the call a single attempt. Both apply to `withIdentity`
+    /// clients too.
     #[napi(
-        ts_args_type = "addrs: string | string[], tenantId: string, token?: string | null, serverName?: string, caFile?: string, offerAlpn?: boolean, tokenProvider?: (signal: AbortSignal) => Promise<string>",
+        ts_args_type = "addrs: string | string[], tenantId: string, token?: string | null, serverName?: string, caFile?: string, offerAlpn?: boolean, tokenProvider?: (signal: AbortSignal) => Promise<string>, reconnectAttempts?: number, reconnectDeadline?: number",
         ts_return_type = "Promise<Client>"
     )]
     pub fn connect(
@@ -73,7 +80,10 @@ impl Client {
         ca_file: Option<String>,
         offer_alpn: Option<bool>,
         token_provider: Option<JsFunction>,
+        reconnect_attempts: Option<f64>,
+        reconnect_deadline: Option<f64>,
     ) -> Result<JsObject> {
+        let policy = reconnect_policy(reconnect_attempts, reconnect_deadline)?;
         let addrs = match addrs {
             Either::A(one) => vec![one],
             Either::B(many) => many,
@@ -102,14 +112,9 @@ impl Client {
         let server_name = server_name.unwrap_or_else(|| "localhost".to_string());
         env.execute_tokio_future(
             async move {
-                let inner = ClusterClient::connect_seeds(
-                    &seeds,
-                    &server_name,
-                    config,
-                    ReconnectPolicy::default(),
-                )
-                .await
-                .map_err(classify)?;
+                let inner = ClusterClient::connect_seeds(&seeds, &server_name, config, policy)
+                    .await
+                    .map_err(classify)?;
                 Ok(inner)
             },
             |_, inner| {

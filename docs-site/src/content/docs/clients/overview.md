@@ -79,7 +79,9 @@ language that means the client:
   it delivered, or reports the loss, and never ends it as though the stream had
   finished.
 
-No binding exposes the reconnect backoff: each uses the Rust default. The
+Every client exposes two reconnect options, the attempt count and a deadline for
+one call, and each page has a "Reconnecting" section for them. None exposes the
+backoff itself: each uses the Rust default. The
 [Rust page](/clients/rust/#clusters) and
 [Multi-node client](https://github.com/GetFelix/felix/blob/main/docs/multi-node-client.md)
 cover the behaviour in full, and each client's page has a "Connecting to a
@@ -345,7 +347,7 @@ worth writing code for.
 
 | | | |
 | --- | --- | --- |
-| **[Rust](/clients/rust/)** | `felix-client` on crates.io | The reference client, and the one the others are built from. Applications use `ClusterClient`; `connect_with_policy` tunes its reconnect backoff. |
+| **[Rust](/clients/rust/)** | `felix-client` on crates.io | The reference client, and the one the others are built from. Applications use `ClusterClient`; `connect_with_policy` tunes its reconnect attempts, deadline and backoff. |
 | **[Python](/clients/python/)** | `felix-client` on PyPI | A PyO3 binding, with a synchronous and an asyncio surface over the same Rust client. `Client([...])` takes a list of seeds, and the cluster behaviour is the Rust client's. |
 | **[TypeScript](/clients/typescript/)** | `felix-client` on npm | A napi-rs addon. One asynchronous surface, because blocking Node's event loop is not something a library may do. `Client.connect([...])` takes an array of seeds, with the Rust client's cluster behaviour. |
 | **[C](/clients/c/)** | `libfelix` and `felix.h`, built from the repository | A C ABI over the Rust client, asynchronous through callbacks. `felix_client_connect_with` takes comma-separated seeds and builds a `ClusterClient`. The base for the C# SDK; build it from the repository. |

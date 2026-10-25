@@ -17,6 +17,29 @@ public class OptionsTests
         await Assert.ThrowsAsync<ArgumentNullException>(() => FelixClient.ConnectAsync(null!));
     }
 
+    public static TheoryData<int?, double?> BadReconnectOptions => new()
+    {
+        { 0, null },
+        { -1, null },
+        { null, 0 },
+        { null, -1000 },
+        { null, 400.0 * 24 * 3600 * 1000 },
+    };
+
+    [Theory]
+    [MemberData(nameof(BadReconnectOptions))]
+    public async Task ReconnectOptionsAreValidatedBeforeAnythingIsSent(int? attempts, double? deadlineMs)
+    {
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => FelixClient.ConnectAsync(new FelixClientOptions
+        {
+            Addrs = ["127.0.0.1:1"],
+            TenantId = "t",
+            Token = "x",
+            ReconnectAttempts = attempts,
+            ReconnectDeadline = deadlineMs is { } ms ? TimeSpan.FromMilliseconds(ms) : null,
+        }));
+    }
+
     [Fact]
     public async Task ACancelledTokenFailsBeforeAnythingIsSent()
     {
