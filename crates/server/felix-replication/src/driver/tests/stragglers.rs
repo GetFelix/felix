@@ -750,3 +750,101 @@ async fn a_route_change_ends_a_pass_waiting_on_a_dead_follower() {
     );
     driver.stop().await;
 }
+
+/// Every request waits its node's current delay, and is logged with the time
+/// it was sent.
+#[derive(Default)]
+pub(super) struct Recording {
+    delays: std::sync::Mutex<Map<&'static str, Duration>>,
+    sent: std::sync::Mutex<Vec<(String, tokio::time::Instant)>>,
+}
+
+impl Recording {
+    pub(super) fn delay(&self, node: &'static str, by: Duration) {
+        self.delays.lock().expect("lock").insert(node, by);
+    }
+
+    /// Whether `node` was sent anything after `since` and before `before`.
+    pub(super) fn sent_between(
+        &self,
+        node: &str,
+        since: tokio::time::Instant,
+        before: tokio::time::Instant,
+    ) -> bool {
+        self.sent
+            .lock()
+            .expect("lock")
+            .iter()
+            .any(|(to, at)| to == node && *at >= since && *at < before)
+    }
+}
+
+impl PeerRequester for Recording {
+    async fn request(
+        &self,
+        node_id: &str,
+        _addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        let batch = match message {
+            InternalMessage::ReplicateRecords(batch)
+            | InternalMessage::ReplicateCacheRecords(batch)
+            | InternalMessage::ReplicateCounterRecords(batch) => batch,
+            other => panic!("unexpected {:?}", other.kind()),
+        };
+        self.sent
+            .lock()
+            .expect("lock")
+            .push((node_id.to_string(), tokio::time::Instant::now()));
+        let delay = self.delays.lock().expect("lock").get(node_id).copied();
+        if let Some(delay) = delay {
+            tokio::time::sleep(delay).await;
+        }
+        Ok(InternalMessage::ReplicateOk(ReplicateOk {
+            correlation_id: 0,
+            durable_offset: batch.first_offset + batch.payloads.len() as u64,
+        }))
+    }
+}
+
+/// How soon after a write the follower that is free must be sent it.
+pub(super) const SOON: Duration = Duration::from_millis(150);
+
+/// **A record appended to this shard cuts a pass waiting on a majority.** With
+/// b busy and d slow, the pass waits on d; c is free and level, so the record
+/// that lands meanwhile must reach it now, not once the pass ends.
+#[tokio::test(start_paused = true)]
+async fn an_append_to_this_shard_cuts_a_waiting_pass_short() {
+    let (broker, _dir) = super::quorum::quorum_leader(3, 4).await;
+    let router = router(LOCAL, &["broker-b", "broker-c", "broker-d"], 4);
+    let marks = Arc::new(QuorumMarks::new());
+    let peers = Arc::new(Recording::default());
+    let driver = driver_with(
+        Arc::clone(&peers),
+        &broker,
+        &router,
+        &marks,
+        &Arc::default(),
+    );
+    assert!(prompt(&marks, 0, 4, 3).await, "the first mark waited");
+
+    // b stays busy; c and d make the majority.
+    peers.delay("broker-b", RTT);
+    append(&broker, 0).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(marks.offset(&watch_key(&key()), 4), Some(4));
+
+    // Now d is slow and the next pass waits on it.
+    peers.delay("broker-c", Duration::from_millis(20));
+    peers.delay("broker-d", RTT);
+    append(&broker, 0).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let landed = tokio::time::Instant::now();
+    append(&broker, 0).await;
+    tokio::time::sleep(SOON).await;
+    assert!(
+        peers.sent_between("broker-c", landed, tokio::time::Instant::now()),
+        "the record waited for the pass to end before it was shipped to a free follower",
+    );
+    driver.stop().await;
+}

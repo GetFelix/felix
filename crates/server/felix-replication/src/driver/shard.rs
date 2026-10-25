@@ -919,9 +919,19 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                         let appended = next_pass
                             .as_ref()
                             .is_some_and(|next| next.appended.swap(false, std::sync::atomic::Ordering::AcqRel));
-                        if appended && log.tail_offset().await.is_ok_and(|now| now > tail) {
-                            cut_short = true;
-                            break;
+                        if appended {
+                            let log_moved = log.tail_offset().await.is_ok_and(|now| now > tail);
+                            // Counter writes wake the driver too.
+                            let counters_moved = match (&counter_log, counter_tail) {
+                                (Some(log), Some(shipped)) => {
+                                    log.tail_offset().await.is_ok_and(|now| now > shipped)
+                                }
+                                _ => false,
+                            };
+                            if log_moved || counters_moved {
+                                cut_short = true;
+                                break;
+                            }
                         }
                         woken = true;
                         wanted = arm();
