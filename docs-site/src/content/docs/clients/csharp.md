@@ -51,11 +51,6 @@ rotates on every use, so keep the newest one:
 using System.Net.Http.Json;
 using System.Text.Json.Serialization;
 
-record Minted(
-    [property: JsonPropertyName("felix_token")] string FelixToken,
-    [property: JsonPropertyName("expires_in")] int ExpiresIn,
-    [property: JsonPropertyName("refresh_token")] string RefreshToken);
-
 var http = new HttpClient { BaseAddress = new Uri("https://controlplane:8443/v1/tenants/t1/") };
 
 var exchange = new HttpRequestMessage(HttpMethod.Post, "token/exchange")
@@ -63,7 +58,7 @@ var exchange = new HttpRequestMessage(HttpMethod.Post, "token/exchange")
     Content = JsonContent.Create(new
     {
         requested = new[] { "stream.publish", "stream.subscribe" },
-        resources = new[] { "stream:t1/orders/*" },
+        resources = new[] { "stream:t1/default/*" },
     }),
 };
 exchange.Headers.Authorization = new("Bearer", oidcToken);
@@ -74,6 +69,12 @@ var minted = await (await http.SendAsync(exchange)).EnsureSuccessStatusCode()
 var refreshed = await http.PostAsJsonAsync("token/refresh",
     new { refresh_token = minted!.RefreshToken });
 minted = await refreshed.EnsureSuccessStatusCode().Content.ReadFromJsonAsync<Minted>();
+
+// Type declarations go after top-level statements.
+record Minted(
+    [property: JsonPropertyName("felix_token")] string FelixToken,
+    [property: JsonPropertyName("expires_in")] int ExpiresIn,
+    [property: JsonPropertyName("refresh_token")] string RefreshToken);
 ```
 
 `FelixClientOptions.Token` cannot change on a live client. After a refresh,

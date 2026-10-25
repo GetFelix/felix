@@ -140,7 +140,7 @@ struct Minted {
     refresh_token: String,
 }
 
-const CONTROLPLANE: &str = "https://controlplane:8443/v1/tenants/t1";
+const CONTROLPLANE: &str = "https://controlplane:8443/v1/tenants/acme";
 
 async fn exchange(http: &reqwest::Client, oidc: &str) -> anyhow::Result<Minted> {
     Ok(http
@@ -148,7 +148,7 @@ async fn exchange(http: &reqwest::Client, oidc: &str) -> anyhow::Result<Minted> 
         .bearer_auth(oidc)
         .json(&serde_json::json!({
             "requested": ["stream.publish", "stream.subscribe"],
-            "resources": ["stream:t1/orders/*"],
+            "resources": ["stream:acme/prod/*"],
         }))
         .send().await?.error_for_status()?.json().await?)
 }
@@ -168,7 +168,7 @@ let tokens = RefreshingToken::with_initial(first.felix_token, {
                 .json(&serde_json::json!({ "refresh_token": current }))
                 .send().await?.error_for_status()?.json().await?;
             *refresh.lock().unwrap() = minted.refresh_token;
-            Ok(minted.felix_token)
+            Ok::<_, anyhow::Error>(minted.felix_token)
         }
     }
 });

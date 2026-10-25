@@ -178,7 +178,7 @@ plane:
 curl -s -X POST "https://controlplane:8443/v1/tenants/t1/token/exchange" \
   -H "Authorization: Bearer $OIDC_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"requested": ["stream.publish", "stream.subscribe"], "resources": ["stream:t1/orders/*"]}'
+  -d '{"requested": ["stream.publish", "stream.subscribe"], "resources": ["stream:t1/default/*"]}'
 ```
 
 ```json
@@ -251,7 +251,9 @@ The exception is a short grace window (`FELIX_REFRESH_REUSE_GRACE_SECONDS`, 30
 by default) that covers a retry after a lost answer and two refreshes racing
 each other. So refresh from one place at a time.
 
-An expired, revoked or unknown refresh token all get the same `403`. There is
+An expired, revoked or unknown refresh token all get the same `403`, as does
+a refresh for a principal whose RBAC grants have all been removed (that also
+ends the chain). There is
 nothing to repair: exchange a fresh identity-provider token again. An
 administrator ends a principal's chains and broker tokens with
 [`POST /v1/tenants/{tenant_id}/refresh-tokens/revoke`](/api/control-plane-api/#admin-api-refresh-token-revocation-and-signing-keys);
@@ -265,7 +267,9 @@ new exchange when a refresh answers `403`.
 
 The broker checks a token when a stream authenticates, and not again while the
 stream is open. A subscription or publish stream that is already running keeps
-working after its token expires. What fails is anything that authenticates
+working after its token expires, with one exception: a publish forwarded
+through a broker that does not own the shard is checked again by the owner,
+which rejects it once the token has expired or been revoked. What fails is anything that authenticates
 afterwards: a new subscription, a cache or group request, or the streams a
 client reopens after losing its connection to a broker. A client that holds one
 fixed token presents that same token every time, so once it has expired those

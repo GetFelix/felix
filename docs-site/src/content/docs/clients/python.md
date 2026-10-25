@@ -80,7 +80,7 @@ def post(path, body, bearer=None):
         return json.load(resp)
 
 minted = post("/token/exchange",
-              {"requested": ["stream.publish"], "resources": ["stream:t1/orders/*"]},
+              {"requested": ["stream.publish"], "resources": ["stream:t1/default/*"]},
               bearer=oidc_token)
 client = felix.Client("127.0.0.1:5000", tenant_id="t1", token=minted["felix_token"])
 

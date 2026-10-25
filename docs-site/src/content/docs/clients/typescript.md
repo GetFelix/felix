@@ -87,7 +87,7 @@ async function post(path: string, body: unknown, bearer?: string) {
 
 let minted = await post(
   "/token/exchange",
-  { requested: ["stream.publish"], resources: ["stream:t1/orders/*"] },
+  { requested: ["stream.publish"], resources: ["stream:t1/default/*"] },
   oidcToken,
 );
 let client = await Client.connect("127.0.0.1:5000", "t1", minted.felix_token, "localhost", caFile);
