@@ -15,10 +15,11 @@ public sealed class FelixGroup
 
     internal FelixGroup(FelixClient client, string tenant, string ns, string stream, uint shard, string group, string? consumer)
     {
-        ArgumentNullException.ThrowIfNull(tenant);
-        ArgumentNullException.ThrowIfNull(ns);
-        ArgumentNullException.ThrowIfNull(stream);
-        ArgumentNullException.ThrowIfNull(group);
+        Arg.Text(tenant);
+        Arg.Text(ns);
+        Arg.Text(stream);
+        Arg.Text(group);
+        Arg.OptionalText(consumer);
         this.client = client;
         Tenant = tenant;
         Namespace = ns;

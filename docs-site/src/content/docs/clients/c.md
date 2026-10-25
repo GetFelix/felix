@@ -458,7 +458,8 @@ combined with an offset to resume from.
 
 `felix_client_watch_cache` takes a filter kind, `FELIX_WATCH_KEY` or
 `FELIX_WATCH_PREFIX` (anything else is `FELIX_STATUS_INVALID_ARGUMENT`), and
-`has_from_offset` with `from_offset` to resume after a change's offset. A watch
+`has_from_offset` with `from_offset`, the first offset not yet seen (a handled
+change's offset plus one, or a `FELIX_WATCH_LAGGED` item's `resume_from`). A watch
 is read until it reports `FELIX_STATUS_CLOSED`. A single watch's offsets are
 sparse, because other keys' changes consume them, so a gap is not a drop;
 `FELIX_WATCH_LAGGED` is.

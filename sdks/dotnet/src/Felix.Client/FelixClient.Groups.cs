@@ -18,9 +18,9 @@ public sealed partial class FelixClient
     /// </summary>
     public unsafe Task<uint> GetShardCountAsync(string tenant, string ns, string stream, CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(tenant);
-        ArgumentNullException.ThrowIfNull(ns);
-        ArgumentNullException.ThrowIfNull(stream);
+        Arg.Text(tenant);
+        Arg.Text(ns);
+        Arg.Text(stream);
         return Call<uint>(cancellationToken, (client, cancel, userData) =>
             NativeMethods.felix_client_stream_shards(client, tenant, ns, stream, cancel, &Callbacks.OnShards, userData));
     }
@@ -36,10 +36,10 @@ public sealed partial class FelixClient
         string group,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(tenant);
-        ArgumentNullException.ThrowIfNull(ns);
-        ArgumentNullException.ThrowIfNull(stream);
-        ArgumentNullException.ThrowIfNull(group);
+        Arg.Text(tenant);
+        Arg.Text(ns);
+        Arg.Text(stream);
+        Arg.Text(group);
         var native = await StartShardedGroup(tenant, ns, stream, group, cancellationToken).ConfigureAwait(false);
         return new FelixShardedGroup(this, native, tenant, ns, stream, group);
     }
@@ -59,10 +59,10 @@ public sealed partial class FelixClient
     /// </remarks>
     public unsafe Task<GroupPosition[]> CreateStreamGroupAsync(string tenant, string ns, string stream, string group, StartPosition start, CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(tenant);
-        ArgumentNullException.ThrowIfNull(ns);
-        ArgumentNullException.ThrowIfNull(stream);
-        ArgumentNullException.ThrowIfNull(group);
+        Arg.Text(tenant);
+        Arg.Text(ns);
+        Arg.Text(stream);
+        Arg.Text(group);
         return Call<GroupPosition[]>(cancellationToken, (client, cancel, userData) =>
             NativeMethods.felix_client_group_create_stream(
                 client, tenant, ns, stream, group, start.Kind, start.Offset, cancel, &Callbacks.OnPositions, userData));
@@ -74,10 +74,10 @@ public sealed partial class FelixClient
     /// </summary>
     public unsafe Task<GroupPosition[]> SeekStreamGroupAsync(string tenant, string ns, string stream, string group, StartPosition start, CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(tenant);
-        ArgumentNullException.ThrowIfNull(ns);
-        ArgumentNullException.ThrowIfNull(stream);
-        ArgumentNullException.ThrowIfNull(group);
+        Arg.Text(tenant);
+        Arg.Text(ns);
+        Arg.Text(stream);
+        Arg.Text(group);
         return Call<GroupPosition[]>(cancellationToken, (client, cancel, userData) =>
             NativeMethods.felix_client_group_seek_stream(
                 client, tenant, ns, stream, group, start.Kind, start.Offset, cancel, &Callbacks.OnPositions, userData));
@@ -86,10 +86,10 @@ public sealed partial class FelixClient
     /// <summary>Where a group stands on every shard of a stream, indexed by shard.</summary>
     public unsafe Task<GroupInfo[]> DescribeStreamGroupAsync(string tenant, string ns, string stream, string group, CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(tenant);
-        ArgumentNullException.ThrowIfNull(ns);
-        ArgumentNullException.ThrowIfNull(stream);
-        ArgumentNullException.ThrowIfNull(group);
+        Arg.Text(tenant);
+        Arg.Text(ns);
+        Arg.Text(stream);
+        Arg.Text(group);
         return Call<GroupInfo[]>(cancellationToken, (client, cancel, userData) =>
             NativeMethods.felix_client_group_describe_stream(
                 client, tenant, ns, stream, group, cancel, &Callbacks.OnInfos, userData));
@@ -101,14 +101,20 @@ public sealed partial class FelixClient
     /// </summary>
     public unsafe Task<bool> DeleteStreamGroupAsync(string tenant, string ns, string stream, string group, CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(tenant);
-        ArgumentNullException.ThrowIfNull(ns);
-        ArgumentNullException.ThrowIfNull(stream);
-        ArgumentNullException.ThrowIfNull(group);
+        Arg.Text(tenant);
+        Arg.Text(ns);
+        Arg.Text(stream);
+        Arg.Text(group);
         return Call<bool>(cancellationToken, (client, cancel, userData) =>
             NativeMethods.felix_client_group_delete_stream(
                 client, tenant, ns, stream, group, cancel, &Callbacks.OnDeleted, userData));
     }
+
+    /// <summary>
+    /// A cache of a tenant's namespace. Nothing is sent: the cache is made by the control plane, and
+    /// a cache that does not exist fails its first call with <see cref="FelixStatus.NotFound"/>.
+    /// </summary>
+    public FelixCache Cache(string tenant, string ns, string cache) => new(this, tenant, ns, cache);
 
     internal Task<T> Call<T>(CancellationToken cancellationToken, Func<nint, nint, nint, int> begin) =>
         NativeCall.Start<T>(handle, cancellationToken, begin);
