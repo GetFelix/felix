@@ -640,6 +640,7 @@ jobs:
 
       # The suite starts these.
       - name: Build the broker and cluster harness
+        id: harness
         run: |
           cargo build --locked -p felix-broker-service --bin felix-broker
           cargo build --locked -p felix-cluster --bin felix-cluster
@@ -666,8 +667,11 @@ jobs:
       # against the checked-in header, linked both ways, and run against its
       # own fixture. Here because this job already builds the broker and the
       # harness. Whether the header matches the source is the felix-capi
-      # `header` test, which `task test` runs.
+      # `header` test, which `task test` runs. It needs only the harness, so a
+      # Python failure does not hide the C result.
       - name: C ABI against the fixture
+        id: capi
+        if: ${{ !cancelled() && steps.harness.outcome == 'success' }}
         env:
           FELIX_CONFORMANCE_RESULTS: ${{ github.workspace }}/c-conformance.json
         run: crates/sdk/felix-capi/tests/c/run.sh fixture
@@ -675,7 +679,7 @@ jobs:
       # Gates like the Python and TypeScript verdicts: a required scenario the C
       # harness failed, skipped or never recorded fails the job.
       - name: C ABI conformance verdict
-        if: always()
+        if: ${{ !cancelled() && steps.capi.outcome != 'skipped' }}
         run: cargo run --locked -q -p felix-conformance -- verify c-conformance.json
 
   # Same reasoning as the Python job above, and the same shape: the binding
