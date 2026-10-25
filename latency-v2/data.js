@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792923030674,
+  "lastUpdate": 1792927299340,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -46464,6 +46464,72 @@ window.BENCHMARK_DATA = {
             "range": "1242.79",
             "unit": "us",
             "extra": "trials: 5\nmedian: 403.00\nmean: 984.00\nstdev: 1242.79\ncv: 126.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f1c233827d96ccf8d2ef00a302b0c01faee76537",
+          "message": "test(csharp): token scenarios; the token scenarios are required (#1552)\n\nC# tags the seven token scenarios, one test each: lazy, single_flight,\nrefused_retry_once and failure_message on existing tests, and new fixture\ntests for expiry_refresh, keep_valid_on_failure and timeout_joins that mint\nshort-lived tokens from the fixture's /tokens endpoint. With every SDK (Rust,\nC, Python, TypeScript, C#) passing them, the token scenarios are required in\nthe conformance catalogue.",
+          "timestamp": "2026-10-25T11:15:01Z",
+          "tree_id": "e57d7894374782cb8342e7eda1258a3cfb03cbe5",
+          "url": "https://github.com/GetFelix/felix/commit/f1c233827d96ccf8d2ef00a302b0c01faee76537"
+        },
+        "date": 1792927293259,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 183,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 183.00\nmean: 182.60\nstdev: 1.14\ncv: 0.62%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 244,
+            "range": "2.59",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 244.00\nmean: 243.20\nstdev: 2.59\ncv: 1.06%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 296,
+            "range": "69.56",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 296.00\nmean: 326.60\nstdev: 69.56\ncv: 21.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 220,
+            "range": "9.51",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 220.00\nmean: 224.00\nstdev: 9.51\ncv: 4.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 445,
+            "range": "178.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 445.00\nmean: 521.60\nstdev: 178.64\ncv: 34.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 610,
+            "range": "565.82",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 610.00\nmean: 851.40\nstdev: 565.82\ncv: 66.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
