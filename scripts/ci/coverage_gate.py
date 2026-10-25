@@ -90,7 +90,7 @@ def main():
     check = sub.add_parser("check")
     check.add_argument("lcov")
     check.add_argument("baseline")
-    check.add_argument("--tolerance", type=float, default=0.1)
+    check.add_argument("--tolerance", type=float, default=0.3)
     check.add_argument("--baseline-files")
     sub.add_parser("files").add_argument("lcov")
     args = parser.parse_args()

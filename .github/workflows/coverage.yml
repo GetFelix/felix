@@ -120,8 +120,8 @@ jobs:
           path: lcov.info
           if-no-files-found: warn
 
-      # An unchanged tree varies about +-0.05 points, hence 0.1. No baseline yet
-      # (first run after this lands) passes.
+      # The C harness's cluster runs make line coverage vary by up to about 0.2
+      # points between runs of the same tree, hence 0.3. No baseline yet passes.
       - name: Gate on main's line coverage
         if: github.event_name == 'pull_request'
         run: |
@@ -135,7 +135,7 @@ jobs:
               rm -f "$RUNNER_TEMP/baseline-files.json"
             fi
             python3 scripts/ci/coverage_gate.py check lcov.info "$RUNNER_TEMP/baseline.txt" \
-              --tolerance 0.1 --baseline-files "$RUNNER_TEMP/baseline-files.json"
+              --tolerance 0.3 --baseline-files "$RUNNER_TEMP/baseline-files.json"
           else
             echo "::notice::no coverage baseline on the badges branch yet; skipping the gate"
             python3 scripts/ci/coverage_gate.py percent lcov.info
