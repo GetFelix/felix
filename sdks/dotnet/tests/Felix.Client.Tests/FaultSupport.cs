@@ -32,6 +32,9 @@ internal sealed class FaultFixture
 
     internal string? ControlUrl { get; private init; }
 
+    /// <summary>The stub broker that advertises no features; empty when the fixture has none.</summary>
+    internal string[] NoCommitAddrs { get; private init; } = [];
+
     internal string? LinkAddr { get; private init; }
 
     internal string? LinkStream { get; private init; }
@@ -77,6 +80,9 @@ internal sealed class FaultFixture
             CaFile = Text("ca_file"),
             Stream = Text("durable_stream"),
             ControlUrl = Optional("control_url"),
+            NoCommitAddrs = root.TryGetProperty("no_commit_addrs", out var bare) && bare.ValueKind == JsonValueKind.Array
+                ? bare.EnumerateArray().Select(a => a.GetString()!).ToArray()
+                : [],
             LinkAddr = Optional("link_addr"),
             LinkStream = Optional("link_stream"),
             MovableStream = Optional("movable_stream"),
@@ -121,6 +127,22 @@ public sealed class LinkFixtureFactAttribute : FixtureFactAttribute
             if (f.ControlUrl is null || f.LinkAddr is null || f.LinkStream is null)
             {
                 Skip = "the fixture file has no link interposer";
+            }
+        }
+    }
+}
+
+/// <summary>Skips unless the fixture file carries the no-commit stub broker and the control endpoint that counts its requests.</summary>
+public sealed class NoCommitFixtureFactAttribute : FixtureFactAttribute
+{
+    public NoCommitFixtureFactAttribute()
+    {
+        if (Skip is null)
+        {
+            var f = FaultFixture.Load();
+            if (f.NoCommitAddrs.Length == 0 || f.ControlUrl is null)
+            {
+                Skip = "the fixture file has no no_commit_addrs or control_url";
             }
         }
     }
