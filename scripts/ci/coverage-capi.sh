@@ -14,8 +14,11 @@ export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}/llvm-cov-target"
 
 # Exports RUSTFLAGS and LLVM_PROFILE_FILE. run.sh reads
 # CARGO_TARGET_DIR, and the C programs and the fixture's broker processes
-# inherit LLVM_PROFILE_FILE, so each writes its own profile.
-source <(cargo llvm-cov show-env --sh --no-cfg-coverage)
+# inherit LLVM_PROFILE_FILE, so each writes its own profile. Captured first:
+# a failure inside `source <(...)` would not stop the script, and the harness
+# would then run uninstrumented and quietly lower the coverage.
+coverage_env="$(cargo llvm-cov show-env --sh --no-cfg-coverage)"
+eval "$coverage_env"
 
 # The fixture starts these; run.sh builds felix-capi itself.
 cargo build --locked -p felix-broker-service --bin felix-broker
