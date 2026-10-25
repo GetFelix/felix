@@ -53,6 +53,10 @@ impl Rig {
         })
     }
 
+    fn dir_path(&self) -> &std::path::Path {
+        self._dir.path()
+    }
+
     fn live(&self) -> crate::status::LiveReport {
         self.status
             .live_report(&watch_key(&key()))
@@ -508,4 +512,34 @@ async fn an_absorbed_unchecked_answer_behind_the_tail_starts_a_pass() {
     let (scan, ended) = shards.passes.next().await.expect("a pass");
     shards.fold(scan, ended);
     assert_eq!(rig.marks.offset(&watch_key(&key()), 4), Some(TAIL + 1));
+}
+
+/// **A follower that cannot progress is passed for once, not per answer.**
+/// The leader cannot read its log, so every pass fails the follower without
+/// moving its cursor and its exchange answers unchecked and behind the tail.
+/// The first pass stalls it; answers after that start none.
+#[tokio::test(start_paused = true)]
+async fn an_unchecked_answer_from_a_follower_that_cannot_progress_loops_no_pass() {
+    let rig = Rig::new().await;
+    let mut shards = appended_behind_busy(&rig).await;
+    assert!(
+        crate::tests::trimmed_history::gut_segments(rig.dir_path()) > 0,
+        "no segment files found"
+    );
+    let mut started = 0;
+    for _ in 0..20 {
+        for node in ["broker-b", "broker-c"] {
+            shards.hold_busy(&key(), node);
+        }
+        let answers = [
+            shards.answer_held(&key(), "broker-b", false),
+            shards.answer_held(&key(), "broker-c", false),
+        ];
+        for answer in answers {
+            shards.apply(answer);
+        }
+        started += shards.passes.len();
+        drain(&mut shards).await;
+    }
+    assert_eq!(started, 1, "passes started for a follower that cannot move");
 }

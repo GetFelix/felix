@@ -858,6 +858,27 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         }
     }
 
+    /// An answer carrying `node`'s held cursor exactly as it is.
+    #[cfg(test)]
+    pub(super) fn answer_held(&self, key: &ShardKey, node: &str, checked: bool) -> Answered {
+        let entry = self.streams.get(key).expect("cursors");
+        let cursor = entry
+            .followers
+            .iter()
+            .find(|cursor| cursor.node_id == node)
+            .expect("follower")
+            .clone();
+        Answered {
+            key: key.clone(),
+            generation: entry.generation,
+            incarnation: entry.incarnation,
+            cursor,
+            rode: Box::default(),
+            cut: false,
+            checked,
+        }
+    }
+
     /// Halt `node`'s held cursor, as an earlier pass would have.
     #[cfg(test)]
     pub(super) fn halt_follower(&mut self, key: &ShardKey, node: &str) {

@@ -320,3 +320,52 @@ async fn a_bootstrap_at_or_below_the_commit_offset_is_offered() {
     assert_eq!(progress, Progress::Resume { offset: base });
     assert_eq!(offers(&follower), vec![base]);
 }
+
+/// Empty every segment file under `dir`, so a read of records the log still
+/// indexes fails with something other than a trim.
+pub(crate) fn gut_segments(dir: &std::path::Path) -> usize {
+    let mut gutted = 0;
+    for entry in std::fs::read_dir(dir).expect("dir") {
+        let path = entry.expect("entry").path();
+        if path.is_dir() {
+            gutted += gut_segments(&path);
+        } else if path
+            .extension()
+            .is_some_and(|ext| ext == "log" || ext == "seg" || ext == "segment")
+        {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .expect("open")
+                .set_len(0)
+                .expect("truncate");
+            gutted += 1;
+        }
+    }
+    gutted
+}
+
+/// **A leader that cannot read its own log stalls the cursor.** Nothing is
+/// wrong with the follower, but an unstalled cursor that cannot move would get
+/// a pass for every unchecked answer.
+#[tokio::test]
+async fn a_leader_read_failure_stalls_the_cursor() {
+    let (log, base, dir) = trimmed_leader().await;
+    assert!(gut_segments(dir.path()) > 0, "no segment files found");
+    let follower = ScriptedFollower::new([]);
+    let mut cursor = cursor(base);
+    cursor.stalled = false;
+    let progress = ship_once(
+        &follower,
+        &log,
+        &shard(),
+        felix_broker::LogKind::Stream,
+        &mut cursor,
+        BATCH_BYTES,
+        &Rebuilds::disabled(),
+    )
+    .await;
+    assert_eq!(progress, Progress::Retry);
+    assert!(cursor.halted.is_none());
+    assert!(cursor.stalled, "a failed read left the cursor unstalled");
+}
