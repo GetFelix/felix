@@ -86,6 +86,8 @@ impl Cluster {
     /// directory, and wait until the control plane can place on it.
     ///
     /// Its ports are new; a broker re-registers its addresses on every start.
+    /// Also waits for that new registration: the old one's fresh heartbeat
+    /// already satisfies "placeable".
     pub async fn restart_node(&mut self, node_id: &str) -> Result<()> {
         let index = self
             .nodes
@@ -95,6 +97,15 @@ impl Cluster {
         if self.nodes[index].is_running() {
             bail!("{node_id} is still running");
         }
+        // Unreadable (no record yet, control plane down) means there is nothing to outwait.
+        let prior_incarnation = match &self.control_plane {
+            Some(control_plane) => control_plane
+                .registered_node(node_id)
+                .await
+                .ok()
+                .map(|node| node.status.incarnation),
+            None => None,
+        };
         // Kept beside the new one: the old run is usually what a failure is about.
         let log = self.nodes[index].data_dir.join("broker.log");
         let _ = std::fs::rename(&log, log.with_extension("log.previous"));
@@ -126,9 +137,25 @@ impl Cluster {
                     attempts += 1;
                     tracing::warn!(%node_id, "broker lost a port on restart; starting it again");
                 }
-                result => return result,
+                Err(error) => return Err(error),
+                Ok(()) => break,
             }
         }
+        let Some(prior) = prior_incarnation else {
+            return Ok(());
+        };
+        let this = &*self;
+        wait::until(
+            READY_TIMEOUT,
+            &format!("{node_id} to register a new incarnation"),
+            || async move {
+                matches!(
+                    this.registered_node(node_id).await,
+                    Ok(node) if node.status.incarnation > prior
+                )
+            },
+        )
+        .await
     }
 
     /// Wait for the broker at `index` to report ready and the control plane
