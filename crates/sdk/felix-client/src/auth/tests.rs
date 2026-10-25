@@ -211,7 +211,6 @@ async fn overlapping_refreshes_share_one_call() -> Result<()> {
     Ok(())
 }
 
-// Scenario token.failure_message.
 /// A blank token is a failed fetch: typed `Token`, never held or handed out.
 #[tokio::test]
 async fn an_empty_or_blank_token_fails_the_fetch() {
@@ -241,6 +240,7 @@ async fn a_blank_token_keeps_a_valid_held_one() -> Result<()> {
     Ok(())
 }
 
+// Scenario token.failure_message.
 /// With nothing valid held, the provider's own text is in the error.
 #[tokio::test]
 async fn a_failed_fetch_carries_the_providers_message() {
@@ -472,5 +472,15 @@ async fn a_waiter_returns_a_newer_stored_token_instead_of_fetching_again() -> Re
 
     assert_eq!(waiter.await?, newer);
     assert_eq!(calls.load(Ordering::SeqCst), 2);
+    Ok(())
+}
+
+/// A blank initial token is no token: the first use calls the provider.
+#[tokio::test]
+async fn a_blank_initial_token_is_fetched_over() -> Result<()> {
+    for blank in ["", "  "] {
+        let provider = RefreshingToken::with_initial(blank, || async { Ok("fetched".to_string()) });
+        assert_eq!(provider.token().await?, "fetched");
+    }
     Ok(())
 }

@@ -159,7 +159,11 @@ impl RefreshingToken {
         Fut: Future<Output = Result<String>> + Send + 'static,
     {
         let token = Self::new_cancellable(fetch);
-        *token.state.lock().expect("token state poisoned") = Some(Held::new(initial.into()));
+        // A blank initial is no token; the first use fetches.
+        let initial = initial.into();
+        if !initial.trim().is_empty() {
+            *token.state.lock().expect("token state poisoned") = Some(Held::new(initial));
+        }
         token
     }
 

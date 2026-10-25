@@ -85,7 +85,7 @@ pub(crate) fn provider(fetch: &Arc<Fetch>, initial: Option<String>) -> Arc<Refre
     };
     // An empty string is no token: the first auth fetches instead of sending
     // one the broker will refuse.
-    Arc::new(match initial.filter(|token| !token.is_empty()) {
+    Arc::new(match initial.filter(|token| !token.trim().is_empty()) {
         Some(initial) => RefreshingToken::with_initial_cancellable(initial, call),
         None => RefreshingToken::new_cancellable(call),
     })

@@ -260,7 +260,7 @@ pub(crate) fn provider(source: &Arc<TokenSource>, initial: Option<&str>) -> Arc<
     let fetch = move || Arc::clone(&source).fetch();
     // An empty string is no token: the first auth fetches instead of sending
     // one the broker will refuse.
-    let initial = initial.filter(|initial| !initial.is_empty());
+    let initial = initial.filter(|initial| !initial.trim().is_empty());
     Arc::new(match initial {
         Some(initial) => RefreshingToken::with_initial(initial, fetch),
         None => RefreshingToken::new(fetch),

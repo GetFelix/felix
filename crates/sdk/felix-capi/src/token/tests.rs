@@ -122,6 +122,16 @@ async fn a_reply_from_another_thread_is_the_token_and_no_initial_token_is_fine()
     assert_eq!(probe.fetches.load(Ordering::SeqCst), 1);
 }
 
+/// A whitespace-only initial token is no token either.
+#[tokio::test]
+async fn a_blank_initial_token_is_fetched_over() {
+    use felix_client::TokenProvider;
+    let probe = Probe::new(Answer::OtherThread("fetched"));
+    let tokens = provider(&probe.source(), Some("  "));
+    assert_eq!(tokens.token().await.unwrap(), "fetched");
+    assert_eq!(probe.fetches.load(Ordering::SeqCst), 1);
+}
+
 /// The initial token is used without asking the app.
 #[tokio::test]
 async fn the_initial_token_is_served_without_a_fetch() {
