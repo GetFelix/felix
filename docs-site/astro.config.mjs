@@ -138,6 +138,7 @@ export default defineConfig({
             { label: 'felix-metro', slug: 'built-on-felix/metro' },
             { label: 'felix-blocks', slug: 'built-on-felix/blocks' },
             { label: 'felix-agents', slug: 'built-on-felix/agents' },
+            { label: 'felixd', slug: 'built-on-felix/felixd' },
           ],
         },
         {
