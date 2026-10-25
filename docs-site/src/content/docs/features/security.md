@@ -62,8 +62,8 @@ let quinn = quinn::ClientConfig::with_root_certificates(Arc::new(roots))?;
 let client = ClusterClient::connect(&seeds, "broker.example.com", ClientConfig::optimized_defaults(quinn)).await?;
 ```
 
-The Python and TypeScript bindings take the same two choices: the platform
-trust store, or a CA file, plus the server name to verify. Neither presents a
+The Python, TypeScript, C and C# clients take the same two choices: the platform
+trust store, or a CA file, plus the server name to verify. None presents a
 client certificate yet, so they cannot connect to a broker with
 `FELIX_TLS_CLIENT_CA` set.
 
@@ -578,7 +578,7 @@ API are not revoked; they expire with the access TTL. See
   and required by default; with `FELIX_INTERNAL_ALLOW_UNAUTHENTICATED=true`
   peers encrypt but do not authenticate each other and the internal network
   is trusted.
-- **Client certificates from the Python and TypeScript bindings.**
+- **Client certificates from the Python, TypeScript, C and C# clients.**
 - **Audit logging, and quotas beyond the publish rate.** Subscriptions, cache
   use and storage are not limited per tenant.
 

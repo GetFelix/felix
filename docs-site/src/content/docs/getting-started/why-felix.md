@@ -187,7 +187,7 @@ What does not exist yet:
 - Load-aware placement. Rebalancing evens out shard counts, not load, so a
   broker leading its share of hot shards is left as it is.
 - Tiered storage, cross-region bridges, encryption at rest, and audit logging.
-- Clients beyond Rust, Python and TypeScript.
+- Go and mobile clients.
 
 For the detail on each capability (shipped, partial, or only intended), read
 [What Felix Is For](/getting-started/what-felix-is-for/). It is kept current

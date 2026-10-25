@@ -28,8 +28,11 @@ flowchart TB
         direction LR
         PY["Python<br/><small>felix-python (PyO3)</small>"]
         TS["TypeScript<br/><small>felix-typescript (napi-rs)</small>"]
-        GO["Go<br/><small>planned</small>"]
+        CS["C#<br/><small>Felix.Client (P/Invoke)</small>"]
+        GO["Go<br/><small>not started</small>"]
     end
+
+    CABI["C ABI<br/><small>felix-capi: libfelix + felix.h</small>"]
 
     CORE["felix-client<br/><small>reconnect · redirects · retry classification · offsets</small>"]
     WIRE["felix-wire + felix-transport<br/><small>framing, QUIC, TLS 1.3</small>"]
@@ -37,14 +40,16 @@ flowchart TB
 
     PY --> CORE
     TS --> CORE
-    GO -.-> CORE
+    CS --> CABI
+    CABI --> CORE
+    GO -.-> CABI
     CORE --> WIRE
     WIRE -->|QUIC| BROKER
 
     classDef planned fill:#fdf0e3,stroke:#b07d3a,color:#3d2a12
     classDef core fill:#e8f0fe,stroke:#4a6fa5,color:#1a2b40
     class GO planned
-    class CORE,WIRE core
+    class CORE,WIRE,CABI core
 ```
 
 Most systems write a native client per language, each speaking the wire
@@ -359,9 +364,9 @@ MB/s of payload, broker CPU up 34%) and durable quorum-acked throughput 4.4×
 TypeScript clients, and the C ABI that C# binds, are built on `ClusterClient`
 and have no other kind. See [Every client is a cluster client](#every-client-is-a-cluster-client).
 
-Python and TypeScript both pass every required scenario in the catalogue, and
-CI is gated on both. That includes the `commit.*` scenarios: all three clients
-offer [atomic commits](/features/atomic-commits/) with the same typed
+Python, TypeScript, the C ABI (driven from C) and C# all pass every required
+scenario in the catalogue, and CI is gated on each. That includes the `commit.*`
+scenarios: every client offers [atomic commits](/features/atomic-commits/) with the same typed
 refusals. Each leaves a couple of optional scenarios unclaimed
 rather than passing over them in silence; their pages say which.
 

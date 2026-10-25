@@ -248,7 +248,7 @@ Detail, with every configuration and its state count:
 The decoders that parse input from outside the process are fuzzed; see
 [Fuzzing](/development/fuzzing/). The wire-protocol conformance runner
 (`task conformance`) holds a catalogue of required scenarios, and CI checks the
-Python and TypeScript clients' results against it.
+Python, TypeScript, C and C# clients' results against it.
 
 The storage power-loss suite rebuilds the directory a reboot could find after
 each flush and checks that recovery keeps every acknowledged record. Pull

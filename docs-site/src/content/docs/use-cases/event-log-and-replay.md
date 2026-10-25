@@ -223,9 +223,11 @@ publisher principal is the broker vouching for who sent the write, not for the
 payload, and it is stored only when `FELIX_RECORD_PUBLISHERS` (or the
 `publisher_principal` fleet feature in a cluster) is on. That is a one-way
 change to the storage format for the data directory. The Rust client exposes
-publisher identity, `offset_for_time` and range reads; the Python and TypeScript
-bindings document none of them yet, so from those languages use the Kafka
-listener or felixctl for replay. Idempotent producers are Rust only. Streams are not
+publisher identity, `offset_for_time` and range reads. The C ABI and the C# SDK
+expose publisher identity and `offset_for_time` but not range reads. The Python
+and TypeScript bindings document none of them yet, so from those languages use
+the Kafka listener or felixctl for replay. Idempotent producers are in the
+Rust, C and C# clients. Streams are not
 compacted by key, so a stream grows until retention trims it.
 
 ## Related

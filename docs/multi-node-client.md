@@ -306,7 +306,7 @@ have to make yourself:
   invented, since no order exists across shards, and resuming would still need
   the per-shard offsets below. Each shard's fanout is already shared by every
   subscriber to it, so merging in the client costs the broker nothing. The
-  Python and TypeScript clients wrap this same implementation
+  Python and TypeScript clients, and the C ABI under C#, wrap this same implementation
   (`subscribe_sharded` / `subscribeSharded`). A client without a Felix library
   does the same thing on the wire: `StreamShards` for the count, then one
   `Subscribe` per shard.

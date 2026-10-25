@@ -2152,7 +2152,7 @@ name an owner that names another, and two brokers that disagree would otherwise
 bounce a client between them indefinitely. The Rust `ClusterClient` caps this at
 three hops and refuses to visit the same broker twice within one attempt. It
 follows redirects for subscribes, cache watches and every group request; the
-Python and TypeScript clients' group calls go through it. The single-broker Rust
+Python, TypeScript, C and C# clients' group calls go through it. The single-broker Rust
 `Client` returns the redirect as `NotLeaderError` and does not follow it.
 
 **Publish is forwarded, not redirected.** The two paths made opposite
