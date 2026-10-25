@@ -55,9 +55,9 @@ public sealed partial class FelixClient : IAsyncDisposable, IDisposable
             throw new ArgumentOutOfRangeException(nameof(options), "ReconnectAttempts must be at least 1");
         }
 
-        if (options.ReconnectDeadline is { } deadline && deadline < TimeSpan.FromMilliseconds(1))
+        if (options.ReconnectDeadline is { } deadline && (deadline < TimeSpan.FromMilliseconds(1) || deadline > TimeSpan.FromDays(365)))
         {
-            throw new ArgumentOutOfRangeException(nameof(options), "ReconnectDeadline must be at least 1 millisecond");
+            throw new ArgumentOutOfRangeException(nameof(options), "ReconnectDeadline must be between 1 millisecond and one year");
         }
 
         cancellationToken.ThrowIfCancellationRequested();

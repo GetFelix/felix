@@ -338,12 +338,12 @@ one so the first connection survives a seed being down.
 
 ### Reconnecting
 
-A call that cannot reach a broker is retried with a backoff. Two options tune that, and both default to the Rust client's own policy, so a client that sets neither behaves as it always did.
+Publishes, opening and following subscriptions, commits, `publish_if` and state reads retry with a backoff when no broker can be reached. Cache and consumer-group calls are not bounded by these options yet. Two options tune the retrying, and both default to the Rust client's own policy, so a client that sets neither behaves as it always did.
 
 - **Attempts** is how many times a call tries to reach a broker before it gives up. Each attempt tries every broker the client knows. The default is 5, and the minimum is 1.
-- **Deadline** is a ceiling on one call across every attempt and every wait between them. It is off by default. Attempt counts alone do not bound time: five attempts against a broker that takes its full publish timeout to answer is minutes.
+- **Deadline** is a ceiling on one call across every attempt and every wait between them. It is off by default, and it is checked between attempts, before each backoff sleep, so a call can last the deadline plus one attempt's own timeout. Attempt counts alone do not bound time: five attempts against a broker that takes its full publish timeout to answer is minutes.
 
-Pass them as `reconnect_attempts` (an int) and `reconnect_deadline` (seconds, a float) to `Client(...)` or `AsyncClient.connect(...)`. Zero, a negative number, `NaN` or infinity raises `ValueError`.
+Pass them as `reconnect_attempts` (an int) and `reconnect_deadline` (seconds, a float) to `Client(...)` or `AsyncClient.connect(...)`. The attempt count must be at least 1 and the deadline above 0 and at most one year; anything else, including an int too large for a machine word, raises `ValueError`.
 
 ```python
 import felix
@@ -356,7 +356,7 @@ with felix.Client(
     reconnect_deadline=30.0,
 ) as client:
     try:
-        # Raises the last error once 30 s have passed, however many attempts remain.
+        # Stops retrying once 30 s have passed, checked between attempts, and raises the last error.
         client.publish("t1", "default", "orders", b"hello", at_least_once=True)
     except felix.FelixError as err:
         print(f"publish gave up: {err}")

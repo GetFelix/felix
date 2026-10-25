@@ -1933,10 +1933,10 @@ that hangs does not stop the others resolving. See `docs/multi-node-client.md`.
 
 ### Reconnecting
 
-A call that cannot reach a broker is retried with a backoff. Two options tune that, and both default to the Rust client's own policy, so a client that sets neither behaves as it always did.
+Publishes, opening and following subscriptions, commits, `publish_if` and state reads retry with a backoff when no broker can be reached. Cache and consumer-group calls are not bounded by these options yet. Two options tune the retrying, and both default to the Rust client's own policy, so a client that sets neither behaves as it always did.
 
 - **Attempts** is how many times a call tries to reach a broker before it gives up. Each attempt tries every broker the client knows. The default is 5, and the minimum is 1.
-- **Deadline** is a ceiling on one call across every attempt and every wait between them. It is off by default. Attempt counts alone do not bound time: five attempts against a broker that takes its full publish timeout to answer is minutes.
+- **Deadline** is a ceiling on one call across every attempt and every wait between them. It is off by default, and it is checked between attempts, before each backoff sleep, so a call can last the deadline plus one attempt's own timeout. Attempt counts alone do not bound time: five attempts against a broker that takes its full publish timeout to answer is minutes.
 
 `ClusterClient::connect_with_policy` takes them as the `attempts` and `deadline` fields of a `ReconnectPolicy`; the other fields are the backoff, which no other client exposes.
 
@@ -1948,7 +1948,7 @@ let policy = ReconnectPolicy {
 };
 let client = ClusterClient::connect_with_policy(&seeds, "localhost", config, policy).await?;
 
-// Fails with the last error once 30 s have passed, however many attempts remain.
+// Stops retrying once 30 s have passed, checked between attempts, and reports the last error.
 client
     .publish_at_least_once("t1", "default", "orders", b"hello".to_vec(), AckMode::PerMessage)
     .await?;

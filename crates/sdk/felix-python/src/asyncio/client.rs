@@ -57,7 +57,7 @@ impl AsyncClient {
         server_name: &str,
         ca_file: Option<&str>,
         offer_alpn: bool,
-        reconnect_attempts: Option<i64>,
+        reconnect_attempts: Option<Bound<'_, PyAny>>,
         reconnect_deadline: Option<f64>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let seeds = parse_addrs(py, &addrs)?;
@@ -66,7 +66,8 @@ impl AsyncClient {
                 "at least one broker address is required",
             ));
         }
-        let policy = crate::args::reconnect_policy(reconnect_attempts, reconnect_deadline)?;
+        let policy =
+            crate::args::reconnect_policy(reconnect_attempts.as_ref(), reconnect_deadline)?;
         let quinn = crate::tls::client_config(ca_file, offer_alpn)?;
         let mut config = ClientConfig::optimized_defaults(quinn);
         config.auth_tenant_id = Some(tenant_id.to_string());

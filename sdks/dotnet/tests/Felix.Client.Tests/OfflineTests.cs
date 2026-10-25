@@ -23,6 +23,7 @@ public class OptionsTests
         { -1, null },
         { null, 0 },
         { null, -1000 },
+        { null, 400.0 * 24 * 3600 * 1000 },
     };
 
     [Theory]

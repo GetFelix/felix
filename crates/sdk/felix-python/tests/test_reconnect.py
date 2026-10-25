@@ -11,8 +11,8 @@ import pytest
 
 import felix
 
-BAD_ATTEMPTS = [0, -1]
-BAD_DEADLINES = [0, 0.0, -1.0, float("nan"), float("inf")]
+BAD_ATTEMPTS = [0, -1, 10**30, 10**100]
+BAD_DEADLINES = [0, 0.0, -1.0, float("nan"), float("inf"), 1e19, 400 * 24 * 3600.0]
 
 
 def _connect(addrs="127.0.0.1:1", **options):

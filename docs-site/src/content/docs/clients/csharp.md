@@ -300,12 +300,12 @@ down. An empty list throws `ArgumentException`.
 
 ### Reconnecting
 
-A call that cannot reach a broker is retried with a backoff. Two options tune that, and both default to the Rust client's own policy, so a client that sets neither behaves as it always did.
+Publishes, opening and following subscriptions, commits, `publish_if` and state reads retry with a backoff when no broker can be reached. Cache and consumer-group calls are not bounded by these options yet. Two options tune the retrying, and both default to the Rust client's own policy, so a client that sets neither behaves as it always did.
 
 - **Attempts** is how many times a call tries to reach a broker before it gives up. Each attempt tries every broker the client knows. The default is 5, and the minimum is 1.
-- **Deadline** is a ceiling on one call across every attempt and every wait between them. It is off by default. Attempt counts alone do not bound time: five attempts against a broker that takes its full publish timeout to answer is minutes.
+- **Deadline** is a ceiling on one call across every attempt and every wait between them. It is off by default, and it is checked between attempts, before each backoff sleep, so a call can last the deadline plus one attempt's own timeout. Attempt counts alone do not bound time: five attempts against a broker that takes its full publish timeout to answer is minutes.
 
-Set them as `FelixClientOptions.ReconnectAttempts` (`int?`) and `FelixClientOptions.ReconnectDeadline` (`TimeSpan?`). Both are null by default. There is no per-user handle to carry the policy to. An attempt count below 1 or a deadline under one millisecond throws `ArgumentOutOfRangeException`.
+Set them as `FelixClientOptions.ReconnectAttempts` (`int?`) and `FelixClientOptions.ReconnectDeadline` (`TimeSpan?`). Both are null by default. There is no per-user handle to carry the policy to. An attempt count below 1, or a deadline under one millisecond or over one year, throws `ArgumentOutOfRangeException`.
 
 ```csharp
 await using var client = await FelixClient.ConnectAsync(new FelixClientOptions
@@ -318,7 +318,7 @@ await using var client = await FelixClient.ConnectAsync(new FelixClientOptions
 });
 try
 {
-    // Throws the last error once 30 s have passed, however many attempts remain.
+    // Stops retrying once 30 s have passed, checked between attempts, and reports the last error.
     await client.PublishAsync("t1", "default", "orders", "hello"u8.ToArray(), delivery: Delivery.AtLeastOnce);
 }
 catch (FelixException e)

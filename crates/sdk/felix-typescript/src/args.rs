@@ -34,6 +34,10 @@ pub(crate) fn seeds(addrs: Vec<String>) -> Result<Vec<Seed>> {
     Ok(seeds)
 }
 
+/// The longest reconnect deadline accepted, in milliseconds. Longer is no
+/// deadline in practice, and a huge one would overflow the clock.
+const MAX_DEADLINE_MS: f64 = 365.0 * 24.0 * 3600.0 * 1000.0;
+
 /// The default reconnect policy with the caller's attempts and deadline (ms).
 ///
 /// Numbers arrive as `f64` so a fraction or `NaN` is refused instead of being
@@ -52,16 +56,13 @@ pub(crate) fn reconnect_policy(
         policy.attempts = attempts as usize;
     }
     if let Some(ms) = deadline_ms {
-        // Rejects NaN, infinity, negatives and overflow along with zero.
-        let deadline = Duration::try_from_secs_f64(ms / 1000.0)
-            .ok()
-            .filter(|d| !d.is_zero())
-            .ok_or_else(|| {
-                invalid(format!(
-                    "reconnectDeadline must be a positive number of milliseconds, not {ms}"
-                ))
-            })?;
-        policy.deadline = Some(deadline);
+        // NaN fails both comparisons. The cap keeps the clock from overflowing.
+        if !(1.0..=MAX_DEADLINE_MS).contains(&ms) {
+            return Err(invalid(format!(
+                "reconnectDeadline must be between 1 millisecond and one year, not {ms}"
+            )));
+        }
+        policy.deadline = Some(Duration::from_secs_f64(ms / 1000.0));
     }
     Ok(policy)
 }

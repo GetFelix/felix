@@ -21,7 +21,7 @@ test("reconnectAttempts must be a whole number of at least 1", async () => {
 });
 
 test("reconnectDeadline must be a positive number of milliseconds", async () => {
-  for (const reconnectDeadline of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+  for (const reconnectDeadline of [0, 0.5, -1, Number.NaN, Number.POSITIVE_INFINITY, 1e22, 400 * 24 * 3600 * 1000]) {
     await assert.rejects(connect({ reconnectDeadline }), (err) => {
       assert.ok(err instanceof InvalidArgumentError, `${reconnectDeadline}: ${err}`);
       assert.match(err.message, /reconnectDeadline/);

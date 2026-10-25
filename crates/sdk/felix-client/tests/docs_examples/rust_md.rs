@@ -1491,7 +1491,7 @@ mod reconnecting_1 {
         };
         let client = ClusterClient::connect_with_policy(&seeds, "localhost", config, policy).await?;
 
-        // Fails with the last error once 30 s have passed, however many attempts remain.
+        // Stops retrying once 30 s have passed, checked between attempts, and reports the last error.
         client
             .publish_at_least_once("t1", "default", "orders", b"hello".to_vec(), AckMode::PerMessage)
             .await?;

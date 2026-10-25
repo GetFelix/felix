@@ -43,34 +43,42 @@ pub(crate) fn parse_addrs(py: Python<'_>, addrs: &Py<PyAny>) -> PyResult<Vec<See
     Ok(seeds)
 }
 
+/// The longest reconnect deadline accepted, in seconds. Longer is no deadline
+/// in practice, and a huge one would overflow the clock.
+const MAX_DEADLINE_SECS: f64 = 365.0 * 24.0 * 3600.0;
+
 /// The default reconnect policy with the caller's attempts and deadline.
 pub(crate) fn reconnect_policy(
-    attempts: Option<i64>,
+    attempts: Option<&Bound<'_, PyAny>>,
     deadline: Option<f64>,
 ) -> PyResult<ReconnectPolicy> {
     let mut policy = ReconnectPolicy::default();
     if let Some(attempts) = attempts {
-        policy.attempts = usize::try_from(attempts)
-            .ok()
-            .filter(|&n| n >= 1)
-            .ok_or_else(|| {
-                PyValueError::new_err(format!(
-                    "reconnect_attempts must be at least 1, not {attempts}"
-                ))
-            })?;
+        // A Python int of any size is a ValueError here, not an OverflowError.
+        let wanted = match attempts.extract::<i64>() {
+            Ok(n) => usize::try_from(n).ok().filter(|&n| n >= 1),
+            Err(err) if err.is_instance_of::<pyo3::exceptions::PyOverflowError>(attempts.py()) => {
+                None
+            }
+            Err(err) => return Err(err),
+        };
+        policy.attempts = wanted.ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "reconnect_attempts must be at least 1, not {}",
+                attempts
+                    .str()
+                    .map_or_else(|_| "that".into(), |s| s.to_string())
+            ))
+        })?;
     }
     if let Some(seconds) = deadline {
-        // Rejects NaN, infinity, negatives and overflow along with zero.
-        policy.deadline = Some(
-            Duration::try_from_secs_f64(seconds)
-                .ok()
-                .filter(|d| !d.is_zero())
-                .ok_or_else(|| {
-                    PyValueError::new_err(format!(
-                        "reconnect_deadline must be a positive number of seconds, not {seconds}"
-                    ))
-                })?,
-        );
+        if !(seconds > 0.0 && seconds <= MAX_DEADLINE_SECS) {
+            return Err(PyValueError::new_err(format!(
+                "reconnect_deadline must be a number of seconds above 0 and at most one year, not {seconds}"
+            )));
+        }
+        // Positive, finite and bounded above, so this cannot fail.
+        policy.deadline = Some(Duration::from_secs_f64(seconds));
     }
     Ok(policy)
 }
