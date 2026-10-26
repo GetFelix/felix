@@ -2438,8 +2438,10 @@ AckedHeldByLeader ==
 
 \* A witness, not a safety property: no leader that opened counted a fence
 \* answer from a replica its promotion named by inheritance. Under
-\* `NameByInheritance` TLC finds one (FelixShardFencedCrashInheritedCounts.cfg),
-\* which shows the configurations that pass with it get that far.
+\* `NameByInheritance` TLC finds one (FelixShardFencedCrashInheritedCounts.cfg,
+\* FelixShardFencedWipeInheritedCounts.cfg,
+\* FelixShardFencedLeaderCrashInheritedCounts.cfg and
+\* FelixShardFencedLeaderCrashTwiceInheritedCounts.cfg), which shows the configurations that pass with it get that far.
 NoInheritedCount ==
     \A b \in Brokers : (bgen[b] > 0 /\ ~fencing[b]) => answered[b] \cap inherited[b] = {}
 

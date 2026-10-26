@@ -284,6 +284,8 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardFencedCrashNamesByInheritance.cfg` | `FelixShardFencedCrashUnprobed.cfg` with two promotions on suspicion, every promoted leader blind until it asks, process and machine crashes (`ProcessCrashes`, `KeepIdOnSameBoot`), and a report carrying the identity its leader's own promotion named each replica by, which placement names a replica the report names none for by (`NameByInheritance`, #1574). A nightly walk, not a check: see below | pass, sampled (exhaustively, 27.9M distinct states at depth 22 with 14.3M still queued when TLC's queue filled the runner's disk, 31 min in) |
 | `FelixShardFencedWipeNamesByInheritance.cfg` | `FelixShardFencedWipe.cfg` with the same two promotions and inherited names. A nightly walk | pass, sampled (exhaustively, even with state constraints, 30.7M distinct states at depth 23 with 13.9M queued when the disk filled) |
 | `FelixShardFencedLeaderCrashNamesByInheritance.cfg` | `FelixShardFencedLeaderCrash.cfg` with inherited names and a second promotion on suspicion. A nightly walk | pass, sampled (did not finish in 5 h 50 min) |
+| `FelixShardFencedWipeInheritedCounts.cfg` | the witness for the wipe walk, the same bounds, so a clean walk means it got that far. A nightly walk | violate `NoInheritedCount` |
+| `FelixShardFencedLeaderCrashInheritedCounts.cfg` | the witness for the leader crash walk, the same bounds. A nightly walk | violate `NoInheritedCount` |
 | `FelixShardFencedCrashInheritedCounts.cfg` | A witness for the inherited-name configurations: a leader promoted at the second failover opens with a fence answer counted from a replica it named by inheritance | violate `NoInheritedCount` |
 | `FelixShardFencedLeaderCrashTwiceNamesByInheritance.cfg` | `FelixShardFencedLeaderCrash.cfg` with inherited names and two leader crashes (`Wipes = 2`, no suspicion), so the second replacement can be decided on a report that names a follower only by inheritance. Every promotion replaces a leader that gave its copy up, so no deposed leader serves beside the new one; that is what keeps it small enough to finish | pass `AckedHeldByLeader`, `AckedAgree`, `NoTruncationBelowHwm` (11.2M distinct states, depth 43, 20.5 min on a CI runner) |
 | `FelixShardFencedLeaderCrashTwiceInheritedCounts.cfg` | its witness, the same bounds: the leader promoted after the second crash opens with a fence answer counted from a replica it named by inheritance | violate `NoInheritedCount` (99K distinct states, depth 19, 10 s) |
@@ -1163,7 +1165,9 @@ of them costs about an order of magnitude in states, so exhaustive search
 cannot reach a behaviour that grows the set, replaces a follower, fails over
 and moves the shard again. The `FelixShardWalk*.cfg` configurations lift the
 bounds (time to 40, six writes, six moves) and TLC samples behaviours up to
-300 steps long instead, in its simulation mode. They run nightly, not per push
+300 steps long instead, in its simulation mode. The inherited-name families
+keep their exhaustive bounds and sample them, since those are too big to
+check exhaustively. They run nightly, not per push
 (`.github/workflows/tla-walk.yml`).
 
 A walk shows less than a check. It is sampling: a pass means the walks found
@@ -1192,7 +1196,9 @@ per family:
 | `FelixShardFencedCrashNamesByInheritance.cfg` | inherited names under two promotions on suspicion with process and machine crashes (the table above) | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `NoTruncationBelowHwm` |
 | `FelixShardFencedCrashInheritedCounts.cfg` | its witness | violate `NoInheritedCount` |
 | `FelixShardFencedWipeNamesByInheritance.cfg` | the same with a wipe | pass the same invariants |
+| `FelixShardFencedWipeInheritedCounts.cfg` | its witness | violate `NoInheritedCount` |
 | `FelixShardFencedLeaderCrashNamesByInheritance.cfg` | a leader crash and a second promotion on suspicion | pass `AckedHeldByLeader`, `AckedAgree`, `NoTruncationBelowHwm` |
+| `FelixShardFencedLeaderCrashInheritedCounts.cfg` | its witness | violate `NoInheritedCount` |
 
 Every walk runs with ballots and every change of leader fenced
 (`Ballots`, `FenceEveryChange`), as the broker ships, and all but the

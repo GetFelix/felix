@@ -247,7 +247,9 @@ walks=(
   "FelixShardFencedCrashNamesByInheritance pass"
   "FelixShardFencedCrashInheritedCounts violates NoInheritedCount"
   "FelixShardFencedWipeNamesByInheritance pass"
+  "FelixShardFencedWipeInheritedCounts violates NoInheritedCount"
   "FelixShardFencedLeaderCrashNamesByInheritance pass"
+  "FelixShardFencedLeaderCrashInheritedCounts violates NoInheritedCount"
 )
 registered=("${expectations[@]}")
 if [ "$mode" = simulate ]; then registered=("${walks[@]}"); fi
