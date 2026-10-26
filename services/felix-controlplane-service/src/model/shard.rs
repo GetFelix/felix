@@ -437,6 +437,14 @@ pub struct ReplicaReport {
     /// it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub given_up: bool,
+    /// For a follower the leader had not reached yet at its generation, the
+    /// storage identity (32 lowercase hex) the assignment that promoted the
+    /// leader named for it. A failover from this report names such a member
+    /// by it instead of by none. Empty from brokers that predate it and,
+    /// under Raft, until every member can apply it; such a member is then
+    /// named by none, as before.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub inherited_storage: BTreeMap<String, String>,
 }
 
 /// A copy of a shard its leader has stopped shipping to.

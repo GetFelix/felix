@@ -374,6 +374,8 @@
 4 import_state.state.replica_reports[].halted.*.generation
 4 import_state.state.replica_reports[].halted.*.reason
 4 import_state.state.replica_reports[].halted.*.since_millis
+20 import_state.state.replica_reports[].inherited_storage
+20 import_state.state.replica_reports[].inherited_storage.*
 3 import_state.state.replica_reports[].key
 3 import_state.state.replica_reports[].key.kind
 3 import_state.state.replica_reports[].key.namespace
@@ -639,6 +641,8 @@
 4 record_replica_report.report.halted.*.generation
 4 record_replica_report.report.halted.*.reason
 4 record_replica_report.report.halted.*.since_millis
+20 record_replica_report.report.inherited_storage
+20 record_replica_report.report.inherited_storage.*
 0 record_replica_report.report.key
 0 record_replica_report.report.key.kind
 0 record_replica_report.report.key.namespace
@@ -943,6 +947,8 @@
 4 snapshot.state.replica_reports[].halted.*.generation
 4 snapshot.state.replica_reports[].halted.*.reason
 4 snapshot.state.replica_reports[].halted.*.since_millis
+20 snapshot.state.replica_reports[].inherited_storage
+20 snapshot.state.replica_reports[].inherited_storage.*
 3 snapshot.state.replica_reports[].key
 3 snapshot.state.replica_reports[].key.kind
 3 snapshot.state.replica_reports[].key.namespace

@@ -145,6 +145,7 @@ fn replica_report(
     reported_at_millis: u64,
 ) -> crate::model::ReplicaReport {
     crate::model::ReplicaReport {
+        inherited_storage: Default::default(),
         given_up: false,
         counter_offsets: Default::default(),
         key: shard_assignment(tenant_id, namespace, stream, "broker-0").key,

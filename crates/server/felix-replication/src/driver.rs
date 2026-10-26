@@ -759,7 +759,7 @@ async fn alone_report(broker: &Broker, key: &ShardKey, generation: u64, floor: u
         None => 0,
     }
     .max(floor);
-    crate::reporter::shard_report(key, generation, tail, tail, &[], false)
+    crate::reporter::shard_report(key, generation, tail, tail, &[], &Default::default(), false)
 }
 
 /// Take a shard's cursors out of the maps for a pass over `route`.

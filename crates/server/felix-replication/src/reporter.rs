@@ -14,6 +14,8 @@
 //! queue behind it and go together in the next one. Batches grow under load,
 //! which is when they are worth having, and an idle broker waits for nothing.
 //! `disk_log/sync.rs` makes the same trade for the same reason.
+use std::collections::BTreeMap;
+
 use felix_common::membership::{
     HaltedReplicaStatus, ReplicaOffset, ReplicaStatusRequest, ReplicaStatusResponse,
     ShardKind as WireShardKind, ShardReplicaStatus,
@@ -148,6 +150,14 @@ pub struct ShardReport {
     /// `None` for one that had not registered yet, for every follower that
     /// sends one. Like `storage_ids`, it names who the positions describe.
     pub node_incarnations: Vec<(String, Option<u64>)>,
+    /// For each follower with no entry in `storage_ids`, the identity (32
+    /// hex digits) the assignment that promoted this leader named for it,
+    /// where it named one. This leader has not reached such a follower at
+    /// its generation, so every acknowledgement the follower gave went to an
+    /// earlier leader, from the copy that assignment named or one before it.
+    /// Storage identities never repeat, so a fence answer under that
+    /// identity comes from a copy that has kept all of it.
+    pub inherited_storage: Vec<(String, String)>,
     /// This broker gave the shard up after a crash and measured where every
     /// follower's copy ends (`crate::reclaim`). Sent without a tail, so it
     /// replaces the report its previous process made whatever that one's
@@ -180,6 +190,7 @@ pub(super) fn shard_report(
     tail: u64,
     acknowledged: u64,
     followers: &[FollowerCursor],
+    inherited: &BTreeMap<String, String>,
     drained: bool,
 ) -> ShardReport {
     ShardReport {
@@ -218,6 +229,14 @@ pub(super) fn shard_report(
             })
             .collect(),
         given_up: false,
+        inherited_storage: followers
+            .iter()
+            .filter(|follower| follower.storage_id.is_none())
+            .filter_map(|follower| {
+                let id = inherited.get(&follower.node_id)?;
+                Some((follower.node_id.clone(), id.clone()))
+            })
+            .collect(),
     }
 }
 
@@ -341,6 +360,7 @@ async fn send_reports(to: &ReportTo, reports: &[ShardReport]) -> Vec<bool> {
                     .collect(),
                 replica_incarnations: report.node_incarnations.iter().cloned().collect(),
                 given_up: report.given_up,
+                inherited_storage_ids: report.inherited_storage.iter().cloned().collect(),
             })
             .collect(),
     };

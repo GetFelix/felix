@@ -438,18 +438,22 @@ impl CaughtUp for ReplicaPositions {
         if ids.is_empty() {
             return ids;
         }
-        // A member the report names no identity for had not been asked by its
-        // leader when it reported, so every answer it gave came later and the
-        // report vouches for none of them. One registered without an identity
-        // predates identities and is left unnamed, as is a replica outside the
-        // old set, which gave the old leader nothing to count.
+        // A member the report names no identity for had not been reached by
+        // its leader, so it acknowledged nothing to that leader. It is named by
+        // the identity the leader's own promotion held it to, which covers
+        // every acknowledgement it gave before, since identities never repeat
+        // (#1574). Without one it is named with none, which no answer matches.
+        // One registered without an identity predates identities and is left
+        // unnamed, as is a replica outside the old set, which gave the old
+        // leader nothing to count.
         for member in old_set {
             let registered = self
                 .nodes
                 .get(*member)
                 .is_some_and(|node| node.storage_id.is_some());
             if registered && !ids.contains_key(*member) {
-                ids.insert(member.to_string(), String::new());
+                let inherited = report.inherited_storage.get(*member).cloned();
+                ids.insert(member.to_string(), inherited.unwrap_or_default());
             }
         }
         ids

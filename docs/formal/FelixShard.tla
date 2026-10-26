@@ -475,6 +475,14 @@ ASSUME Wipes > 0 => /\ ReportFromAnswers /\ ~Counters /\ ~Handoff /\ ~Cancel
 \* incarnation is the control plane's stamp as the report arrives, which can
 \* follow a crash the report predates
 \* (FelixShardFencedCrashNamesByRegistration.cfg).
+\* `NameByInheritance`: for a replica the report names no identity for, its
+\* leader's report also carries the identity that leader's own promotion
+\* named it by (`inh`), and placement names the replica by that (#1574):
+\* `inherited_storage` in crates/server/felix-replication/src/reporter.rs,
+\* `report_storage_ids` in placement/replica_positions.rs. The leader has
+\* not reached that replica at its generation, so every acknowledgement the
+\* replica gave went to an earlier leader from that copy or one before it,
+\* and identities never repeat.
 Yes == TRUE
 No == FALSE
 StripIds == FALSE
@@ -494,6 +502,7 @@ ReclaimBlind == FALSE
 FenceChecksIds == TRUE
 UnnamedCounts == FALSE
 NameByRegistration == FALSE
+NameByInheritance == FALSE
 \* `LosePromises`: a follower loses its data directory once, with what it
 \* promised (`Forget`).
 \* `PromiseFromRoutes`: a follower with no promise on disk answers only what
@@ -518,6 +527,12 @@ ASSUME PromiseFromRoutes => LosePromises
 FencedIds == FenceOnPromote /\ StorageIds /\ Wipes > 0
 Unnamed == 99
 UnprobedStart == FALSE
+
+\* Under `UnprobedStart` a promoted leader starts blind too: its cursors
+\* belong to its generation, so it knows no follower's identity until it has
+\* asked. Inheritance is modelled only there. A reclaimed or elected leader
+\* is named by no promotion, and `expect` is not kept for one.
+ASSUME NameByInheritance => /\ FencedIds /\ UnprobedStart /\ ~Reclaims /\ Elections = 0
 
 VARIABLES
     now,        \* real time
@@ -578,6 +593,7 @@ VARIABLES
     inc,        \* how many times each broker has registered: its incarnation
     restarting, \* brokers wiped and not yet registered again
     expect,     \* per leader, the identity it counts each replica's fence answer from
+    inherited,  \* history, per leader: the replicas its promotion named by inheritance
     leftDirty   \* how much of its log a crashed process left to the page cache, until a clean stop
 
 \* The counter log's state, which only a cache shard's actions change.
@@ -590,9 +606,11 @@ setVars == << setGen, oldSet, installed, nextVars >>
 
 \* Storage identities and registrations: only a wipe, a crash, a leader
 \* learning one, a registration and a promotion change them.
-idVars == << sid, seen, seenInc, wipes, checked, registered, inc, restarting, expect, leftDirty >>
-\* All of them but `expect`, which a placement decision sets on a promotion.
-decideIdVars == << sid, seen, seenInc, wipes, checked, registered, inc, restarting, leftDirty >>
+idVars == << sid, seen, seenInc, wipes, checked, registered, inc, restarting, expect, inherited,
+             leftDirty >>
+\* All of them but `expect`, `inherited` and the promoted leader's `seen`
+\* and `seenInc`, which a promotion sets.
+decideIdVars == << sid, wipes, checked, registered, inc, restarting, leftDirty >>
 
 vars == << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
            hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit,
@@ -636,7 +654,7 @@ Opens(b, g) == opened' = IF TracksOpens THEN opened \cup {<<g, b>>} ELSE opened
 \* names every broker at its first registration, as `sids` names its first
 \* identity.
 NoReport == [holders |-> {}, len |-> 0, drained |-> FALSE, gen |-> 0, sids |-> [m \in Brokers |-> 0],
-             incs |-> [m \in Brokers |-> 1]]
+             incs |-> [m \in Brokers |-> 1], inh |-> [m \in Brokers |-> Unnamed]]
 
 \* The replica set the stream asked for: everyone but a destination still
 \* copying, a replacement still joining, and the brokers outside it. A quorum
@@ -782,7 +800,10 @@ IdInit ==
     /\ registered = [m \in Brokers |-> 1]
     /\ inc = [m \in Brokers |-> 0]
     /\ restarting = {}
-    /\ expect = [m \in Brokers |-> [n \in Brokers |-> 0]]
+    \* The first leader was promoted by nobody, so it inherits no name.
+    /\ expect = [m \in Brokers |-> [n \in Brokers |->
+                   IF FencedIds /\ UnprobedStart THEN Unnamed ELSE 0]]
+    /\ inherited = [m \in Brokers |-> {}]
     /\ leftDirty = [b \in Brokers |-> 0]
 
 Init ==
@@ -1251,7 +1272,10 @@ Report(b) ==
                        \* leader never crashes and keeps its first identity.
                        sids    |-> IF CrashLeader THEN [seen[b] EXCEPT ![b] = sid[b]]
                                                   ELSE seen[b],
-                       incs    |-> seenInc[b]] >>
+                       incs    |-> seenInc[b],
+                       \* What its own promotion named each replica by.
+                       inh     |-> IF NameByInheritance THEN expect[b]
+                                                        ELSE [m \in Brokers |-> Unnamed]] >>
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, fenceVars >>
@@ -1375,12 +1399,16 @@ ByProbe(v, f) ==
     /\ \A o \in ReplicaSet \ {v.leader} : ~Ahead(o, f)
 
 \* The identity a promotion from report `r` hands the new leader for `m`: the
-\* one `r` names, and under `NameByRegistration` for one it names none, the
+\* one `r` names. For one it names none, under `NameByInheritance` the one
+\* `r`'s leader was promoted with for `m`, and under `NameByRegistration` the
 \* one `m` is registered under while it is at the incarnation `r` was taken
 \* at. A crash registers again with a new identity and incarnation.
+Inherits(r, m) == r.sids[m] = Unnamed /\ NameByInheritance /\ r.inh[m] /= Unnamed
+
 Named(r, m) ==
-    IF /\ r.sids[m] = Unnamed /\ NameByRegistration /\ registered[m] /= 0
-       /\ r.incs[m] = inc[m] + 1
+    IF Inherits(r, m) THEN r.inh[m]
+    ELSE IF /\ r.sids[m] = Unnamed /\ NameByRegistration /\ registered[m] /= 0
+            /\ r.incs[m] = inc[m] + 1
     THEN registered[m] - 1
     ELSE r.sids[m]
 
@@ -1463,6 +1491,16 @@ Promote(v, f, views) ==
     \* (`fence_storage_ids`). Kept only where identities can change.
     /\ expect' = IF FencedIds THEN [expect EXCEPT ![f] = [m \in Brokers |-> Named(v.report, m)]]
                                 ELSE expect
+    /\ inherited' = [inherited EXCEPT ![f] = { m \in Brokers : Inherits(v.report, m) }]
+    \* The new leader's cursors are its generation's: under `UnprobedStart` it
+    \* knows no follower's identity until it asks (`Probe`), like the first
+    \* leader. The model lets it ask while it fences, which the code does only
+    \* once open; a probe changes nothing the fence reads, so that adds no
+    \* outcome.
+    /\ IF FencedIds /\ UnprobedStart
+       THEN /\ seen' = [seen EXCEPT ![f] = [m \in Brokers |-> IF m = f THEN seen[f][f] ELSE Unnamed]]
+            /\ seenInc' = [seenInc EXCEPT ![f] = [m \in Brokers |-> IF m = f THEN seenInc[f][f] ELSE 0]]
+       ELSE UNCHANGED << seen, seenInc >>
     /\ UNCHANGED << now, clock, inflight, hbOut, hbAt, hwm, halted, acked, writes,
                     staleCommit, successor, moves, chwm, cacked >>
 
@@ -1489,8 +1527,11 @@ Promote(v, f, views) ==
 \* never are.) `UnnamedCounts` counts it, and TLC finds the record lost
 \* (FelixShardFencedCrashCountsUnnamed.cfg), as it does naming it by its
 \* registration (`NameByRegistration`,
-\* FelixShardFencedCrashNamesByRegistration.cfg). The code compares the identity
-\* the answer's connection gave in its handshake.
+\* FelixShardFencedCrashNamesByRegistration.cfg). Named by the identity the
+\* report's leader was itself promoted with (`NameByInheritance`), it counts
+\* safely (FelixShardFencedLeaderCrashTwiceNamesByInheritance.cfg, and the
+\* walks of FelixShardFencedCrashNamesByInheritance.cfg). The code compares the
+\* identity the answer's connection gave in its handshake.
 FenceCounts(b, f) ==
     \/ ~(FenceChecksIds /\ FencedIds)
     \/ expect[b][f] = sid[f]
@@ -2107,7 +2148,7 @@ Decide(v, f, views) ==
     \/ /\ \/ Fence(v, f, views) \/ CutOver(v, f, views) \/ Retake(v, f, views)
           \/ Reseat(v, f, views) \/ GrowSet(v, f, views) \/ Seat(v, f, views)
           \/ Swap(v, f, views) \/ CpAdopt(v, f, views) \/ Reclaim(v, views)
-       /\ UNCHANGED << counterVars, expect >>
+       /\ UNCHANGED << counterVars, expect, inherited, seen, seenInc >>
 
 -----------------------------------------------------------------------------
 (* Wipes. A follower loses its data directory and comes back empty, under *)
@@ -2133,7 +2174,7 @@ Wipe(f) ==
             /\ UNCHANGED restarting
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, halted, queued, pending, acked, writes, staleCommit >>
-    /\ UNCHANGED << handoffVars, fenceVars, seen, seenInc, checked, expect, leftDirty >>
+    /\ UNCHANGED << handoffVars, fenceVars, seen, seenInc, checked, expect, inherited, leftDirty >>
 
 \* A follower crashes under `FsyncMode::Periodic` or `None` and restarts
 \* without a suffix it had not synced, which it may already have answered
@@ -2189,7 +2230,7 @@ Crash(f) ==
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bexpiry,
                     hbOut, hbAt, halted, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, promised, answered, ballot, opened, setVars, ackGen,
-                    seen, seenInc, expect >>
+                    seen, seenInc, expect, inherited >>
 
 \* `f`, back from a process crash that kept its identity, stops cleanly and
 \* starts again in the same boot. The stop syncs what this run wrote and
@@ -2210,7 +2251,7 @@ CleanStop(f) ==
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, fenceVars, sid, seen, seenInc, wipes, checked, registered,
-                    restarting, expect >>
+                    restarting, expect, inherited >>
 
 \* Under `StripIds`, the wiped broker registers again without an identity;
 \* otherwise registering with one is the wipe's own step. Nothing orders the
@@ -2225,7 +2266,7 @@ Register(f) ==
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, fenceVars >>
-    /\ UNCHANGED << sid, seen, seenInc, wipes, checked, expect, leftDirty >>
+    /\ UNCHANGED << sid, seen, seenInc, wipes, checked, expect, inherited, leftDirty >>
 
 \* `f` loses its data directory, and with it the generation and ballot it
 \* promised. Under `PromiseFromRoutes` it answers what its routing view
@@ -2248,7 +2289,8 @@ Forget(f) ==
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, fencing, answered, confirmed, opened, setVars, ackGen >>
-    /\ UNCHANGED << sid, seen, seenInc, checked, registered, inc, restarting, expect, leftDirty >>
+    /\ UNCHANGED << sid, seen, seenInc, checked, registered, inc, restarting, expect, inherited,
+                    leftDirty >>
 
 \* The incarnation `f`'s handshake gives: none before it has registered.
 \* Registering closes the connections opened before it, so a leader learns
@@ -2273,7 +2315,7 @@ Probe(b, f) ==
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, promised, fencing, answered, ballot, opened, setVars, ackGen >>
-    /\ UNCHANGED << sid, wipes, registered, inc, restarting, expect, leftDirty >>
+    /\ UNCHANGED << sid, wipes, registered, inc, restarting, expect, inherited, leftDirty >>
 
 \* `f` answers one of `b`'s requests over a connection from the copy `b`
 \* knows: the `Witness` in crates/server/felix-replication/src/driver/shard.rs.
@@ -2290,7 +2332,7 @@ Answer(b, f) ==
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, fenceVars, sid, seen, seenInc, wipes, registered, inc, restarting,
-                    expect, leftDirty >>
+                    expect, inherited, leftDirty >>
 
 \* A report ends `b`'s pass: what it heard before counts toward no later
 \* mark.
@@ -2326,7 +2368,7 @@ Next ==
         \/ AckQuorum(b) /\ UNCHANGED quietVars
         \/ Report(b) /\ EndPass(b)
            /\ UNCHANGED << counterVars, heard, sid, seen, seenInc, wipes, registered, inc, restarting,
-                           expect, leftDirty >>
+                           expect, inherited, leftDirty >>
         \/ ObserveFence(b) /\ UNCHANGED quietVars
         \/ Elect(b) /\ UNCHANGED quietVars
         \/ FinishChange(b) /\ UNCHANGED quietVars
@@ -2393,6 +2435,15 @@ AckedHeldByLeader ==
             \A a \in ackGen : a[2] <= bgen[b] => \E i \in 1..Len(log[b]) : log[b][i].id = a[1]
     ELSE \A b \in Brokers : (bgen[b] = Newest /\ ~fencing[b]) =>
             \A id \in acked : \E i \in 1..Len(log[b]) : log[b][i].id = id
+
+\* A witness, not a safety property: no leader that opened counted a fence
+\* answer from a replica its promotion named by inheritance. Under
+\* `NameByInheritance` TLC finds one (FelixShardFencedCrashInheritedCounts.cfg,
+\* FelixShardFencedWipeInheritedCounts.cfg,
+\* FelixShardFencedLeaderCrashInheritedCounts.cfg and
+\* FelixShardFencedLeaderCrashTwiceInheritedCounts.cfg), which shows the configurations that pass with it get that far.
+NoInheritedCount ==
+    \A b \in Brokers : (bgen[b] > 0 /\ ~fencing[b]) => answered[b] \cap inherited[b] = {}
 
 \* Under `Quorum`, a report from a leader still serving names a follower that
 \* may take over whenever a majority of the replicas is still replicating.
@@ -2512,7 +2563,8 @@ TypeOK ==
     /\ \A p \in Planners : Cardinality(cpView[p]) <= 1
     /\ staged \subseteq Brokers /\ Cardinality(staged) <= 1
     /\ heard \in [Brokers -> [holders : SUBSET Brokers, len : Nat, drained : BOOLEAN, gen : Nat,
-                               sids : [Brokers -> Nat], incs : [Brokers -> Nat]]]
+                               sids : [Brokers -> Nat], incs : [Brokers -> Nat],
+                               inh : [Brokers -> Nat]]]
     /\ promised \in [Brokers -> Nat]
     /\ fencing \in [Brokers -> BOOLEAN]
     /\ answered \in [Brokers -> SUBSET Brokers]
@@ -2536,6 +2588,7 @@ TypeOK ==
     /\ checked \in [Brokers -> SUBSET Brokers]
     /\ registered \in [Brokers -> Nat] /\ inc \in [Brokers -> Nat] /\ restarting \subseteq Brokers
     /\ expect \in [Brokers -> [Brokers -> Nat]]
+    /\ inherited \in [Brokers -> SUBSET Brokers]
     /\ leftDirty \in [Brokers -> Nat]
     /\ wipes \in 0..(IF LosePromises THEN 1 ELSE Wipes)
 

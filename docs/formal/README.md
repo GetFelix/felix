@@ -281,6 +281,14 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardFencedCrashUnprobed.cfg` | `FelixShardFencedCrash.cfg` with the first leader not yet knowing either follower's identity (`UnprobedStart`), so a report can name none for one; placement names such a member with an empty identity, which nothing matches. Off later pull requests by weight | pass (state count and time to be measured in CI) |
 | `FelixShardFencedCrashCountsUnnamed.cfg` | `FelixShardFencedCrash.cfg` also counting a replica the report named no identity for (`UnnamedCounts`): the leader reported before it asked one follower who it is, then shipped it a record and acknowledged it on the two of them; the follower crashes, and the successor's fence counts it. The code names such a member with an empty identity, which nothing matches | violate `AckedHeldByLeader` |
 | `FelixShardFencedCrashNamesByRegistration.cfg` | `FelixShardFencedCrash.cfg` with placement naming a replica the report left unnamed by its registered identity while it is at the report's incarnation (`NameByRegistration`), a rule considered and not taken: for a follower the leader had not asked yet that incarnation is stamped as the report arrives, which can follow a crash the report predates | violate `AckedHeldByLeader` |
+| `FelixShardFencedCrashNamesByInheritance.cfg` | `FelixShardFencedCrashUnprobed.cfg` with two promotions on suspicion, every promoted leader blind until it asks, process and machine crashes (`ProcessCrashes`, `KeepIdOnSameBoot`), and a report carrying the identity its leader's own promotion named each replica by, which placement names a replica the report names none for by (`NameByInheritance`, #1574). A nightly walk, not a check: see below | pass, sampled (exhaustively, 27.9M distinct states at depth 22 with 14.3M still queued when TLC's queue filled the runner's disk, 31 min in) |
+| `FelixShardFencedWipeNamesByInheritance.cfg` | `FelixShardFencedWipe.cfg` with the same two promotions and inherited names. A nightly walk | pass, sampled (exhaustively, even with state constraints, 30.7M distinct states at depth 23 with 13.9M queued when the disk filled) |
+| `FelixShardFencedLeaderCrashNamesByInheritance.cfg` | `FelixShardFencedLeaderCrash.cfg` with inherited names and a second promotion on suspicion. A nightly walk | pass, sampled (did not finish in 5 h 50 min) |
+| `FelixShardFencedWipeInheritedCounts.cfg` | the witness for the wipe walk, the same bounds, so a clean walk means it got that far. A nightly walk | violate `NoInheritedCount` |
+| `FelixShardFencedLeaderCrashInheritedCounts.cfg` | the witness for the leader crash walk, the same bounds. A nightly walk | violate `NoInheritedCount` |
+| `FelixShardFencedCrashInheritedCounts.cfg` | A witness for the inherited-name configurations: a leader promoted at the second failover opens with a fence answer counted from a replica it named by inheritance | violate `NoInheritedCount` |
+| `FelixShardFencedLeaderCrashTwiceNamesByInheritance.cfg` | `FelixShardFencedLeaderCrash.cfg` with inherited names and two leader crashes (`Wipes = 2`, no suspicion), so the second replacement can be decided on a report that names a follower only by inheritance. Every promotion replaces a leader that gave its copy up, so no deposed leader serves beside the new one; that is what keeps it small enough to finish | pass `AckedHeldByLeader`, `AckedAgree`, `NoTruncationBelowHwm` (11.2M distinct states, depth 43, 20.5 min on a CI runner) |
+| `FelixShardFencedLeaderCrashTwiceInheritedCounts.cfg` | its witness, the same bounds: the leader promoted after the second crash opens with a fence answer counted from a replica it named by inheritance | violate `NoInheritedCount` (99K distinct states, depth 19, 10 s) |
 | `FelixShardFencedCrashCountsRotated.cfg` | the same counting the rotated copy, as before #1335: under `Periodic` with three replicas, a record acknowledged on the leader and the follower that lost it is gone once the leader is replaced | violate `AckedHeldByLeader` |
 | `FelixShardFencedLeaderCrash.cfg` | `FelixShardLeaderCrashGivesUp.cfg` on the fenced, follower-acked path, no suspicion: the crashed leader's copy still holds its promise and answers the successor's fence, and only the identity check keeps it out (the model has no `refuse_short_copy`) | pass `AckedHeldByLeader`, `AckedAgree`, `NoTruncationBelowHwm` (state count and time to be measured in CI) |
 | `FelixShardFencedLeaderCrashCountsRotated.cfg` | `FelixShardFencedLeaderCrash.cfg` counting every fence answer (`FenceChecksIds <- No`): the crashed leader's short copy counts in its successor's fence | violate `AckedHeldByLeader` |
@@ -1157,7 +1165,9 @@ of them costs about an order of magnitude in states, so exhaustive search
 cannot reach a behaviour that grows the set, replaces a follower, fails over
 and moves the shard again. The `FelixShardWalk*.cfg` configurations lift the
 bounds (time to 40, six writes, six moves) and TLC samples behaviours up to
-300 steps long instead, in its simulation mode. They run nightly, not per push
+300 steps long instead, in its simulation mode. The inherited-name families
+keep their exhaustive bounds and sample them, since those are too big to
+check exhaustively. They run nightly, not per push
 (`.github/workflows/tla-walk.yml`).
 
 A walk shows less than a check. It is sampling: a pass means the walks found
@@ -1183,6 +1193,12 @@ per family:
 | `FelixShardWalkElectStaleSet.cfg` | the same without the set check | violate `AckedHeldByLeader` |
 | `FelixShardWalkElectSwap.cfg` | `FelixShardElectSwap.cfg` lifted: up to six cut-overs that change the set by more than one member, promotion on suspicion up to generation 10, elections two generations past the control plane's, adoption to generation 10 and a planner acting on a held read, six writes, time to 40, drifting clocks | pass the same invariants and `SetChangesJoint` |
 | `FelixShardWalkElectSwapNoJoint.cfg` | the same without the joint configuration, and without promotion on suspicion or adoption so the walks reach the trace within their budget | violate `AckedHeldByLeader` |
+| `FelixShardFencedCrashNamesByInheritance.cfg` | inherited names under two promotions on suspicion with process and machine crashes (the table above) | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `NoTruncationBelowHwm` |
+| `FelixShardFencedCrashInheritedCounts.cfg` | its witness | violate `NoInheritedCount` |
+| `FelixShardFencedWipeNamesByInheritance.cfg` | the same with a wipe | pass the same invariants |
+| `FelixShardFencedWipeInheritedCounts.cfg` | its witness | violate `NoInheritedCount` |
+| `FelixShardFencedLeaderCrashNamesByInheritance.cfg` | a leader crash and a second promotion on suspicion | pass `AckedHeldByLeader`, `AckedAgree`, `NoTruncationBelowHwm` |
+| `FelixShardFencedLeaderCrashInheritedCounts.cfg` | its witness | violate `NoInheritedCount` |
 
 Every walk runs with ballots and every change of leader fenced
 (`Ballots`, `FenceEveryChange`), as the broker ships, and all but the
@@ -1195,7 +1211,16 @@ lapsed lease promotes, so the rest of a walk still reaches moves a promotion
 would keep ending. The handoff walk runs on the lease, where placement never
 acts on a suspicion.
 
-The walks carry no `SYMMETRY`: simulation stores no states, so it buys nothing.
+The inherited-name walks are the exhaustive configurations unchanged, sampled
+because they do not finish. State constraints that kept the second promotion
+to the inherited case, the fault between the two promotions, the write on one
+side of the first promotion, or a deposed leader idle, still left over 30M
+distinct states and a queue of 13M when the runner's disk filled: a leader
+deposed on suspicion keeps serving beside each new one.
+`FelixShardFencedLeaderCrashTwiceNamesByInheritance.cfg` is the one that
+finishes, per push.
+
+The other walks carry no `SYMMETRY`: simulation stores no states, so it buys nothing.
 `Tick` draws each clock from its drift window rather than from `0..MaxTime`,
 which gives the same clocks and keeps a tick cheap at time to 40.
 

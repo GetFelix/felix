@@ -7,6 +7,7 @@ use super::*;
 fn report(leader_offset: u64, caught_up: &[&str], offsets: &[(&str, u64)]) -> ReplicaReport {
     ReplicaReport {
         given_up: false,
+        inherited_storage: Default::default(),
         key: ShardKey {
             tenant_id: "t".to_string(),
             namespace: "ns".to_string(),

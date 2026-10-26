@@ -36,6 +36,7 @@ fn status(
     y_behind: Option<u64>,
 ) -> felix_common::membership::ShardReplicaStatus {
     felix_common::membership::ShardReplicaStatus {
+        inherited_storage_ids: Default::default(),
         given_up: false,
         replica_counter_offsets: Vec::new(),
         tenant_id: "t1".to_string(),

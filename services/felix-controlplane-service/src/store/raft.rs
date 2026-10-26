@@ -74,6 +74,10 @@ const DELETED_NAMES_LEVEL: u16 = 18;
 /// The metadata level whose members advance the placement token when a
 /// stream's consistency or durability changes (#1253).
 const PATCH_FENCE_LEVEL: u16 = 19;
+
+/// The metadata level whose members store the identities a replica report
+/// inherits from its leader's promotion (#1574).
+const INHERITED_STORAGE_LEVEL: u16 = 20;
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
@@ -897,6 +901,13 @@ impl ControlPlaneStore for RaftStore {
         if !report.follower_storage.is_empty() && self.group_level().await < STORAGE_IDENTITY_LEVEL
         {
             report.follower_storage.clear();
+        }
+        // Without them a member its leader had not reached is named by none,
+        // which refuses its fence answer, as before. Dropped first.
+        if !report.inherited_storage.is_empty()
+            && self.group_level().await < INHERITED_STORAGE_LEVEL
+        {
+            report.inherited_storage.clear();
         }
         // The API's own check still stands for a group that cannot apply
         // the field.

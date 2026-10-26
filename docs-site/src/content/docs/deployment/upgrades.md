@@ -323,6 +323,13 @@ by the same round before it is acknowledged.
   change fences placement. On Postgres migration 0036 does that for every
   instance. Under Raft it takes every member at metadata level 19; until
   then a change of consistency fences nothing, as before.
+- **A second failover in a row needs every control-plane member upgraded.**
+  A leader promoted by a failover reports the identity that failover named
+  each follower by until it reaches the follower, so the next failover can
+  count that follower's fence answer. On Postgres migration 0037 adds the
+  column. Under Raft the report keeps it only once every member is at
+  metadata level 20; until then such a follower's answer does not count, as
+  before, and a shard that needs it waits.
 - **Finalize with every control-plane member upgraded.** The order is checked
   by the member that serves the `finalize` call. During a rolling
   control-plane upgrade an older member does not check it, so finish the

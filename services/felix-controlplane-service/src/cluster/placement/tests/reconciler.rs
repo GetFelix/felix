@@ -255,6 +255,7 @@ pub(super) async fn report(
     store
         .record_replica_report(
             crate::model::ReplicaReport {
+                inherited_storage: Default::default(),
                 given_up: false,
                 counter_offsets: Default::default(),
                 stream_incarnation: None,
@@ -546,6 +547,7 @@ async fn failed_over(ids: &[(&str, &str)]) -> (InMemoryStore, ShardAssignment) {
     store
         .record_replica_report(
             crate::model::ReplicaReport {
+                inherited_storage: Default::default(),
                 given_up: false,
                 counter_offsets: Default::default(),
                 stream_incarnation: None,
