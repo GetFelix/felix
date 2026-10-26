@@ -1972,6 +1972,7 @@ async fn an_older_members_report_does_not_keep_by_round() -> anyhow::Result<()> 
         leader: None,
         node_incarnations: Default::default(),
         follower_storage: Default::default(),
+        inherited_storage: Default::default(),
     };
     store
         .record_replica_report(report.clone(), "broker-x")
@@ -2079,6 +2080,7 @@ async fn an_older_members_write_does_not_keep_a_storage_id() -> anyhow::Result<(
         leader: Some("broker-x".to_string()),
         node_incarnations: [("broker-y".to_string(), 3)].into(),
         follower_storage: [("broker-y".to_string(), id.clone())].into(),
+        inherited_storage: [("broker-z".to_string(), id.clone())].into(),
     };
     store
         .record_replica_report(report.clone(), "broker-x")
@@ -2091,6 +2093,7 @@ async fn an_older_members_write_does_not_keep_a_storage_id() -> anyhow::Result<(
             .expect("held")
     };
     assert_eq!(held().await.follower_storage, report.follower_storage);
+    assert_eq!(held().await.inherited_storage, report.inherited_storage);
     assert_eq!(held().await.leader, report.leader);
     assert_eq!(held().await.node_incarnations, report.node_incarnations);
 
@@ -2103,6 +2106,8 @@ async fn an_older_members_write_does_not_keep_a_storage_id() -> anyhow::Result<(
     let after = held().await;
     assert_eq!(after.reported_at_millis, 6_000);
     assert!(after.follower_storage.is_empty(), "{after:?}");
+    // Nor the identities it inherited (0037).
+    assert!(after.inherited_storage.is_empty(), "{after:?}");
     assert_eq!(after.leader, None, "{after:?}");
     assert!(after.node_incarnations.is_empty(), "{after:?}");
 

@@ -395,6 +395,13 @@ async fn record_one(
             .filter(|(_, id)| crate::model::validate_storage_id(id).is_ok())
             .map(|(node, id)| (node.clone(), id.clone()))
             .collect(),
+        // Likewise: a malformed one names the member by none.
+        inherited_storage: shard
+            .inherited_storage_ids
+            .iter()
+            .filter(|(_, id)| crate::model::validate_storage_id(id).is_ok())
+            .map(|(node, id)| (node.clone(), id.clone()))
+            .collect(),
     };
     // The store checks leadership again as it writes: the checks above read
     // an assignment a promotion may have replaced since.

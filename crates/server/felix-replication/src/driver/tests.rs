@@ -11,6 +11,7 @@ mod drain;
 mod groups;
 mod halts;
 mod identity;
+mod inherited;
 mod learner;
 mod quorum;
 mod reports;

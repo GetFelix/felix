@@ -206,6 +206,7 @@ fn report() -> ReplicaReport {
         leader: Some(s("n")),
         node_incarnations: any_map(1),
         follower_storage: any_map(s("0123456789abcdef0123456789abcdef")),
+        inherited_storage: any_map(s("0123456789abcdef0123456789abcdef")),
     }
 }
 

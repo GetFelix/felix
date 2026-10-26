@@ -3,7 +3,9 @@ name: TLA+ walks
 # Long random walks over replica-set changes, in TLC's simulation mode. The
 # per-push `formal` job in ci.yml checks every behaviour up to small bounds:
 # a move or two and a promotion or two. These lift the bounds and sample
-# behaviours hundreds of steps long instead, which is sampling, not proof: a
+# behaviours hundreds of steps long instead (the inherited-name families keep
+# their exhaustive bounds, which are too big to check exhaustively), which is
+# sampling, not proof: a
 # pass means nothing was found. Each family's negative twin must still find
 # its violation within the budget, the same expectation model as ci.yml.
 # A pull request that changes the walks runs them too. See
@@ -38,6 +40,9 @@ on:
     paths:
       - .github/workflows/tla-walk.yml
       - docs/formal/FelixShardWalk*.cfg
+      - docs/formal/FelixShardFenced*NamesByInheritance.cfg
+      - docs/formal/FelixShardFenced*InheritedCounts.cfg
+      - docs/formal/FelixShard.tla
 
 permissions:
   contents: read
@@ -68,6 +73,13 @@ jobs:
             configs: FelixShardWalkElect FelixShardWalkElectStaleSet
           - family: swap
             configs: FelixShardWalkElectSwap FelixShardWalkElectSwapNoJoint
+          # Inherited names with promotions on suspicion: too big to finish
+          # exhaustively, so sampled. Each family's witness stands in for a twin: it
+          # must still reach an inherited count at the same bounds.
+          - family: inherited-crash
+            configs: FelixShardFencedCrashNamesByInheritance FelixShardFencedCrashInheritedCounts
+          - family: inherited-wipe
+            configs: FelixShardFencedWipeNamesByInheritance FelixShardFencedWipeInheritedCounts FelixShardFencedLeaderCrashNamesByInheritance FelixShardFencedLeaderCrashInheritedCounts
     steps:
       - name: Checkout
         uses: actions/checkout@v7

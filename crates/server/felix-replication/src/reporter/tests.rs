@@ -75,6 +75,7 @@ fn report(stream: &str) -> ShardReport {
         storage_ids: Vec::new(),
         node_incarnations: Vec::new(),
         given_up: false,
+        inherited_storage: Vec::new(),
     }
 }
 
@@ -214,7 +215,15 @@ fn a_follower_that_is_not_reached_is_not_reported_as_close() {
     behind.stalled = false;
     let key = report("orders").key;
 
-    let report = shard_report(&key, 4, 10, 10, &[unreachable, behind], false);
+    let report = shard_report(
+        &key,
+        4,
+        10,
+        10,
+        &[unreachable, behind],
+        &Default::default(),
+        false,
+    );
     assert_eq!(report.offsets, vec![("broker-c".to_string(), 7)]);
     assert_eq!(report.tail, 10);
 }
@@ -229,7 +238,7 @@ fn a_follower_that_has_not_answered_yet_is_not_reported_as_close() {
     let unheard = FollowerCursor::new("broker-b", addr, 0);
     let key = report("orders").key;
 
-    let report = shard_report(&key, 4, 5, 5, &[unheard], false);
+    let report = shard_report(&key, 4, 5, 5, &[unheard], &Default::default(), false);
     assert!(
         report.offsets.is_empty(),
         "an unheard follower was reported"
@@ -249,7 +258,15 @@ fn a_halted_follower_is_reported_with_its_reason() {
     fenced.halted = Some(crate::Halt::Fenced);
     let key = report("orders").key;
 
-    let report = shard_report(&key, 4, 10, 10, &[diverged, bootstrap, fenced], false);
+    let report = shard_report(
+        &key,
+        4,
+        10,
+        10,
+        &[diverged, bootstrap, fenced],
+        &Default::default(),
+        false,
+    );
     assert_eq!(
         report.halted,
         vec![
@@ -258,6 +275,45 @@ fn a_halted_follower_is_reported_with_its_reason() {
         ]
     );
     assert!(report.offsets.is_empty());
+}
+
+/// **A follower this leader has not reached is named by the identity its
+/// promotion was decided on (#1574).** One it has reached is named by what
+/// it answered under, never by the promotion's, and a replica the promotion
+/// named nothing for stays unnamed.
+#[test]
+fn a_follower_not_reached_yet_is_named_by_the_promotions_identity() {
+    let addr: std::net::SocketAddr = "10.0.0.1:7000".parse().expect("addr");
+    let mut reached = FollowerCursor::new("broker-b", addr, 9);
+    reached.storage_id = Some(StorageId::from_bytes([0xbb; 16]));
+    let unreached = FollowerCursor::new("broker-c", addr, 9);
+    let unnamed = FollowerCursor::new("broker-d", addr, 9);
+    let inherited = [
+        ("broker-b".to_string(), "b0".repeat(16)),
+        ("broker-c".to_string(), "c0".repeat(16)),
+        // Not a replica any more.
+        ("broker-e".to_string(), "e0".repeat(16)),
+    ]
+    .into();
+    let key = report("orders").key;
+
+    let report = shard_report(
+        &key,
+        4,
+        10,
+        10,
+        &[reached, unreached, unnamed],
+        &inherited,
+        false,
+    );
+    assert_eq!(
+        report.storage_ids,
+        vec![("broker-b".to_string(), StorageId::from_bytes([0xbb; 16]))]
+    );
+    assert_eq!(
+        report.inherited_storage,
+        vec![("broker-c".to_string(), "c0".repeat(16))]
+    );
 }
 
 /// A control plane that stores reports for streams named `led-*` and refuses

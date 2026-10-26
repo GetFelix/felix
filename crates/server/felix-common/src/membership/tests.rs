@@ -46,6 +46,7 @@ fn a_report_that_is_not_drained_omits_the_field() {
         by_round: false,
         replica_incarnations: BTreeMap::new(),
         replica_storage_ids: BTreeMap::new(),
+        inherited_storage_ids: BTreeMap::new(),
     };
     let json = serde_json::to_string(&status).expect("write");
     assert!(!json.contains("drained"), "{json}");
@@ -80,11 +81,13 @@ fn a_report_without_storage_ids_is_unchanged() {
         by_round: false,
         replica_incarnations: BTreeMap::new(),
         replica_storage_ids: BTreeMap::new(),
+        inherited_storage_ids: BTreeMap::new(),
     };
     let today = r#"{"tenant_id":"t1","namespace":"ns","stream":"orders","shard":0,"kind":"stream","generation":1,"caught_up":["broker-b"],"replica_offsets":[],"leader_offset":3}"#;
     assert_eq!(serde_json::to_string(&status).expect("write"), today);
     let parsed: ShardReplicaStatus = serde_json::from_str(today).expect("read");
     assert!(parsed.replica_storage_ids.is_empty());
+    assert!(parsed.inherited_storage_ids.is_empty());
 
     let with = ShardReplicaStatus {
         replica_storage_ids: BTreeMap::from([("broker-b".into(), "ab".repeat(16))]),
@@ -141,6 +144,10 @@ fn a_report_round_trips() {
             replica_storage_ids: BTreeMap::from([(
                 "broker-b".into(),
                 "ab000000000000000000000000000000".into(),
+            )]),
+            inherited_storage_ids: BTreeMap::from([(
+                "broker-c".into(),
+                "cd000000000000000000000000000000".into(),
             )]),
         }],
     };
