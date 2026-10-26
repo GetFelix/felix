@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792989246117,
+  "lastUpdate": 1793005378275,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -37440,6 +37440,58 @@ window.BENCHMARK_DATA = {
             "range": "5935.87",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 806282.24\nmean: 802954.08\nstdev: 5935.87\ncv: 0.74%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f61e7257e6552457ffcb2de17c960e5698ea4d5c",
+          "message": "fix(replication): name a follower its leader never reached by the promotion's identity (#1574) (#1577)\n\nA promoted shard could stay closed for good after two failovers in a row. The second leader died before its first report named one of its followers, so placement named that follower with an empty storage id, the third leader could not count its fence answer, and without it no majority existed. No records were lost.\n\nA leader's replica report now carries, for each follower it has no identity for, the identity its own promotion held that follower to (inherited_storage). Placement names such a member by it instead of by an empty id. Storage ids never repeat, so an answer under that id comes from a copy that kept every acknowledgement it gave since. A copy that changed is still refused. A shard still waiting on its fence sends no report. The field is gated at metadata level 20 (absent means refuse), with Postgres migration 0037.\n\nModel: NameByInheritance in FelixShard.tla. A leader-crash pair is checked exhaustively per push with a witness twin. The crash, wipe and leader-crash inheritance configurations run as walks with twins; exhaustive coverage of those is #1584. The regression test fencing::a_second_failover_counts_a_follower_its_predecessor_never_reached fails with the placement change reverted.\n\nFixes #1574.",
+          "timestamp": "2026-10-26T01:56:58-07:00",
+          "tree_id": "d57b36ac405f5c24448502625c3c44aef85df7cd",
+          "url": "https://github.com/GetFelix/felix/commit/f61e7257e6552457ffcb2de17c960e5698ea4d5c"
+        },
+        "date": 1793005377454,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 577971.26,
+            "range": "37438.15",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 577971.26\nmean: 563121.39\nstdev: 37438.15\ncv: 6.65%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 577971.26,
+            "range": "37438.15",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 577971.26\nmean: 563121.39\nstdev: 37438.15\ncv: 6.65%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 121984.94,
+            "range": "1240.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 121984.94\nmean: 122212.49\nstdev: 1240.89\ncv: 1.02%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1219849.37,
+            "range": "12408.90",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1219849.37\nmean: 1222124.92\nstdev: 12408.90\ncv: 1.02%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
