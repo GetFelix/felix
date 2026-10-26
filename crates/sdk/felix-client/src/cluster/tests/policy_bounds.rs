@@ -150,3 +150,110 @@ async fn a_group_call_stops_at_the_deadline() -> Result<()> {
     );
     Ok(())
 }
+
+/// **A call over every shard of a stream spends one deadline, not one per
+/// shard.** Each of the stub's four shards answers in 250 ms, inside the 600 ms
+/// deadline on its own; together they are not.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_stream_wide_group_call_shares_one_deadline() -> Result<()> {
+    let (broker, cert) = StubBroker::start(|_| {
+        std::thread::sleep(Duration::from_millis(250));
+        Message::Ok
+    })?;
+    let cluster = ClusterClient::connect_with_policy(
+        &[broker.addr],
+        "localhost",
+        build_client_config_with_overrides(cert, 0)?,
+        bounded(),
+    )
+    .await?;
+    let cluster = std::sync::Arc::new(cluster);
+    let started = Instant::now();
+    cluster
+        .group_delete_stream("t1", "default", "orders", "workers")
+        .await
+        .expect_err("the shards together outlast the deadline");
+
+    let took = started.elapsed();
+    assert!(
+        took < Duration::from_millis(1000),
+        "took {took:?} against a 600ms deadline"
+    );
+    assert!(broker.group_requests() < 4, "every shard was still asked");
+    Ok(())
+}
+
+/// **A cached owner's refusal does not fall through to the entry broker once
+/// the deadline has passed.**
+#[tokio::test]
+#[serial_test::serial]
+async fn a_cache_reroute_stops_at_the_deadline() -> Result<()> {
+    let (server_config, cert) = crate::test_support::build_server_config()?;
+    let owner = StubBroker::start_with(server_config.clone(), |_| {
+        refusal(ErrorCode::ShardUnavailable)
+    })?;
+    let entry = StubBroker::start_with(server_config, |_| Message::Ok)?;
+    entry.set_cache_owners(vec![felix_wire::ShardOwner {
+        shard: 0,
+        node_id: Some("broker-2".into()),
+        addr: Some(owner.addr.to_string()),
+        generation: 1,
+        unavailable: None,
+    }]);
+    let policy = ReconnectPolicy {
+        attempts: 1,
+        deadline: Some(Duration::from_millis(1)),
+        ..limited(1)
+    };
+    let cluster = ClusterClient::connect_with_policy(
+        &[entry.addr],
+        "localhost",
+        build_client_config_with_overrides(cert, 0)?,
+        policy,
+    )
+    .await?;
+    cluster
+        .cache_put("t1", "default", "sessions", "alice", "v".into(), None)
+        .await
+        .expect_err("the owner refused");
+    assert_eq!(owner.cache_requests(), 1);
+    assert_eq!(entry.cache_requests(), 0, "fell through past the deadline");
+    Ok(())
+}
+
+/// **A redirect is not followed once the deadline has passed.**
+#[tokio::test]
+#[serial_test::serial]
+async fn a_group_redirect_stops_at_the_deadline() -> Result<()> {
+    let (server_config, cert) = crate::test_support::build_server_config()?;
+    let leader = StubBroker::start_with(server_config.clone(), |_| Message::Ok)?;
+    let leader_addr = leader.addr;
+    // Slow enough that the deadline has passed by the time it answers.
+    let entry = StubBroker::start_with(server_config, move |_| {
+        std::thread::sleep(Duration::from_millis(30));
+        Message::NotLeader {
+            node_id: "leader".into(),
+            addr: Some(leader_addr.to_string()),
+            generation: 1,
+        }
+    })?;
+    let policy = ReconnectPolicy {
+        deadline: Some(Duration::from_millis(10)),
+        ..limited(1)
+    };
+    let cluster = ClusterClient::connect_with_policy(
+        &[entry.addr],
+        "localhost",
+        build_client_config_with_overrides(cert, 0)?,
+        policy,
+    )
+    .await?;
+    cluster
+        .group_ack("t1", "default", "orders", 0, "workers", 1)
+        .await
+        .expect_err("redirected past the deadline");
+    assert_eq!(entry.group_requests(), 1);
+    assert_eq!(leader.group_requests(), 0, "followed past the deadline");
+    Ok(())
+}

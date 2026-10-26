@@ -374,7 +374,7 @@ impl ClusterClient {
             stream.to_string(),
             shard,
         );
-        self.on_group_shard(key, |client| async move {
+        self.on_group_read(key, |client| async move {
             client
                 .read(tenant_id, namespace, stream, shard, from, end, max_records)
                 .await
@@ -407,7 +407,7 @@ impl ClusterClient {
             stream.to_string(),
             shard,
         );
-        self.on_group_shard(key, |client| async move {
+        self.on_group_read(key, |client| async move {
             client
                 .offset_for_time(tenant_id, namespace, stream, shard, at_micros)
                 .await

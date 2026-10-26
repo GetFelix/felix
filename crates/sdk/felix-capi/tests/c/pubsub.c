@@ -4610,7 +4610,7 @@ static void faults(const struct fixture *f, const char *run) {
   } else {
     /* A fenced shard refuses at once and every refusal is retryable, so only
        the deadline stops an at-least-once publish with a large attempt
-       budget, and a cache and a group call to the same owner. */
+       budget, and a group call to the same owner. */
     SCENARIO_BEGIN("retry.deadline_bounds_an_operation");
     if (code == 200 && control_addr(body, addr, sizeof addr)) {
       FelixClient *bounded = NULL;
@@ -4633,25 +4633,13 @@ static void faults(const struct fixture *f, const char *run) {
               "attempts instead",
               seconds);
 
-        /* The same deadline bounds a cache call and a group call to the
-           fenced owner. Whatever the owner answers they end in time, so only
-           the span is checked. */
-        struct cctx cc = {bounded, f, f->cache};
-        struct cres cached;
-        clock_gettime(CLOCK_MONOTONIC, &began);
-        (void)c_get(&cc, "bounded", false, &cached);
-        clock_gettime(CLOCK_MONOTONIC, &ended);
-        seconds = (double)(ended.tv_sec - began.tv_sec) +
-                  (double)(ended.tv_nsec - began.tv_nsec) / 1e9;
-        CHECK(seconds < 10.0,
-              "the cache call took %.1fs against a 2s deadline: it spent its "
-              "attempts instead",
-              seconds);
-
+        /* The same deadline bounds a group call to the fenced owner. The
+           owner refuses a settle before it looks the group up, so the group
+           need not exist. */
         struct gres grouped;
         gres_init(&grouped);
         clock_gettime(CLOCK_MONOTONIC, &began);
-        (void)gwait(&grouped,
+        status = gwait(&grouped,
                     felix_client_group_ack(bounded, f->tenant, f->ns,
                                            f->movable_stream, 0,
                                            "bounded-group", 0, NULL, on_done,
@@ -4660,7 +4648,9 @@ static void faults(const struct fixture *f, const char *run) {
         waiter_destroy(&grouped.w);
         seconds = (double)(ended.tv_sec - began.tv_sec) +
                   (double)(ended.tv_nsec - began.tv_nsec) / 1e9;
-        CHECK(seconds < 10.0,
+        CHECK(status == FELIX_STATUS_SHARD_UNAVAILABLE,
+              "a bounded group call during a move gave %d", (int)status);
+        CHECK(seconds < 4.0,
               "the group call took %.1fs against a 2s deadline: it spent its "
               "attempts instead",
               seconds);

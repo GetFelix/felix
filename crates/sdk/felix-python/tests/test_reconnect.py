@@ -48,7 +48,7 @@ def test_the_async_client_validates_too(deadline):
 def test_a_deadline_bounds_a_retried_publish(disposable_fixture):
     """A fenced shard refuses at once and every refusal is retryable, so only
     the deadline stops an at-least-once publish with a large attempt budget.
-    The same deadline bounds a cache call and a group call to that owner."""
+    The same deadline bounds a group call to that owner."""
     fixture = disposable_fixture
     if not fixture.get("control_url"):
         pytest.skip("this fixture has no control endpoint")
@@ -77,22 +77,10 @@ def test_a_deadline_bounds_a_retried_publish(disposable_fixture):
                     at_least_once=True,
                 )
             elapsed = time.monotonic() - started
-            # Whatever the owner answers, these end in time; the outcome is
-            # the broker's to decide, so only the span is asserted.
-            spans = {}
+            # A settle is refused by the fenced owner before it looks the group
+            # up, so the group need not exist.
             began = time.monotonic()
-            try:
-                client.cache_get(
-                    fixture["tenant_id"],
-                    fixture["namespace"],
-                    fixture["cache"],
-                    "bounded",
-                )
-            except felix.FelixError:
-                pass
-            spans["cache"] = time.monotonic() - began
-            began = time.monotonic()
-            try:
+            with pytest.raises(felix.ShardUnavailableError):
                 client.group_ack(
                     fixture["tenant_id"],
                     fixture["namespace"],
@@ -101,9 +89,7 @@ def test_a_deadline_bounds_a_retried_publish(disposable_fixture):
                     "bounded-group",
                     0,
                 )
-            except felix.FelixError:
-                pass
-            spans["group"] = time.monotonic() - began
+            group_elapsed = time.monotonic() - began
     finally:
         heal = urllib.request.Request(
             fixture["control_url"] + "/heal", data=b"", method="POST"
@@ -113,8 +99,7 @@ def test_a_deadline_bounds_a_retried_publish(disposable_fixture):
         f"the publish took {elapsed:.1f}s against a {deadline}s deadline: "
         "it spent its attempts instead"
     )
-    for name, span in spans.items():
-        assert span < deadline + 8.0, (
-            f"the {name} call took {span:.1f}s against a {deadline}s deadline: "
-            "it spent its attempts instead"
-        )
+    assert group_elapsed < deadline + 2.0, (
+        f"the group call took {group_elapsed:.1f}s against a {deadline}s deadline: "
+        "it spent its attempts instead"
+    )

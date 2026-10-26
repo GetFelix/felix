@@ -1877,7 +1877,8 @@ Cache and counter calls (`cache_put`, `cache_get`, `cache_delete`,
 `counter_add`, `counter_get`) are on `ClusterClient` too. Each goes to the owner
 of the key's shard, asked once per cache with `shard_owners`, and otherwise
 through the broker in use, which forwards. A write that may have been applied
-is not sent twice, as for `publish`; a failed read is asked again once.
+is not sent twice, as for `publish`; a failed read is asked again under the
+`ReconnectPolicy`, and a write only after a refusal that applied nothing.
 
 An `AckMode::None` publish returns once it is queued. Call
 `ClusterClient::finish()` before exiting: it waits until everything queued on
@@ -1933,7 +1934,7 @@ that hangs does not stop the others resolving. See `docs/multi-node-client.md`.
 
 ### Reconnecting
 
-Publishes, opening and following subscriptions, commits, `publish_if`, state reads, cache calls and consumer-group calls retry with a backoff when no broker can be reached. Two options tune the retrying, and both default to the Rust client's own policy, so a client that sets neither behaves as it always did.
+Publishes, opening and following subscriptions, commits, `publish_if`, state reads, cache calls and consumer-group calls retry under these options. A read, and a group describe or dead-letter listing, retries on any error that is not terminal. A write, including a group poll, which claims records, retries only on a broker's retryable refusal, which says nothing was applied, so a write that may have applied is never sent twice. The deadline covers re-routes and, for a call over every shard of a stream, all its shards together. Two options tune the retrying, and both default to the Rust client's own policy, so a client that sets neither behaves as it always did.
 
 - **Attempts** is how many times a call tries to reach a broker before it gives up. Each attempt tries every broker the client knows. The default is 5, and the minimum is 1.
 - **Deadline** is a ceiling on one call across every attempt and every wait between them. It is off by default, and it is checked between attempts, before each backoff sleep, so a call can last the deadline plus one attempt's own timeout. Attempt counts alone do not bound time: five attempts against a broker that takes its full publish timeout to answer is minutes.

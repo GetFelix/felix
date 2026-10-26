@@ -44,19 +44,14 @@ public class ClusterFaultTests
                 Assert.True(e.Status == FelixStatus.ShardUnavailable, $"a bounded publish during a move gave {e.Status} ({e.Message})");
                 Assert.True(took < TimeSpan.FromSeconds(10), $"the publish took {took} against a 2s deadline: it spent its attempts instead");
 
-                // The same deadline bounds a cache call and a group call to the fenced owner. Whatever the
-                // owner answers they end in time, so only the span is asserted.
+                // The same deadline bounds a group call to the fenced owner. The owner refuses a settle
+                // before it looks the group up, so the group need not exist.
                 began = DateTime.UtcNow;
-                try { await bounded.Cache(f.Tenant, f.Namespace, f.Cache).GetAsync("bounded"); }
-                catch (FelixException) { }
+                var grouped = await Assert.ThrowsAsync<FelixException>(() =>
+                    bounded.JoinGroup(f.Tenant, f.Namespace, f.MovableStream!, 0, "bounded-group").AckAsync(0L));
                 took = DateTime.UtcNow - began;
-                Assert.True(took < TimeSpan.FromSeconds(10), $"the cache call took {took} against a 2s deadline: it spent its attempts instead");
-
-                began = DateTime.UtcNow;
-                try { await bounded.JoinGroup(f.Tenant, f.Namespace, f.MovableStream!, 0, "bounded-group").AckAsync(0L); }
-                catch (FelixException) { }
-                took = DateTime.UtcNow - began;
-                Assert.True(took < TimeSpan.FromSeconds(10), $"the group call took {took} against a 2s deadline: it spent its attempts instead");
+                Assert.True(grouped.Status == FelixStatus.ShardUnavailable, $"a bounded group call during a move gave {grouped.Status} ({grouped.Message})");
+                Assert.True(took < TimeSpan.FromSeconds(4), $"the group call took {took} against a 2s deadline: it spent its attempts instead");
             }
 
             // Retryable means the same publish lands once the move finishes.

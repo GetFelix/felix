@@ -453,6 +453,7 @@ async fn serve_stream(
                             | felix_wire::FEATURE_RECORD_TIMESTAMPS
                             | felix_wire::FEATURE_ATOMIC_COMMIT
                             | felix_wire::FEATURE_CONSUMER_GROUP
+                            | felix_wire::FEATURE_GROUP_ADMIN
                             | felix_wire::FEATURE_PUBLISH_CONDITIONAL
                             | extended,
                     ),
@@ -607,8 +608,19 @@ async fn serve_stream(
             Message::GroupAck { request_id, .. } => {
                 seen.group_requests.fetch_add(1, Ordering::SeqCst);
                 let answer = match script(request_id) {
-                    error @ Message::Error { .. } => error,
+                    refusal @ (Message::Error { .. } | Message::NotLeader { .. }) => refusal,
                     _ => Message::CacheOk { request_id },
+                };
+                write_message(&mut *send.lock().await, answer).await?;
+            }
+            Message::GroupDelete { request_id, .. } => {
+                seen.group_requests.fetch_add(1, Ordering::SeqCst);
+                let answer = match script(request_id) {
+                    error @ Message::Error { .. } => error,
+                    _ => Message::GroupDeleted {
+                        existed: false,
+                        request_id,
+                    },
                 };
                 write_message(&mut *send.lock().await, answer).await?;
             }

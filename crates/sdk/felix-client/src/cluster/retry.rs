@@ -101,9 +101,15 @@ pub(crate) struct Pace<'a> {
 
 impl<'a> Pace<'a> {
     pub(crate) fn new(policy: &'a ReconnectPolicy) -> Self {
+        Self::since(policy, Instant::now())
+    }
+
+    /// A pace whose deadline counts from `started`, for a call made of several
+    /// operations that share one budget of time. Attempts are still its own.
+    pub(crate) fn since(policy: &'a ReconnectPolicy, started: Instant) -> Self {
         Self {
             policy,
-            started: Instant::now(),
+            started,
             attempts: 1,
         }
     }
@@ -148,12 +154,26 @@ impl super::ClusterClient {
     /// call terminal. Anything else may have been applied, so only an error
     /// carrying a broker's retry class is sent again: that class says the
     /// broker refused before applying anything.
-    pub(crate) async fn paced<T, F, Fut>(&self, read: bool, mut attempt: F) -> anyhow::Result<T>
+    pub(crate) async fn paced<T, F, Fut>(&self, read: bool, attempt: F) -> anyhow::Result<T>
     where
         F: FnMut(Option<Instant>) -> Fut,
         Fut: std::future::Future<Output = anyhow::Result<T>>,
     {
-        let mut pace = Pace::new(&self.policy);
+        self.paced_since(Instant::now(), read, attempt).await
+    }
+
+    /// [`Self::paced`] with the deadline counted from `started`.
+    pub(crate) async fn paced_since<T, F, Fut>(
+        &self,
+        started: Instant,
+        read: bool,
+        mut attempt: F,
+    ) -> anyhow::Result<T>
+    where
+        F: FnMut(Option<Instant>) -> Fut,
+        Fut: std::future::Future<Output = anyhow::Result<T>>,
+    {
+        let mut pace = Pace::since(&self.policy, started);
         let mut retrying = Retrying::default();
         loop {
             let error = match attempt(pace.deadline()).await {
