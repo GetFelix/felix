@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793005378275,
+  "lastUpdate": 1793025525642,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -37492,6 +37492,58 @@ window.BENCHMARK_DATA = {
             "range": "12408.90",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1219849.37\nmean: 1222124.92\nstdev: 12408.90\ncv: 1.02%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a6424690df4dd714545a39e7558c5c592ac2b210",
+          "message": "ci(deps): bump the actions-minor-and-patch group with 4 updates (#1581)\n\nDependabot update. CI green.",
+          "timestamp": "2026-10-26T07:31:34-07:00",
+          "tree_id": "62d636b419755db3d3e48c84594b44d9fedf3ba5",
+          "url": "https://github.com/GetFelix/felix/commit/a6424690df4dd714545a39e7558c5c592ac2b210"
+        },
+        "date": 1793025525198,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 351860.85,
+            "range": "11490.09",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 351860.85\nmean: 348831.82\nstdev: 11490.09\ncv: 3.29%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 351860.85,
+            "range": "11490.09",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 351860.85\nmean: 348831.82\nstdev: 11490.09\ncv: 3.29%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80886.53,
+            "range": "629.32",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80886.53\nmean: 80933.29\nstdev: 629.32\ncv: 0.78%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 808865.32,
+            "range": "6293.17",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 808865.32\nmean: 809332.95\nstdev: 6293.17\ncv: 0.78%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
