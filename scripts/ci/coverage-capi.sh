@@ -20,9 +20,27 @@ export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}/llvm-cov-target"
 coverage_env="$(cargo llvm-cov show-env --sh --no-cfg-coverage)"
 eval "$coverage_env"
 
-# The fixture starts these; run.sh builds felix-capi itself.
-cargo build --locked -p felix-broker-service --bin felix-broker
-cargo build --locked -p felix-cluster --bin felix-cluster
+# The workspace run's own selection, so this rebuilds nothing and the harness
+# loads the libfelix (and the fixture's binaries) that run measured. See
+# FELIX_CAPI_PREBUILT in run.sh for why a `-p` build would not do. A test
+# build leaves the cdylib only under deps/, so cargo reports where it is.
+# The report still warns about exports felix-capi's unit tests never call:
+# those are the unit-test build's dead-stripped copies, which never ran.
+shared="$(cargo test --locked --no-run --all-features --workspace --message-format json \
+  | python3 -I -c '
+import json, sys
+found = []
+for line in sys.stdin:
+    msg = json.loads(line)
+    if (msg.get("reason") == "compiler-artifact" and msg["target"]["name"] == "felix"
+            and "cdylib" in msg["target"]["kind"] and not msg["profile"]["test"]):
+        found += [f for f in msg["filenames"] if f.endswith((".so", ".dylib"))]
+print(found[0] if found else "")
+')"
+if [ -z "$shared" ]; then
+  echo "cargo reported no felix-capi cdylib" >&2
+  exit 1
+fi
 
-crates/sdk/felix-capi/tests/c/run.sh fixture
+FELIX_CAPI_PREBUILT="$shared" crates/sdk/felix-capi/tests/c/run.sh fixture
 
