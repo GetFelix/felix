@@ -120,7 +120,7 @@ jobs:
           toolchain: "1.97.1"
 
       - name: Rust Cache
-        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Deployment YAML in the docs parses
         run: cargo test -p felix-common --test deployment_yaml
@@ -357,7 +357,7 @@ jobs:
 
       - name: Rust Cache
         if: runner.environment == 'github-hosted'
-        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Warm target dir
         if: runner.environment == 'self-hosted'
@@ -416,7 +416,7 @@ jobs:
 
       - name: Rust Cache
         if: runner.environment == 'github-hosted'
-        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Warm target dir
         if: runner.environment == 'self-hosted'
@@ -515,7 +515,7 @@ jobs:
 
       - name: Rust Cache
         if: runner.environment == 'github-hosted'
-        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Install Task
         uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
@@ -643,7 +643,7 @@ jobs:
           toolchain: "1.97.1"
 
       - name: Rust cache
-        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - uses: actions/setup-python@v7
         with:
@@ -722,7 +722,7 @@ jobs:
           toolchain: "1.97.1"
 
       - name: Rust cache
-        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - uses: actions/setup-node@v7
         with:
@@ -806,7 +806,7 @@ jobs:
           toolchain: "1.97.1"
 
       - name: Rust cache
-        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - uses: actions/setup-dotnet@v5
         with:
@@ -1030,7 +1030,7 @@ jobs:
           toolchain: nightly
 
       - name: Rust Cache
-        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # The fuzz crates are outside the workspace and build with their own
           # flags, so they would otherwise miss the cache the other jobs share.
