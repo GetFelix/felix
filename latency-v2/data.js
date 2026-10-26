@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792989243528,
+  "lastUpdate": 1793005375306,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -47520,6 +47520,72 @@ window.BENCHMARK_DATA = {
             "range": "1040.56",
             "unit": "us",
             "extra": "trials: 5\nmedian: 567.00\nmean: 1286.00\nstdev: 1040.56\ncv: 80.91%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f61e7257e6552457ffcb2de17c960e5698ea4d5c",
+          "message": "fix(replication): name a follower its leader never reached by the promotion's identity (#1574) (#1577)\n\nA promoted shard could stay closed for good after two failovers in a row. The second leader died before its first report named one of its followers, so placement named that follower with an empty storage id, the third leader could not count its fence answer, and without it no majority existed. No records were lost.\n\nA leader's replica report now carries, for each follower it has no identity for, the identity its own promotion held that follower to (inherited_storage). Placement names such a member by it instead of by an empty id. Storage ids never repeat, so an answer under that id comes from a copy that kept every acknowledgement it gave since. A copy that changed is still refused. A shard still waiting on its fence sends no report. The field is gated at metadata level 20 (absent means refuse), with Postgres migration 0037.\n\nModel: NameByInheritance in FelixShard.tla. A leader-crash pair is checked exhaustively per push with a witness twin. The crash, wipe and leader-crash inheritance configurations run as walks with twins; exhaustive coverage of those is #1584. The regression test fencing::a_second_failover_counts_a_follower_its_predecessor_never_reached fails with the placement change reverted.\n\nFixes #1574.",
+          "timestamp": "2026-10-26T01:56:58-07:00",
+          "tree_id": "d57b36ac405f5c24448502625c3c44aef85df7cd",
+          "url": "https://github.com/GetFelix/felix/commit/f61e7257e6552457ffcb2de17c960e5698ea4d5c"
+        },
+        "date": 1793005369558,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 96,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 96.00\nmean: 95.80\nstdev: 0.45\ncv: 0.47%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 128,
+            "range": "3.03",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 128.00\nmean: 129.80\nstdev: 3.03\ncv: 2.34%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 166,
+            "range": "18.23",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 166.00\nmean: 172.60\nstdev: 18.23\ncv: 10.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 132,
+            "range": "2.51",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 132.00\nmean: 132.60\nstdev: 2.51\ncv: 1.89%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 257,
+            "range": "26.09",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 257.00\nmean: 267.60\nstdev: 26.09\ncv: 9.75%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 354,
+            "range": "532.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 354.00\nmean: 589.60\nstdev: 532.45\ncv: 90.31%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
