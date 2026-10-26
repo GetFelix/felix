@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793025885029,
+  "lastUpdate": 1793026236756,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -37596,6 +37596,58 @@ window.BENCHMARK_DATA = {
             "range": "71575.53",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1218751.41\nmean: 1192690.62\nstdev: 71575.53\ncv: 6.00%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e53a9806c82d41491c94461c0b9cc73d6fbe8d51",
+          "message": "ci(coverage): count the C harness without mismatched function data (#1547) (#1585)\n\nThe C ABI harness rebuilt felix-capi with `-p felix-capi` during the coverage run. That resolves features differently from the workspace's `--all-features` build, so each unmangled `felix_*` export carried two coverage hashes under one name, and llvm-cov dropped its counters (79 functions).\n\ncoverage-capi.sh now reuses the workspace run's build. It runs `cargo test --no-run --all-features --workspace`, which compiles nothing, and passes the cdylib's path from deps/ to run.sh in FELIX_CAPI_PREBUILT. In that mode run.sh runs no cargo command and tests only the shared library. CI's C job still runs both the shared and static builds.\n\nMismatches drop from 79 to 36. The remaining 36 are exports felix-capi's unit tests never call: they are the unit-test binary's dead-stripped copies, which never ran, so no counts are lost. Line coverage is 89.22%, against 88.91% on main.\n\nCloses #1547.",
+          "timestamp": "2026-10-26T07:38:58-07:00",
+          "tree_id": "3867efdedfa79f2eb2ebc7c794b75b0a749c442a",
+          "url": "https://github.com/GetFelix/felix/commit/e53a9806c82d41491c94461c0b9cc73d6fbe8d51"
+        },
+        "date": 1793026236117,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 356695.17,
+            "range": "25762.52",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 356695.17\nmean: 356810.75\nstdev: 25762.52\ncv: 7.22%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 356695.17,
+            "range": "25762.52",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 356695.17\nmean: 356810.75\nstdev: 25762.52\ncv: 7.22%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82879.05,
+            "range": "3865.62",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82879.05\nmean: 80934.92\nstdev: 3865.62\ncv: 4.78%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 828790.45,
+            "range": "38656.25",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 828790.45\nmean: 809349.19\nstdev: 38656.25\ncv: 4.78%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
