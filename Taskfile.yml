@@ -176,6 +176,11 @@ tasks:
       - "bash scripts/ci/coverage-capi.sh"
       - "cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex '(^|/)(demos)(/|$)|(^|/)src/bin/'"
       - "cargo llvm-cov report --summary-only --ignore-filename-regex '(^|/)(demos)(/|$)|(^|/)src/bin/'"
+      # DIAGNOSTIC (#1547), remove before merge.
+      - |
+        LLVM_COV_FLAGS=-dump cargo llvm-cov report --summary-only --ignore-filename-regex '(^|/)(demos)(/|$)|(^|/)src/bin/' 2>&1 >/dev/null | grep -a 'hash-mismatch' | sed 's/.*found for .\(.*\). with hash.*/\1/' | rustfilt 2>/dev/null | sort | uniq -c | sort -rn || true
+        LLVM_COV_FLAGS=-dump cargo llvm-cov report --summary-only --ignore-filename-regex '(^|/)(demos)(/|$)|(^|/)src/bin/' 2>&1 >/dev/null | grep -a 'hash-mismatch' | head -200 || true
+        ls target/llvm-cov-target/debug/ | head -50; ls target/llvm-cov-target/debug/deps | grep -E '^(libfelix|felix)' | head -80
       - |
         if [ -z "${CI:-}" ]; then
           task pg:down
