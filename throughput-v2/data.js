@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792964809300,
+  "lastUpdate": 1792989246117,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -37388,6 +37388,58 @@ window.BENCHMARK_DATA = {
             "range": "6686.25",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 813187.72\nmean: 813527.32\nstdev: 6686.25\ncv: 0.82%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-6.17.0-1022-azure-x86_64-with-glibc2.39 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "586d35c4b1598e790a6cf77347cbe6a750f0080d",
+          "message": "fix(client): cache and group calls obey ReconnectPolicy (#1565) (#1578)\n\nCache and consumer-group calls in ClusterClient now run under ReconnectPolicy (attempts, backoff, deadline) like every other call. One clock covers an operation, including the cache owner-to-entry fall-through, group redirect hops, and the group calls that span every shard. Reads retry on any non-terminal error; writes only on a broker's retryable refusal, so a write that may have applied is never sent twice.\n\nThe conformance scenario retry.deadline_bounds_an_operation now also runs a group settle against a fenced owner, which must return shard_unavailable after retrying close to the deadline. Client pages no longer exempt cache and group calls.\n\nFixes #1565.",
+          "timestamp": "2026-10-25T21:29:17-07:00",
+          "tree_id": "9f0704aadd4a9917bc0058105b6ca902606b3a83",
+          "url": "https://github.com/GetFelix/felix/commit/586d35c4b1598e790a6cf77347cbe6a750f0080d"
+        },
+        "date": 1792989245544,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 345641.17,
+            "range": "3245.37",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 345641.17\nmean: 344271.55\nstdev: 3245.37\ncv: 0.94%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 345641.17,
+            "range": "3245.37",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 345641.17\nmean: 344271.55\nstdev: 3245.37\ncv: 0.94%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80628.22,
+            "range": "593.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80628.22\nmean: 80295.41\nstdev: 593.59\ncv: 0.74%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 806282.24,
+            "range": "5935.87",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 806282.24\nmean: 802954.08\nstdev: 5935.87\ncv: 0.74%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
