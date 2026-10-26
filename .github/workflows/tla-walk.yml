@@ -68,6 +68,12 @@ jobs:
             configs: FelixShardWalkElect FelixShardWalkElectStaleSet
           - family: swap
             configs: FelixShardWalkElectSwap FelixShardWalkElectSwapNoJoint
+          # Inherited names with promotions on suspicion: too big to finish
+          # exhaustively, so sampled. The witness stands in for a twin.
+          - family: inherited-crash
+            configs: FelixShardFencedCrashNamesByInheritance FelixShardFencedCrashInheritedCounts
+          - family: inherited-wipe
+            configs: FelixShardFencedWipeNamesByInheritance FelixShardFencedLeaderCrashNamesByInheritance
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -123,9 +129,6 @@ jobs:
           - FelixShardFencedAckMove
           - FelixShardFencedAckStagedMove
           - FelixShardFencedAckMoveCancel
-          - FelixShardFencedCrashNamesByInheritance
-          - FelixShardFencedWipeNamesByInheritance
-          - FelixShardFencedLeaderCrashNamesByInheritance
     steps:
       - name: Checkout
         uses: actions/checkout@v7

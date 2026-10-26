@@ -460,11 +460,13 @@ kept everything it acknowledged. A leader sends no report while it still
 fences, so a copy whose fence answer it did not count is named in its
 reports only once it has opened and ships to that copy. Without an inherited identity, from a leader nobody promoted or one that
 predates the field, the member is named with an empty identity, which
-nothing matches. `FelixShardFencedCrashNamesByInheritance.cfg`,
+nothing matches. `FelixShardFencedLeaderCrashTwiceNamesByInheritance.cfg`
+checks two leader replacements in a row with inherited names, and its witness
+shows the second one counting an inherited name. With promotions on suspicion
+(`FelixShardFencedCrashNamesByInheritance.cfg`,
 `FelixShardFencedWipeNamesByInheritance.cfg` and
-`FelixShardFencedLeaderCrashNamesByInheritance.cfg` check two promotions in
-a row with inherited names, and `FelixShardFencedCrashInheritedCounts.cfg`
-shows the second one counting an inherited name. A replica the assignment does not
+`FelixShardFencedLeaderCrashNamesByInheritance.cfg`) the state space is too
+big to finish, so the nightly walks sample those instead. A replica the assignment does not
 name counts as it always has: one outside the old set, which gave the old
 leader nothing to count, such as a new copy a `Leader` failover brings in,
 and one registered without an identity, a build from before them, where

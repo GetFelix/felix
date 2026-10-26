@@ -1529,7 +1529,8 @@ Promote(v, f, views) ==
 \* registration (`NameByRegistration`,
 \* FelixShardFencedCrashNamesByRegistration.cfg). Named by the identity the
 \* report's leader was itself promoted with (`NameByInheritance`), it counts
-\* safely (FelixShardFencedCrashNamesByInheritance.cfg). The code compares the
+\* safely (FelixShardFencedLeaderCrashTwiceNamesByInheritance.cfg, and the
+\* walks of FelixShardFencedCrashNamesByInheritance.cfg). The code compares the
 \* identity the answer's connection gave in its handshake.
 FenceCounts(b, f) ==
     \/ ~(FenceChecksIds /\ FencedIds)

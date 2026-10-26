@@ -160,6 +160,8 @@ expectations=(
   "FelixShardFencedCrashCountsUnnamed violates AckedHeldByLeader"
   "FelixShardFencedCrashNamesByRegistration violates AckedHeldByLeader"
   "FelixShardFencedCrashInheritedCounts violates NoInheritedCount"
+  "FelixShardFencedLeaderCrashTwiceNamesByInheritance pass"
+  "FelixShardFencedLeaderCrashTwiceInheritedCounts violates NoInheritedCount"
   "FelixShardFencedLeaderCrash pass"
   "FelixShardFencedLeaderCrashKeepsGen violates AckedHeldByLeader"
   "FelixShardFencedLeaderCrashCountsRotated violates AckedHeldByLeader"
@@ -228,7 +230,9 @@ expectations=(
 
 # The long random walks, for `--simulate`: one pass configuration per family
 # of set changes, and its negative twin, which must reach its violation
-# within the budget to show the walks get that far at all.
+# within the budget to show the walks get that far at all. The inherited-name
+# configurations with promotions on suspicion are here too: they outgrow a
+# runner's disk exhaustively, so sampling them is what is left.
 walks=(
   "FelixShardWalkSpares pass"
   "FelixShardWalkSparesSeatEarly violates AckedHeldByLeader"
@@ -240,6 +244,10 @@ walks=(
   "FelixShardWalkElectStaleSet violates AckedHeldByLeader"
   "FelixShardWalkElectSwap pass"
   "FelixShardWalkElectSwapNoJoint violates AckedHeldByLeader"
+  "FelixShardFencedCrashNamesByInheritance pass"
+  "FelixShardFencedCrashInheritedCounts violates NoInheritedCount"
+  "FelixShardFencedWipeNamesByInheritance pass"
+  "FelixShardFencedLeaderCrashNamesByInheritance pass"
 )
 registered=("${expectations[@]}")
 if [ "$mode" = simulate ]; then registered=("${walks[@]}"); fi
@@ -296,6 +304,7 @@ weights=(
   "FelixShardFencedCrash 26"
   "FelixShardFencedCrashUnprobed 31"
   "FelixShardFencedCrashInheritedCounts 3"
+  "FelixShardFencedLeaderCrashTwiceNamesByInheritance 21"
   "FelixShardFencedPromotion 7"
   "FelixShardCancelResend 6"
   "FelixShardFigure8FollowerAcks 6"
