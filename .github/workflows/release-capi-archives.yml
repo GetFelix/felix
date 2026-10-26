@@ -132,7 +132,7 @@ jobs:
       # cl links the Windows smoke check.
       - name: MSVC environment
         if: ${{ matrix.msvc_arch }}
-        uses: ilammy/msvc-dev-cmd@a102174a2b586eec2ea151a69e6fd14404a8ce7c # v1.13.0
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
         with:
           arch: ${{ matrix.msvc_arch }}
 
