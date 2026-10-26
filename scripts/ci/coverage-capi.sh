@@ -24,6 +24,8 @@ eval "$coverage_env"
 # loads the libfelix (and the fixture's binaries) that run measured. See
 # FELIX_CAPI_PREBUILT in run.sh for why a `-p` build would not do. A test
 # build leaves the cdylib only under deps/, so cargo reports where it is.
+# The report still warns about exports felix-capi's unit tests never call:
+# those are the unit-test build's dead-stripped copies, which never ran.
 shared="$(cargo test --locked --no-run --all-features --workspace --message-format json \
   | python3 -I -c '
 import json, sys
