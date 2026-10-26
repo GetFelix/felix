@@ -477,8 +477,8 @@ it (see "Error codes" in `docs/protocol.md`):
   `counter_get`) goes to the key's owner, learned once per cache from
   `shard_owners`, or through the entry broker, which forwards. An owner that
   fails is forgotten. A write is then sent through the entry broker only if the
-  owner said it applied nothing, as a publish is; a read is always asked again
-  once.
+  owner said it applied nothing, as a publish is; a read is asked again. Both
+  follow the policy's attempts, backoff and deadline, re-routes included.
 - Opening a subscription (`subscribe`, `subscribe_from`, `subscribe_shard`,
   `subscribe_sharded`)
   retries a `retry` or `retry_after` refusal with the policy's attempts and

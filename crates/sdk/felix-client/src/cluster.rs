@@ -76,7 +76,9 @@ pub use sharded::{
 };
 
 pub(crate) use follow::resume_position;
-pub(crate) use retry::{Attempt, Next, Retrying, next_step, route_went_stale, wants_reconnect};
+pub(crate) use retry::{
+    Attempt, Next, Retrying, expired, next_step, route_went_stale, wants_reconnect,
+};
 
 use std::collections::HashMap;
 use std::net::SocketAddr;

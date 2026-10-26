@@ -122,7 +122,7 @@ export default function register(ctx) {
       );
     }));
 
-  it("a deadline bounds a retried publish", { timeout: 300_000 }, () =>
+  it("a deadline bounds a retried publish and group call", { timeout: 300_000 }, () =>
     scenario("retry.deadline_bounds_an_operation", async () => {
       // A fenced shard refuses at once and every refusal is retryable, so only
       // the deadline stops an at-least-once publish with a large attempt
@@ -138,9 +138,13 @@ export default function register(ctx) {
           return JSON.parse(body);
         };
         const owner = await post("/fence");
-        const deadline = 2_000;
+        // Longer than the policy's largest backoff step (2 s), so a client that
+        // made one attempt and gave up is told apart from one that kept going.
+        const deadline = 6_000;
         let elapsed;
         let caught;
+        let groupCaught;
+        let groupElapsed;
         try {
           await withClient(
             fixture,
@@ -162,6 +166,25 @@ export default function register(ctx) {
                   (err) => err,
                 );
               elapsed = Date.now() - started;
+
+              // A group call to the fenced owner is bounded by the same
+              // deadline. The owner refuses a settle before it looks the group
+              // up, so the group need not exist.
+              const began = Date.now();
+              groupCaught = await client
+                .groupAck(
+                  fixture.tenant_id,
+                  fixture.namespace,
+                  fixture.movable_stream,
+                  0,
+                  unique("bounded-group"),
+                  0n,
+                )
+                .then(
+                  () => null,
+                  (err) => err,
+                );
+              groupElapsed = Date.now() - began;
             },
           );
         } finally {
@@ -171,6 +194,18 @@ export default function register(ctx) {
         assert.ok(
           elapsed < deadline + 8_000,
           `the publish took ${elapsed}ms against a ${deadline}ms deadline: it spent its attempts instead`,
+        );
+        assert.ok(
+          groupCaught instanceof ShardUnavailableError,
+          `the group call gave ${groupCaught}`,
+        );
+        assert.ok(
+          groupElapsed >= deadline - 2_000 - 250,
+          `the group call took ${groupElapsed}ms: it gave up before the ${deadline}ms deadline was in reach`,
+        );
+        assert.ok(
+          groupElapsed < deadline + 2_000,
+          `the group call took ${groupElapsed}ms against a ${deadline}ms deadline: it spent its attempts instead`,
         );
       } finally {
         await own.stop();

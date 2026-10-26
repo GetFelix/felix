@@ -4610,12 +4610,12 @@ static void faults(const struct fixture *f, const char *run) {
   } else {
     /* A fenced shard refuses at once and every refusal is retryable, so only
        the deadline stops an at-least-once publish with a large attempt
-       budget. */
+       budget, and a group call to the same owner. */
     SCENARIO_BEGIN("retry.deadline_bounds_an_operation");
     if (code == 200 && control_addr(body, addr, sizeof addr)) {
       FelixClient *bounded = NULL;
       FelixStatus status = connect_reconnecting(
-          addr, f->tenant, f->token, f->ca_file, 40, 2000, &bounded);
+          addr, f->tenant, f->token, f->ca_file, 40, 6000, &bounded);
       CHECK(status == FELIX_STATUS_OK, "connect to the owner gave %d",
             (int)status);
       if (bounded) {
@@ -4628,8 +4628,36 @@ static void faults(const struct fixture *f, const char *run) {
                          (double)(ended.tv_nsec - began.tv_nsec) / 1e9;
         CHECK(status == FELIX_STATUS_SHARD_UNAVAILABLE,
               "a bounded publish during a move gave %d", (int)status);
-        CHECK(seconds < 10.0,
-              "the publish took %.1fs against a 2s deadline: it spent its "
+        CHECK(seconds < 14.0,
+              "the publish took %.1fs against a 6s deadline: it spent its "
+              "attempts instead",
+              seconds);
+
+        /* The same deadline bounds a group call to the fenced owner. The
+           owner refuses a settle before it looks the group up, so the group
+           need not exist. */
+        struct gres grouped;
+        gres_init(&grouped);
+        clock_gettime(CLOCK_MONOTONIC, &began);
+        status = gwait(&grouped,
+                    felix_client_group_ack(bounded, f->tenant, f->ns,
+                                           f->movable_stream, 0,
+                                           "bounded-group", 0, NULL, on_done,
+                                           &grouped));
+        clock_gettime(CLOCK_MONOTONIC, &ended);
+        waiter_destroy(&grouped.w);
+        seconds = (double)(ended.tv_sec - began.tv_sec) +
+                  (double)(ended.tv_nsec - began.tv_nsec) / 1e9;
+        CHECK(status == FELIX_STATUS_SHARD_UNAVAILABLE,
+              "a bounded group call during a move gave %d", (int)status);
+        /* The largest backoff step is 2s, so a client still retrying stops no
+           earlier than 6 - 2 - 0.25 seconds in. */
+        CHECK(seconds >= 3.75,
+              "the group call took %.1fs: it gave up before the 6s deadline "
+              "was in reach",
+              seconds);
+        CHECK(seconds < 8.0,
+              "the group call took %.1fs against a 6s deadline: it spent its "
               "attempts instead",
               seconds);
         felix_client_free(bounded);

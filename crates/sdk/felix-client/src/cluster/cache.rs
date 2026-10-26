@@ -10,11 +10,12 @@
 use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::Result;
 use bytes::Bytes;
 
-use super::{Attempt, ClusterClient, Next, StreamKey, next_step, wants_reconnect};
+use super::{Attempt, ClusterClient, Next, StreamKey, expired, next_step, wants_reconnect};
 use crate::cache::{CacheConditionResult, VersionedValue};
 use crate::client::Client;
 use felix_wire::CacheCondition;
@@ -27,7 +28,9 @@ impl ClusterClient {
     /// through the broker in use, which forwards. Like [`Self::publish`], a
     /// put that may have been applied is not sent again: a failure is
     /// returned with the connection already replaced. It is sent again only
-    /// when a known owner answered that it no longer serves the shard.
+    /// when a broker refused it with a retryable code, which says nothing was
+    /// applied. Attempts, backoff and deadline come from the
+    /// [`super::ReconnectPolicy`], re-routes included.
     pub async fn cache_put(
         &self,
         tenant_id: &str,
@@ -52,8 +55,9 @@ impl ClusterClient {
     /// [`Client::cache_get`].
     ///
     /// Routed like [`Self::cache_put`]. A read changes nothing, so one that
-    /// fails is asked again once: through the broker in use if a known owner
-    /// failed, or through a new connection if the broker in use did.
+    /// fails is asked again under the [`super::ReconnectPolicy`]: through the
+    /// broker in use if a known owner failed, or through a new connection if
+    /// the broker in use did.
     pub async fn cache_get(
         &self,
         tenant_id: &str,
@@ -222,8 +226,8 @@ impl ClusterClient {
         .await
     }
 
-    /// One cache request: to the key's owner when known, else the broker in
-    /// use. `read` says it may be sent again whatever happened to it.
+    /// One cache request, retried under the client's policy. `read` says it
+    /// may be sent again whatever happened to it.
     async fn cache_request<T, F, Fut>(
         &self,
         tenant_id: &str,
@@ -242,7 +246,28 @@ impl ClusterClient {
             namespace.to_string(),
             cache.to_string(),
         );
-        if let Some((shard, node_id, owner)) = self.cache_owner(&cache_key, key).await {
+        self.paced(read, |deadline| {
+            self.cache_attempt(&cache_key, key, read, deadline, &request)
+        })
+        .await
+    }
+
+    /// One try: at the key's owner when known, else through the broker in use.
+    /// A refusal from the owner that applied nothing falls through to the
+    /// entry broker at once, unless `deadline` has passed.
+    async fn cache_attempt<T, F, Fut>(
+        &self,
+        cache_key: &StreamKey,
+        key: &str,
+        read: bool,
+        deadline: Option<Instant>,
+        request: &F,
+    ) -> Result<T>
+    where
+        F: Fn(Arc<Client>) -> Fut,
+        Fut: Future<Output = Result<T>>,
+    {
+        if let Some((shard, node_id, owner)) = self.cache_owner(cache_key, key).await {
             let err = match request(owner).await {
                 Ok(answer) => return Ok(answer),
                 Err(err) => err,
@@ -252,12 +277,15 @@ impl ClusterClient {
                 ..Attempt::default()
             };
             // Asked again next time, so a moved shard's new owner is found.
-            self.cache_routes.write().await.remove(&cache_key);
+            self.cache_routes.write().await.remove(cache_key);
             if !read && next_step(&err, attempt) != Next::Reroute {
                 return Err(err.context(format!(
                     "cache request to shard {shard}'s owner {node_id} failed; \
                      the next one goes through the entry broker"
                 )));
+            }
+            if expired(deadline) {
+                return Err(err);
             }
             tracing::debug!(
                 error = %format!("{err:#}"),
@@ -265,12 +293,12 @@ impl ClusterClient {
             );
         }
 
-        self.through_entry(read, request).await
+        self.through_entry(request).await
     }
 
     /// How many shards `stream` was placed with. See [`Client::stream_shards`].
     ///
-    /// Asked of the broker in use, and once more through another broker if
+    /// Asked of the broker in use, and again under the client's policy if
     /// that one is gone.
     pub async fn stream_shards(
         &self,
@@ -278,17 +306,18 @@ impl ClusterClient {
         namespace: &str,
         stream: &str,
     ) -> Result<u32> {
-        self.through_entry(true, |client| async move {
-            client.stream_shards(tenant_id, namespace, stream).await
+        self.paced(true, |_| {
+            self.through_entry(|client| async move {
+                client.stream_shards(tenant_id, namespace, stream).await
+            })
         })
         .await
     }
 
-    /// `request` through the broker in use, moving to another broker when
-    /// that one is gone. A `read` is asked again there. Anything else may have
-    /// been applied, so its failure is returned with the connection already
-    /// replaced.
-    async fn through_entry<T, F, Fut>(&self, read: bool, request: F) -> Result<T>
+    /// `request` once through the broker in use. When that broker is gone the
+    /// connection is replaced before the error is returned, so the next try
+    /// goes to another one.
+    async fn through_entry<T, F, Fut>(&self, request: F) -> Result<T>
     where
         F: Fn(Arc<Client>) -> Fut,
         Fut: Future<Output = Result<T>>,
@@ -299,15 +328,12 @@ impl ClusterClient {
             Err(err) if !wants_reconnect(&err) => return Err(err),
             Err(err) => err,
         };
-        if let Err(reconnect_err) = self.reconnect(&client).await {
-            return Err(err.context(format!(
+        match self.reconnect(&client).await {
+            Ok(()) => Err(err.context("request failed; reconnected to another broker")),
+            Err(reconnect_err) => Err(err.context(format!(
                 "request failed and no other broker answered: {reconnect_err:#}"
-            )));
+            ))),
         }
-        if !read {
-            return Err(err.context("request failed; reconnected to another broker"));
-        }
-        request(self.client().await).await
     }
 
     /// The shard `key` falls in and a client for its owner, when the owner is

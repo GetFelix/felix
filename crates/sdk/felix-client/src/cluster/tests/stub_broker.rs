@@ -3,7 +3,7 @@
 //!
 //! It advertises every frame flag and only `FEATURE_ERROR_CODES`,
 //! `FEATURE_IDEMPOTENT_PRODUCER`, `FEATURE_STREAM_SHARDS` (every stream has
-//! [`STREAM_SHARDS`]), `FEATURE_ATOMIC_COMMIT` and `FEATURE_SHARD_OWNERS`
+//! [`STREAM_SHARDS`]), `FEATURE_ATOMIC_COMMIT`, `FEATURE_CONSUMER_GROUP` and `FEATURE_SHARD_OWNERS`
 //! (answered from [`StubBroker::set_cache_owners`]), so a
 //! [`ClusterClient`](crate::ClusterClient) skips discovery and sends its
 //! publishes as acked binary batches, answered here with coded binary acks.
@@ -196,6 +196,11 @@ impl StubBroker {
         self.seen.cache_requests.load(Ordering::SeqCst)
     }
 
+    /// Group acks it was sent.
+    pub(super) fn group_requests(&self) -> usize {
+        self.seen.group_requests.load(Ordering::SeqCst)
+    }
+
     /// What it answers `shard_owners` with, for any cache.
     pub(super) fn set_cache_owners(&self, owners: Vec<felix_wire::ShardOwner>) {
         *self.seen.cache_owners.lock().unwrap() = owners;
@@ -293,6 +298,7 @@ struct Seen {
     batch_streams: Arc<Mutex<Vec<Sequenced>>>,
     sequences: Arc<Mutex<Vec<Sequenced>>>,
     cache_requests: Arc<AtomicUsize>,
+    group_requests: Arc<AtomicUsize>,
     cache_owners: Arc<Mutex<Vec<felix_wire::ShardOwner>>>,
     /// The token each stream authenticated with.
     tokens: Arc<Mutex<Vec<String>>>,
@@ -329,6 +335,7 @@ impl Default for Seen {
             batch_streams: Arc::default(),
             sequences: Arc::default(),
             cache_requests: Arc::default(),
+            group_requests: Arc::default(),
             cache_owners: Arc::default(),
             tokens: Arc::default(),
             acks_held: Arc::new(tokio::sync::watch::channel(false).0),
@@ -445,6 +452,8 @@ async fn serve_stream(
                             | felix_wire::FEATURE_SHARD_OWNERS
                             | felix_wire::FEATURE_RECORD_TIMESTAMPS
                             | felix_wire::FEATURE_ATOMIC_COMMIT
+                            | felix_wire::FEATURE_CONSUMER_GROUP
+                            | felix_wire::FEATURE_GROUP_ADMIN
                             | felix_wire::FEATURE_PUBLISH_CONDITIONAL
                             | extended,
                     ),
@@ -593,6 +602,25 @@ async fn serve_stream(
                 let answer = match script(id) {
                     error @ Message::Error { .. } => error,
                     _ => Message::CacheOk { request_id: id },
+                };
+                write_message(&mut *send.lock().await, answer).await?;
+            }
+            Message::GroupAck { request_id, .. } => {
+                seen.group_requests.fetch_add(1, Ordering::SeqCst);
+                let answer = match script(request_id) {
+                    refusal @ (Message::Error { .. } | Message::NotLeader { .. }) => refusal,
+                    _ => Message::CacheOk { request_id },
+                };
+                write_message(&mut *send.lock().await, answer).await?;
+            }
+            Message::GroupDelete { request_id, .. } => {
+                seen.group_requests.fetch_add(1, Ordering::SeqCst);
+                let answer = match script(request_id) {
+                    error @ Message::Error { .. } => error,
+                    _ => Message::GroupDeleted {
+                        existed: false,
+                        request_id,
+                    },
                 };
                 write_message(&mut *send.lock().await, answer).await?;
             }

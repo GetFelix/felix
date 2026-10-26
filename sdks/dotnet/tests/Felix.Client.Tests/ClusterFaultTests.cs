@@ -35,14 +35,25 @@ public class ClusterFaultTests
 
             // A refusal is retryable at once, so only the deadline stops an at-least-once publish with a
             // large attempt budget.
-            await using (var bounded = await f.ConnectAsync(40, TimeSpan.FromSeconds(2), addr!))
+            await using (var bounded = await f.ConnectAsync(40, TimeSpan.FromSeconds(6), addr!))
             {
                 var began = DateTime.UtcNow;
                 var e = await Assert.ThrowsAsync<FelixException>(() =>
                     bounded.PublishAsync(f.Tenant, f.Namespace, f.MovableStream!, FaultControl.Bytes("bounded"), delivery: Delivery.AtLeastOnce));
                 var took = DateTime.UtcNow - began;
                 Assert.True(e.Status == FelixStatus.ShardUnavailable, $"a bounded publish during a move gave {e.Status} ({e.Message})");
-                Assert.True(took < TimeSpan.FromSeconds(10), $"the publish took {took} against a 2s deadline: it spent its attempts instead");
+                Assert.True(took < TimeSpan.FromSeconds(14), $"the publish took {took} against a 6s deadline: it spent its attempts instead");
+
+                // The same deadline bounds a group call to the fenced owner. The owner refuses a settle
+                // before it looks the group up, so the group need not exist.
+                began = DateTime.UtcNow;
+                var grouped = await Assert.ThrowsAsync<FelixException>(() =>
+                    bounded.JoinGroup(f.Tenant, f.Namespace, f.MovableStream!, 0, "bounded-group").AckAsync(0L));
+                took = DateTime.UtcNow - began;
+                Assert.True(grouped.Status == FelixStatus.ShardUnavailable, $"a bounded group call during a move gave {grouped.Status} ({grouped.Message})");
+                // The largest backoff step is 2s, so a client still retrying stops no earlier than this.
+                Assert.True(took >= TimeSpan.FromSeconds(6 - 2 - 0.25), $"the group call took {took}: it gave up before the 6s deadline was in reach");
+                Assert.True(took < TimeSpan.FromSeconds(8), $"the group call took {took} against a 6s deadline: it spent its attempts instead");
             }
 
             // Retryable means the same publish lands once the move finishes.

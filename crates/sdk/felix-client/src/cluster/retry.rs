@@ -90,6 +90,115 @@ impl ReconnectPolicy {
     }
 }
 
+/// The clock of one retried operation: how many attempts it has spent and how
+/// long it has run. Every retrying call shares it, so attempts, backoff and
+/// deadline mean the same thing for each.
+pub(crate) struct Pace<'a> {
+    policy: &'a ReconnectPolicy,
+    started: Instant,
+    attempts: usize,
+}
+
+impl<'a> Pace<'a> {
+    pub(crate) fn new(policy: &'a ReconnectPolicy) -> Self {
+        Self::since(policy, Instant::now())
+    }
+
+    /// A pace whose deadline counts from `started`, for a call made of several
+    /// operations that share one budget of time. Attempts are still its own.
+    pub(crate) fn since(policy: &'a ReconnectPolicy, started: Instant) -> Self {
+        Self {
+            policy,
+            started,
+            attempts: 1,
+        }
+    }
+
+    /// When the operation must be over, if the policy sets a deadline. Passed
+    /// down so a re-route inside one attempt stops at it too.
+    pub(crate) fn deadline(&self) -> Option<Instant> {
+        self.policy
+            .deadline
+            .map(|deadline| self.started + self.policy.budget(deadline))
+    }
+
+    /// Wait out the backoff, no shorter than `at_least`, before the next
+    /// attempt. `false` means attempts or the deadline are spent and the
+    /// caller should return its error.
+    ///
+    /// The deadline is checked before sleeping: sleeping past it and then
+    /// failing wastes the time it exists to save.
+    pub(crate) async fn wait(&mut self, at_least: Duration) -> bool {
+        if self.attempts >= self.policy.attempts.max(1) {
+            return false;
+        }
+        let delay = self.policy.delay_before(self.attempts - 1).max(at_least);
+        if self
+            .deadline()
+            .is_some_and(|deadline| Instant::now() + delay >= deadline)
+        {
+            return false;
+        }
+        self.attempts += 1;
+        tokio::time::sleep(delay).await;
+        true
+    }
+}
+
+impl super::ClusterClient {
+    /// Run `attempt` again under the client's [`ReconnectPolicy`] while it
+    /// fails in a way worth another try.
+    ///
+    /// `attempt` gets the operation's deadline, so a re-route inside it can
+    /// stop there. A `read` is retried on any error [`next_step`] does not
+    /// call terminal. Anything else may have been applied, so only an error
+    /// carrying a broker's retry class is sent again: that class says the
+    /// broker refused before applying anything.
+    pub(crate) async fn paced<T, F, Fut>(&self, read: bool, attempt: F) -> anyhow::Result<T>
+    where
+        F: FnMut(Option<Instant>) -> Fut,
+        Fut: std::future::Future<Output = anyhow::Result<T>>,
+    {
+        self.paced_since(Instant::now(), read, attempt).await
+    }
+
+    /// [`Self::paced`] with the deadline counted from `started`.
+    pub(crate) async fn paced_since<T, F, Fut>(
+        &self,
+        started: Instant,
+        read: bool,
+        mut attempt: F,
+    ) -> anyhow::Result<T>
+    where
+        F: FnMut(Option<Instant>) -> Fut,
+        Fut: std::future::Future<Output = anyhow::Result<T>>,
+    {
+        let mut pace = Pace::since(&self.policy, started);
+        let mut retrying = Retrying::default();
+        loop {
+            let error = match attempt(pace.deadline()).await {
+                Ok(value) => return Ok(value),
+                Err(error) => error,
+            };
+            let coded = error.is::<BrokerError>();
+            let at_least = match retrying.next(&error, Attempt::default()) {
+                Next::Fail => return Err(error),
+                _ if !read && !coded => return Err(error),
+                Next::Reroute => Duration::ZERO,
+                Next::Backoff { at_least } => at_least,
+            };
+            if !pace.wait(at_least).await {
+                return Err(error);
+            }
+        }
+    }
+}
+
+/// Whether `deadline` has passed.
+pub(crate) fn expired(deadline: Option<Instant>) -> bool {
+    deadline.is_some_and(|deadline| Instant::now() >= deadline)
+}
+
 /// What a retrying loop does after one failed attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Next {

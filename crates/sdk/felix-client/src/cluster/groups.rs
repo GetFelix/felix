@@ -9,13 +9,13 @@
 
 use std::future::Future;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
 use felix_wire::StartPosition;
 
-use super::{ClusterClient, MAX_REDIRECTS, ShardKey};
+use super::{ClusterClient, MAX_REDIRECTS, ShardKey, expired};
 use crate::client::{Client, GroupInfo, GroupPosition};
 
 impl ClusterClient {
@@ -254,7 +254,7 @@ impl ClusterClient {
         shard: u32,
         group: &str,
     ) -> Result<Vec<u64>> {
-        self.on_group_shard(
+        self.on_group_read(
             shard_key(tenant_id, namespace, stream, shard),
             |client| async move {
                 client
@@ -358,7 +358,7 @@ impl ClusterClient {
         shard: u32,
         group: &str,
     ) -> Result<GroupInfo> {
-        self.on_group_shard(
+        self.on_group_read(
             shard_key(tenant_id, namespace, stream, shard),
             |client| async move {
                 client
@@ -405,15 +405,26 @@ impl ClusterClient {
         group: &str,
         start: StartPosition,
     ) -> Result<Vec<GroupPosition>> {
+        let started = Instant::now();
         let shards = self
-            .group_shards(tenant_id, namespace, stream, start)
+            .group_shards(started, tenant_id, namespace, stream, start)
             .await?;
         let mut positions = Vec::with_capacity(shards as usize);
         for shard in 0..shards {
+            self.before_next_shard(started, shard)?;
             positions.push(
-                self.group_seek(tenant_id, namespace, stream, shard, group, start)
-                    .await
-                    .with_context(|| format!("seek {group} on shard {shard} of {stream}"))?,
+                self.on_group_shard_since(
+                    started,
+                    false,
+                    shard_key(tenant_id, namespace, stream, shard),
+                    |client| async move {
+                        client
+                            .group_seek(tenant_id, namespace, stream, shard, group, start)
+                            .await
+                    },
+                )
+                .await
+                .with_context(|| format!("seek {group} on shard {shard} of {stream}"))?,
             );
         }
         Ok(positions)
@@ -430,15 +441,26 @@ impl ClusterClient {
         group: &str,
         start: StartPosition,
     ) -> Result<Vec<GroupPosition>> {
+        let started = Instant::now();
         let shards = self
-            .group_shards(tenant_id, namespace, stream, start)
+            .group_shards(started, tenant_id, namespace, stream, start)
             .await?;
         let mut positions = Vec::with_capacity(shards as usize);
         for shard in 0..shards {
+            self.before_next_shard(started, shard)?;
             positions.push(
-                self.group_create(tenant_id, namespace, stream, shard, group, start)
-                    .await
-                    .with_context(|| format!("create {group} on shard {shard} of {stream}"))?,
+                self.on_group_shard_since(
+                    started,
+                    false,
+                    shard_key(tenant_id, namespace, stream, shard),
+                    |client| async move {
+                        client
+                            .group_create(tenant_id, namespace, stream, shard, group, start)
+                            .await
+                    },
+                )
+                .await
+                .with_context(|| format!("create {group} on shard {shard} of {stream}"))?,
             );
         }
         Ok(positions)
@@ -453,15 +475,26 @@ impl ClusterClient {
         stream: &str,
         group: &str,
     ) -> Result<Vec<GroupInfo>> {
+        let started = Instant::now();
         let shards = self
-            .stream_shard_count(tenant_id, namespace, stream)
+            .shard_count_since(started, tenant_id, namespace, stream)
             .await?;
         let mut infos = Vec::with_capacity(shards as usize);
         for shard in 0..shards {
+            self.before_next_shard(started, shard)?;
             infos.push(
-                self.group_describe(tenant_id, namespace, stream, shard, group)
-                    .await
-                    .with_context(|| format!("describe {group} on shard {shard} of {stream}"))?,
+                self.on_group_shard_since(
+                    started,
+                    true,
+                    shard_key(tenant_id, namespace, stream, shard),
+                    |client| async move {
+                        client
+                            .group_describe(tenant_id, namespace, stream, shard, group)
+                            .await
+                    },
+                )
+                .await
+                .with_context(|| format!("describe {group} on shard {shard} of {stream}"))?,
             );
         }
         Ok(infos)
@@ -477,13 +510,24 @@ impl ClusterClient {
         stream: &str,
         group: &str,
     ) -> Result<bool> {
+        let started = Instant::now();
         let shards = self
-            .stream_shard_count(tenant_id, namespace, stream)
+            .shard_count_since(started, tenant_id, namespace, stream)
             .await?;
         let mut existed = false;
         for shard in 0..shards {
+            self.before_next_shard(started, shard)?;
             existed |= self
-                .group_delete(tenant_id, namespace, stream, shard, group)
+                .on_group_shard_since(
+                    started,
+                    false,
+                    shard_key(tenant_id, namespace, stream, shard),
+                    |client| async move {
+                        client
+                            .group_delete(tenant_id, namespace, stream, shard, group)
+                            .await
+                    },
+                )
                 .await
                 .with_context(|| format!("delete {group} on shard {shard} of {stream}"))?;
         }
@@ -494,13 +538,14 @@ impl ClusterClient {
     /// mean something different on each.
     async fn group_shards(
         &self,
+        started: Instant,
         tenant_id: &str,
         namespace: &str,
         stream: &str,
         start: StartPosition,
     ) -> Result<u32> {
         let shards = self
-            .stream_shard_count(tenant_id, namespace, stream)
+            .shard_count_since(started, tenant_id, namespace, stream)
             .await?;
         if let StartPosition::Offset(offset) = start {
             anyhow::ensure!(
@@ -512,13 +557,89 @@ impl ClusterClient {
         Ok(shards)
     }
 
-    /// Run `op` against the broker that leads the shard, following redirects.
+    /// The shard count, asked under the same clock as the per-shard calls that
+    /// follow.
+    async fn shard_count_since(
+        &self,
+        started: Instant,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+    ) -> Result<u32> {
+        self.paced_since(started, true, |_| {
+            self.stream_shard_count(tenant_id, namespace, stream)
+        })
+        .await
+    }
+
+    /// Stop a stream-wide call once its deadline has passed, rather than
+    /// starting another shard.
+    fn before_next_shard(&self, started: Instant, shard: u32) -> Result<()> {
+        let pace = super::retry::Pace::since(&self.policy, started);
+        anyhow::ensure!(
+            !expired(pace.deadline()),
+            "the reconnect deadline passed before shard {shard} was reached"
+        );
+        Ok(())
+    }
+
+    /// Run `op` against the broker that leads the shard, following redirects,
+    /// and again under the client's [`super::ReconnectPolicy`] when a broker
+    /// refuses with a retryable code. Such a refusal says nothing was applied,
+    /// so sending it again cannot repeat an effect. Any other failure is
+    /// returned as it came.
+    pub(crate) async fn on_group_shard<T, F, Fut>(&self, key: ShardKey, op: F) -> Result<T>
+    where
+        F: Fn(Arc<Client>) -> Fut,
+        Fut: Future<Output = Result<T>>,
+    {
+        self.on_group_shard_since(Instant::now(), false, key, op)
+            .await
+    }
+
+    /// [`Self::on_group_shard`] for a call that only reads, so it is also
+    /// sent again after a failure that says nothing about whether it applied.
+    pub(crate) async fn on_group_read<T, F, Fut>(&self, key: ShardKey, op: F) -> Result<T>
+    where
+        F: Fn(Arc<Client>) -> Fut,
+        Fut: Future<Output = Result<T>>,
+    {
+        self.on_group_shard_since(Instant::now(), true, key, op)
+            .await
+    }
+
+    /// The shared form: the deadline counts from `started`, so a call over
+    /// every shard of a stream spends one budget of time, not one per shard.
+    async fn on_group_shard_since<T, F, Fut>(
+        &self,
+        started: Instant,
+        read: bool,
+        key: ShardKey,
+        op: F,
+    ) -> Result<T>
+    where
+        F: Fn(Arc<Client>) -> Fut,
+        Fut: Future<Output = Result<T>>,
+    {
+        self.paced_since(started, read, |deadline| {
+            self.follow_shard(key.clone(), deadline, &op)
+        })
+        .await
+    }
+
+    /// One try at `op` against the broker that leads the shard, following
+    /// redirects until `deadline`.
     ///
     /// Starts from the broker that last served the shard, or the client in use
     /// when there is none. The remembered broker is forgotten on any failure,
     /// so the next call asks afresh instead of repeating a question to a broker
     /// that has stopped answering or lost the shard.
-    pub(crate) async fn on_group_shard<T, F, Fut>(&self, key: ShardKey, op: F) -> Result<T>
+    pub(crate) async fn follow_shard<T, F, Fut>(
+        &self,
+        key: ShardKey,
+        deadline: Option<Instant>,
+        op: F,
+    ) -> Result<T>
     where
         F: Fn(Arc<Client>) -> Fut,
         Fut: Future<Output = Result<T>>,
@@ -541,6 +662,9 @@ impl ClusterClient {
                 Err(err) => err,
             };
             self.group_routes.write().await.remove(&key);
+            if expired(deadline) {
+                return Err(error);
+            }
             // A remembered or redirected-to leader that answers
             // `shard_unavailable` or `draining` has lost the shard since it was
             // named. The broker in use routes by the current assignment, so ask

@@ -10,6 +10,7 @@ mod identity;
 mod keyed_producer;
 mod not_leader_retry;
 mod offsets;
+mod policy_bounds;
 mod reconnect;
 mod reresolve;
 mod sharded_deleted;

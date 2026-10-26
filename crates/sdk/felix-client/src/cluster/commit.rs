@@ -3,11 +3,12 @@
 
 use std::future::Future;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::Duration;
 
 use anyhow::Result;
 use felix_wire::ErrorCode;
 
+use super::retry::Pace;
 use super::{ClusterClient, ShardKey};
 use crate::BrokerError;
 use crate::ConditionalWrite;
@@ -15,7 +16,7 @@ use crate::client::Client;
 use crate::commit::{CommitOp, CommitReceipt, StateValue, prepare};
 
 impl ClusterClient {
-    /// [`Self::on_group_shard`], run again after a backoff when a broker
+    /// [`Self::follow_shard`], run again after a backoff when a broker
     /// answers a coded `not_leader`, as a plain publish is.
     ///
     /// Safe for commits, conditional publishes and state reads because the
@@ -28,30 +29,20 @@ impl ClusterClient {
         F: Fn(Arc<Client>) -> Fut,
         Fut: Future<Output = Result<T>>,
     {
-        let started = Instant::now();
-        let attempts = self.policy.attempts.max(1);
-        let mut attempt = 0;
+        let mut pace = Pace::new(&self.policy);
         loop {
-            let error = match self.on_group_shard(key.clone(), &op).await {
+            let error = match self.follow_shard(key.clone(), pace.deadline(), &op).await {
                 Ok(value) => return Ok(value),
                 Err(error) => error,
             };
-            attempt += 1;
             let refused_unapplied = error
                 .downcast_ref::<BrokerError>()
                 .is_some_and(|broker| broker.code == ErrorCode::NotLeader);
-            if !refused_unapplied || attempt >= attempts {
-                return Err(error);
-            }
             // The failed call dropped the cached route, so the next one asks
             // the entry broker for the current owner.
-            let delay = self.policy.delay_before(attempt - 1);
-            if let Some(budget) = self.policy.deadline
-                && started.elapsed() + delay >= budget
-            {
+            if !refused_unapplied || !pace.wait(Duration::ZERO).await {
                 return Err(error);
             }
-            tokio::time::sleep(delay).await;
         }
     }
 
