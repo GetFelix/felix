@@ -22,8 +22,23 @@ eval "$coverage_env"
 
 # The workspace run's own selection, so this rebuilds nothing and the harness
 # loads the libfelix (and the fixture's binaries) that run measured. See
-# FELIX_CAPI_PREBUILT in run.sh for why a `-p` build would not do.
-cargo test --locked --no-run --all-features --workspace
+# FELIX_CAPI_PREBUILT in run.sh for why a `-p` build would not do. A test
+# build leaves the cdylib only under deps/, so cargo reports where it is.
+shared="$(cargo test --locked --no-run --all-features --workspace --message-format json \
+  | python3 -I -c '
+import json, sys
+found = []
+for line in sys.stdin:
+    msg = json.loads(line)
+    if (msg.get("reason") == "compiler-artifact" and msg["target"]["name"] == "felix"
+            and "cdylib" in msg["target"]["kind"] and not msg["profile"]["test"]):
+        found += [f for f in msg["filenames"] if f.endswith((".so", ".dylib"))]
+print(found[0] if found else "")
+')"
+if [ -z "$shared" ]; then
+  echo "cargo reported no felix-capi cdylib" >&2
+  exit 1
+fi
 
-FELIX_CAPI_PREBUILT=1 crates/sdk/felix-capi/tests/c/run.sh fixture
+FELIX_CAPI_PREBUILT="$shared" crates/sdk/felix-capi/tests/c/run.sh fixture
 

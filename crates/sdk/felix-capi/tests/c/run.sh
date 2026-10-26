@@ -9,8 +9,8 @@
 #                            The scenarios that kill a broker each get a
 #                            fixture of their own, started and stopped here.
 #
-# FELIX_CAPI_PREBUILT=1 builds nothing and runs only the shared library already
-# in the target dir. The coverage run sets it, because a `-p felix-capi` build
+# FELIX_CAPI_PREBUILT=<path to libfelix.so or .dylib> builds nothing and runs
+# only that shared library. The coverage run sets it, because a `-p felix-capi` build
 # here resolves features differently from its workspace build, and llvm-cov
 # then finds two hashes for each unmangled export and drops its counters.
 set -euo pipefail
@@ -51,11 +51,14 @@ case "$(uname -s)" in
   Darwin) shared="$target/libfelix.dylib" ;;
   *) shared="$target/libfelix.so" ;;
 esac
-if [ ! -f "$shared" ]; then
-  echo "$shared is missing; FELIX_CAPI_PREBUILT needs a prior build" >&2
-  exit 1
+if [ -n "${FELIX_CAPI_PREBUILT:-}" ]; then
+  shared="$FELIX_CAPI_PREBUILT"
+  if [ ! -f "$shared" ]; then
+    echo "FELIX_CAPI_PREBUILT names $shared, which does not exist" >&2
+    exit 1
+  fi
 fi
-cc "${cflags[@]}" "$crate/tests/c/pubsub.c" "$shared" -Wl,-rpath,"$target" -o "$work/pubsub-shared"
+cc "${cflags[@]}" "$crate/tests/c/pubsub.c" "$shared" -Wl,-rpath,"$(dirname "$shared")" -o "$work/pubsub-shared"
 if [ -z "${FELIX_CAPI_PREBUILT:-}" ]; then
   # Every C example on the client docs page, compiled against the header.
   cargo test --locked -q -p felix-capi --test doc_examples
