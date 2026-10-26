@@ -8,6 +8,11 @@
 #                            $FELIX_CONFORMANCE_RESULTS when that is set.
 #                            The scenarios that kill a broker each get a
 #                            fixture of their own, started and stopped here.
+#
+# FELIX_CAPI_PREBUILT=<path to libfelix.so or .dylib> builds nothing and runs
+# only that shared library. The coverage run sets it, because a `-p felix-capi` build
+# here resolves features differently from its workspace build, and llvm-cov
+# then finds two hashes for each unmangled export and drops its counters.
 set -euo pipefail
 
 mode="${1:-offline}"
@@ -26,15 +31,19 @@ cleanup() {
 trap cleanup EXIT
 
 cd "$repo"
-cargo build --locked -q -p felix-capi
-# What a static link needs from the system differs per platform; rustc says.
-# Without --color never, CARGO_TERM_COLOR=always leaves an escape code on the
-# last library name.
-native="$(cargo rustc --color never --locked -p felix-capi --lib --crate-type staticlib -- --print native-static-libs 2>&1 \
-  | sed -n 's/.*native-static-libs: //p' | tail -n 1)"
-if [ -z "$native" ]; then
-  echo "rustc did not report the static library's native dependencies" >&2
-  exit 1
+builds=(shared)
+if [ -z "${FELIX_CAPI_PREBUILT:-}" ]; then
+  builds+=(static)
+  cargo build --locked -q -p felix-capi
+  # What a static link needs from the system differs per platform; rustc says.
+  # Without --color never, CARGO_TERM_COLOR=always leaves an escape code on the
+  # last library name.
+  native="$(cargo rustc --color never --locked -p felix-capi --lib --crate-type staticlib -- --print native-static-libs 2>&1 \
+    | sed -n 's/.*native-static-libs: //p' | tail -n 1)"
+  if [ -z "$native" ]; then
+    echo "rustc did not report the static library's native dependencies" >&2
+    exit 1
+  fi
 fi
 
 cflags=(-std=c11 -pthread -Wall -Wextra -Werror -I "$crate/include")
@@ -42,15 +51,23 @@ case "$(uname -s)" in
   Darwin) shared="$target/libfelix.dylib" ;;
   *) shared="$target/libfelix.so" ;;
 esac
-# Every C example on the client docs page, compiled against the header.
-cargo test --locked -q -p felix-capi --test doc_examples
-cc "${cflags[@]}" "$crate/tests/c/pubsub.c" "$shared" -Wl,-rpath,"$target" -o "$work/pubsub-shared"
-# shellcheck disable=SC2086 # the native library list is meant to split
-cc "${cflags[@]}" "$crate/tests/c/pubsub.c" "$target/libfelix.a" $native -o "$work/pubsub-static"
+if [ -n "${FELIX_CAPI_PREBUILT:-}" ]; then
+  shared="$FELIX_CAPI_PREBUILT"
+  if [ ! -f "$shared" ]; then
+    echo "FELIX_CAPI_PREBUILT names $shared, which does not exist" >&2
+    exit 1
+  fi
+fi
+cc "${cflags[@]}" "$crate/tests/c/pubsub.c" "$shared" -Wl,-rpath,"$(dirname "$shared")" -o "$work/pubsub-shared"
+if [ -z "${FELIX_CAPI_PREBUILT:-}" ]; then
+  # Every C example on the client docs page, compiled against the header.
+  cargo test --locked -q -p felix-capi --test doc_examples
+  # shellcheck disable=SC2086 # the native library list is meant to split
+  cc "${cflags[@]}" "$crate/tests/c/pubsub.c" "$target/libfelix.a" $native -o "$work/pubsub-static"
+fi
 
 if [ "$mode" = offline ]; then
-  "$work/pubsub-shared" offline
-  "$work/pubsub-static" offline
+  for build in "${builds[@]}"; do "$work/pubsub-$build" offline; done
   exit 0
 fi
 
@@ -119,11 +136,10 @@ PY
 
 start_fixture "$work/shared" fixture_pid || exit 1
 
-"$work/pubsub-shared" offline
-"$work/pubsub-static" offline
+for build in "${builds[@]}"; do "$work/pubsub-$build" offline; done
 
 # Each build appends its outcomes to its own file; they are merged below, so a
-# scenario passes only if it passed in both.
+# scenario passes only if it passed in every build.
 status=0
 # The scenarios that kill a broker each get a fixture of their own, because a
 # cluster someone else damaged would fail every scenario after it, and the
@@ -143,16 +159,15 @@ run_build() {
     disposable_pid=""
   done
 }
-run_build shared
-run_build static
+for build in "${builds[@]}"; do run_build "$build"; done
 
 if [ -n "${FELIX_CONFORMANCE_RESULTS:-}" ]; then
   version="$(sed -n 's/^version = "\(.*\)"$/\1/p' "$repo/Cargo.toml" | head -n 1)"
-  python3 -I - "$FELIX_CONFORMANCE_RESULTS" "${version:-unknown}" "$work/lines-shared" "$work/lines-static" <<'PY'
+  python3 -I - "$FELIX_CONFORMANCE_RESULTS" "${version:-unknown}" "$work" "${builds[@]}" <<'PY'
 import json, os, sys
 
-destination, version, *paths = sys.argv[1:]
-builds = ("shared", "static")
+destination, version, work, *builds = sys.argv[1:]
+paths = [os.path.join(work, f"lines-{build}") for build in builds]
 rank = {"pass": 0, "skip": 1, "fail": 2}
 
 def read(path):
@@ -174,7 +189,7 @@ if not any(per_build.values()):
     sys.exit(0)
 
 # Worst outcome wins, and an id one build never recorded (it crashed, or never
-# started) fails: it has not been shown to hold in both.
+# started) fails: it has not been shown to hold in every build.
 merged = {}
 for scenario in sorted(set().union(*per_build.values())):
     worst = None
