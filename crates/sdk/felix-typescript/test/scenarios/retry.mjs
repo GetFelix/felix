@@ -138,7 +138,9 @@ export default function register(ctx) {
           return JSON.parse(body);
         };
         const owner = await post("/fence");
-        const deadline = 2_000;
+        // Longer than the policy's largest backoff step (2 s), so a client that
+        // made one attempt and gave up is told apart from one that kept going.
+        const deadline = 6_000;
         let elapsed;
         let caught;
         let groupCaught;
@@ -196,6 +198,10 @@ export default function register(ctx) {
         assert.ok(
           groupCaught instanceof ShardUnavailableError,
           `the group call gave ${groupCaught}`,
+        );
+        assert.ok(
+          groupElapsed >= deadline - 2_000 - 250,
+          `the group call took ${groupElapsed}ms: it gave up before the ${deadline}ms deadline was in reach`,
         );
         assert.ok(
           groupElapsed < deadline + 2_000,

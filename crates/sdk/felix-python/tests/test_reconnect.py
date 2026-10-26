@@ -52,7 +52,9 @@ def test_a_deadline_bounds_a_retried_publish(disposable_fixture):
     fixture = disposable_fixture
     if not fixture.get("control_url"):
         pytest.skip("this fixture has no control endpoint")
-    deadline = 2.0
+    # Longer than the policy's largest backoff step (2 s), so a client that made
+    # one attempt and gave up is told apart from one that kept going.
+    deadline = 6.0
     request = urllib.request.Request(
         fixture["control_url"] + "/fence", data=b"", method="POST"
     )
@@ -98,6 +100,10 @@ def test_a_deadline_bounds_a_retried_publish(disposable_fixture):
     assert elapsed < deadline + 8.0, (
         f"the publish took {elapsed:.1f}s against a {deadline}s deadline: "
         "it spent its attempts instead"
+    )
+    assert group_elapsed >= deadline - 2.0 - 0.25, (
+        f"the group call took {group_elapsed:.1f}s: it gave up before the "
+        f"{deadline}s deadline was in reach"
     )
     assert group_elapsed < deadline + 2.0, (
         f"the group call took {group_elapsed:.1f}s against a {deadline}s deadline: "

@@ -288,12 +288,14 @@ must stop retrying once the deadline passes, rather than spending every
 attempt. Attempt counts alone do not bound time. The fixture holds a shard
 fenced with `POST /fence`, so every publish to its owner is refused at once
 with a retryable error; an at-least-once publish through a client built with
-40 attempts and a two second deadline must fail with that error well inside
-ten seconds. Without the deadline the same publish backs off through all 40
+40 attempts and a six second deadline must fail with that error well inside
+fourteen seconds. Without the deadline the same publish backs off through all 40
 attempts, which takes the better part of a minute. The same client then settles a
 record in a group on the fenced stream; the owner refuses it with the same
-retryable error, and the call must end within two seconds of the deadline: the
-deadline covers every call, not only publishes. The
+retryable error, and the call must end between the deadline less the largest
+backoff step (two seconds) and a quarter second of slack, and the deadline plus
+two seconds. The lower bound shows it kept retrying rather than giving up after
+one attempt. The deadline covers every call, not only publishes. The
 deadline defaults to none, and a deadline shorter than one attempt's own
 timeout leaves the operation a single attempt.
 """
