@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793027053040,
+  "lastUpdate": 1793030090910,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -37700,6 +37700,58 @@ window.BENCHMARK_DATA = {
             "range": "6051.46",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 801923.04\nmean: 800534.79\nstdev: 6051.46\ncv: 0.76%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4e50dbaffdd4b55ee1e91b2ac0ee13fe3c436e4e",
+          "message": "build(deps): bump serde-saphyr from 1.3.0 to 2.0.0 (#1580)\n\n* build(deps): bump serde-saphyr from 1.3.0 to 2.0.0\n\nBumps [serde-saphyr](https://github.com/bourumir-wyngs/serde-saphyr) from 1.3.0 to 2.0.0.\n- [Release notes](https://github.com/bourumir-wyngs/serde-saphyr/releases)\n- [Changelog](https://github.com/bourumir-wyngs/serde-saphyr/blob/master/CHANGELOG.md)\n- [Commits](https://github.com/bourumir-wyngs/serde-saphyr/compare/1.3.0...2.0.0)\n\n---\nupdated-dependencies:\n- dependency-name: serde-saphyr\n  dependency-version: 2.0.0\n  dependency-type: direct:production\n  update-type: version-update:semver-major\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\n\n* build(deps): re-lock the out-of-workspace crates for serde-saphyr 2.0\n\n---------\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>\nCo-authored-by: Gabriel Loewen <gabrielloewen@outlook.com>",
+          "timestamp": "2026-10-26T15:50:30Z",
+          "tree_id": "dcee023a0bc1487d4cdb7bf6bea212bed8520d37",
+          "url": "https://github.com/GetFelix/felix/commit/4e50dbaffdd4b55ee1e91b2ac0ee13fe3c436e4e"
+        },
+        "date": 1793030089012,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 535017.87,
+            "range": "35163.25",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 535017.87\nmean: 516358.32\nstdev: 35163.25\ncv: 6.81%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 535017.87,
+            "range": "35163.25",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 535017.87\nmean: 516358.32\nstdev: 35163.25\ncv: 6.81%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 112987.72,
+            "range": "4657.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 112987.72\nmean: 114054.18\nstdev: 4657.38\ncv: 4.08%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1129877.2,
+            "range": "46573.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1129877.20\nmean: 1140541.77\nstdev: 46573.81\ncv: 4.08%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
