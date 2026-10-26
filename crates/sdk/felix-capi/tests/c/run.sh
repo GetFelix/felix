@@ -51,6 +51,10 @@ case "$(uname -s)" in
   Darwin) shared="$target/libfelix.dylib" ;;
   *) shared="$target/libfelix.so" ;;
 esac
+if [ ! -f "$shared" ]; then
+  echo "$shared is missing; FELIX_CAPI_PREBUILT needs a prior build" >&2
+  exit 1
+fi
 cc "${cflags[@]}" "$crate/tests/c/pubsub.c" "$shared" -Wl,-rpath,"$target" -o "$work/pubsub-shared"
 if [ -z "${FELIX_CAPI_PREBUILT:-}" ]; then
   # Every C example on the client docs page, compiled against the header.

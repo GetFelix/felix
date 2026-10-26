@@ -20,11 +20,9 @@ export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}/llvm-cov-target"
 coverage_env="$(cargo llvm-cov show-env --sh --no-cfg-coverage)"
 eval "$coverage_env"
 
-# The workspace run's own selection, so this rebuilds nothing: the harness
-# loads the libfelix that run measured, and the fixture's felix-broker and
-# felix-cluster are already there. A `-p` build resolves features differently,
-# and llvm-cov drops the counters of every export whose hash then differs
-# under the same unmangled name.
+# The workspace run's own selection, so this rebuilds nothing and the harness
+# loads the libfelix (and the fixture's binaries) that run measured. See
+# FELIX_CAPI_PREBUILT in run.sh for why a `-p` build would not do.
 cargo test --locked --no-run --all-features --workspace
 
 FELIX_CAPI_PREBUILT=1 crates/sdk/felix-capi/tests/c/run.sh fixture
