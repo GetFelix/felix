@@ -9,13 +9,13 @@
 
 use std::future::Future;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
 use felix_wire::StartPosition;
 
-use super::{ClusterClient, MAX_REDIRECTS, ShardKey};
+use super::{ClusterClient, MAX_REDIRECTS, ShardKey, expired};
 use crate::client::{Client, GroupInfo, GroupPosition};
 
 impl ClusterClient {
@@ -512,13 +512,35 @@ impl ClusterClient {
         Ok(shards)
     }
 
-    /// Run `op` against the broker that leads the shard, following redirects.
+    /// Run `op` against the broker that leads the shard, following redirects,
+    /// and again under the client's [`super::ReconnectPolicy`] when a broker
+    /// refuses with a retryable code. Such a refusal says nothing was applied,
+    /// so sending it again cannot repeat an effect. Any other failure is
+    /// returned as it came.
+    pub(crate) async fn on_group_shard<T, F, Fut>(&self, key: ShardKey, op: F) -> Result<T>
+    where
+        F: Fn(Arc<Client>) -> Fut,
+        Fut: Future<Output = Result<T>>,
+    {
+        self.paced(false, |deadline| {
+            self.follow_shard(key.clone(), deadline, &op)
+        })
+        .await
+    }
+
+    /// One try at `op` against the broker that leads the shard, following
+    /// redirects until `deadline`.
     ///
     /// Starts from the broker that last served the shard, or the client in use
     /// when there is none. The remembered broker is forgotten on any failure,
     /// so the next call asks afresh instead of repeating a question to a broker
     /// that has stopped answering or lost the shard.
-    pub(crate) async fn on_group_shard<T, F, Fut>(&self, key: ShardKey, op: F) -> Result<T>
+    pub(crate) async fn follow_shard<T, F, Fut>(
+        &self,
+        key: ShardKey,
+        deadline: Option<Instant>,
+        op: F,
+    ) -> Result<T>
     where
         F: Fn(Arc<Client>) -> Fut,
         Fut: Future<Output = Result<T>>,
@@ -541,6 +563,9 @@ impl ClusterClient {
                 Err(err) => err,
             };
             self.group_routes.write().await.remove(&key);
+            if expired(deadline) {
+                return Err(error);
+            }
             // A remembered or redirected-to leader that answers
             // `shard_unavailable` or `draining` has lost the shard since it was
             // named. The broker in use routes by the current assignment, so ask

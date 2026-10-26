@@ -4610,7 +4610,7 @@ static void faults(const struct fixture *f, const char *run) {
   } else {
     /* A fenced shard refuses at once and every refusal is retryable, so only
        the deadline stops an at-least-once publish with a large attempt
-       budget. */
+       budget, and a cache and a group call to the same owner. */
     SCENARIO_BEGIN("retry.deadline_bounds_an_operation");
     if (code == 200 && control_addr(body, addr, sizeof addr)) {
       FelixClient *bounded = NULL;
@@ -4630,6 +4630,38 @@ static void faults(const struct fixture *f, const char *run) {
               "a bounded publish during a move gave %d", (int)status);
         CHECK(seconds < 10.0,
               "the publish took %.1fs against a 2s deadline: it spent its "
+              "attempts instead",
+              seconds);
+
+        /* The same deadline bounds a cache call and a group call to the
+           fenced owner. Whatever the owner answers they end in time, so only
+           the span is checked. */
+        struct cctx cc = {bounded, f, f->cache};
+        struct cres cached;
+        clock_gettime(CLOCK_MONOTONIC, &began);
+        (void)c_get(&cc, "bounded", false, &cached);
+        clock_gettime(CLOCK_MONOTONIC, &ended);
+        seconds = (double)(ended.tv_sec - began.tv_sec) +
+                  (double)(ended.tv_nsec - began.tv_nsec) / 1e9;
+        CHECK(seconds < 10.0,
+              "the cache call took %.1fs against a 2s deadline: it spent its "
+              "attempts instead",
+              seconds);
+
+        struct gres grouped;
+        gres_init(&grouped);
+        clock_gettime(CLOCK_MONOTONIC, &began);
+        (void)gwait(&grouped,
+                    felix_client_group_ack(bounded, f->tenant, f->ns,
+                                           f->movable_stream, 0,
+                                           "bounded-group", 0, NULL, on_done,
+                                           &grouped));
+        clock_gettime(CLOCK_MONOTONIC, &ended);
+        waiter_destroy(&grouped.w);
+        seconds = (double)(ended.tv_sec - began.tv_sec) +
+                  (double)(ended.tv_nsec - began.tv_nsec) / 1e9;
+        CHECK(seconds < 10.0,
+              "the group call took %.1fs against a 2s deadline: it spent its "
               "attempts instead",
               seconds);
         felix_client_free(bounded);

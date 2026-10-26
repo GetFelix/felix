@@ -122,7 +122,7 @@ export default function register(ctx) {
       );
     }));
 
-  it("a deadline bounds a retried publish", { timeout: 300_000 }, () =>
+  it("a deadline bounds a retried publish, cache call and group call", { timeout: 300_000 }, () =>
     scenario("retry.deadline_bounds_an_operation", async () => {
       // A fenced shard refuses at once and every refusal is retryable, so only
       // the deadline stops an at-least-once publish with a large attempt
@@ -141,6 +141,7 @@ export default function register(ctx) {
         const deadline = 2_000;
         let elapsed;
         let caught;
+        const spans = {};
         try {
           await withClient(
             fixture,
@@ -162,6 +163,28 @@ export default function register(ctx) {
                   (err) => err,
                 );
               elapsed = Date.now() - started;
+
+              // The same policy bounds a cache and a group call to the fenced
+              // owner. Whatever the owner answers, the call ends in time; the
+              // outcome is not asserted because the broker decides it.
+              const timed = async (name, call) => {
+                const began = Date.now();
+                await call().catch(() => {});
+                spans[name] = Date.now() - began;
+              };
+              await timed("cache", () =>
+                client.cacheGet(fixture.tenant_id, fixture.namespace, fixture.cache, "bounded"),
+              );
+              await timed("group", () =>
+                client.groupAck(
+                  fixture.tenant_id,
+                  fixture.namespace,
+                  fixture.movable_stream,
+                  0,
+                  unique("bounded-group"),
+                  0n,
+                ),
+              );
             },
           );
         } finally {
@@ -172,6 +195,12 @@ export default function register(ctx) {
           elapsed < deadline + 8_000,
           `the publish took ${elapsed}ms against a ${deadline}ms deadline: it spent its attempts instead`,
         );
+        for (const [name, span] of Object.entries(spans)) {
+          assert.ok(
+            span < deadline + 8_000,
+            `the ${name} call took ${span}ms against a ${deadline}ms deadline: it spent its attempts instead`,
+          );
+        }
       } finally {
         await own.stop();
       }
