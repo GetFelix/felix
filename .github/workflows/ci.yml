@@ -1015,6 +1015,20 @@ jobs:
           distribution: temurin
           java-version: "21"
 
+      # TLC queues states in its scratch directory, and the largest
+      # configurations queue tens of gigabytes. The runner's /tmp can be a
+      # memory-backed tmpfs with a quota ("Disk quota exceeded" with the disk
+      # far from full), so keep the scratch directory on the runner's disk.
+      - name: Scratch disk for TLC
+        run: |
+          set -euo pipefail
+          scratch="$RUNNER_TEMP/tlc"
+          mkdir -p "$scratch"
+          findmnt -no FSTYPE,SIZE,TARGET -T /tmp || true
+          df -h /tmp "$scratch"
+          echo "TLC scratch: $scratch"
+          echo "TLC_SCRATCH_DIR=$scratch" >> "$GITHUB_ENV"
+
       - name: Model-check
         env:
           TLA_SHARD: ${{ matrix.shard }}/7

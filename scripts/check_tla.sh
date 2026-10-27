@@ -60,12 +60,13 @@ fetch_tools() {
 #
 # Checkpoints off and the scratch directory outside the tree: TLC otherwise
 # writes gigabytes of state fingerprints into a `states/` directory beside the
-# spec, and a run that is killed leaves them there.
+# spec, and a run that is killed leaves them there. TLC_SCRATCH_DIR puts it on
+# a bigger disk: the largest configurations outgrow a hosted runner's root disk.
 tlc() {
   local cfg="$1"
   shift
   local scratch
-  scratch="$(mktemp -d)"
+  scratch="$(mktemp -d "${TLC_SCRATCH_DIR:-${TMPDIR:-/tmp}}/tlc.XXXXXX")"
   # A configuration checks the module whose name it starts with.
   local module="FelixShard"
   case "$cfg" in
