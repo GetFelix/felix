@@ -3,12 +3,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "astro dev",
+    "gen:release-notes": "node ../scripts/gen-release-notes.mjs",
+    "dev": "npm run gen:release-notes && astro dev",
     "check:mermaid": "node ../scripts/check-mermaid.mjs",
     "check:diagrams": "node ../scripts/check-diagram-copies.mjs",
     "check:animations": "node ../scripts/check-diagram-animations.mjs",
     "check:evidence": "python3 ../scripts/check_doc_evidence.py",
-    "build": "npm run check:mermaid && npm run check:diagrams && npm run check:animations && npm run check:evidence && astro build",
+    "build": "npm run gen:release-notes && npm run check:mermaid && npm run check:diagrams && npm run check:animations && npm run check:evidence && astro build",
     "preview": "astro preview"
   },
   "dependencies": {

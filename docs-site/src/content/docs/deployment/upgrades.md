@@ -4,7 +4,9 @@ description: What happens when two versions of Felix meet on the client protocol
 ---
 
 Two versions of Felix can meet in five places. This page says what happens on
-a mismatch in each.
+a mismatch in each. What changed in each release is in the
+[release notes](/release-notes/), and the line in development has an
+[upgrade page](/release-notes/upgrading-to-0-7/).
 
 ## The five compatibility surfaces
 

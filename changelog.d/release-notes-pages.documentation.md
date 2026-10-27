@@ -1,0 +1,1 @@
+- The docs site has a [Release notes](https://docs.getfelix.dev/release-notes/) section: one page per released version, generated from this changelog when the site is built, and an [Upgrading to 0.7](https://docs.getfelix.dev/release-notes/upgrading-to-0-7/) page for the line in development.
