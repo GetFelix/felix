@@ -48,6 +48,7 @@ reads it, waits, and reads it again.
 <TabItem label="Rust">
 
 ```rust
+use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -61,6 +62,15 @@ const TENANT: &str = "dev";
 const NAMESPACE: &str = "default";
 const CACHE: &str = "tutorial-cache";
 
+// Every call to the broker gets this long.
+const CALL_TIMEOUT: Duration = Duration::from_secs(10);
+
+async fn bounded<T>(what: &str, limit: Duration, call: impl Future<Output = Result<T>>) -> Result<T> {
+    tokio::time::timeout(limit, call)
+        .await
+        .with_context(|| format!("{what} did not finish within {limit:?}"))?
+}
+
 async fn connect() -> Result<Arc<ClusterClient>> {
     let ca_file = std::env::var("FELIX_CA_FILE").context("set FELIX_CA_FILE")?;
     let roots = Arc::new(root_store_from_pem_file(&ca_file)?);
@@ -69,20 +79,20 @@ async fn connect() -> Result<Arc<ClusterClient>> {
 
     let broker = std::env::var("FELIX_BROKERS").unwrap_or_else(|_| "127.0.0.1:5000".into());
     let seeds: Vec<SocketAddr> = vec![broker.parse().context("FELIX_BROKERS must be ip:port")?];
-    Ok(Arc::new(ClusterClient::connect(&seeds, "localhost", config).await?))
+    let client = bounded("connecting", CALL_TIMEOUT, ClusterClient::connect(&seeds, "localhost", config)).await?;
+    Ok(Arc::new(client))
 }
 
 async fn ttl(client: &ClusterClient) -> Result<()> {
     // The TTL is in milliseconds.
-    client
-        .cache_put(TENANT, NAMESPACE, CACHE, "greeting", Bytes::from_static(b"hello"), Some(5_000))
-        .await?;
-    let now = client.cache_get(TENANT, NAMESPACE, CACHE, "greeting").await?;
-    println!("right after the put: {now:?}");
+    let put = client.cache_put(TENANT, NAMESPACE, CACHE, "greeting", Bytes::from_static(b"hello"), Some(5_000));
+    bounded("put", CALL_TIMEOUT, put).await?;
+    let get = client.cache_get(TENANT, NAMESPACE, CACHE, "greeting");
+    println!("right after the put: {:?}", bounded("get", CALL_TIMEOUT, get).await?);
 
     tokio::time::sleep(Duration::from_secs(6)).await;
-    let later = client.cache_get(TENANT, NAMESPACE, CACHE, "greeting").await?;
-    println!("six seconds later: {later:?}");
+    let get = client.cache_get(TENANT, NAMESPACE, CACHE, "greeting");
+    println!("six seconds later: {:?}", bounded("get", CALL_TIMEOUT, get).await?);
     Ok(())
 }
 ```
@@ -91,9 +101,9 @@ async fn ttl(client: &ClusterClient) -> Result<()> {
 <TabItem label="Python">
 
 ```python
+import asyncio
 import os
 import sys
-import time
 
 import felix
 
@@ -102,24 +112,35 @@ TENANT = "dev"
 NAMESPACE = "default"
 CACHE = "tutorial-cache"
 
+# Every call to the broker gets this long.
+CALL_TIMEOUT = 10.0
 
-def connect() -> felix.Client:
-    return felix.Client(
-        os.environ.get("FELIX_BROKERS", "127.0.0.1:5000"),
-        tenant_id=TENANT,
-        token=os.environ["FELIX_AUTH_TOKEN"],
-        ca_file=os.environ["FELIX_CA_FILE"],
-        reconnect_deadline=10.0,
+
+async def bounded(call, extra=0.0):
+    return await asyncio.wait_for(call, CALL_TIMEOUT + extra)
+
+
+async def connect() -> felix.AsyncClient:
+    return await bounded(
+        felix.AsyncClient.connect(
+            os.environ.get("FELIX_BROKERS", "127.0.0.1:5000"),
+            tenant_id=TENANT,
+            token=os.environ["FELIX_AUTH_TOKEN"],
+            ca_file=os.environ["FELIX_CA_FILE"],
+            reconnect_deadline=CALL_TIMEOUT,
+        )
     )
 
 
-def ttl(client: felix.Client) -> None:
+async def ttl(client: felix.AsyncClient) -> None:
     # The TTL is in seconds.
-    client.cache_put(TENANT, NAMESPACE, CACHE, "greeting", b"hello", ttl=5.0)
-    print("right after the put:", client.cache_get(TENANT, NAMESPACE, CACHE, "greeting"))
+    await bounded(client.cache_put(TENANT, NAMESPACE, CACHE, "greeting", b"hello", ttl=5.0))
+    now = await bounded(client.cache_get(TENANT, NAMESPACE, CACHE, "greeting"))
+    print("right after the put:", now)
 
-    time.sleep(6)
-    print("six seconds later:", client.cache_get(TENANT, NAMESPACE, CACHE, "greeting"))
+    await asyncio.sleep(6)
+    later = await bounded(client.cache_get(TENANT, NAMESPACE, CACHE, "greeting"))
+    print("six seconds later:", later)
 ```
 
 </TabItem>
@@ -134,6 +155,22 @@ const TENANT = "dev";
 const NAMESPACE = "default";
 const CACHE = "tutorial-cache";
 
+// Every call to the broker gets this long. The client takes no timeout
+// argument, so a timer is raced against the call.
+const CALL_TIMEOUT_MS = 10_000;
+
+async function bounded<T>(what: string, call: Promise<T>, ms = CALL_TIMEOUT_MS): Promise<T> {
+  const timer = new AbortController();
+  const expired = sleep(ms, undefined, { signal: timer.signal }).then(() => {
+    throw new Error(`${what} did not finish within ${ms} ms`);
+  });
+  try {
+    return await Promise.race([call, expired]);
+  } finally {
+    timer.abort();
+  }
+}
+
 function required(name: string): string {
   const value = process.env[name];
   if (!value) throw new Error(`set ${name}`);
@@ -141,21 +178,24 @@ function required(name: string): string {
 }
 
 function connect(): Promise<Client> {
-  return Client.connect(process.env.FELIX_BROKERS ?? "127.0.0.1:5000", TENANT, {
-    token: required("FELIX_AUTH_TOKEN"),
-    caFile: required("FELIX_CA_FILE"),
-    reconnectDeadline: 10_000, // milliseconds
-  });
+  return bounded(
+    "connecting",
+    Client.connect(process.env.FELIX_BROKERS ?? "127.0.0.1:5000", TENANT, {
+      token: required("FELIX_AUTH_TOKEN"),
+      caFile: required("FELIX_CA_FILE"),
+      reconnectDeadline: CALL_TIMEOUT_MS,
+    }),
+  );
 }
 
 async function ttl(client: Client): Promise<void> {
   // The TTL is in seconds.
-  await client.cachePut(TENANT, NAMESPACE, CACHE, "greeting", Buffer.from("hello"), 5);
-  const now = await client.cacheGet(TENANT, NAMESPACE, CACHE, "greeting");
+  await bounded("put", client.cachePut(TENANT, NAMESPACE, CACHE, "greeting", Buffer.from("hello"), 5));
+  const now = await bounded("get", client.cacheGet(TENANT, NAMESPACE, CACHE, "greeting"));
   console.log("right after the put:", now);
 
   await sleep(6000);
-  const later = await client.cacheGet(TENANT, NAMESPACE, CACHE, "greeting");
+  const later = await bounded("get", client.cacheGet(TENANT, NAMESPACE, CACHE, "greeting"));
   console.log("six seconds later:", later);
 }
 ```
@@ -174,31 +214,46 @@ const string CacheName = "tutorial-cache";
 const string LeaseKey = "lease:report";
 const int LeaseTtlSeconds = 10;
 
+// Every call to the broker gets this long.
+const int CallSeconds = 10;
+
+static async Task<T> Bounded<T>(Func<CancellationToken, Task<T>> call)
+{
+    using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(CallSeconds));
+    return await call(limit.Token);
+}
+
+static async Task BoundedTask(Func<CancellationToken, Task> call)
+{
+    using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(CallSeconds));
+    await call(limit.Token);
+}
+
 static string Required(string name) =>
     Environment.GetEnvironmentVariable(name) is { Length: > 0 } value
         ? value
         : throw new InvalidOperationException($"set {name}");
 
-static async Task<FelixClient> ConnectAsync(CancellationToken ct) =>
-    await FelixClient.ConnectAsync(new FelixClientOptions
+static Task<FelixClient> ConnectAsync() =>
+    Bounded(ct => FelixClient.ConnectAsync(new FelixClientOptions
     {
         Addrs = [Environment.GetEnvironmentVariable("FELIX_BROKERS") ?? "127.0.0.1:5000"],
         TenantId = Tenant,
         Token = Required("FELIX_AUTH_TOKEN"),
         CaFile = Required("FELIX_CA_FILE"),
-        ReconnectDeadline = TimeSpan.FromSeconds(10),
-    }, ct);
+        ReconnectDeadline = TimeSpan.FromSeconds(CallSeconds),
+    }, ct));
 
 static string Text(ReadOnlyMemory<byte>? value) =>
     value is { } bytes ? Encoding.UTF8.GetString(bytes.Span) : "(none)";
 
-static async Task TtlAsync(FelixCache cache, CancellationToken ct)
+static async Task TtlAsync(FelixCache cache)
 {
-    await cache.PutAsync("greeting", "hello"u8.ToArray(), ttl: TimeSpan.FromSeconds(5), cancellationToken: ct);
-    Console.WriteLine($"right after the put: {Text(await cache.GetAsync("greeting", ct))}");
+    await BoundedTask(ct => cache.PutAsync("greeting", "hello"u8.ToArray(), ttl: TimeSpan.FromSeconds(5), cancellationToken: ct));
+    Console.WriteLine($"right after the put: {Text(await Bounded(ct => cache.GetAsync("greeting", ct)))}");
 
-    await Task.Delay(TimeSpan.FromSeconds(6), ct);
-    Console.WriteLine($"six seconds later: {Text(await cache.GetAsync("greeting", ct))}");
+    await Task.Delay(TimeSpan.FromSeconds(6));
+    Console.WriteLine($"six seconds later: {Text(await Bounded(ct => cache.GetAsync("greeting", ct)))}");
 }
 ```
 
@@ -227,9 +282,8 @@ use anyhow::bail;
 use felix_client::{CacheWatchFilter, CacheWatchItem};
 
 async fn watch(client: &Arc<ClusterClient>) -> Result<()> {
-    let mut watch = client
-        .watch_cache(TENANT, NAMESPACE, CACHE, CacheWatchFilter::Prefix("status:".into()), None)
-        .await?;
+    let start = client.watch_cache(TENANT, NAMESPACE, CACHE, CacheWatchFilter::Prefix("status:".into()), None);
+    let mut watch = bounded("starting the watch", CALL_TIMEOUT, start).await?;
     println!("watching status:*");
     while let Some(item) = watch.recv().await {
         match item {
@@ -247,13 +301,13 @@ async fn watch(client: &Arc<ClusterClient>) -> Result<()> {
 }
 
 async fn set(client: &ClusterClient, key: &str, value: &str) -> Result<()> {
-    client
-        .cache_put(TENANT, NAMESPACE, CACHE, key, Bytes::copy_from_slice(value.as_bytes()), None)
-        .await
+    let put = client.cache_put(TENANT, NAMESPACE, CACHE, key, Bytes::copy_from_slice(value.as_bytes()), None);
+    bounded("put", CALL_TIMEOUT, put).await
 }
 
 async fn delete(client: &ClusterClient, key: &str) -> Result<()> {
-    let removed = client.cache_delete(TENANT, NAMESPACE, CACHE, key).await?;
+    let delete = client.cache_delete(TENANT, NAMESPACE, CACHE, key);
+    let removed = bounded("delete", CALL_TIMEOUT, delete).await?;
     println!("{}", if removed.is_some() { "deleted" } else { "there was nothing to delete" });
     Ok(())
 }
@@ -263,11 +317,12 @@ async fn delete(client: &ClusterClient, key: &str) -> Result<()> {
 <TabItem label="Python">
 
 ```python
-def watch(client: felix.Client) -> None:
+async def watch(client: felix.AsyncClient) -> None:
     prefix = felix.CacheWatchFilter.prefix("status:")
-    with client.watch_cache(TENANT, NAMESPACE, CACHE, prefix) as watch:
+    start = client.watch_cache(TENANT, NAMESPACE, CACHE, prefix)
+    async with await bounded(start) as changes:
         print("watching status:*")
-        for item in watch:
+        async for item in changes:
             if isinstance(item, felix.CacheChange):
                 if item.value is None:
                     print(f"{item.key} deleted")
@@ -279,12 +334,12 @@ def watch(client: felix.Client) -> None:
                 print("the shard moved; the watch follows it")
 
 
-def set_key(client: felix.Client, key: str, value: str) -> None:
-    client.cache_put(TENANT, NAMESPACE, CACHE, key, value.encode())
+async def set_key(client: felix.AsyncClient, key: str, value: str) -> None:
+    await bounded(client.cache_put(TENANT, NAMESPACE, CACHE, key, value.encode()))
 
 
-def delete_key(client: felix.Client, key: str) -> None:
-    removed = client.cache_delete(TENANT, NAMESPACE, CACHE, key)
+async def delete_key(client: felix.AsyncClient, key: str) -> None:
+    removed = await bounded(client.cache_delete(TENANT, NAMESPACE, CACHE, key))
     print("deleted" if removed is not None else "there was nothing to delete")
 ```
 
@@ -293,7 +348,10 @@ def delete_key(client: felix.Client, key: str) -> None:
 
 ```ts
 async function watch(client: Client): Promise<void> {
-  const changes = await client.watchCache(TENANT, NAMESPACE, CACHE, undefined, "status:");
+  const changes = await bounded(
+    "starting the watch",
+    client.watchCache(TENANT, NAMESPACE, CACHE, undefined, "status:"),
+  );
   try {
     console.log("watching status:*");
     for (;;) {
@@ -316,11 +374,11 @@ async function watch(client: Client): Promise<void> {
 }
 
 async function setKey(client: Client, key: string, value: string): Promise<void> {
-  await client.cachePut(TENANT, NAMESPACE, CACHE, key, Buffer.from(value));
+  await bounded("put", client.cachePut(TENANT, NAMESPACE, CACHE, key, Buffer.from(value)));
 }
 
 async function deleteKey(client: Client, key: string): Promise<void> {
-  const removed = await client.cacheDelete(TENANT, NAMESPACE, CACHE, key);
+  const removed = await bounded("delete", client.cacheDelete(TENANT, NAMESPACE, CACHE, key));
   console.log(removed === null ? "there was nothing to delete" : "deleted");
 }
 ```
@@ -329,11 +387,11 @@ async function deleteKey(client: Client, key: string): Promise<void> {
 <TabItem label="C#">
 
 ```csharp
-static async Task WatchAsync(FelixCache cache, CancellationToken ct)
+static async Task WatchAsync(FelixCache cache)
 {
-    await using var watch = await cache.WatchPrefixAsync("status:", cancellationToken: ct);
+    await using var watch = await Bounded(ct => cache.WatchPrefixAsync("status:", cancellationToken: ct));
     Console.WriteLine("watching status:*");
-    await foreach (var item in watch.WithCancellation(ct))
+    await foreach (var item in watch)
     {
         switch (item.Kind)
         {
@@ -352,11 +410,11 @@ static async Task WatchAsync(FelixCache cache, CancellationToken ct)
     }
 }
 
-static Task SetAsync(FelixCache cache, string key, string value, CancellationToken ct) =>
-    cache.PutAsync(key, Encoding.UTF8.GetBytes(value), cancellationToken: ct);
+static Task SetAsync(FelixCache cache, string key, string value) =>
+    BoundedTask(ct => cache.PutAsync(key, Encoding.UTF8.GetBytes(value), cancellationToken: ct));
 
-static async Task DeleteAsync(FelixCache cache, string key, CancellationToken ct) =>
-    Console.WriteLine(await cache.DeleteAsync(key, ct) is null ? "there was nothing to delete" : "deleted");
+static async Task DeleteAsync(FelixCache cache, string key) =>
+    Console.WriteLine(await Bounded(ct => cache.DeleteAsync(key, ct)) is null ? "there was nothing to delete" : "deleted");
 ```
 
 </TabItem>
@@ -383,8 +441,11 @@ lease passed to someone else.
 
 The holder renews with `Version(token)`, so a renewal fails if the lease has
 since changed hands, and releases with a delete at that version for the same
-reason. A worker that does not hold the lease watches the key and tries again
-when the lease is released or expires, or after one TTL, whichever comes first.
+reason. It releases on every path, including after an error, so the next worker
+does not wait out the TTL. If the release itself fails the lease still expires
+on its own. A worker that does not hold the lease watches the key, opened before its first
+claim so a release in between is not missed, and tries again when the lease is
+released or expires, or after one TTL, whichever comes first.
 The expired entry is deleted by the broker, so the watch hears about it, up to
 about a second after the TTL.
 
@@ -392,71 +453,86 @@ about a second after the TTL.
 <TabItem label="Rust">
 
 ```rust
-use felix_client::CacheCondition;
+use felix_client::{CacheCondition, ClusterCacheWatch};
 
 const LEASE_KEY: &str = "lease:report";
 const LEASE_TTL_MS: u64 = 10_000;
 
 async fn lease(client: &Arc<ClusterClient>, name: &str) -> Result<()> {
+    // Watch before the first claim, so a release that lands between a refusal
+    // and the wait is not missed.
+    let start = client.watch_cache(TENANT, NAMESPACE, CACHE, CacheWatchFilter::Key(LEASE_KEY.into()), None);
+    let mut watch = bounded("starting the watch", CALL_TIMEOUT, start).await?;
     loop {
-        let claim = client
-            .cache_put_if(
-                TENANT, NAMESPACE, CACHE, LEASE_KEY,
-                Bytes::copy_from_slice(name.as_bytes()),
-                Some(LEASE_TTL_MS),
-                CacheCondition::Absent,
-            )
-            .await?;
+        let claim = client.cache_put_if(
+            TENANT, NAMESPACE, CACHE, LEASE_KEY,
+            Bytes::copy_from_slice(name.as_bytes()),
+            Some(LEASE_TTL_MS),
+            CacheCondition::Absent,
+        );
+        let claim = bounded("claim", CALL_TIMEOUT, claim).await?;
         if claim.applied {
             let token = claim.version.context("the broker did not report a version to fence with")?;
+            drop(watch);
             return hold(client, name, token).await;
         }
         println!("{name}: the lease is taken, waiting");
-        wait_for_release(client).await?;
+        wait_for_release(&mut watch).await?;
     }
 }
 
 async fn hold(client: &ClusterClient, name: &str, mut token: u64) -> Result<()> {
     println!("{name}: holds the lease, fencing token {token}");
+    let worked = renew_rounds(client, name, &mut token).await;
+
+    // Release on every path, so the next worker does not wait out the TTL. If
+    // this fails the lease still expires on its own.
+    let release = client.cache_delete_if(TENANT, NAMESPACE, CACHE, LEASE_KEY, token);
+    match bounded("release", CALL_TIMEOUT, release).await {
+        Ok(released) => {
+            println!("{name}: released ({})", if released.applied { "ok" } else { "it had already moved on" });
+        }
+        Err(err) => println!("{name}: could not release, the lease expires on its own: {err:#}"),
+    }
+    worked
+}
+
+async fn renew_rounds(client: &ClusterClient, name: &str, token: &mut u64) -> Result<()> {
     for round in 1..=3 {
         // Do a unit of work here, passing `token` to whatever it writes.
         tokio::time::sleep(Duration::from_millis(LEASE_TTL_MS / 3)).await;
 
-        let renewed = client
-            .cache_put_if(
-                TENANT, NAMESPACE, CACHE, LEASE_KEY,
-                Bytes::copy_from_slice(name.as_bytes()),
-                Some(LEASE_TTL_MS),
-                CacheCondition::Version(token),
-            )
-            .await?;
+        let renew = client.cache_put_if(
+            TENANT, NAMESPACE, CACHE, LEASE_KEY,
+            Bytes::copy_from_slice(name.as_bytes()),
+            Some(LEASE_TTL_MS),
+            CacheCondition::Version(*token),
+        );
+        let renewed = bounded("renew", CALL_TIMEOUT, renew).await?;
         match renewed.version {
-            Some(version) if renewed.applied => token = version,
+            Some(version) if renewed.applied => *token = version,
             _ => bail!("{name}: lost the lease; stop working"),
         }
         println!("{name}: renewed (round {round}), fencing token {token}");
     }
-
-    let released = client.cache_delete_if(TENANT, NAMESPACE, CACHE, LEASE_KEY, token).await?;
-    println!("{name}: released ({})", if released.applied { "ok" } else { "it had already moved on" });
     Ok(())
 }
 
 // Returns when the lease is deleted, or after one TTL.
-async fn wait_for_release(client: &Arc<ClusterClient>) -> Result<()> {
-    let mut watch = client
-        .watch_cache(TENANT, NAMESPACE, CACHE, CacheWatchFilter::Key(LEASE_KEY.into()), None)
-        .await?;
+async fn wait_for_release(watch: &mut ClusterCacheWatch) -> Result<()> {
     let deleted = async {
         while let Some(item) = watch.recv().await {
             if matches!(item, CacheWatchItem::Change(ref change) if change.value.is_none()) {
-                return;
+                return true;
             }
         }
+        false
     };
-    // A timeout is expected when the holder keeps renewing, so it is not an error.
-    let _ = tokio::time::timeout(Duration::from_millis(LEASE_TTL_MS), deleted).await;
-    Ok(())
+    // A timeout is expected while the holder keeps renewing.
+    match tokio::time::timeout(Duration::from_millis(LEASE_TTL_MS), deleted).await {
+        Ok(false) => bail!("the watch ended"),
+        _ => Ok(()),
+    }
 }
 ```
 
@@ -464,55 +540,72 @@ async fn wait_for_release(client: &Arc<ClusterClient>) -> Result<()> {
 <TabItem label="C#">
 
 ```csharp
-static async Task LeaseAsync(FelixCache cache, string name, CancellationToken ct)
+static async Task LeaseAsync(FelixCache cache, string name)
 {
     var me = Encoding.UTF8.GetBytes(name);
     var ttl = TimeSpan.FromSeconds(LeaseTtlSeconds);
+
+    // Watch before the first claim, so a release that lands between a refusal
+    // and the wait is not missed.
+    await using var watch = await Bounded(ct => cache.WatchKeyAsync(LeaseKey, cancellationToken: ct));
     while (true)
     {
-        var claim = await cache.PutIfAbsentAsync(LeaseKey, me, ttl, ct);
+        var claim = await Bounded(ct => cache.PutIfAbsentAsync(LeaseKey, me, ttl, ct));
         if (claim.Applied)
         {
             var token = claim.Version
                 ?? throw new InvalidOperationException("the broker did not report a version to fence with");
-            await HoldAsync(cache, name, me, token, ct);
+            await HoldAsync(cache, name, me, token);
             return;
         }
         Console.WriteLine($"{name}: the lease is taken, waiting");
-        await WaitForReleaseAsync(cache, ct);
+        await WaitForReleaseAsync(watch);
     }
 }
 
-static async Task HoldAsync(FelixCache cache, string name, byte[] me, long token, CancellationToken ct)
+static async Task HoldAsync(FelixCache cache, string name, byte[] me, long token)
 {
     var ttl = TimeSpan.FromSeconds(LeaseTtlSeconds);
     Console.WriteLine($"{name}: holds the lease, fencing token {token}");
-    for (var round = 1; round <= 3; round++)
+    try
     {
-        // Do a unit of work here, passing `token` to whatever it writes.
-        await Task.Delay(ttl / 3, ct);
-
-        var renewed = await cache.PutIfVersionAsync(LeaseKey, me, token, ttl, ct);
-        if (!renewed.Applied || renewed.Version is not { } next)
+        for (var round = 1; round <= 3; round++)
         {
-            throw new InvalidOperationException($"{name}: lost the lease; stop working");
-        }
-        token = next;
-        Console.WriteLine($"{name}: renewed (round {round}), fencing token {token}");
-    }
+            // Do a unit of work here, passing `token` to whatever it writes.
+            await Task.Delay(ttl / 3);
 
-    var released = await cache.DeleteIfVersionAsync(LeaseKey, token, ct);
-    Console.WriteLine($"{name}: released ({(released.Applied ? "ok" : "it had already moved on")})");
+            var renewed = await Bounded(ct => cache.PutIfVersionAsync(LeaseKey, me, token, ttl, ct));
+            if (!renewed.Applied || renewed.Version is not { } next)
+            {
+                throw new InvalidOperationException($"{name}: lost the lease; stop working");
+            }
+            token = next;
+            Console.WriteLine($"{name}: renewed (round {round}), fencing token {token}");
+        }
+    }
+    finally
+    {
+        // Release on every path, so the next worker does not wait out the TTL.
+        // If this fails the lease still expires on its own.
+        try
+        {
+            var released = await Bounded(ct => cache.DeleteIfVersionAsync(LeaseKey, token, ct));
+            Console.WriteLine($"{name}: released ({(released.Applied ? "ok" : "it had already moved on")})");
+        }
+        catch (Exception e) when (e is FelixException or OperationCanceledException)
+        {
+            Console.WriteLine($"{name}: could not release, the lease expires on its own: {e.Message}");
+        }
+    }
 }
 
 // Returns when the lease is deleted, or after one TTL.
-static async Task WaitForReleaseAsync(FelixCache cache, CancellationToken ct)
+static async Task WaitForReleaseAsync(FelixCacheWatch watch)
 {
-    await using var watch = await cache.WatchKeyAsync(LeaseKey, cancellationToken: ct);
     var deadline = DateTime.UtcNow.AddSeconds(LeaseTtlSeconds);
     while (DateTime.UtcNow < deadline)
     {
-        var item = await watch.ReadAsync(deadline - DateTime.UtcNow, ct);
+        var item = await watch.ReadAsync(deadline - DateTime.UtcNow);
         if (item is null || item.IsDelete)
         {
             return;
@@ -532,9 +625,7 @@ static async Task WaitForReleaseAsync(FelixCache cache, CancellationToken ct)
 ```rust
 #[tokio::main]
 async fn main() -> Result<()> {
-    let client = tokio::time::timeout(Duration::from_secs(10), connect())
-        .await
-        .context("connecting took longer than 10 seconds")??;
+    let client = connect().await?;
     let args: Vec<String> = std::env::args().skip(1).collect();
     let arg = |i: usize| args.get(i).map(String::as_str);
     match (arg(0), arg(1), arg(2)) {
@@ -552,22 +643,22 @@ async fn main() -> Result<()> {
 <TabItem label="Python">
 
 ```python
-def main() -> None:
+async def main() -> None:
     args = sys.argv[1:]
-    with connect() as client:
+    async with await connect() as client:
         if args[:1] == ["ttl"]:
-            ttl(client)
+            await ttl(client)
         elif args[:1] == ["watch"]:
-            watch(client)
+            await watch(client)
         elif len(args) == 3 and args[0] == "set":
-            set_key(client, args[1], args[2])
+            await set_key(client, args[1], args[2])
         elif len(args) == 2 and args[0] == "delete":
-            delete_key(client, args[1])
+            await delete_key(client, args[1])
         else:
             sys.exit("usage: cache.py ttl | watch | set <key> <value> | delete <key>")
 
 
-main()
+asyncio.run(main())
 ```
 
 </TabItem>
@@ -601,25 +692,24 @@ if (args.Length == 0 || args[0] is not ("ttl" or "watch" or "lease" or "set" or 
     return 1;
 }
 
-using var connecting = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-await using var client = await ConnectAsync(connecting.Token);
+await using var client = await ConnectAsync();
 var cache = client.Cache(Tenant, Namespace, CacheName);
 switch (args)
 {
     case ["ttl"]:
-        await TtlAsync(cache, CancellationToken.None);
+        await TtlAsync(cache);
         break;
     case ["watch"]:
-        await WatchAsync(cache, CancellationToken.None);
+        await WatchAsync(cache);
         break;
     case ["lease", var name]:
-        await LeaseAsync(cache, name, CancellationToken.None);
+        await LeaseAsync(cache, name);
         break;
     case ["set", var key, var value]:
-        await SetAsync(cache, key, value, CancellationToken.None);
+        await SetAsync(cache, key, value);
         break;
     case ["delete", var key]:
-        await DeleteAsync(cache, key, CancellationToken.None);
+        await DeleteAsync(cache, key);
         break;
     default:
         Console.Error.WriteLine("usage: cache ttl | watch | lease <name> | set <key> <value> | delete <key>");
@@ -685,13 +775,14 @@ renewal, and its token is higher than any `a` held.
 ## C
 
 Each C call returns at once and reports to a callback, so this program wraps
-each one in a `waiter` that blocks until the callback has run. It has the same
-modes as above. Values and keys handed to a callback are valid only while it
+each one in a `waiter` that blocks until the callback has run or ten seconds
+have passed. It has the same modes as above. Values and keys handed to a callback are valid only while it
 runs, so the callbacks copy what the program needs.
 
 ```c
 #define _POSIX_C_SOURCE 200809L
 
+#include <errno.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -736,19 +827,38 @@ static void finish(struct waiter *w, FelixStatus status, const char *message, vo
     pthread_mutex_unlock(&w->mu);
 }
 
-/* A refused call never runs its callback, so its error comes from the thread. */
-static FelixStatus wait_for(struct waiter *w, FelixStatus started) {
+/* A refused call never runs its callback, so its error comes from the thread.
+   A call the broker does not answer within limit_ms ends the program: its
+   callback may still run later, so nothing it uses can be freed. */
+static FelixStatus wait_for_ms(struct waiter *w, FelixStatus started, long limit_ms) {
     if (started != FELIX_STATUS_OK) {
         snprintf(w->message, sizeof w->message, "%s", felix_last_error_message());
         return started;
     }
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_sec += limit_ms / 1000;
+    deadline.tv_nsec += (limit_ms % 1000) * 1000000L;
+    if (deadline.tv_nsec >= 1000000000L) {
+        deadline.tv_sec++;
+        deadline.tv_nsec -= 1000000000L;
+    }
     pthread_mutex_lock(&w->mu);
-    while (!w->done) pthread_cond_wait(&w->cv, &w->mu);
+    while (!w->done) {
+        if (pthread_cond_timedwait(&w->cv, &w->mu, &deadline) == ETIMEDOUT) {
+            fprintf(stderr, "no answer from the broker within %ld ms\n", limit_ms);
+            exit(1);
+        }
+    }
     w->done = false;
     FelixStatus status = w->status;
     pthread_mutex_unlock(&w->mu);
     return status;
 }
+
+/* Every call to the broker gets this long. */
+#define CALL_LIMIT_MS 10000
+#define wait_for(w, started) wait_for_ms((w), (started), CALL_LIMIT_MS)
 
 static void copy_text(char *to, size_t cap, const void *from, size_t len) {
     size_t n = len < cap - 1 ? len : cap - 1;
@@ -854,7 +964,8 @@ static int watch_prefix(const FelixClient *client, struct waiter *w) {
     int exit_code = 1;
     printf("watching status:*\n");
     for (;;) {
-        status = wait_for(w, felix_cache_watch_next(watch, 30000, NULL, on_watch_item, w));
+        status = wait_for_ms(w, felix_cache_watch_next(watch, 30000, NULL, on_watch_item, w),
+                             30000 + CALL_LIMIT_MS);
         if (status == FELIX_STATUS_TIMEOUT) continue;
         if (status == FELIX_STATUS_CLOSED) {
             exit_code = 0;
@@ -879,8 +990,70 @@ static int watch_prefix(const FelixClient *client, struct waiter *w) {
     return exit_code;
 }
 
-/* Returns when the lease key is deleted, or when a wait times out. */
-static int wait_for_release(const FelixClient *client, struct waiter *w) {
+/* Returns when the lease key is deleted, or after one TTL. */
+static int wait_for_release(struct waiter *w, FelixCacheWatch *watch) {
+    for (;;) {
+        FelixStatus status = wait_for_ms(
+            w, felix_cache_watch_next(watch, LEASE_TTL_MS, NULL, on_watch_item, w),
+            LEASE_TTL_MS + CALL_LIMIT_MS);
+        if (status == FELIX_STATUS_TIMEOUT) return 0;
+        if (status == FELIX_STATUS_CLOSED) {
+            fprintf(stderr, "the watch ended\n");
+            return 1;
+        }
+        if (status != FELIX_STATUS_OK) {
+            fprintf(stderr, "watch: %s\n", w->message);
+            return 1;
+        }
+        if (w->kind == FELIX_WATCH_CHANGE && !w->has_value) return 0;
+    }
+}
+
+static int hold(const FelixClient *client, struct waiter *w, const char *name, uint64_t token) {
+    int exit_code = 0;
+    FelixStatus status;
+    printf("%s: holds the lease, fencing token %llu\n", name, (unsigned long long)token);
+    for (int round = 1; round <= 3; round++) {
+        /* Do a unit of work here, passing token to whatever it writes. */
+        struct timespec pause = {LEASE_TTL_MS / 3 / 1000, (LEASE_TTL_MS / 3 % 1000) * 1000000L};
+        nanosleep(&pause, NULL);
+
+        status = wait_for(
+            w, felix_client_cache_put_if(client, TENANT, NAMESPACE, CACHE, LEASE_KEY,
+                                         (const uint8_t *)name, strlen(name), LEASE_TTL_MS,
+                                         FELIX_IF_VERSION, token, NULL, on_condition, w));
+        if (status != FELIX_STATUS_OK) {
+            fprintf(stderr, "renew: %s\n", w->message);
+            exit_code = 1;
+            break;
+        }
+        if (!w->applied || !w->has_version) {
+            fprintf(stderr, "%s: lost the lease; stop working\n", name);
+            exit_code = 1;
+            break;
+        }
+        token = w->version;
+        printf("%s: renewed (round %d), fencing token %llu\n", name, round,
+               (unsigned long long)token);
+    }
+
+    /* Release on every path, so the next worker does not wait out the TTL. If
+       this fails the lease still expires on its own. */
+    status = wait_for(
+        w, felix_client_cache_delete_if(client, TENANT, NAMESPACE, CACHE, LEASE_KEY, token, NULL,
+                                        on_condition, w));
+    if (status != FELIX_STATUS_OK) {
+        fprintf(stderr, "%s: could not release, the lease expires on its own: %s\n", name,
+                w->message);
+    } else {
+        printf("%s: released (%s)\n", name, w->applied ? "ok" : "it had already moved on");
+    }
+    return exit_code;
+}
+
+static int lease(const FelixClient *client, struct waiter *w, const char *name) {
+    /* Watch before the first claim, so a release that lands between a refusal
+       and the wait is not missed. */
     FelixStatus status = wait_for(
         w, felix_client_watch_cache(client, TENANT, NAMESPACE, CACHE, FELIX_WATCH_KEY,
                                     LEASE_KEY, false, false, 0, NULL, on_watch_open, w));
@@ -889,76 +1062,29 @@ static int wait_for_release(const FelixClient *client, struct waiter *w) {
         return 1;
     }
     FelixCacheWatch *watch = w->handle;
-    int exit_code = 0;
+
     for (;;) {
-        status = wait_for(w, felix_cache_watch_next(watch, LEASE_TTL_MS, NULL, on_watch_item, w));
-        if (status == FELIX_STATUS_TIMEOUT || status == FELIX_STATUS_CLOSED) break;
-        if (status != FELIX_STATUS_OK) {
-            fprintf(stderr, "watch: %s\n", w->message);
-            exit_code = 1;
-            break;
-        }
-        if (w->kind == FELIX_WATCH_CHANGE && !w->has_value) break;
-    }
-    felix_cache_watch_free(watch);
-    return exit_code;
-}
-
-static int hold(const FelixClient *client, struct waiter *w, const char *name, uint64_t token) {
-    printf("%s: holds the lease, fencing token %llu\n", name, (unsigned long long)token);
-    for (int round = 1; round <= 3; round++) {
-        /* Do a unit of work here, passing token to whatever it writes. */
-        struct timespec pause = {LEASE_TTL_MS / 3 / 1000, (LEASE_TTL_MS / 3 % 1000) * 1000000L};
-        nanosleep(&pause, NULL);
-
-        FelixStatus status = wait_for(
-            w, felix_client_cache_put_if(client, TENANT, NAMESPACE, CACHE, LEASE_KEY,
-                                         (const uint8_t *)name, strlen(name), LEASE_TTL_MS,
-                                         FELIX_IF_VERSION, token, NULL, on_condition, w));
-        if (status != FELIX_STATUS_OK) {
-            fprintf(stderr, "renew: %s\n", w->message);
-            return 1;
-        }
-        if (!w->applied || !w->has_version) {
-            fprintf(stderr, "%s: lost the lease; stop working\n", name);
-            return 1;
-        }
-        token = w->version;
-        printf("%s: renewed (round %d), fencing token %llu\n", name, round,
-               (unsigned long long)token);
-    }
-
-    FelixStatus status = wait_for(
-        w, felix_client_cache_delete_if(client, TENANT, NAMESPACE, CACHE, LEASE_KEY, token, NULL,
-                                        on_condition, w));
-    if (status != FELIX_STATUS_OK) {
-        fprintf(stderr, "release: %s\n", w->message);
-        return 1;
-    }
-    printf("%s: released (%s)\n", name, w->applied ? "ok" : "it had already moved on");
-    return 0;
-}
-
-static int lease(const FelixClient *client, struct waiter *w, const char *name) {
-    for (;;) {
-        FelixStatus status = wait_for(
+        status = wait_for(
             w, felix_client_cache_put_if(client, TENANT, NAMESPACE, CACHE, LEASE_KEY,
                                          (const uint8_t *)name, strlen(name), LEASE_TTL_MS,
                                          FELIX_IF_ABSENT, 0, NULL, on_condition, w));
         if (status != FELIX_STATUS_OK) {
             fprintf(stderr, "claim: %s\n", w->message);
-            return 1;
+            break;
         }
         if (w->applied) {
             if (!w->has_version) {
                 fprintf(stderr, "the broker did not report a version to fence with\n");
-                return 1;
+                break;
             }
+            felix_cache_watch_free(watch);
             return hold(client, w, name, w->version);
         }
         printf("%s: the lease is taken, waiting\n", name);
-        if (wait_for_release(client, w) != 0) return 1;
+        if (wait_for_release(w, watch) != 0) break;
     }
+    felix_cache_watch_free(watch);
+    return 1;
 }
 
 int main(int argc, char **argv) {
@@ -982,10 +1108,15 @@ int main(int argc, char **argv) {
     pthread_mutex_init(&w.mu, NULL);
     pthread_cond_init(&w.cv, NULL);
     int exit_code = 1;
+    const struct FelixConnectOptions options = {
+        .size = sizeof(struct FelixConnectOptions),
+        .reconnect_deadline_ms = 10000,
+    };
 
     FelixStatus status = wait_for(
-        &w, felix_client_connect(broker && *broker ? broker : "127.0.0.1:5000", TENANT, token,
-                                 "localhost", ca_file, NULL, on_connect, &w));
+        &w, felix_client_connect_with(broker && *broker ? broker : "127.0.0.1:5000", TENANT,
+                                      token, "localhost", ca_file, &options, NULL, on_connect,
+                                      &w));
     if (status != FELIX_STATUS_OK) {
         fprintf(stderr, "connect: %s\n", w.message);
     } else {

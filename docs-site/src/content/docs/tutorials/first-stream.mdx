@@ -41,14 +41,17 @@ stopped.
 
 The program takes one argument, `publish` or `read`. This part is shared by
 both. The broker address, token and certificate come from the environment, so
-none of them is written into the code, and the connect call has a time limit.
+none of them is written into the code, and every call to the broker has a time
+limit (see [Time limits](/tutorials/overview/#time-limits)).
 
 <Tabs syncKey="lang">
 <TabItem label="Rust">
 
 ```rust
+use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use felix_client::{ClientConfig, ClusterClient, quic_client_config, root_store_from_pem_file};
@@ -58,6 +61,15 @@ const TENANT: &str = "dev";
 const NAMESPACE: &str = "default";
 const STREAM: &str = "tutorial-events";
 
+// Every call to the broker gets this long.
+const CALL_TIMEOUT: Duration = Duration::from_secs(10);
+
+async fn bounded<T>(what: &str, limit: Duration, call: impl Future<Output = Result<T>>) -> Result<T> {
+    tokio::time::timeout(limit, call)
+        .await
+        .with_context(|| format!("{what} did not finish within {limit:?}"))?
+}
+
 async fn connect() -> Result<Arc<ClusterClient>> {
     let ca_file = std::env::var("FELIX_CA_FILE").context("set FELIX_CA_FILE")?;
     let roots = Arc::new(root_store_from_pem_file(&ca_file)?);
@@ -66,7 +78,7 @@ async fn connect() -> Result<Arc<ClusterClient>> {
 
     let broker = std::env::var("FELIX_BROKERS").unwrap_or_else(|_| "127.0.0.1:5000".into());
     let seeds: Vec<SocketAddr> = vec![broker.parse().context("FELIX_BROKERS must be ip:port")?];
-    let client = ClusterClient::connect(&seeds, "localhost", config).await?;
+    let client = bounded("connecting", CALL_TIMEOUT, ClusterClient::connect(&seeds, "localhost", config)).await?;
     Ok(Arc::new(client))
 }
 ```
@@ -75,6 +87,7 @@ async fn connect() -> Result<Arc<ClusterClient>> {
 <TabItem label="Python">
 
 ```python
+import asyncio
 import os
 import sys
 from pathlib import Path
@@ -86,14 +99,24 @@ TENANT = "dev"
 NAMESPACE = "default"
 STREAM = "tutorial-events"
 
+# Every call to the broker gets this long. `extra` is for a call that waits on
+# purpose.
+CALL_TIMEOUT = 10.0
 
-def connect() -> felix.Client:
-    return felix.Client(
-        os.environ.get("FELIX_BROKERS", "127.0.0.1:5000"),
-        tenant_id=TENANT,
-        token=os.environ["FELIX_AUTH_TOKEN"],
-        ca_file=os.environ["FELIX_CA_FILE"],
-        reconnect_deadline=10.0,
+
+async def bounded(call, extra=0.0):
+    return await asyncio.wait_for(call, CALL_TIMEOUT + extra)
+
+
+async def connect() -> felix.AsyncClient:
+    return await bounded(
+        felix.AsyncClient.connect(
+            os.environ.get("FELIX_BROKERS", "127.0.0.1:5000"),
+            tenant_id=TENANT,
+            token=os.environ["FELIX_AUTH_TOKEN"],
+            ca_file=os.environ["FELIX_CA_FILE"],
+            reconnect_deadline=CALL_TIMEOUT,
+        )
     )
 ```
 
@@ -102,7 +125,7 @@ def connect() -> felix.Client:
 
 ```ts
 import { setTimeout as sleep } from "node:timers/promises";
-import { readFile, rename, writeFile } from "node:fs/promises";
+import { open, readFile, rename } from "node:fs/promises";
 import {
   Client,
   type Event,
@@ -115,6 +138,22 @@ const TENANT = "dev";
 const NAMESPACE = "default";
 const STREAM = "tutorial-events";
 
+// Every call to the broker gets this long. The client takes no timeout
+// argument, so a timer is raced against the call.
+const CALL_TIMEOUT_MS = 10_000;
+
+async function bounded<T>(what: string, call: Promise<T>, ms = CALL_TIMEOUT_MS): Promise<T> {
+  const timer = new AbortController();
+  const expired = sleep(ms, undefined, { signal: timer.signal }).then(() => {
+    throw new Error(`${what} did not finish within ${ms} ms`);
+  });
+  try {
+    return await Promise.race([call, expired]);
+  } finally {
+    timer.abort();
+  }
+}
+
 function required(name: string): string {
   const value = process.env[name];
   if (!value) throw new Error(`set ${name}`);
@@ -122,11 +161,14 @@ function required(name: string): string {
 }
 
 function connect(): Promise<Client> {
-  return Client.connect(process.env.FELIX_BROKERS ?? "127.0.0.1:5000", TENANT, {
-    token: required("FELIX_AUTH_TOKEN"),
-    caFile: required("FELIX_CA_FILE"),
-    reconnectDeadline: 10_000, // milliseconds
-  });
+  return bounded(
+    "connecting",
+    Client.connect(process.env.FELIX_BROKERS ?? "127.0.0.1:5000", TENANT, {
+      token: required("FELIX_AUTH_TOKEN"),
+      caFile: required("FELIX_CA_FILE"),
+      reconnectDeadline: CALL_TIMEOUT_MS,
+    }),
+  );
 }
 ```
 
@@ -142,20 +184,29 @@ const string Tenant = "dev";
 const string Namespace = "default";
 const string StreamName = "tutorial-events";
 
+// Every call to the broker gets this long.
+const int CallSeconds = 10;
+
+static async Task<T> Bounded<T>(Func<CancellationToken, Task<T>> call)
+{
+    using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(CallSeconds));
+    return await call(limit.Token);
+}
+
 static string Required(string name) =>
     Environment.GetEnvironmentVariable(name) is { Length: > 0 } value
         ? value
         : throw new InvalidOperationException($"set {name}");
 
-static async Task<FelixClient> ConnectAsync(CancellationToken ct) =>
-    await FelixClient.ConnectAsync(new FelixClientOptions
+static Task<FelixClient> ConnectAsync() =>
+    Bounded(ct => FelixClient.ConnectAsync(new FelixClientOptions
     {
         Addrs = [Environment.GetEnvironmentVariable("FELIX_BROKERS") ?? "127.0.0.1:5000"],
         TenantId = Tenant,
         Token = Required("FELIX_AUTH_TOKEN"),
         CaFile = Required("FELIX_CA_FILE"),
-        ReconnectDeadline = TimeSpan.FromSeconds(10),
-    }, ct);
+        ReconnectDeadline = TimeSpan.FromSeconds(CallSeconds),
+    }, ct));
 ```
 
 </TabItem>
@@ -174,18 +225,16 @@ written at.
 <TabItem label="Rust">
 
 ```rust
-use std::time::Duration;
-
 use felix_client::AckMode;
 
 async fn publish_three(client: &ClusterClient) -> Result<()> {
     for i in 1..=3 {
         let payload = format!("event {i}").into_bytes();
         let publish = client.publish(TENANT, NAMESPACE, STREAM, payload, AckMode::PerMessage);
-        let offset = tokio::time::timeout(Duration::from_secs(10), publish)
-            .await
-            .context("the broker did not answer within 10 seconds")??;
-        println!("published event {i} at offset {offset:?}");
+        let offset = bounded("publish", CALL_TIMEOUT, publish)
+            .await?
+            .context("a durable stream returns an offset")?;
+        println!("published event {i} at offset {offset}");
     }
     Ok(())
 }
@@ -195,9 +244,9 @@ async fn publish_three(client: &ClusterClient) -> Result<()> {
 <TabItem label="Python">
 
 ```python
-def publish_three(client: felix.Client) -> None:
+async def publish_three(client: felix.AsyncClient) -> None:
     for i in range(1, 4):
-        offset = client.publish(TENANT, NAMESPACE, STREAM, f"event {i}".encode())
+        offset = await bounded(client.publish(TENANT, NAMESPACE, STREAM, f"event {i}".encode()))
         print(f"published event {i} at offset {offset}")
 ```
 
@@ -207,7 +256,10 @@ def publish_three(client: felix.Client) -> None:
 ```ts
 async function publishThree(client: Client): Promise<void> {
   for (let i = 1; i <= 3; i++) {
-    const offset = await client.publish(TENANT, NAMESPACE, STREAM, Buffer.from(`event ${i}`));
+    const offset = await bounded(
+      "publish",
+      client.publish(TENANT, NAMESPACE, STREAM, Buffer.from(`event ${i}`)),
+    );
     console.log(`published event ${i} at offset ${offset}`);
   }
 }
@@ -217,12 +269,12 @@ async function publishThree(client: Client): Promise<void> {
 <TabItem label="C#">
 
 ```csharp
-static async Task PublishThreeAsync(FelixClient client, CancellationToken ct)
+static async Task PublishThreeAsync(FelixClient client)
 {
     for (var i = 1; i <= 3; i++)
     {
-        long? offset = await client.PublishAsync(
-            Tenant, Namespace, StreamName, Encoding.UTF8.GetBytes($"event {i}"), cancellationToken: ct);
+        long? offset = await Bounded(ct => client.PublishAsync(
+            Tenant, Namespace, StreamName, Encoding.UTF8.GetBytes($"event {i}"), cancellationToken: ct));
         Console.WriteLine($"published event {i} at offset {offset}");
     }
 }
@@ -252,43 +304,52 @@ reading.
 use std::path::Path;
 
 use felix_client::StartPosition;
+use tokio::io::AsyncWriteExt;
 
-fn load_checkpoint(path: &Path) -> Result<Option<u64>> {
-    match std::fs::read_to_string(path) {
+async fn load_checkpoint(path: &Path) -> Result<Option<u64>> {
+    match tokio::fs::read_to_string(path).await {
         Ok(text) => Ok(Some(text.trim().parse().context("the checkpoint is not an offset")?)),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(err) => Err(err).context("read the checkpoint"),
     }
 }
 
-// Write beside the file and rename, so a crash leaves the old checkpoint whole.
-fn save_checkpoint(path: &Path, offset: u64) -> Result<()> {
+// Sync a temporary file and rename it over the checkpoint, so a crash leaves
+// the old checkpoint or the new one, never half of one.
+async fn save_checkpoint(path: &Path, offset: u64) -> Result<()> {
     let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, offset.to_string()).context("write the checkpoint")?;
-    std::fs::rename(&tmp, path).context("replace the checkpoint")
+    let mut file = tokio::fs::File::create(&tmp).await.context("create the checkpoint")?;
+    file.write_all(offset.to_string().as_bytes()).await.context("write the checkpoint")?;
+    file.sync_all().await.context("sync the checkpoint")?;
+    drop(file);
+    tokio::fs::rename(&tmp, path).await.context("replace the checkpoint")
 }
 
 async fn read_new(client: &Arc<ClusterClient>, checkpoint: &Path) -> Result<()> {
-    let start = match load_checkpoint(checkpoint)? {
+    let start = match load_checkpoint(checkpoint).await? {
         Some(offset) => StartPosition::Offset(offset + 1),
         None => StartPosition::Earliest,
     };
-    let mut events = client
-        .subscribe_from(TENANT, NAMESPACE, STREAM, Some(start))
-        .await?;
+    let subscribe = client.subscribe_from(TENANT, NAMESPACE, STREAM, Some(start));
+    let mut events = bounded("subscribe", CALL_TIMEOUT, subscribe).await?;
 
     loop {
-        let next = tokio::time::timeout(Duration::from_secs(3), events.next_event()).await;
-        let Ok(next) = next else {
-            println!("nothing new for 3 seconds, stopping");
-            return Ok(());
-        };
-        let Some(event) = next? else {
-            return Ok(());
-        };
-        let offset = event.offset.context("the stream has no offsets; is it durable?")?;
-        println!("offset {offset}: {}", String::from_utf8_lossy(&event.payload));
-        save_checkpoint(checkpoint, offset)?;
+        match tokio::time::timeout(Duration::from_secs(3), events.next_event()).await {
+            Err(_) => {
+                println!("nothing new for 3 seconds, stopping");
+                return Ok(());
+            }
+            Ok(Err(err)) => return Err(err),
+            Ok(Ok(None)) => {
+                println!("the subscription ended");
+                return Ok(());
+            }
+            Ok(Ok(Some(event))) => {
+                let offset = event.offset.context("the stream has no offsets; is it durable?")?;
+                println!("offset {offset}: {}", String::from_utf8_lossy(&event.payload));
+                save_checkpoint(checkpoint, offset).await?;
+            }
+        }
     }
 }
 ```
@@ -304,23 +365,33 @@ def load_checkpoint(path: Path) -> int | None:
         return None
 
 
+# Sync a temporary file and rename it over the checkpoint, so a crash leaves
+# the old checkpoint or the new one, never half of one.
 def save_checkpoint(path: Path, offset: int) -> None:
-    # Write beside the file and rename, so a crash leaves the old checkpoint whole.
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(str(offset))
+    with open(tmp, "w") as file:
+        file.write(str(offset))
+        file.flush()
+        os.fsync(file.fileno())
     tmp.replace(path)
 
 
-def read_new(client: felix.Client, checkpoint: Path) -> None:
+async def read_new(client: felix.AsyncClient, checkpoint: Path) -> None:
     saved = load_checkpoint(checkpoint)
     start = "earliest" if saved is None else saved + 1
-    with client.subscribe(TENANT, NAMESPACE, STREAM, start=start) as events:
-        while (event := events.next_event(timeout=3.0)) is not None:
+    subscribe = client.subscribe(TENANT, NAMESPACE, STREAM, start=start)
+    async with await bounded(subscribe) as events:
+        while (event := await events.next_event(timeout=3.0)) is not None:
             if event.offset is None:
                 raise RuntimeError("the stream has no offsets; is it durable?")
             print(f"offset {event.offset}: {event.payload.decode(errors='replace')}")
             save_checkpoint(checkpoint, event.offset)
-    print("nothing new for 3 seconds, stopping")
+        # next_event returns None both when the wait times out and when the
+        # subscription ends.
+        if await events.closed:
+            print("the subscription ended")
+        else:
+            print("nothing new for 3 seconds, stopping")
 ```
 
 </TabItem>
@@ -336,9 +407,16 @@ async function loadCheckpoint(path: string): Promise<bigint | null> {
   }
 }
 
-// Write beside the file and rename, so a crash leaves the old checkpoint whole.
+// Sync a temporary file and rename it over the checkpoint, so a crash leaves
+// the old checkpoint or the new one, never half of one.
 async function saveCheckpoint(path: string, offset: bigint): Promise<void> {
-  await writeFile(`${path}.tmp`, offset.toString());
+  const file = await open(`${path}.tmp`, "w");
+  try {
+    await file.writeFile(offset.toString());
+    await file.sync();
+  } finally {
+    await file.close();
+  }
   await rename(`${path}.tmp`, path);
 }
 
@@ -361,7 +439,10 @@ async function nextWithin(
 async function readNew(client: Client, checkpoint: string): Promise<void> {
   const saved = await loadCheckpoint(checkpoint);
   const start: StartPosition = saved === null ? "earliest" : saved + 1n;
-  const events = await client.subscribe(TENANT, NAMESPACE, STREAM, start);
+  const events = await bounded(
+    "subscribe",
+    client.subscribe(TENANT, NAMESPACE, STREAM, start),
+  );
   try {
     for (;;) {
       const event = await nextWithin(events, 3000);
@@ -369,7 +450,10 @@ async function readNew(client: Client, checkpoint: string): Promise<void> {
         console.log("nothing new for 3 seconds, stopping");
         return;
       }
-      if (event === null) return;
+      if (event === null) {
+        console.log("the subscription ended");
+        return;
+      }
       if (event.offset === null) throw new Error("the stream has no offsets; is it durable?");
       console.log(`offset ${event.offset}: ${event.payload.toString()}`);
       await saveCheckpoint(checkpoint, event.offset);
@@ -384,32 +468,44 @@ async function readNew(client: Client, checkpoint: string): Promise<void> {
 <TabItem label="C#">
 
 ```csharp
-static async Task<long?> LoadCheckpointAsync(string path, CancellationToken ct) =>
-    File.Exists(path) ? long.Parse((await File.ReadAllTextAsync(path, ct)).Trim()) : null;
+static async Task<long?> LoadCheckpointAsync(string path) =>
+    File.Exists(path) ? long.Parse((await File.ReadAllTextAsync(path)).Trim()) : null;
 
-// Write beside the file and move over it, so a crash leaves the old checkpoint whole.
-static async Task SaveCheckpointAsync(string path, long offset, CancellationToken ct)
+// Sync a temporary file and move it over the checkpoint, so a crash leaves the
+// old checkpoint or the new one, never half of one.
+static async Task SaveCheckpointAsync(string path, long offset)
 {
-    await File.WriteAllTextAsync(path + ".tmp", offset.ToString(), ct);
+    await using (var file = new FileStream(path + ".tmp", FileMode.Create, FileAccess.Write))
+    {
+        await file.WriteAsync(Encoding.UTF8.GetBytes(offset.ToString()));
+        file.Flush(flushToDisk: true);
+    }
     File.Move(path + ".tmp", path, overwrite: true);
 }
 
-static async Task ReadNewAsync(FelixClient client, string checkpoint, CancellationToken ct)
+static async Task ReadNewAsync(FelixClient client, string checkpoint)
 {
-    long? saved = await LoadCheckpointAsync(checkpoint, ct);
+    long? saved = await LoadCheckpointAsync(checkpoint);
     var start = saved is { } last ? StartPosition.FromOffset((ulong)(last + 1)) : StartPosition.Earliest;
-    await using var events = await client.SubscribeAsync(Tenant, Namespace, StreamName, shard: 0, start, ct);
+    await using var events = await Bounded(ct => client.SubscribeAsync(Tenant, Namespace, StreamName, shard: 0, start, ct));
 
-    while (await events.ReadAsync(TimeSpan.FromSeconds(3), ct) is { } ev)
+    try
     {
-        if (ev.Offset is not { } offset)
+        while (await Bounded(ct => events.ReadAsync(TimeSpan.FromSeconds(3), ct)) is { } ev)
         {
-            throw new InvalidOperationException("the stream has no offsets; is it durable?");
+            if (ev.Offset is not { } offset)
+            {
+                throw new InvalidOperationException("the stream has no offsets; is it durable?");
+            }
+            Console.WriteLine($"offset {offset}: {Encoding.UTF8.GetString(ev.Payload.Span)}");
+            await SaveCheckpointAsync(checkpoint, offset);
         }
-        Console.WriteLine($"offset {offset}: {Encoding.UTF8.GetString(ev.Payload.Span)}");
-        await SaveCheckpointAsync(checkpoint, offset, ct);
+        Console.WriteLine("nothing new for 3 seconds, stopping");
     }
-    Console.WriteLine("nothing new for 3 seconds, stopping");
+    catch (FelixException e) when (e.Status == FelixStatus.Closed)
+    {
+        Console.WriteLine("the subscription ended");
+    }
 }
 ```
 
@@ -428,9 +524,7 @@ use anyhow::bail;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let client = tokio::time::timeout(Duration::from_secs(10), connect())
-        .await
-        .context("connecting took longer than 10 seconds")??;
+    let client = connect().await?;
     match std::env::args().nth(1).as_deref() {
         Some("publish") => publish_three(&client).await,
         Some("read") => read_new(&client, Path::new("checkpoint")).await,
@@ -443,18 +537,18 @@ async fn main() -> Result<()> {
 <TabItem label="Python">
 
 ```python
-def main() -> None:
+async def main() -> None:
     mode = sys.argv[1] if len(sys.argv) > 1 else ""
     if mode not in ("publish", "read"):
         sys.exit("usage: first_stream.py publish|read")
-    with connect() as client:
+    async with await connect() as client:
         if mode == "publish":
-            publish_three(client)
+            await publish_three(client)
         else:
-            read_new(client, Path("checkpoint"))
+            await read_new(client, Path("checkpoint"))
 
 
-main()
+asyncio.run(main())
 ```
 
 </TabItem>
@@ -489,15 +583,14 @@ if (mode is not ("publish" or "read"))
     return 1;
 }
 
-using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-await using var client = await ConnectAsync(cts.Token);
+await using var client = await ConnectAsync();
 if (mode == "publish")
 {
-    await PublishThreeAsync(client, cts.Token);
+    await PublishThreeAsync(client);
 }
 else
 {
-    await ReadNewAsync(client, "checkpoint", cts.Token);
+    await ReadNewAsync(client, "checkpoint");
 }
 return 0;
 ```
@@ -550,17 +643,23 @@ for how to handle that in a long-running reader.
 ## C
 
 Each C call returns at once and reports to a callback, so the program below
-wraps each one in a small `waiter` that blocks until the callback has run. It
+wraps each one in a small `waiter` that blocks until the callback has run or
+ten seconds have passed. It
 is the same two modes as above. See [How calls work](/clients/c/#how-calls-work)
 for the model.
 
 ```c
+#define _POSIX_C_SOURCE 200809L
+
+#include <errno.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <unistd.h>
 
 #include "felix.h"
 
@@ -590,19 +689,38 @@ static void finish(struct waiter *w, FelixStatus status, const char *message, vo
     pthread_mutex_unlock(&w->mu);
 }
 
-/* A refused call never runs its callback, so its error comes from the thread. */
-static FelixStatus wait_for(struct waiter *w, FelixStatus started) {
+/* A refused call never runs its callback, so its error comes from the thread.
+   A call the broker does not answer within limit_ms ends the program: its
+   callback may still run later, so nothing it uses can be freed. */
+static FelixStatus wait_for_ms(struct waiter *w, FelixStatus started, long limit_ms) {
     if (started != FELIX_STATUS_OK) {
         snprintf(w->message, sizeof w->message, "%s", felix_last_error_message());
         return started;
     }
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_sec += limit_ms / 1000;
+    deadline.tv_nsec += (limit_ms % 1000) * 1000000L;
+    if (deadline.tv_nsec >= 1000000000L) {
+        deadline.tv_sec++;
+        deadline.tv_nsec -= 1000000000L;
+    }
     pthread_mutex_lock(&w->mu);
-    while (!w->done) pthread_cond_wait(&w->cv, &w->mu);
+    while (!w->done) {
+        if (pthread_cond_timedwait(&w->cv, &w->mu, &deadline) == ETIMEDOUT) {
+            fprintf(stderr, "no answer from the broker within %ld ms\n", limit_ms);
+            exit(1);
+        }
+    }
     w->done = false;
     FelixStatus status = w->status;
     pthread_mutex_unlock(&w->mu);
     return status;
 }
+
+/* Every call to the broker gets this long. */
+#define CALL_LIMIT_MS 10000
+#define wait_for(w, started) wait_for_ms((w), (started), CALL_LIMIT_MS)
 
 static void on_connect(void *user_data, FelixStatus status, const char *message,
                        FelixClient *client) {
@@ -659,11 +777,13 @@ static bool load_checkpoint(uint64_t *offset) {
     return ok;
 }
 
-/* Written beside the file and renamed, so a crash leaves the old one whole. */
+/* Synced, then renamed over the checkpoint, so a crash leaves the old one or
+   the new one, never half of one. */
 static bool save_checkpoint(uint64_t offset) {
     FILE *f = fopen(CHECKPOINT ".tmp", "w");
     if (!f) return false;
     bool ok = fprintf(f, "%llu\n", (unsigned long long)offset) > 0;
+    ok = ok && fflush(f) == 0 && fsync(fileno(f)) == 0;
     ok = (fclose(f) == 0) && ok;
     return ok && rename(CHECKPOINT ".tmp", CHECKPOINT) == 0;
 }
@@ -685,9 +805,15 @@ static int read_new(const FelixClient *client, struct waiter *w) {
     sub = w->handle;
 
     for (;;) {
-        status = wait_for(w, felix_subscription_next(sub, 3000, NULL, on_event, w));
+        status = wait_for_ms(w, felix_subscription_next(sub, 3000, NULL, on_event, w),
+                             3000 + CALL_LIMIT_MS);
         if (status == FELIX_STATUS_TIMEOUT) {
             printf("nothing new for 3 seconds, stopping\n");
+            exit_code = 0;
+            break;
+        }
+        if (status == FELIX_STATUS_CLOSED) {
+            printf("the subscription ended\n");
             exit_code = 0;
             break;
         }
@@ -734,10 +860,15 @@ int main(int argc, char **argv) {
     pthread_mutex_init(&w.mu, NULL);
     pthread_cond_init(&w.cv, NULL);
     int exit_code = 1;
+    const struct FelixConnectOptions options = {
+        .size = sizeof(struct FelixConnectOptions),
+        .reconnect_deadline_ms = 10000,
+    };
 
     FelixStatus status = wait_for(
-        &w, felix_client_connect(broker && *broker ? broker : "127.0.0.1:5000", TENANT, token,
-                                 "localhost", ca_file, NULL, on_connect, &w));
+        &w, felix_client_connect_with(broker && *broker ? broker : "127.0.0.1:5000", TENANT,
+                                      token, "localhost", ca_file, &options, NULL, on_connect,
+                                      &w));
     if (status != FELIX_STATUS_OK) {
         fprintf(stderr, "connect: %s\n", w.message);
     } else {

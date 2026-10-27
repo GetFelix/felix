@@ -51,6 +51,35 @@ yet, so that step has no tab for them.
 The code in each tutorial is compiled as part of the documentation tests, so
 the snippets match the client APIs they were written against.
 
+The Python examples use the asyncio client, `felix.AsyncClient`, because it
+lets every call carry a time limit. The synchronous `felix.Client` takes the
+same calls without `await`.
+
+## Time limits
+
+Every call to the broker in these programs has a time limit of ten seconds, and
+a call that waits on purpose, such as a consumer group poll, gets its wait on
+top. A program that waits on a broker for ever is hard to tell from one that is
+working, so the limit turns a stuck call into an error. Each language sets it
+differently:
+
+- Rust wraps the call in `tokio::time::timeout` through a small `bounded`
+  helper.
+- Python wraps the awaitable in `asyncio.wait_for`.
+- TypeScript races the promise against a timer, because the client takes no
+  timeout argument. The call itself is not cancelled and may still finish.
+- C# passes a `CancellationToken` from a `CancellationTokenSource` that expires
+  after the limit.
+- C waits for each callback with a deadline, and ends the program if the broker
+  does not answer in time, because the callback may still run later.
+
+Every program also sets the client's reconnect deadline to ten seconds, which
+caps the time one call spends retrying. A call that times out may or may not
+have reached the broker, so a write that times out is not known to have failed.
+Reads that wait for events by design, such as a subscription or a watch, have
+no limit of their own. Where a tutorial reads with a timeout, it is part of the
+example.
+
 ## Set up once
 
 The tutorials run against the development stack from the
@@ -95,7 +124,7 @@ Then install the client for your language:
 ```bash
 cargo new felix-tutorial && cd felix-tutorial
 cargo add felix-client anyhow bytes serde_json
-cargo add tokio --features rt-multi-thread,macros,time
+cargo add tokio --features rt-multi-thread,macros,time,fs
 ```
 
 Put each tutorial's Rust blocks, in order, into `src/main.rs`. See the

@@ -57,6 +57,7 @@ the cache does not collect old orders.
 <TabItem label="Rust">
 
 ```rust
+use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -73,6 +74,17 @@ const GROUP: &str = "fulfilment";
 const CACHE: &str = "tutorial-cache";
 const STATUS_TTL_MS: u64 = 60 * 60 * 1000;
 
+// Every call to the broker gets this long. A poll waits on purpose, so it gets
+// its wait on top.
+const CALL_TIMEOUT: Duration = Duration::from_secs(10);
+const POLL_WAIT: Duration = Duration::from_secs(5);
+
+async fn bounded<T>(what: &str, limit: Duration, call: impl Future<Output = Result<T>>) -> Result<T> {
+    tokio::time::timeout(limit, call)
+        .await
+        .with_context(|| format!("{what} did not finish within {limit:?}"))?
+}
+
 async fn connect() -> Result<Arc<ClusterClient>> {
     let ca_file = std::env::var("FELIX_CA_FILE").context("set FELIX_CA_FILE")?;
     let roots = Arc::new(root_store_from_pem_file(&ca_file)?);
@@ -81,14 +93,15 @@ async fn connect() -> Result<Arc<ClusterClient>> {
 
     let broker = std::env::var("FELIX_BROKERS").unwrap_or_else(|_| "127.0.0.1:5000".into());
     let seeds: Vec<SocketAddr> = vec![broker.parse().context("FELIX_BROKERS must be ip:port")?];
-    Ok(Arc::new(ClusterClient::connect(&seeds, "localhost", config).await?))
+    let client = bounded("connecting", CALL_TIMEOUT, ClusterClient::connect(&seeds, "localhost", config)).await?;
+    Ok(Arc::new(client))
 }
 
 async fn set_status(client: &ClusterClient, id: &str, status: &str) -> Result<()> {
     let value = Bytes::copy_from_slice(status.as_bytes());
-    client
-        .cache_put(TENANT, NAMESPACE, CACHE, &format!("order:{id}"), value, Some(STATUS_TTL_MS))
-        .await
+    let key = format!("order:{id}");
+    let put = client.cache_put(TENANT, NAMESPACE, CACHE, &key, value, Some(STATUS_TTL_MS));
+    bounded("writing the status", CALL_TIMEOUT, put).await
 }
 
 async fn submit(client: &ClusterClient, count: u32) -> Result<()> {
@@ -99,9 +112,7 @@ async fn submit(client: &ClusterClient, count: u32) -> Result<()> {
         // The status goes first, so a fast worker's result is never overwritten.
         set_status(client, &id, "queued").await?;
         let publish = client.publish(TENANT, NAMESPACE, STREAM, order, AckMode::PerMessage);
-        tokio::time::timeout(Duration::from_secs(10), publish)
-            .await
-            .context("the broker did not answer within 10 seconds")??;
+        bounded("publish", CALL_TIMEOUT, publish).await?;
         println!("accepted {id}");
     }
     Ok(())
@@ -112,10 +123,10 @@ async fn submit(client: &ClusterClient, count: u32) -> Result<()> {
 <TabItem label="Python">
 
 ```python
+import asyncio
 import json
 import os
 import sys
-import time
 
 import felix
 
@@ -127,31 +138,44 @@ GROUP = "fulfilment"
 CACHE = "tutorial-cache"
 STATUS_TTL_SECONDS = 60 * 60
 
+# Every call to the broker gets this long. A poll waits on purpose, so it gets
+# its wait on top.
+CALL_TIMEOUT = 10.0
+POLL_WAIT = 5.0
 
-def connect() -> felix.Client:
-    return felix.Client(
-        os.environ.get("FELIX_BROKERS", "127.0.0.1:5000"),
-        tenant_id=TENANT,
-        token=os.environ["FELIX_AUTH_TOKEN"],
-        ca_file=os.environ["FELIX_CA_FILE"],
-        reconnect_deadline=10.0,
+
+async def bounded(call, extra=0.0):
+    return await asyncio.wait_for(call, CALL_TIMEOUT + extra)
+
+
+async def connect() -> felix.AsyncClient:
+    return await bounded(
+        felix.AsyncClient.connect(
+            os.environ.get("FELIX_BROKERS", "127.0.0.1:5000"),
+            tenant_id=TENANT,
+            token=os.environ["FELIX_AUTH_TOKEN"],
+            ca_file=os.environ["FELIX_CA_FILE"],
+            reconnect_deadline=CALL_TIMEOUT,
+        )
     )
 
 
-def set_status(client: felix.Client, order_id: str, status: str) -> None:
-    client.cache_put(
-        TENANT, NAMESPACE, CACHE, f"order:{order_id}", status.encode(), ttl=STATUS_TTL_SECONDS
+async def set_status(client: felix.AsyncClient, order_id: str, status: str) -> None:
+    await bounded(
+        client.cache_put(
+            TENANT, NAMESPACE, CACHE, f"order:{order_id}", status.encode(), ttl=STATUS_TTL_SECONDS
+        )
     )
 
 
-def submit(client: felix.Client, count: int) -> None:
+async def submit(client: felix.AsyncClient, count: int) -> None:
     for n in range(1, count + 1):
         order_id = f"o-{n}"
         order = json.dumps({"id": order_id, "qty": n}).encode()
 
         # The status goes first, so a fast worker's result is never overwritten.
-        set_status(client, order_id, "queued")
-        client.publish(TENANT, NAMESPACE, STREAM, order)
+        await set_status(client, order_id, "queued")
+        await bounded(client.publish(TENANT, NAMESPACE, STREAM, order))
         print(f"accepted {order_id}")
 ```
 
@@ -170,6 +194,23 @@ const GROUP = "fulfilment";
 const CACHE = "tutorial-cache";
 const STATUS_TTL_SECONDS = 60 * 60;
 
+// Every call to the broker gets this long, and a poll gets its wait on top. The
+// client takes no timeout argument, so a timer is raced against the call.
+const CALL_TIMEOUT_MS = 10_000;
+const POLL_WAIT_MS = 5000;
+
+async function bounded<T>(what: string, call: Promise<T>, ms = CALL_TIMEOUT_MS): Promise<T> {
+  const timer = new AbortController();
+  const expired = sleep(ms, undefined, { signal: timer.signal }).then(() => {
+    throw new Error(`${what} did not finish within ${ms} ms`);
+  });
+  try {
+    return await Promise.race([call, expired]);
+  } finally {
+    timer.abort();
+  }
+}
+
 function required(name: string): string {
   const value = process.env[name];
   if (!value) throw new Error(`set ${name}`);
@@ -177,16 +218,20 @@ function required(name: string): string {
 }
 
 function connect(): Promise<Client> {
-  return Client.connect(process.env.FELIX_BROKERS ?? "127.0.0.1:5000", TENANT, {
-    token: required("FELIX_AUTH_TOKEN"),
-    caFile: required("FELIX_CA_FILE"),
-    reconnectDeadline: 10_000, // milliseconds
-  });
+  return bounded(
+    "connecting",
+    Client.connect(process.env.FELIX_BROKERS ?? "127.0.0.1:5000", TENANT, {
+      token: required("FELIX_AUTH_TOKEN"),
+      caFile: required("FELIX_CA_FILE"),
+      reconnectDeadline: CALL_TIMEOUT_MS,
+    }),
+  );
 }
 
 async function setStatus(client: Client, id: string, status: string): Promise<void> {
-  await client.cachePut(
-    TENANT, NAMESPACE, CACHE, `order:${id}`, Buffer.from(status), STATUS_TTL_SECONDS,
+  await bounded(
+    "writing the status",
+    client.cachePut(TENANT, NAMESPACE, CACHE, `order:${id}`, Buffer.from(status), STATUS_TTL_SECONDS),
   );
 }
 
@@ -197,7 +242,7 @@ async function submit(client: Client, count: number): Promise<void> {
 
     // The status goes first, so a fast worker's result is never overwritten.
     await setStatus(client, id, "queued");
-    await client.publish(TENANT, NAMESPACE, STREAM, order);
+    await bounded("publish", client.publish(TENANT, NAMESPACE, STREAM, order));
     console.log(`accepted ${id}`);
   }
 }
@@ -218,25 +263,42 @@ const string StreamName = "tutorial-orders";
 const string Group = "fulfilment";
 const string CacheName = "tutorial-cache";
 
+// Every call to the broker gets this long. A poll waits on purpose, so it gets
+// its wait on top.
+const int CallSeconds = 10;
+const int PollWaitSeconds = 5;
+
+static async Task<T> Bounded<T>(Func<CancellationToken, Task<T>> call, int extraSeconds = 0)
+{
+    using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(CallSeconds + extraSeconds));
+    return await call(limit.Token);
+}
+
+static async Task BoundedTask(Func<CancellationToken, Task> call)
+{
+    using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(CallSeconds));
+    await call(limit.Token);
+}
+
 static string Required(string name) =>
     Environment.GetEnvironmentVariable(name) is { Length: > 0 } value
         ? value
         : throw new InvalidOperationException($"set {name}");
 
-static async Task<FelixClient> ConnectAsync(CancellationToken ct) =>
-    await FelixClient.ConnectAsync(new FelixClientOptions
+static Task<FelixClient> ConnectAsync() =>
+    Bounded(ct => FelixClient.ConnectAsync(new FelixClientOptions
     {
         Addrs = [Environment.GetEnvironmentVariable("FELIX_BROKERS") ?? "127.0.0.1:5000"],
         TenantId = Tenant,
         Token = Required("FELIX_AUTH_TOKEN"),
         CaFile = Required("FELIX_CA_FILE"),
-        ReconnectDeadline = TimeSpan.FromSeconds(10),
-    }, ct);
+        ReconnectDeadline = TimeSpan.FromSeconds(CallSeconds),
+    }, ct));
 
-static Task SetStatusAsync(FelixCache cache, string id, string status, CancellationToken ct) =>
-    cache.PutAsync($"order:{id}", Encoding.UTF8.GetBytes(status), ttl: TimeSpan.FromHours(1), cancellationToken: ct);
+static Task SetStatusAsync(FelixCache cache, string id, string status) =>
+    BoundedTask(ct => cache.PutAsync($"order:{id}", Encoding.UTF8.GetBytes(status), ttl: TimeSpan.FromHours(1), cancellationToken: ct));
 
-static async Task SubmitAsync(FelixClient client, FelixCache cache, int count, CancellationToken ct)
+static async Task SubmitAsync(FelixClient client, FelixCache cache, int count)
 {
     for (var n = 1; n <= count; n++)
     {
@@ -244,8 +306,8 @@ static async Task SubmitAsync(FelixClient client, FelixCache cache, int count, C
         var order = JsonSerializer.SerializeToUtf8Bytes(new { id, qty = n });
 
         // The status goes first, so a fast worker's result is never overwritten.
-        await SetStatusAsync(cache, id, "queued", ct);
-        await client.PublishAsync(Tenant, Namespace, StreamName, order, cancellationToken: ct);
+        await SetStatusAsync(cache, id, "queued");
+        await Bounded(ct => client.PublishAsync(Tenant, Namespace, StreamName, order, cancellationToken: ct));
         Console.WriteLine($"accepted {id}");
     }
 }
@@ -263,12 +325,18 @@ acknowledgement comes last, after the result is in the cache. If a worker dies
 before acknowledging, the order comes back and the same result is written
 again, which is why writing the result is safe to repeat.
 
-The worker separates two kinds of failure. An order that does not parse will
-never succeed, so retrying it only delays the orders behind it. The worker
-acknowledges it and moves on. Anything else, such as a cache write that
-failed, may work on the next attempt, so the worker nacks the record and the
-broker hands it out again. A record that keeps failing ends up as a dead
-letter, as in [A work queue](/tutorials/work-queue/#4-dead-letters-and-redrive).
+The worker separates two kinds of failure. An order that does not parse, or
+whose quantity is outside 1 to 1,000,000, will never succeed, so retrying it
+only delays the orders behind it. The worker acknowledges it and moves on.
+Anything else, such as a cache write that failed, may work on the next attempt,
+so the worker nacks the record and the broker hands it out again. The Rust and
+C# workers nack with a one second delay, so a failing order is not retried at
+full speed; the Python and TypeScript bindings nack without one. A record that
+keeps failing ends up as a dead letter, as in
+[A work queue](/tutorials/work-queue/#4-dead-letters-and-redrive).
+
+Every call to the broker has a time limit. See
+[Time limits](/tutorials/overview/#time-limits).
 
 <Tabs syncKey="lang">
 <TabItem label="Rust">
@@ -276,37 +344,49 @@ letter, as in [A work queue](/tutorials/work-queue/#4-dead-letters-and-redrive).
 ```rust
 use anyhow::bail;
 
-async fn fulfil(client: &ClusterClient, id: &str, qty: u64) -> Result<()> {
+const PRICE: u64 = 5;
+const MAX_QTY: u64 = 1_000_000;
+
+async fn fulfil(client: &ClusterClient, id: &str, total: u64) -> Result<()> {
     set_status(client, id, "processing").await?;
     tokio::time::sleep(Duration::from_secs(2)).await;
-    set_status(client, id, &format!("done total={}", qty * 5)).await
+    set_status(client, id, &format!("done total={total}")).await
 }
 
+// The order's id and its total, or None for an order that can never be filled.
 fn parse_order(payload: &[u8]) -> Option<(String, u64)> {
     let order: serde_json::Value = serde_json::from_slice(payload).ok()?;
-    Some((order.get("id")?.as_str()?.to_owned(), order.get("qty")?.as_u64()?))
+    let qty = order.get("qty")?.as_u64()?;
+    if qty == 0 || qty > MAX_QTY {
+        return None;
+    }
+    Some((order.get("id")?.as_str()?.to_owned(), qty.checked_mul(PRICE)?))
 }
 
 async fn work(client: &ClusterClient) -> Result<()> {
     loop {
-        let records = client
-            .group_poll_wait(TENANT, NAMESPACE, STREAM, 0, GROUP, 1, Duration::from_secs(5))
-            .await?;
+        let poll = client.group_poll_wait(TENANT, NAMESPACE, STREAM, 0, GROUP, 1, POLL_WAIT);
+        let records = bounded("poll", CALL_TIMEOUT + POLL_WAIT, poll).await?;
         for record in records {
-            let Some((id, qty)) = parse_order(&record.payload) else {
+            let Some((id, total)) = parse_order(&record.payload) else {
                 // It will never parse, so settle it rather than retry it.
                 println!("rejected a malformed order at offset {}", record.offset);
-                client.group_ack(TENANT, NAMESPACE, STREAM, 0, GROUP, record.offset).await?;
+                let ack = client.group_ack(TENANT, NAMESPACE, STREAM, 0, GROUP, record.offset);
+                bounded("ack", CALL_TIMEOUT, ack).await?;
                 continue;
             };
-            match fulfil(client, &id, qty).await {
+            match fulfil(client, &id, total).await {
                 Ok(()) => {
-                    client.group_ack(TENANT, NAMESPACE, STREAM, 0, GROUP, record.offset).await?;
+                    let ack = client.group_ack(TENANT, NAMESPACE, STREAM, 0, GROUP, record.offset);
+                    bounded("ack", CALL_TIMEOUT, ack).await?;
                     println!("fulfilled {id} (attempt {})", record.attempts);
                 }
                 Err(err) => {
                     println!("{id} failed on attempt {}: {err:#}", record.attempts);
-                    client.group_nack(TENANT, NAMESPACE, STREAM, 0, GROUP, &record).await?;
+                    let nack = client.group_nack_after(
+                        TENANT, NAMESPACE, STREAM, 0, GROUP, &record, Duration::from_secs(1),
+                    );
+                    bounded("nack", CALL_TIMEOUT, nack).await?;
                 }
             }
         }
@@ -318,40 +398,51 @@ async fn work(client: &ClusterClient) -> Result<()> {
 <TabItem label="Python">
 
 ```python
+PRICE = 5
+MAX_QTY = 1_000_000
+
+
+# The order's id and its total, or None for an order that can never be filled.
 def parse_order(payload: bytes) -> tuple[str, int] | None:
     try:
         order = json.loads(payload)
-        return str(order["id"]), int(order["qty"])
+        qty = int(order["qty"])
+        if not 1 <= qty <= MAX_QTY:
+            return None
+        return str(order["id"]), qty * PRICE
     except (ValueError, KeyError, TypeError):
         return None
 
 
-def fulfil(client: felix.Client, order_id: str, qty: int) -> None:
-    set_status(client, order_id, "processing")
-    time.sleep(2)
-    set_status(client, order_id, f"done total={qty * 5}")
+async def fulfil(client: felix.AsyncClient, order_id: str, total: int) -> None:
+    await set_status(client, order_id, "processing")
+    await asyncio.sleep(2)
+    await set_status(client, order_id, f"done total={total}")
 
 
-def work(client: felix.Client) -> None:
+async def work(client: felix.AsyncClient) -> None:
     while True:
-        records = client.group_poll(
-            TENANT, NAMESPACE, STREAM, 0, GROUP, max_records=1, wait=5.0
+        records = await bounded(
+            client.group_poll(
+                TENANT, NAMESPACE, STREAM, 0, GROUP, max_records=1, wait=POLL_WAIT
+            ),
+            extra=POLL_WAIT,
         )
         for record in records:
             order = parse_order(record.payload)
             if order is None:
                 # It will never parse, so settle it rather than retry it.
                 print(f"rejected a malformed order at offset {record.offset}")
-                client.group_ack(TENANT, NAMESPACE, STREAM, 0, GROUP, record.offset)
+                await bounded(client.group_ack(TENANT, NAMESPACE, STREAM, 0, GROUP, record.offset))
                 continue
-            order_id, qty = order
+            order_id, total = order
             try:
-                fulfil(client, order_id, qty)
-            except felix.FelixError as err:
-                print(f"{order_id} failed on attempt {record.attempts}: {err}")
-                client.group_nack(TENANT, NAMESPACE, STREAM, 0, GROUP, record)
+                await fulfil(client, order_id, total)
+            except (felix.FelixError, asyncio.TimeoutError) as err:
+                print(f"{order_id} failed on attempt {record.attempts}: {err!r}")
+                await bounded(client.group_nack(TENANT, NAMESPACE, STREAM, 0, GROUP, record))
             else:
-                client.group_ack(TENANT, NAMESPACE, STREAM, 0, GROUP, record.offset)
+                await bounded(client.group_ack(TENANT, NAMESPACE, STREAM, 0, GROUP, record.offset))
                 print(f"fulfilled {order_id} (attempt {record.attempts})")
 ```
 
@@ -361,15 +452,20 @@ def work(client: felix.Client) -> None:
 ```ts
 import { FelixError } from "felix-client";
 
-function parseOrder(payload: Buffer): { id: string; qty: number } | null {
+const PRICE = 5;
+const MAX_QTY = 1_000_000;
+
+// The order's id and its total, or null for an order that can never be filled.
+function parseOrder(payload: Buffer): { id: string; total: number } | null {
   try {
     const order: unknown = JSON.parse(payload.toString());
     if (
       typeof order === "object" && order !== null &&
       "id" in order && typeof order.id === "string" &&
-      "qty" in order && typeof order.qty === "number"
+      "qty" in order && typeof order.qty === "number" &&
+      Number.isInteger(order.qty) && order.qty >= 1 && order.qty <= MAX_QTY
     ) {
-      return { id: order.id, qty: order.qty };
+      return { id: order.id, total: order.qty * PRICE };
     }
   } catch {
     // Not JSON.
@@ -377,32 +473,36 @@ function parseOrder(payload: Buffer): { id: string; qty: number } | null {
   return null;
 }
 
-async function fulfil(client: Client, id: string, qty: number): Promise<void> {
+async function fulfil(client: Client, id: string, total: number): Promise<void> {
   await setStatus(client, id, "processing");
   await sleep(2000);
-  await setStatus(client, id, `done total=${qty * 5}`);
+  await setStatus(client, id, `done total=${total}`);
 }
 
 async function work(client: Client): Promise<void> {
   for (;;) {
-    const records = await client.groupPoll(TENANT, NAMESPACE, STREAM, 0, GROUP, 1, 5000);
+    const records = await bounded(
+      "poll",
+      client.groupPoll(TENANT, NAMESPACE, STREAM, 0, GROUP, 1, POLL_WAIT_MS),
+      CALL_TIMEOUT_MS + POLL_WAIT_MS,
+    );
     for (const record of records) {
       const order = parseOrder(record.payload);
       if (order === null) {
         // It will never parse, so settle it rather than retry it.
         console.log(`rejected a malformed order at offset ${record.offset}`);
-        await client.groupAck(TENANT, NAMESPACE, STREAM, 0, GROUP, record.offset);
+        await bounded("ack", client.groupAck(TENANT, NAMESPACE, STREAM, 0, GROUP, record.offset));
         continue;
       }
       try {
-        await fulfil(client, order.id, order.qty);
+        await fulfil(client, order.id, order.total);
       } catch (err) {
         if (!(err instanceof FelixError)) throw err;
         console.log(`${order.id} failed on attempt ${record.attempts}: ${err.message}`);
-        await client.groupNack(TENANT, NAMESPACE, STREAM, 0, GROUP, record);
+        await bounded("nack", client.groupNack(TENANT, NAMESPACE, STREAM, 0, GROUP, record));
         continue;
       }
-      await client.groupAck(TENANT, NAMESPACE, STREAM, 0, GROUP, record.offset);
+      await bounded("ack", client.groupAck(TENANT, NAMESPACE, STREAM, 0, GROUP, record.offset));
       console.log(`fulfilled ${order.id} (attempt ${record.attempts})`);
     }
   }
@@ -413,7 +513,11 @@ async function work(client: Client): Promise<void> {
 <TabItem label="C#">
 
 ```csharp
-static (string Id, int Qty)? ParseOrder(ReadOnlyMemory<byte> payload)
+const int Price = 5;
+const int MaxQty = 1_000_000;
+
+// The order's id and its total, or null for an order that can never be filled.
+static (string Id, long Total)? ParseOrder(ReadOnlyMemory<byte> payload)
 {
     try
     {
@@ -421,9 +525,10 @@ static (string Id, int Qty)? ParseOrder(ReadOnlyMemory<byte> payload)
         var root = doc.RootElement;
         if (root.ValueKind == JsonValueKind.Object
             && root.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String
-            && root.TryGetProperty("qty", out var qty) && qty.TryGetInt32(out var count))
+            && root.TryGetProperty("qty", out var qty) && qty.TryGetInt32(out var count)
+            && count is >= 1 and <= MaxQty)
         {
-            return (id.GetString()!, count);
+            return (id.GetString()!, checked((long)count * Price));
         }
     }
     catch (JsonException)
@@ -433,11 +538,11 @@ static (string Id, int Qty)? ParseOrder(ReadOnlyMemory<byte> payload)
     return null;
 }
 
-static async Task FulfilAsync(FelixCache cache, string id, int qty)
+static async Task FulfilAsync(FelixCache cache, string id, long total)
 {
-    await SetStatusAsync(cache, id, "processing", CancellationToken.None);
+    await SetStatusAsync(cache, id, "processing");
     await Task.Delay(TimeSpan.FromSeconds(2));
-    await SetStatusAsync(cache, id, $"done total={qty * 5}", CancellationToken.None);
+    await SetStatusAsync(cache, id, $"done total={total}");
 }
 
 static async Task WorkAsync(FelixClient client, FelixCache cache)
@@ -445,27 +550,29 @@ static async Task WorkAsync(FelixClient client, FelixCache cache)
     var group = client.JoinGroup(Tenant, Namespace, StreamName, shard: 0, Group);
     while (true)
     {
-        var records = await group.PollAsync(maxRecords: 1, wait: TimeSpan.FromSeconds(5));
+        var records = await Bounded(
+            ct => group.PollAsync(maxRecords: 1, wait: TimeSpan.FromSeconds(PollWaitSeconds), cancellationToken: ct),
+            extraSeconds: PollWaitSeconds);
         foreach (var record in records)
         {
             if (ParseOrder(record.Payload) is not { } order)
             {
                 // It will never parse, so settle it rather than retry it.
                 Console.WriteLine($"rejected a malformed order at offset {record.Offset}");
-                await group.AckAsync(record);
+                await BoundedTask(ct => group.AckAsync(record, ct));
                 continue;
             }
             try
             {
-                await FulfilAsync(cache, order.Id, order.Qty);
+                await FulfilAsync(cache, order.Id, order.Total);
             }
-            catch (FelixException e)
+            catch (Exception e) when (e is FelixException or OperationCanceledException)
             {
                 Console.WriteLine($"{order.Id} failed on attempt {record.Attempts}: {e.Message}");
-                await group.NackAsync(record);
+                await BoundedTask(ct => group.NackAsync(record, delay: TimeSpan.FromSeconds(1), cancellationToken: ct));
                 continue;
             }
-            await group.AckAsync(record);
+            await BoundedTask(ct => group.AckAsync(record, ct));
             Console.WriteLine($"fulfilled {order.Id} (attempt {record.Attempts})");
         }
     }
@@ -490,9 +597,8 @@ watch falls behind, the broker ends it and says where to watch again from.
 use felix_client::{CacheWatchFilter, CacheWatchItem};
 
 async fn dashboard(client: &Arc<ClusterClient>) -> Result<()> {
-    let mut watch = client
-        .watch_cache_retained(TENANT, NAMESPACE, CACHE, CacheWatchFilter::Prefix("order:".into()))
-        .await?;
+    let start = client.watch_cache_retained(TENANT, NAMESPACE, CACHE, CacheWatchFilter::Prefix("order:".into()));
+    let mut watch = bounded("starting the watch", CALL_TIMEOUT, start).await?;
     while let Some(item) = watch.recv().await {
         match item {
             CacheWatchItem::Change(change) => {
@@ -513,10 +619,11 @@ async fn dashboard(client: &Arc<ClusterClient>) -> Result<()> {
 <TabItem label="Python">
 
 ```python
-def dashboard(client: felix.Client) -> None:
+async def dashboard(client: felix.AsyncClient) -> None:
     prefix = felix.CacheWatchFilter.prefix("order:")
-    with client.watch_cache(TENANT, NAMESPACE, CACHE, prefix, retained=True) as watch:
-        for item in watch:
+    start = client.watch_cache(TENANT, NAMESPACE, CACHE, prefix, retained=True)
+    async with await bounded(start) as changes:
+        async for item in changes:
             if isinstance(item, felix.CacheChange):
                 status = "(expired)" if item.value is None else item.value.decode(errors="replace")
                 print(f"{item.key} = {status}")
@@ -531,12 +638,15 @@ def dashboard(client: felix.Client) -> None:
 
 ```ts
 async function dashboard(client: Client): Promise<void> {
-  const changes = await client.watchCache(
-    TENANT, NAMESPACE, CACHE,
-    undefined, // key
-    "order:",  // prefix
-    undefined, // start offset
-    true,      // retained: current values first
+  const changes = await bounded(
+    "starting the watch",
+    client.watchCache(
+      TENANT, NAMESPACE, CACHE,
+      undefined, // key
+      "order:",  // prefix
+      undefined, // start offset
+      true,      // retained: current values first
+    ),
   );
   try {
     for (;;) {
@@ -564,7 +674,7 @@ async function dashboard(client: Client): Promise<void> {
 ```csharp
 static async Task DashboardAsync(FelixCache cache)
 {
-    await using var watch = await cache.WatchPrefixAsync("order:", retained: true);
+    await using var watch = await Bounded(ct => cache.WatchPrefixAsync("order:", retained: true, cancellationToken: ct));
     await foreach (var item in watch)
     {
         switch (item.Kind)
@@ -595,9 +705,7 @@ static async Task DashboardAsync(FelixCache cache)
 ```rust
 #[tokio::main]
 async fn main() -> Result<()> {
-    let client = tokio::time::timeout(Duration::from_secs(10), connect())
-        .await
-        .context("connecting took longer than 10 seconds")??;
+    let client = connect().await?;
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("submit") => {
@@ -615,20 +723,20 @@ async fn main() -> Result<()> {
 <TabItem label="Python">
 
 ```python
-def main() -> None:
+async def main() -> None:
     args = sys.argv[1:]
     if not args or args[0] not in ("submit", "work", "dashboard"):
         sys.exit("usage: orders.py submit [count] | work | dashboard")
-    with connect() as client:
+    async with await connect() as client:
         if args[0] == "submit":
-            submit(client, int(args[1]) if len(args) > 1 else 3)
+            await submit(client, int(args[1]) if len(args) > 1 else 3)
         elif args[0] == "work":
-            work(client)
+            await work(client)
         else:
-            dashboard(client)
+            await dashboard(client)
 
 
-main()
+asyncio.run(main())
 ```
 
 </TabItem>
@@ -664,13 +772,12 @@ if (mode is not ("submit" or "work" or "dashboard"))
     return 1;
 }
 
-using var connecting = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-await using var client = await ConnectAsync(connecting.Token);
+await using var client = await ConnectAsync();
 var cache = client.Cache(Tenant, Namespace, CacheName);
 switch (mode)
 {
     case "submit":
-        await SubmitAsync(client, cache, args.Length > 1 ? int.Parse(args[1]) : 3, CancellationToken.None);
+        await SubmitAsync(client, cache, args.Length > 1 ? int.Parse(args[1]) : 3);
         break;
     case "work":
         await WorkAsync(client, cache);
@@ -698,8 +805,8 @@ accepted o-3
 accepted o-4
 ```
 
-The dashboard follows every order from queued to done, interleaved as the
-workers get to them:
+The dashboard follows every order from queued to done. The lines for
+different orders interleave, and their order varies from run to run:
 
 ```text
 order:o-1 = queued
@@ -724,9 +831,19 @@ then follows any new ones.
 To see the failure paths, stop a worker with Ctrl-C while it is fulfilling an
 order. The other worker finishes the order about 30 seconds later, on
 `attempt 2`, and the dashboard shows it reach `done`.
-To see the rejection path, publish text that is not an order with
-`felixctl pub tutorial-orders 'not json'`. A worker prints
-`rejected a malformed order` and carries on.
+To see the rejection path, publish text that is not an order:
+
+```bash
+docker compose run --rm felixctl pub tutorial-orders 'not json'
+```
+
+A worker prints `rejected a malformed order` and carries on.
+
+An order that fails every attempt becomes a dead letter, and the worker never
+writes its final status. Its key stays at `processing` until the one hour TTL
+removes it. List the group's dead letters, as in
+[A work queue](/tutorials/work-queue/#4-dead-letters-and-redrive), to find
+orders stuck that way. Redriving one runs it again.
 
 ## Where next
 

@@ -10,10 +10,12 @@ mod first_stream {
     use felix_client::AckMode;
     use felix_client::StartPosition;
     use felix_client::{ClientConfig, ClusterClient, quic_client_config, root_store_from_pem_file};
+    use std::future::Future;
     use std::net::SocketAddr;
     use std::path::Path;
     use std::sync::Arc;
     use std::time::Duration;
+    use tokio::io::AsyncWriteExt;
 
 
 
@@ -21,6 +23,15 @@ mod first_stream {
     const TENANT: &str = "dev";
     const NAMESPACE: &str = "default";
     const STREAM: &str = "tutorial-events";
+
+    // Every call to the broker gets this long.
+    const CALL_TIMEOUT: Duration = Duration::from_secs(10);
+
+    async fn bounded<T>(what: &str, limit: Duration, call: impl Future<Output = Result<T>>) -> Result<T> {
+        tokio::time::timeout(limit, call)
+            .await
+            .with_context(|| format!("{what} did not finish within {limit:?}"))?
+    }
 
     async fn connect() -> Result<Arc<ClusterClient>> {
         let ca_file = std::env::var("FELIX_CA_FILE").context("set FELIX_CA_FILE")?;
@@ -30,71 +41,76 @@ mod first_stream {
 
         let broker = std::env::var("FELIX_BROKERS").unwrap_or_else(|_| "127.0.0.1:5000".into());
         let seeds: Vec<SocketAddr> = vec![broker.parse().context("FELIX_BROKERS must be ip:port")?];
-        let client = ClusterClient::connect(&seeds, "localhost", config).await?;
+        let client = bounded("connecting", CALL_TIMEOUT, ClusterClient::connect(&seeds, "localhost", config)).await?;
         Ok(Arc::new(client))
     }
-
 
 
     async fn publish_three(client: &ClusterClient) -> Result<()> {
         for i in 1..=3 {
             let payload = format!("event {i}").into_bytes();
             let publish = client.publish(TENANT, NAMESPACE, STREAM, payload, AckMode::PerMessage);
-            let offset = tokio::time::timeout(Duration::from_secs(10), publish)
-                .await
-                .context("the broker did not answer within 10 seconds")??;
-            println!("published event {i} at offset {offset:?}");
+            let offset = bounded("publish", CALL_TIMEOUT, publish)
+                .await?
+                .context("a durable stream returns an offset")?;
+            println!("published event {i} at offset {offset}");
         }
         Ok(())
     }
 
 
 
-    fn load_checkpoint(path: &Path) -> Result<Option<u64>> {
-        match std::fs::read_to_string(path) {
+    async fn load_checkpoint(path: &Path) -> Result<Option<u64>> {
+        match tokio::fs::read_to_string(path).await {
             Ok(text) => Ok(Some(text.trim().parse().context("the checkpoint is not an offset")?)),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(err) => Err(err).context("read the checkpoint"),
         }
     }
 
-    // Write beside the file and rename, so a crash leaves the old checkpoint whole.
-    fn save_checkpoint(path: &Path, offset: u64) -> Result<()> {
+    // Sync a temporary file and rename it over the checkpoint, so a crash leaves
+    // the old checkpoint or the new one, never half of one.
+    async fn save_checkpoint(path: &Path, offset: u64) -> Result<()> {
         let tmp = path.with_extension("tmp");
-        std::fs::write(&tmp, offset.to_string()).context("write the checkpoint")?;
-        std::fs::rename(&tmp, path).context("replace the checkpoint")
+        let mut file = tokio::fs::File::create(&tmp).await.context("create the checkpoint")?;
+        file.write_all(offset.to_string().as_bytes()).await.context("write the checkpoint")?;
+        file.sync_all().await.context("sync the checkpoint")?;
+        drop(file);
+        tokio::fs::rename(&tmp, path).await.context("replace the checkpoint")
     }
 
     async fn read_new(client: &Arc<ClusterClient>, checkpoint: &Path) -> Result<()> {
-        let start = match load_checkpoint(checkpoint)? {
+        let start = match load_checkpoint(checkpoint).await? {
             Some(offset) => StartPosition::Offset(offset + 1),
             None => StartPosition::Earliest,
         };
-        let mut events = client
-            .subscribe_from(TENANT, NAMESPACE, STREAM, Some(start))
-            .await?;
+        let subscribe = client.subscribe_from(TENANT, NAMESPACE, STREAM, Some(start));
+        let mut events = bounded("subscribe", CALL_TIMEOUT, subscribe).await?;
 
         loop {
-            let next = tokio::time::timeout(Duration::from_secs(3), events.next_event()).await;
-            let Ok(next) = next else {
-                println!("nothing new for 3 seconds, stopping");
-                return Ok(());
-            };
-            let Some(event) = next? else {
-                return Ok(());
-            };
-            let offset = event.offset.context("the stream has no offsets; is it durable?")?;
-            println!("offset {offset}: {}", String::from_utf8_lossy(&event.payload));
-            save_checkpoint(checkpoint, offset)?;
+            match tokio::time::timeout(Duration::from_secs(3), events.next_event()).await {
+                Err(_) => {
+                    println!("nothing new for 3 seconds, stopping");
+                    return Ok(());
+                }
+                Ok(Err(err)) => return Err(err),
+                Ok(Ok(None)) => {
+                    println!("the subscription ended");
+                    return Ok(());
+                }
+                Ok(Ok(Some(event))) => {
+                    let offset = event.offset.context("the stream has no offsets; is it durable?")?;
+                    println!("offset {offset}: {}", String::from_utf8_lossy(&event.payload));
+                    save_checkpoint(checkpoint, offset).await?;
+                }
+            }
         }
     }
 
 
     #[tokio::main]
     async fn main() -> Result<()> {
-        let client = tokio::time::timeout(Duration::from_secs(10), connect())
-            .await
-            .context("connecting took longer than 10 seconds")??;
+        let client = connect().await?;
         match std::env::args().nth(1).as_deref() {
             Some("publish") => publish_three(&client).await,
             Some("read") => read_new(&client, Path::new("checkpoint")).await,
@@ -109,6 +125,7 @@ mod work_queue {
     use anyhow::bail;
     use anyhow::{Context, Result};
     use felix_client::{AckMode, ClientConfig, ClusterClient, quic_client_config, root_store_from_pem_file};
+    use std::future::Future;
     use std::net::SocketAddr;
     use std::sync::Arc;
     use std::time::Duration;
@@ -121,6 +138,17 @@ mod work_queue {
     const STREAM: &str = "tutorial-jobs";
     const GROUP: &str = "workers";
 
+    // Every call to the broker gets this long. A poll waits on purpose, so it gets
+    // its wait on top.
+    const CALL_TIMEOUT: Duration = Duration::from_secs(10);
+    const POLL_WAIT: Duration = Duration::from_secs(5);
+
+    async fn bounded<T>(what: &str, limit: Duration, call: impl Future<Output = Result<T>>) -> Result<T> {
+        tokio::time::timeout(limit, call)
+            .await
+            .with_context(|| format!("{what} did not finish within {limit:?}"))?
+    }
+
     async fn connect() -> Result<Arc<ClusterClient>> {
         let ca_file = std::env::var("FELIX_CA_FILE").context("set FELIX_CA_FILE")?;
         let roots = Arc::new(root_store_from_pem_file(&ca_file)?);
@@ -129,17 +157,18 @@ mod work_queue {
 
         let broker = std::env::var("FELIX_BROKERS").unwrap_or_else(|_| "127.0.0.1:5000".into());
         let seeds: Vec<SocketAddr> = vec![broker.parse().context("FELIX_BROKERS must be ip:port")?];
-        Ok(Arc::new(ClusterClient::connect(&seeds, "localhost", config).await?))
+        let client = bounded("connecting", CALL_TIMEOUT, ClusterClient::connect(&seeds, "localhost", config)).await?;
+        Ok(Arc::new(client))
     }
 
     async fn produce(client: &ClusterClient) -> Result<()> {
         let jobs = ["job 1", "job 2", "job 3", "job 4", "job 5", "job 6", "poison"];
         for job in jobs {
             let publish = client.publish(TENANT, NAMESPACE, STREAM, job.as_bytes().to_vec(), AckMode::PerMessage);
-            let offset = tokio::time::timeout(Duration::from_secs(10), publish)
-                .await
-                .context("the broker did not answer within 10 seconds")??;
-            println!("queued {job} at offset {offset:?}");
+            let offset = bounded("publish", CALL_TIMEOUT, publish)
+                .await?
+                .context("a durable stream returns an offset")?;
+            println!("queued {job} at offset {offset}");
         }
         Ok(())
     }
@@ -155,19 +184,22 @@ mod work_queue {
 
     async fn work(client: &ClusterClient, name: &str) -> Result<()> {
         loop {
-            let records = client
-                .group_poll_wait(TENANT, NAMESPACE, STREAM, 0, GROUP, 1, Duration::from_secs(5))
-                .await?;
+            let poll = client.group_poll_wait(TENANT, NAMESPACE, STREAM, 0, GROUP, 1, POLL_WAIT);
+            let records = bounded("poll", CALL_TIMEOUT + POLL_WAIT, poll).await?;
             for record in records {
                 let job = String::from_utf8_lossy(&record.payload).into_owned();
                 match handle(&job).await {
                     Ok(()) => {
-                        client.group_ack(TENANT, NAMESPACE, STREAM, 0, GROUP, record.offset).await?;
+                        let ack = client.group_ack(TENANT, NAMESPACE, STREAM, 0, GROUP, record.offset);
+                        bounded("ack", CALL_TIMEOUT, ack).await?;
                         println!("{name}: finished {job} (attempt {})", record.attempts);
                     }
                     Err(err) => {
                         println!("{name}: {job} failed on attempt {}: {err:#}", record.attempts);
-                        client.group_nack(TENANT, NAMESPACE, STREAM, 0, GROUP, &record).await?;
+                        let nack = client.group_nack_after(
+                            TENANT, NAMESPACE, STREAM, 0, GROUP, &record, Duration::from_secs(1),
+                        );
+                        bounded("nack", CALL_TIMEOUT, nack).await?;
                     }
                 }
             }
@@ -175,13 +207,15 @@ mod work_queue {
     }
 
     async fn dead(client: &ClusterClient, redrive: bool) -> Result<()> {
-        let offsets = client.group_dead_letters(TENANT, NAMESPACE, STREAM, 0, GROUP).await?;
+        let list = client.group_dead_letters(TENANT, NAMESPACE, STREAM, 0, GROUP);
+        let offsets = bounded("listing dead letters", CALL_TIMEOUT, list).await?;
         if offsets.is_empty() {
             println!("no dead letters");
         }
         for offset in offsets {
             if redrive {
-                client.group_redrive(TENANT, NAMESPACE, STREAM, 0, GROUP, offset).await?;
+                let call = client.group_redrive(TENANT, NAMESPACE, STREAM, 0, GROUP, offset);
+                bounded("redrive", CALL_TIMEOUT, call).await?;
                 println!("redrove offset {offset}");
             } else {
                 println!("dead letter at offset {offset}");
@@ -192,9 +226,7 @@ mod work_queue {
 
     #[tokio::main]
     async fn main() -> Result<()> {
-        let client = tokio::time::timeout(Duration::from_secs(10), connect())
-            .await
-            .context("connecting took longer than 10 seconds")??;
+        let client = connect().await?;
         let args: Vec<String> = std::env::args().skip(1).collect();
         match args.first().map(String::as_str) {
             Some("produce") => produce(&client).await,
@@ -212,9 +244,10 @@ mod cache_leases_watches {
     use anyhow::bail;
     use anyhow::{Context, Result};
     use bytes::Bytes;
-    use felix_client::CacheCondition;
+    use felix_client::{CacheCondition, ClusterCacheWatch};
     use felix_client::{CacheWatchFilter, CacheWatchItem};
     use felix_client::{ClientConfig, ClusterClient, quic_client_config, root_store_from_pem_file};
+    use std::future::Future;
     use std::net::SocketAddr;
     use std::sync::Arc;
     use std::time::Duration;
@@ -226,6 +259,15 @@ mod cache_leases_watches {
     const NAMESPACE: &str = "default";
     const CACHE: &str = "tutorial-cache";
 
+    // Every call to the broker gets this long.
+    const CALL_TIMEOUT: Duration = Duration::from_secs(10);
+
+    async fn bounded<T>(what: &str, limit: Duration, call: impl Future<Output = Result<T>>) -> Result<T> {
+        tokio::time::timeout(limit, call)
+            .await
+            .with_context(|| format!("{what} did not finish within {limit:?}"))?
+    }
+
     async fn connect() -> Result<Arc<ClusterClient>> {
         let ca_file = std::env::var("FELIX_CA_FILE").context("set FELIX_CA_FILE")?;
         let roots = Arc::new(root_store_from_pem_file(&ca_file)?);
@@ -234,28 +276,27 @@ mod cache_leases_watches {
 
         let broker = std::env::var("FELIX_BROKERS").unwrap_or_else(|_| "127.0.0.1:5000".into());
         let seeds: Vec<SocketAddr> = vec![broker.parse().context("FELIX_BROKERS must be ip:port")?];
-        Ok(Arc::new(ClusterClient::connect(&seeds, "localhost", config).await?))
+        let client = bounded("connecting", CALL_TIMEOUT, ClusterClient::connect(&seeds, "localhost", config)).await?;
+        Ok(Arc::new(client))
     }
 
     async fn ttl(client: &ClusterClient) -> Result<()> {
         // The TTL is in milliseconds.
-        client
-            .cache_put(TENANT, NAMESPACE, CACHE, "greeting", Bytes::from_static(b"hello"), Some(5_000))
-            .await?;
-        let now = client.cache_get(TENANT, NAMESPACE, CACHE, "greeting").await?;
-        println!("right after the put: {now:?}");
+        let put = client.cache_put(TENANT, NAMESPACE, CACHE, "greeting", Bytes::from_static(b"hello"), Some(5_000));
+        bounded("put", CALL_TIMEOUT, put).await?;
+        let get = client.cache_get(TENANT, NAMESPACE, CACHE, "greeting");
+        println!("right after the put: {:?}", bounded("get", CALL_TIMEOUT, get).await?);
 
         tokio::time::sleep(Duration::from_secs(6)).await;
-        let later = client.cache_get(TENANT, NAMESPACE, CACHE, "greeting").await?;
-        println!("six seconds later: {later:?}");
+        let get = client.cache_get(TENANT, NAMESPACE, CACHE, "greeting");
+        println!("six seconds later: {:?}", bounded("get", CALL_TIMEOUT, get).await?);
         Ok(())
     }
 
 
     async fn watch(client: &Arc<ClusterClient>) -> Result<()> {
-        let mut watch = client
-            .watch_cache(TENANT, NAMESPACE, CACHE, CacheWatchFilter::Prefix("status:".into()), None)
-            .await?;
+        let start = client.watch_cache(TENANT, NAMESPACE, CACHE, CacheWatchFilter::Prefix("status:".into()), None);
+        let mut watch = bounded("starting the watch", CALL_TIMEOUT, start).await?;
         println!("watching status:*");
         while let Some(item) = watch.recv().await {
             match item {
@@ -273,13 +314,13 @@ mod cache_leases_watches {
     }
 
     async fn set(client: &ClusterClient, key: &str, value: &str) -> Result<()> {
-        client
-            .cache_put(TENANT, NAMESPACE, CACHE, key, Bytes::copy_from_slice(value.as_bytes()), None)
-            .await
+        let put = client.cache_put(TENANT, NAMESPACE, CACHE, key, Bytes::copy_from_slice(value.as_bytes()), None);
+        bounded("put", CALL_TIMEOUT, put).await
     }
 
     async fn delete(client: &ClusterClient, key: &str) -> Result<()> {
-        let removed = client.cache_delete(TENANT, NAMESPACE, CACHE, key).await?;
+        let delete = client.cache_delete(TENANT, NAMESPACE, CACHE, key);
+        let removed = bounded("delete", CALL_TIMEOUT, delete).await?;
         println!("{}", if removed.is_some() { "deleted" } else { "there was nothing to delete" });
         Ok(())
     }
@@ -289,72 +330,85 @@ mod cache_leases_watches {
     const LEASE_TTL_MS: u64 = 10_000;
 
     async fn lease(client: &Arc<ClusterClient>, name: &str) -> Result<()> {
+        // Watch before the first claim, so a release that lands between a refusal
+        // and the wait is not missed.
+        let start = client.watch_cache(TENANT, NAMESPACE, CACHE, CacheWatchFilter::Key(LEASE_KEY.into()), None);
+        let mut watch = bounded("starting the watch", CALL_TIMEOUT, start).await?;
         loop {
-            let claim = client
-                .cache_put_if(
-                    TENANT, NAMESPACE, CACHE, LEASE_KEY,
-                    Bytes::copy_from_slice(name.as_bytes()),
-                    Some(LEASE_TTL_MS),
-                    CacheCondition::Absent,
-                )
-                .await?;
+            let claim = client.cache_put_if(
+                TENANT, NAMESPACE, CACHE, LEASE_KEY,
+                Bytes::copy_from_slice(name.as_bytes()),
+                Some(LEASE_TTL_MS),
+                CacheCondition::Absent,
+            );
+            let claim = bounded("claim", CALL_TIMEOUT, claim).await?;
             if claim.applied {
                 let token = claim.version.context("the broker did not report a version to fence with")?;
+                drop(watch);
                 return hold(client, name, token).await;
             }
             println!("{name}: the lease is taken, waiting");
-            wait_for_release(client).await?;
+            wait_for_release(&mut watch).await?;
         }
     }
 
     async fn hold(client: &ClusterClient, name: &str, mut token: u64) -> Result<()> {
         println!("{name}: holds the lease, fencing token {token}");
+        let worked = renew_rounds(client, name, &mut token).await;
+
+        // Release on every path, so the next worker does not wait out the TTL. If
+        // this fails the lease still expires on its own.
+        let release = client.cache_delete_if(TENANT, NAMESPACE, CACHE, LEASE_KEY, token);
+        match bounded("release", CALL_TIMEOUT, release).await {
+            Ok(released) => {
+                println!("{name}: released ({})", if released.applied { "ok" } else { "it had already moved on" });
+            }
+            Err(err) => println!("{name}: could not release, the lease expires on its own: {err:#}"),
+        }
+        worked
+    }
+
+    async fn renew_rounds(client: &ClusterClient, name: &str, token: &mut u64) -> Result<()> {
         for round in 1..=3 {
             // Do a unit of work here, passing `token` to whatever it writes.
             tokio::time::sleep(Duration::from_millis(LEASE_TTL_MS / 3)).await;
 
-            let renewed = client
-                .cache_put_if(
-                    TENANT, NAMESPACE, CACHE, LEASE_KEY,
-                    Bytes::copy_from_slice(name.as_bytes()),
-                    Some(LEASE_TTL_MS),
-                    CacheCondition::Version(token),
-                )
-                .await?;
+            let renew = client.cache_put_if(
+                TENANT, NAMESPACE, CACHE, LEASE_KEY,
+                Bytes::copy_from_slice(name.as_bytes()),
+                Some(LEASE_TTL_MS),
+                CacheCondition::Version(*token),
+            );
+            let renewed = bounded("renew", CALL_TIMEOUT, renew).await?;
             match renewed.version {
-                Some(version) if renewed.applied => token = version,
+                Some(version) if renewed.applied => *token = version,
                 _ => bail!("{name}: lost the lease; stop working"),
             }
             println!("{name}: renewed (round {round}), fencing token {token}");
         }
-
-        let released = client.cache_delete_if(TENANT, NAMESPACE, CACHE, LEASE_KEY, token).await?;
-        println!("{name}: released ({})", if released.applied { "ok" } else { "it had already moved on" });
         Ok(())
     }
 
     // Returns when the lease is deleted, or after one TTL.
-    async fn wait_for_release(client: &Arc<ClusterClient>) -> Result<()> {
-        let mut watch = client
-            .watch_cache(TENANT, NAMESPACE, CACHE, CacheWatchFilter::Key(LEASE_KEY.into()), None)
-            .await?;
+    async fn wait_for_release(watch: &mut ClusterCacheWatch) -> Result<()> {
         let deleted = async {
             while let Some(item) = watch.recv().await {
                 if matches!(item, CacheWatchItem::Change(ref change) if change.value.is_none()) {
-                    return;
+                    return true;
                 }
             }
+            false
         };
-        // A timeout is expected when the holder keeps renewing, so it is not an error.
-        let _ = tokio::time::timeout(Duration::from_millis(LEASE_TTL_MS), deleted).await;
-        Ok(())
+        // A timeout is expected while the holder keeps renewing.
+        match tokio::time::timeout(Duration::from_millis(LEASE_TTL_MS), deleted).await {
+            Ok(false) => bail!("the watch ended"),
+            _ => Ok(()),
+        }
     }
 
     #[tokio::main]
     async fn main() -> Result<()> {
-        let client = tokio::time::timeout(Duration::from_secs(10), connect())
-            .await
-            .context("connecting took longer than 10 seconds")??;
+        let client = connect().await?;
         let args: Vec<String> = std::env::args().skip(1).collect();
         let arg = |i: usize| args.get(i).map(String::as_str);
         match (arg(0), arg(1), arg(2)) {
@@ -376,6 +430,7 @@ mod build_an_app {
     use bytes::Bytes;
     use felix_client::{AckMode, ClientConfig, ClusterClient, quic_client_config, root_store_from_pem_file};
     use felix_client::{CacheWatchFilter, CacheWatchItem};
+    use std::future::Future;
     use std::net::SocketAddr;
     use std::sync::Arc;
     use std::time::Duration;
@@ -390,6 +445,17 @@ mod build_an_app {
     const CACHE: &str = "tutorial-cache";
     const STATUS_TTL_MS: u64 = 60 * 60 * 1000;
 
+    // Every call to the broker gets this long. A poll waits on purpose, so it gets
+    // its wait on top.
+    const CALL_TIMEOUT: Duration = Duration::from_secs(10);
+    const POLL_WAIT: Duration = Duration::from_secs(5);
+
+    async fn bounded<T>(what: &str, limit: Duration, call: impl Future<Output = Result<T>>) -> Result<T> {
+        tokio::time::timeout(limit, call)
+            .await
+            .with_context(|| format!("{what} did not finish within {limit:?}"))?
+    }
+
     async fn connect() -> Result<Arc<ClusterClient>> {
         let ca_file = std::env::var("FELIX_CA_FILE").context("set FELIX_CA_FILE")?;
         let roots = Arc::new(root_store_from_pem_file(&ca_file)?);
@@ -398,14 +464,15 @@ mod build_an_app {
 
         let broker = std::env::var("FELIX_BROKERS").unwrap_or_else(|_| "127.0.0.1:5000".into());
         let seeds: Vec<SocketAddr> = vec![broker.parse().context("FELIX_BROKERS must be ip:port")?];
-        Ok(Arc::new(ClusterClient::connect(&seeds, "localhost", config).await?))
+        let client = bounded("connecting", CALL_TIMEOUT, ClusterClient::connect(&seeds, "localhost", config)).await?;
+        Ok(Arc::new(client))
     }
 
     async fn set_status(client: &ClusterClient, id: &str, status: &str) -> Result<()> {
         let value = Bytes::copy_from_slice(status.as_bytes());
-        client
-            .cache_put(TENANT, NAMESPACE, CACHE, &format!("order:{id}"), value, Some(STATUS_TTL_MS))
-            .await
+        let key = format!("order:{id}");
+        let put = client.cache_put(TENANT, NAMESPACE, CACHE, &key, value, Some(STATUS_TTL_MS));
+        bounded("writing the status", CALL_TIMEOUT, put).await
     }
 
     async fn submit(client: &ClusterClient, count: u32) -> Result<()> {
@@ -416,46 +483,56 @@ mod build_an_app {
             // The status goes first, so a fast worker's result is never overwritten.
             set_status(client, &id, "queued").await?;
             let publish = client.publish(TENANT, NAMESPACE, STREAM, order, AckMode::PerMessage);
-            tokio::time::timeout(Duration::from_secs(10), publish)
-                .await
-                .context("the broker did not answer within 10 seconds")??;
+            bounded("publish", CALL_TIMEOUT, publish).await?;
             println!("accepted {id}");
         }
         Ok(())
     }
 
 
-    async fn fulfil(client: &ClusterClient, id: &str, qty: u64) -> Result<()> {
+    const PRICE: u64 = 5;
+    const MAX_QTY: u64 = 1_000_000;
+
+    async fn fulfil(client: &ClusterClient, id: &str, total: u64) -> Result<()> {
         set_status(client, id, "processing").await?;
         tokio::time::sleep(Duration::from_secs(2)).await;
-        set_status(client, id, &format!("done total={}", qty * 5)).await
+        set_status(client, id, &format!("done total={total}")).await
     }
 
+    // The order's id and its total, or None for an order that can never be filled.
     fn parse_order(payload: &[u8]) -> Option<(String, u64)> {
         let order: serde_json::Value = serde_json::from_slice(payload).ok()?;
-        Some((order.get("id")?.as_str()?.to_owned(), order.get("qty")?.as_u64()?))
+        let qty = order.get("qty")?.as_u64()?;
+        if qty == 0 || qty > MAX_QTY {
+            return None;
+        }
+        Some((order.get("id")?.as_str()?.to_owned(), qty.checked_mul(PRICE)?))
     }
 
     async fn work(client: &ClusterClient) -> Result<()> {
         loop {
-            let records = client
-                .group_poll_wait(TENANT, NAMESPACE, STREAM, 0, GROUP, 1, Duration::from_secs(5))
-                .await?;
+            let poll = client.group_poll_wait(TENANT, NAMESPACE, STREAM, 0, GROUP, 1, POLL_WAIT);
+            let records = bounded("poll", CALL_TIMEOUT + POLL_WAIT, poll).await?;
             for record in records {
-                let Some((id, qty)) = parse_order(&record.payload) else {
+                let Some((id, total)) = parse_order(&record.payload) else {
                     // It will never parse, so settle it rather than retry it.
                     println!("rejected a malformed order at offset {}", record.offset);
-                    client.group_ack(TENANT, NAMESPACE, STREAM, 0, GROUP, record.offset).await?;
+                    let ack = client.group_ack(TENANT, NAMESPACE, STREAM, 0, GROUP, record.offset);
+                    bounded("ack", CALL_TIMEOUT, ack).await?;
                     continue;
                 };
-                match fulfil(client, &id, qty).await {
+                match fulfil(client, &id, total).await {
                     Ok(()) => {
-                        client.group_ack(TENANT, NAMESPACE, STREAM, 0, GROUP, record.offset).await?;
+                        let ack = client.group_ack(TENANT, NAMESPACE, STREAM, 0, GROUP, record.offset);
+                        bounded("ack", CALL_TIMEOUT, ack).await?;
                         println!("fulfilled {id} (attempt {})", record.attempts);
                     }
                     Err(err) => {
                         println!("{id} failed on attempt {}: {err:#}", record.attempts);
-                        client.group_nack(TENANT, NAMESPACE, STREAM, 0, GROUP, &record).await?;
+                        let nack = client.group_nack_after(
+                            TENANT, NAMESPACE, STREAM, 0, GROUP, &record, Duration::from_secs(1),
+                        );
+                        bounded("nack", CALL_TIMEOUT, nack).await?;
                     }
                 }
             }
@@ -464,9 +541,8 @@ mod build_an_app {
 
 
     async fn dashboard(client: &Arc<ClusterClient>) -> Result<()> {
-        let mut watch = client
-            .watch_cache_retained(TENANT, NAMESPACE, CACHE, CacheWatchFilter::Prefix("order:".into()))
-            .await?;
+        let start = client.watch_cache_retained(TENANT, NAMESPACE, CACHE, CacheWatchFilter::Prefix("order:".into()));
+        let mut watch = bounded("starting the watch", CALL_TIMEOUT, start).await?;
         while let Some(item) = watch.recv().await {
             match item {
                 CacheWatchItem::Change(change) => {
@@ -484,9 +560,7 @@ mod build_an_app {
 
     #[tokio::main]
     async fn main() -> Result<()> {
-        let client = tokio::time::timeout(Duration::from_secs(10), connect())
-            .await
-            .context("connecting took longer than 10 seconds")??;
+        let client = connect().await?;
         let args: Vec<String> = std::env::args().skip(1).collect();
         match args.first().map(String::as_str) {
             Some("submit") => {

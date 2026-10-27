@@ -757,6 +757,17 @@ fn generate_tutorials(pages: &[(&str, String)]) -> Result<String, String> {
          // FELIX_BLESS_DOCS=1 cargo test -p felix-client --test docs_examples_sync\n",
     );
     for (slug, page) in pages {
+        // A fence like `rust,no_run` would be skipped by the extractor, so a
+        // block could stop being compiled without anyone noticing.
+        for (index, line) in page.lines().enumerate() {
+            let tag = line.trim_start_matches('`').trim();
+            if line.starts_with("```") && tag != "rust" && tag.starts_with("rust") {
+                return Err(format!(
+                    "{slug}.mdx line {}: use a plain rust fence, not \"{tag}\"",
+                    index + 1
+                ));
+            }
+        }
         let blocks = rust_blocks(page);
         if blocks.is_empty() {
             return Err(format!("{slug}.mdx has no rust blocks"));
@@ -795,11 +806,17 @@ fn generate_tutorials(pages: &[(&str, String)]) -> Result<String, String> {
 
 #[test]
 fn generated_tutorials_match_the_pages() {
+    // The packaged crate has no docs site next to it.
+    if !tutorial_path(TUTORIALS[0])
+        .parent()
+        .is_some_and(Path::exists)
+    {
+        return;
+    }
     let mut pages = Vec::new();
     for slug in TUTORIALS {
-        let Ok(page) = std::fs::read_to_string(tutorial_path(slug)) else {
-            return;
-        };
+        let page = std::fs::read_to_string(tutorial_path(slug))
+            .unwrap_or_else(|err| panic!("read the {slug} tutorial: {err}"));
         pages.push((*slug, page));
     }
     let expected = generate_tutorials(&pages).unwrap_or_else(|problems| panic!("{problems}"));

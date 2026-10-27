@@ -45,6 +45,7 @@ worker will refuse.
 <TabItem label="Rust">
 
 ```rust
+use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -58,6 +59,17 @@ const NAMESPACE: &str = "default";
 const STREAM: &str = "tutorial-jobs";
 const GROUP: &str = "workers";
 
+// Every call to the broker gets this long. A poll waits on purpose, so it gets
+// its wait on top.
+const CALL_TIMEOUT: Duration = Duration::from_secs(10);
+const POLL_WAIT: Duration = Duration::from_secs(5);
+
+async fn bounded<T>(what: &str, limit: Duration, call: impl Future<Output = Result<T>>) -> Result<T> {
+    tokio::time::timeout(limit, call)
+        .await
+        .with_context(|| format!("{what} did not finish within {limit:?}"))?
+}
+
 async fn connect() -> Result<Arc<ClusterClient>> {
     let ca_file = std::env::var("FELIX_CA_FILE").context("set FELIX_CA_FILE")?;
     let roots = Arc::new(root_store_from_pem_file(&ca_file)?);
@@ -66,17 +78,18 @@ async fn connect() -> Result<Arc<ClusterClient>> {
 
     let broker = std::env::var("FELIX_BROKERS").unwrap_or_else(|_| "127.0.0.1:5000".into());
     let seeds: Vec<SocketAddr> = vec![broker.parse().context("FELIX_BROKERS must be ip:port")?];
-    Ok(Arc::new(ClusterClient::connect(&seeds, "localhost", config).await?))
+    let client = bounded("connecting", CALL_TIMEOUT, ClusterClient::connect(&seeds, "localhost", config)).await?;
+    Ok(Arc::new(client))
 }
 
 async fn produce(client: &ClusterClient) -> Result<()> {
     let jobs = ["job 1", "job 2", "job 3", "job 4", "job 5", "job 6", "poison"];
     for job in jobs {
         let publish = client.publish(TENANT, NAMESPACE, STREAM, job.as_bytes().to_vec(), AckMode::PerMessage);
-        let offset = tokio::time::timeout(Duration::from_secs(10), publish)
-            .await
-            .context("the broker did not answer within 10 seconds")??;
-        println!("queued {job} at offset {offset:?}");
+        let offset = bounded("publish", CALL_TIMEOUT, publish)
+            .await?
+            .context("a durable stream returns an offset")?;
+        println!("queued {job} at offset {offset}");
     }
     Ok(())
 }
@@ -86,9 +99,9 @@ async fn produce(client: &ClusterClient) -> Result<()> {
 <TabItem label="Python">
 
 ```python
+import asyncio
 import os
 import sys
-import time
 
 import felix
 
@@ -98,21 +111,32 @@ NAMESPACE = "default"
 STREAM = "tutorial-jobs"
 GROUP = "workers"
 
+# Every call to the broker gets this long. A poll waits on purpose, so it gets
+# its wait on top.
+CALL_TIMEOUT = 10.0
+POLL_WAIT = 5.0
 
-def connect() -> felix.Client:
-    return felix.Client(
-        os.environ.get("FELIX_BROKERS", "127.0.0.1:5000"),
-        tenant_id=TENANT,
-        token=os.environ["FELIX_AUTH_TOKEN"],
-        ca_file=os.environ["FELIX_CA_FILE"],
-        reconnect_deadline=10.0,
+
+async def bounded(call, extra=0.0):
+    return await asyncio.wait_for(call, CALL_TIMEOUT + extra)
+
+
+async def connect() -> felix.AsyncClient:
+    return await bounded(
+        felix.AsyncClient.connect(
+            os.environ.get("FELIX_BROKERS", "127.0.0.1:5000"),
+            tenant_id=TENANT,
+            token=os.environ["FELIX_AUTH_TOKEN"],
+            ca_file=os.environ["FELIX_CA_FILE"],
+            reconnect_deadline=CALL_TIMEOUT,
+        )
     )
 
 
-def produce(client: felix.Client) -> None:
+async def produce(client: felix.AsyncClient) -> None:
     jobs = ["job 1", "job 2", "job 3", "job 4", "job 5", "job 6", "poison"]
     for job in jobs:
-        offset = client.publish(TENANT, NAMESPACE, STREAM, job.encode())
+        offset = await bounded(client.publish(TENANT, NAMESPACE, STREAM, job.encode()))
         print(f"queued {job} at offset {offset}")
 ```
 
@@ -129,6 +153,23 @@ const NAMESPACE = "default";
 const STREAM = "tutorial-jobs";
 const GROUP = "workers";
 
+// Every call to the broker gets this long, and a poll gets its wait on top. The
+// client takes no timeout argument, so a timer is raced against the call.
+const CALL_TIMEOUT_MS = 10_000;
+const POLL_WAIT_MS = 5000;
+
+async function bounded<T>(what: string, call: Promise<T>, ms = CALL_TIMEOUT_MS): Promise<T> {
+  const timer = new AbortController();
+  const expired = sleep(ms, undefined, { signal: timer.signal }).then(() => {
+    throw new Error(`${what} did not finish within ${ms} ms`);
+  });
+  try {
+    return await Promise.race([call, expired]);
+  } finally {
+    timer.abort();
+  }
+}
+
 function required(name: string): string {
   const value = process.env[name];
   if (!value) throw new Error(`set ${name}`);
@@ -136,17 +177,20 @@ function required(name: string): string {
 }
 
 function connect(): Promise<Client> {
-  return Client.connect(process.env.FELIX_BROKERS ?? "127.0.0.1:5000", TENANT, {
-    token: required("FELIX_AUTH_TOKEN"),
-    caFile: required("FELIX_CA_FILE"),
-    reconnectDeadline: 10_000, // milliseconds
-  });
+  return bounded(
+    "connecting",
+    Client.connect(process.env.FELIX_BROKERS ?? "127.0.0.1:5000", TENANT, {
+      token: required("FELIX_AUTH_TOKEN"),
+      caFile: required("FELIX_CA_FILE"),
+      reconnectDeadline: CALL_TIMEOUT_MS,
+    }),
+  );
 }
 
 async function produce(client: Client): Promise<void> {
   const jobs = ["job 1", "job 2", "job 3", "job 4", "job 5", "job 6", "poison"];
   for (const job of jobs) {
-    const offset = await client.publish(TENANT, NAMESPACE, STREAM, Buffer.from(job));
+    const offset = await bounded("publish", client.publish(TENANT, NAMESPACE, STREAM, Buffer.from(job)));
     console.log(`queued ${job} at offset ${offset}`);
   }
 }
@@ -165,28 +209,45 @@ const string Namespace = "default";
 const string StreamName = "tutorial-jobs";
 const string Group = "workers";
 
+// Every call to the broker gets this long. A poll waits on purpose, so it gets
+// its wait on top.
+const int CallSeconds = 10;
+const int PollWaitSeconds = 5;
+
+static async Task<T> Bounded<T>(Func<CancellationToken, Task<T>> call, int extraSeconds = 0)
+{
+    using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(CallSeconds + extraSeconds));
+    return await call(limit.Token);
+}
+
+static async Task BoundedTask(Func<CancellationToken, Task> call)
+{
+    using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(CallSeconds));
+    await call(limit.Token);
+}
+
 static string Required(string name) =>
     Environment.GetEnvironmentVariable(name) is { Length: > 0 } value
         ? value
         : throw new InvalidOperationException($"set {name}");
 
-static async Task<FelixClient> ConnectAsync(CancellationToken ct) =>
-    await FelixClient.ConnectAsync(new FelixClientOptions
+static Task<FelixClient> ConnectAsync() =>
+    Bounded(ct => FelixClient.ConnectAsync(new FelixClientOptions
     {
         Addrs = [Environment.GetEnvironmentVariable("FELIX_BROKERS") ?? "127.0.0.1:5000"],
         TenantId = Tenant,
         Token = Required("FELIX_AUTH_TOKEN"),
         CaFile = Required("FELIX_CA_FILE"),
-        ReconnectDeadline = TimeSpan.FromSeconds(10),
-    }, ct);
+        ReconnectDeadline = TimeSpan.FromSeconds(CallSeconds),
+    }, ct));
 
-static async Task ProduceAsync(FelixClient client, CancellationToken ct)
+static async Task ProduceAsync(FelixClient client)
 {
     string[] jobs = ["job 1", "job 2", "job 3", "job 4", "job 5", "job 6", "poison"];
     foreach (var job in jobs)
     {
-        long? offset = await client.PublishAsync(
-            Tenant, Namespace, StreamName, Encoding.UTF8.GetBytes(job), cancellationToken: ct);
+        long? offset = await Bounded(ct => client.PublishAsync(
+            Tenant, Namespace, StreamName, Encoding.UTF8.GetBytes(job), cancellationToken: ct));
         Console.WriteLine($"queued {job} at offset {offset}");
     }
 }
@@ -205,9 +266,14 @@ whichever one polled first.
 
 For each job the worker does one of two things. If the handler succeeds, the
 worker acknowledges the offset and the job is finished. If it fails, the worker
-nacks the record, which hands it back for immediate redelivery instead of
-waiting out the claim. The record carries `attempts`, the number of times it
-has been handed out, this delivery included.
+nacks the record, which hands it back instead of waiting out the claim. The
+Rust, C# and C workers nack with a one second delay, so a job that keeps
+failing is not retried at full speed. The Python and TypeScript bindings nack
+without a delay. The record carries `attempts`, the number of times it has been
+handed out, this delivery included.
+
+Every call to the broker has a time limit. See
+[Time limits](/tutorials/overview/#time-limits) for how each language sets it.
 
 The handler here sleeps for two seconds to stand in for work, and refuses the
 `poison` job until you set `ACCEPT_POISON`, which stands in for fixing the bug.
@@ -228,19 +294,22 @@ async fn handle(job: &str) -> Result<()> {
 
 async fn work(client: &ClusterClient, name: &str) -> Result<()> {
     loop {
-        let records = client
-            .group_poll_wait(TENANT, NAMESPACE, STREAM, 0, GROUP, 1, Duration::from_secs(5))
-            .await?;
+        let poll = client.group_poll_wait(TENANT, NAMESPACE, STREAM, 0, GROUP, 1, POLL_WAIT);
+        let records = bounded("poll", CALL_TIMEOUT + POLL_WAIT, poll).await?;
         for record in records {
             let job = String::from_utf8_lossy(&record.payload).into_owned();
             match handle(&job).await {
                 Ok(()) => {
-                    client.group_ack(TENANT, NAMESPACE, STREAM, 0, GROUP, record.offset).await?;
+                    let ack = client.group_ack(TENANT, NAMESPACE, STREAM, 0, GROUP, record.offset);
+                    bounded("ack", CALL_TIMEOUT, ack).await?;
                     println!("{name}: finished {job} (attempt {})", record.attempts);
                 }
                 Err(err) => {
                     println!("{name}: {job} failed on attempt {}: {err:#}", record.attempts);
-                    client.group_nack(TENANT, NAMESPACE, STREAM, 0, GROUP, &record).await?;
+                    let nack = client.group_nack_after(
+                        TENANT, NAMESPACE, STREAM, 0, GROUP, &record, Duration::from_secs(1),
+                    );
+                    bounded("nack", CALL_TIMEOUT, nack).await?;
                 }
             }
         }
@@ -252,26 +321,29 @@ async fn work(client: &ClusterClient, name: &str) -> Result<()> {
 <TabItem label="Python">
 
 ```python
-def handle(job: str) -> None:
-    time.sleep(2)
+async def handle(job: str) -> None:
+    await asyncio.sleep(2)
     if job == "poison" and "ACCEPT_POISON" not in os.environ:
         raise ValueError("cannot parse job")
 
 
-def work(client: felix.Client, name: str) -> None:
+async def work(client: felix.AsyncClient, name: str) -> None:
     while True:
-        records = client.group_poll(
-            TENANT, NAMESPACE, STREAM, 0, GROUP, max_records=1, wait=5.0
+        records = await bounded(
+            client.group_poll(
+                TENANT, NAMESPACE, STREAM, 0, GROUP, max_records=1, wait=POLL_WAIT
+            ),
+            extra=POLL_WAIT,
         )
         for record in records:
             job = record.payload.decode(errors="replace")
             try:
-                handle(job)
+                await handle(job)
             except ValueError as err:
                 print(f"{name}: {job} failed on attempt {record.attempts}: {err}")
-                client.group_nack(TENANT, NAMESPACE, STREAM, 0, GROUP, record)
+                await bounded(client.group_nack(TENANT, NAMESPACE, STREAM, 0, GROUP, record))
             else:
-                client.group_ack(TENANT, NAMESPACE, STREAM, 0, GROUP, record.offset)
+                await bounded(client.group_ack(TENANT, NAMESPACE, STREAM, 0, GROUP, record.offset))
                 print(f"{name}: finished {job} (attempt {record.attempts})")
 ```
 
@@ -281,17 +353,17 @@ def work(client: felix.Client, name: str) -> None:
 ```ts
 async function handle(job: string): Promise<void> {
   await sleep(2000);
-  if (job === "poison" && !process.env.ACCEPT_POISON) {
+  if (job === "poison" && process.env.ACCEPT_POISON === undefined) {
     throw new Error("cannot parse job");
   }
 }
 
 async function work(client: Client, name: string): Promise<void> {
   for (;;) {
-    const records = await client.groupPoll(
-      TENANT, NAMESPACE, STREAM, 0, GROUP,
-      1,    // maxRecords
-      5000, // waitMs
+    const records = await bounded(
+      "poll",
+      client.groupPoll(TENANT, NAMESPACE, STREAM, 0, GROUP, 1, POLL_WAIT_MS),
+      CALL_TIMEOUT_MS + POLL_WAIT_MS,
     );
     for (const record of records) {
       const job = record.payload.toString();
@@ -299,10 +371,10 @@ async function work(client: Client, name: string): Promise<void> {
         await handle(job);
       } catch (err) {
         console.log(`${name}: ${job} failed on attempt ${record.attempts}: ${(err as Error).message}`);
-        await client.groupNack(TENANT, NAMESPACE, STREAM, 0, GROUP, record);
+        await bounded("nack", client.groupNack(TENANT, NAMESPACE, STREAM, 0, GROUP, record));
         continue;
       }
-      await client.groupAck(TENANT, NAMESPACE, STREAM, 0, GROUP, record.offset);
+      await bounded("ack", client.groupAck(TENANT, NAMESPACE, STREAM, 0, GROUP, record.offset));
       console.log(`${name}: finished ${job} (attempt ${record.attempts})`);
     }
   }
@@ -327,7 +399,9 @@ static async Task WorkAsync(FelixClient client, string name)
     var group = client.JoinGroup(Tenant, Namespace, StreamName, shard: 0, Group);
     while (true)
     {
-        var records = await group.PollAsync(maxRecords: 1, wait: TimeSpan.FromSeconds(5));
+        var records = await Bounded(
+            ct => group.PollAsync(maxRecords: 1, wait: TimeSpan.FromSeconds(PollWaitSeconds), cancellationToken: ct),
+            extraSeconds: PollWaitSeconds);
         foreach (var record in records)
         {
             var job = Encoding.UTF8.GetString(record.Payload.Span);
@@ -338,10 +412,10 @@ static async Task WorkAsync(FelixClient client, string name)
             catch (InvalidOperationException e)
             {
                 Console.WriteLine($"{name}: {job} failed on attempt {record.Attempts}: {e.Message}");
-                await group.NackAsync(record);
+                await BoundedTask(ct => group.NackAsync(record, delay: TimeSpan.FromSeconds(1), cancellationToken: ct));
                 continue;
             }
-            await group.AckAsync(record);
+            await BoundedTask(ct => group.AckAsync(record, ct));
             Console.WriteLine($"{name}: finished {job} (attempt {record.Attempts})");
         }
     }
@@ -372,13 +446,15 @@ token has.
 
 ```rust
 async fn dead(client: &ClusterClient, redrive: bool) -> Result<()> {
-    let offsets = client.group_dead_letters(TENANT, NAMESPACE, STREAM, 0, GROUP).await?;
+    let list = client.group_dead_letters(TENANT, NAMESPACE, STREAM, 0, GROUP);
+    let offsets = bounded("listing dead letters", CALL_TIMEOUT, list).await?;
     if offsets.is_empty() {
         println!("no dead letters");
     }
     for offset in offsets {
         if redrive {
-            client.group_redrive(TENANT, NAMESPACE, STREAM, 0, GROUP, offset).await?;
+            let call = client.group_redrive(TENANT, NAMESPACE, STREAM, 0, GROUP, offset);
+            bounded("redrive", CALL_TIMEOUT, call).await?;
             println!("redrove offset {offset}");
         } else {
             println!("dead letter at offset {offset}");
@@ -392,13 +468,13 @@ async fn dead(client: &ClusterClient, redrive: bool) -> Result<()> {
 <TabItem label="Python">
 
 ```python
-def dead(client: felix.Client, redrive: bool) -> None:
-    offsets = client.group_dead_letters(TENANT, NAMESPACE, STREAM, 0, GROUP)
+async def dead(client: felix.AsyncClient, redrive: bool) -> None:
+    offsets = await bounded(client.group_dead_letters(TENANT, NAMESPACE, STREAM, 0, GROUP))
     if not offsets:
         print("no dead letters")
     for offset in offsets:
         if redrive:
-            client.group_redrive(TENANT, NAMESPACE, STREAM, 0, GROUP, offset)
+            await bounded(client.group_redrive(TENANT, NAMESPACE, STREAM, 0, GROUP, offset))
             print(f"redrove offset {offset}")
         else:
             print(f"dead letter at offset {offset}")
@@ -409,11 +485,11 @@ def dead(client: felix.Client, redrive: bool) -> None:
 
 ```ts
 async function dead(client: Client, redrive: boolean): Promise<void> {
-  const offsets = await client.groupDeadLetters(TENANT, NAMESPACE, STREAM, 0, GROUP);
+  const offsets = await bounded("listing dead letters", client.groupDeadLetters(TENANT, NAMESPACE, STREAM, 0, GROUP));
   if (offsets.length === 0) console.log("no dead letters");
   for (const offset of offsets) {
     if (redrive) {
-      await client.groupRedrive(TENANT, NAMESPACE, STREAM, 0, GROUP, offset);
+      await bounded("redrive", client.groupRedrive(TENANT, NAMESPACE, STREAM, 0, GROUP, offset));
       console.log(`redrove offset ${offset}`);
     } else {
       console.log(`dead letter at offset ${offset}`);
@@ -429,7 +505,7 @@ async function dead(client: Client, redrive: boolean): Promise<void> {
 static async Task DeadAsync(FelixClient client, bool redrive)
 {
     var group = client.JoinGroup(Tenant, Namespace, StreamName, shard: 0, Group);
-    long[] offsets = await group.DeadLettersAsync();
+    long[] offsets = await Bounded(ct => group.DeadLettersAsync(ct));
     if (offsets.Length == 0)
     {
         Console.WriteLine("no dead letters");
@@ -438,7 +514,7 @@ static async Task DeadAsync(FelixClient client, bool redrive)
     {
         if (redrive)
         {
-            await group.RedriveAsync(offset);
+            await BoundedTask(ct => group.RedriveAsync(offset, ct));
             Console.WriteLine($"redrove offset {offset}");
         }
         else
@@ -460,9 +536,7 @@ static async Task DeadAsync(FelixClient client, bool redrive)
 ```rust
 #[tokio::main]
 async fn main() -> Result<()> {
-    let client = tokio::time::timeout(Duration::from_secs(10), connect())
-        .await
-        .context("connecting took longer than 10 seconds")??;
+    let client = connect().await?;
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("produce") => produce(&client).await,
@@ -478,20 +552,20 @@ async fn main() -> Result<()> {
 <TabItem label="Python">
 
 ```python
-def main() -> None:
+async def main() -> None:
     mode = sys.argv[1] if len(sys.argv) > 1 else ""
     if mode not in ("produce", "work", "dead", "redrive"):
         sys.exit("usage: work_queue.py produce | work [name] | dead | redrive")
-    with connect() as client:
+    async with await connect() as client:
         if mode == "produce":
-            produce(client)
+            await produce(client)
         elif mode == "work":
-            work(client, sys.argv[2] if len(sys.argv) > 2 else "worker")
+            await work(client, sys.argv[2] if len(sys.argv) > 2 else "worker")
         else:
-            dead(client, redrive=mode == "redrive")
+            await dead(client, redrive=mode == "redrive")
 
 
-main()
+asyncio.run(main())
 ```
 
 </TabItem>
@@ -527,12 +601,11 @@ if (mode is not ("produce" or "work" or "dead" or "redrive"))
     return 1;
 }
 
-using var connecting = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-await using var client = await ConnectAsync(connecting.Token);
+await using var client = await ConnectAsync();
 switch (mode)
 {
     case "produce":
-        await ProduceAsync(client, connecting.Token);
+        await ProduceAsync(client);
         break;
     case "work":
         await WorkAsync(client, args.Length > 1 ? args[1] : "worker");
@@ -613,13 +686,14 @@ longer than the default can also extend a claim while it works.
 ## C
 
 Each C call returns at once and reports to a callback, so this program wraps
-each one in a `waiter` that blocks until the callback has run. It has the same
-four modes. A poll's records are valid only inside the callback, so the
+each one in a `waiter` that blocks until the callback has run or ten seconds
+have passed. It has the same four modes. A poll's records are valid only inside the callback, so the
 callback copies the one job it asked for.
 
 ```c
 #define _POSIX_C_SOURCE 200809L
 
+#include <errno.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -627,6 +701,7 @@ callback copies the one job it asked for.
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "felix.h"
 
@@ -661,19 +736,38 @@ static void finish(struct waiter *w, FelixStatus status, const char *message, vo
     pthread_mutex_unlock(&w->mu);
 }
 
-/* A refused call never runs its callback, so its error comes from the thread. */
-static FelixStatus wait_for(struct waiter *w, FelixStatus started) {
+/* A refused call never runs its callback, so its error comes from the thread.
+   A call the broker does not answer within limit_ms ends the program: its
+   callback may still run later, so nothing it uses can be freed. */
+static FelixStatus wait_for_ms(struct waiter *w, FelixStatus started, long limit_ms) {
     if (started != FELIX_STATUS_OK) {
         snprintf(w->message, sizeof w->message, "%s", felix_last_error_message());
         return started;
     }
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_sec += limit_ms / 1000;
+    deadline.tv_nsec += (limit_ms % 1000) * 1000000L;
+    if (deadline.tv_nsec >= 1000000000L) {
+        deadline.tv_sec++;
+        deadline.tv_nsec -= 1000000000L;
+    }
     pthread_mutex_lock(&w->mu);
-    while (!w->done) pthread_cond_wait(&w->cv, &w->mu);
+    while (!w->done) {
+        if (pthread_cond_timedwait(&w->cv, &w->mu, &deadline) == ETIMEDOUT) {
+            fprintf(stderr, "no answer from the broker within %ld ms\n", limit_ms);
+            exit(1);
+        }
+    }
     w->done = false;
     FelixStatus status = w->status;
     pthread_mutex_unlock(&w->mu);
     return status;
 }
+
+/* Every call to the broker gets this long. */
+#define CALL_LIMIT_MS 10000
+#define wait_for(w, started) wait_for_ms((w), (started), CALL_LIMIT_MS)
 
 static void on_connect(void *user_data, FelixStatus status, const char *message,
                        FelixClient *client) {
@@ -740,11 +834,12 @@ static bool handle(const char *job) {
 
 static int work(const FelixClient *client, struct waiter *w, const char *name) {
     for (;;) {
-        FelixStatus status = wait_for(
+        FelixStatus status = wait_for_ms(
             w, felix_client_group_poll(client, TENANT, NAMESPACE, STREAM, 0, GROUP,
                                        1 /* max_records */, 5000 /* wait_ms */,
                                        0 /* broker's visibility */, NULL, false, NULL,
-                                       on_poll, w));
+                                       on_poll, w),
+            5000 + CALL_LIMIT_MS);
         if (status != FELIX_STATUS_OK) {
             fprintf(stderr, "poll: %s\n", w->message);
             return 1;
@@ -766,7 +861,7 @@ static int work(const FelixClient *client, struct waiter *w, const char *name) {
         } else {
             printf("%s: %s failed on attempt %u\n", name, job, attempts);
             status = wait_for(w, felix_client_group_nack(client, TENANT, NAMESPACE, STREAM, 0,
-                                                         GROUP, offset, attempts, 0, NULL,
+                                                         GROUP, offset, attempts, 1000 /* delay_ms */, NULL,
                                                          on_done, w));
             if (status != FELIX_STATUS_OK) {
                 fprintf(stderr, "nack: %s\n", w->message);
@@ -823,10 +918,15 @@ int main(int argc, char **argv) {
     pthread_mutex_init(&w.mu, NULL);
     pthread_cond_init(&w.cv, NULL);
     int exit_code = 1;
+    const struct FelixConnectOptions options = {
+        .size = sizeof(struct FelixConnectOptions),
+        .reconnect_deadline_ms = 10000,
+    };
 
     FelixStatus status = wait_for(
-        &w, felix_client_connect(broker && *broker ? broker : "127.0.0.1:5000", TENANT, token,
-                                 "localhost", ca_file, NULL, on_connect, &w));
+        &w, felix_client_connect_with(broker && *broker ? broker : "127.0.0.1:5000", TENANT,
+                                      token, "localhost", ca_file, &options, NULL, on_connect,
+                                      &w));
     if (status != FELIX_STATUS_OK) {
         fprintf(stderr, "connect: %s\n", w.message);
     } else {

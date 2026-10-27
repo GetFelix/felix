@@ -101,6 +101,20 @@ def _signature(function: ast.FunctionDef | ast.AsyncFunctionDef, drop_self: bool
     return inspect.Signature(params)
 
 
+# The same names, for a block that uses the asyncio client.
+ASYNC_RECEIVERS = {
+    **RECEIVERS,
+    "client": "AsyncClient",
+    "events": "AsyncSubscription",
+    "changes": "AsyncCacheWatch",
+    "watch": "AsyncCacheWatch",
+}
+
+
+def receivers_for(source):
+    return ASYNC_RECEIVERS if "AsyncClient" in source else RECEIVERS
+
+
 def stubs():
     """{class: {member: Signature or None for an attribute}} from `_felix.pyi`."""
     classes = {}
@@ -143,6 +157,7 @@ def test_every_example_compiles(line, source):
 
 def check_against_stubs(where, source):
     classes = stubs()
+    receivers = receivers_for(source)
     for node in ast.walk(ast.parse(source)):
         if not isinstance(node, ast.Attribute):
             continue
@@ -159,8 +174,8 @@ def check_against_stubs(where, source):
             members = classes.get(receiver.attr, {})
             assert node.attr in members, f"{where}: felix.{receiver.attr}.{node.attr} is unknown"
             continue
-        if isinstance(receiver, ast.Name) and receiver.id in RECEIVERS:
-            cls = RECEIVERS[receiver.id]
+        if isinstance(receiver, ast.Name) and receiver.id in receivers:
+            cls = receivers[receiver.id]
             members = classes[cls]
             assert node.attr in members, f"{where}: {cls} has no {node.attr}"
 
@@ -178,8 +193,8 @@ def check_against_stubs(where, source):
             and func.value.value.id == "felix"
         ):
             _bind(classes[func.value.attr][func.attr], node, where)
-        elif isinstance(func.value, ast.Name) and func.value.id in RECEIVERS:
-            signature = classes[RECEIVERS[func.value.id]][func.attr]
+        elif isinstance(func.value, ast.Name) and func.value.id in receivers:
+            signature = classes[receivers[func.value.id]][func.attr]
             if signature is not None:
                 _bind(signature, node, where)
 

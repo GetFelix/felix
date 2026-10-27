@@ -13,13 +13,30 @@ use std::process::Command;
 
 const CFLAGS: &[&str] = &["-std=c11", "-pthread", "-Wall", "-Wextra", "-Werror"];
 
-/// Pages under `docs-site/src/content/docs/` with ```c blocks.
-const PAGES: &[&str] = &[
-    "clients/c.md",
+/// The page every tutorial program is checked beside, and the tutorials that
+/// must keep a C program.
+const C_PAGE: &str = "clients/c.md";
+const TUTORIALS_WITH_C: &[&str] = &[
     "tutorials/first-stream.mdx",
     "tutorials/work-queue.mdx",
     "tutorials/cache-leases-watches.mdx",
 ];
+
+/// The C page, then every tutorial page. A tutorial may have no C block.
+fn pages(docs: &Path) -> Vec<String> {
+    let mut pages = vec![C_PAGE.to_string()];
+    let mut tutorials: Vec<String> = std::fs::read_dir(docs.join("tutorials"))
+        .expect("read the tutorials directory")
+        .filter_map(|entry| {
+            let name = entry.expect("read a directory entry").file_name();
+            let name = name.to_str()?;
+            name.ends_with(".mdx").then(|| format!("tutorials/{name}"))
+        })
+        .collect();
+    tutorials.sort();
+    pages.extend(tutorials);
+    pages
+}
 
 struct Block {
     line: usize,
@@ -97,11 +114,15 @@ fn every_c_example_on_the_docs_pages_compiles() {
     let require_curl = std::env::var_os("FELIX_CAPI_DOCS_REQUIRE_CURL").is_some();
 
     let mut failures = Vec::new();
-    for page_name in PAGES {
+    for page_name in &pages(&docs) {
         let page = std::fs::read_to_string(docs.join(page_name))
             .unwrap_or_else(|err| panic!("read {page_name}: {err}"));
         let blocks = c_blocks(&page);
-        assert!(!blocks.is_empty(), "no ```c blocks found on {page_name}");
+        assert!(
+            !(page_name == C_PAGE || TUTORIALS_WITH_C.contains(&page_name.as_str()))
+                || !blocks.is_empty(),
+            "no ```c blocks found on {page_name}"
+        );
         let stem = page_name.replace(['/', '.'], "_");
 
         for block in &blocks {
