@@ -299,6 +299,9 @@ tasks:
       # Belongs here for the same reason: a feature bit or a message variant is
       # added in Rust, and that is the moment the docs fall behind.
       - "python3 scripts/check_capability_docs.py"
+      # The shipped dashboard and alert rules query metrics by name; one the
+      # code does not register is a panel that stays empty.
+      - "python3 scripts/check_observability_assets.py"
       # The spec's configurations are claims about how the code behaves, and
       # nothing else connects the two artifacts. A cited test that no longer
       # exists is how that drift starts showing (#598).

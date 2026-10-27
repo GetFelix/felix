@@ -338,6 +338,11 @@ def main() -> int:
         fail("postgres: broker.config did not render a ConfigMap")
     if len(by_kind(docs, "ServiceMonitor")) != 2:
         fail("postgres: expected a ServiceMonitor per workload")
+    rules = by_kind(docs, "PrometheusRule")
+    if len(rules) != 1 or not rules[0].get("spec", {}).get("groups"):
+        fail("postgres: expected one PrometheusRule carrying the alert groups")
+    if by_kind(render(postgres, "prometheusRule.enabled=false"), "PrometheusRule"):
+        fail("a PrometheusRule rendered with prometheusRule.enabled off")
 
     print("render: raft")
     docs = render(raft)

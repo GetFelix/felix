@@ -614,6 +614,36 @@ jobs:
       - name: Lint, render, and check
         run: python3 scripts/check_chart.py
 
+      - name: Observability assets name real metrics
+        run: python3 scripts/check_observability_assets.py
+
+      # promtool is the only thing that parses PromQL, so it checks the shipped
+      # rules, the rules as the chart renders them, and the unit tests that pin
+      # the cases the expressions were written for. Pinned by version and
+      # digest; the tarball is checked before it is unpacked.
+      - name: Alert rules parse and behave
+        env:
+          PROMETHEUS_VERSION: 3.5.0
+          PROMETHEUS_SHA256: e811827af26d822afb09a4f28314f61b618b12cff5369835a67f674d8b46f39a
+        run: |
+          set -euo pipefail
+          archive="prometheus-${PROMETHEUS_VERSION}.linux-amd64.tar.gz"
+          curl -fsSL -o "$RUNNER_TEMP/$archive" \
+            "https://github.com/prometheus/prometheus/releases/download/v${PROMETHEUS_VERSION}/$archive"
+          echo "${PROMETHEUS_SHA256}  $RUNNER_TEMP/$archive" | sha256sum --check -
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" \
+            "prometheus-${PROMETHEUS_VERSION}.linux-amd64/promtool"
+          promtool="$RUNNER_TEMP/prometheus-${PROMETHEUS_VERSION}.linux-amd64/promtool"
+          rules=deploy/observability/prometheus
+          "$promtool" check rules "$rules/felix-alerts.yaml"
+          helm template felix deploy/helm/felix \
+            --values deploy/helm/felix/ci/postgres-values.yaml \
+            --set prometheusRule.enabled=true \
+            | python3 -c 'import sys, yaml; docs = [d for d in yaml.safe_load_all(sys.stdin) if d and d["kind"] == "PrometheusRule"]; assert len(docs) == 1; yaml.safe_dump(docs[0]["spec"], open(sys.argv[1], "w"))' \
+              "$RUNNER_TEMP/rendered-rules.yaml"
+          "$promtool" check rules "$RUNNER_TEMP/rendered-rules.yaml"
+          "$promtool" test rules "$rules/felix-alerts.test.yaml"
+
   # The Python binding, built and run against real brokers the way the release
   # does. It lives here and not only in release.yml because a job whose first
   # execution in its life was the v0.4.0 tag build is a job that fails at the
