@@ -80,6 +80,7 @@ export default defineConfig({
             { label: 'Events and State Together', slug: 'use-cases/event-and-state' },
             { label: 'Audit Logs and Replay', slug: 'use-cases/event-log-and-replay' },
             { label: 'Coming from Kafka', slug: 'use-cases/kafka-migration' },
+            { label: 'Coming from NATS', slug: 'use-cases/nats-migration' },
             { label: 'Multi-tenant SaaS', slug: 'use-cases/multi-tenant-saas' },
             { label: 'Data Residency', slug: 'use-cases/data-residency' },
           ],

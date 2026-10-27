@@ -47,6 +47,7 @@ that each need an accurate local copy of state that keeps changing.
 | [Events and state together](/use-cases/event-and-state/) | An event and the state it changes written as one record, with no outbox | Postgres plus an outbox table plus Kafka |
 | [Audit logs and replay](/use-cases/event-log-and-replay/) | A crash-safe log with offsets, append times, and the identity of whoever wrote each record | Kafka, JetStream, a database audit table |
 | [Coming from Kafka](/use-cases/kafka-migration/) | Kafka producers, and consumers that assign their own partitions, read and write durable streams; no consumer groups or transactions | Kafka |
+| [Coming from NATS](/use-cases/nats-migration/) | How subjects, queue groups, JetStream, KV and accounts map onto streams, consumer groups, the cache and tenants, and what Felix lacks | NATS |
 
 ## Running it for others
 
