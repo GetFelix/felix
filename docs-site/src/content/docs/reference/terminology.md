@@ -42,8 +42,8 @@ in-memory or non-durable stream.
 
 A stream created with `durable: true` on a broker that has
 `FELIX_DURABLE_STORAGE_DIR` set. Its records go to a segmented log on disk, are
-replicated to followers, can be replayed by offset, and are delivered
-at-least-once. See [Durable Storage](/architecture/durable-storage/).
+replicated to followers when the replication factor is above 1, can be replayed
+by offset, and are delivered at-least-once. See [Durable Storage](/architecture/durable-storage/).
 
 ### Cache
 
@@ -132,9 +132,12 @@ and the node catalog. A node and a broker are the same thing.
 
 The service that holds cluster metadata (tenants, namespaces, streams, caches,
 nodes and shard assignments) and decides where shards live. Brokers read it at
-startup and follow its changes. It stays off the publish path, except for
-`Quorum` writes before the [majority_ack](#fleet-feature) fleet feature is
-finalized. See [System Design](/architecture/system-design/).
+startup and follow its changes. Clients never call it to publish or read, but a
+replicated write can still wait on it: by default, the leader acknowledges only
+after its [replica report](#replica-report) has reached the control plane and
+it has re-checked its [lease](#leader-lease). With the `majority_ack`
+[fleet feature](#fleet-feature) finalized, `Quorum` streams skip both waits;
+`Leader` streams and caches keep them. See [System Design](/architecture/system-design/).
 
 ### Data plane
 
@@ -193,8 +196,10 @@ and the broker refuses it with `stale_width` if the stream has since changed.
 
 The control plane's job of choosing each shard's leader and replicas. It uses
 rendezvous hashing over the live brokers, spreads copies across zones, keeps
-them inside the stream's region, and re-plans on a timer. Only one control-plane
-instance runs placement at a time. See
+them inside the stream's region, and re-plans on a timer. The control-plane
+instance holding the placement lease runs the timed passes, and every placement
+write is conditional on the shard's generation, so instances that plan at the
+same time cannot both apply a move. See
 [Adding and Removing Brokers](/deployment/scaling/).
 
 ### Assignment
@@ -516,8 +521,11 @@ publish queue answers `overloaded`, which a client can retry.
 
 ### Tenant quota
 
-A per-tenant cap on publish bytes and messages per second on each broker. A
-publish over the cap is refused as `overloaded` with reason `tenant_quota`.
+A per-tenant cap on publish bytes and messages per second, enforced separately
+on each broker and off unless configured. An acknowledged publish over the cap
+is refused as `overloaded` with reason `tenant_quota`, and a Kafka produce is
+throttled instead. Quotas limit publishing only. See
+[Semantics](/architecture/semantics/).
 
 ## Reading
 
@@ -715,10 +723,10 @@ resolve by sending it again.
 
 ### Fleet feature
 
-Cluster-wide behavior that stays off until an operator turns it on. Brokers
-report which fleet features they support when they register. The operator then
-[finalizes](#finalize) a feature, which is refused unless every serving broker
-supports it. Examples are `majority_ack`, `lease_free_reads` and
+Cluster-wide behavior that stays off until it is [finalized](#finalize).
+Brokers report which fleet features they support when they register. On an
+upgraded cluster an operator finalizes each feature, which is refused unless
+every serving broker supports it. A new cluster finalizes them for itself. Examples are `majority_ack`, `lease_free_reads` and
 `stream_incarnations`. See [Upgrades & Compatibility](/deployment/upgrades/).
 
 ### Finalize
@@ -797,7 +805,9 @@ to. It contains no tenant data, and tenant permissions never reach it.
 ### Revocation
 
 Withdrawing a principal's access. Brokers learn of it from a feed, end the
-principal's open streams, and refuse tokens issued before it.
+principal's open streams, and refuse tokens issued before it. A broker that
+cannot reach the feed keeps accepting a revoked token until the token expires.
+See [Security](/features/security/).
 
 ## Testing and performance
 
@@ -849,8 +859,8 @@ leader's generation accepted by a majority. The fence step of a
 is the version from a lease claim.
 
 **Lease** names three things. A [leader lease](#leader-lease) is a broker's
-right to lead a shard. The placement lease is held by the one control-plane
-instance that runs placement. A lease in
+right to lead a shard. The placement lease is held by the control-plane
+instance that runs the timed placement passes. A lease in
 [Leases, Locks and Idempotency](/use-cases/leases-and-locks/) is an application
 pattern built on conditional cache writes.
 
