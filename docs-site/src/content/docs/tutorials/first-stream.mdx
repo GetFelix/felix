@@ -528,7 +528,7 @@ static async Task ReadNewAsync(FelixClient client, string checkpoint)
 </TabItem>
 </Tabs>
 
-## 5. Run it
+## 5. Pick the mode
 
 The last part picks the mode from the command line.
 
@@ -544,7 +544,7 @@ async fn main() -> Result<()> {
     match std::env::args().nth(1).as_deref() {
         Some("publish") => publish_three(&client).await,
         Some("read") => read_new(&client, Path::new("checkpoint")).await,
-        _ => bail!("usage: first-stream publish|read"),
+        _ => bail!("usage: first_stream publish|read"),
     }
 }
 ```
@@ -595,7 +595,7 @@ await main();
 var mode = args.Length > 0 ? args[0] : "";
 if (mode is not ("publish" or "read"))
 {
-    Console.Error.WriteLine("usage: first-stream publish|read");
+    Console.Error.WriteLine("usage: dotnet run -- publish|read");
     return 1;
 }
 
@@ -614,9 +614,74 @@ return 0;
 </TabItem>
 </Tabs>
 
+## Run it
+
+The program takes one argument, `publish` or `read`. Run each in a terminal where the `FELIX_*` settings from the [overview](/tutorials/overview/#set-up-once) are exported, and `PODMAN_COMPOSE_PROVIDER=docker-compose` too if you use `felixctl` with Podman. The reader writes its `checkpoint` file to the directory you run it from, so run both from the same one.
+
+<Tabs syncKey="lang">
+<TabItem label="Rust">
+
+From the project directory:
+
+```bash
+# publish three records
+cargo run --bin first_stream -- publish
+# read them back
+cargo run --bin first_stream -- read
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```bash
+# publish three records
+python first_stream.py publish
+# read them back
+python first_stream.py read
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```bash
+# publish three records
+npx tsx first-stream.mts publish
+# read them back
+npx tsx first-stream.mts read
+```
+
+</TabItem>
+<TabItem label="C#">
+
+From the `FirstStream` directory:
+
+```bash
+# publish three records
+dotnet run -- publish
+# read them back
+dotnet run -- read
+```
+
+</TabItem>
+<TabItem label="C">
+
+Build `first-stream.c` as the [C section](#c) below shows, then run:
+
+```bash
+# publish three records
+./first-stream publish
+# read them back
+./first-stream read
+```
+
+</TabItem>
+</Tabs>
+
+
+
 ## What you should see
 
-Publish three records:
+After `publish`, the program prints:
 
 ```text
 published event 1 at offset 1
@@ -625,7 +690,8 @@ published event 3 at offset 3
 ```
 
 Your offsets may start somewhere else. A new stream's first record is often
-not at offset 0, because a leader writes a marker of its own first. Now read:
+not at offset 0, because a leader writes a marker of its own first. After
+`read`, it prints:
 
 ```text
 offset 1: event 1
@@ -634,8 +700,8 @@ offset 3: event 3
 nothing new for 3 seconds, stopping
 ```
 
-Run the reader again and it prints only the idle line, because `checkpoint`
-holds 3 and the reader asked to start at 4. Publish again and read again, and
+Run `read` again and it prints only the idle line, because `checkpoint`
+holds 3 and the reader asked to start at 4. Run `publish` and then `read` again, and
 only the new records appear:
 
 ```text
@@ -864,7 +930,7 @@ int main(int argc, char **argv) {
     const char *ca_file = getenv("FELIX_CA_FILE");
     const char *broker = getenv("FELIX_BROKERS");
     if (argc < 2 || (strcmp(argv[1], "publish") != 0 && strcmp(argv[1], "read") != 0)) {
-        fprintf(stderr, "usage: first_stream publish|read\n");
+        fprintf(stderr, "usage: first-stream publish|read\n");
         return 1;
     }
     if (!token || !*token || !ca_file || !*ca_file) {
@@ -899,6 +965,16 @@ int main(int argc, char **argv) {
     return exit_code;
 }
 ```
+
+Save it as `first-stream.c` in the root of a Felix checkout, build `libfelix` as the
+[overview](/tutorials/overview/) describes, and compile and link it:
+
+```bash
+cc -std=c11 -pthread -I crates/sdk/felix-capi/include first-stream.c \
+   target/release/libfelix.so -Wl,-rpath,"$PWD/target/release" -o first-stream
+```
+
+Use `libfelix.dylib` on macOS. Run it with the commands in the C tab of [Run it](#run-it).
 
 ## Where next
 

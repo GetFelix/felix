@@ -559,7 +559,7 @@ async fn main() -> Result<()> {
         Some("work") => work(&client, args.get(1).map_or("worker", String::as_str)).await,
         Some("dead") => dead(&client, false).await,
         Some("redrive") => dead(&client, true).await,
-        _ => bail!("usage: work-queue produce | work [name] | dead | redrive"),
+        _ => bail!("usage: work_queue produce | work [name] | dead | redrive"),
     }
 }
 ```
@@ -613,7 +613,7 @@ await main();
 var mode = args.Length > 0 ? args[0] : "";
 if (mode is not ("produce" or "work" or "dead" or "redrive"))
 {
-    Console.Error.WriteLine("usage: work-queue produce | work [name] | dead | redrive");
+    Console.Error.WriteLine("usage: dotnet run -- produce | work [name] | dead | redrive");
     return 1;
 }
 
@@ -636,11 +636,116 @@ return 0;
 </TabItem>
 </Tabs>
 
+## Run it
+
+Use four terminals. Each needs the `FELIX_*` settings from the [overview](/tutorials/overview/#set-up-once), and `PODMAN_COMPOSE_PROVIDER=docker-compose` if you use `felixctl` with Podman. `work` takes an optional worker name, and `ACCEPT_POISON=1` makes a worker accept the `poison` job.
+
+<Tabs syncKey="lang">
+<TabItem label="Rust">
+
+From the project directory:
+
+```bash
+# terminal 1: first worker
+cargo run --bin work_queue -- work a
+# terminal 2: second worker
+cargo run --bin work_queue -- work b
+# terminal 3: put the jobs on the stream
+cargo run --bin work_queue -- produce
+# terminal 3, once the workers go quiet: list the dead letters
+cargo run --bin work_queue -- dead
+# stop both workers, then in terminal 1 start one that accepts the poison job
+ACCEPT_POISON=1 cargo run --bin work_queue -- work a
+# terminal 3: redrive the dead letter
+cargo run --bin work_queue -- redrive
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```bash
+# terminal 1: first worker
+python work_queue.py work a
+# terminal 2: second worker
+python work_queue.py work b
+# terminal 3: put the jobs on the stream
+python work_queue.py produce
+# terminal 3, once the workers go quiet: list the dead letters
+python work_queue.py dead
+# stop both workers, then in terminal 1 start one that accepts the poison job
+ACCEPT_POISON=1 python work_queue.py work a
+# terminal 3: redrive the dead letter
+python work_queue.py redrive
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```bash
+# terminal 1: first worker
+npx tsx work-queue.mts work a
+# terminal 2: second worker
+npx tsx work-queue.mts work b
+# terminal 3: put the jobs on the stream
+npx tsx work-queue.mts produce
+# terminal 3, once the workers go quiet: list the dead letters
+npx tsx work-queue.mts dead
+# stop both workers, then in terminal 1 start one that accepts the poison job
+ACCEPT_POISON=1 npx tsx work-queue.mts work a
+# terminal 3: redrive the dead letter
+npx tsx work-queue.mts redrive
+```
+
+</TabItem>
+<TabItem label="C#">
+
+From the `WorkQueue` directory:
+
+```bash
+# terminal 1: first worker
+dotnet run -- work a
+# terminal 2: second worker
+dotnet run -- work b
+# terminal 3: put the jobs on the stream
+dotnet run -- produce
+# terminal 3, once the workers go quiet: list the dead letters
+dotnet run -- dead
+# stop both workers, then in terminal 1 start one that accepts the poison job
+ACCEPT_POISON=1 dotnet run -- work a
+# terminal 3: redrive the dead letter
+dotnet run -- redrive
+```
+
+</TabItem>
+<TabItem label="C">
+
+Build `work-queue.c` as the [C section](#c) below shows, then run:
+
+```bash
+# terminal 1: first worker
+./work-queue work a
+# terminal 2: second worker
+./work-queue work b
+# terminal 3: put the jobs on the stream
+./work-queue produce
+# terminal 3, once the workers go quiet: list the dead letters
+./work-queue dead
+# stop both workers, then in terminal 1 start one that accepts the poison job
+ACCEPT_POISON=1 ./work-queue work a
+# terminal 3: redrive the dead letter
+./work-queue redrive
+```
+
+</TabItem>
+</Tabs>
+
+
+
 ## What you should see
 
-Start two workers, each in its own terminal, with names `a` and `b`. Then
-queue the jobs from a third. The workers print as they go, and the split
-between them varies from run to run:
+With `work a` and `work b` running in two terminals, `produce` in a third queues
+the jobs. The workers print as they go, and the split between them varies from
+run to run:
 
 ```text
 a: finished job 1 (attempt 1)
@@ -660,21 +765,21 @@ b: poison failed on attempt 5: cannot parse job
 ```
 
 Each job was finished by exactly one worker. The poison job went back and forth
-for five attempts and then stopped coming. List what the group set aside:
+for five attempts and then stopped coming. `dead` lists what the group set aside:
 
 ```text
-$ work-queue dead
 dead letter at offset 7
 ```
 
 Your offset will differ. Now fix the cause and redrive it. Stop the workers,
-start one with `ACCEPT_POISON=1` in its environment, and redrive from another
-terminal. The worker finishes the job on a fresh attempt count:
+start one with `ACCEPT_POISON=1 ... work a` as in the commands above, and run
+`redrive` from another terminal. `redrive` prints:
 
 ```text
-$ work-queue redrive
 redrove offset 7
 ```
+
+The worker finishes the job on a fresh attempt count:
 
 ```text
 a: finished poison (attempt 1)
@@ -922,7 +1027,7 @@ int main(int argc, char **argv) {
     const char *mode = argc > 1 ? argv[1] : "";
     if (strcmp(mode, "produce") && strcmp(mode, "work") && strcmp(mode, "dead") &&
         strcmp(mode, "redrive")) {
-        fprintf(stderr, "usage: work_queue produce | work [name] | dead | redrive\n");
+        fprintf(stderr, "usage: work-queue produce | work [name] | dead | redrive\n");
         return 1;
     }
     if (!token || !*token || !ca_file || !*ca_file) {
@@ -962,6 +1067,16 @@ int main(int argc, char **argv) {
     return exit_code;
 }
 ```
+
+Save it as `work-queue.c` in the root of a Felix checkout, build `libfelix` as the
+[overview](/tutorials/overview/) describes, and compile and link it:
+
+```bash
+cc -std=c11 -pthread -I crates/sdk/felix-capi/include work-queue.c \
+   target/release/libfelix.so -Wl,-rpath,"$PWD/target/release" -o work-queue
+```
+
+Use `libfelix.dylib` on macOS. Run it with the commands in the C tab of [Run it](#run-it).
 
 ## Where next
 

@@ -183,7 +183,19 @@ see [felixctl](/getting-started/felixctl/#install) and the
 [Docker Compose page](/deployment/docker-compose/#try-it-in-one-command) for
 adding a context.
 
-Then install the client for your language:
+Then set up your language. Each tutorial is one program. Copy the blocks for
+your language, in order, into that tutorial's file, then run the file with a
+mode argument, as the tutorial's "Run it" section shows. Every terminal you run
+a program from needs the exported `FELIX_*` settings above.
+
+| Tutorial | Program name |
+| --- | --- |
+| Your first stream | `first_stream` (C: `first-stream`) |
+| A work queue | `work_queue` (C: `work-queue`) |
+| Cache, leases and watches | `cache_leases_watches` (C: `cache-leases-watches`) |
+| Build an app | `build_an_app` (no C version) |
+
+The file names below follow each language's convention.
 
 <Tabs syncKey="lang">
 <TabItem label="Rust">
@@ -194,7 +206,10 @@ cargo add felix-client anyhow bytes serde_json
 cargo add tokio --features rt-multi-thread,macros,time,fs
 ```
 
-Put each tutorial's Rust blocks, in order, into `src/main.rs`. See the
+Each tutorial is one binary in this project. Put its blocks in
+`src/bin/first_stream.rs`, `src/bin/work_queue.rs`,
+`src/bin/cache_leases_watches.rs` and `src/bin/build_an_app.rs`, and run one
+with `cargo run --bin first_stream -- <mode>`. See the
 [Rust client](/clients/rust/) for the API.
 
 </TabItem>
@@ -204,42 +219,53 @@ Put each tutorial's Rust blocks, in order, into `src/main.rs`. See the
 pip install felix-client
 ```
 
-The module is `felix`. See the [Python client](/clients/python/).
+The module is `felix`. Each tutorial is one file: `first_stream.py`,
+`work_queue.py`, `cache_leases_watches.py` and `build_an_app.py`. Run one with
+`python first_stream.py <mode>`. See the [Python client](/clients/python/).
 
 </TabItem>
 <TabItem label="TypeScript">
 
 ```bash
+mkdir felix-tutorial && cd felix-tutorial
 npm install felix-client
 ```
 
-The programs are ES modules with top-level `await`. Run them with a TypeScript
-runner such as `npx tsx`. See the [TypeScript client](/clients/typescript/).
+The programs are ES modules with top-level `await`, so each tutorial is one
+`.mts` file: `first-stream.mts`, `work-queue.mts`, `cache-leases-watches.mts`
+and `build-an-app.mts`. Run one with `npx tsx first-stream.mts <mode>`. See the
+[TypeScript client](/clients/typescript/).
 
 </TabItem>
 <TabItem label="C#">
 
+Each tutorial is its own console project. For the first one:
+
 ```bash
-dotnet new console -o FelixTutorial && cd FelixTutorial
+dotnet new console -o FirstStream && cd FirstStream
 dotnet add package Felix.Client
 ```
 
-Put each tutorial's C# blocks, in order, into `Program.cs`. See the
-[C# client](/clients/csharp/).
+Make `WorkQueue`, `CacheLeasesWatches` and `BuildAnApp` the same way. Put a
+tutorial's blocks in its project's `Program.cs`, and from that directory run
+`dotnet run -- <mode>`. See the [C# client](/clients/csharp/).
 
 </TabItem>
 <TabItem label="C">
 
-Build the shared library as [the C client page](/clients/c/) describes and
-compile each program against `felix.h`:
+Each tutorial's C program is one file: `first-stream.c`, `work-queue.c` and
+`cache-leases-watches.c`. Build the shared library as
+[the C client page](/clients/c/) describes and compile each program against
+`felix.h`. From the root of a Felix checkout, with the file saved there:
 
 ```bash
 cargo build --release -p felix-capi
-cc -std=c11 -pthread -I crates/sdk/felix-capi/include program.c \
-   target/release/libfelix.so -Wl,-rpath,"$PWD/target/release" -o program
+cc -std=c11 -pthread -I crates/sdk/felix-capi/include first-stream.c \
+   target/release/libfelix.so -Wl,-rpath,"$PWD/target/release" -o first-stream
 ```
 
-Use `libfelix.dylib` on macOS.
+Use `libfelix.dylib` on macOS, and change the file and output names for the
+other tutorials. Run the result as `./first-stream <mode>`.
 
 </TabItem>
 </Tabs>

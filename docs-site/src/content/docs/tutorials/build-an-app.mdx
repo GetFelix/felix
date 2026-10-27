@@ -731,7 +731,7 @@ async fn main() -> Result<()> {
         }
         Some("work") => work(&client).await,
         Some("dashboard") => dashboard(&client).await,
-        _ => bail!("usage: orders submit [count] | work | dashboard"),
+        _ => bail!("usage: build_an_app submit [count] | work | dashboard"),
     }
 }
 ```
@@ -743,7 +743,7 @@ async fn main() -> Result<()> {
 async def main() -> None:
     args = sys.argv[1:]
     if not args or args[0] not in ("submit", "work", "dashboard"):
-        sys.exit("usage: orders.py submit [count] | work | dashboard")
+        sys.exit("usage: build_an_app.py submit [count] | work | dashboard")
     async with await connect() as client:
         if args[0] == "submit":
             await submit(client, int(args[1]) if len(args) > 1 else 3)
@@ -763,7 +763,7 @@ asyncio.run(main())
 async function main(): Promise<void> {
   const [mode, count = "3"] = process.argv.slice(2);
   if (mode !== "submit" && mode !== "work" && mode !== "dashboard") {
-    throw new Error("usage: orders submit [count] | work | dashboard");
+    throw new Error("usage: build-an-app submit [count] | work | dashboard");
   }
   const client = await connect();
   try {
@@ -785,7 +785,7 @@ await main();
 var mode = args.Length > 0 ? args[0] : "";
 if (mode is not ("submit" or "work" or "dashboard"))
 {
-    Console.Error.WriteLine("usage: orders submit [count] | work | dashboard");
+    Console.Error.WriteLine("usage: dotnet run -- submit [count] | work | dashboard");
     return 1;
 }
 
@@ -809,13 +809,81 @@ return 0;
 </TabItem>
 </Tabs>
 
+## Run it
+
+Use four terminals. Each needs the `FELIX_*` settings from the [overview](/tutorials/overview/#set-up-once), and `PODMAN_COMPOSE_PROVIDER=docker-compose` if you use `felixctl` with Podman. `submit` takes an optional order count, 3 by default.
+
+<Tabs syncKey="lang">
+<TabItem label="Rust">
+
+From the project directory:
+
+```bash
+# terminal 1: the dashboard
+cargo run --bin build_an_app -- dashboard
+# terminal 2: first worker
+cargo run --bin build_an_app -- work
+# terminal 3: second worker
+cargo run --bin build_an_app -- work
+# terminal 4: submit four orders
+cargo run --bin build_an_app -- submit 4
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```bash
+# terminal 1: the dashboard
+python build_an_app.py dashboard
+# terminal 2: first worker
+python build_an_app.py work
+# terminal 3: second worker
+python build_an_app.py work
+# terminal 4: submit four orders
+python build_an_app.py submit 4
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```bash
+# terminal 1: the dashboard
+npx tsx build-an-app.mts dashboard
+# terminal 2: first worker
+npx tsx build-an-app.mts work
+# terminal 3: second worker
+npx tsx build-an-app.mts work
+# terminal 4: submit four orders
+npx tsx build-an-app.mts submit 4
+```
+
+</TabItem>
+<TabItem label="C#">
+
+From the `BuildAnApp` directory:
+
+```bash
+# terminal 1: the dashboard
+dotnet run -- dashboard
+# terminal 2: first worker
+dotnet run -- work
+# terminal 3: second worker
+dotnet run -- work
+# terminal 4: submit four orders
+dotnet run -- submit 4
+```
+
+</TabItem>
+</Tabs>
+
+
+
 ## What you should see
 
-Start `dashboard` in one terminal and two `work` processes in two others. In a
-fourth, submit some orders:
+With `dashboard` running in one terminal and `work` in two others, `submit 4` in
+a fourth prints:
 
 ```text
-$ orders submit 4
 accepted o-1
 accepted o-2
 accepted o-3

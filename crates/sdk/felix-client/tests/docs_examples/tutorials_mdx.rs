@@ -117,7 +117,7 @@ mod first_stream {
         match std::env::args().nth(1).as_deref() {
             Some("publish") => publish_three(&client).await,
             Some("read") => read_new(&client, Path::new("checkpoint")).await,
-            _ => bail!("usage: first-stream publish|read"),
+            _ => bail!("usage: first_stream publish|read"),
         }
     }
 }
@@ -239,7 +239,7 @@ mod work_queue {
             Some("work") => work(&client, args.get(1).map_or("worker", String::as_str)).await,
             Some("dead") => dead(&client, false).await,
             Some("redrive") => dead(&client, true).await,
-            _ => bail!("usage: work-queue produce | work [name] | dead | redrive"),
+            _ => bail!("usage: work_queue produce | work [name] | dead | redrive"),
         }
     }
 }
@@ -426,7 +426,7 @@ mod cache_leases_watches {
             (Some("lease"), Some(name), _) => lease(&client, name).await,
             (Some("set"), Some(key), Some(value)) => set(&client, key, value).await,
             (Some("delete"), Some(key), _) => delete(&client, key).await,
-            _ => bail!("usage: cache ttl | watch | lease <name> | set <key> <value> | delete <key>"),
+            _ => bail!("usage: cache_leases_watches ttl | watch | lease <name> | set <key> <value> | delete <key>"),
         }
     }
 }
@@ -581,7 +581,7 @@ mod build_an_app {
             }
             Some("work") => work(&client).await,
             Some("dashboard") => dashboard(&client).await,
-            _ => bail!("usage: orders submit [count] | work | dashboard"),
+            _ => bail!("usage: build_an_app submit [count] | work | dashboard"),
         }
     }
 }

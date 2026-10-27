@@ -650,7 +650,7 @@ async fn main() -> Result<()> {
         (Some("lease"), Some(name), _) => lease(&client, name).await,
         (Some("set"), Some(key), Some(value)) => set(&client, key, value).await,
         (Some("delete"), Some(key), _) => delete(&client, key).await,
-        _ => bail!("usage: cache ttl | watch | lease <name> | set <key> <value> | delete <key>"),
+        _ => bail!("usage: cache_leases_watches ttl | watch | lease <name> | set <key> <value> | delete <key>"),
     }
 }
 ```
@@ -671,7 +671,7 @@ async def main() -> None:
         elif len(args) == 2 and args[0] == "delete":
             await delete_key(client, args[1])
         else:
-            sys.exit("usage: cache.py ttl | watch | set <key> <value> | delete <key>")
+            sys.exit("usage: cache_leases_watches.py ttl | watch | set <key> <value> | delete <key>")
 
 
 asyncio.run(main())
@@ -689,7 +689,7 @@ async function main(): Promise<void> {
     else if (mode === "watch") await watch(client);
     else if (mode === "set" && a && b) await setKey(client, a, b);
     else if (mode === "delete" && a) await deleteKey(client, a);
-    else throw new Error("usage: cache ttl | watch | set <key> <value> | delete <key>");
+    else throw new Error("usage: cache-leases-watches ttl | watch | set <key> <value> | delete <key>");
   } finally {
     client.close();
   }
@@ -704,7 +704,7 @@ await main();
 ```csharp
 if (args.Length == 0 || args[0] is not ("ttl" or "watch" or "lease" or "set" or "delete"))
 {
-    Console.Error.WriteLine("usage: cache ttl | watch | lease <name> | set <key> <value> | delete <key>");
+    Console.Error.WriteLine("usage: dotnet run -- ttl | watch | lease <name> | set <key> <value> | delete <key>");
     return 1;
 }
 
@@ -728,7 +728,7 @@ switch (args)
         await DeleteAsync(cache, key);
         break;
     default:
-        Console.Error.WriteLine("usage: cache ttl | watch | lease <name> | set <key> <value> | delete <key>");
+        Console.Error.WriteLine("usage: dotnet run -- ttl | watch | lease <name> | set <key> <value> | delete <key>");
         return 1;
 }
 return 0;
@@ -737,9 +737,106 @@ return 0;
 </TabItem>
 </Tabs>
 
+## Run it
+
+Each terminal needs the `FELIX_*` settings from the [overview](/tutorials/overview/#set-up-once), and `PODMAN_COMPOSE_PROVIDER=docker-compose` if you use `felixctl` with Podman. `ttl`, `watch`, `set` and `delete` are in every language. `lease` is in the Rust, C# and C programs only.
+
+<Tabs syncKey="lang">
+<TabItem label="Rust">
+
+From the project directory:
+
+```bash
+# value with an expiry
+cargo run --bin cache_leases_watches -- ttl
+# terminal 1: watch the status keys
+cargo run --bin cache_leases_watches -- watch
+# terminal 2: change keys
+cargo run --bin cache_leases_watches -- set status:api up
+cargo run --bin cache_leases_watches -- set status:worker degraded
+cargo run --bin cache_leases_watches -- delete status:api
+# stop the watch with Ctrl-C, then in terminal 1 take the lease
+cargo run --bin cache_leases_watches -- lease a
+# terminal 2, quickly: wait for it
+cargo run --bin cache_leases_watches -- lease b
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```bash
+# value with an expiry
+python cache_leases_watches.py ttl
+# terminal 1: watch the status keys
+python cache_leases_watches.py watch
+# terminal 2: change keys
+python cache_leases_watches.py set status:api up
+python cache_leases_watches.py set status:worker degraded
+python cache_leases_watches.py delete status:api
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```bash
+# value with an expiry
+npx tsx cache-leases-watches.mts ttl
+# terminal 1: watch the status keys
+npx tsx cache-leases-watches.mts watch
+# terminal 2: change keys
+npx tsx cache-leases-watches.mts set status:api up
+npx tsx cache-leases-watches.mts set status:worker degraded
+npx tsx cache-leases-watches.mts delete status:api
+```
+
+</TabItem>
+<TabItem label="C#">
+
+From the `CacheLeasesWatches` directory:
+
+```bash
+# value with an expiry
+dotnet run -- ttl
+# terminal 1: watch the status keys
+dotnet run -- watch
+# terminal 2: change keys
+dotnet run -- set status:api up
+dotnet run -- set status:worker degraded
+dotnet run -- delete status:api
+# stop the watch with Ctrl-C, then in terminal 1 take the lease
+dotnet run -- lease a
+# terminal 2, quickly: wait for it
+dotnet run -- lease b
+```
+
+</TabItem>
+<TabItem label="C">
+
+Build `cache-leases-watches.c` as the [C section](#c) below shows, then run:
+
+```bash
+# value with an expiry
+./cache-leases-watches ttl
+# terminal 1: watch the status keys
+./cache-leases-watches watch
+# terminal 2: change keys
+./cache-leases-watches set status:api up
+./cache-leases-watches set status:worker degraded
+./cache-leases-watches delete status:api
+# stop the watch with Ctrl-C, then in terminal 1 take the lease
+./cache-leases-watches lease a
+# terminal 2, quickly: wait for it
+./cache-leases-watches lease b
+```
+
+</TabItem>
+</Tabs>
+
+
+
 ## What you should see
 
-The TTL mode shows the value and then its absence:
+After `ttl`, the program shows the value and then its absence:
 
 ```text
 right after the put: Some(b"hello")
@@ -747,13 +844,8 @@ six seconds later: None
 ```
 
 Other languages print the value in their own way. For the watch, start
-`watch` in one terminal and change keys from another:
-
-```text
-$ cache set status:api up
-$ cache set status:worker degraded
-$ cache delete status:api
-```
+`watch` in one terminal and run the three `set` and `delete` commands from
+another:
 
 ```text
 watching status:*
@@ -766,6 +858,7 @@ A key without the `status:` prefix produces nothing, because the watch filters o
 the broker.
 
 For the lease, run `lease a` and then, quickly, `lease b` in another terminal.
+The Python and TypeScript programs have no `lease` mode.
 Your version numbers will differ. They only grow:
 
 ```text
@@ -1112,7 +1205,7 @@ int main(int argc, char **argv) {
               (!strcmp(mode, "lease") && argc > 2) || (!strcmp(mode, "set") && argc > 3) ||
               (!strcmp(mode, "delete") && argc > 2);
     if (!ok) {
-        fprintf(stderr, "usage: cache ttl | watch | lease <name> | set <key> <value> | delete <key>\n");
+        fprintf(stderr, "usage: cache-leases-watches ttl | watch | lease <name> | set <key> <value> | delete <key>\n");
         return 1;
     }
     if (!token || !*token || !ca_file || !*ca_file) {
@@ -1156,6 +1249,16 @@ int main(int argc, char **argv) {
     return exit_code;
 }
 ```
+
+Save it as `cache-leases-watches.c` in the root of a Felix checkout, build `libfelix` as the
+[overview](/tutorials/overview/) describes, and compile and link it:
+
+```bash
+cc -std=c11 -pthread -I crates/sdk/felix-capi/include cache-leases-watches.c \
+   target/release/libfelix.so -Wl,-rpath,"$PWD/target/release" -o cache-leases-watches
+```
+
+Use `libfelix.dylib` on macOS. Run it with the commands in the C tab of [Run it](#run-it).
 
 ## Where next
 
