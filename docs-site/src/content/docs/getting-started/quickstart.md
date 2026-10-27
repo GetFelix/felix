@@ -400,17 +400,6 @@ task demo:cross-tenant-isolation
 
 See `Taskfile.yml` in the repository root for all available tasks.
 
-## Next Steps
-
-Now that you have Felix running:
-
-- **Explore the Architecture:** [System Design](/architecture/system-design/)
-- **Work from the terminal:** [felixctl](/getting-started/felixctl/)
-- **Learn the APIs:** [Broker API](/api/broker-api/)
-- **Tune Performance:** [Performance Guide](/features/performance/)
-- **Deploy Properly:** [Deployment Guides](/deployment/local/)
-- **Contribute:** [Development Guide](/development/contributing/)
-
 ## Troubleshooting
 
 ### Port Already in Use
@@ -456,3 +445,14 @@ A broker that exits right after logging `broker started` is missing its
 control-plane configuration, not failing to bind. Read the line after it.
 
 See [Troubleshooting Guide](/reference/troubleshooting/) for more help.
+
+## Where next
+
+- [felixctl](/getting-started/felixctl/): create streams and publish from the terminal
+- [Demos](/demos/overview/): runnable examples of isolation, queues and failover
+- [Pub/Sub Streaming](/features/pubsub/), [Queues and Consumer Groups](/features/queues/) and [Distributed Cache](/features/cache/): the three ways to use the log
+- [Broker API](/api/broker-api/): the wire-level API
+- [Performance Guide](/features/performance/): tuning
+- [System Design](/architecture/system-design/): the architecture
+- [Deployment](/deployment/local/): run it properly
+- [Contributing](/development/contributing/): the development guide

@@ -121,3 +121,11 @@ the Helm chart each carry their own version, so run
 `task release:check -- v<version>` first to confirm they all match the tag.
 Before tagging, try the latest [nightly build](/development/building/#nightly-builds),
 which is main as of last night, built the way a release is.
+
+## Machine-readable docs
+
+The site build publishes `/llms.txt`, an index of every page grouped by sidebar
+section, and `/llms-full.txt`, every page body as one Markdown file. Both come
+from the docs collection in `docs-site/src/llms.ts`, so a new page appears in
+them once it is in the sidebar. A page's `description` frontmatter becomes its
+line in the index.
