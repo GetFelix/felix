@@ -1,5 +1,5 @@
-// Writes every ```ts block of the TypeScript client page to test/doc-examples/
-// as its own module, so `tsc -p tsconfig.json` checks the page against
+// Writes every ```ts block of the TypeScript client page and the resilience
+// guide to test/doc-examples/ as its own module, so `tsc -p tsconfig.json` checks the page against
 // index.d.ts. Names a block uses without defining are declared in
 // doc-globals.d.ts. CI runs this before tsc; the output is not checked in.
 
@@ -8,7 +8,12 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const page = join(here, "../../../../docs-site/src/content/docs/clients/typescript.md");
+const clients = join(here, "../../../../docs-site/src/content/docs/clients");
+// Each page, and the prefix its generated modules are named with.
+const PAGES = [
+  { file: "typescript.md", prefix: "typescript-md" },
+  { file: "resilient-clients.mdx", prefix: "resilient-clients-mdx" },
+];
 const out = join(here, "doc-examples");
 
 // Everything index.d.ts exports, so a block can use any of it without the
@@ -26,7 +31,7 @@ const TYPES = [
   "ShardMoved", "ShardPositions", "StartPosition", "StateValue", "TokenProvider",
 ];
 
-export function extract(markdown) {
+export function extract(markdown, name = "typescript.md") {
   const blocks = [];
   const lines = markdown.split("\n");
   for (let i = 0; i < lines.length; i++) {
@@ -35,13 +40,13 @@ export function extract(markdown) {
     const start = i + 1;
     const body = [];
     for (i++; i < lines.length && !/^\s*```\s*$/.test(lines[i]); i++) body.push(lines[i]);
-    if (i === lines.length) throw new Error(`typescript.md:${start}: unclosed code block`);
+    if (i === lines.length) throw new Error(`${name}:${start}: unclosed code block`);
     blocks.push({ line: start, code: body.join("\n") });
   }
   return blocks;
 }
 
-export function toModule({ line, code }) {
+export function toModule({ line, code }, file = "typescript.md") {
   const imported = new Set();
   const source = code.replace(
     /import\s*\{([^}]*)\}\s*from\s*"felix-client";?/g,
@@ -58,7 +63,7 @@ export function toModule({ line, code }) {
     ...TYPES.filter((n) => !imported.has(n)).map((n) => `type ${n}`),
   ];
   return [
-    `// Generated from docs-site/src/content/docs/clients/typescript.md:${line}.`,
+    `// Generated from docs-site/src/content/docs/clients/${file}:${line}.`,
     `import { ${wanted.join(", ")} } from "../../index";`,
     source,
     "export {};",
@@ -67,13 +72,15 @@ export function toModule({ line, code }) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const blocks = extract(readFileSync(page, "utf8"));
-  if (blocks.length === 0) throw new Error("typescript.md has no ts blocks; has the page moved?");
   rmSync(out, { recursive: true, force: true });
   mkdirSync(out);
-  for (const block of blocks) {
-    const name = `typescript-md-L${String(block.line).padStart(4, "0")}.ts`;
-    writeFileSync(join(out, name), toModule(block));
+  for (const { file, prefix } of PAGES) {
+    const blocks = extract(readFileSync(join(clients, file), "utf8"), file);
+    if (blocks.length === 0) throw new Error(`${file} has no ts blocks; has the page moved?`);
+    for (const block of blocks) {
+      const name = `${prefix}-L${String(block.line).padStart(4, "0")}.ts`;
+      writeFileSync(join(out, name), toModule(block, file));
+    }
+    console.log(`wrote ${blocks.length} examples from ${file} to ${out}`);
   }
-  console.log(`wrote ${blocks.length} examples to ${out}`);
 }

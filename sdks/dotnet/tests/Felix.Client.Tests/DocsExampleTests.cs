@@ -6,12 +6,16 @@ using Xunit;
 namespace Felix.Client.Tests;
 
 /// <summary>
-/// Compiles every csharp block on the C# client page against this build of Felix.Client, so the
-/// page cannot drift from the API. Nothing is run: most blocks need a broker.
+/// Compiles every csharp block on the C# client page and the resilience guide against this build of
+/// Felix.Client, so the pages cannot drift from the API. Nothing is run: most blocks need a broker.
 /// </summary>
 public class DocsExampleTests
 {
-    private const string Page = "docs-site/src/content/docs/clients/csharp.md";
+    private static readonly string[] Pages =
+    [
+        "docs-site/src/content/docs/clients/csharp.md",
+        "docs-site/src/content/docs/clients/resilient-clients.mdx",
+    ];
 
     // What the page's blocks use without defining: implicit usings, and the names an earlier block
     // or the surrounding prose supplies. A block that declares one of these shadows it.
@@ -41,13 +45,20 @@ public class DocsExampleTests
             public static void Handle(ReadOnlySpan<byte> payload) => throw new NotImplementedException();
             public static void Store(string key, ReadOnlyMemory<byte> value, DateTimeOffset? expiresAt) => throw new NotImplementedException();
             public static void Remove(string key) => throw new NotImplementedException();
+            public static byte[] payload => throw new NotImplementedException();
+            public static Task<long?> LoadCheckpointAsync() => throw new NotImplementedException();
+            public static Task SaveCheckpointAsync(long offset) => throw new NotImplementedException();
+            public static Task<IReadOnlyList<ShardPosition>> LoadPositionsAsync() => throw new NotImplementedException();
+            public static Task SavePositionsAsync(IReadOnlyList<ShardPosition> positions) => throw new NotImplementedException();
         }
         """;
 
     [Fact]
     public void EveryCSharpBlockOnThePageCompiles()
     {
-        var blocks = Extract(File.ReadAllText(FindPage()));
+        var blocks = Pages
+            .SelectMany(page => Extract(File.ReadAllText(FindPage(page)), page).Select(block => (Page: page, block.Line, block.Code)))
+            .ToList();
         Assert.NotEmpty(blocks);
 
         var references = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!)
@@ -61,24 +72,24 @@ public class DocsExampleTests
             .WithNullableContextOptions(NullableContextOptions.Enable);
 
         var failures = new List<string>();
-        foreach (var (line, code) in blocks)
+        foreach (var (page, line, code) in blocks)
         {
             var compilation = CSharpCompilation.Create(
-                $"csharp_md_L{line}",
+                $"{Path.GetFileNameWithoutExtension(page).Replace('-', '_')}_L{line}",
                 [CSharpSyntaxTree.ParseText(code, parse), prelude],
                 references,
                 options);
             failures.AddRange(compilation.GetDiagnostics()
                 .Where(d => d.Severity == DiagnosticSeverity.Error || d.Severity == DiagnosticSeverity.Warning)
                 .Where(d => d.Location.SourceTree != prelude)
-                .Select(d => $"csharp.md:{line + d.Location.GetLineSpan().StartLinePosition.Line}: {d.Id}: {d.GetMessage()}"));
+                .Select(d => $"{Path.GetFileName(page)}:{line + d.Location.GetLineSpan().StartLinePosition.Line}: {d.Id}: {d.GetMessage()}"));
         }
 
         Assert.True(failures.Count == 0, string.Join('\n', failures));
     }
 
     /// <summary>Each csharp block with the page line its code starts on.</summary>
-    internal static List<(int Line, string Code)> Extract(string markdown)
+    internal static List<(int Line, string Code)> Extract(string markdown, string page = "csharp.md")
     {
         var lines = markdown.Split('\n');
         var blocks = new List<(int, string)>();
@@ -91,7 +102,7 @@ public class DocsExampleTests
 
             var start = i + 1;
             var end = Array.FindIndex(lines, start, l => Regex.IsMatch(l, @"^\s*```\s*$"));
-            Assert.True(end >= 0, $"csharp.md:{start}: unclosed code block");
+            Assert.True(end >= 0, $"{page}:{start}: unclosed code block");
             blocks.Add((start + 1, string.Join('\n', lines[start..end])));
             i = end;
         }
@@ -99,17 +110,17 @@ public class DocsExampleTests
         return blocks;
     }
 
-    private static string FindPage()
+    private static string FindPage(string page)
     {
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
         {
-            var candidate = Path.Combine(dir.FullName, Page);
+            var candidate = Path.Combine(dir.FullName, page);
             if (File.Exists(candidate))
             {
                 return candidate;
             }
         }
 
-        throw new FileNotFoundException($"{Page} not found above {AppContext.BaseDirectory}");
+        throw new FileNotFoundException($"{page} not found above {AppContext.BaseDirectory}");
     }
 }

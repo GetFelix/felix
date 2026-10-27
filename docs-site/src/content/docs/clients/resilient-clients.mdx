@@ -1,0 +1,2150 @@
+---
+title: "Building Resilient Clients"
+description: "Seeds, reconnection, token refresh, retry classes, unknown outcomes, resuming, slow consumers, consumer groups and shutdown, with the real API in every client language."
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+Brokers get restarted, shards move, tokens expire and networks drop packets.
+Felix's clients absorb most of that, and this page covers the part they leave
+to you. Each section says what the client already does, then shows the code an
+application adds, in every language that has the API. The per-language pages
+([Rust](/clients/rust/), [Python](/clients/python/),
+[TypeScript](/clients/typescript/), [C#](/clients/csharp/), [C](/clients/c/))
+are the reference for everything else.
+
+The examples read credentials from the environment or a file. They rely on
+the client's own timeouts (10 s to connect to a broker, 30 s for a publish
+acknowledgement, 30 s for a token fetch) and pass a cancellation token where
+the client takes one. Names such as `handle`, `charge` and `checkpoint` stand
+for your own code.
+
+The C examples use the `waiter` and `wait_for` helpers from [A minimal
+example](/clients/c/#a-minimal-example) to turn a callback into a blocking
+call, and `on_connect`, `on_publish`, `on_subscribe`, `on_event` and `on_done`
+are the one-line callbacks that pass their result to `finish`. A production C
+client would drive the callbacks from its own event loop instead.
+
+## Connecting to a cluster
+
+Give the client more than one seed. It asks whichever seed answers which
+brokers exist, adds them, and keeps your seeds whatever the answer, so a stale
+seed cannot leave it worse off. One reachable seed is enough to start, and
+listing several lets the first connection survive one being down.
+
+Prefer names to IP addresses. When no broker the client knows answers, it
+resolves the names again, which is how it gets back in after a rollout has
+given every broker a new address. In Rust, a seed is an address or a
+`host:port` name (`Seed`). Every other client takes `host:port` strings, and a
+name that does not resolve at connect time is an error (`ValueError`, an
+`InvalidArg` rejection, a `FelixException` with status `InvalidArgument`,
+`FELIX_STATUS_INVALID_ARGUMENT`). `server_name` is the name the broker's
+certificate carries, and TLS is always on.
+
+<Tabs syncKey="lang">
+<TabItem label="Rust">
+
+```rust
+use felix_client::{ClusterClient, ReconnectPolicy, Seed};
+
+// Names are resolved again whenever no known broker answers.
+let seeds: Vec<Seed> = vec![
+    "felix-0.felix.svc:5000".parse()?,
+    "felix-1.felix.svc:5000".parse()?,
+    "felix-2.felix.svc:5000".parse()?,
+];
+// The connect gives up after `config.connect_timeout` per broker (10 s by default).
+let client = Arc::new(
+    ClusterClient::connect_seeds(&seeds, "felix.example.com", config, ReconnectPolicy::default())
+        .await
+        .context("connect to the Felix cluster")?,
+);
+tracing::info!(brokers = client.endpoints().await.len(), "connected");
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+import os
+
+import felix
+
+with felix.Client(
+    ["felix-0.felix.svc:5000", "felix-1.felix.svc:5000", "felix-2.felix.svc:5000"],
+    tenant_id="acme",
+    token=os.environ["FELIX_TOKEN"],
+    server_name="felix.example.com",
+) as client:
+    # The seeds plus every broker they named.
+    print(client.endpoints())
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+import { Client } from "felix-client";
+
+const token = process.env.FELIX_TOKEN;
+if (!token) throw new Error("set FELIX_TOKEN");
+
+const cluster = await Client.connect(
+  ["felix-0.felix.svc:5000", "felix-1.felix.svc:5000", "felix-2.felix.svc:5000"],
+  "acme",
+  { token, serverName: "felix.example.com" },
+);
+try {
+  // The seeds plus every broker they named.
+  console.log(await cluster.endpoints());
+} finally {
+  cluster.close();
+}
+```
+
+</TabItem>
+<TabItem label="C#">
+
+```csharp
+using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+
+await using var cluster = await FelixClient.ConnectAsync(new FelixClientOptions
+{
+    Addrs = ["felix-0.felix.svc:5000", "felix-1.felix.svc:5000", "felix-2.felix.svc:5000"],
+    TenantId = "acme",
+    Token = Environment.GetEnvironmentVariable("FELIX_TOKEN"),
+    ServerName = "felix.example.com",
+}, timeout.Token);
+
+// The seeds plus every broker they named.
+Console.WriteLine(string.Join(", ", await cluster.GetEndpointsAsync(timeout.Token)));
+```
+
+</TabItem>
+<TabItem label="C">
+
+```c
+static FelixClient *connect_cluster(struct waiter *w, const char *token) {
+    /* `addrs` is one host:port or several separated by commas. */
+    FelixStatus started = felix_client_connect_with(
+        "felix-0.felix.svc:5000,felix-1.felix.svc:5000,felix-2.felix.svc:5000",
+        "acme", token, "felix.example.com", NULL /* system CAs */,
+        NULL /* default options */, NULL /* no cancel token */, on_connect, w);
+    if (wait_for(w, started) != FELIX_STATUS_OK) {
+        fprintf(stderr, "connect: %s\n", w->message);
+        return NULL;
+    }
+    return w->handle;
+}
+```
+
+</TabItem>
+</Tabs>
+
+### What the client does for you
+
+- **A broker fails.** A call waiting on it fails once the connection has been
+  silent for the idle timeout (6 s by default), with the connection already
+  rebuilt from the brokers that remain. Reads and writes the broker refused
+  without applying are retried on another broker. A write that may have been
+  applied is reported as an unknown outcome and not sent again
+  ([Writes whose outcome is unknown](#writes-whose-outcome-is-unknown)).
+- **A shard moves.** A publish that reaches the old owner is redirected to the
+  new one, and the client remembers where each shard lives. A subscription
+  follows its shard to the new owner and carries on.
+- **A broker fails over.** Publishes ride out a leader failover inside the
+  retry budget below. A leader change costs the client about the idle timeout.
+
+The client does not hide a failure it cannot recover from. Those arrive as the
+errors in [Errors and retry classes](#errors-and-retry-classes).
+
+## Reconnection
+
+Publishes, opening and following subscriptions, commits, conditional
+publishes, state reads, cache calls and consumer-group calls retry under one
+policy. A read retries on any error that is not terminal. A write, including a
+group poll, which claims records, retries only on a broker's refusal that says
+nothing was applied.
+
+- **Attempts** is how many times a call tries to reach a broker. Each attempt
+  tries every broker the client knows. The default is 5.
+- **Deadline** is a ceiling on one call across every attempt and every wait.
+  It is off by default. It is checked before each backoff sleep, so a call can
+  last the deadline plus one attempt's own timeout.
+- **Backoff** and **max backoff** shape the wait between attempts: the first
+  retry waits a random time up to the backoff, the ceiling doubles each
+  attempt up to the maximum, and the jitter keeps every client of a cluster
+  from retrying in step. The defaults are 200 ms and 2 s. Only the Rust client
+  exposes them.
+
+A deadline shorter than one attempt's own timeout means no retry happens: the
+first attempt spends the whole budget. Set it to cover at least one attempt
+plus the backoff you can afford, or leave it off to wait out a failover.
+
+| Language | Attempts | Deadline | Backoff |
+| --- | --- | --- | --- |
+| Rust | `ReconnectPolicy.attempts` | `deadline: Option<Duration>` | `backoff`, `max_backoff` |
+| Python | `reconnect_attempts` | `reconnect_deadline` (seconds) | |
+| TypeScript | `reconnectAttempts` | `reconnectDeadline` (milliseconds) | |
+| C# | `ReconnectAttempts` | `ReconnectDeadline` (`TimeSpan`) | |
+| C | `reconnect_attempts` | `reconnect_deadline_ms` | |
+
+<Tabs syncKey="lang">
+<TabItem label="Rust">
+
+```rust
+use felix_client::{ClusterClient, ReconnectPolicy};
+
+let policy = ReconnectPolicy {
+    attempts: 8,
+    backoff: Duration::from_millis(250),
+    max_backoff: Duration::from_secs(4),
+    // The longest any one call may spend retrying.
+    deadline: Some(Duration::from_secs(30)),
+};
+let client =
+    ClusterClient::connect_with_policy(&seeds, "felix.example.com", config, policy).await?;
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+import os
+
+import felix
+
+with felix.Client(
+    ["felix-0.felix.svc:5000", "felix-1.felix.svc:5000"],
+    tenant_id="acme",
+    token=os.environ["FELIX_TOKEN"],
+    reconnect_attempts=8,
+    reconnect_deadline=30.0,
+) as client:
+    client.publish("acme", "prod", "orders", b"hello")
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+import { Client } from "felix-client";
+
+const bounded = await Client.connect(
+  ["felix-0.felix.svc:5000", "felix-1.felix.svc:5000"],
+  "acme",
+  {
+    token: process.env.FELIX_TOKEN,
+    reconnectAttempts: 8,
+    reconnectDeadline: 30_000,
+  },
+);
+bounded.close();
+```
+
+</TabItem>
+<TabItem label="C#">
+
+```csharp
+await using var bounded = await FelixClient.ConnectAsync(new FelixClientOptions
+{
+    Addrs = ["felix-0.felix.svc:5000", "felix-1.felix.svc:5000"],
+    TenantId = "acme",
+    Token = Environment.GetEnvironmentVariable("FELIX_TOKEN"),
+    ReconnectAttempts = 8,
+    ReconnectDeadline = TimeSpan.FromSeconds(30),
+});
+```
+
+</TabItem>
+<TabItem label="C">
+
+```c
+static FelixClient *connect_bounded(struct waiter *w, const char *token) {
+    FelixConnectOptions options = {
+        .size = sizeof options,
+        .reconnect_attempts = 8,
+        .reconnect_deadline_ms = 30000,
+    };
+    FelixStatus started = felix_client_connect_with(
+        "felix-0.felix.svc:5000,felix-1.felix.svc:5000", "acme", token,
+        "felix.example.com", NULL, &options, NULL, on_connect, w);
+    if (wait_for(w, started) != FELIX_STATUS_OK) {
+        fprintf(stderr, "connect: %s\n", w->message);
+        return NULL;
+    }
+    return w->handle;
+}
+```
+
+</TabItem>
+</Tabs>
+
+A client made for another user with `with_identity` (Rust, Python, TypeScript)
+inherits the policy.
+
+## Authentication that lasts
+
+A token lasts 15 minutes by default, and the broker checks it each time a
+stream authenticates, including the streams a reconnect opens. A process that
+outlives one token needs a token provider. The client calls it lazily: when it
+holds no token, when the held one has passed two thirds of its life, or when a
+broker has just refused it. An idle client makes no calls, and the client never
+runs two calls at once. If a fetch fails while the held token is still valid,
+the client keeps using it and asks again about five seconds later. A fetch that
+does not answer within 30 seconds counts as failed.
+
+The provider returns a token and nothing else, so it can read a file a sidecar
+keeps fresh, call a secrets service, or run the control plane's refresh flow.
+Each language page has the full exchange and refresh example for the control
+plane: [Rust](/clients/rust/#getting-and-refreshing-a-token),
+[Python](/clients/python/#getting-and-refreshing-a-token),
+[TypeScript](/clients/typescript/#getting-and-refreshing-a-token),
+[C#](/clients/csharp/#getting-and-refreshing-a-token) and
+[C](/clients/c/#getting-and-refreshing-a-token). A refresh token works once, so
+the provider must store the replacement before it returns.
+
+<Tabs syncKey="lang">
+<TabItem label="Rust">
+
+```rust
+use felix_client::RefreshingToken;
+
+// The provider is async, so it awaits its I/O and never blocks the runtime.
+// `tokio::fs` needs tokio's `fs` feature.
+let tokens = RefreshingToken::new(|| async {
+    let token = tokio::fs::read_to_string("/var/run/secrets/felix/token").await?;
+    anyhow::Ok(token.trim().to_owned())
+});
+config.auth_tenant_id = Some("acme".into());
+config.token_provider = Some(Arc::new(tokens));
+let client = ClusterClient::connect_seeds(&seeds, "felix.example.com", config, policy).await?;
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+import felix
+
+
+def read_token() -> str:
+    # Runs on a Felix worker thread, so blocking here is fine.
+    with open("/var/run/secrets/felix/token") as handle:
+        return handle.read().strip()
+
+
+with felix.Client(
+    ["felix-0.felix.svc:5000", "felix-1.felix.svc:5000"],
+    tenant_id="acme",
+    token_provider=read_token,
+) as client:
+    client.publish("acme", "prod", "orders", b"hello")
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+import { readFile } from "node:fs/promises";
+import { Client } from "felix-client";
+
+const refreshing = await Client.connect(addrs, "acme", {
+  // `signal` aborts when the client stops waiting for this call.
+  tokenProvider: async (signal) =>
+    (await readFile("/var/run/secrets/felix/token", { encoding: "utf8", signal })).trim(),
+});
+refreshing.close();
+```
+
+</TabItem>
+<TabItem label="C#">
+
+```csharp
+await using var refreshing = await FelixClient.ConnectAsync(new FelixClientOptions
+{
+    Addrs = ["felix-0.felix.svc:5000", "felix-1.felix.svc:5000"],
+    TenantId = "acme",
+    // Pass the token to File.ReadAllTextAsync so a cancelled fetch stops reading.
+    TokenProvider = async ct =>
+        (await File.ReadAllTextAsync("/var/run/secrets/felix/token", ct)).Trim(),
+});
+```
+
+</TabItem>
+<TabItem label="C">
+
+```c
+struct token_source {
+    const char *path;
+};
+
+/* Runs on a library thread and must not block, so it answers at once from a
+   small local file that a sidecar keeps fresh. A fetch that has to call out
+   starts the request and answers the reply from its completion. */
+static void fetch_token(void *user_data, FelixTokenReply *reply) {
+    const struct token_source *source = user_data;
+    char token[4096];
+    size_t len = 0;
+    FILE *file = fopen(source->path, "r");
+    if (file) {
+        len = fread(token, 1, sizeof token - 1, file);
+        fclose(file);
+    }
+    while (len > 0 && (token[len - 1] == '\n' || token[len - 1] == '\r' || token[len - 1] == ' ')) {
+        len--;
+    }
+    token[len] = '\0';
+    if (len == 0) {
+        (void)felix_token_reply_err(reply, "the token file is missing or empty");
+    } else if (felix_token_reply_ok(reply, token) != FELIX_STATUS_OK) {
+        /* Refused for a bad argument, which leaves the reply open. */
+        (void)felix_token_reply_err(reply, "the token file holds an unusable token");
+    }
+}
+
+static FelixClient *connect_refreshing(struct waiter *w) {
+    static const struct token_source source = {"/var/run/secrets/felix/token"};
+    FelixConnectOptions options = {
+        .size = sizeof options,
+        .token_fetch = fetch_token,
+        .token_user_data = (void *)&source,
+    };
+    /* A NULL token has the first connect call the fetch function. */
+    FelixStatus started = felix_client_connect_with(
+        "felix-0.felix.svc:5000,felix-1.felix.svc:5000", "acme", NULL,
+        "felix.example.com", NULL, &options, NULL, on_connect, w);
+    if (wait_for(w, started) != FELIX_STATUS_OK) {
+        fprintf(stderr, "connect: %s\n", w->message);
+        return NULL;
+    }
+    return w->handle;
+}
+```
+
+</TabItem>
+</Tabs>
+
+### When a broker rejects the token
+
+A refused token is one retry, not a loop. The client asks the provider again,
+and only if it returns a different token does it try again. If the broker
+refuses that one too, the call fails with the language's auth error. The
+client does not retry that error: a provider call can rotate a refresh token,
+so each retry would cost a rotation. The next operation asks the provider
+again.
+
+An auth error is therefore final for that call. Log it, alert on it, and stop
+sending the request; a retry cannot grant a permission. A revoked token, or a
+refresh token that has expired, needs a new login, after which you connect a
+new client.
+
+<Tabs syncKey="lang">
+<TabItem label="Rust">
+
+```rust
+use felix_client::{AckMode, AuthError, AuthErrorKind};
+
+if let Err(err) = client
+    .publish("acme", "prod", "orders", payload, AckMode::PerMessage)
+    .await
+{
+    match err.downcast_ref::<AuthError>() {
+        // The provider could not produce a token: fix the token source.
+        Some(auth) if auth.kind == AuthErrorKind::Token => {
+            tracing::error!(error = %auth.message, "token source failed");
+        }
+        // The broker refused a token the provider did return: log in again.
+        Some(auth) => tracing::error!(error = %auth.message, "token refused"),
+        None => return Err(err),
+    }
+}
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+import logging
+
+import felix
+
+log = logging.getLogger(__name__)
+
+try:
+    client.publish("acme", "prod", "orders", payload)
+except felix.AuthError as err:
+    # Either the provider failed or the broker refused its token.
+    log.error("not authorized (code=%s): %s", err.code, err)
+    raise
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+import { AuthError } from "felix-client";
+
+try {
+  await client.publish("acme", "prod", "orders", payload);
+} catch (err) {
+  if (err instanceof AuthError) {
+    // Either the provider failed or the broker refused its token.
+    console.error(`not authorized (code=${err.code}): ${err.message}`);
+  }
+  throw err;
+}
+```
+
+</TabItem>
+<TabItem label="C#">
+
+```csharp
+try
+{
+    await client.PublishAsync("acme", "prod", "orders", payload);
+}
+catch (FelixException e) when (e.Status == FelixStatus.Auth)
+{
+    // Either the provider failed or the broker refused its token.
+    Console.Error.WriteLine($"not authorized: {e.Message}");
+    throw;
+}
+```
+
+</TabItem>
+<TabItem label="C">
+
+```c
+static FelixStatus publish_checked(struct waiter *w, const FelixClient *client,
+                                   const uint8_t *payload, size_t len) {
+    FelixStatus status = wait_for(w, felix_client_publish(
+        client, "acme", "prod", "orders", payload, len, NULL, 0,
+        FELIX_ACK_PER_MESSAGE, FELIX_DELIVERY_AT_MOST_ONCE, NULL, on_publish, w));
+    if (status == FELIX_STATUS_AUTH) {
+        /* Either the fetch function failed or the broker refused its token.
+           The message carries the fetch function's own words. */
+        fprintf(stderr, "not authorized: %s\n", w->message);
+    }
+    return status;
+}
+```
+
+</TabItem>
+</Tabs>
+
+## Errors and retry classes
+
+A broker that sends error codes attaches a code and a **retry class** to every
+refusal. The class says what you may do about it, and it is the field to
+branch on. Never match a message: it is prose, and it gets reworded. The codes
+and their classes are in the [wire protocol](/architecture/wire-protocol/#error)
+and the [error code table](https://github.com/GetFelix/felix/blob/main/docs/protocol.md#error-codes).
+
+| Class | What it means | What to do |
+| --- | --- | --- |
+| `retry` | Nothing was applied. The shard is moving, the broker is draining, or another broker owns the shard. | Send it again. The cluster client already did, with backoff, before the error reached you. |
+| `retry_after` | Nothing was applied. The broker is shedding load. | Wait at least `retry_after_ms` from the error's detail, then send it again. |
+| `redirect` | Nothing was applied. Another broker owns the shard. | Send it again. The cluster client follows the redirect itself. |
+| `outcome_unknown` | The write may have been applied, as after a quorum timeout. | Do not resend a plain write. Use an idempotent producer or a conditional publish, or read to find out. |
+| `fatal` | It cannot succeed as sent: bad credentials, a missing stream, a limit. | Fix the request or the credentials. Do not retry. |
+
+The cluster client has already acted on the class before an error reaches
+you: a `fatal` error is returned at once, an `outcome_unknown` write is never
+re-sent, and the other classes are retried inside the attempts and deadline of
+the [reconnect policy](#reconnection). An error that reaches your code has
+exhausted that budget, so a retry loop of your own is for outages longer than
+it.
+
+How each client shows the class:
+
+| Language | Where to read it |
+| --- | --- |
+| Rust | `BrokerError { code, retry, detail }`, recovered with `downcast_ref`. `None` means no code. |
+| Python | `err.retry`, `err.code`, `err.detail`, plus an exception class per kind. |
+| TypeScript | `err.retry`, `err.code`, `err.detail`, `err.retryable`, plus a class per kind. |
+| C# | `FelixException.Status`, `IsRetryable` and `OutcomeUnknown`. The class is folded into the status. |
+| C | The `FelixStatus` of the callback. The class is folded into the status. |
+
+A broker that predates error codes sends none. Rust then gives you no
+`BrokerError`, and the other clients choose the exception class or status from
+the message. Treat a missing code as "no information", not as success.
+
+<Tabs syncKey="lang">
+<TabItem label="Rust">
+
+```rust
+use felix_client::{AckMode, BrokerError, RetryClass};
+
+enum Verdict {
+    // Nothing was applied: send it again after the pause.
+    Resend(Duration),
+    // It may have landed: find out before writing again.
+    Reconcile,
+    // Sending it again cannot help.
+    GiveUp,
+}
+
+fn judge(err: &anyhow::Error) -> Verdict {
+    let Some(refusal) = err.downcast_ref::<BrokerError>() else {
+        // No code: no broker answered, or the broker predates error codes.
+        return Verdict::GiveUp;
+    };
+    match refusal.retry {
+        RetryClass::Retry | RetryClass::Redirect => Verdict::Resend(Duration::from_millis(200)),
+        RetryClass::RetryAfter => {
+            let wait = refusal.detail.as_ref().and_then(|detail| detail.retry_after_ms);
+            Verdict::Resend(Duration::from_millis(wait.unwrap_or(1_000)))
+        }
+        RetryClass::OutcomeUnknown => Verdict::Reconcile,
+        _ => Verdict::GiveUp,
+    }
+}
+
+let mut attempt = 1;
+let offset = loop {
+    match cluster
+        .publish("acme", "prod", "orders", payload.clone(), AckMode::PerMessage)
+        .await
+    {
+        Ok(offset) => break offset,
+        Err(err) if attempt < 4 => match judge(&err) {
+            Verdict::Resend(pause) => {
+                tracing::warn!(attempt, "publish refused; sending again: {err:#}");
+                tokio::time::sleep(pause).await;
+                attempt += 1;
+            }
+            Verdict::Reconcile | Verdict::GiveUp => return Err(err),
+        },
+        Err(err) => return Err(err),
+    }
+};
+tracing::info!(?offset, "published");
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+import logging
+import time
+
+import felix
+
+log = logging.getLogger(__name__)
+
+
+def publish_with_retry(client, payload, attempts=4):
+    delay = 0.2
+    for attempt in range(1, attempts + 1):
+        try:
+            return client.publish("acme", "prod", "orders", payload)
+        except felix.FelixError as err:
+            # Resend only what the broker says it did not apply. An
+            # outcome_unknown write may have landed, and fatal never will.
+            if err.retry not in ("retry", "retry_after", "redirect") or attempt == attempts:
+                raise
+            if err.retry == "retry_after" and err.detail:
+                delay = err.detail.get("retry_after_ms", 1000) / 1000
+            log.warning("publish refused (%s); attempt %d", err.code, attempt)
+            time.sleep(delay)
+            delay = min(delay * 2, 5.0)
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+import { setTimeout as sleep } from "node:timers/promises";
+import { type Client, FelixError } from "felix-client";
+
+async function publishWithRetry(cluster: Client, body: Buffer, attempts = 4): Promise<bigint | null> {
+  let delayMs = 200;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await cluster.publish("acme", "prod", "orders", body);
+    } catch (err) {
+      // `retryable` is true only when nothing was applied. An
+      // outcome_unknown write may have landed, and a fatal one never will.
+      if (!(err instanceof FelixError) || !err.retryable || attempt >= attempts) throw err;
+      if (err.retry === "retry_after") delayMs = err.detail?.retry_after_ms ?? 1_000;
+      await sleep(delayMs);
+      delayMs = Math.min(delayMs * 2, 5_000);
+    }
+  }
+}
+```
+
+</TabItem>
+<TabItem label="C#">
+
+```csharp
+using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+long? published = await PublishWithRetryAsync(client, payload, timeout.Token);
+Console.WriteLine($"published at {published}");
+
+static async Task<long?> PublishWithRetryAsync(
+    FelixClient cluster, ReadOnlyMemory<byte> payload, CancellationToken ct)
+{
+    var delay = TimeSpan.FromMilliseconds(200);
+    for (var attempt = 1; ; attempt++)
+    {
+        try
+        {
+            return await cluster.PublishAsync("acme", "prod", "orders", payload, cancellationToken: ct);
+        }
+        // IsRetryable is true only when nothing was applied. OutcomeUnknown
+        // propagates: the write may have landed.
+        catch (FelixException e) when (e.IsRetryable && attempt < 4)
+        {
+            Console.Error.WriteLine($"publish attempt {attempt}: {e.Message}");
+            await Task.Delay(delay, ct);
+            delay = TimeSpan.FromMilliseconds(Math.Min(delay.TotalMilliseconds * 2, 5_000));
+        }
+    }
+}
+```
+
+</TabItem>
+<TabItem label="C">
+
+```c
+enum next_step { STEP_RESEND, STEP_RECONCILE, STEP_GIVE_UP };
+
+/* C reports the class of the failure as a status, not the broker's label. */
+static enum next_step next_step(FelixStatus status) {
+    switch (status) {
+    case FELIX_STATUS_CONNECTION:
+    case FELIX_STATUS_SHARD_UNAVAILABLE:
+    case FELIX_STATUS_OVERLOADED:
+        return STEP_RESEND; /* nothing was applied */
+    case FELIX_STATUS_OUTCOME_UNKNOWN:
+        return STEP_RECONCILE; /* it may have landed */
+    default:
+        return STEP_GIVE_UP; /* auth, not found, cursor, invalid argument, ... */
+    }
+}
+
+static FelixStatus publish_with_retry(struct waiter *w, const FelixClient *client,
+                                      const uint8_t *payload, size_t len) {
+    long delay_ms = 200;
+    FelixStatus status = FELIX_STATUS_ERROR;
+    for (int attempt = 1; attempt <= 4; attempt++) {
+        status = wait_for(w, felix_client_publish(
+            client, "acme", "prod", "orders", payload, len, NULL, 0,
+            FELIX_ACK_PER_MESSAGE, FELIX_DELIVERY_AT_MOST_ONCE, NULL, on_publish, w));
+        if (status == FELIX_STATUS_OK || next_step(status) != STEP_RESEND) {
+            break;
+        }
+        fprintf(stderr, "publish attempt %d: %s\n", attempt, w->message);
+        struct timespec pause = {.tv_sec = delay_ms / 1000, .tv_nsec = (delay_ms % 1000) * 1000000L};
+        nanosleep(&pause, NULL);
+        delay_ms = delay_ms * 2 > 5000 ? 5000 : delay_ms * 2;
+    }
+    return status;
+}
+```
+
+</TabItem>
+</Tabs>
+
+## Writes whose outcome is unknown
+
+A publish that fails after the broker may have written it has an unknown
+outcome: a connection dropped before the acknowledgement, or the leader wrote
+the record and a majority did not confirm it in time. By default no client
+sends it again, because nothing downstream could tell two copies apart. You
+choose one of three answers.
+
+- **Idempotent producer.** The producer numbers its batches, the shard's
+  leader remembers the last few, and a batch carrying a sequence it already
+  holds is answered from memory instead of being appended. A resend after a
+  lost acknowledgement lands once, across reconnects and leader changes. It
+  exists in Rust, C# and C. Python and TypeScript do not wrap it yet.
+- **Conditional publish.** `publish_if` writes only if the shard's next
+  offset is the one you expect. It suits a single writer that must not append
+  after it has been replaced, and a refusal is an answer, not an error.
+  Rust, C# and C have it.
+- **At-least-once.** The client resends an ambiguous publish to another
+  broker. The record is certain to land and **may land twice**, so the
+  consumers must tolerate a duplicate, usually by carrying an id in the
+  payload. Every client has it. In Python and TypeScript it cannot be combined
+  with a routing key.
+
+With an idempotent producer, a failure other than a broker refusal leaves the
+batch in doubt. The next call on that shard must carry **the same batch and
+key**; it goes out under the same sequence and lands once. A different batch
+is refused without being sent until the first one settles. A refusal, such as
+the shard no longer knowing the producer, ends the producer on that stream.
+
+<Tabs syncKey="lang">
+<TabItem label="Rust">
+
+```rust
+use felix_client::PublishRefused;
+
+let producer = cluster.idempotent_producer().await?;
+let mut attempt = 1;
+let offset = loop {
+    match producer.publish("acme", "prod", "orders", payload.clone()).await {
+        Ok(offset) => break offset,
+        // The shard refuses this producer (a sequence gap, an unknown producer):
+        // retrying the same batch will not change that.
+        Err(err) if err.downcast_ref::<PublishRefused>().is_some() => {
+            return Err(err.context("the broker refused the producer"));
+        }
+        // In doubt: the same call again is safe, and lands once.
+        Err(err) if attempt < 5 => {
+            tracing::warn!(attempt, "publish in doubt; sending the same batch again: {err:#}");
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            attempt += 1;
+        }
+        Err(err) => return Err(err),
+    }
+};
+tracing::info!(?offset, "published exactly once");
+producer.close_within(Duration::from_secs(10)).await?;
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+import felix
+
+# At-least-once: the record is certain to land and may land twice, so put an
+# id in the payload that the consumer can deduplicate on.
+try:
+    client.publish("acme", "prod", "orders", payload, at_least_once=True)
+except felix.FelixError as err:
+    # Every attempt failed. The record may or may not have landed.
+    print(f"publish gave up: {err}")
+    raise
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+import { FelixError } from "felix-client";
+
+// At-least-once: the record is certain to land and may land twice, so put an
+// id in the payload that the consumer can deduplicate on.
+try {
+  await client.publish("acme", "prod", "orders", payload, undefined, "per_message", true);
+} catch (err) {
+  // Every attempt failed. The record may or may not have landed.
+  if (err instanceof FelixError) console.error(`publish gave up: ${err.message}`);
+  throw err;
+}
+```
+
+</TabItem>
+<TabItem label="C#">
+
+```csharp
+await using var producer = await client.CreateProducerAsync();
+try
+{
+    for (var attempt = 1; ; attempt++)
+    {
+        try
+        {
+            long? offset = await producer.PublishAsync("acme", "prod", "orders", payloadA);
+            Console.WriteLine($"published exactly once at {offset}");
+            break;
+        }
+        // The batch is in doubt, not refused: the same call again lands once.
+        catch (FelixException e) when (attempt < 5 && (e.IsRetryable || e.OutcomeUnknown))
+        {
+            Console.Error.WriteLine($"in doubt, sending the same batch again: {e.Message}");
+            await Task.Delay(TimeSpan.FromSeconds(1));
+        }
+    }
+}
+finally
+{
+    // Waits for what was handed over; DisposeAsync would wait up to 30 s.
+    await producer.CloseAsync(TimeSpan.FromSeconds(10));
+}
+```
+
+</TabItem>
+<TabItem label="C">
+
+```c
+static void on_producer(void *user_data, FelixStatus status, const char *message,
+                        FelixProducer *producer) {
+    finish(user_data, status, message, producer);
+}
+
+static FelixStatus publish_exactly_once(struct waiter *w, const FelixClient *client,
+                                        const uint8_t *payload, size_t len) {
+    FelixStatus status = wait_for(w, felix_client_idempotent_producer(client, NULL, on_producer, w));
+    if (status != FELIX_STATUS_OK) {
+        return status;
+    }
+    FelixProducer *producer = w->handle;
+    const size_t lens[1] = {len};
+
+    for (int attempt = 1; attempt <= 5; attempt++) {
+        status = wait_for(w, felix_producer_publish(
+            producer, "acme", "prod", "orders", payload, lens, 1, NULL, 0, NULL, on_publish, w));
+        if (status == FELIX_STATUS_OK) {
+            break;
+        }
+        /* A lost connection, a moving shard, load shedding and an unknown outcome leave
+           the batch in doubt, not refused. Call again with the same payload and key and
+           it lands once. Any other status is a refusal that ends the producer. */
+        if (status != FELIX_STATUS_CONNECTION && status != FELIX_STATUS_SHARD_UNAVAILABLE &&
+            status != FELIX_STATUS_OVERLOADED && status != FELIX_STATUS_OUTCOME_UNKNOWN) {
+            break;
+        }
+        fprintf(stderr, "in doubt, sending the same batch again: %s\n", w->message);
+        struct timespec pause = {.tv_sec = 1};
+        nanosleep(&pause, NULL);
+    }
+
+    /* Waits for what was handed over, for up to 10 s. */
+    FelixStatus closed = wait_for(w, felix_producer_close(producer, 10000, NULL, on_done, w));
+    if (closed != FELIX_STATUS_OK) {
+        fprintf(stderr, "producer close: %s\n", w->message);
+    }
+    felix_producer_free(producer);
+    return status;
+}
+```
+
+</TabItem>
+</Tabs>
+
+The C `felix_client_publish` takes `FELIX_DELIVERY_AT_LEAST_ONCE` where the
+examples above pass `FELIX_DELIVERY_AT_MOST_ONCE`, and the C# `PublishAsync`
+takes `delivery: Delivery.AtLeastOnce`. In Rust, `publish_at_least_once` is
+the call.
+
+### Conditional publish
+
+`publish_if` answers with where the write landed or, when the shard has moved
+on, the shard's tail. Do not resend one whose answer was lost. Read the shard
+at the expected offset to find out whether it landed.
+
+<Tabs syncKey="lang">
+<TabItem label="Rust">
+
+```rust
+use felix_client::ConditionalWrite;
+
+// The offset this writer expects to write next.
+let mut next = 0;
+for tick in ticks {
+    match cluster
+        .publish_if("acme", "games", "match-7", None, vec![tick], next)
+        .await?
+    {
+        ConditionalWrite::Written { offset } => next = offset + 1,
+        ConditionalWrite::Refused { tail } => {
+            anyhow::bail!("another writer has the stream; its next offset is {tail}")
+        }
+    }
+}
+```
+
+</TabItem>
+<TabItem label="C#">
+
+```csharp
+long next = 0; // the offset this writer expects to write next
+foreach (var tick in new[] { payloadA, payloadB })
+{
+    ConditionalWrite result = await client.PublishIfAsync(
+        "acme", "games", "match-7", [tick], expectedOffset: next);
+    if (!result.Written)
+    {
+        throw new InvalidOperationException(
+            $"another writer has the stream; its next offset is {result.Offset}");
+    }
+
+    next = result.Offset + 1;
+}
+```
+
+</TabItem>
+<TabItem label="C">
+
+```c
+struct conditional {
+    struct waiter w;
+    bool written;
+    uint64_t offset;
+};
+
+static void on_conditional(void *user_data, FelixStatus status, const char *message,
+                           bool written, uint64_t offset) {
+    struct conditional *result = user_data;
+    result->written = written;
+    result->offset = offset;
+    finish(&result->w, status, message, NULL);
+}
+
+static bool write_if_next(struct conditional *result, const FelixClient *client,
+                          const uint8_t *payload, size_t len, uint64_t *next) {
+    const size_t lens[1] = {len};
+    FelixStatus status = wait_for(&result->w, felix_client_publish_if(
+        client, "acme", "games", "match-7", NULL, 0, payload, lens, 1, *next,
+        NULL, on_conditional, result));
+    if (status != FELIX_STATUS_OK) {
+        fprintf(stderr, "publish_if: %s\n", result->w.message);
+        return false;
+    }
+    if (!result->written) {
+        fprintf(stderr, "another writer has the stream; its next offset is %" PRIu64 "\n",
+                result->offset);
+        return false;
+    }
+    *next = result->offset + 1;
+    return true;
+}
+```
+
+</TabItem>
+</Tabs>
+
+Python and TypeScript do not wrap conditional publishes.
+
+## Reading without losing your place
+
+A subscriber's queue sheds records under the default policy rather than
+blocking the publisher, so a subscriber can miss records. On a durable stream
+every delivered event carries its log offset, and that is what makes losing
+your place detectable and fixable.
+
+### Resume one shard
+
+Checkpoint the offset you handled and resume at the next one. `start` is the
+first record you have **not** seen, so a resuming consumer passes `offset + 1`.
+Handle the record before you save the checkpoint, so a crash between the two
+repeats one record instead of losing it.
+
+Check the offsets as they arrive. **A jump between consecutive offsets is a
+drop**, with one exception the broker tells you about: a new leader writes a
+generation-start record that takes an offset and is never delivered, and the
+event after it reports the count in `skipped_before`. The first offset an event
+accounts for is `offset - skipped_before`.
+
+If the checkpoint is older than retention, the subscribe fails with a cursor
+error. The only recovery is to accept the gap, and say so in a log: a silent
+restart at the tail loses records with nothing reported. The Rust error carries
+`available`, the nearest offset that would have worked.
+
+<Tabs syncKey="lang">
+<TabItem label="Rust">
+
+```rust
+use felix_client::{StartPosition, SubscribeCursorError};
+
+let mut start = match checkpoint.load().await? {
+    Some(offset) => StartPosition::Offset(offset + 1),
+    None => StartPosition::Earliest,
+};
+let mut expected: Option<u64> = None;
+
+loop {
+    let mut subscription = cluster
+        .subscribe_from("acme", "prod", "events", Some(start))
+        .await?;
+
+    loop {
+        match subscription.next_event().await {
+            Ok(Some(event)) => {
+                if let (Some(want), Some(got)) = (expected, event.offset) {
+                    let first = got - event.skipped_before;
+                    if first > want {
+                        tracing::warn!(dropped = first - want, "records were dropped");
+                    }
+                }
+                handle(&event.payload).await?;
+                if let Some(offset) = event.offset {
+                    checkpoint.save(offset).await?;
+                    start = StartPosition::Offset(offset + 1);
+                    expected = Some(offset + 1);
+                }
+            }
+            Ok(None) if subscription.stream_deleted() => return Ok(()),
+            // The broker ended it for another reason: subscribe again from `start`.
+            Ok(None) => break,
+            Err(err) => match err.downcast_ref::<SubscribeCursorError>() {
+                Some(cursor) => {
+                    tracing::error!(
+                        requested = cursor.requested,
+                        resuming_at = cursor.available,
+                        "checkpoint is past retention",
+                    );
+                    start = StartPosition::Offset(cursor.available);
+                    expected = None;
+                    break;
+                }
+                None => return Err(err),
+            },
+        }
+    }
+}
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+import logging
+import time
+
+import felix
+
+log = logging.getLogger(__name__)
+
+
+def run(client, checkpoint, handle):
+    last = checkpoint.load()  # None on a cold start
+    start = last + 1 if last is not None else "earliest"
+    expected = None
+
+    while True:
+        try:
+            with client.subscribe("acme", "prod", "events", start=start) as events:
+                for event in events:
+                    first = event.offset - event.skipped_before
+                    if expected is not None and first > expected:
+                        log.warning("dropped %d records", first - expected)
+                    handle(event.payload)
+                    checkpoint.save(event.offset)
+                    start = expected = event.offset + 1
+            return  # the broker ended the stream
+        except felix.ConnectionError:
+            # The client already tried other brokers. Resuming from `start` is lossless.
+            log.warning("subscription lost; resuming at %s", start, exc_info=True)
+            time.sleep(1)
+        except felix.CursorError:
+            log.error("checkpoint %s is past retention; restarting at earliest", start)
+            start, expected = "earliest", None
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+import { ConnectionError, CursorError } from "felix-client";
+import { setTimeout as sleep } from "node:timers/promises";
+
+interface Checkpoint {
+  load(): Promise<bigint | null>;
+  save(offset: bigint): Promise<void>;
+}
+
+async function run(
+  cluster: Client,
+  checkpoint: Checkpoint,
+  apply: (payload: Buffer) => Promise<void>,
+): Promise<void> {
+  const last = await checkpoint.load();
+  let start: StartPosition = last === null ? "earliest" : last + 1n;
+  let expected: bigint | null = null;
+
+  for (;;) {
+    const events = await cluster.subscribe("acme", "prod", "events", start);
+    try {
+      for (let event = await events.nextEvent(); event !== null; event = await events.nextEvent()) {
+        if (event.offset !== null) {
+          const first = event.offset - event.skippedBefore;
+          if (expected !== null && first > expected) {
+            console.warn(`dropped ${first - expected} records`);
+          }
+          await apply(event.payload);
+          await checkpoint.save(event.offset);
+          start = expected = event.offset + 1n;
+        }
+      }
+      return; // the broker ended the stream
+    } catch (err) {
+      if (err instanceof CursorError) {
+        console.error(`checkpoint ${start} is past retention; restarting at earliest`);
+        start = "earliest";
+        expected = null;
+      } else if (err instanceof ConnectionError) {
+        // The client already tried other brokers. Resuming from `start` is lossless.
+        console.warn(`subscription lost; resuming at ${start}`);
+        await sleep(1_000);
+      } else {
+        throw err;
+      }
+    } finally {
+      await events.close();
+    }
+  }
+}
+```
+
+</TabItem>
+<TabItem label="C#">
+
+```csharp
+using var stop = new CancellationTokenSource();
+Console.CancelKeyPress += (_, e) =>
+{
+    e.Cancel = true;
+    stop.Cancel();
+};
+await RunAsync(client, stop.Token);
+
+static async Task RunAsync(FelixClient cluster, CancellationToken ct)
+{
+    long? last = await LoadCheckpointAsync();
+    var start = last is { } seen ? StartPosition.FromOffset((ulong)(seen + 1)) : StartPosition.Earliest;
+    long? expected = null;
+
+    while (true)
+    {
+        try
+        {
+            await using var events = await cluster.SubscribeAsync(
+                "acme", "prod", "events", shard: 0, start, ct);
+            await foreach (var ev in events.WithCancellation(ct))
+            {
+                if (ev.Offset is { } offset)
+                {
+                    var first = offset - ev.SkippedBefore;
+                    if (expected is { } want && first > want)
+                    {
+                        Console.Error.WriteLine($"dropped {first - want} records");
+                    }
+
+                    Handle(ev.Payload.Span);
+                    await SaveCheckpointAsync(offset);
+                    start = StartPosition.FromOffset((ulong)(offset + 1));
+                    expected = offset + 1;
+                }
+            }
+
+            return; // the broker ended the stream
+        }
+        catch (FelixException e) when (e.Status == FelixStatus.Connection)
+        {
+            // The client already tried other brokers. Resuming from `start` is lossless.
+            Console.Error.WriteLine($"subscription lost; resuming: {e.Message}");
+            await Task.Delay(TimeSpan.FromSeconds(1), ct);
+        }
+        catch (FelixException e) when (e.Status == FelixStatus.Cursor)
+        {
+            Console.Error.WriteLine("checkpoint is past retention; restarting at earliest");
+            start = StartPosition.Earliest;
+            expected = null;
+        }
+    }
+}
+```
+
+</TabItem>
+<TabItem label="C">
+
+```c
+/* Reads one subscription until it ends or fails. `next` is the first offset not
+   yet handled, so the caller can subscribe again at it. */
+static FelixStatus read_from(struct waiter *w, const FelixClient *client, uint64_t *next) {
+    FelixStatus status = wait_for(w, felix_client_subscribe(
+        client, "acme", "prod", "events", 0, FELIX_START_OFFSET, *next, NULL, on_subscribe, w));
+    if (status != FELIX_STATUS_OK) {
+        return status;
+    }
+    FelixSubscription *subscription = w->handle;
+
+    for (;;) {
+        status = wait_for(w, felix_subscription_next(subscription, 5000, NULL, on_event, w));
+        if (status == FELIX_STATUS_TIMEOUT) {
+            continue; /* nothing yet; the subscription is still good */
+        }
+        if (status != FELIX_STATUS_OK) {
+            break; /* CLOSED, CONNECTION, CURSOR, ... */
+        }
+        FelixEvent *event = w->handle;
+        const uint8_t *data = NULL;
+        size_t len = 0;
+        uint64_t offset = 0, skipped = 0;
+        bool has_offset = false;
+        if (felix_event_offset(event, &offset, &has_offset) != FELIX_STATUS_OK ||
+            felix_event_skipped_before(event, &skipped) != FELIX_STATUS_OK ||
+            felix_event_payload(event, &data, &len) != FELIX_STATUS_OK) {
+            fprintf(stderr, "event: %s\n", felix_last_error_message());
+            felix_event_free(event);
+            status = FELIX_STATUS_ERROR;
+            break;
+        }
+        if (has_offset) {
+            if (offset - skipped > *next) {
+                fprintf(stderr, "dropped %" PRIu64 " records\n", offset - skipped - *next);
+            }
+            handle_payload(data, len);
+            if (save_checkpoint(offset) != 0) {
+                felix_event_free(event);
+                status = FELIX_STATUS_ERROR;
+                break;
+            }
+            *next = offset + 1;
+        }
+        felix_event_free(event);
+    }
+    felix_subscription_free(subscription);
+    return status;
+}
+```
+
+</TabItem>
+</Tabs>
+
+The cluster client, and every binding, resubscribes by itself when a
+connection drops mid-stream: on a durable stream it resumes from the offset
+after the last one it delivered, and where it cannot it raises an error rather
+than ending as though the stream had finished. The loops above
+are for a restart of your process, and for the cases where the client gave up.
+In C, call `read_from` again when it returns `FELIX_STATUS_CONNECTION`, and
+treat `FELIX_STATUS_CURSOR` the way the other examples do.
+
+### Resume a sharded stream
+
+A subscription reads one shard. `subscribe_sharded` opens one per shard,
+follows each shard's own owner, and merges them. Order holds within a shard
+and nowhere across shards. Resuming is a **map** from shard to last offset,
+because offsets are per shard, and a single number carried across shards
+replays on every shard but one.
+
+A lost shard is an item in the stream, not an error. The other shards carry
+on, so a consumer that ignored the item would read part of the stream while
+believing it read all of it. Alert on it.
+
+A shard that has delivered nothing has no position. On resume, such a shard
+starts wherever `start` says, which is the live tail by default. Pass `earliest`
+alongside the positions if records published to it while you were away matter.
+
+<Tabs syncKey="lang">
+<TabItem label="Rust">
+
+```rust
+use felix_client::{ShardEvent, StartPosition};
+
+let mut stream = match checkpoint.load().await? {
+    Some(positions) => {
+        cluster
+            .resubscribe_sharded("acme", "prod", "orders", positions, Some(StartPosition::Earliest))
+            .await?
+    }
+    None => {
+        cluster
+            .subscribe_sharded("acme", "prod", "orders", Some(StartPosition::Earliest))
+            .await?
+    }
+};
+
+while let Some(item) = stream.next().await {
+    match item {
+        ShardEvent::Record { shard, event } => {
+            handle(shard, &event).await?;
+            checkpoint.save(stream.positions()).await?;
+        }
+        ShardEvent::ShardLost { shard, error } => tracing::error!(shard, %error, "shard lost"),
+        ShardEvent::ShardRecovered { shard } => tracing::info!(shard, "shard recovered"),
+        ShardEvent::ShardMoved { shard, .. } => tracing::info!(shard, "shard moved; followed"),
+        ShardEvent::StreamDeleted { shard } => tracing::info!(shard, "stream deleted"),
+        _ => {} // `ShardEvent` is non-exhaustive
+    }
+}
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+import logging
+
+import felix
+
+log = logging.getLogger(__name__)
+
+resume = checkpoint.load()  # {shard: last offset}, or None on a cold start
+with client.subscribe_sharded(
+    "acme", "prod", "orders", start="earliest", resume=resume
+) as stream:
+    for item in stream:
+        if isinstance(item, felix.ShardRecord):
+            handle(item.event.payload)
+            # Read positions while the subscription is open: a closed one returns {}.
+            checkpoint.save(stream.positions())
+        elif isinstance(item, felix.ShardLost):
+            log.error("shard %d lost: %s", item.shard, item.error)
+        elif isinstance(item, felix.ShardRecovered):
+            log.info("shard %d recovered", item.shard)
+        elif isinstance(item, felix.ShardMoved):
+            log.info("shard %d moved; followed", item.shard)
+        elif isinstance(item, felix.StreamDeleted):
+            log.info("shard %d: stream deleted", item.shard)
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+const positions = await loadPositions(); // { [shard]: last offset } or undefined
+const merged = await client.subscribeSharded("acme", "prod", "orders", "earliest", positions);
+try {
+  for (let item = await merged.nextEvent(); item !== null; item = await merged.nextEvent()) {
+    if (item.event) {
+      await handle(item.event.payload);
+      await savePositions(await merged.positions());
+    } else if (item.lostError !== null) {
+      console.error(`shard ${item.shard} lost: ${item.lostError}`);
+    } else if (item.recovered) {
+      console.info(`shard ${item.shard} recovered`);
+    } else if (item.shardMoved) {
+      console.info(`shard ${item.shard} moved; followed`);
+    } else if (item.streamDeleted) {
+      console.info(`shard ${item.shard}: stream deleted`);
+    }
+  }
+} finally {
+  await merged.close();
+}
+```
+
+</TabItem>
+<TabItem label="C#">
+
+```csharp
+var saved = await LoadPositionsAsync();
+await using var merged = await client.ResubscribeShardedAsync(
+    "acme", "prod", "orders", saved, StartPosition.Earliest);
+
+await foreach (var item in merged)
+{
+    switch (item.Kind)
+    {
+        case ShardItemKind.Record:
+            Handle(item.Event!.Payload.Span);
+            await SavePositionsAsync(merged.Positions());
+            break;
+        case ShardItemKind.Lost:
+            Console.Error.WriteLine($"shard {item.Shard} lost: {item.Message}");
+            break;
+        case ShardItemKind.Recovered:
+            Console.WriteLine($"shard {item.Shard} recovered");
+            break;
+        case ShardItemKind.Moved:
+            Console.WriteLine($"shard {item.Shard} moved; followed");
+            break;
+        case ShardItemKind.StreamDeleted:
+            Console.WriteLine($"shard {item.Shard}: stream deleted");
+            break;
+    }
+}
+```
+
+</TabItem>
+<TabItem label="C">
+
+```c
+#define MAX_SHARDS 64
+
+struct positions {
+    uint32_t shards[MAX_SHARDS];
+    uint64_t offsets[MAX_SHARDS];
+    size_t count;
+};
+
+static void on_sharded(void *user_data, FelixStatus status, const char *message,
+                       FelixShardedSubscription *subscription) {
+    finish(user_data, status, message, subscription);
+}
+
+struct shard_item {
+    struct waiter w;
+    FelixShardItemKind kind;
+    uint32_t shard;
+};
+
+static void on_shard_item(void *user_data, FelixStatus status, const char *message,
+                          FelixShardItemKind kind, uint32_t shard, FelixEvent *event) {
+    struct shard_item *item = user_data;
+    item->kind = kind;
+    item->shard = shard;
+    finish(&item->w, status, message, event);
+}
+
+/* Reads until the feeds end or a read fails. `saved` holds where each shard had
+   reached, and is updated as records are handled. */
+static FelixStatus read_sharded(struct shard_item *item, const FelixClient *client,
+                                struct positions *saved) {
+    FelixStatus status = wait_for(&item->w, felix_client_resubscribe_sharded(
+        client, "acme", "prod", "orders", saved->shards, saved->offsets, saved->count,
+        FELIX_START_EARLIEST, 0, NULL, on_sharded, &item->w));
+    if (status != FELIX_STATUS_OK) {
+        return status;
+    }
+    FelixShardedSubscription *subscription = item->w.handle;
+
+    for (;;) {
+        status = wait_for(&item->w, felix_sharded_next(subscription, 5000, NULL, on_shard_item, item));
+        if (status == FELIX_STATUS_TIMEOUT) {
+            continue;
+        }
+        if (status != FELIX_STATUS_OK) {
+            break; /* CLOSED once every feed has ended, or a failure */
+        }
+        switch (item->kind) {
+        case FELIX_SHARD_RECORD: {
+            FelixEvent *event = item->w.handle;
+            const uint8_t *data = NULL;
+            size_t len = 0;
+            if (felix_event_payload(event, &data, &len) == FELIX_STATUS_OK) {
+                handle_payload(data, len);
+            }
+            felix_event_free(event);
+            /* Also callable while a read is pending. Entries past MAX_SHARDS are not written. */
+            if (felix_sharded_positions(subscription, saved->shards, saved->offsets,
+                                        MAX_SHARDS, &saved->count) != FELIX_STATUS_OK) {
+                status = FELIX_STATUS_ERROR;
+                goto done;
+            }
+            if (saved->count > MAX_SHARDS) {
+                saved->count = MAX_SHARDS;
+            }
+            break;
+        }
+        case FELIX_SHARD_LOST:
+            fprintf(stderr, "shard %u lost: %s\n", (unsigned)item->shard, item->w.message);
+            break;
+        case FELIX_SHARD_RECOVERED:
+        case FELIX_SHARD_MOVED:
+        case FELIX_SHARD_STREAM_DELETED:
+        default:
+            fprintf(stderr, "shard %u: item %d\n", (unsigned)item->shard, (int)item->kind);
+            break;
+        }
+    }
+done:
+    felix_sharded_subscription_free(subscription);
+    return status;
+}
+```
+
+</TabItem>
+</Tabs>
+
+### Drops, lag and moves
+
+Three signals look alike from the outside and mean different things.
+
+| Signal | What happened | What the client does |
+| --- | --- | --- |
+| A jump in offsets, less `skipped_before` | The subscriber's queue overflowed and records were dropped. | Nothing. This is the only trace a broker without `subscription_lagged` leaves, so check for it. |
+| `subscription_lagged` | A durable stream's queue on the broker dropped records, and the broker ended the subscription after delivering what was queued. `resume_from` is the first dropped offset. | The cluster client and every binding resubscribe after the last event they delivered and replay the gap from the log. A bare Rust `Client` subscription ends with `SubscriptionLagged` and you resubscribe. |
+| `shard_moved` | A rebalance or a drain moved the shard. The old owner delivered everything it committed, then said where the shard went. | The cluster client and every binding follow the shard to its new owner. On a durable stream nothing is repeated or skipped. A bare Rust `Client` subscription ends and `shard_moved()` says where. |
+
+Resume after the last event you received, not at `resume_from`: the broker can
+also drop a frame on its way out to a slow subscriber without reporting it,
+and that frame can sit below `resume_from`. An in-memory stream has no offsets,
+so it keeps dropping, and a moved shard resumes at the new owner's tail.
+
+Python, TypeScript, C# and C never show you `subscription_lagged` or a plain
+shard move; the subscription handles both. A sharded subscription reports a
+move as an item for information.
+
+## Slow consumers
+
+A subscriber that cannot keep up loses records, but only its own. Each
+subscription has a bounded queue on the broker, and a publisher never waits on
+a subscriber under the default overflow policy (`drop_new`). The stream's
+policy lives on the broker. A subscriber picks only the size, because a
+subscriber that could pick `block` could stall every publisher on the shard
+just by reading slowly.
+
+Two queues matter to a client, and the Rust client sets both:
+
+- `broker_sub_queue_capacity` asks the broker for a different queue size for
+  this client's subscriptions, counted in published batches. The broker clamps
+  it to `FELIX_SUBSCRIBER_QUEUE_CAPACITY_MAX`, and `queue_capacity()` on a
+  `Client` subscription reports what it granted (`None` from a broker that
+  predates the option, which keeps the stream's default).
+- `client_sub_queue_capacity` and `client_sub_queue_policy` size the client's
+  own queue per subscription. `ClientSubQueuePolicy::DropNew` drops the
+  arriving item. `Block` stops reading the event stream until the application
+  catches up, which pushes the wait back to the broker's queue and its policy.
+  `DropOld` currently behaves as `DropNew`.
+
+A larger queue makes drops rarer and does not change what a drop is. On a
+durable stream a drop ends the subscription with `subscription_lagged`, and
+the client resubscribes and replays the gap from the log, so a reader that
+must not miss records uses a durable stream. An ephemeral stream keeps
+dropping. Python, TypeScript, C# and C take the stream's and the client's
+defaults and do not expose these settings.
+
+<Tabs syncKey="lang">
+<TabItem label="Rust">
+
+```rust
+// A reader with bursty processing asks for more room.
+config.broker_sub_queue_capacity = Some(4096);
+config.client_sub_queue_capacity = 8192;
+let client = Arc::new(ClusterClient::connect(&seeds, "felix.example.com", config).await?);
+
+let mut subscription = client.subscribe("acme", "prod", "webhooks").await?;
+
+// Hand slow work to a task over a bounded channel instead of doing it in the
+// read loop, where it holds up the next event.
+let (queued, mut work) = tokio::sync::mpsc::channel::<Event>(100);
+let worker = tokio::spawn(async move {
+    while let Some(event) = work.recv().await {
+        slow_work(event).await?;
+    }
+    anyhow::Ok(())
+});
+while let Some(event) = subscription.next_event().await? {
+    if queued.send(event).await.is_err() {
+        break; // the worker stopped; its result below says why
+    }
+}
+// Closing the channel lets the worker drain what is queued and finish.
+drop(queued);
+worker.await??;
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+import queue
+import threading
+
+work = queue.Queue(maxsize=1000)  # bounded: put() waits when the worker is behind
+
+
+def worker():
+    while True:
+        payload = work.get()
+        if payload is None:
+            return
+        slow_work(payload)
+
+
+thread = threading.Thread(target=worker)
+thread.start()
+try:
+    with client.subscribe("acme", "prod", "webhooks") as events:
+        for event in events:
+            work.put(event.payload)
+finally:
+    work.put(None)  # lets the worker drain what is queued and finish
+    thread.join()
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+// Awaiting the work inside the loop makes the loop the bound: while it runs,
+// the next event waits in the client's queue, not in an unbounded array.
+const slow = await client.subscribe("acme", "prod", "webhooks");
+try {
+  for (let event = await slow.nextEvent(); event !== null; event = await slow.nextEvent()) {
+    await handle(event.payload);
+  }
+} finally {
+  await slow.close();
+}
+```
+
+</TabItem>
+<TabItem label="C#">
+
+```csharp
+using System.Threading.Channels;
+
+// Bounded: WriteAsync waits when the worker is behind.
+var work = Channel.CreateBounded<ReadOnlyMemory<byte>>(1000);
+var worker = Task.Run(async () =>
+{
+    await foreach (var payload in work.Reader.ReadAllAsync())
+    {
+        Handle(payload.Span);
+    }
+});
+
+await using var feed = await client.SubscribeAsync("acme", "prod", "webhooks", shard: 0, StartPosition.Latest);
+try
+{
+    await foreach (var ev in feed)
+    {
+        await work.Writer.WriteAsync(ev.Payload);
+    }
+}
+finally
+{
+    work.Writer.Complete(); // lets the worker drain what is queued and finish
+    await worker;
+}
+```
+
+</TabItem>
+</Tabs>
+
+In C, read events on one thread and hand them to a worker over a bounded
+queue of your own, with the same shape as the examples above. A callback that
+blocks stalls the client, so never do the slow work inside one.
+
+## Consumer groups under failure
+
+A consumer group hands each record to one consumer and takes it back if nobody
+settles it. Records are pulled, because only the consumer knows when it has
+capacity. Four things go wrong, and each has a tool.
+
+- **A consumer dies mid-record.** The record's claim lapses after the
+  visibility timeout (`FELIX_GROUP_VISIBILITY_TIMEOUT_MS`, 30 s by default) and
+  the record goes to whoever polls next. The same record can therefore be seen
+  twice, so handling must be idempotent. `attempts` counts deliveries,
+  this one included, so `1` is a first attempt and anything higher is a
+  redelivery.
+- **The work takes longer than the timeout.** Extend the claim before it
+  lapses. `extend` is for the delivery you hold: once the claim has lapsed and
+  the record has gone out again, it is refused with `stale_claim`, even if
+  your worker is still running. Rust, C# and C have `extend`. Python and
+  TypeScript do not wrap it, so size the visibility timeout for the work, or
+  split the work.
+- **A consumer restarts.** A claim belongs to the group, not the process, so a
+  restarted consumer would wait out the timeout for its old records. Poll with
+  a stable consumer name (1 to 128 bytes, unique per live process) and set
+  `reclaim` after a restart, and the records that name still holds come back at
+  once. Only the first poll on a connection reclaims, so leaving it set on
+  every poll is harmless. Claims are the leader's memory, so this holds while
+  the shard's leader stays put; after a failover the group resumes from its
+  durable position.
+- **A settle comes too late.** An ack, nack or extend for a claim that no
+  longer stands is refused with `stale_claim`. Nothing was applied, and the
+  record will be delivered again, so log it and move on. Rust, Python and
+  TypeScript show the code. C# and C report it as the general error status.
+
+`nack` hands a record back for immediate redelivery, or after a delay on a
+broker with claim control. A record that keeps failing is dead-lettered after
+`FELIX_GROUP_MAX_ATTEMPTS`. See [Queues](/features/queues/) for dead letters,
+redrive and the broker's side of all of this.
+
+<Tabs syncKey="lang">
+<TabItem label="Rust">
+
+```rust
+use felix_client::{BrokerError, ErrorCode, GroupMember};
+
+fn is_stale_claim(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<BrokerError>()
+        .is_some_and(|refusal| refusal.code == ErrorCode::StaleClaim)
+}
+
+// A claim that lapsed means the record belongs to the group again.
+fn tolerate_stale(result: Result<()>) -> Result<()> {
+    match result {
+        Err(err) if is_stale_claim(&err) => {
+            tracing::warn!("claim lapsed; the record will be delivered again");
+            Ok(())
+        }
+        other => other,
+    }
+}
+
+let member = GroupMember { consumer: "billing-worker-1".into(), reclaim: true };
+while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+    let records = client
+        .group_poll_as("acme", "prod", "orders", 0, "billing", Some(&member), 16, Duration::from_secs(5))
+        .await?;
+    for record in records {
+        // Ask for time before the slow step.
+        if let Err(err) = client
+            .group_extend("acme", "prod", "orders", 0, "billing", &record, Duration::from_secs(60))
+            .await
+        {
+            if is_stale_claim(&err) {
+                continue; // someone else has it now
+            }
+            return Err(err);
+        }
+        match charge(&record.payload, record.attempts).await {
+            Ok(()) => tolerate_stale(
+                client.group_ack("acme", "prod", "orders", 0, "billing", record.offset).await,
+            )?,
+            Err(err) => {
+                tracing::warn!(offset = record.offset, "charge failed: {err:#}");
+                // Back off before the retry instead of redelivering at once.
+                tolerate_stale(
+                    client
+                        .group_nack_after(
+                            "acme", "prod", "orders", 0, "billing", &record, Duration::from_secs(30),
+                        )
+                        .await,
+                )?;
+            }
+        }
+    }
+}
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+import logging
+
+import felix
+
+log = logging.getLogger(__name__)
+
+
+def settle(action, *args):
+    """Run an ack or nack, tolerating a claim that has lapsed."""
+    try:
+        action(*args)
+    except felix.FelixError as err:
+        if err.code != "stale_claim":
+            raise
+        log.warning("claim lapsed; the record will be delivered again")
+
+
+while not stopping.is_set():
+    records = client.group_poll(
+        "acme", "prod", "orders", 0, "billing",
+        max_records=16,
+        wait=5.0,
+        consumer="billing-worker-1",  # stable across restarts
+        reclaim=True,                 # take back what this name held before
+    )
+    for record in records:
+        try:
+            charge(record.payload, record.attempts)
+        except Exception:
+            log.exception("charge failed at offset %d", record.offset)
+            settle(client.group_nack, "acme", "prod", "orders", 0, "billing", record)
+        else:
+            settle(client.group_ack, "acme", "prod", "orders", 0, "billing", record.offset)
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+import { FelixError } from "felix-client";
+
+// Run an ack or nack, tolerating a claim that has lapsed.
+async function settle(action: () => Promise<void>): Promise<void> {
+  try {
+    await action();
+  } catch (err) {
+    if (!(err instanceof FelixError) || err.code !== "stale_claim") throw err;
+    console.warn("claim lapsed; the record will be delivered again");
+  }
+}
+
+while (!signal.aborted) {
+  const records = await client.groupPoll(
+    "acme", "prod", "orders", 0, "billing",
+    16,                // maxRecords
+    5_000,             // waitMs
+    "billing-worker-1", // stable across restarts
+    true,              // take back what this name held before
+  );
+  for (const delivery of records) {
+    try {
+      await charge(delivery.payload);
+      await settle(() => client.groupAck("acme", "prod", "orders", 0, "billing", delivery.offset));
+    } catch (err) {
+      console.error(`charge failed at offset ${delivery.offset}`, err);
+      await settle(() => client.groupNack("acme", "prod", "orders", 0, "billing", delivery));
+    }
+  }
+}
+```
+
+</TabItem>
+<TabItem label="C#">
+
+```csharp
+using var stop = new CancellationTokenSource();
+Console.CancelKeyPress += (_, e) =>
+{
+    e.Cancel = true;
+    stop.Cancel();
+};
+var ct = stop.Token;
+
+var group = client.JoinGroup("acme", "prod", "orders", shard: 0, "billing", consumer: "billing-worker-1");
+
+while (!ct.IsCancellationRequested)
+{
+    // A stable consumer name with reclaim takes back what this name held before a restart.
+    var records = await group.PollAsync(
+        maxRecords: 16, wait: TimeSpan.FromSeconds(5), reclaim: true, cancellationToken: ct);
+    foreach (var record in records)
+    {
+        try
+        {
+            // Ask for time before the slow step.
+            await group.ExtendAsync(record, TimeSpan.FromSeconds(60), ct);
+            Handle(record.Payload.Span);
+            await group.AckAsync(record, ct);
+        }
+        catch (FelixException e) when (e.Status == FelixStatus.Error)
+        {
+            // Most likely stale_claim: the claim lapsed and the record belongs to the
+            // group again. C# folds the code into the general error status.
+            Console.Error.WriteLine($"offset {record.Offset}: {e.Message}");
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            Console.Error.WriteLine($"offset {record.Offset} failed: {e.Message}");
+            await group.NackAsync(record, delay: TimeSpan.FromSeconds(30), cancellationToken: ct);
+        }
+    }
+}
+```
+
+</TabItem>
+<TabItem label="C">
+
+```c
+struct claim {
+    struct waiter w;
+    bool have;
+    uint64_t offset;
+    uint32_t attempts;
+    uint8_t *payload;
+    size_t len;
+};
+
+/* The record is borrowed for the length of the callback, so copy what you keep. */
+static void on_poll(void *user_data, FelixStatus status, const char *message,
+                    const FelixGroupRecord *records, size_t count) {
+    struct claim *claim = user_data;
+    claim->have = false;
+    if (status == FELIX_STATUS_OK && count > 0) {
+        claim->payload = malloc(records[0].payload_len ? records[0].payload_len : 1);
+        /* No memory: the record is left unsettled and comes back after its claim lapses. */
+        if (claim->payload) {
+            memcpy(claim->payload, records[0].payload, records[0].payload_len);
+            claim->len = records[0].payload_len;
+            claim->offset = records[0].offset;
+            claim->attempts = records[0].attempts;
+            claim->have = true;
+        }
+    }
+    finish(&claim->w, status, message, NULL);
+}
+
+static void on_extend(void *user_data, FelixStatus status, const char *message,
+                      uint64_t visible_ms) {
+    (void)visible_ms;
+    struct claim *claim = user_data;
+    finish(&claim->w, status, message, NULL);
+}
+
+/* Takes one record at a time to keep the example short. */
+static FelixStatus work_the_queue(struct claim *claim, const FelixClient *client,
+                                  atomic_bool *stop) {
+    while (!atomic_load(stop)) {
+        FelixStatus status = wait_for(&claim->w, felix_client_group_poll(
+            client, "acme", "prod", "orders", 0, "billing",
+            1 /* max_records */, 5000 /* wait_ms */, 0 /* the broker's visibility */,
+            "billing-worker-1" /* stable across restarts */, true /* reclaim */,
+            NULL, on_poll, claim));
+        if (status != FELIX_STATUS_OK) {
+            return status;
+        }
+        if (!claim->have) {
+            continue; /* an empty poll is an answer, not an error */
+        }
+
+        /* Ask for time before the slow step. */
+        status = wait_for(&claim->w, felix_client_group_extend(
+            client, "acme", "prod", "orders", 0, "billing", claim->offset, claim->attempts,
+            60000, NULL, on_extend, claim));
+        if (status != FELIX_STATUS_OK) {
+            /* The claim lapsed (stale_claim arrives as the general error status):
+               the record belongs to the group again. */
+            fprintf(stderr, "offset %" PRIu64 ": %s\n", claim->offset, claim->w.message);
+            free(claim->payload);
+            continue;
+        }
+
+        if (charge(claim->payload, claim->len) == 0) {
+            status = wait_for(&claim->w, felix_client_group_ack(
+                client, "acme", "prod", "orders", 0, "billing", claim->offset,
+                NULL, on_done, &claim->w));
+        } else {
+            status = wait_for(&claim->w, felix_client_group_nack(
+                client, "acme", "prod", "orders", 0, "billing", claim->offset,
+                claim->attempts, 30000 /* back off */, NULL, on_done, &claim->w));
+        }
+        if (status != FELIX_STATUS_OK) {
+            fprintf(stderr, "settle offset %" PRIu64 ": %s\n", claim->offset, claim->w.message);
+        }
+        free(claim->payload);
+    }
+    return FELIX_STATUS_OK;
+}
+```
+
+</TabItem>
+</Tabs>
+
+## Shutting down cleanly
+
+Dropping or closing a handle ends it, and the one thing closing cannot do is
+wait. Wait for what you care about first.
+
+- **Stop reading.** Close subscriptions and watches. A client's subscriptions
+  hold their own connection and keep running after the client is closed, so
+  closing the client does not stop them.
+- **Flush what you wrote.** A publish with `AckMode::None` returns once it is
+  queued, and records still queued are lost with the process. Rust's `finish()`
+  waits for everything queued on every broker and then ends publishing through
+  that client. An idempotent producer's `close` waits for the batches it was
+  handed, and a close with a timeout gives up after that long.
+- **Close the client last.** Whatever it still has pending is cancelled or
+  fails, and a publish that may have been sent is reported as an unknown
+  outcome.
+
+Shutting down your process is not the same as a broker shutting down (see
+[Process lifecycle and graceful shutdown](/deployment/graceful-shutdown/)). A
+broker that is told to stop marks itself draining so load balancers stop routing to
+it, asks the control plane to move its shards elsewhere, stops accepting
+connections, and gives streams already in flight a bounded grace period before
+it closes each connection. Nothing in your code is needed for that to work:
+a subscription follows its shard to the new owner, a publish refused with
+`draining` or `shard_unavailable` is retried on another broker, and a
+connection the broker closes is replaced from the brokers that remain. What you
+see is a short pause. The only publishes you must treat with care are those in
+flight when the connection closed, and those arrive as an unknown outcome.
+A rolling restart needs no special client settings. If you set a [reconnect
+deadline](#reconnection), keep it longer than a broker takes to drain;
+`FELIX_SHUTDOWN_HANDOFF_TIMEOUT_MS` bounds how long it spends handing its
+shards over.
+
+<Tabs syncKey="lang">
+<TabItem label="Rust">
+
+```rust
+// Stop reading. Dropping a subscription closes it on the broker.
+drop(subscription);
+
+// Let the producer's batches finish, but not for ever.
+producer.close_within(Duration::from_secs(10)).await?;
+
+// Wait for AckMode::None publishes to be written, then end publishing.
+tokio::time::timeout(Duration::from_secs(15), client.finish())
+    .await
+    .context("finish took longer than 15 seconds")??;
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+import os
+
+import felix
+
+# Leaving a `with` block closes the subscription and then the client, in that order.
+with felix.Client(
+    ["felix-0.felix.svc:5000", "felix-1.felix.svc:5000"],
+    tenant_id="acme",
+    token=os.environ["FELIX_TOKEN"],
+) as client:
+    events = client.subscribe("acme", "prod", "events")
+    try:
+        for event in events:
+            handle(event.payload)
+    finally:
+        events.close()
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+import { Client } from "felix-client";
+
+const live = await Client.connect(addrs, "acme", { token: process.env.FELIX_TOKEN });
+const feed = await live.subscribe("acme", "prod", "events");
+try {
+  for (let event = await feed.nextEvent(); event !== null; event = await feed.nextEvent()) {
+    await handle(event.payload);
+  }
+} finally {
+  // Subscriptions keep their own connection, so close each one, then the client.
+  await feed.close();
+  live.close();
+}
+```
+
+</TabItem>
+<TabItem label="C#">
+
+```csharp
+await using var live = await FelixClient.ConnectAsync(new FelixClientOptions
+{
+    Addrs = ["felix-0.felix.svc:5000", "felix-1.felix.svc:5000"],
+    TenantId = "acme",
+    Token = Environment.GetEnvironmentVariable("FELIX_TOKEN"),
+});
+await using var producer = await live.CreateProducerAsync();
+await using var feed = await live.SubscribeAsync("acme", "prod", "events", shard: 0, StartPosition.Latest);
+
+try
+{
+    await foreach (var ev in feed)
+    {
+        Handle(ev.Payload.Span);
+    }
+}
+finally
+{
+    // Waits for what the producer was handed. `await using` disposes in reverse order:
+    // the subscription, the producer, then the client.
+    await producer.CloseAsync(TimeSpan.FromSeconds(10));
+}
+```
+
+</TabItem>
+<TabItem label="C">
+
+```c
+static void shut_down(struct waiter *w, FelixSubscription *subscription,
+                      FelixProducer *producer, FelixClient *client) {
+    /* Stop reading first. A pending read completes as cancelled. */
+    felix_subscription_free(subscription);
+
+    if (producer) {
+        /* Waits for what was handed over, for up to 10 s. */
+        FelixStatus closed = wait_for(w, felix_producer_close(producer, 10000, NULL, on_done, w));
+        if (closed == FELIX_STATUS_TIMEOUT) {
+            fprintf(stderr, "producer close timed out; batches may still be sent\n");
+        } else if (closed != FELIX_STATUS_OK) {
+            fprintf(stderr, "producer close: %s\n", w->message);
+        }
+        felix_producer_free(producer);
+    }
+
+    /* Last: cancels the client's pending calls, and waits a few seconds for them. */
+    felix_client_free(client);
+}
+```
+
+</TabItem>
+</Tabs>
+
+## Where next
+
+- [Choosing a Client](/clients/overview/) covers how the bindings relate and what the conformance suite checks.
+- [Delivery semantics](/architecture/semantics/) has the guarantees each stream type gives and the failure scenarios behind this page.
+- [Queues](/features/queues/) and [Pub/Sub](/features/pubsub/) cover consumer groups and subscriber queues from the broker's side.
+- [Wire protocol](/architecture/wire-protocol/) lists the frames and error codes the clients act on.

@@ -1,4 +1,4 @@
-"""The examples on docs-site's Python page compile and match the binding.
+"""The examples on docs-site's Python page and resilience guide compile and match the binding.
 
 Every block is compiled, and every call on a client, a handle or the `felix`
 module is bound against the signatures in `_felix.pyi`, so a renamed method or
@@ -25,6 +25,7 @@ import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DOCS_PAGE = ROOT.parents[2] / "docs-site/src/content/docs/clients/python.md"
+RESILIENT_PAGE = ROOT.parents[2] / "docs-site/src/content/docs/clients/resilient-clients.mdx"
 STUBS = ROOT / "python/felix/_felix.pyi"
 
 # Names the examples give to objects, and the stub class each one is.
@@ -41,9 +42,9 @@ RECEIVERS = {
 }
 
 
-def blocks():
+def blocks(path=DOCS_PAGE):
     """Every ```python block on the page, with the line it starts on."""
-    page = DOCS_PAGE.read_text()
+    page = path.read_text()
     found = []
     for match in re.finditer(r"```python\n(.*?)```", page, re.S):
         found.append((page.count("\n", 0, match.start()) + 2, match.group(1)))
@@ -127,8 +128,25 @@ def test_every_example_compiles(line, source):
 
 @pytest.mark.parametrize("line,source", blocks(), ids=lambda value: str(value)[:12])
 def test_every_example_matches_the_stubs(line, source):
+    check_against_stubs(source, f"python.md:{line}")
+
+
+def test_the_resilience_guide_has_examples():
+    assert len(blocks(RESILIENT_PAGE)) >= 10
+
+
+@pytest.mark.parametrize("line,source", blocks(RESILIENT_PAGE), ids=lambda value: str(value)[:12])
+def test_every_resilience_example_compiles(line, source):
+    compile(source, f"resilient-clients.mdx:{line}", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
+
+
+@pytest.mark.parametrize("line,source", blocks(RESILIENT_PAGE), ids=lambda value: str(value)[:12])
+def test_every_resilience_example_matches_the_stubs(line, source):
+    check_against_stubs(source, f"resilient-clients.mdx:{line}")
+
+
+def check_against_stubs(source, where):
     classes = stubs()
-    where = f"python.md:{line}"
     for node in ast.walk(ast.parse(source)):
         if not isinstance(node, ast.Attribute):
             continue
