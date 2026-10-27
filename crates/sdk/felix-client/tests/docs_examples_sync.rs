@@ -558,7 +558,7 @@ const RESILIENT_EXAMPLES: &[Example] = &[
         "Reconnection",
         1,
         Body {
-            params: "seeds: Vec<SocketAddr>, config: ClientConfig",
+            params: "seeds: Vec<Seed>, config: ClientConfig",
             context: "",
         },
     ),
@@ -630,7 +630,7 @@ const RESILIENT_EXAMPLES: &[Example] = &[
         "Slow consumers",
         1,
         Body {
-            params: "seeds: Vec<SocketAddr>, mut config: ClientConfig",
+            params: "seeds: Vec<Seed>, mut config: ClientConfig",
             context: "async fn slow_work(_: Event) -> Result<()> { Ok(()) }",
         },
     ),
@@ -681,6 +681,7 @@ const HEADER_BODY: &str = "\
 // FELIX_BLESS_DOCS=1 cargo test -p felix-client --test docs_examples_sync
 
 /// What a `Body` example has in scope besides its own `use` lines.
+#[allow(unused_imports)]
 mod prelude {
     pub(crate) use anyhow::{Context, Result};
     pub(crate) use bytes::Bytes;
@@ -716,6 +717,10 @@ fn page_path(page: &Page) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../../docs-site/src/content/docs/clients")
         .join(page.file)
+}
+
+fn docs_site_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../docs-site")
 }
 
 fn generated_path(page: &Page) -> PathBuf {
@@ -858,9 +863,13 @@ fn generate(spec: &Page, page: &str) -> Result<String, String> {
 #[test]
 fn generated_examples_match_the_page() {
     for spec in PAGES {
-        let Ok(page) = std::fs::read_to_string(page_path(spec)) else {
+        // A packaged crate has no docs site next to it. With the site present, a
+        // missing page is a failure, not something to skip.
+        if !docs_site_dir().is_dir() {
             continue;
-        };
+        }
+        let page = std::fs::read_to_string(page_path(spec))
+            .unwrap_or_else(|err| panic!("read {}: {err}", spec.file));
         let expected = generate(spec, &page).unwrap_or_else(|problems| panic!("{problems}"));
         let path = generated_path(spec);
         if std::env::var_os("FELIX_BLESS_DOCS").is_some() {

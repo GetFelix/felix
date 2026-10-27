@@ -195,6 +195,7 @@ plus the backoff you can afford, or leave it off to wait out a failover.
 ```rust
 use felix_client::{ClusterClient, ReconnectPolicy};
 
+// `seeds` is the Vec<Seed> built in the previous section.
 let policy = ReconnectPolicy {
     attempts: 8,
     backoff: Duration::from_millis(250),
@@ -202,8 +203,7 @@ let policy = ReconnectPolicy {
     // The longest any one call may spend retrying.
     deadline: Some(Duration::from_secs(30)),
 };
-let client =
-    ClusterClient::connect_with_policy(&seeds, "felix.example.com", config, policy).await?;
+let client = ClusterClient::connect_seeds(&seeds, "felix.example.com", config, policy).await?;
 ```
 
 </TabItem>
@@ -379,9 +379,11 @@ struct token_source {
     const char *path;
 };
 
-/* Runs on a library thread and must not block, so it answers at once from a
-   small local file that a sidecar keeps fresh. A fetch that has to call out
-   starts the request and answers the reply from its completion. */
+/* The fetch function runs on a library thread and must not block. A real
+   provider that calls out starts its request here and answers the reply from
+   the request's completion, as the libcurl example on the C page does. This one
+   is a stand-in: it reads a small local file that a sidecar keeps fresh, which
+   returns quickly enough to answer inline. */
 static void fetch_token(void *user_data, FelixTokenReply *reply) {
     const struct token_source *source = user_data;
     char token[4096];
@@ -562,9 +564,21 @@ How each client shows the class:
 | --- | --- |
 | Rust | `BrokerError { code, retry, detail }`, recovered with `downcast_ref`. `None` means no code. |
 | Python | `err.retry`, `err.code`, `err.detail`, plus an exception class per kind. |
-| TypeScript | `err.retry`, `err.code`, `err.detail`, `err.retryable`, plus a class per kind. |
-| C# | `FelixException.Status`, `IsRetryable` and `OutcomeUnknown`. The class is folded into the status. |
+| TypeScript | `err.retry`, `err.code`, `err.detail`, `err.retryable`, plus a class per kind. `retryable` is also true for a connection error. |
+| C# | `FelixException.Status`, `IsRetryable` and `OutcomeUnknown`. The class is folded into the status, and `IsRetryable` is also true for a connection error. |
 | C | The `FelixStatus` of the callback. The class is folded into the status. |
+
+**A connection error on a write is ambiguous.** It carries no class from the
+broker, and a lost acknowledgement after the broker wrote the record can
+surface that way. Resend such a write only with an idempotent producer (Rust,
+C# and C), or after checking, with a conditional publish or by reading the
+stream back. C#'s `IsRetryable` and TypeScript's `retryable` suit reads, and
+the write loops below test the class or the specific statuses instead.
+
+**A stale settle surfaces late.** The cluster client retries a `stale_claim`
+refusal of an ack or nack with backoff, so it reaches you only after the
+reconnect policy's attempts. Log it and move on
+([Consumer groups under failure](#consumer-groups-under-failure)).
 
 A broker that predates error codes sends none. Rust then gives you no
 `BrokerError`, and the other clients choose the exception class or status from
@@ -587,7 +601,8 @@ enum Verdict {
 
 fn judge(err: &anyhow::Error) -> Verdict {
     let Some(refusal) = err.downcast_ref::<BrokerError>() else {
-        // No code: no broker answered, or the broker predates error codes.
+        // No code: a lost connection, which is ambiguous for a write, or a broker
+        // that predates error codes. Do not resend a plain write.
         return Verdict::GiveUp;
     };
     match refusal.retry {
@@ -664,9 +679,12 @@ async function publishWithRetry(cluster: Client, body: Buffer, attempts = 4): Pr
     try {
       return await cluster.publish("acme", "prod", "orders", body);
     } catch (err) {
-      // `retryable` is true only when nothing was applied. An
-      // outcome_unknown write may have landed, and a fatal one never will.
-      if (!(err instanceof FelixError) || !err.retryable || attempt >= attempts) throw err;
+      // Resend only what the broker says it did not apply. `retryable` is also
+      // true for a connection error, which on a write is ambiguous, so test the class.
+      const unapplied =
+        err instanceof FelixError &&
+        (err.retry === "retry" || err.retry === "retry_after" || err.retry === "redirect");
+      if (!unapplied || attempt >= attempts) throw err;
       if (err.retry === "retry_after") delayMs = err.detail?.retry_after_ms ?? 1_000;
       await sleep(delayMs);
       delayMs = Math.min(delayMs * 2, 5_000);
@@ -693,9 +711,11 @@ static async Task<long?> PublishWithRetryAsync(
         {
             return await cluster.PublishAsync("acme", "prod", "orders", payload, cancellationToken: ct);
         }
-        // IsRetryable is true only when nothing was applied. OutcomeUnknown
-        // propagates: the write may have landed.
-        catch (FelixException e) when (e.IsRetryable && attempt < 4)
+        // Resend only what the broker refused without applying. A connection
+        // error (which IsRetryable also covers) and OutcomeUnknown propagate:
+        // the write may have landed.
+        catch (FelixException e) when (
+            e.Status is FelixStatus.ShardUnavailable or FelixStatus.Overloaded && attempt < 4)
         {
             Console.Error.WriteLine($"publish attempt {attempt}: {e.Message}");
             await Task.Delay(delay, ct);
@@ -711,15 +731,16 @@ static async Task<long?> PublishWithRetryAsync(
 ```c
 enum next_step { STEP_RESEND, STEP_RECONCILE, STEP_GIVE_UP };
 
-/* C reports the class of the failure as a status, not the broker's label. */
+/* C reports the kind of failure as a status, not the broker's label. A write
+   that failed with FELIX_STATUS_CONNECTION is ambiguous, so it is not resent here. */
 static enum next_step next_step(FelixStatus status) {
     switch (status) {
-    case FELIX_STATUS_CONNECTION:
     case FELIX_STATUS_SHARD_UNAVAILABLE:
     case FELIX_STATUS_OVERLOADED:
         return STEP_RESEND; /* nothing was applied */
+    case FELIX_STATUS_CONNECTION:
     case FELIX_STATUS_OUTCOME_UNKNOWN:
-        return STEP_RECONCILE; /* it may have landed */
+        return STEP_RECONCILE; /* it may have landed: a lost ack looks like a lost connection */
     default:
         return STEP_GIVE_UP; /* auth, not found, cursor, invalid argument, ... */
     }
@@ -1032,16 +1053,51 @@ generation-start record that takes an offset and is never delivered, and the
 event after it reports the count in `skipped_before`. The first offset an event
 accounts for is `offset - skipped_before`.
 
-If the checkpoint is older than retention, the subscribe fails with a cursor
-error. The only recovery is to accept the gap, and say so in a log: a silent
-restart at the tail loses records with nothing reported. The Rust error carries
-`available`, the nearest offset that would have worked.
+A subscribe can also fail with a cursor error, for one of two reasons. **Too
+old** means retention discarded the checkpoint's offset, and the only recovery
+is to accept the gap and say so in a log: a silent restart at the tail loses
+records with nothing reported. **In the future** means the checkpoint is past
+the stream's tail, so it came from another stream or was corrupted. That is a
+bug in the caller's checkpoint, and the loop should fail loudly. Rust's error
+carries the `reason` and `available`, the nearest offset that would have
+worked. The other clients raise the same error without the reason, so their
+loops fail on it unless the caller opted into skipping the gap (`allow_gap`),
+and the error message says which case it was.
 
 <Tabs syncKey="lang">
 <TabItem label="Rust">
 
 ```rust
+use felix_client::{AuthError, BrokerError, CursorErrorReason, RetryClass};
 use felix_client::{StartPosition, SubscribeCursorError};
+
+// Too old: take the smallest gap. In the future: the checkpoint is not this stream's.
+fn after_cursor_error(cursor: &SubscribeCursorError) -> Result<StartPosition> {
+    match cursor.reason {
+        CursorErrorReason::TooOld => {
+            tracing::error!(
+                requested = cursor.requested,
+                resuming_at = cursor.available,
+                "checkpoint is past retention",
+            );
+            Ok(StartPosition::Offset(cursor.available))
+        }
+        _ => anyhow::bail!(
+            "checkpoint {} is beyond the stream's tail ({})",
+            cursor.requested,
+            cursor.available
+        ),
+    }
+}
+
+// A failure that waiting and subscribing again could outlast.
+fn worth_resuming(err: &anyhow::Error) -> bool {
+    if err.downcast_ref::<AuthError>().is_some() {
+        return false;
+    }
+    err.downcast_ref::<BrokerError>()
+        .is_none_or(|refusal| refusal.retry != RetryClass::Fatal)
+}
 
 let mut start = match checkpoint.load().await? {
     Some(offset) => StartPosition::Offset(offset + 1),
@@ -1050,9 +1106,20 @@ let mut start = match checkpoint.load().await? {
 let mut expected: Option<u64> = None;
 
 loop {
-    let mut subscription = cluster
+    let mut subscription = match cluster
         .subscribe_from("acme", "prod", "events", Some(start))
-        .await?;
+        .await
+    {
+        Ok(subscription) => subscription,
+        Err(err) => match err.downcast_ref::<SubscribeCursorError>() {
+            Some(cursor) => {
+                start = after_cursor_error(cursor)?;
+                expected = None;
+                continue;
+            }
+            None => return Err(err),
+        },
+    };
 
     loop {
         match subscription.next_event().await {
@@ -1071,21 +1138,24 @@ loop {
                 }
             }
             Ok(None) if subscription.stream_deleted() => return Ok(()),
-            // The broker ended it for another reason: subscribe again from `start`.
-            Ok(None) => break,
-            Err(err) => match err.downcast_ref::<SubscribeCursorError>() {
-                Some(cursor) => {
-                    tracing::error!(
-                        requested = cursor.requested,
-                        resuming_at = cursor.available,
-                        "checkpoint is past retention",
-                    );
-                    start = StartPosition::Offset(cursor.available);
+            // The broker ended it for another reason: wait, then subscribe again from `start`.
+            Ok(None) => {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                break;
+            }
+            Err(err) => {
+                if let Some(cursor) = err.downcast_ref::<SubscribeCursorError>() {
+                    start = after_cursor_error(cursor)?;
                     expected = None;
-                    break;
+                } else if worth_resuming(&err) {
+                    // The client already tried other brokers. Resuming from `start` is lossless.
+                    tracing::warn!("subscription lost; resuming: {err:#}");
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                } else {
+                    return Err(err);
                 }
-                None => return Err(err),
-            },
+                break;
+            }
         }
     }
 }
@@ -1103,7 +1173,7 @@ import felix
 log = logging.getLogger(__name__)
 
 
-def run(client, checkpoint, handle):
+def run(client, checkpoint, handle, allow_gap=False):
     last = checkpoint.load()  # None on a cold start
     start = last + 1 if last is not None else "earliest"
     expected = None
@@ -1124,7 +1194,11 @@ def run(client, checkpoint, handle):
             log.warning("subscription lost; resuming at %s", start, exc_info=True)
             time.sleep(1)
         except felix.CursorError:
-            log.error("checkpoint %s is past retention; restarting at earliest", start)
+            # Retention discarded the offset, or the checkpoint is past the tail
+            # (another stream's). The message says which; the second is a bug.
+            if not allow_gap:
+                raise
+            log.error("checkpoint %s is unusable; restarting at earliest", start, exc_info=True)
             start, expected = "earliest", None
 ```
 
@@ -1132,8 +1206,14 @@ def run(client, checkpoint, handle):
 <TabItem label="TypeScript">
 
 ```ts
-import { ConnectionError, CursorError } from "felix-client";
 import { setTimeout as sleep } from "node:timers/promises";
+import {
+  type Client,
+  ConnectionError,
+  CursorError,
+  type StartPosition,
+  type SubscriptionHandle,
+} from "felix-client";
 
 interface Checkpoint {
   load(): Promise<bigint | null>;
@@ -1144,14 +1224,16 @@ async function run(
   cluster: Client,
   checkpoint: Checkpoint,
   apply: (payload: Buffer) => Promise<void>,
+  allowGap = false,
 ): Promise<void> {
   const last = await checkpoint.load();
   let start: StartPosition = last === null ? "earliest" : last + 1n;
   let expected: bigint | null = null;
 
   for (;;) {
-    const events = await cluster.subscribe("acme", "prod", "events", start);
+    let events: SubscriptionHandle | undefined;
     try {
+      events = await cluster.subscribe("acme", "prod", "events", start);
       for (let event = await events.nextEvent(); event !== null; event = await events.nextEvent()) {
         if (event.offset !== null) {
           const first = event.offset - event.skippedBefore;
@@ -1166,7 +1248,10 @@ async function run(
       return; // the broker ended the stream
     } catch (err) {
       if (err instanceof CursorError) {
-        console.error(`checkpoint ${start} is past retention; restarting at earliest`);
+        // Retention discarded the offset, or the checkpoint is past the tail
+        // (another stream's). The message says which; the second is a bug.
+        if (!allowGap) throw err;
+        console.error(`checkpoint ${start} is unusable; restarting at earliest`, err);
         start = "earliest";
         expected = null;
       } else if (err instanceof ConnectionError) {
@@ -1177,7 +1262,7 @@ async function run(
         throw err;
       }
     } finally {
-      await events.close();
+      await events?.close();
     }
   }
 }
@@ -1195,7 +1280,7 @@ Console.CancelKeyPress += (_, e) =>
 };
 await RunAsync(client, stop.Token);
 
-static async Task RunAsync(FelixClient cluster, CancellationToken ct)
+static async Task RunAsync(FelixClient cluster, CancellationToken ct, bool allowGap = false)
 {
     long? last = await LoadCheckpointAsync();
     var start = last is { } seen ? StartPosition.FromOffset((ulong)(seen + 1)) : StartPosition.Earliest;
@@ -1232,9 +1317,11 @@ static async Task RunAsync(FelixClient cluster, CancellationToken ct)
             Console.Error.WriteLine($"subscription lost; resuming: {e.Message}");
             await Task.Delay(TimeSpan.FromSeconds(1), ct);
         }
-        catch (FelixException e) when (e.Status == FelixStatus.Cursor)
+        catch (FelixException e) when (e.Status == FelixStatus.Cursor && allowGap)
         {
-            Console.Error.WriteLine("checkpoint is past retention; restarting at earliest");
+            // Retention discarded the offset, or the checkpoint is past the tail
+            // (another stream's). Without allowGap the error propagates.
+            Console.Error.WriteLine($"checkpoint is unusable; restarting at earliest: {e.Message}");
             start = StartPosition.Earliest;
             expected = null;
         }
@@ -1304,8 +1391,10 @@ connection drops mid-stream: on a durable stream it resumes from the offset
 after the last one it delivered, and where it cannot it raises an error rather
 than ending as though the stream had finished. The loops above
 are for a restart of your process, and for the cases where the client gave up.
-In C, call `read_from` again when it returns `FELIX_STATUS_CONNECTION`, and
-treat `FELIX_STATUS_CURSOR` the way the other examples do.
+In C, call `read_from` again when it returns `FELIX_STATUS_CONNECTION`, after
+a pause. A `FELIX_STATUS_CURSOR` result is for the caller to fail on, or to
+answer by setting `*next` to the start you chose and subscribing with
+`FELIX_START_EARLIEST`, if you accept the gap.
 
 ### Resume a sharded stream
 
@@ -1500,9 +1589,14 @@ static FelixStatus read_sharded(struct shard_item *item, const FelixClient *clie
             FelixEvent *event = item->w.handle;
             const uint8_t *data = NULL;
             size_t len = 0;
-            if (felix_event_payload(event, &data, &len) == FELIX_STATUS_OK) {
-                handle_payload(data, len);
+            if (felix_event_payload(event, &data, &len) != FELIX_STATUS_OK) {
+                /* Do not advance the position past a record that was not handled. */
+                fprintf(stderr, "event: %s\n", felix_last_error_message());
+                felix_event_free(event);
+                status = FELIX_STATUS_ERROR;
+                goto done;
             }
+            handle_payload(data, len);
             felix_event_free(event);
             /* Also callable while a read is pending. Entries past MAX_SHARDS are not written. */
             if (felix_sharded_positions(subscription, saved->shards, saved->offsets,
@@ -1590,7 +1684,10 @@ defaults and do not expose these settings.
 // A reader with bursty processing asks for more room.
 config.broker_sub_queue_capacity = Some(4096);
 config.client_sub_queue_capacity = 8192;
-let client = Arc::new(ClusterClient::connect(&seeds, "felix.example.com", config).await?);
+let client = Arc::new(
+    ClusterClient::connect_seeds(&seeds, "felix.example.com", config, ReconnectPolicy::default())
+        .await?,
+);
 
 let mut subscription = client.subscribe("acme", "prod", "webhooks").await?;
 
@@ -1620,15 +1717,31 @@ worker.await??;
 import queue
 import threading
 
-work = queue.Queue(maxsize=1000)  # bounded: put() waits when the worker is behind
+work = queue.Queue(maxsize=1000)  # bounded: offer() waits when the worker is behind
+done = threading.Event()  # set when no more records are coming
+failure = []  # the worker's error, if it dies
 
 
 def worker():
-    while True:
-        payload = work.get()
-        if payload is None:
+    try:
+        while not (done.is_set() and work.empty()):
+            try:
+                payload = work.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            slow_work(payload)
+    except Exception as err:
+        failure.append(err)
+
+
+def offer(payload):
+    """Wait for room, but give up once the worker has died."""
+    while not failure:
+        try:
+            work.put(payload, timeout=1.0)
             return
-        slow_work(payload)
+        except queue.Full:
+            pass
 
 
 thread = threading.Thread(target=worker)
@@ -1636,10 +1749,14 @@ thread.start()
 try:
     with client.subscribe("acme", "prod", "webhooks") as events:
         for event in events:
-            work.put(event.payload)
+            offer(event.payload)
+            if failure:
+                break
 finally:
-    work.put(None)  # lets the worker drain what is queued and finish
+    done.set()  # lets the worker drain what is queued and finish
     thread.join()
+if failure:
+    raise failure[0]
 ```
 
 </TabItem>
@@ -1664,28 +1781,43 @@ try {
 ```csharp
 using System.Threading.Channels;
 
+// Cancelled when the worker fails, so the reader stops instead of waiting for room.
+using var halt = new CancellationTokenSource();
+
 // Bounded: WriteAsync waits when the worker is behind.
 var work = Channel.CreateBounded<ReadOnlyMemory<byte>>(1000);
 var worker = Task.Run(async () =>
 {
-    await foreach (var payload in work.Reader.ReadAllAsync())
+    try
     {
-        Handle(payload.Span);
+        await foreach (var payload in work.Reader.ReadAllAsync())
+        {
+            Handle(payload.Span);
+        }
+    }
+    catch
+    {
+        halt.Cancel();
+        throw;
     }
 });
 
 await using var feed = await client.SubscribeAsync("acme", "prod", "webhooks", shard: 0, StartPosition.Latest);
 try
 {
-    await foreach (var ev in feed)
+    await foreach (var ev in feed.WithCancellation(halt.Token))
     {
-        await work.Writer.WriteAsync(ev.Payload);
+        await work.Writer.WriteAsync(ev.Payload, halt.Token);
     }
+}
+catch (OperationCanceledException) when (halt.IsCancellationRequested)
+{
+    // The worker failed; its exception is rethrown below.
 }
 finally
 {
-    work.Writer.Complete(); // lets the worker drain what is queued and finish
-    await worker;
+    work.Writer.TryComplete(); // lets the worker drain what is queued and finish
+    await worker;              // rethrows the worker's failure
 }
 ```
 
@@ -1724,8 +1856,11 @@ capacity. Four things go wrong, and each has a tool.
   durable position.
 - **A settle comes too late.** An ack, nack or extend for a claim that no
   longer stands is refused with `stale_claim`. Nothing was applied, and the
-  record will be delivered again, so log it and move on. Rust, Python and
-  TypeScript show the code. C# and C report it as the general error status.
+  record will be delivered again. The cluster client retries a stale ack or
+  nack with backoff first, so the refusal surfaces only after the reconnect
+  policy's attempts. Log it and move on. Rust, Python and TypeScript show the
+  code. C# and C report it as the general error status, so the C# example
+  recognises it by the broker's message, on settles only.
 
 `nack` hands a record back for immediate redelivery, or after a delay on a
 broker with claim control. A record that keeps failing is dead-lettered after
@@ -1801,10 +1936,10 @@ import felix
 log = logging.getLogger(__name__)
 
 
-def settle(action, *args):
+def settle(action):
     """Run an ack or nack, tolerating a claim that has lapsed."""
     try:
-        action(*args)
+        action()
     except felix.FelixError as err:
         if err.code != "stale_claim":
             raise
@@ -1824,9 +1959,9 @@ while not stopping.is_set():
             charge(record.payload, record.attempts)
         except Exception:
             log.exception("charge failed at offset %d", record.offset)
-            settle(client.group_nack, "acme", "prod", "orders", 0, "billing", record)
+            settle(lambda: client.group_nack("acme", "prod", "orders", 0, "billing", record))
         else:
-            settle(client.group_ack, "acme", "prod", "orders", 0, "billing", record.offset)
+            settle(lambda: client.group_ack("acme", "prod", "orders", 0, "billing", record.offset))
 ```
 
 </TabItem>
@@ -1854,13 +1989,19 @@ while (!signal.aborted) {
     true,              // take back what this name held before
   );
   for (const delivery of records) {
+    let handled = false;
     try {
       await charge(delivery.payload);
-      await settle(() => client.groupAck("acme", "prod", "orders", 0, "billing", delivery.offset));
+      handled = true;
     } catch (err) {
       console.error(`charge failed at offset ${delivery.offset}`, err);
-      await settle(() => client.groupNack("acme", "prod", "orders", 0, "billing", delivery));
     }
+    // Settled outside the handler's try, so a failed ack never nacks a handled record.
+    await settle(() =>
+      handled
+        ? client.groupAck("acme", "prod", "orders", 0, "billing", delivery.offset)
+        : client.groupNack("acme", "prod", "orders", 0, "billing", delivery),
+    );
   }
 }
 ```
@@ -1886,24 +2027,46 @@ while (!ct.IsCancellationRequested)
         maxRecords: 16, wait: TimeSpan.FromSeconds(5), reclaim: true, cancellationToken: ct);
     foreach (var record in records)
     {
+        // Ask for time before the slow step. A failed extend means the claim is gone.
+        if (!await TrySettleAsync(() => group.ExtendAsync(record, TimeSpan.FromSeconds(60), ct), record))
+        {
+            continue;
+        }
+
+        var handled = false;
         try
         {
-            // Ask for time before the slow step.
-            await group.ExtendAsync(record, TimeSpan.FromSeconds(60), ct);
             Handle(record.Payload.Span);
-            await group.AckAsync(record, ct);
-        }
-        catch (FelixException e) when (e.Status == FelixStatus.Error)
-        {
-            // Most likely stale_claim: the claim lapsed and the record belongs to the
-            // group again. C# folds the code into the general error status.
-            Console.Error.WriteLine($"offset {record.Offset}: {e.Message}");
+            handled = true;
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
             Console.Error.WriteLine($"offset {record.Offset} failed: {e.Message}");
-            await group.NackAsync(record, delay: TimeSpan.FromSeconds(30), cancellationToken: ct);
         }
+
+        // Settled outside the handler's try, so a failed ack never nacks a handled record.
+        await TrySettleAsync(
+            () => handled
+                ? group.AckAsync(record, ct)
+                : group.NackAsync(record, delay: TimeSpan.FromSeconds(30), cancellationToken: ct),
+            record);
+    }
+}
+
+// C# carries no error code, so a lapsed claim is recognised by the broker's message,
+// and only on a settle. Anything else propagates.
+static async Task<bool> TrySettleAsync(Func<Task> settle, GroupRecord record)
+{
+    try
+    {
+        await settle();
+        return true;
+    }
+    catch (FelixException e) when (
+        e.Status == FelixStatus.Error && e.Message.Contains("claim is stale", StringComparison.OrdinalIgnoreCase))
+    {
+        Console.Error.WriteLine($"offset {record.Offset}: claim lapsed; it will be delivered again");
+        return false;
     }
 }
 ```

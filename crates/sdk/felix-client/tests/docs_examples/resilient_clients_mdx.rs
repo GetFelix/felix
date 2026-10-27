@@ -3,6 +3,7 @@
 // FELIX_BLESS_DOCS=1 cargo test -p felix-client --test docs_examples_sync
 
 /// What a `Body` example has in scope besides its own `use` lines.
+#[allow(unused_imports)]
 mod prelude {
     pub(crate) use anyhow::{Context, Result};
     pub(crate) use bytes::Bytes;
@@ -42,9 +43,10 @@ mod reconnection_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
-    async fn example(seeds: Vec<SocketAddr>, config: ClientConfig) -> Result<()> {
+    async fn example(seeds: Vec<Seed>, config: ClientConfig) -> Result<()> {
         use felix_client::{ClusterClient, ReconnectPolicy};
 
+        // `seeds` is the Vec<Seed> built in the previous section.
         let policy = ReconnectPolicy {
             attempts: 8,
             backoff: Duration::from_millis(250),
@@ -52,8 +54,7 @@ mod reconnection_1 {
             // The longest any one call may spend retrying.
             deadline: Some(Duration::from_secs(30)),
         };
-        let client =
-            ClusterClient::connect_with_policy(&seeds, "felix.example.com", config, policy).await?;
+        let client = ClusterClient::connect_seeds(&seeds, "felix.example.com", config, policy).await?;
         Ok(())
     }
 }
@@ -79,7 +80,7 @@ mod authentication_that_lasts_1 {
     }
 }
 
-/// resilient-clients.mdx line 445: "When a broker rejects the token", block 1.
+/// resilient-clients.mdx line 447: "When a broker rejects the token", block 1.
 mod when_a_broker_rejects_the_token_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -105,7 +106,7 @@ mod when_a_broker_rejects_the_token_1 {
     }
 }
 
-/// resilient-clients.mdx line 576: "Errors and retry classes", block 1.
+/// resilient-clients.mdx line 590: "Errors and retry classes", block 1.
 mod errors_and_retry_classes_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -124,7 +125,8 @@ mod errors_and_retry_classes_1 {
 
         fn judge(err: &anyhow::Error) -> Verdict {
             let Some(refusal) = err.downcast_ref::<BrokerError>() else {
-                // No code: no broker answered, or the broker predates error codes.
+                // No code: a lost connection, which is ambiguous for a write, or a broker
+                // that predates error codes. Do not resend a plain write.
                 return Verdict::GiveUp;
             };
             match refusal.retry {
@@ -161,7 +163,7 @@ mod errors_and_retry_classes_1 {
     }
 }
 
-/// resilient-clients.mdx line 783: "Writes whose outcome is unknown", block 1.
+/// resilient-clients.mdx line 804: "Writes whose outcome is unknown", block 1.
 mod writes_whose_outcome_is_unknown_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -194,7 +196,7 @@ mod writes_whose_outcome_is_unknown_1 {
     }
 }
 
-/// resilient-clients.mdx line 935: "Conditional publish", block 1.
+/// resilient-clients.mdx line 956: "Conditional publish", block 1.
 mod conditional_publish_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -219,7 +221,7 @@ mod conditional_publish_1 {
     }
 }
 
-/// resilient-clients.mdx line 1043: "Resume one shard", block 1.
+/// resilient-clients.mdx line 1070: "Resume one shard", block 1.
 mod resume_one_shard_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -232,7 +234,36 @@ mod resume_one_shard_1 {
     async fn handle(_: &Bytes) -> Result<()> { Ok(()) }
 
     async fn example(cluster: &Arc<ClusterClient>, checkpoint: Checkpoint) -> Result<()> {
+        use felix_client::{AuthError, BrokerError, CursorErrorReason, RetryClass};
         use felix_client::{StartPosition, SubscribeCursorError};
+
+        // Too old: take the smallest gap. In the future: the checkpoint is not this stream's.
+        fn after_cursor_error(cursor: &SubscribeCursorError) -> Result<StartPosition> {
+            match cursor.reason {
+                CursorErrorReason::TooOld => {
+                    tracing::error!(
+                        requested = cursor.requested,
+                        resuming_at = cursor.available,
+                        "checkpoint is past retention",
+                    );
+                    Ok(StartPosition::Offset(cursor.available))
+                }
+                _ => anyhow::bail!(
+                    "checkpoint {} is beyond the stream's tail ({})",
+                    cursor.requested,
+                    cursor.available
+                ),
+            }
+        }
+
+        // A failure that waiting and subscribing again could outlast.
+        fn worth_resuming(err: &anyhow::Error) -> bool {
+            if err.downcast_ref::<AuthError>().is_some() {
+                return false;
+            }
+            err.downcast_ref::<BrokerError>()
+                .is_none_or(|refusal| refusal.retry != RetryClass::Fatal)
+        }
 
         let mut start = match checkpoint.load().await? {
             Some(offset) => StartPosition::Offset(offset + 1),
@@ -241,9 +272,20 @@ mod resume_one_shard_1 {
         let mut expected: Option<u64> = None;
 
         loop {
-            let mut subscription = cluster
+            let mut subscription = match cluster
                 .subscribe_from("acme", "prod", "events", Some(start))
-                .await?;
+                .await
+            {
+                Ok(subscription) => subscription,
+                Err(err) => match err.downcast_ref::<SubscribeCursorError>() {
+                    Some(cursor) => {
+                        start = after_cursor_error(cursor)?;
+                        expected = None;
+                        continue;
+                    }
+                    None => return Err(err),
+                },
+            };
 
             loop {
                 match subscription.next_event().await {
@@ -262,21 +304,24 @@ mod resume_one_shard_1 {
                         }
                     }
                     Ok(None) if subscription.stream_deleted() => return Ok(()),
-                    // The broker ended it for another reason: subscribe again from `start`.
-                    Ok(None) => break,
-                    Err(err) => match err.downcast_ref::<SubscribeCursorError>() {
-                        Some(cursor) => {
-                            tracing::error!(
-                                requested = cursor.requested,
-                                resuming_at = cursor.available,
-                                "checkpoint is past retention",
-                            );
-                            start = StartPosition::Offset(cursor.available);
+                    // The broker ended it for another reason: wait, then subscribe again from `start`.
+                    Ok(None) => {
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        break;
+                    }
+                    Err(err) => {
+                        if let Some(cursor) = err.downcast_ref::<SubscribeCursorError>() {
+                            start = after_cursor_error(cursor)?;
                             expected = None;
-                            break;
+                        } else if worth_resuming(&err) {
+                            // The client already tried other brokers. Resuming from `start` is lossless.
+                            tracing::warn!("subscription lost; resuming: {err:#}");
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                        } else {
+                            return Err(err);
                         }
-                        None => return Err(err),
-                    },
+                        break;
+                    }
                 }
             }
         }
@@ -284,7 +329,7 @@ mod resume_one_shard_1 {
     }
 }
 
-/// resilient-clients.mdx line 1329: "Resume a sharded stream", block 1.
+/// resilient-clients.mdx line 1418: "Resume a sharded stream", block 1.
 mod resume_a_sharded_stream_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -329,18 +374,21 @@ mod resume_a_sharded_stream_1 {
     }
 }
 
-/// resilient-clients.mdx line 1589: "Slow consumers", block 1.
+/// resilient-clients.mdx line 1683: "Slow consumers", block 1.
 mod slow_consumers_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
     async fn slow_work(_: Event) -> Result<()> { Ok(()) }
 
-    async fn example(seeds: Vec<SocketAddr>, mut config: ClientConfig) -> Result<()> {
+    async fn example(seeds: Vec<Seed>, mut config: ClientConfig) -> Result<()> {
         // A reader with bursty processing asks for more room.
         config.broker_sub_queue_capacity = Some(4096);
         config.client_sub_queue_capacity = 8192;
-        let client = Arc::new(ClusterClient::connect(&seeds, "felix.example.com", config).await?);
+        let client = Arc::new(
+            ClusterClient::connect_seeds(&seeds, "felix.example.com", config, ReconnectPolicy::default())
+                .await?,
+        );
 
         let mut subscription = client.subscribe("acme", "prod", "webhooks").await?;
 
@@ -365,7 +413,7 @@ mod slow_consumers_1 {
     }
 }
 
-/// resilient-clients.mdx line 1738: "Consumer groups under failure", block 1.
+/// resilient-clients.mdx line 1873: "Consumer groups under failure", block 1.
 mod consumer_groups_under_failure_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -429,7 +477,7 @@ mod consumer_groups_under_failure_1 {
     }
 }
 
-/// resilient-clients.mdx line 2035: "Shutting down cleanly", block 1.
+/// resilient-clients.mdx line 2198: "Shutting down cleanly", block 1.
 mod shutting_down_cleanly_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
