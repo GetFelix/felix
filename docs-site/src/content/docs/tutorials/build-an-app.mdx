@@ -64,7 +64,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
-use felix_client::{AckMode, ClientConfig, ClusterClient, quic_client_config, root_store_from_pem_file};
+use felix_client::{AckMode, ClientConfig, ClusterClient, ReconnectPolicy, quic_client_config, root_store_from_pem_file};
 
 // Must match FELIX_AUTH_TENANT.
 const TENANT: &str = "dev";
@@ -93,7 +93,10 @@ async fn connect() -> Result<Arc<ClusterClient>> {
 
     let broker = std::env::var("FELIX_BROKERS").unwrap_or_else(|_| "127.0.0.1:5000".into());
     let seeds: Vec<SocketAddr> = vec![broker.parse().context("FELIX_BROKERS must be ip:port")?];
-    let client = bounded("connecting", CALL_TIMEOUT, ClusterClient::connect(&seeds, "localhost", config)).await?;
+    // Cap the time one call spends retrying.
+    let policy = ReconnectPolicy { deadline: Some(CALL_TIMEOUT), ..ReconnectPolicy::default() };
+    let connecting = ClusterClient::connect_with_policy(&seeds, "localhost", config, policy);
+    let client = bounded("connecting", CALL_TIMEOUT, connecting).await?;
     Ok(Arc::new(client))
 }
 

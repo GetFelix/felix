@@ -9,7 +9,7 @@ mod first_stream {
     use anyhow::{Context, Result};
     use felix_client::AckMode;
     use felix_client::StartPosition;
-    use felix_client::{ClientConfig, ClusterClient, quic_client_config, root_store_from_pem_file};
+    use felix_client::{ClientConfig, ClusterClient, ReconnectPolicy, quic_client_config, root_store_from_pem_file};
     use std::future::Future;
     use std::net::SocketAddr;
     use std::path::Path;
@@ -41,7 +41,10 @@ mod first_stream {
 
         let broker = std::env::var("FELIX_BROKERS").unwrap_or_else(|_| "127.0.0.1:5000".into());
         let seeds: Vec<SocketAddr> = vec![broker.parse().context("FELIX_BROKERS must be ip:port")?];
-        let client = bounded("connecting", CALL_TIMEOUT, ClusterClient::connect(&seeds, "localhost", config)).await?;
+        // Cap the time one call spends retrying.
+        let policy = ReconnectPolicy { deadline: Some(CALL_TIMEOUT), ..ReconnectPolicy::default() };
+        let connecting = ClusterClient::connect_with_policy(&seeds, "localhost", config, policy);
+        let client = bounded("connecting", CALL_TIMEOUT, connecting).await?;
         Ok(Arc::new(client))
     }
 
@@ -124,7 +127,7 @@ mod work_queue {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use anyhow::bail;
     use anyhow::{Context, Result};
-    use felix_client::{AckMode, ClientConfig, ClusterClient, quic_client_config, root_store_from_pem_file};
+    use felix_client::{AckMode, ClientConfig, ClusterClient, ReconnectPolicy, quic_client_config, root_store_from_pem_file};
     use std::future::Future;
     use std::net::SocketAddr;
     use std::sync::Arc;
@@ -157,7 +160,10 @@ mod work_queue {
 
         let broker = std::env::var("FELIX_BROKERS").unwrap_or_else(|_| "127.0.0.1:5000".into());
         let seeds: Vec<SocketAddr> = vec![broker.parse().context("FELIX_BROKERS must be ip:port")?];
-        let client = bounded("connecting", CALL_TIMEOUT, ClusterClient::connect(&seeds, "localhost", config)).await?;
+        // Cap the time one call spends retrying.
+        let policy = ReconnectPolicy { deadline: Some(CALL_TIMEOUT), ..ReconnectPolicy::default() };
+        let connecting = ClusterClient::connect_with_policy(&seeds, "localhost", config, policy);
+        let client = bounded("connecting", CALL_TIMEOUT, connecting).await?;
         Ok(Arc::new(client))
     }
 
@@ -246,7 +252,7 @@ mod cache_leases_watches {
     use bytes::Bytes;
     use felix_client::{CacheCondition, ClusterCacheWatch};
     use felix_client::{CacheWatchFilter, CacheWatchItem};
-    use felix_client::{ClientConfig, ClusterClient, quic_client_config, root_store_from_pem_file};
+    use felix_client::{ClientConfig, ClusterClient, ReconnectPolicy, quic_client_config, root_store_from_pem_file};
     use std::future::Future;
     use std::net::SocketAddr;
     use std::sync::Arc;
@@ -276,7 +282,10 @@ mod cache_leases_watches {
 
         let broker = std::env::var("FELIX_BROKERS").unwrap_or_else(|_| "127.0.0.1:5000".into());
         let seeds: Vec<SocketAddr> = vec![broker.parse().context("FELIX_BROKERS must be ip:port")?];
-        let client = bounded("connecting", CALL_TIMEOUT, ClusterClient::connect(&seeds, "localhost", config)).await?;
+        // Cap the time one call spends retrying.
+        let policy = ReconnectPolicy { deadline: Some(CALL_TIMEOUT), ..ReconnectPolicy::default() };
+        let connecting = ClusterClient::connect_with_policy(&seeds, "localhost", config, policy);
+        let client = bounded("connecting", CALL_TIMEOUT, connecting).await?;
         Ok(Arc::new(client))
     }
 
@@ -428,7 +437,7 @@ mod build_an_app {
     use anyhow::bail;
     use anyhow::{Context, Result};
     use bytes::Bytes;
-    use felix_client::{AckMode, ClientConfig, ClusterClient, quic_client_config, root_store_from_pem_file};
+    use felix_client::{AckMode, ClientConfig, ClusterClient, ReconnectPolicy, quic_client_config, root_store_from_pem_file};
     use felix_client::{CacheWatchFilter, CacheWatchItem};
     use std::future::Future;
     use std::net::SocketAddr;
@@ -464,7 +473,10 @@ mod build_an_app {
 
         let broker = std::env::var("FELIX_BROKERS").unwrap_or_else(|_| "127.0.0.1:5000".into());
         let seeds: Vec<SocketAddr> = vec![broker.parse().context("FELIX_BROKERS must be ip:port")?];
-        let client = bounded("connecting", CALL_TIMEOUT, ClusterClient::connect(&seeds, "localhost", config)).await?;
+        // Cap the time one call spends retrying.
+        let policy = ReconnectPolicy { deadline: Some(CALL_TIMEOUT), ..ReconnectPolicy::default() };
+        let connecting = ClusterClient::connect_with_policy(&seeds, "localhost", config, policy);
+        let client = bounded("connecting", CALL_TIMEOUT, connecting).await?;
         Ok(Arc::new(client))
     }
 
