@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793119298099,
+  "lastUpdate": 1793121645543,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -38012,6 +38012,58 @@ window.BENCHMARK_DATA = {
             "range": "7259.85",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1242404.13\nmean: 1244268.54\nstdev: 7259.85\ncv: 0.58%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "097cf15fee2ed2120df18afcf798703e0e6aaf19",
+          "message": "docs(clients): mark the 0.7 reconnect options in the resilient-clients guide (#1604)\n\nThe Building Resilient Clients guide documents reconnect options that are not in 0.6.2, the current release. At v0.6.2, Rust's `ReconnectPolicy` has `attempts`, `backoff` and `max_backoff` but no `deadline`, and the Python, TypeScript, C# and C clients take neither an attempt count nor a deadline (`git grep reconnect_deadline v0.6.2 -- crates/sdk sdks` finds nothing). A note under the options table says so, tells 0.6.2 users to bound a call with their own timeout as the tutorials do, and links to Upgrading to 0.7. A diff of the public SDK surfaces between v0.6.2 and main found no other public API difference, so this section is the only one that needs it.\n\nThe generated Rust copy of the page is regenerated for the shifted lines; only its line-number comments change.",
+          "timestamp": "2026-10-27T17:15:48Z",
+          "tree_id": "e2262c9beb3c36d971d73e9fc59f4f8067338bc8",
+          "url": "https://github.com/GetFelix/felix/commit/097cf15fee2ed2120df18afcf798703e0e6aaf19"
+        },
+        "date": 1793121644643,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 360111.58,
+            "range": "12361.77",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 360111.58\nmean: 361865.74\nstdev: 12361.77\ncv: 3.42%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 360111.58,
+            "range": "12361.77",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 360111.58\nmean: 361865.74\nstdev: 12361.77\ncv: 3.42%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 83196.75,
+            "range": "764.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 83196.75\nmean: 83604.45\nstdev: 764.58\ncv: 0.91%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 831967.53,
+            "range": "7645.80",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 831967.53\nmean: 836044.46\nstdev: 7645.80\ncv: 0.91%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
