@@ -48,7 +48,8 @@ scrape_configs:
 ```
 
 The metrics below are grouped by the question they answer. The list is not
-exhaustive.
+exhaustive; the [Metrics reference](/reference/metrics/) has every metric the
+code registers, with its type, labels and meaning.
 
 **Is the publish path healthy?**
 
