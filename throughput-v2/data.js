@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793076778449,
+  "lastUpdate": 1793077102079,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -37804,6 +37804,58 @@ window.BENCHMARK_DATA = {
             "range": "3619.11",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 818923.50\nmean: 817712.97\nstdev: 3619.11\ncv: 0.44%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "97bb57afa7a61a45927824273cfee164c3d5a43d",
+          "message": "docs: production guide, Grafana dashboard and Prometheus alert rules (#1594)\n\n* docs: production guide, Grafana dashboard and Prometheus alert rules\n\n* fix(observability): alert on expired credentials and first counter events, trim misleading panels, test rules with promtool",
+          "timestamp": "2026-10-26T21:47:33-07:00",
+          "tree_id": "3a7a7f432d98a779399047298cc9b44541a3d17a",
+          "url": "https://github.com/GetFelix/felix/commit/97bb57afa7a61a45927824273cfee164c3d5a43d"
+        },
+        "date": 1793077101495,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 417053.39,
+            "range": "39010.90",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 417053.39\nmean: 412736.86\nstdev: 39010.90\ncv: 9.45%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 417053.39,
+            "range": "39010.90",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 417053.39\nmean: 412736.86\nstdev: 39010.90\ncv: 9.45%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 93952.52,
+            "range": "3295.02",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 93952.52\nmean: 93093.93\nstdev: 3295.02\ncv: 3.54%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 939525.22,
+            "range": "32950.20",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 939525.22\nmean: 930939.26\nstdev: 32950.20\ncv: 3.54%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
