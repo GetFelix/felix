@@ -15,11 +15,9 @@ it carries on with the first record it has not seen.
 A running broker and the environment variables from the
 [tutorials overview](/tutorials/overview/#set-up-once). That page starts the
 development stack from the [quickstart](/getting-started/quickstart/) and
-exports the broker address, a token and the broker's certificate. You also need
-the client for your language, installed as the
-[Rust](/clients/rust/), [Python](/clients/python/),
-[TypeScript](/clients/typescript/), [C#](/clients/csharp/) or [C](/clients/c/)
-client page describes. The steps show Rust, Python, TypeScript and C#. The C
+writes the broker address, a token and the broker's certificate to an env file
+you source in each terminal. You also need the client for your language, set up
+as the overview's "Set up once" tabs describe. The steps show Rust, Python, TypeScript and C#. The C
 client is callback based, so its version is one program at the end.
 
 ## 1. Create a stream
@@ -27,12 +25,25 @@ client is callback based, so its version is one program at the end.
 A stream has to exist before anything can publish to it. Create one with
 [`felixctl`](/getting-started/felixctl/):
 
+<Tabs syncKey="engine">
+<TabItem label="Docker">
+
 ```bash
 docker compose run --rm felixctl stream create tutorial-events
 ```
 
-With an installed `felixctl`, drop the `docker compose run --rm felixctl`
-prefix. A new stream is durable: its records are written to disk before the
+</TabItem>
+<TabItem label="Podman">
+
+```bash
+podman compose run --rm felixctl stream create tutorial-events
+```
+
+</TabItem>
+</Tabs>
+
+With an installed `felixctl`, drop the `docker compose run --rm felixctl` or
+`podman compose run --rm felixctl` prefix. A new stream is durable: its records are written to disk before the
 broker acknowledges them, and each one gets an offset, its position in the
 stream's log. Offsets only grow, and they are what lets a reader say where it
 stopped.
@@ -54,7 +65,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use felix_client::{ClientConfig, ClusterClient, ReconnectPolicy, quic_client_config, root_store_from_pem_file};
+use felix_client::{ClientConfig, ClusterClient, quic_client_config, root_store_from_pem_file};
 
 // Must match FELIX_AUTH_TENANT.
 const TENANT: &str = "dev";
@@ -78,9 +89,7 @@ async fn connect() -> Result<Arc<ClusterClient>> {
 
     let broker = std::env::var("FELIX_BROKERS").unwrap_or_else(|_| "127.0.0.1:5000".into());
     let seeds: Vec<SocketAddr> = vec![broker.parse().context("FELIX_BROKERS must be ip:port")?];
-    // Cap the time one call spends retrying.
-    let policy = ReconnectPolicy { deadline: Some(CALL_TIMEOUT), ..ReconnectPolicy::default() };
-    let connecting = ClusterClient::connect_with_policy(&seeds, "localhost", config, policy);
+    let connecting = ClusterClient::connect(&seeds, "localhost", config);
     let client = bounded("connecting", CALL_TIMEOUT, connecting).await?;
     Ok(Arc::new(client))
 }
@@ -118,7 +127,6 @@ async def connect() -> felix.AsyncClient:
             tenant_id=TENANT,
             token=os.environ["FELIX_AUTH_TOKEN"],
             ca_file=os.environ["FELIX_CA_FILE"],
-            reconnect_deadline=CALL_TIMEOUT,
         )
     )
 ```
@@ -169,7 +177,6 @@ function connect(): Promise<Client> {
     Client.connect(process.env.FELIX_BROKERS ?? "127.0.0.1:5000", TENANT, {
       token: required("FELIX_AUTH_TOKEN"),
       caFile: required("FELIX_CA_FILE"),
-      reconnectDeadline: CALL_TIMEOUT_MS,
     }),
   );
 }
@@ -208,7 +215,6 @@ static Task<FelixClient> ConnectAsync() =>
         TenantId = Tenant,
         Token = Required("FELIX_AUTH_TOKEN"),
         CaFile = Required("FELIX_CA_FILE"),
-        ReconnectDeadline = TimeSpan.FromSeconds(CallSeconds),
     }, ct));
 ```
 
@@ -515,7 +521,7 @@ static async Task ReadNewAsync(FelixClient client, string checkpoint)
 </TabItem>
 </Tabs>
 
-## 5. Run it
+## 5. Pick the mode
 
 The last part picks the mode from the command line.
 
@@ -531,7 +537,7 @@ async fn main() -> Result<()> {
     match std::env::args().nth(1).as_deref() {
         Some("publish") => publish_three(&client).await,
         Some("read") => read_new(&client, Path::new("checkpoint")).await,
-        _ => bail!("usage: first-stream publish|read"),
+        _ => bail!("usage: first_stream publish|read"),
     }
 }
 ```
@@ -582,7 +588,7 @@ await main();
 var mode = args.Length > 0 ? args[0] : "";
 if (mode is not ("publish" or "read"))
 {
-    Console.Error.WriteLine("usage: first-stream publish|read");
+    Console.Error.WriteLine("usage: dotnet run -- publish|read");
     return 1;
 }
 
@@ -601,9 +607,76 @@ return 0;
 </TabItem>
 </Tabs>
 
+## Run it
+
+The program takes one argument, `publish` or `read`. Run each in a terminal where you have run `source /path/to/felix-tutorial.env` from the [overview](/tutorials/overview/#set-up-once). The reader writes its `checkpoint` file to the directory you run it from, so run both from the same one.
+
+<Tabs syncKey="lang">
+<TabItem label="Rust">
+
+From the project directory:
+
+```bash
+# publish three records
+cargo run --bin first_stream -- publish
+# read them back
+cargo run --bin first_stream -- read
+```
+
+</TabItem>
+<TabItem label="Python">
+
+With the virtual environment active:
+
+```bash
+# publish three records
+python3 first_stream.py publish
+# read them back
+python3 first_stream.py read
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+From the project directory:
+
+```bash
+# publish three records
+npx tsx first-stream.mts publish
+# read them back
+npx tsx first-stream.mts read
+```
+
+</TabItem>
+<TabItem label="C#">
+
+From the `FirstStream` directory:
+
+```bash
+# publish three records
+dotnet run -- publish
+# read them back
+dotnet run -- read
+```
+
+</TabItem>
+<TabItem label="C">
+
+Build `first-stream.c` as the [C section](#c) below shows, then run it from that directory:
+
+```bash
+# publish three records
+./first-stream publish
+# read them back
+./first-stream read
+```
+
+</TabItem>
+</Tabs>
+
 ## What you should see
 
-Publish three records:
+After `publish`, the program prints:
 
 ```text
 published event 1 at offset 1
@@ -612,7 +685,8 @@ published event 3 at offset 3
 ```
 
 Your offsets may start somewhere else. A new stream's first record is often
-not at offset 0, because a leader writes a marker of its own first. Now read:
+not at offset 0, because a leader writes a marker of its own first. After
+`read`, it prints:
 
 ```text
 offset 1: event 1
@@ -621,8 +695,8 @@ offset 3: event 3
 nothing new for 3 seconds, stopping
 ```
 
-Run the reader again and it prints only the idle line, because `checkpoint`
-holds 3 and the reader asked to start at 4. Publish again and read again, and
+Run `read` again and it prints only the idle line, because `checkpoint`
+holds 3 and the reader asked to start at 4. Run `publish` and then `read` again, and
 only the new records appear:
 
 ```text
@@ -851,7 +925,7 @@ int main(int argc, char **argv) {
     const char *ca_file = getenv("FELIX_CA_FILE");
     const char *broker = getenv("FELIX_BROKERS");
     if (argc < 2 || (strcmp(argv[1], "publish") != 0 && strcmp(argv[1], "read") != 0)) {
-        fprintf(stderr, "usage: first_stream publish|read\n");
+        fprintf(stderr, "usage: first-stream publish|read\n");
         return 1;
     }
     if (!token || !*token || !ca_file || !*ca_file) {
@@ -863,15 +937,10 @@ int main(int argc, char **argv) {
     pthread_mutex_init(&w.mu, NULL);
     pthread_cond_init(&w.cv, NULL);
     int exit_code = 1;
-    const struct FelixConnectOptions options = {
-        .size = sizeof(struct FelixConnectOptions),
-        .reconnect_deadline_ms = 10000,
-    };
 
     FelixStatus status = wait_for(
-        &w, felix_client_connect_with(broker && *broker ? broker : "127.0.0.1:5000", TENANT,
-                                      token, "localhost", ca_file, &options, NULL, on_connect,
-                                      &w));
+        &w, felix_client_connect(broker && *broker ? broker : "127.0.0.1:5000", TENANT,
+                                 token, "localhost", ca_file, NULL, on_connect, &w));
     if (status != FELIX_STATUS_OK) {
         fprintf(stderr, "connect: %s\n", w.message);
     } else {
@@ -886,6 +955,18 @@ int main(int argc, char **argv) {
     return exit_code;
 }
 ```
+
+Save it as `first-stream.c` in the unpacked release directory from the
+[overview](/tutorials/overview/), and compile and link it there:
+
+```bash
+cc -std=c11 -pthread -I include first-stream.c -L lib -lfelix \
+   -Wl,-rpath,"$PWD/lib" -o first-stream
+```
+
+This links `lib/libfelix.dylib` on macOS. To build from source instead, see
+[the C client page](/clients/c/). Run it with the commands in the C tab of
+[Run it](#run-it).
 
 ## Where next
 

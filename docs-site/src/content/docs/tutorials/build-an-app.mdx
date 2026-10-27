@@ -26,9 +26,8 @@ submit would sit behind an HTTP handler.
 
 ## Prerequisites
 
-A running broker and the environment variables from the
-[tutorials overview](/tutorials/overview/#set-up-once), and the client for your
-language. The earlier tutorials introduce each call used here, so
+A running broker, the env file and the client for your language, all set up as
+the [tutorials overview](/tutorials/overview/#set-up-once) describes. The earlier tutorials introduce each call used here, so
 [Your first stream](/tutorials/first-stream/),
 [A work queue](/tutorials/work-queue/) and
 [Cache, leases and watches](/tutorials/cache-leases-watches/) are worth doing
@@ -37,10 +36,24 @@ the same as in the earlier tutorials.
 
 ## 1. Create the stream and the cache
 
+<Tabs syncKey="engine">
+<TabItem label="Docker">
+
 ```bash
 docker compose run --rm felixctl stream create tutorial-orders
 docker compose run --rm felixctl cache create tutorial-cache
 ```
+
+</TabItem>
+<TabItem label="Podman">
+
+```bash
+podman compose run --rm felixctl stream create tutorial-orders
+podman compose run --rm felixctl cache create tutorial-cache
+```
+
+</TabItem>
+</Tabs>
 
 Use `felixctl` directly if you installed it. If you did the previous tutorial,
 the cache exists and the command says so.
@@ -64,7 +77,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
-use felix_client::{AckMode, ClientConfig, ClusterClient, ReconnectPolicy, quic_client_config, root_store_from_pem_file};
+use felix_client::{AckMode, ClientConfig, ClusterClient, quic_client_config, root_store_from_pem_file};
 
 // Must match FELIX_AUTH_TENANT.
 const TENANT: &str = "dev";
@@ -93,9 +106,7 @@ async fn connect() -> Result<Arc<ClusterClient>> {
 
     let broker = std::env::var("FELIX_BROKERS").unwrap_or_else(|_| "127.0.0.1:5000".into());
     let seeds: Vec<SocketAddr> = vec![broker.parse().context("FELIX_BROKERS must be ip:port")?];
-    // Cap the time one call spends retrying.
-    let policy = ReconnectPolicy { deadline: Some(CALL_TIMEOUT), ..ReconnectPolicy::default() };
-    let connecting = ClusterClient::connect_with_policy(&seeds, "localhost", config, policy);
+    let connecting = ClusterClient::connect(&seeds, "localhost", config);
     let client = bounded("connecting", CALL_TIMEOUT, connecting).await?;
     Ok(Arc::new(client))
 }
@@ -158,7 +169,6 @@ async def connect() -> felix.AsyncClient:
             tenant_id=TENANT,
             token=os.environ["FELIX_AUTH_TOKEN"],
             ca_file=os.environ["FELIX_CA_FILE"],
-            reconnect_deadline=CALL_TIMEOUT,
         )
     )
 
@@ -226,7 +236,6 @@ function connect(): Promise<Client> {
     Client.connect(process.env.FELIX_BROKERS ?? "127.0.0.1:5000", TENANT, {
       token: required("FELIX_AUTH_TOKEN"),
       caFile: required("FELIX_CA_FILE"),
-      reconnectDeadline: CALL_TIMEOUT_MS,
     }),
   );
 }
@@ -295,7 +304,6 @@ static Task<FelixClient> ConnectAsync() =>
         TenantId = Tenant,
         Token = Required("FELIX_AUTH_TOKEN"),
         CaFile = Required("FELIX_CA_FILE"),
-        ReconnectDeadline = TimeSpan.FromSeconds(CallSeconds),
     }, ct));
 
 static Task SetStatusAsync(FelixCache cache, string id, string status) =>
@@ -717,7 +725,7 @@ async fn main() -> Result<()> {
         }
         Some("work") => work(&client).await,
         Some("dashboard") => dashboard(&client).await,
-        _ => bail!("usage: orders submit [count] | work | dashboard"),
+        _ => bail!("usage: build_an_app submit [count] | work | dashboard"),
     }
 }
 ```
@@ -729,7 +737,7 @@ async fn main() -> Result<()> {
 async def main() -> None:
     args = sys.argv[1:]
     if not args or args[0] not in ("submit", "work", "dashboard"):
-        sys.exit("usage: orders.py submit [count] | work | dashboard")
+        sys.exit("usage: build_an_app.py submit [count] | work | dashboard")
     async with await connect() as client:
         if args[0] == "submit":
             await submit(client, int(args[1]) if len(args) > 1 else 3)
@@ -749,7 +757,7 @@ asyncio.run(main())
 async function main(): Promise<void> {
   const [mode, count = "3"] = process.argv.slice(2);
   if (mode !== "submit" && mode !== "work" && mode !== "dashboard") {
-    throw new Error("usage: orders submit [count] | work | dashboard");
+    throw new Error("usage: build-an-app submit [count] | work | dashboard");
   }
   const client = await connect();
   try {
@@ -771,7 +779,7 @@ await main();
 var mode = args.Length > 0 ? args[0] : "";
 if (mode is not ("submit" or "work" or "dashboard"))
 {
-    Console.Error.WriteLine("usage: orders submit [count] | work | dashboard");
+    Console.Error.WriteLine("usage: dotnet run -- submit [count] | work | dashboard");
     return 1;
 }
 
@@ -795,13 +803,83 @@ return 0;
 </TabItem>
 </Tabs>
 
+## Run it
+
+Use four terminals. Run `source /path/to/felix-tutorial.env` from the [overview](/tutorials/overview/#set-up-once) in each terminal first. `submit` takes an optional order count, 3 by default.
+
+<Tabs syncKey="lang">
+<TabItem label="Rust">
+
+From the project directory:
+
+```bash
+# terminal 1: the dashboard
+cargo run --bin build_an_app -- dashboard
+# terminal 2: first worker
+cargo run --bin build_an_app -- work
+# terminal 3: second worker
+cargo run --bin build_an_app -- work
+# terminal 4: submit four orders
+cargo run --bin build_an_app -- submit 4
+```
+
+</TabItem>
+<TabItem label="Python">
+
+With the virtual environment active:
+
+```bash
+# terminal 1: the dashboard
+python3 build_an_app.py dashboard
+# terminal 2: first worker
+python3 build_an_app.py work
+# terminal 3: second worker
+python3 build_an_app.py work
+# terminal 4: submit four orders
+python3 build_an_app.py submit 4
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+From the project directory:
+
+```bash
+# terminal 1: the dashboard
+npx tsx build-an-app.mts dashboard
+# terminal 2: first worker
+npx tsx build-an-app.mts work
+# terminal 3: second worker
+npx tsx build-an-app.mts work
+# terminal 4: submit four orders
+npx tsx build-an-app.mts submit 4
+```
+
+</TabItem>
+<TabItem label="C#">
+
+From the `BuildAnApp` directory:
+
+```bash
+# terminal 1: the dashboard
+dotnet run -- dashboard
+# terminal 2: first worker
+dotnet run -- work
+# terminal 3: second worker
+dotnet run -- work
+# terminal 4: submit four orders
+dotnet run -- submit 4
+```
+
+</TabItem>
+</Tabs>
+
 ## What you should see
 
-Start `dashboard` in one terminal and two `work` processes in two others. In a
-fourth, submit some orders:
+With `dashboard` running in one terminal and `work` in two others, `submit 4` in
+a fourth prints:
 
 ```text
-$ orders submit 4
 accepted o-1
 accepted o-2
 accepted o-3
@@ -836,9 +914,22 @@ order. The other worker finishes the order about 30 seconds later, on
 `attempt 2`, and the dashboard shows it reach `done`.
 To see the rejection path, publish text that is not an order:
 
+<Tabs syncKey="engine">
+<TabItem label="Docker">
+
 ```bash
 docker compose run --rm felixctl pub tutorial-orders 'not json'
 ```
+
+</TabItem>
+<TabItem label="Podman">
+
+```bash
+podman compose run --rm felixctl pub tutorial-orders 'not json'
+```
+
+</TabItem>
+</Tabs>
 
 A worker prints `rejected a malformed order` and carries on.
 

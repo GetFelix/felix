@@ -16,9 +16,8 @@ tells you when one changes. See [Cache](/features/cache/) for the full model.
 
 ## Prerequisites
 
-A running broker and the environment variables from the
-[tutorials overview](/tutorials/overview/#set-up-once), and the client for your
-language. The steps show Rust, Python, TypeScript and C#, and the C version is
+A running broker, the env file and the client for your language, all set up as
+the [tutorials overview](/tutorials/overview/#set-up-once) describes. The steps show Rust, Python, TypeScript and C#, and the C version is
 one program at the end.
 
 Conditional writes are in the Rust, C# and C clients. The Python and
@@ -27,9 +26,22 @@ those two and their programs have no `lease` mode.
 
 ## 1. Create the cache
 
+<Tabs syncKey="engine">
+<TabItem label="Docker">
+
 ```bash
 docker compose run --rm felixctl cache create tutorial-cache
 ```
+
+</TabItem>
+<TabItem label="Podman">
+
+```bash
+podman compose run --rm felixctl cache create tutorial-cache
+```
+
+</TabItem>
+</Tabs>
 
 Use `felixctl cache create tutorial-cache` if you installed it. With these
 defaults the cache is not replicated, and the leader acknowledges a write alone.
@@ -55,7 +67,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
-use felix_client::{ClientConfig, ClusterClient, ReconnectPolicy, quic_client_config, root_store_from_pem_file};
+use felix_client::{ClientConfig, ClusterClient, quic_client_config, root_store_from_pem_file};
 
 // Must match FELIX_AUTH_TENANT.
 const TENANT: &str = "dev";
@@ -79,9 +91,7 @@ async fn connect() -> Result<Arc<ClusterClient>> {
 
     let broker = std::env::var("FELIX_BROKERS").unwrap_or_else(|_| "127.0.0.1:5000".into());
     let seeds: Vec<SocketAddr> = vec![broker.parse().context("FELIX_BROKERS must be ip:port")?];
-    // Cap the time one call spends retrying.
-    let policy = ReconnectPolicy { deadline: Some(CALL_TIMEOUT), ..ReconnectPolicy::default() };
-    let connecting = ClusterClient::connect_with_policy(&seeds, "localhost", config, policy);
+    let connecting = ClusterClient::connect(&seeds, "localhost", config);
     let client = bounded("connecting", CALL_TIMEOUT, connecting).await?;
     Ok(Arc::new(client))
 }
@@ -130,7 +140,6 @@ async def connect() -> felix.AsyncClient:
             tenant_id=TENANT,
             token=os.environ["FELIX_AUTH_TOKEN"],
             ca_file=os.environ["FELIX_CA_FILE"],
-            reconnect_deadline=CALL_TIMEOUT,
         )
     )
 
@@ -186,7 +195,6 @@ function connect(): Promise<Client> {
     Client.connect(process.env.FELIX_BROKERS ?? "127.0.0.1:5000", TENANT, {
       token: required("FELIX_AUTH_TOKEN"),
       caFile: required("FELIX_CA_FILE"),
-      reconnectDeadline: CALL_TIMEOUT_MS,
     }),
   );
 }
@@ -244,7 +252,6 @@ static Task<FelixClient> ConnectAsync() =>
         TenantId = Tenant,
         Token = Required("FELIX_AUTH_TOKEN"),
         CaFile = Required("FELIX_CA_FILE"),
-        ReconnectDeadline = TimeSpan.FromSeconds(CallSeconds),
     }, ct));
 
 static string Text(ReadOnlyMemory<byte>? value) =>
@@ -637,7 +644,7 @@ async fn main() -> Result<()> {
         (Some("lease"), Some(name), _) => lease(&client, name).await,
         (Some("set"), Some(key), Some(value)) => set(&client, key, value).await,
         (Some("delete"), Some(key), _) => delete(&client, key).await,
-        _ => bail!("usage: cache ttl | watch | lease <name> | set <key> <value> | delete <key>"),
+        _ => bail!("usage: cache_leases_watches ttl | watch | lease <name> | set <key> <value> | delete <key>"),
     }
 }
 ```
@@ -658,7 +665,7 @@ async def main() -> None:
         elif len(args) == 2 and args[0] == "delete":
             await delete_key(client, args[1])
         else:
-            sys.exit("usage: cache.py ttl | watch | set <key> <value> | delete <key>")
+            sys.exit("usage: cache_leases_watches.py ttl | watch | set <key> <value> | delete <key>")
 
 
 asyncio.run(main())
@@ -676,7 +683,7 @@ async function main(): Promise<void> {
     else if (mode === "watch") await watch(client);
     else if (mode === "set" && a && b) await setKey(client, a, b);
     else if (mode === "delete" && a) await deleteKey(client, a);
-    else throw new Error("usage: cache ttl | watch | set <key> <value> | delete <key>");
+    else throw new Error("usage: cache-leases-watches ttl | watch | set <key> <value> | delete <key>");
   } finally {
     client.close();
   }
@@ -691,7 +698,7 @@ await main();
 ```csharp
 if (args.Length == 0 || args[0] is not ("ttl" or "watch" or "lease" or "set" or "delete"))
 {
-    Console.Error.WriteLine("usage: cache ttl | watch | lease <name> | set <key> <value> | delete <key>");
+    Console.Error.WriteLine("usage: dotnet run -- ttl | watch | lease <name> | set <key> <value> | delete <key>");
     return 1;
 }
 
@@ -715,7 +722,7 @@ switch (args)
         await DeleteAsync(cache, key);
         break;
     default:
-        Console.Error.WriteLine("usage: cache ttl | watch | lease <name> | set <key> <value> | delete <key>");
+        Console.Error.WriteLine("usage: dotnet run -- ttl | watch | lease <name> | set <key> <value> | delete <key>");
         return 1;
 }
 return 0;
@@ -724,9 +731,108 @@ return 0;
 </TabItem>
 </Tabs>
 
+## Run it
+
+Run `source /path/to/felix-tutorial.env` from the [overview](/tutorials/overview/#set-up-once) in each terminal first. `ttl`, `watch`, `set` and `delete` are in every language. `lease` is in the Rust, C# and C programs only.
+
+<Tabs syncKey="lang">
+<TabItem label="Rust">
+
+From the project directory:
+
+```bash
+# value with an expiry
+cargo run --bin cache_leases_watches -- ttl
+# terminal 1: watch the status keys
+cargo run --bin cache_leases_watches -- watch
+# terminal 2: change keys
+cargo run --bin cache_leases_watches -- set status:api up
+cargo run --bin cache_leases_watches -- set status:worker degraded
+cargo run --bin cache_leases_watches -- delete status:api
+# stop the watch with Ctrl-C, then in terminal 1 take the lease
+cargo run --bin cache_leases_watches -- lease a
+# terminal 2, quickly: wait for it
+cargo run --bin cache_leases_watches -- lease b
+```
+
+</TabItem>
+<TabItem label="Python">
+
+With the virtual environment active:
+
+```bash
+# value with an expiry
+python3 cache_leases_watches.py ttl
+# terminal 1: watch the status keys
+python3 cache_leases_watches.py watch
+# terminal 2: change keys
+python3 cache_leases_watches.py set status:api up
+python3 cache_leases_watches.py set status:worker degraded
+python3 cache_leases_watches.py delete status:api
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+From the project directory:
+
+```bash
+# value with an expiry
+npx tsx cache-leases-watches.mts ttl
+# terminal 1: watch the status keys
+npx tsx cache-leases-watches.mts watch
+# terminal 2: change keys
+npx tsx cache-leases-watches.mts set status:api up
+npx tsx cache-leases-watches.mts set status:worker degraded
+npx tsx cache-leases-watches.mts delete status:api
+```
+
+</TabItem>
+<TabItem label="C#">
+
+From the `CacheLeasesWatches` directory:
+
+```bash
+# value with an expiry
+dotnet run -- ttl
+# terminal 1: watch the status keys
+dotnet run -- watch
+# terminal 2: change keys
+dotnet run -- set status:api up
+dotnet run -- set status:worker degraded
+dotnet run -- delete status:api
+# stop the watch with Ctrl-C, then in terminal 1 take the lease
+dotnet run -- lease a
+# terminal 2, quickly: wait for it
+dotnet run -- lease b
+```
+
+</TabItem>
+<TabItem label="C">
+
+Build `cache-leases-watches.c` as the [C section](#c) below shows, then run it from that directory:
+
+```bash
+# value with an expiry
+./cache-leases-watches ttl
+# terminal 1: watch the status keys
+./cache-leases-watches watch
+# terminal 2: change keys
+./cache-leases-watches set status:api up
+./cache-leases-watches set status:worker degraded
+./cache-leases-watches delete status:api
+# stop the watch with Ctrl-C, then in terminal 1 take the lease
+./cache-leases-watches lease a
+# terminal 2, quickly: wait for it
+./cache-leases-watches lease b
+```
+
+</TabItem>
+</Tabs>
+
 ## What you should see
 
-The TTL mode shows the value and then its absence:
+After `ttl`, the program shows the value and then its absence:
 
 ```text
 right after the put: Some(b"hello")
@@ -734,13 +840,8 @@ six seconds later: None
 ```
 
 Other languages print the value in their own way. For the watch, start
-`watch` in one terminal and change keys from another:
-
-```text
-$ cache set status:api up
-$ cache set status:worker degraded
-$ cache delete status:api
-```
+`watch` in one terminal and run the three `set` and `delete` commands from
+another:
 
 ```text
 watching status:*
@@ -753,6 +854,7 @@ A key without the `status:` prefix produces nothing, because the watch filters o
 the broker.
 
 For the lease, run `lease a` and then, quickly, `lease b` in another terminal.
+The Python and TypeScript programs have no `lease` mode.
 Your version numbers will differ. They only grow:
 
 ```text
@@ -1099,7 +1201,7 @@ int main(int argc, char **argv) {
               (!strcmp(mode, "lease") && argc > 2) || (!strcmp(mode, "set") && argc > 3) ||
               (!strcmp(mode, "delete") && argc > 2);
     if (!ok) {
-        fprintf(stderr, "usage: cache ttl | watch | lease <name> | set <key> <value> | delete <key>\n");
+        fprintf(stderr, "usage: cache-leases-watches ttl | watch | lease <name> | set <key> <value> | delete <key>\n");
         return 1;
     }
     if (!token || !*token || !ca_file || !*ca_file) {
@@ -1111,15 +1213,10 @@ int main(int argc, char **argv) {
     pthread_mutex_init(&w.mu, NULL);
     pthread_cond_init(&w.cv, NULL);
     int exit_code = 1;
-    const struct FelixConnectOptions options = {
-        .size = sizeof(struct FelixConnectOptions),
-        .reconnect_deadline_ms = 10000,
-    };
 
     FelixStatus status = wait_for(
-        &w, felix_client_connect_with(broker && *broker ? broker : "127.0.0.1:5000", TENANT,
-                                      token, "localhost", ca_file, &options, NULL, on_connect,
-                                      &w));
+        &w, felix_client_connect(broker && *broker ? broker : "127.0.0.1:5000", TENANT,
+                                 token, "localhost", ca_file, NULL, on_connect, &w));
     if (status != FELIX_STATUS_OK) {
         fprintf(stderr, "connect: %s\n", w.message);
     } else {
@@ -1143,6 +1240,18 @@ int main(int argc, char **argv) {
     return exit_code;
 }
 ```
+
+Save it as `cache-leases-watches.c` in the unpacked release directory from the
+[overview](/tutorials/overview/), and compile and link it there:
+
+```bash
+cc -std=c11 -pthread -I include cache-leases-watches.c -L lib -lfelix \
+   -Wl,-rpath,"$PWD/lib" -o cache-leases-watches
+```
+
+This links `lib/libfelix.dylib` on macOS. To build from source instead, see
+[the C client page](/clients/c/). Run it with the commands in the C tab of
+[Run it](#run-it).
 
 ## Where next
 

@@ -18,17 +18,29 @@ acknowledges it.
 
 ## Prerequisites
 
-A running broker and the environment variables from the
-[tutorials overview](/tutorials/overview/#set-up-once), and the client for your
-language. [Your first stream](/tutorials/first-stream/) is worth doing first
+A running broker, the env file and the client for your language, all set up as
+the [tutorials overview](/tutorials/overview/#set-up-once) describes. [Your first stream](/tutorials/first-stream/) is worth doing first
 but not required. The steps show Rust, Python, TypeScript and C#. The C version
 is one program at the end.
 
 ## 1. Create the stream
 
+<Tabs syncKey="engine">
+<TabItem label="Docker">
+
 ```bash
 docker compose run --rm felixctl stream create tutorial-jobs
 ```
+
+</TabItem>
+<TabItem label="Podman">
+
+```bash
+podman compose run --rm felixctl stream create tutorial-jobs
+```
+
+</TabItem>
+</Tabs>
 
 Use `felixctl stream create tutorial-jobs` if you installed it. A group needs a
 durable stream, which is what this creates, because the group's position is
@@ -51,7 +63,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use felix_client::{AckMode, ClientConfig, ClusterClient, ReconnectPolicy, quic_client_config, root_store_from_pem_file};
+use felix_client::{AckMode, ClientConfig, ClusterClient, quic_client_config, root_store_from_pem_file};
 
 // Must match FELIX_AUTH_TENANT.
 const TENANT: &str = "dev";
@@ -78,9 +90,7 @@ async fn connect() -> Result<Arc<ClusterClient>> {
 
     let broker = std::env::var("FELIX_BROKERS").unwrap_or_else(|_| "127.0.0.1:5000".into());
     let seeds: Vec<SocketAddr> = vec![broker.parse().context("FELIX_BROKERS must be ip:port")?];
-    // Cap the time one call spends retrying.
-    let policy = ReconnectPolicy { deadline: Some(CALL_TIMEOUT), ..ReconnectPolicy::default() };
-    let connecting = ClusterClient::connect_with_policy(&seeds, "localhost", config, policy);
+    let connecting = ClusterClient::connect(&seeds, "localhost", config);
     let client = bounded("connecting", CALL_TIMEOUT, connecting).await?;
     Ok(Arc::new(client))
 }
@@ -131,7 +141,6 @@ async def connect() -> felix.AsyncClient:
             tenant_id=TENANT,
             token=os.environ["FELIX_AUTH_TOKEN"],
             ca_file=os.environ["FELIX_CA_FILE"],
-            reconnect_deadline=CALL_TIMEOUT,
         )
     )
 
@@ -185,7 +194,6 @@ function connect(): Promise<Client> {
     Client.connect(process.env.FELIX_BROKERS ?? "127.0.0.1:5000", TENANT, {
       token: required("FELIX_AUTH_TOKEN"),
       caFile: required("FELIX_CA_FILE"),
-      reconnectDeadline: CALL_TIMEOUT_MS,
     }),
   );
 }
@@ -241,7 +249,6 @@ static Task<FelixClient> ConnectAsync() =>
         TenantId = Tenant,
         Token = Required("FELIX_AUTH_TOKEN"),
         CaFile = Required("FELIX_CA_FILE"),
-        ReconnectDeadline = TimeSpan.FromSeconds(CallSeconds),
     }, ct));
 
 static async Task ProduceAsync(FelixClient client)
@@ -546,7 +553,7 @@ async fn main() -> Result<()> {
         Some("work") => work(&client, args.get(1).map_or("worker", String::as_str)).await,
         Some("dead") => dead(&client, false).await,
         Some("redrive") => dead(&client, true).await,
-        _ => bail!("usage: work-queue produce | work [name] | dead | redrive"),
+        _ => bail!("usage: work_queue produce | work [name] | dead | redrive"),
     }
 }
 ```
@@ -600,7 +607,7 @@ await main();
 var mode = args.Length > 0 ? args[0] : "";
 if (mode is not ("produce" or "work" or "dead" or "redrive"))
 {
-    Console.Error.WriteLine("usage: work-queue produce | work [name] | dead | redrive");
+    Console.Error.WriteLine("usage: dotnet run -- produce | work [name] | dead | redrive");
     return 1;
 }
 
@@ -623,11 +630,118 @@ return 0;
 </TabItem>
 </Tabs>
 
+## Run it
+
+Use three terminals. Run `source /path/to/felix-tutorial.env` from the [overview](/tutorials/overview/#set-up-once) in each terminal first. `work` takes an optional worker name, and `ACCEPT_POISON=1` makes a worker accept the `poison` job.
+
+<Tabs syncKey="lang">
+<TabItem label="Rust">
+
+From the project directory:
+
+```bash
+# terminal 1: first worker
+cargo run --bin work_queue -- work a
+# terminal 2: second worker
+cargo run --bin work_queue -- work b
+# terminal 3: put the jobs on the stream
+cargo run --bin work_queue -- produce
+# terminal 3, once the workers go quiet: list the dead letters
+cargo run --bin work_queue -- dead
+# stop both workers, then in terminal 1 start one that accepts the poison job
+ACCEPT_POISON=1 cargo run --bin work_queue -- work a
+# terminal 3: redrive the dead letter
+cargo run --bin work_queue -- redrive
+```
+
+</TabItem>
+<TabItem label="Python">
+
+With the virtual environment active:
+
+```bash
+# terminal 1: first worker
+python3 work_queue.py work a
+# terminal 2: second worker
+python3 work_queue.py work b
+# terminal 3: put the jobs on the stream
+python3 work_queue.py produce
+# terminal 3, once the workers go quiet: list the dead letters
+python3 work_queue.py dead
+# stop both workers, then in terminal 1 start one that accepts the poison job
+ACCEPT_POISON=1 python3 work_queue.py work a
+# terminal 3: redrive the dead letter
+python3 work_queue.py redrive
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+From the project directory:
+
+```bash
+# terminal 1: first worker
+npx tsx work-queue.mts work a
+# terminal 2: second worker
+npx tsx work-queue.mts work b
+# terminal 3: put the jobs on the stream
+npx tsx work-queue.mts produce
+# terminal 3, once the workers go quiet: list the dead letters
+npx tsx work-queue.mts dead
+# stop both workers, then in terminal 1 start one that accepts the poison job
+ACCEPT_POISON=1 npx tsx work-queue.mts work a
+# terminal 3: redrive the dead letter
+npx tsx work-queue.mts redrive
+```
+
+</TabItem>
+<TabItem label="C#">
+
+From the `WorkQueue` directory:
+
+```bash
+# terminal 1: first worker
+dotnet run -- work a
+# terminal 2: second worker
+dotnet run -- work b
+# terminal 3: put the jobs on the stream
+dotnet run -- produce
+# terminal 3, once the workers go quiet: list the dead letters
+dotnet run -- dead
+# stop both workers, then in terminal 1 start one that accepts the poison job
+ACCEPT_POISON=1 dotnet run -- work a
+# terminal 3: redrive the dead letter
+dotnet run -- redrive
+```
+
+</TabItem>
+<TabItem label="C">
+
+Build `work-queue.c` as the [C section](#c) below shows, then run it from that directory:
+
+```bash
+# terminal 1: first worker
+./work-queue work a
+# terminal 2: second worker
+./work-queue work b
+# terminal 3: put the jobs on the stream
+./work-queue produce
+# terminal 3, once the workers go quiet: list the dead letters
+./work-queue dead
+# stop both workers, then in terminal 1 start one that accepts the poison job
+ACCEPT_POISON=1 ./work-queue work a
+# terminal 3: redrive the dead letter
+./work-queue redrive
+```
+
+</TabItem>
+</Tabs>
+
 ## What you should see
 
-Start two workers, each in its own terminal, with names `a` and `b`. Then
-queue the jobs from a third. The workers print as they go, and the split
-between them varies from run to run:
+With `work a` and `work b` running in two terminals, `produce` in a third queues
+the jobs. The workers print as they go, and the split between them varies from
+run to run:
 
 ```text
 a: finished job 1 (attempt 1)
@@ -647,21 +761,21 @@ b: poison failed on attempt 5: cannot parse job
 ```
 
 Each job was finished by exactly one worker. The poison job went back and forth
-for five attempts and then stopped coming. List what the group set aside:
+for five attempts and then stopped coming. `dead` lists what the group set aside:
 
 ```text
-$ work-queue dead
 dead letter at offset 7
 ```
 
 Your offset will differ. Now fix the cause and redrive it. Stop the workers,
-start one with `ACCEPT_POISON=1` in its environment, and redrive from another
-terminal. The worker finishes the job on a fresh attempt count:
+start one with `ACCEPT_POISON=1 ... work a` as in the commands above, and run
+`redrive` from another terminal. `redrive` prints:
 
 ```text
-$ work-queue redrive
 redrove offset 7
 ```
+
+The worker finishes the job on a fresh attempt count:
 
 ```text
 a: finished poison (attempt 1)
@@ -909,7 +1023,7 @@ int main(int argc, char **argv) {
     const char *mode = argc > 1 ? argv[1] : "";
     if (strcmp(mode, "produce") && strcmp(mode, "work") && strcmp(mode, "dead") &&
         strcmp(mode, "redrive")) {
-        fprintf(stderr, "usage: work_queue produce | work [name] | dead | redrive\n");
+        fprintf(stderr, "usage: work-queue produce | work [name] | dead | redrive\n");
         return 1;
     }
     if (!token || !*token || !ca_file || !*ca_file) {
@@ -921,15 +1035,10 @@ int main(int argc, char **argv) {
     pthread_mutex_init(&w.mu, NULL);
     pthread_cond_init(&w.cv, NULL);
     int exit_code = 1;
-    const struct FelixConnectOptions options = {
-        .size = sizeof(struct FelixConnectOptions),
-        .reconnect_deadline_ms = 10000,
-    };
 
     FelixStatus status = wait_for(
-        &w, felix_client_connect_with(broker && *broker ? broker : "127.0.0.1:5000", TENANT,
-                                      token, "localhost", ca_file, &options, NULL, on_connect,
-                                      &w));
+        &w, felix_client_connect(broker && *broker ? broker : "127.0.0.1:5000", TENANT,
+                                 token, "localhost", ca_file, NULL, on_connect, &w));
     if (status != FELIX_STATUS_OK) {
         fprintf(stderr, "connect: %s\n", w.message);
     } else {
@@ -949,6 +1058,18 @@ int main(int argc, char **argv) {
     return exit_code;
 }
 ```
+
+Save it as `work-queue.c` in the unpacked release directory from the
+[overview](/tutorials/overview/), and compile and link it there:
+
+```bash
+cc -std=c11 -pthread -I include work-queue.c -L lib -lfelix \
+   -Wl,-rpath,"$PWD/lib" -o work-queue
+```
+
+This links `lib/libfelix.dylib` on macOS. To build from source instead, see
+[the C client page](/clients/c/). Run it with the commands in the C tab of
+[Run it](#run-it).
 
 ## Where next
 

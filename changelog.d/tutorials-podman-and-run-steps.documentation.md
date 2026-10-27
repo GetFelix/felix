@@ -1,0 +1,1 @@
+- The tutorials work with the released 0.6.2 clients and with Podman: every container command has a Podman form, each language gets its own file per tutorial with the command to run it, every tutorial has a "Run it" section, setup writes the settings to a file every terminal sources, and the C programs build against the release archive.

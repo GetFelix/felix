@@ -73,8 +73,7 @@ differently:
 - C waits for each callback with a deadline, and ends the program if the broker
   does not answer in time, because the callback may still run later.
 
-Every program also sets the client's reconnect deadline to ten seconds, which
-caps the time one call spends retrying. A call that times out may or may not
+A call that times out may or may not
 have reached the broker, so a write that times out is not known to have failed.
 Reads that wait for events by design, such as a subscription or a watch, have
 no limit of their own. Where a tutorial reads with a timeout, it is part of the
@@ -82,97 +81,233 @@ example.
 
 ## Set up once
 
+The tutorials target Felix v0.6.2, the current release. The compose file below
+is the one tagged v0.6.2, and it pins the broker, control plane and `felixctl`
+images to 0.6.2. Install the client libraries at the same version, as each
+language tab shows.
+
 The tutorials run against the development stack from the
 [quickstart](/getting-started/quickstart/): a control plane, one broker with
 durable storage, and credentials for a tenant named `dev` with a namespace
 named `default`. It needs Docker or Podman. The credentials work on your
 machine only.
 
+Pick your container engine. The choice applies to every command on these
+pages. With Podman, start the machine first on macOS or Windows
+(`podman machine start`), and have `docker-compose` 2.20 or later installed:
+`podman compose` hands the file to it, and `podman-compose` does not run this
+file correctly. [Docker or Podman](/getting-started/containers/) has the
+details.
+
+<Tabs syncKey="engine">
+<TabItem label="Docker">
+
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/GetFelix/felix/main/compose.yaml
-docker compose up
+curl -fsSLO https://raw.githubusercontent.com/GetFelix/felix/v0.6.2/compose.yaml
+docker compose up        # stays in the foreground and prints the logs
+# or, in the background:
+docker compose up -d
+docker compose logs -f
 ```
 
-With Podman, use `PODMAN_COMPOSE_PROVIDER=docker-compose podman compose up`.
-Leave it running. In another terminal in the same directory, copy out the
-client token and the broker's certificate and export the settings every
-tutorial reads:
+</TabItem>
+<TabItem label="Podman">
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/GetFelix/felix/v0.6.2/compose.yaml
+export PODMAN_COMPOSE_PROVIDER=docker-compose
+podman compose up        # stays in the foreground and prints the logs
+# or, in the background:
+podman compose up -d
+podman compose logs -f
+```
+
+</TabItem>
+</Tabs>
+
+Run `up` from the directory that holds `compose.yaml`. In the foreground form
+the stack prints its logs and keeps the terminal, so leave it running. In
+another terminal in the same directory, copy out the client token and the
+broker's certificate and write the settings every tutorial reads to an env
+file, with absolute paths so it works from any directory:
+
+<Tabs syncKey="engine">
+<TabItem label="Docker">
 
 ```bash
 docker compose exec -T felix-broker cat /var/lib/felix/client.jwt > felix-dev.jwt
 docker compose exec -T felix-broker cat /var/lib/felix/broker-cert.pem > felix-dev.pem
 
+cat > felix-tutorial.env <<EOF
 export FELIX_BROKERS=127.0.0.1:5000
 export FELIX_AUTH_TENANT=dev
 export FELIX_AUTH_TOKEN="$(cat felix-dev.jwt)"
 export FELIX_CA_FILE="$PWD/felix-dev.pem"
+export COMPOSE_FILE="$PWD/compose.yaml"
+EOF
+source felix-tutorial.env
 ```
+
+</TabItem>
+<TabItem label="Podman">
+
+```bash
+export PODMAN_COMPOSE_PROVIDER=docker-compose
+podman compose exec -T felix-broker cat /var/lib/felix/client.jwt > felix-dev.jwt
+podman compose exec -T felix-broker cat /var/lib/felix/broker-cert.pem > felix-dev.pem
+
+cat > felix-tutorial.env <<EOF
+export FELIX_BROKERS=127.0.0.1:5000
+export FELIX_AUTH_TENANT=dev
+export FELIX_AUTH_TOKEN="$(cat felix-dev.jwt)"
+export FELIX_CA_FILE="$PWD/felix-dev.pem"
+export COMPOSE_FILE="$PWD/compose.yaml"
+export PODMAN_COMPOSE_PROVIDER=docker-compose
+EOF
+source felix-tutorial.env
+```
+
+</TabItem>
+</Tabs>
+
+The stack publishes ports 5000 to 5003 (UDP) and 8080, 8081 and 8443 (TCP) on
+`127.0.0.1`. If `up` fails because a port is in use, another container usually
+holds it, often another Felix stack. On Podman, `lsof` names the holder as
+`gvproxy`, the process that forwards every published port, so ask the engine
+which container it is and stop that stack first:
+
+<Tabs syncKey="engine">
+<TabItem label="Docker">
+
+```bash
+docker ps --format '{{.Names}}\t{{.Ports}}'
+```
+
+</TabItem>
+<TabItem label="Podman">
+
+```bash
+podman ps --format '{{.Names}}\t{{.Ports}}'
+```
+
+</TabItem>
+</Tabs>
+
+Run `source /path/to/felix-tutorial.env` in every terminal you use for the
+tutorials, the programs and `felixctl` alike. `COMPOSE_FILE` lets
+`compose` find the stack from any directory.
 
 The token lasts a day. The broker makes a new certificate every time it starts,
 so copy the file again after a restart. The tutorials create their streams and
 caches with `felixctl`, which the compose file runs for you as
-`docker compose run --rm felixctl`. To use one installed on your machine,
+`docker compose run --rm felixctl`, or `podman compose run --rm felixctl` with
+Podman, where the env file already sets `PODMAN_COMPOSE_PROVIDER`. To use one installed on your machine,
 see [felixctl](/getting-started/felixctl/#install) and the
 [Docker Compose page](/deployment/docker-compose/#try-it-in-one-command) for
 adding a context.
 
-Then install the client for your language:
+Then set up your language. Each tutorial is one program. Copy the blocks for
+your language, in order, into that tutorial's file, then run the file with a
+mode argument, as the tutorial's "Run it" section shows. Every terminal you run
+a program from needs the exported `FELIX_*` settings above.
+
+| Tutorial | Program name |
+| --- | --- |
+| Your first stream | `first_stream` (C: `first-stream`) |
+| A work queue | `work_queue` (C: `work-queue`) |
+| Cache, leases and watches | `cache_leases_watches` (C: `cache-leases-watches`) |
+| Build an app | `build_an_app` (no C version) |
+
+The file names below follow each language's convention.
 
 <Tabs syncKey="lang">
 <TabItem label="Rust">
 
 ```bash
 cargo new felix-tutorial && cd felix-tutorial
-cargo add felix-client anyhow bytes serde_json
-cargo add tokio --features rt-multi-thread,macros,time,fs
+cargo add felix-client@0.6.2 anyhow bytes serde_json
+cargo add tokio --features rt-multi-thread,macros,time,fs,io-util
 ```
 
-Put each tutorial's Rust blocks, in order, into `src/main.rs`. See the
+Each tutorial is one binary in this project. Put its blocks in
+`src/bin/first_stream.rs`, `src/bin/work_queue.rs`,
+`src/bin/cache_leases_watches.rs` and `src/bin/build_an_app.rs`, and run one
+with `cargo run --bin first_stream -- <mode>`. See the
 [Rust client](/clients/rust/) for the API.
 
 </TabItem>
 <TabItem label="Python">
 
+You need Python 3.10 or later. Make a virtual environment for the tutorials:
+
 ```bash
-pip install felix-client
+python3 -m venv .venv && . .venv/bin/activate
+pip install felix-client==0.6.2
 ```
 
-The module is `felix`. See the [Python client](/clients/python/).
+Activate it again in every terminal. The module is `felix`. Each tutorial is one file: `first_stream.py`,
+`work_queue.py`, `cache_leases_watches.py` and `build_an_app.py`. Run one with
+`python3 first_stream.py <mode>`. See the [Python client](/clients/python/).
 
 </TabItem>
 <TabItem label="TypeScript">
 
 ```bash
-npm install felix-client
+mkdir felix-tutorial && cd felix-tutorial
+npm install felix-client@0.6.2
+npm install -D tsx
 ```
 
-The programs are ES modules with top-level `await`. Run them with a TypeScript
-runner such as `npx tsx`. See the [TypeScript client](/clients/typescript/).
+The programs are ES modules with top-level `await`, so each tutorial is one
+`.mts` file: `first-stream.mts`, `work-queue.mts`, `cache-leases-watches.mts`
+and `build-an-app.mts`. Run one with `npx tsx first-stream.mts <mode>`. See the
+[TypeScript client](/clients/typescript/).
 
 </TabItem>
 <TabItem label="C#">
 
+Each tutorial is its own console project. For the first one:
+
 ```bash
-dotnet new console -o FelixTutorial && cd FelixTutorial
-dotnet add package Felix.Client
+dotnet new console -o FirstStream && cd FirstStream
+dotnet add package Felix.Client --version 0.6.2
 ```
 
-Put each tutorial's C# blocks, in order, into `Program.cs`. See the
-[C# client](/clients/csharp/).
+Make `WorkQueue`, `CacheLeasesWatches` and `BuildAnApp` the same way. A
+tutorial's blocks replace the template's `Program.cs` in its project, and from that directory run
+`dotnet run -- <mode>`. See the [C# client](/clients/csharp/).
 
 </TabItem>
 <TabItem label="C">
 
-Build the shared library as [the C client page](/clients/c/) describes and
-compile each program against `felix.h`:
+Each tutorial's C program is one file: `first-stream.c`, `work-queue.c` and
+`cache-leases-watches.c`. Download the v0.6.2 release archive for your
+platform as [the C client page](/clients/c/#install) describes, unpack it and
+save the program inside the unpacked directory. On Linux x64:
 
 ```bash
-cargo build --release -p felix-capi
-cc -std=c11 -pthread -I crates/sdk/felix-capi/include program.c \
-   target/release/libfelix.so -Wl,-rpath,"$PWD/target/release" -o program
+curl -fLO https://github.com/GetFelix/felix/releases/download/v0.6.2/libfelix-v0.6.2-linux-x64.tar.gz
+tar xzf libfelix-v0.6.2-linux-x64.tar.gz
+cd libfelix-v0.6.2-linux-x64
+cc -std=c11 -pthread -I include first-stream.c -L lib -lfelix \
+   -Wl,-rpath,"$PWD/lib" -o first-stream
 ```
 
-Use `libfelix.dylib` on macOS.
+On macOS with Apple silicon, use the `osx-arm64` archive. The command is the
+same and links `lib/libfelix.dylib`:
+
+```bash
+curl -fLO https://github.com/GetFelix/felix/releases/download/v0.6.2/libfelix-v0.6.2-osx-arm64.tar.gz
+tar xzf libfelix-v0.6.2-osx-arm64.tar.gz
+cd libfelix-v0.6.2-osx-arm64
+cc -std=c11 -pthread -I include first-stream.c -L lib -lfelix \
+   -Wl,-rpath,"$PWD/lib" -o first-stream
+```
+
+The release also has `linux-arm64` and `osx-x64` archives, and zip archives
+for Windows. Change the file and output names for the other tutorials, and
+run the result as `./first-stream <mode>`. To build from source instead, see
+[the C client page](/clients/c/).
 
 </TabItem>
 </Tabs>
