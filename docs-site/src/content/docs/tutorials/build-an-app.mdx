@@ -26,9 +26,8 @@ submit would sit behind an HTTP handler.
 
 ## Prerequisites
 
-A running broker and the environment variables from the
-[tutorials overview](/tutorials/overview/#set-up-once), and the client for your
-language. The earlier tutorials introduce each call used here, so
+A running broker, the env file and the client for your language, all set up as
+the [tutorials overview](/tutorials/overview/#set-up-once) describes. The earlier tutorials introduce each call used here, so
 [Your first stream](/tutorials/first-stream/),
 [A work queue](/tutorials/work-queue/) and
 [Cache, leases and watches](/tutorials/cache-leases-watches/) are worth doing
@@ -811,7 +810,7 @@ return 0;
 
 ## Run it
 
-Use four terminals. Each needs the `FELIX_*` settings from the [overview](/tutorials/overview/#set-up-once), and `PODMAN_COMPOSE_PROVIDER=docker-compose` if you use `felixctl` with Podman. `submit` takes an optional order count, 3 by default.
+Use four terminals. Run `source /path/to/felix-tutorial.env` from the [overview](/tutorials/overview/#set-up-once) in each terminal first. `submit` takes an optional order count, 3 by default.
 
 <Tabs syncKey="lang">
 <TabItem label="Rust">
@@ -832,19 +831,23 @@ cargo run --bin build_an_app -- submit 4
 </TabItem>
 <TabItem label="Python">
 
+With the virtual environment active:
+
 ```bash
 # terminal 1: the dashboard
-python build_an_app.py dashboard
+python3 build_an_app.py dashboard
 # terminal 2: first worker
-python build_an_app.py work
+python3 build_an_app.py work
 # terminal 3: second worker
-python build_an_app.py work
+python3 build_an_app.py work
 # terminal 4: submit four orders
-python build_an_app.py submit 4
+python3 build_an_app.py submit 4
 ```
 
 </TabItem>
 <TabItem label="TypeScript">
+
+From the project directory:
 
 ```bash
 # terminal 1: the dashboard
@@ -875,8 +878,6 @@ dotnet run -- submit 4
 
 </TabItem>
 </Tabs>
-
-
 
 ## What you should see
 

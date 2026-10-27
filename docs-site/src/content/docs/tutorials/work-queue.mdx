@@ -18,9 +18,8 @@ acknowledges it.
 
 ## Prerequisites
 
-A running broker and the environment variables from the
-[tutorials overview](/tutorials/overview/#set-up-once), and the client for your
-language. [Your first stream](/tutorials/first-stream/) is worth doing first
+A running broker, the env file and the client for your language, all set up as
+the [tutorials overview](/tutorials/overview/#set-up-once) describes. [Your first stream](/tutorials/first-stream/) is worth doing first
 but not required. The steps show Rust, Python, TypeScript and C#. The C version
 is one program at the end.
 
@@ -638,7 +637,7 @@ return 0;
 
 ## Run it
 
-Use four terminals. Each needs the `FELIX_*` settings from the [overview](/tutorials/overview/#set-up-once), and `PODMAN_COMPOSE_PROVIDER=docker-compose` if you use `felixctl` with Podman. `work` takes an optional worker name, and `ACCEPT_POISON=1` makes a worker accept the `poison` job.
+Use three terminals. Run `source /path/to/felix-tutorial.env` from the [overview](/tutorials/overview/#set-up-once) in each terminal first. `work` takes an optional worker name, and `ACCEPT_POISON=1` makes a worker accept the `poison` job.
 
 <Tabs syncKey="lang">
 <TabItem label="Rust">
@@ -663,23 +662,27 @@ cargo run --bin work_queue -- redrive
 </TabItem>
 <TabItem label="Python">
 
+With the virtual environment active:
+
 ```bash
 # terminal 1: first worker
-python work_queue.py work a
+python3 work_queue.py work a
 # terminal 2: second worker
-python work_queue.py work b
+python3 work_queue.py work b
 # terminal 3: put the jobs on the stream
-python work_queue.py produce
+python3 work_queue.py produce
 # terminal 3, once the workers go quiet: list the dead letters
-python work_queue.py dead
+python3 work_queue.py dead
 # stop both workers, then in terminal 1 start one that accepts the poison job
-ACCEPT_POISON=1 python work_queue.py work a
+ACCEPT_POISON=1 python3 work_queue.py work a
 # terminal 3: redrive the dead letter
-python work_queue.py redrive
+python3 work_queue.py redrive
 ```
 
 </TabItem>
 <TabItem label="TypeScript">
+
+From the project directory:
 
 ```bash
 # terminal 1: first worker
@@ -719,7 +722,7 @@ dotnet run -- redrive
 </TabItem>
 <TabItem label="C">
 
-Build `work-queue.c` as the [C section](#c) below shows, then run:
+Build `work-queue.c` as the [C section](#c) below shows, then run it from that directory:
 
 ```bash
 # terminal 1: first worker
@@ -738,8 +741,6 @@ ACCEPT_POISON=1 ./work-queue work a
 
 </TabItem>
 </Tabs>
-
-
 
 ## What you should see
 
@@ -1068,15 +1069,17 @@ int main(int argc, char **argv) {
 }
 ```
 
-Save it as `work-queue.c` in the root of a Felix checkout, build `libfelix` as the
-[overview](/tutorials/overview/) describes, and compile and link it:
+Save it as `work-queue.c` in the unpacked release directory from the
+[overview](/tutorials/overview/), and compile and link it there:
 
 ```bash
-cc -std=c11 -pthread -I crates/sdk/felix-capi/include work-queue.c \
-   target/release/libfelix.so -Wl,-rpath,"$PWD/target/release" -o work-queue
+cc -std=c11 -pthread -I include work-queue.c -L lib -lfelix \
+   -Wl,-rpath,"$PWD/lib" -o work-queue
 ```
 
-Use `libfelix.dylib` on macOS. Run it with the commands in the C tab of [Run it](#run-it).
+This links `lib/libfelix.dylib` on macOS. To build from source instead, see
+[the C client page](/clients/c/). Run it with the commands in the C tab of
+[Run it](#run-it).
 
 ## Where next
 

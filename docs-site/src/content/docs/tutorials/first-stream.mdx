@@ -15,11 +15,9 @@ it carries on with the first record it has not seen.
 A running broker and the environment variables from the
 [tutorials overview](/tutorials/overview/#set-up-once). That page starts the
 development stack from the [quickstart](/getting-started/quickstart/) and
-exports the broker address, a token and the broker's certificate. You also need
-the client for your language, installed as the
-[Rust](/clients/rust/), [Python](/clients/python/),
-[TypeScript](/clients/typescript/), [C#](/clients/csharp/) or [C](/clients/c/)
-client page describes. The steps show Rust, Python, TypeScript and C#. The C
+writes the broker address, a token and the broker's certificate to an env file
+you source in each terminal. You also need the client for your language, set up
+as the overview's "Set up once" tabs describe. The steps show Rust, Python, TypeScript and C#. The C
 client is callback based, so its version is one program at the end.
 
 ## 1. Create a stream
@@ -616,7 +614,7 @@ return 0;
 
 ## Run it
 
-The program takes one argument, `publish` or `read`. Run each in a terminal where the `FELIX_*` settings from the [overview](/tutorials/overview/#set-up-once) are exported, and `PODMAN_COMPOSE_PROVIDER=docker-compose` too if you use `felixctl` with Podman. The reader writes its `checkpoint` file to the directory you run it from, so run both from the same one.
+The program takes one argument, `publish` or `read`. Run each in a terminal where you have run `source /path/to/felix-tutorial.env` from the [overview](/tutorials/overview/#set-up-once). The reader writes its `checkpoint` file to the directory you run it from, so run both from the same one.
 
 <Tabs syncKey="lang">
 <TabItem label="Rust">
@@ -633,15 +631,19 @@ cargo run --bin first_stream -- read
 </TabItem>
 <TabItem label="Python">
 
+With the virtual environment active:
+
 ```bash
 # publish three records
-python first_stream.py publish
+python3 first_stream.py publish
 # read them back
-python first_stream.py read
+python3 first_stream.py read
 ```
 
 </TabItem>
 <TabItem label="TypeScript">
+
+From the project directory:
 
 ```bash
 # publish three records
@@ -665,7 +667,7 @@ dotnet run -- read
 </TabItem>
 <TabItem label="C">
 
-Build `first-stream.c` as the [C section](#c) below shows, then run:
+Build `first-stream.c` as the [C section](#c) below shows, then run it from that directory:
 
 ```bash
 # publish three records
@@ -676,8 +678,6 @@ Build `first-stream.c` as the [C section](#c) below shows, then run:
 
 </TabItem>
 </Tabs>
-
-
 
 ## What you should see
 
@@ -966,15 +966,17 @@ int main(int argc, char **argv) {
 }
 ```
 
-Save it as `first-stream.c` in the root of a Felix checkout, build `libfelix` as the
-[overview](/tutorials/overview/) describes, and compile and link it:
+Save it as `first-stream.c` in the unpacked release directory from the
+[overview](/tutorials/overview/), and compile and link it there:
 
 ```bash
-cc -std=c11 -pthread -I crates/sdk/felix-capi/include first-stream.c \
-   target/release/libfelix.so -Wl,-rpath,"$PWD/target/release" -o first-stream
+cc -std=c11 -pthread -I include first-stream.c -L lib -lfelix \
+   -Wl,-rpath,"$PWD/lib" -o first-stream
 ```
 
-Use `libfelix.dylib` on macOS. Run it with the commands in the C tab of [Run it](#run-it).
+This links `lib/libfelix.dylib` on macOS. To build from source instead, see
+[the C client page](/clients/c/). Run it with the commands in the C tab of
+[Run it](#run-it).
 
 ## Where next
 

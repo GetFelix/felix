@@ -16,9 +16,8 @@ tells you when one changes. See [Cache](/features/cache/) for the full model.
 
 ## Prerequisites
 
-A running broker and the environment variables from the
-[tutorials overview](/tutorials/overview/#set-up-once), and the client for your
-language. The steps show Rust, Python, TypeScript and C#, and the C version is
+A running broker, the env file and the client for your language, all set up as
+the [tutorials overview](/tutorials/overview/#set-up-once) describes. The steps show Rust, Python, TypeScript and C#, and the C version is
 one program at the end.
 
 Conditional writes are in the Rust, C# and C clients. The Python and
@@ -739,7 +738,7 @@ return 0;
 
 ## Run it
 
-Each terminal needs the `FELIX_*` settings from the [overview](/tutorials/overview/#set-up-once), and `PODMAN_COMPOSE_PROVIDER=docker-compose` if you use `felixctl` with Podman. `ttl`, `watch`, `set` and `delete` are in every language. `lease` is in the Rust, C# and C programs only.
+Run `source /path/to/felix-tutorial.env` from the [overview](/tutorials/overview/#set-up-once) in each terminal first. `ttl`, `watch`, `set` and `delete` are in every language. `lease` is in the Rust, C# and C programs only.
 
 <Tabs syncKey="lang">
 <TabItem label="Rust">
@@ -764,19 +763,23 @@ cargo run --bin cache_leases_watches -- lease b
 </TabItem>
 <TabItem label="Python">
 
+With the virtual environment active:
+
 ```bash
 # value with an expiry
-python cache_leases_watches.py ttl
+python3 cache_leases_watches.py ttl
 # terminal 1: watch the status keys
-python cache_leases_watches.py watch
+python3 cache_leases_watches.py watch
 # terminal 2: change keys
-python cache_leases_watches.py set status:api up
-python cache_leases_watches.py set status:worker degraded
-python cache_leases_watches.py delete status:api
+python3 cache_leases_watches.py set status:api up
+python3 cache_leases_watches.py set status:worker degraded
+python3 cache_leases_watches.py delete status:api
 ```
 
 </TabItem>
 <TabItem label="TypeScript">
+
+From the project directory:
 
 ```bash
 # value with an expiry
@@ -812,7 +815,7 @@ dotnet run -- lease b
 </TabItem>
 <TabItem label="C">
 
-Build `cache-leases-watches.c` as the [C section](#c) below shows, then run:
+Build `cache-leases-watches.c` as the [C section](#c) below shows, then run it from that directory:
 
 ```bash
 # value with an expiry
@@ -831,8 +834,6 @@ Build `cache-leases-watches.c` as the [C section](#c) below shows, then run:
 
 </TabItem>
 </Tabs>
-
-
 
 ## What you should see
 
@@ -1250,15 +1251,17 @@ int main(int argc, char **argv) {
 }
 ```
 
-Save it as `cache-leases-watches.c` in the root of a Felix checkout, build `libfelix` as the
-[overview](/tutorials/overview/) describes, and compile and link it:
+Save it as `cache-leases-watches.c` in the unpacked release directory from the
+[overview](/tutorials/overview/), and compile and link it there:
 
 ```bash
-cc -std=c11 -pthread -I crates/sdk/felix-capi/include cache-leases-watches.c \
-   target/release/libfelix.so -Wl,-rpath,"$PWD/target/release" -o cache-leases-watches
+cc -std=c11 -pthread -I include cache-leases-watches.c -L lib -lfelix \
+   -Wl,-rpath,"$PWD/lib" -o cache-leases-watches
 ```
 
-Use `libfelix.dylib` on macOS. Run it with the commands in the C tab of [Run it](#run-it).
+This links `lib/libfelix.dylib` on macOS. To build from source instead, see
+[the C client page](/clients/c/). Run it with the commands in the C tab of
+[Run it](#run-it).
 
 ## Where next
 

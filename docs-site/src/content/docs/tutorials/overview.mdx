@@ -100,7 +100,10 @@ details.
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/GetFelix/felix/main/compose.yaml
-docker compose up
+docker compose up        # stays in the foreground and prints the logs
+# or, in the background:
+docker compose up -d
+docker compose logs -f
 ```
 
 </TabItem>
@@ -109,16 +112,20 @@ docker compose up
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/GetFelix/felix/main/compose.yaml
 export PODMAN_COMPOSE_PROVIDER=docker-compose
-podman compose up
+podman compose up        # stays in the foreground and prints the logs
+# or, in the background:
+podman compose up -d
+podman compose logs -f
 ```
 
 </TabItem>
 </Tabs>
 
-The stack stays in the foreground and prints its logs. Leave it running, or add
-`-d` to start it in the background and follow the logs with `logs -f`. In
+Run `up` from the directory that holds `compose.yaml`. In the foreground form
+the stack prints its logs and keeps the terminal, so leave it running. In
 another terminal in the same directory, copy out the client token and the
-broker's certificate and export the settings every tutorial reads:
+broker's certificate and write the settings every tutorial reads to an env
+file, with absolute paths so it works from any directory:
 
 <Tabs syncKey="engine">
 <TabItem label="Docker">
@@ -127,10 +134,14 @@ broker's certificate and export the settings every tutorial reads:
 docker compose exec -T felix-broker cat /var/lib/felix/client.jwt > felix-dev.jwt
 docker compose exec -T felix-broker cat /var/lib/felix/broker-cert.pem > felix-dev.pem
 
+cat > felix-tutorial.env <<EOF
 export FELIX_BROKERS=127.0.0.1:5000
 export FELIX_AUTH_TENANT=dev
 export FELIX_AUTH_TOKEN="$(cat felix-dev.jwt)"
 export FELIX_CA_FILE="$PWD/felix-dev.pem"
+export COMPOSE_FILE="$PWD/compose.yaml"
+EOF
+source felix-tutorial.env
 ```
 
 </TabItem>
@@ -141,10 +152,15 @@ export PODMAN_COMPOSE_PROVIDER=docker-compose
 podman compose exec -T felix-broker cat /var/lib/felix/client.jwt > felix-dev.jwt
 podman compose exec -T felix-broker cat /var/lib/felix/broker-cert.pem > felix-dev.pem
 
+cat > felix-tutorial.env <<EOF
 export FELIX_BROKERS=127.0.0.1:5000
 export FELIX_AUTH_TENANT=dev
 export FELIX_AUTH_TOKEN="$(cat felix-dev.jwt)"
 export FELIX_CA_FILE="$PWD/felix-dev.pem"
+export COMPOSE_FILE="$PWD/compose.yaml"
+export PODMAN_COMPOSE_PROVIDER=docker-compose
+EOF
+source felix-tutorial.env
 ```
 
 </TabItem>
@@ -173,12 +189,15 @@ podman ps --format '{{.Names}}\t{{.Ports}}'
 </TabItem>
 </Tabs>
 
+Run `source /path/to/felix-tutorial.env` in every terminal you use for the
+tutorials, the programs and `felixctl` alike. `COMPOSE_FILE` lets
+`compose` find the stack from any directory.
+
 The token lasts a day. The broker makes a new certificate every time it starts,
 so copy the file again after a restart. The tutorials create their streams and
 caches with `felixctl`, which the compose file runs for you as
 `docker compose run --rm felixctl`, or `podman compose run --rm felixctl` with
-Podman. Export `PODMAN_COMPOSE_PROVIDER=docker-compose` in every terminal you
-use it from. To use one installed on your machine,
+Podman, where the env file already sets `PODMAN_COMPOSE_PROVIDER`. To use one installed on your machine,
 see [felixctl](/getting-started/felixctl/#install) and the
 [Docker Compose page](/deployment/docker-compose/#try-it-in-one-command) for
 adding a context.
@@ -203,7 +222,7 @@ The file names below follow each language's convention.
 ```bash
 cargo new felix-tutorial && cd felix-tutorial
 cargo add felix-client anyhow bytes serde_json
-cargo add tokio --features rt-multi-thread,macros,time,fs
+cargo add tokio --features rt-multi-thread,macros,time,fs,io-util
 ```
 
 Each tutorial is one binary in this project. Put its blocks in
@@ -215,13 +234,16 @@ with `cargo run --bin first_stream -- <mode>`. See the
 </TabItem>
 <TabItem label="Python">
 
+You need Python 3.10 or later. Make a virtual environment for the tutorials:
+
 ```bash
+python3 -m venv .venv && . .venv/bin/activate
 pip install felix-client
 ```
 
-The module is `felix`. Each tutorial is one file: `first_stream.py`,
+Activate it again in every terminal. The module is `felix`. Each tutorial is one file: `first_stream.py`,
 `work_queue.py`, `cache_leases_watches.py` and `build_an_app.py`. Run one with
-`python first_stream.py <mode>`. See the [Python client](/clients/python/).
+`python3 first_stream.py <mode>`. See the [Python client](/clients/python/).
 
 </TabItem>
 <TabItem label="TypeScript">
@@ -229,6 +251,7 @@ The module is `felix`. Each tutorial is one file: `first_stream.py`,
 ```bash
 mkdir felix-tutorial && cd felix-tutorial
 npm install felix-client
+npm install -D tsx
 ```
 
 The programs are ES modules with top-level `await`, so each tutorial is one
@@ -246,26 +269,30 @@ dotnet new console -o FirstStream && cd FirstStream
 dotnet add package Felix.Client
 ```
 
-Make `WorkQueue`, `CacheLeasesWatches` and `BuildAnApp` the same way. Put a
-tutorial's blocks in its project's `Program.cs`, and from that directory run
+Make `WorkQueue`, `CacheLeasesWatches` and `BuildAnApp` the same way. A
+tutorial's blocks replace the template's `Program.cs` in its project, and from that directory run
 `dotnet run -- <mode>`. See the [C# client](/clients/csharp/).
 
 </TabItem>
 <TabItem label="C">
 
 Each tutorial's C program is one file: `first-stream.c`, `work-queue.c` and
-`cache-leases-watches.c`. Build the shared library as
-[the C client page](/clients/c/) describes and compile each program against
-`felix.h`. From the root of a Felix checkout, with the file saved there:
+`cache-leases-watches.c`. Download the release archive for your platform as
+[the C client page](/clients/c/#install) describes, unpack it and save the
+program inside the unpacked directory. For v0.6.2 on Linux x64:
 
 ```bash
-cargo build --release -p felix-capi
-cc -std=c11 -pthread -I crates/sdk/felix-capi/include first-stream.c \
-   target/release/libfelix.so -Wl,-rpath,"$PWD/target/release" -o first-stream
+curl -fLO https://github.com/GetFelix/felix/releases/download/v0.6.2/libfelix-v0.6.2-linux-x64.tar.gz
+tar xzf libfelix-v0.6.2-linux-x64.tar.gz
+cd libfelix-v0.6.2-linux-x64
+cc -std=c11 -pthread -I include first-stream.c -L lib -lfelix \
+   -Wl,-rpath,"$PWD/lib" -o first-stream
 ```
 
-Use `libfelix.dylib` on macOS, and change the file and output names for the
-other tutorials. Run the result as `./first-stream <mode>`.
+On macOS use the `osx-arm64` or `osx-x64` archive. The same command links
+`lib/libfelix.dylib`. Change the file and output names for the other
+tutorials, and run the result as `./first-stream <mode>`. To build from source
+instead, see [the C client page](/clients/c/).
 
 </TabItem>
 </Tabs>
