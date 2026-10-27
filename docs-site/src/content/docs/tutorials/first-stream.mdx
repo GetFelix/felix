@@ -65,7 +65,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use felix_client::{ClientConfig, ClusterClient, ReconnectPolicy, quic_client_config, root_store_from_pem_file};
+use felix_client::{ClientConfig, ClusterClient, quic_client_config, root_store_from_pem_file};
 
 // Must match FELIX_AUTH_TENANT.
 const TENANT: &str = "dev";
@@ -89,9 +89,7 @@ async fn connect() -> Result<Arc<ClusterClient>> {
 
     let broker = std::env::var("FELIX_BROKERS").unwrap_or_else(|_| "127.0.0.1:5000".into());
     let seeds: Vec<SocketAddr> = vec![broker.parse().context("FELIX_BROKERS must be ip:port")?];
-    // Cap the time one call spends retrying.
-    let policy = ReconnectPolicy { deadline: Some(CALL_TIMEOUT), ..ReconnectPolicy::default() };
-    let connecting = ClusterClient::connect_with_policy(&seeds, "localhost", config, policy);
+    let connecting = ClusterClient::connect(&seeds, "localhost", config);
     let client = bounded("connecting", CALL_TIMEOUT, connecting).await?;
     Ok(Arc::new(client))
 }
@@ -129,7 +127,6 @@ async def connect() -> felix.AsyncClient:
             tenant_id=TENANT,
             token=os.environ["FELIX_AUTH_TOKEN"],
             ca_file=os.environ["FELIX_CA_FILE"],
-            reconnect_deadline=CALL_TIMEOUT,
         )
     )
 ```
@@ -180,7 +177,6 @@ function connect(): Promise<Client> {
     Client.connect(process.env.FELIX_BROKERS ?? "127.0.0.1:5000", TENANT, {
       token: required("FELIX_AUTH_TOKEN"),
       caFile: required("FELIX_CA_FILE"),
-      reconnectDeadline: CALL_TIMEOUT_MS,
     }),
   );
 }
@@ -219,7 +215,6 @@ static Task<FelixClient> ConnectAsync() =>
         TenantId = Tenant,
         Token = Required("FELIX_AUTH_TOKEN"),
         CaFile = Required("FELIX_CA_FILE"),
-        ReconnectDeadline = TimeSpan.FromSeconds(CallSeconds),
     }, ct));
 ```
 
@@ -942,15 +937,10 @@ int main(int argc, char **argv) {
     pthread_mutex_init(&w.mu, NULL);
     pthread_cond_init(&w.cv, NULL);
     int exit_code = 1;
-    const struct FelixConnectOptions options = {
-        .size = sizeof(struct FelixConnectOptions),
-        .reconnect_deadline_ms = 10000,
-    };
 
     FelixStatus status = wait_for(
-        &w, felix_client_connect_with(broker && *broker ? broker : "127.0.0.1:5000", TENANT,
-                                      token, "localhost", ca_file, &options, NULL, on_connect,
-                                      &w));
+        &w, felix_client_connect(broker && *broker ? broker : "127.0.0.1:5000", TENANT,
+                                 token, "localhost", ca_file, NULL, on_connect, &w));
     if (status != FELIX_STATUS_OK) {
         fprintf(stderr, "connect: %s\n", w.message);
     } else {
