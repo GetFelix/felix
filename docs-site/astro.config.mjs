@@ -188,6 +188,7 @@ export default defineConfig({
           label: 'Reference',
           collapsed: true,
           items: [
+            { label: 'Terminology', slug: 'reference/terminology' },
             { label: 'Configuration', slug: 'reference/configuration' },
             { label: 'Environment Variables', slug: 'reference/environment-variables' },
             { label: 'Troubleshooting', slug: 'reference/troubleshooting' },

@@ -9,7 +9,8 @@ QUIC connection.
 
 This page is the short version of how it fits together. The
 [status table](/getting-started/what-felix-is-for/) is the page to trust
-for what is and is not built.
+for what is and is not built, and [Terminology](/reference/terminology/)
+explains the words the docs use, such as shard, leader lease and fleet.
 
 ## The core idea: one log, three readings
 
