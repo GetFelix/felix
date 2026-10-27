@@ -383,8 +383,8 @@ If the build runs out of memory:
 cargo build --release -j 2
 ```
 
-## Next Steps
+## Where next
 
-- [Quickstart Guide](/getting-started/quickstart/) - Run your first Felix deployment
-- [Building & Testing](/development/building/) - Development workflow
-- [Configuration](/reference/configuration/) - Customize Felix behavior
+- [Quickstart](/getting-started/quickstart/): run your first Felix deployment
+- [felixctl](/getting-started/felixctl/): the command-line tool you just built
+- [Configuration](/reference/configuration/): settings for the broker and control plane

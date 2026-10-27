@@ -499,3 +499,9 @@ constrains the roadmap.
 - [Semantics](/architecture/semantics/): the precise behavioral contract
 - [Benchmarks](/features/benchmarks/): methodology and current numbers
 - [Design](https://github.com/GetFelix/felix/blob/main/docs/design.md): full target architecture
+
+## Where next
+
+- [Overview](/getting-started/overview/): the components and how a message moves through them
+- [Quickstart](/getting-started/quickstart/): run a broker and publish something
+- [Use Cases](/use-cases/overview/): the scenarios Felix is built for

@@ -196,9 +196,9 @@ and its ecosystem is small.
 The full version of this list, kept current per capability, is
 [What Felix Is For](/getting-started/what-felix-is-for/).
 
-## Where to next
+## Where next
 
 - [Quickstart](/getting-started/quickstart/): run a broker and the demos
 - [Installation](/getting-started/installation/): build from source
+- [Pub/Sub Streaming](/features/pubsub/): the feature most readers want first
 - [System design](/architecture/system-design/): the architecture in depth
-- [Broker API](/api/broker-api/): the wire-level API

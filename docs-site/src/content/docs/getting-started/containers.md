@@ -103,3 +103,9 @@ checks, so it runs the same under both, given the `docker-compose` provider.
 Under `podman-compose` it does not: `run` cannot start the profiled `felixctl`
 service, and the broker starts even if `felix-dev-auth` failed. Its smoke test,
 `scripts/ci/compose_smoke.sh`, takes `CONTAINER_ENGINE=podman`.
+
+## Where next
+
+- [Quickstart](/getting-started/quickstart/): the full local stack
+- [Docker Compose](/deployment/docker-compose/): a compose deployment in depth
+- [Kubernetes](/deployment/kubernetes/): the Helm chart
