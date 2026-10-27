@@ -67,6 +67,16 @@ export default defineConfig({
           ],
         },
         {
+          label: 'Tutorials',
+          items: [
+            { label: 'Overview', slug: 'tutorials/overview' },
+            { label: 'Your First Stream', slug: 'tutorials/first-stream' },
+            { label: 'A Work Queue', slug: 'tutorials/work-queue' },
+            { label: 'Cache, Leases and Watches', slug: 'tutorials/cache-leases-watches' },
+            { label: 'Build an App', slug: 'tutorials/build-an-app' },
+          ],
+        },
+        {
           label: 'Use Cases',
           collapsed: true,
           items: [
@@ -174,6 +184,7 @@ export default defineConfig({
           label: 'Deployment',
           collapsed: true,
           items: [
+            { label: 'Running in Production', slug: 'deployment/production' },
             { label: 'Local Development', slug: 'deployment/local' },
             { label: 'Docker Compose', slug: 'deployment/docker-compose' },
             { label: 'Kubernetes', slug: 'deployment/kubernetes' },
@@ -193,8 +204,22 @@ export default defineConfig({
             { label: 'Terminology', slug: 'reference/terminology' },
             { label: 'Configuration', slug: 'reference/configuration' },
             { label: 'Environment Variables', slug: 'reference/environment-variables' },
+            { label: 'Metrics', slug: 'reference/metrics' },
+            { label: 'Error Codes', slug: 'reference/error-codes' },
+            { label: 'felixctl Commands', slug: 'reference/felixctl' },
             { label: 'Troubleshooting', slug: 'reference/troubleshooting' },
             { label: 'FAQ', slug: 'reference/faq' },
+          ],
+        },
+        {
+          label: 'Release Notes',
+          collapsed: true,
+          // Overview and the per-version pages are generated from CHANGELOG.md
+          // (scripts/gen-release-notes.mjs); version order comes from frontmatter.
+          items: [
+            { label: 'Overview', slug: 'release-notes' },
+            { label: 'Upgrading to 0.7', slug: 'release-notes/upgrading-to-0-7' },
+            { autogenerate: { directory: 'release-notes/releases' } },
           ],
         },
         {

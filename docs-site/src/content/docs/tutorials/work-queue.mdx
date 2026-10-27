@@ -1,0 +1,963 @@
+---
+title: "A work queue"
+description: "Build a job queue with a consumer group: workers that share the load, retries, a worker crash and its redelivery, dead letters and redrive."
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+You will build a job queue. One mode of the program puts jobs on a stream, and
+another runs a worker that takes them one at a time, does the work and
+acknowledges them. You will run two workers and watch them split the jobs,
+stop one in the middle of a job and watch the other pick the job up, and send
+a job that always fails to see where it ends up.
+
+The queue is a [consumer group](/features/queues/) on a stream. Where every
+subscriber to a stream sees every record, the members of a group divide the
+records between them, and a record is not finished until a member
+acknowledges it.
+
+## Prerequisites
+
+A running broker and the environment variables from the
+[tutorials overview](/tutorials/overview/#set-up-once), and the client for your
+language. [Your first stream](/tutorials/first-stream/) is worth doing first
+but not required. The steps show Rust, Python, TypeScript and C#. The C version
+is one program at the end.
+
+## 1. Create the stream
+
+```bash
+docker compose run --rm felixctl stream create tutorial-jobs
+```
+
+Use `felixctl stream create tutorial-jobs` if you installed it. A group needs a
+durable stream, which is what this creates, because the group's position is
+kept in a log beside the stream's records. You do not create the group. It
+exists from its first poll and starts at the beginning of the stream.
+
+## 2. Connect and put jobs on the stream
+
+The program takes a mode: `produce`, `work`, `dead` or `redrive`. Producing is
+an ordinary publish. It sends six jobs and then one, named `poison`, that the
+worker will refuse.
+
+<Tabs syncKey="lang">
+<TabItem label="Rust">
+
+```rust
+use std::future::Future;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::{Context, Result};
+use felix_client::{AckMode, ClientConfig, ClusterClient, ReconnectPolicy, quic_client_config, root_store_from_pem_file};
+
+// Must match FELIX_AUTH_TENANT.
+const TENANT: &str = "dev";
+const NAMESPACE: &str = "default";
+const STREAM: &str = "tutorial-jobs";
+const GROUP: &str = "workers";
+
+// Every call to the broker gets this long. A poll waits on purpose, so it gets
+// its wait on top.
+const CALL_TIMEOUT: Duration = Duration::from_secs(10);
+const POLL_WAIT: Duration = Duration::from_secs(5);
+
+async fn bounded<T>(what: &str, limit: Duration, call: impl Future<Output = Result<T>>) -> Result<T> {
+    tokio::time::timeout(limit, call)
+        .await
+        .with_context(|| format!("{what} did not finish within {limit:?}"))?
+}
+
+async fn connect() -> Result<Arc<ClusterClient>> {
+    let ca_file = std::env::var("FELIX_CA_FILE").context("set FELIX_CA_FILE")?;
+    let roots = Arc::new(root_store_from_pem_file(&ca_file)?);
+    // Reads FELIX_AUTH_TENANT and FELIX_AUTH_TOKEN.
+    let config = ClientConfig::from_env_or_yaml(quic_client_config(Some(roots), false)?, None)?;
+
+    let broker = std::env::var("FELIX_BROKERS").unwrap_or_else(|_| "127.0.0.1:5000".into());
+    let seeds: Vec<SocketAddr> = vec![broker.parse().context("FELIX_BROKERS must be ip:port")?];
+    // Cap the time one call spends retrying.
+    let policy = ReconnectPolicy { deadline: Some(CALL_TIMEOUT), ..ReconnectPolicy::default() };
+    let connecting = ClusterClient::connect_with_policy(&seeds, "localhost", config, policy);
+    let client = bounded("connecting", CALL_TIMEOUT, connecting).await?;
+    Ok(Arc::new(client))
+}
+
+async fn produce(client: &ClusterClient) -> Result<()> {
+    let jobs = ["job 1", "job 2", "job 3", "job 4", "job 5", "job 6", "poison"];
+    for job in jobs {
+        let publish = client.publish(TENANT, NAMESPACE, STREAM, job.as_bytes().to_vec(), AckMode::PerMessage);
+        let offset = bounded("publish", CALL_TIMEOUT, publish)
+            .await?
+            .context("a durable stream returns an offset")?;
+        println!("queued {job} at offset {offset}");
+    }
+    Ok(())
+}
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+import asyncio
+import os
+import sys
+
+import felix
+
+# Must match FELIX_AUTH_TENANT.
+TENANT = "dev"
+NAMESPACE = "default"
+STREAM = "tutorial-jobs"
+GROUP = "workers"
+
+# Every call to the broker gets this long. A poll waits on purpose, so it gets
+# its wait on top.
+CALL_TIMEOUT = 10.0
+POLL_WAIT = 5.0
+
+
+async def bounded(call, extra=0.0):
+    return await asyncio.wait_for(call, CALL_TIMEOUT + extra)
+
+
+async def connect() -> felix.AsyncClient:
+    return await bounded(
+        felix.AsyncClient.connect(
+            os.environ.get("FELIX_BROKERS", "127.0.0.1:5000"),
+            tenant_id=TENANT,
+            token=os.environ["FELIX_AUTH_TOKEN"],
+            ca_file=os.environ["FELIX_CA_FILE"],
+            reconnect_deadline=CALL_TIMEOUT,
+        )
+    )
+
+
+async def produce(client: felix.AsyncClient) -> None:
+    jobs = ["job 1", "job 2", "job 3", "job 4", "job 5", "job 6", "poison"]
+    for job in jobs:
+        offset = await bounded(client.publish(TENANT, NAMESPACE, STREAM, job.encode()))
+        print(f"queued {job} at offset {offset}")
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+import { setTimeout as sleep } from "node:timers/promises";
+import { Client } from "felix-client";
+
+// Must match FELIX_AUTH_TENANT.
+const TENANT = "dev";
+const NAMESPACE = "default";
+const STREAM = "tutorial-jobs";
+const GROUP = "workers";
+
+// Every call to the broker gets this long, and a poll gets its wait on top. The
+// client takes no timeout argument, so a timer is raced against the call.
+const CALL_TIMEOUT_MS = 10_000;
+const POLL_WAIT_MS = 5000;
+
+async function bounded<T>(what: string, call: Promise<T>, ms = CALL_TIMEOUT_MS): Promise<T> {
+  const timer = new AbortController();
+  const expired = sleep(ms, undefined, { signal: timer.signal }).then(() => {
+    throw new Error(`${what} did not finish within ${ms} ms`);
+  });
+  try {
+    return await Promise.race([call, expired]);
+  } finally {
+    timer.abort();
+  }
+}
+
+function required(name: string): string {
+  const value = process.env[name];
+  if (!value) throw new Error(`set ${name}`);
+  return value;
+}
+
+function connect(): Promise<Client> {
+  return bounded(
+    "connecting",
+    Client.connect(process.env.FELIX_BROKERS ?? "127.0.0.1:5000", TENANT, {
+      token: required("FELIX_AUTH_TOKEN"),
+      caFile: required("FELIX_CA_FILE"),
+      reconnectDeadline: CALL_TIMEOUT_MS,
+    }),
+  );
+}
+
+async function produce(client: Client): Promise<void> {
+  const jobs = ["job 1", "job 2", "job 3", "job 4", "job 5", "job 6", "poison"];
+  for (const job of jobs) {
+    const offset = await bounded("publish", client.publish(TENANT, NAMESPACE, STREAM, Buffer.from(job)));
+    console.log(`queued ${job} at offset ${offset}`);
+  }
+}
+```
+
+</TabItem>
+<TabItem label="C#">
+
+```csharp
+using System.Text;
+using Felix;
+
+// Must match FELIX_AUTH_TENANT.
+const string Tenant = "dev";
+const string Namespace = "default";
+const string StreamName = "tutorial-jobs";
+const string Group = "workers";
+
+// Every call to the broker gets this long. A poll waits on purpose, so it gets
+// its wait on top.
+const int CallSeconds = 10;
+const int PollWaitSeconds = 5;
+
+static async Task<T> Bounded<T>(Func<CancellationToken, Task<T>> call, int extraSeconds = 0)
+{
+    using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(CallSeconds + extraSeconds));
+    return await call(limit.Token);
+}
+
+static async Task BoundedTask(Func<CancellationToken, Task> call)
+{
+    using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(CallSeconds));
+    await call(limit.Token);
+}
+
+static string Required(string name) =>
+    Environment.GetEnvironmentVariable(name) is { Length: > 0 } value
+        ? value
+        : throw new InvalidOperationException($"set {name}");
+
+static Task<FelixClient> ConnectAsync() =>
+    Bounded(ct => FelixClient.ConnectAsync(new FelixClientOptions
+    {
+        Addrs = [Environment.GetEnvironmentVariable("FELIX_BROKERS") ?? "127.0.0.1:5000"],
+        TenantId = Tenant,
+        Token = Required("FELIX_AUTH_TOKEN"),
+        CaFile = Required("FELIX_CA_FILE"),
+        ReconnectDeadline = TimeSpan.FromSeconds(CallSeconds),
+    }, ct));
+
+static async Task ProduceAsync(FelixClient client)
+{
+    string[] jobs = ["job 1", "job 2", "job 3", "job 4", "job 5", "job 6", "poison"];
+    foreach (var job in jobs)
+    {
+        long? offset = await Bounded(ct => client.PublishAsync(
+            Tenant, Namespace, StreamName, Encoding.UTF8.GetBytes(job), cancellationToken: ct));
+        Console.WriteLine($"queued {job} at offset {offset}");
+    }
+}
+```
+
+</TabItem>
+</Tabs>
+
+## 3. Write the worker
+
+A worker asks for work, because only the worker knows when it has capacity.
+The poll waits up to five seconds on the broker and returns an empty list
+when nothing arrived, which is an answer and not an error. The worker asks for
+one job at a time so that jobs spread across workers instead of piling up in
+whichever one polled first.
+
+For each job the worker does one of two things. If the handler succeeds, the
+worker acknowledges the offset and the job is finished. If it fails, the worker
+nacks the record, which hands it back instead of waiting out the claim. The
+Rust, C# and C workers nack with a one second delay, so a job that keeps
+failing is not retried at full speed. The Python and TypeScript bindings nack
+without a delay. The record carries `attempts`, the number of times it has been
+handed out, this delivery included.
+
+Every call to the broker has a time limit. See
+[Time limits](/tutorials/overview/#time-limits) for how each language sets it.
+
+The handler here sleeps for two seconds to stand in for work, and refuses the
+`poison` job until you set `ACCEPT_POISON`, which stands in for fixing the bug.
+
+<Tabs syncKey="lang">
+<TabItem label="Rust">
+
+```rust
+use anyhow::bail;
+
+async fn handle(job: &str) -> Result<()> {
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    if job == "poison" && std::env::var_os("ACCEPT_POISON").is_none() {
+        bail!("cannot parse job");
+    }
+    Ok(())
+}
+
+async fn work(client: &ClusterClient, name: &str) -> Result<()> {
+    loop {
+        let poll = client.group_poll_wait(TENANT, NAMESPACE, STREAM, 0, GROUP, 1, POLL_WAIT);
+        let records = bounded("poll", CALL_TIMEOUT + POLL_WAIT, poll).await?;
+        for record in records {
+            let job = String::from_utf8_lossy(&record.payload).into_owned();
+            match handle(&job).await {
+                Ok(()) => {
+                    let ack = client.group_ack(TENANT, NAMESPACE, STREAM, 0, GROUP, record.offset);
+                    bounded("ack", CALL_TIMEOUT, ack).await?;
+                    println!("{name}: finished {job} (attempt {})", record.attempts);
+                }
+                Err(err) => {
+                    println!("{name}: {job} failed on attempt {}: {err:#}", record.attempts);
+                    let nack = client.group_nack_after(
+                        TENANT, NAMESPACE, STREAM, 0, GROUP, &record, Duration::from_secs(1),
+                    );
+                    bounded("nack", CALL_TIMEOUT, nack).await?;
+                }
+            }
+        }
+    }
+}
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+async def handle(job: str) -> None:
+    await asyncio.sleep(2)
+    if job == "poison" and "ACCEPT_POISON" not in os.environ:
+        raise ValueError("cannot parse job")
+
+
+async def work(client: felix.AsyncClient, name: str) -> None:
+    while True:
+        records = await bounded(
+            client.group_poll(
+                TENANT, NAMESPACE, STREAM, 0, GROUP, max_records=1, wait=POLL_WAIT
+            ),
+            extra=POLL_WAIT,
+        )
+        for record in records:
+            job = record.payload.decode(errors="replace")
+            try:
+                await handle(job)
+            except ValueError as err:
+                print(f"{name}: {job} failed on attempt {record.attempts}: {err}")
+                await bounded(client.group_nack(TENANT, NAMESPACE, STREAM, 0, GROUP, record))
+            else:
+                await bounded(client.group_ack(TENANT, NAMESPACE, STREAM, 0, GROUP, record.offset))
+                print(f"{name}: finished {job} (attempt {record.attempts})")
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+async function handle(job: string): Promise<void> {
+  await sleep(2000);
+  if (job === "poison" && process.env.ACCEPT_POISON === undefined) {
+    throw new Error("cannot parse job");
+  }
+}
+
+async function work(client: Client, name: string): Promise<void> {
+  for (;;) {
+    const records = await bounded(
+      "poll",
+      client.groupPoll(TENANT, NAMESPACE, STREAM, 0, GROUP, 1, POLL_WAIT_MS),
+      CALL_TIMEOUT_MS + POLL_WAIT_MS,
+    );
+    for (const record of records) {
+      const job = record.payload.toString();
+      try {
+        await handle(job);
+      } catch (err) {
+        console.log(`${name}: ${job} failed on attempt ${record.attempts}: ${(err as Error).message}`);
+        await bounded("nack", client.groupNack(TENANT, NAMESPACE, STREAM, 0, GROUP, record));
+        continue;
+      }
+      await bounded("ack", client.groupAck(TENANT, NAMESPACE, STREAM, 0, GROUP, record.offset));
+      console.log(`${name}: finished ${job} (attempt ${record.attempts})`);
+    }
+  }
+}
+```
+
+</TabItem>
+<TabItem label="C#">
+
+```csharp
+static async Task HandleAsync(string job)
+{
+    await Task.Delay(TimeSpan.FromSeconds(2));
+    if (job == "poison" && Environment.GetEnvironmentVariable("ACCEPT_POISON") is null)
+    {
+        throw new InvalidOperationException("cannot parse job");
+    }
+}
+
+static async Task WorkAsync(FelixClient client, string name)
+{
+    var group = client.JoinGroup(Tenant, Namespace, StreamName, shard: 0, Group);
+    while (true)
+    {
+        var records = await Bounded(
+            ct => group.PollAsync(maxRecords: 1, wait: TimeSpan.FromSeconds(PollWaitSeconds), cancellationToken: ct),
+            extraSeconds: PollWaitSeconds);
+        foreach (var record in records)
+        {
+            var job = Encoding.UTF8.GetString(record.Payload.Span);
+            try
+            {
+                await HandleAsync(job);
+            }
+            catch (InvalidOperationException e)
+            {
+                Console.WriteLine($"{name}: {job} failed on attempt {record.Attempts}: {e.Message}");
+                await BoundedTask(ct => group.NackAsync(record, delay: TimeSpan.FromSeconds(1), cancellationToken: ct));
+                continue;
+            }
+            await BoundedTask(ct => group.AckAsync(record, ct));
+            Console.WriteLine($"{name}: finished {job} (attempt {record.Attempts})");
+        }
+    }
+}
+```
+
+</TabItem>
+</Tabs>
+
+A group gives at-least-once delivery. If a worker dies after doing the work
+and before acknowledging, the job is handed out again, so a handler should be
+safe to run twice for the same job.
+
+## 4. Dead letters and redrive
+
+A record that keeps failing would hold up the queue if the broker kept
+handing it back. After five deliveries (`FELIX_GROUP_MAX_ATTEMPTS` on the
+broker) it is set aside as a dead letter and the group moves on. A dead letter
+is the offset of a record that is still in the stream. Listing them is read
+only, and the two ways out are to redrive an offset, which makes the record
+owed again with its attempt count reset, or to discard it, which stops tracking
+it. Redrive and discard change what every worker of the group sees, so they
+need the `group.manage` or `stream.manage` permission, which the development
+token has.
+
+<Tabs syncKey="lang">
+<TabItem label="Rust">
+
+```rust
+async fn dead(client: &ClusterClient, redrive: bool) -> Result<()> {
+    let list = client.group_dead_letters(TENANT, NAMESPACE, STREAM, 0, GROUP);
+    let offsets = bounded("listing dead letters", CALL_TIMEOUT, list).await?;
+    if offsets.is_empty() {
+        println!("no dead letters");
+    }
+    for offset in offsets {
+        if redrive {
+            let call = client.group_redrive(TENANT, NAMESPACE, STREAM, 0, GROUP, offset);
+            bounded("redrive", CALL_TIMEOUT, call).await?;
+            println!("redrove offset {offset}");
+        } else {
+            println!("dead letter at offset {offset}");
+        }
+    }
+    Ok(())
+}
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+async def dead(client: felix.AsyncClient, redrive: bool) -> None:
+    offsets = await bounded(client.group_dead_letters(TENANT, NAMESPACE, STREAM, 0, GROUP))
+    if not offsets:
+        print("no dead letters")
+    for offset in offsets:
+        if redrive:
+            await bounded(client.group_redrive(TENANT, NAMESPACE, STREAM, 0, GROUP, offset))
+            print(f"redrove offset {offset}")
+        else:
+            print(f"dead letter at offset {offset}")
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+async function dead(client: Client, redrive: boolean): Promise<void> {
+  const offsets = await bounded("listing dead letters", client.groupDeadLetters(TENANT, NAMESPACE, STREAM, 0, GROUP));
+  if (offsets.length === 0) console.log("no dead letters");
+  for (const offset of offsets) {
+    if (redrive) {
+      await bounded("redrive", client.groupRedrive(TENANT, NAMESPACE, STREAM, 0, GROUP, offset));
+      console.log(`redrove offset ${offset}`);
+    } else {
+      console.log(`dead letter at offset ${offset}`);
+    }
+  }
+}
+```
+
+</TabItem>
+<TabItem label="C#">
+
+```csharp
+static async Task DeadAsync(FelixClient client, bool redrive)
+{
+    var group = client.JoinGroup(Tenant, Namespace, StreamName, shard: 0, Group);
+    long[] offsets = await Bounded(ct => group.DeadLettersAsync(ct));
+    if (offsets.Length == 0)
+    {
+        Console.WriteLine("no dead letters");
+    }
+    foreach (var offset in offsets)
+    {
+        if (redrive)
+        {
+            await BoundedTask(ct => group.RedriveAsync(offset, ct));
+            Console.WriteLine($"redrove offset {offset}");
+        }
+        else
+        {
+            Console.WriteLine($"dead letter at offset {offset}");
+        }
+    }
+}
+```
+
+</TabItem>
+</Tabs>
+
+## 5. Pick the mode
+
+<Tabs syncKey="lang">
+<TabItem label="Rust">
+
+```rust
+#[tokio::main]
+async fn main() -> Result<()> {
+    let client = connect().await?;
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.first().map(String::as_str) {
+        Some("produce") => produce(&client).await,
+        Some("work") => work(&client, args.get(1).map_or("worker", String::as_str)).await,
+        Some("dead") => dead(&client, false).await,
+        Some("redrive") => dead(&client, true).await,
+        _ => bail!("usage: work-queue produce | work [name] | dead | redrive"),
+    }
+}
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+async def main() -> None:
+    mode = sys.argv[1] if len(sys.argv) > 1 else ""
+    if mode not in ("produce", "work", "dead", "redrive"):
+        sys.exit("usage: work_queue.py produce | work [name] | dead | redrive")
+    async with await connect() as client:
+        if mode == "produce":
+            await produce(client)
+        elif mode == "work":
+            await work(client, sys.argv[2] if len(sys.argv) > 2 else "worker")
+        else:
+            await dead(client, redrive=mode == "redrive")
+
+
+asyncio.run(main())
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+async function main(): Promise<void> {
+  const [mode, name = "worker"] = process.argv.slice(2);
+  if (mode !== "produce" && mode !== "work" && mode !== "dead" && mode !== "redrive") {
+    throw new Error("usage: work-queue produce | work [name] | dead | redrive");
+  }
+  const client = await connect();
+  try {
+    if (mode === "produce") await produce(client);
+    else if (mode === "work") await work(client, name);
+    else await dead(client, mode === "redrive");
+  } finally {
+    client.close();
+  }
+}
+
+await main();
+```
+
+</TabItem>
+<TabItem label="C#">
+
+```csharp
+var mode = args.Length > 0 ? args[0] : "";
+if (mode is not ("produce" or "work" or "dead" or "redrive"))
+{
+    Console.Error.WriteLine("usage: work-queue produce | work [name] | dead | redrive");
+    return 1;
+}
+
+await using var client = await ConnectAsync();
+switch (mode)
+{
+    case "produce":
+        await ProduceAsync(client);
+        break;
+    case "work":
+        await WorkAsync(client, args.Length > 1 ? args[1] : "worker");
+        break;
+    default:
+        await DeadAsync(client, redrive: mode == "redrive");
+        break;
+}
+return 0;
+```
+
+</TabItem>
+</Tabs>
+
+## What you should see
+
+Start two workers, each in its own terminal, with names `a` and `b`. Then
+queue the jobs from a third. The workers print as they go, and the split
+between them varies from run to run:
+
+```text
+a: finished job 1 (attempt 1)
+a: finished job 3 (attempt 1)
+a: finished job 5 (attempt 1)
+a: poison failed on attempt 1: cannot parse job
+a: poison failed on attempt 2: cannot parse job
+```
+
+```text
+b: finished job 2 (attempt 1)
+b: finished job 4 (attempt 1)
+b: finished job 6 (attempt 1)
+b: poison failed on attempt 3: cannot parse job
+b: poison failed on attempt 4: cannot parse job
+b: poison failed on attempt 5: cannot parse job
+```
+
+Each job was finished by exactly one worker. The poison job went back and forth
+for five attempts and then stopped coming. List what the group set aside:
+
+```text
+$ work-queue dead
+dead letter at offset 7
+```
+
+Your offset will differ. Now fix the cause and redrive it. Stop the workers,
+start one with `ACCEPT_POISON=1` in its environment, and redrive from another
+terminal. The worker finishes the job on a fresh attempt count:
+
+```text
+$ work-queue redrive
+redrove offset 7
+```
+
+```text
+a: finished poison (attempt 1)
+```
+
+### A worker that crashes
+
+Queue six more jobs with the two workers running. While `a` is partway through
+one (it takes two seconds), stop it abruptly with Ctrl-C. It never
+acknowledged that job. Its claim stands for the visibility timeout, 30 seconds
+unless the broker sets `FELIX_GROUP_VISIBILITY_TIMEOUT_MS`, and when it lapses
+the job is handed to whoever polls next. Meanwhile `b` carries on with the
+other jobs. About half a minute later it picks up the orphan, and the attempt
+count shows it was a redelivery:
+
+```text
+b: finished job 3 (attempt 2)
+```
+
+The Rust, C# and C clients can choose the visibility for a poll. The Rust
+[`GroupPollOptions`](/clients/rust/#creating-moving-and-deleting-a-group) and
+the C# `visibility` argument do it per poll, and a worker whose jobs run
+longer than the default can also extend a claim while it works.
+
+## C
+
+Each C call returns at once and reports to a callback, so this program wraps
+each one in a `waiter` that blocks until the callback has run or ten seconds
+have passed. It has the same four modes. A poll's records are valid only inside the callback, so the
+callback copies the one job it asked for.
+
+```c
+#define _POSIX_C_SOURCE 200809L
+
+#include <errno.h>
+#include <pthread.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <unistd.h>
+
+#include "felix.h"
+
+#define TENANT "dev"
+#define NAMESPACE "default"
+#define STREAM "tutorial-jobs"
+#define GROUP "workers"
+#define MAX_DEAD 64
+
+struct waiter {
+    pthread_mutex_t mu;
+    pthread_cond_t cv;
+    bool done;
+    FelixStatus status;
+    void *handle;
+    bool has_offset;
+    uint64_t offset;
+    size_t count;
+    uint32_t attempts;
+    char payload[128];
+    uint64_t dead[MAX_DEAD];
+    char message[256];
+};
+
+static void finish(struct waiter *w, FelixStatus status, const char *message, void *handle) {
+    pthread_mutex_lock(&w->mu);
+    w->done = true;
+    w->status = status;
+    w->handle = handle;
+    snprintf(w->message, sizeof w->message, "%s", message ? message : "");
+    pthread_cond_signal(&w->cv);
+    pthread_mutex_unlock(&w->mu);
+}
+
+/* A refused call never runs its callback, so its error comes from the thread.
+   A call the broker does not answer within limit_ms ends the program: its
+   callback may still run later, so nothing it uses can be freed. */
+static FelixStatus wait_for_ms(struct waiter *w, FelixStatus started, long limit_ms) {
+    if (started != FELIX_STATUS_OK) {
+        snprintf(w->message, sizeof w->message, "%s", felix_last_error_message());
+        return started;
+    }
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_sec += limit_ms / 1000;
+    deadline.tv_nsec += (limit_ms % 1000) * 1000000L;
+    if (deadline.tv_nsec >= 1000000000L) {
+        deadline.tv_sec++;
+        deadline.tv_nsec -= 1000000000L;
+    }
+    pthread_mutex_lock(&w->mu);
+    while (!w->done) {
+        if (pthread_cond_timedwait(&w->cv, &w->mu, &deadline) == ETIMEDOUT) {
+            fprintf(stderr, "no answer from the broker within %ld ms\n", limit_ms);
+            exit(1);
+        }
+    }
+    w->done = false;
+    FelixStatus status = w->status;
+    pthread_mutex_unlock(&w->mu);
+    return status;
+}
+
+/* Every call to the broker gets this long. */
+#define CALL_LIMIT_MS 10000
+#define wait_for(w, started) wait_for_ms((w), (started), CALL_LIMIT_MS)
+
+static void on_connect(void *user_data, FelixStatus status, const char *message,
+                       FelixClient *client) {
+    finish(user_data, status, message, client);
+}
+
+static void on_publish(void *user_data, FelixStatus status, const char *message,
+                       bool has_offset, uint64_t offset) {
+    struct waiter *w = user_data;
+    w->has_offset = has_offset;
+    w->offset = offset;
+    finish(w, status, message, NULL);
+}
+
+static void on_done(void *user_data, FelixStatus status, const char *message) {
+    finish(user_data, status, message, NULL);
+}
+
+static void on_poll(void *user_data, FelixStatus status, const char *message,
+                    const FelixGroupRecord *records, size_t count) {
+    struct waiter *w = user_data;
+    w->count = status == FELIX_STATUS_OK ? count : 0;
+    if (w->count > 0) {
+        size_t n = records[0].payload_len < sizeof w->payload - 1 ? records[0].payload_len
+                                                                    : sizeof w->payload - 1;
+        memcpy(w->payload, records[0].payload, n);
+        w->payload[n] = '\0';
+        w->offset = records[0].offset;
+        w->attempts = records[0].attempts;
+    }
+    finish(w, status, message, NULL);
+}
+
+static void on_dead(void *user_data, FelixStatus status, const char *message,
+                    const uint64_t *offsets, size_t count) {
+    struct waiter *w = user_data;
+    w->count = status == FELIX_STATUS_OK ? (count < MAX_DEAD ? count : MAX_DEAD) : 0;
+    for (size_t i = 0; i < w->count; i++) w->dead[i] = offsets[i];
+    finish(w, status, message, NULL);
+}
+
+static int produce(const FelixClient *client, struct waiter *w) {
+    const char *jobs[] = {"job 1", "job 2", "job 3", "job 4", "job 5", "job 6", "poison"};
+    for (size_t i = 0; i < sizeof jobs / sizeof jobs[0]; i++) {
+        FelixStatus status = wait_for(
+            w, felix_client_publish(client, TENANT, NAMESPACE, STREAM, (const uint8_t *)jobs[i],
+                                    strlen(jobs[i]), NULL, 0, FELIX_ACK_PER_MESSAGE,
+                                    FELIX_DELIVERY_AT_MOST_ONCE, NULL, on_publish, w));
+        if (status != FELIX_STATUS_OK) {
+            fprintf(stderr, "publish: %s\n", w->message);
+            return 1;
+        }
+        printf("queued %s\n", jobs[i]);
+    }
+    return 0;
+}
+
+/* Stands in for the work; refuses "poison" until ACCEPT_POISON is set. */
+static bool handle(const char *job) {
+    struct timespec two_seconds = {2, 0};
+    nanosleep(&two_seconds, NULL);
+    return strcmp(job, "poison") != 0 || getenv("ACCEPT_POISON") != NULL;
+}
+
+static int work(const FelixClient *client, struct waiter *w, const char *name) {
+    for (;;) {
+        FelixStatus status = wait_for_ms(
+            w, felix_client_group_poll(client, TENANT, NAMESPACE, STREAM, 0, GROUP,
+                                       1 /* max_records */, 5000 /* wait_ms */,
+                                       0 /* broker's visibility */, NULL, false, NULL,
+                                       on_poll, w),
+            5000 + CALL_LIMIT_MS);
+        if (status != FELIX_STATUS_OK) {
+            fprintf(stderr, "poll: %s\n", w->message);
+            return 1;
+        }
+        if (w->count == 0) continue;
+
+        char job[sizeof w->payload];
+        snprintf(job, sizeof job, "%s", w->payload);
+        uint64_t offset = w->offset;
+        uint32_t attempts = w->attempts;
+        if (handle(job)) {
+            status = wait_for(w, felix_client_group_ack(client, TENANT, NAMESPACE, STREAM, 0,
+                                                        GROUP, offset, NULL, on_done, w));
+            if (status != FELIX_STATUS_OK) {
+                fprintf(stderr, "ack: %s\n", w->message);
+                return 1;
+            }
+            printf("%s: finished %s (attempt %u)\n", name, job, attempts);
+        } else {
+            printf("%s: %s failed on attempt %u\n", name, job, attempts);
+            status = wait_for(w, felix_client_group_nack(client, TENANT, NAMESPACE, STREAM, 0,
+                                                         GROUP, offset, attempts, 1000 /* delay_ms */, NULL,
+                                                         on_done, w));
+            if (status != FELIX_STATUS_OK) {
+                fprintf(stderr, "nack: %s\n", w->message);
+                return 1;
+            }
+        }
+    }
+}
+
+static int dead(const FelixClient *client, struct waiter *w, bool redrive) {
+    FelixStatus status = wait_for(
+        w, felix_client_group_dead_letters(client, TENANT, NAMESPACE, STREAM, 0, GROUP, NULL,
+                                           on_dead, w));
+    if (status != FELIX_STATUS_OK) {
+        fprintf(stderr, "dead letters: %s\n", w->message);
+        return 1;
+    }
+    if (w->count == 0) printf("no dead letters\n");
+    size_t found = w->count;
+    uint64_t offsets[MAX_DEAD];
+    memcpy(offsets, w->dead, found * sizeof offsets[0]);
+    for (size_t i = 0; i < found; i++) {
+        if (!redrive) {
+            printf("dead letter at offset %llu\n", (unsigned long long)offsets[i]);
+            continue;
+        }
+        status = wait_for(w, felix_client_group_redrive(client, TENANT, NAMESPACE, STREAM, 0,
+                                                        GROUP, offsets[i], NULL, on_done, w));
+        if (status != FELIX_STATUS_OK) {
+            fprintf(stderr, "redrive: %s\n", w->message);
+            return 1;
+        }
+        printf("redrove offset %llu\n", (unsigned long long)offsets[i]);
+    }
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    const char *token = getenv("FELIX_AUTH_TOKEN");
+    const char *ca_file = getenv("FELIX_CA_FILE");
+    const char *broker = getenv("FELIX_BROKERS");
+    const char *mode = argc > 1 ? argv[1] : "";
+    if (strcmp(mode, "produce") && strcmp(mode, "work") && strcmp(mode, "dead") &&
+        strcmp(mode, "redrive")) {
+        fprintf(stderr, "usage: work_queue produce | work [name] | dead | redrive\n");
+        return 1;
+    }
+    if (!token || !*token || !ca_file || !*ca_file) {
+        fprintf(stderr, "set FELIX_AUTH_TOKEN and FELIX_CA_FILE\n");
+        return 1;
+    }
+
+    struct waiter w = {.done = false};
+    pthread_mutex_init(&w.mu, NULL);
+    pthread_cond_init(&w.cv, NULL);
+    int exit_code = 1;
+    const struct FelixConnectOptions options = {
+        .size = sizeof(struct FelixConnectOptions),
+        .reconnect_deadline_ms = 10000,
+    };
+
+    FelixStatus status = wait_for(
+        &w, felix_client_connect_with(broker && *broker ? broker : "127.0.0.1:5000", TENANT,
+                                      token, "localhost", ca_file, &options, NULL, on_connect,
+                                      &w));
+    if (status != FELIX_STATUS_OK) {
+        fprintf(stderr, "connect: %s\n", w.message);
+    } else {
+        FelixClient *client = w.handle;
+        if (!strcmp(mode, "produce")) {
+            exit_code = produce(client, &w);
+        } else if (!strcmp(mode, "work")) {
+            exit_code = work(client, &w, argc > 2 ? argv[2] : "worker");
+        } else {
+            exit_code = dead(client, &w, !strcmp(mode, "redrive"));
+        }
+        /* Every call has completed, so no callback still holds &w. */
+        felix_client_free(client);
+    }
+    pthread_cond_destroy(&w.cv);
+    pthread_mutex_destroy(&w.mu);
+    return exit_code;
+}
+```
+
+## Where next
+
+[Cache, leases and watches](/tutorials/cache-leases-watches/) uses the cache for
+shared state, including a lease so that only one of several workers does a
+job. The [queues page](/features/queues/) covers what the broker guarantees,
+long work and backoff (extending a claim, delayed nacks), named members that
+take their claims back after a restart, and the limits a group has. For the
+fuller API in your language, see the consumer group sections of the
+[Rust](/clients/rust/#consumer-groups), [Python](/clients/python/),
+[TypeScript](/clients/typescript/#queues) and [C#](/clients/csharp/#consumer-groups)
+pages.

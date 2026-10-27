@@ -7,14 +7,19 @@ namespace Felix.Client.Tests;
 
 /// <summary>
 /// Compiles every csharp block on the C# client page and the resilience guide against this build of
-/// Felix.Client, so the pages cannot drift from the API. Nothing is run: most blocks need a broker.
+/// Felix.Client, so the pages cannot drift from the API. Each tutorial page is compiled as one program, because its
+/// blocks are steps of it. Nothing is run: most blocks need a broker.
 /// </summary>
 public class DocsExampleTests
 {
-    private static readonly string[] Pages =
+    private const string Page = "docs-site/src/content/docs/clients/csharp.md";
+
+    private static readonly string[] Tutorials =
     [
-        "docs-site/src/content/docs/clients/csharp.md",
-        "docs-site/src/content/docs/clients/resilient-clients.mdx",
+        "first-stream",
+        "work-queue",
+        "cache-leases-watches",
+        "build-an-app",
     ];
 
     // What the page's blocks use without defining: implicit usings, and the names an earlier block
@@ -56,11 +61,61 @@ public class DocsExampleTests
     [Fact]
     public void EveryCSharpBlockOnThePageCompiles()
     {
-        var blocks = Pages
-            .SelectMany(page => Extract(File.ReadAllText(FindPage(page)), page).Select(block => (Page: page, block.Line, block.Code)))
-            .ToList();
+        var blocks = Extract(File.ReadAllText(FindPage(Page)));
         Assert.NotEmpty(blocks);
+        AssertCompiles("csharp.md", blocks);
+    }
 
+    [Fact]
+    public void EveryCSharpBlockOnTheResilienceGuideCompiles()
+    {
+        var blocks = Extract(File.ReadAllText(FindPage("docs-site/src/content/docs/clients/resilient-clients.mdx")));
+        Assert.NotEmpty(blocks);
+        AssertCompiles("resilient-clients.mdx", blocks);
+    }
+
+    [Fact]
+    public void EveryTutorialCompilesAsOneProgram()
+    {
+        foreach (var slug in Tutorials)
+        {
+            var path = $"docs-site/src/content/docs/tutorials/{slug}.mdx";
+            var blocks = Extract(File.ReadAllText(FindPage(path)));
+            Assert.NotEmpty(blocks);
+            AssertCompiles($"{slug}.mdx", [Join(blocks)]);
+        }
+    }
+
+    /// <summary>
+    /// The blocks as one file: the <c>using</c> directives first, once each, then the statements
+    /// and local functions of every block in order.
+    /// </summary>
+    internal static (int Line, string Code) Join(List<(int Line, string Code)> blocks)
+    {
+        var usings = new SortedSet<string>(StringComparer.Ordinal);
+        var body = new List<string>();
+        foreach (var (_, code) in blocks)
+        {
+            foreach (var line in code.Split('\n'))
+            {
+                if (Regex.IsMatch(line, @"^using [\w.]+;\s*$"))
+                {
+                    usings.Add(line.Trim());
+                }
+                else
+                {
+                    body.Add(line);
+                }
+            }
+
+            body.Add("");
+        }
+
+        return (blocks[0].Line, string.Join('\n', usings.Concat(body)));
+    }
+
+    private static void AssertCompiles(string label, List<(int Line, string Code)> blocks)
+    {
         var references = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!)
             .Split(Path.PathSeparator)
             .Append(typeof(FelixClient).Assembly.Location)
@@ -72,24 +127,24 @@ public class DocsExampleTests
             .WithNullableContextOptions(NullableContextOptions.Enable);
 
         var failures = new List<string>();
-        foreach (var (page, line, code) in blocks)
+        foreach (var (line, code) in blocks)
         {
             var compilation = CSharpCompilation.Create(
-                $"{Path.GetFileNameWithoutExtension(page).Replace('-', '_')}_L{line}",
+                $"{label.Replace('.', '_').Replace('-', '_')}_L{line}",
                 [CSharpSyntaxTree.ParseText(code, parse), prelude],
                 references,
                 options);
             failures.AddRange(compilation.GetDiagnostics()
                 .Where(d => d.Severity == DiagnosticSeverity.Error || d.Severity == DiagnosticSeverity.Warning)
                 .Where(d => d.Location.SourceTree != prelude)
-                .Select(d => $"{Path.GetFileName(page)}:{line + d.Location.GetLineSpan().StartLinePosition.Line}: {d.Id}: {d.GetMessage()}"));
+                .Select(d => $"{label}:{line + d.Location.GetLineSpan().StartLinePosition.Line}: {d.Id}: {d.GetMessage()}"));
         }
 
         Assert.True(failures.Count == 0, string.Join('\n', failures));
     }
 
     /// <summary>Each csharp block with the page line its code starts on.</summary>
-    internal static List<(int Line, string Code)> Extract(string markdown, string page = "csharp.md")
+    internal static List<(int Line, string Code)> Extract(string markdown)
     {
         var lines = markdown.Split('\n');
         var blocks = new List<(int, string)>();
@@ -102,7 +157,7 @@ public class DocsExampleTests
 
             var start = i + 1;
             var end = Array.FindIndex(lines, start, l => Regex.IsMatch(l, @"^\s*```\s*$"));
-            Assert.True(end >= 0, $"{page}:{start}: unclosed code block");
+            Assert.True(end >= 0, $"csharp.md:{start}: unclosed code block");
             blocks.Add((start + 1, string.Join('\n', lines[start..end])));
             i = end;
         }

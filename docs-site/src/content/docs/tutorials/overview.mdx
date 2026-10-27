@@ -1,0 +1,184 @@
+---
+title: "Tutorials"
+description: "Step-by-step tutorials that build a stream, a work queue, a lease and a small app on Felix, with code in Rust, Python, TypeScript, C# and C."
+---
+
+import { LinkCard, CardGrid, Tabs, TabItem } from '@astrojs/starlight/components';
+
+These tutorials build things on Felix one step at a time. Each has you write a
+small program, run it and compare what it prints with what the page says you
+should see. The [demos](/demos/overview/) run finished systems. The
+tutorials are where you write the code yourself.
+
+<CardGrid>
+  <LinkCard
+    title="Your first stream"
+    description="Create a durable stream, publish, read it back with offsets and resume after a restart."
+    href="/tutorials/first-stream/"
+  />
+  <LinkCard
+    title="A work queue"
+    description="Consumer groups: two workers sharing jobs, a crash and redelivery, dead letters and redrive."
+    href="/tutorials/work-queue/"
+  />
+  <LinkCard
+    title="Cache, leases and watches"
+    description="Values with an expiry, a lease taken with a conditional write, and a watch that reacts to changes."
+    href="/tutorials/cache-leases-watches/"
+  />
+  <LinkCard
+    title="Build an app"
+    description="An order pipeline: an API, a worker group, results in a cache and a dashboard."
+    href="/tutorials/build-an-app/"
+  />
+</CardGrid>
+
+The first three are independent. The last one uses all three ideas, so do it
+after the others.
+
+## Languages
+
+Every tutorial shows Rust, Python, TypeScript and C#, and the language you pick
+on one page stays selected on the others. The C client is callback based, so
+the first three tutorials end with a complete C program instead of a tab per
+step, and the last has no C version. The C calls it makes are the ones from the
+earlier tutorials.
+
+Conditional cache writes, which the lease in the third tutorial needs, are in
+the Rust, C# and C clients. The Python and TypeScript bindings do not have them
+yet, so that step has no tab for them.
+
+The code in each tutorial is compiled as part of the documentation tests, so
+the snippets match the client APIs they were written against.
+
+The Python examples use the asyncio client, `felix.AsyncClient`, because it
+lets every call carry a time limit. The synchronous `felix.Client` takes the
+same calls without `await`.
+
+## Time limits
+
+Every call to the broker in these programs has a time limit of ten seconds, and
+a call that waits on purpose, such as a consumer group poll, gets its wait on
+top. A program that waits on a broker for ever is hard to tell from one that is
+working, so the limit turns a stuck call into an error. Each language sets it
+differently:
+
+- Rust wraps the call in `tokio::time::timeout` through a small `bounded`
+  helper.
+- Python wraps the awaitable in `asyncio.wait_for`.
+- TypeScript races the promise against a timer, because the client takes no
+  timeout argument. The call itself is not cancelled and may still finish.
+- C# passes a `CancellationToken` from a `CancellationTokenSource` that expires
+  after the limit.
+- C waits for each callback with a deadline, and ends the program if the broker
+  does not answer in time, because the callback may still run later.
+
+Every program also sets the client's reconnect deadline to ten seconds, which
+caps the time one call spends retrying. A call that times out may or may not
+have reached the broker, so a write that times out is not known to have failed.
+Reads that wait for events by design, such as a subscription or a watch, have
+no limit of their own. Where a tutorial reads with a timeout, it is part of the
+example.
+
+## Set up once
+
+The tutorials run against the development stack from the
+[quickstart](/getting-started/quickstart/): a control plane, one broker with
+durable storage, and credentials for a tenant named `dev` with a namespace
+named `default`. It needs Docker or Podman. The credentials work on your
+machine only.
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/GetFelix/felix/main/compose.yaml
+docker compose up
+```
+
+With Podman, use `PODMAN_COMPOSE_PROVIDER=docker-compose podman compose up`.
+Leave it running. In another terminal in the same directory, copy out the
+client token and the broker's certificate and export the settings every
+tutorial reads:
+
+```bash
+docker compose exec -T felix-broker cat /var/lib/felix/client.jwt > felix-dev.jwt
+docker compose exec -T felix-broker cat /var/lib/felix/broker-cert.pem > felix-dev.pem
+
+export FELIX_BROKERS=127.0.0.1:5000
+export FELIX_AUTH_TENANT=dev
+export FELIX_AUTH_TOKEN="$(cat felix-dev.jwt)"
+export FELIX_CA_FILE="$PWD/felix-dev.pem"
+```
+
+The token lasts a day. The broker makes a new certificate every time it starts,
+so copy the file again after a restart. The tutorials create their streams and
+caches with `felixctl`, which the compose file runs for you as
+`docker compose run --rm felixctl`. To use one installed on your machine,
+see [felixctl](/getting-started/felixctl/#install) and the
+[Docker Compose page](/deployment/docker-compose/#try-it-in-one-command) for
+adding a context.
+
+Then install the client for your language:
+
+<Tabs syncKey="lang">
+<TabItem label="Rust">
+
+```bash
+cargo new felix-tutorial && cd felix-tutorial
+cargo add felix-client anyhow bytes serde_json
+cargo add tokio --features rt-multi-thread,macros,time,fs
+```
+
+Put each tutorial's Rust blocks, in order, into `src/main.rs`. See the
+[Rust client](/clients/rust/) for the API.
+
+</TabItem>
+<TabItem label="Python">
+
+```bash
+pip install felix-client
+```
+
+The module is `felix`. See the [Python client](/clients/python/).
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```bash
+npm install felix-client
+```
+
+The programs are ES modules with top-level `await`. Run them with a TypeScript
+runner such as `npx tsx`. See the [TypeScript client](/clients/typescript/).
+
+</TabItem>
+<TabItem label="C#">
+
+```bash
+dotnet new console -o FelixTutorial && cd FelixTutorial
+dotnet add package Felix.Client
+```
+
+Put each tutorial's C# blocks, in order, into `Program.cs`. See the
+[C# client](/clients/csharp/).
+
+</TabItem>
+<TabItem label="C">
+
+Build the shared library as [the C client page](/clients/c/) describes and
+compile each program against `felix.h`:
+
+```bash
+cargo build --release -p felix-capi
+cc -std=c11 -pthread -I crates/sdk/felix-capi/include program.c \
+   target/release/libfelix.so -Wl,-rpath,"$PWD/target/release" -o program
+```
+
+Use `libfelix.dylib` on macOS.
+
+</TabItem>
+</Tabs>
+
+If you build Felix from source instead of using the compose stack, see
+[Installation](/getting-started/installation/) and
+[Running a broker yourself](/getting-started/quickstart/#running-a-broker-yourself).
+A broker you run yourself needs a tenant, a token and a certificate; set the
+four variables above to match.

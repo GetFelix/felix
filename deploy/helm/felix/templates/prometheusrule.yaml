@@ -1,0 +1,15 @@
+{{- if .Values.prometheusRule.enabled }}
+{{- $pr := .Values.prometheusRule }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "felix.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "felix.labels" . | nindent 4 }}
+    {{- with $pr.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- .Files.Get "files/felix-alerts.yaml" | nindent 2 }}
+{{- end }}

@@ -220,6 +220,17 @@ docs and `compose.yaml` pin (`scripts/check_release_version.py`), and its releas
 - once those jobs finish, sends a `felix-release` dispatch to each repo in
   `.github/companions.txt` so it can open a bump PR (see below).
 
+### Release notes and the upgrade page
+
+The docs site's [release notes](/release-notes/) are generated from
+`CHANGELOG.md` at build time by `scripts/gen-release-notes.mjs`, so assembling
+the changelog fragments is all a release needs for them. The hand-written
+[Upgrading to 0.7](/release-notes/upgrading-to-0-7/) page is not generated.
+Review it before tagging: it should match the assembled changelog, drop the
+"not released" notice, and say whether the release adds a fleet feature or
+changes `INTERNAL_VERSION` or `FORMAT_VERSION`. When the next line starts,
+add its page and link it from `deployment/upgrades.md`.
+
 ### Backfilling the C archives
 
 A release that predates the archives gets them without rerunning anything
@@ -471,7 +482,9 @@ cd docs-site && npm ci && npm run build
 ```
 
 The build runs the mermaid, diagram and evidence checks before `astro build`.
-`npm run dev` serves the site with live reload.
+`npm run dev` serves the site with live reload. Use these scripts rather than
+running `astro` directly: they first generate the release notes pages from
+`CHANGELOG.md`, which the sidebar needs.
 
 ## Cleaning up
 

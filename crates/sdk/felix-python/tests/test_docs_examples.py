@@ -1,4 +1,4 @@
-"""The examples on docs-site's Python page and resilience guide compile and match the binding.
+"""The examples on docs-site's Python page, tutorials and resilience guide compile and match the binding.
 
 Every block is compiled, and every call on a client, a handle or the `felix`
 module is bound against the signatures in `_felix.pyi`, so a renamed method or
@@ -25,8 +25,10 @@ import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DOCS_PAGE = ROOT.parents[2] / "docs-site/src/content/docs/clients/python.md"
-RESILIENT_PAGE = ROOT.parents[2] / "docs-site/src/content/docs/clients/resilient-clients.mdx"
 STUBS = ROOT / "python/felix/_felix.pyi"
+RESILIENT_PAGE = ROOT.parents[2] / "docs-site/src/content/docs/clients/resilient-clients.mdx"
+TUTORIALS = ROOT.parents[2] / "docs-site/src/content/docs/tutorials"
+TUTORIAL_PAGES = ["first-stream", "work-queue", "cache-leases-watches", "build-an-app"]
 
 # Names the examples give to objects, and the stub class each one is.
 RECEIVERS = {
@@ -42,13 +44,27 @@ RECEIVERS = {
 }
 
 
-def blocks(path=DOCS_PAGE):
-    """Every ```python block on the page, with the line it starts on."""
+def blocks_of(path):
+    """Every ```python block on a page, with the line it starts on."""
     page = path.read_text()
     found = []
     for match in re.finditer(r"```python\n(.*?)```", page, re.S):
         found.append((page.count("\n", 0, match.start()) + 2, match.group(1)))
     return found
+
+
+def blocks():
+    """Every ```python block on the Python page."""
+    return blocks_of(DOCS_PAGE)
+
+
+def tutorial_blocks():
+    """Every ```python block of every tutorial, as (page, line, source)."""
+    return [
+        (slug, line, source)
+        for slug in TUTORIAL_PAGES
+        for line, source in blocks_of(TUTORIALS / f"{slug}.mdx")
+    ]
 
 
 def block_containing(text):
@@ -84,6 +100,20 @@ def _signature(function: ast.FunctionDef | ast.AsyncFunctionDef, drop_self: bool
     if drop_self and params and params[0].name in ("self", "cls"):
         params = params[1:]
     return inspect.Signature(params)
+
+
+# The same names, for a block that uses the asyncio client.
+ASYNC_RECEIVERS = {
+    **RECEIVERS,
+    "client": "AsyncClient",
+    "events": "AsyncSubscription",
+    "changes": "AsyncCacheWatch",
+    "watch": "AsyncCacheWatch",
+}
+
+
+def receivers_for(source):
+    return ASYNC_RECEIVERS if "AsyncClient" in source else RECEIVERS
 
 
 def stubs():
@@ -126,27 +156,9 @@ def test_every_example_compiles(line, source):
     compile(source, f"python.md:{line}", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
 
 
-@pytest.mark.parametrize("line,source", blocks(), ids=lambda value: str(value)[:12])
-def test_every_example_matches_the_stubs(line, source):
-    check_against_stubs(source, f"python.md:{line}")
-
-
-def test_the_resilience_guide_has_examples():
-    assert len(blocks(RESILIENT_PAGE)) >= 10
-
-
-@pytest.mark.parametrize("line,source", blocks(RESILIENT_PAGE), ids=lambda value: str(value)[:12])
-def test_every_resilience_example_compiles(line, source):
-    compile(source, f"resilient-clients.mdx:{line}", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
-
-
-@pytest.mark.parametrize("line,source", blocks(RESILIENT_PAGE), ids=lambda value: str(value)[:12])
-def test_every_resilience_example_matches_the_stubs(line, source):
-    check_against_stubs(source, f"resilient-clients.mdx:{line}")
-
-
-def check_against_stubs(source, where):
+def check_against_stubs(where, source):
     classes = stubs()
+    receivers = receivers_for(source)
     for node in ast.walk(ast.parse(source)):
         if not isinstance(node, ast.Attribute):
             continue
@@ -163,8 +175,8 @@ def check_against_stubs(source, where):
             members = classes.get(receiver.attr, {})
             assert node.attr in members, f"{where}: felix.{receiver.attr}.{node.attr} is unknown"
             continue
-        if isinstance(receiver, ast.Name) and receiver.id in RECEIVERS:
-            cls = RECEIVERS[receiver.id]
+        if isinstance(receiver, ast.Name) and receiver.id in receivers:
+            cls = receivers[receiver.id]
             members = classes[cls]
             assert node.attr in members, f"{where}: {cls} has no {node.attr}"
 
@@ -182,10 +194,51 @@ def check_against_stubs(source, where):
             and func.value.value.id == "felix"
         ):
             _bind(classes[func.value.attr][func.attr], node, where)
-        elif isinstance(func.value, ast.Name) and func.value.id in RECEIVERS:
-            signature = classes[RECEIVERS[func.value.id]][func.attr]
+        elif isinstance(func.value, ast.Name) and func.value.id in receivers:
+            signature = classes[receivers[func.value.id]][func.attr]
             if signature is not None:
                 _bind(signature, node, where)
+
+
+@pytest.mark.parametrize("line,source", blocks(), ids=lambda value: str(value)[:12])
+def test_every_example_matches_the_stubs(line, source):
+    check_against_stubs(f"python.md:{line}", source)
+
+
+def test_the_tutorials_have_examples():
+    assert {slug for slug, _, _ in tutorial_blocks()} == set(TUTORIAL_PAGES)
+
+
+@pytest.mark.parametrize(
+    "page,line,source", tutorial_blocks(), ids=lambda value: str(value)[:12]
+)
+def test_every_tutorial_example_compiles(page, line, source):
+    compile(source, f"{page}.mdx:{line}", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
+
+
+@pytest.mark.parametrize(
+    "page,line,source", tutorial_blocks(), ids=lambda value: str(value)[:12]
+)
+def test_every_tutorial_example_matches_the_stubs(page, line, source):
+    check_against_stubs(f"{page}.mdx:{line}", source)
+
+
+def test_the_resilience_guide_has_examples():
+    assert len(blocks_of(RESILIENT_PAGE)) >= 10
+
+
+@pytest.mark.parametrize(
+    "line,source", blocks_of(RESILIENT_PAGE), ids=lambda value: str(value)[:12]
+)
+def test_every_resilience_example_compiles(line, source):
+    compile(source, f"resilient-clients.mdx:{line}", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
+
+
+@pytest.mark.parametrize(
+    "line,source", blocks_of(RESILIENT_PAGE), ids=lambda value: str(value)[:12]
+)
+def test_every_resilience_example_matches_the_stubs(line, source):
+    check_against_stubs(f"resilient-clients.mdx:{line}", source)
 
 
 def test_the_stubs_name_what_the_module_has():

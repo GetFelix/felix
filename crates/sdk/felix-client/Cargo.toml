@@ -41,8 +41,8 @@ rcgen = { workspace = true }
 reqwest = { workspace = true }
 serial_test = { workspace = true }
 tempfile = { workspace = true }
-# `fs` is for the token provider in the resilience guide, compiled by tests/docs_examples.rs.
-tokio = { workspace = true, features = ["test-util", "fs"] }
+# `fs` is for the token providers in the tutorials and the resilience guide, compiled by tests/docs_examples.rs.
+tokio = { workspace = true, features = ["fs", "test-util"] }
 tracing-subscriber = { workspace = true }
 
 [package.metadata.docs.rs]

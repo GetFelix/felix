@@ -1,0 +1,72 @@
+# Run with: promtool test rules felix-alerts.test.yaml
+rule_files:
+  - felix-alerts.yaml
+
+evaluation_interval: 1m
+
+tests:
+  # A credential that has already expired reads negative, and must still alert.
+  - interval: 1m
+    input_series:
+      - series: 'felix_broker_credential_expires_in_seconds{instance="b1"}'
+        values: '-5x10'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: FelixCredentialExpiring
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: b1
+            exp_annotations:
+              summary: "Broker b1 credential has -5 s left (negative means expired)"
+              description: "The heartbeat is the lease renewal; an expired token stops the broker serving. Check the refresh token file."
+              runbook_url: "https://docs.getfelix.dev/features/observability/#alert-rules"
+
+  # -1 means the token carries no exp, which is not a problem.
+  - interval: 1m
+    input_series:
+      - series: 'felix_broker_credential_expires_in_seconds{instance="b1"}'
+        values: '-1x10'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: FelixCredentialExpiring
+        exp_alerts: []
+
+  # A counter exists only after its first increment, so the first event is a
+  # series that appears with value 1. It must alert, and clear once the window
+  # has passed.
+  - interval: 1m
+    input_series:
+      - series: 'felix_broker_acked_publishes_dropped_total{instance="b1",reason="fenced"}'
+        values: '_ _ _ 1x10'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: FelixAckedPublishesDropped
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              instance: b1
+              reason: fenced
+            exp_annotations:
+              summary: "Broker b1 acknowledged publishes it did not write"
+              description: "Happens with acks on accept (FELIX_ACK_ON_COMMIT off). The reason label says why."
+              runbook_url: "https://docs.getfelix.dev/features/observability/#alert-rules"
+      - eval_time: 9m
+        alertname: FelixAckedPublishesDropped
+        exp_alerts: []
+
+  # No control-plane instance exports the gauge at all.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="unrelated",instance="x"}'
+        values: '1x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: FelixNoPlacementLeaseHolder
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "No control-plane instance holds the placement lease"
+              description: "Nothing places shards or restores copies. Check every control-plane instance and its store."
+              runbook_url: "https://docs.getfelix.dev/deployment/control-plane-ha/"

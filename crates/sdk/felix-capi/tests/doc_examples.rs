@@ -1,9 +1,9 @@
-//! Every ```c block on the C client page and the resilience guide compiles
-//! against `include/felix.h`, so the examples cannot drift from the ABI.
+//! Every ```c block on the C client page and in the tutorials compiles against
+//! `include/felix.h`, so the examples cannot drift from the ABI.
 //!
 //! A block with `int main(` is a program, compiled and linked against the
 //! shared library. Any other block is a fragment, compiled to an object; one
-//! without `#include`s of its own gets its page's prelude in `tests/c/` first. Blocks
+//! without `#include`s of its own gets `tests/c/doc_prelude.h` first. Blocks
 //! that include `<curl/curl.h>` are skipped where that header is missing,
 //! unless `FELIX_CAPI_DOCS_REQUIRE_CURL` is set, as CI's C ABI step does.
 #![cfg(unix)]
@@ -13,23 +13,33 @@ use std::process::Command;
 
 const CFLAGS: &[&str] = &["-std=c11", "-pthread", "-Wall", "-Wextra", "-Werror"];
 
-/// A page under `docs-site/src/content/docs/clients/` with C blocks, and the
-/// header its fragments start from.
-struct Page {
-    file: &'static str,
-    prelude: &'static str,
-}
-
-const PAGES: &[Page] = &[
-    Page {
-        file: "c.md",
-        prelude: "doc_prelude.h",
-    },
-    Page {
-        file: "resilient-clients.mdx",
-        prelude: "resilient_prelude.h",
-    },
+/// The page every tutorial program is checked beside, and the tutorials that
+/// must keep a C program.
+const C_PAGE: &str = "clients/c.md";
+/// The resilience guide has its own prelude, with the waiter helpers its
+/// fragments call.
+const RESILIENT_PAGE: &str = "clients/resilient-clients.mdx";
+const TUTORIALS_WITH_C: &[&str] = &[
+    "tutorials/first-stream.mdx",
+    "tutorials/work-queue.mdx",
+    "tutorials/cache-leases-watches.mdx",
 ];
+
+/// The C page, then every tutorial page. A tutorial may have no C block.
+fn pages(docs: &Path) -> Vec<String> {
+    let mut pages = vec![C_PAGE.to_string(), RESILIENT_PAGE.to_string()];
+    let mut tutorials: Vec<String> = std::fs::read_dir(docs.join("tutorials"))
+        .expect("read the tutorials directory")
+        .filter_map(|entry| {
+            let name = entry.expect("read a directory entry").file_name();
+            let name = name.to_str()?;
+            name.ends_with(".mdx").then(|| format!("tutorials/{name}"))
+        })
+        .collect();
+    tutorials.sort();
+    pages.extend(tutorials);
+    pages
+}
 
 struct Block {
     line: usize,
@@ -95,24 +105,12 @@ fn shared_library() -> PathBuf {
 }
 
 #[test]
-fn every_c_example_on_the_client_pages_compiles() {
-    for page in PAGES {
-        compile_page(page);
-    }
-}
-
-fn compile_page(page: &Page) {
+fn every_c_example_on_the_docs_pages_compiles() {
     let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let page_path = crate_dir
-        .join("../../../docs-site/src/content/docs/clients")
-        .join(page.file);
-    let text = std::fs::read_to_string(&page_path)
-        .unwrap_or_else(|err| panic!("read {}: {err}", page.file));
-    let blocks = c_blocks(&text);
-    assert!(!blocks.is_empty(), "no ```c blocks found on {}", page.file);
-
+    let docs = crate_dir.join("../../../docs-site/src/content/docs");
     let include = crate_dir.join("include");
-    let prelude = crate_dir.join("tests/c").join(page.prelude);
+    let prelude = crate_dir.join("tests/c/doc_prelude.h");
+    let resilient_prelude = crate_dir.join("tests/c/resilient_prelude.h");
     let shared = shared_library();
     let work = Path::new(env!("CARGO_TARGET_TMPDIR")).join("capi-doc-examples");
     std::fs::create_dir_all(&work).expect("create the work directory");
@@ -120,52 +118,70 @@ fn compile_page(page: &Page) {
     let require_curl = std::env::var_os("FELIX_CAPI_DOCS_REQUIRE_CURL").is_some();
 
     let mut failures = Vec::new();
-    for block in &blocks {
-        let at = format!("{} line {}", page.file, block.line);
-        if block.code.contains("#include <curl/curl.h>") && !curl {
-            assert!(
-                !require_curl,
-                "{at} needs libcurl's header, which is missing"
-            );
-            eprintln!("skipping {at}: libcurl's header is not installed");
-            continue;
-        }
-        let stem = page.file.replace('.', "_");
-        let source = work.join(format!("{stem}_line{}.c", block.line));
-        std::fs::write(&source, &block.code).expect("write the block");
-        let mut cc = Command::new("cc");
-        cc.args(CFLAGS).arg("-I").arg(&include);
-        if block.code.contains("int main(") {
-            cc.arg(&source)
-                .arg(&shared)
-                .arg(format!(
-                    "-Wl,-rpath,{}",
-                    shared.parent().expect("library directory").display()
-                ))
-                .arg("-o")
-                .arg(work.join(format!("{stem}_line{}", block.line)));
-        } else {
-            if !block.code.contains("#include") {
-                cc.arg("-include").arg(&prelude);
+    for page_name in &pages(&docs) {
+        let page = std::fs::read_to_string(docs.join(page_name))
+            .unwrap_or_else(|err| panic!("read {page_name}: {err}"));
+        let blocks = c_blocks(&page);
+        assert!(
+            !(page_name == C_PAGE
+                || page_name == RESILIENT_PAGE
+                || TUTORIALS_WITH_C.contains(&page_name.as_str()))
+                || !blocks.is_empty(),
+            "no ```c blocks found on {page_name}"
+        );
+        let stem = page_name.replace(['/', '.'], "_");
+
+        for block in &blocks {
+            let at = format!("{page_name} line {}", block.line);
+            if block.code.contains("#include <curl/curl.h>") && !curl {
+                assert!(
+                    !require_curl,
+                    "{at} needs libcurl's header, which is missing"
+                );
+                eprintln!("skipping {at}: libcurl's header is not installed");
+                continue;
             }
-            // A fragment's function has no caller.
-            cc.args(["-Wno-unused-function", "-c"])
-                .arg(&source)
-                .arg("-o")
-                .arg(work.join(format!("{stem}_line{}.o", block.line)));
-        }
-        let output = cc.output().expect("run cc");
-        if !output.status.success() {
-            failures.push(format!(
-                "{at}:\n{}",
-                String::from_utf8_lossy(&output.stderr)
-            ));
+            let name = format!("{stem}_line{}", block.line);
+            let source = work.join(format!("{name}.c"));
+            std::fs::write(&source, &block.code).expect("write the block");
+            let mut cc = Command::new("cc");
+            cc.args(CFLAGS).arg("-I").arg(&include);
+            if block.code.contains("int main(") {
+                cc.arg(&source)
+                    .arg(&shared)
+                    .arg(format!(
+                        "-Wl,-rpath,{}",
+                        shared.parent().expect("library directory").display()
+                    ))
+                    .arg("-o")
+                    .arg(work.join(&name));
+            } else {
+                if !block.code.contains("#include") {
+                    let prelude = if page_name == RESILIENT_PAGE {
+                        &resilient_prelude
+                    } else {
+                        &prelude
+                    };
+                    cc.arg("-include").arg(prelude);
+                }
+                // A fragment's function has no caller.
+                cc.args(["-Wno-unused-function", "-c"])
+                    .arg(&source)
+                    .arg("-o")
+                    .arg(work.join(format!("{name}.o")));
+            }
+            let output = cc.output().expect("run cc");
+            if !output.status.success() {
+                failures.push(format!(
+                    "{at}:\n{}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
         }
     }
     assert!(
         failures.is_empty(),
-        "C examples on {} that do not compile:\n{}",
-        page.file,
+        "C examples that do not compile:\n{}",
         failures.join("\n")
     );
 }

@@ -291,9 +291,17 @@ tasks:
       # And that the *runtime* knows them, so a mistyped name is reported
       # rather than quietly taking a default.
       - "python3 scripts/check_env_registry.py"
+      # Every metric the code registers is on the metrics page, and no other.
+      - "python3 scripts/check_metrics_reference.py"
+      # Every error code, retry class and detail reason has a row on the error
+      # codes page.
+      - "python3 scripts/check_error_codes_reference.py"
       # Belongs here for the same reason: a feature bit or a message variant is
       # added in Rust, and that is the moment the docs fall behind.
       - "python3 scripts/check_capability_docs.py"
+      # The shipped dashboard and alert rules query metrics by name; one the
+      # code does not register is a panel that stays empty.
+      - "python3 scripts/check_observability_assets.py"
       # The spec's configurations are claims about how the code behaves, and
       # nothing else connects the two artifacts. A cited test that no longer
       # exists is how that drift starts showing (#598).
@@ -305,6 +313,12 @@ tasks:
       # The spec-pairing check's own tests; Python only, so they run with the rest.
       - "python3 -m unittest scripts/test_check_spec_pairing.py"
       - "python3 -m unittest discover -s scripts/ci"
+  docs:felixctl:
+    desc: "Regenerate the felixctl command reference page from the clap definitions"
+    # The page is felixctl's own output. A felixctl test fails when the committed
+    # page differs, and this is the fix it names.
+    cmds:
+      - "cargo run -q -p felixctl -- reference > docs-site/src/content/docs/reference/felixctl.md"
   tla:check:
     desc: "Model-check the lease, replication and promotion protocol (docs/formal) with TLC"
     # Java, Docker or Podman; the TLA+ tools are fetched once, pinned, into target/tla.

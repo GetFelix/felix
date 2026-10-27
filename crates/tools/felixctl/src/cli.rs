@@ -370,6 +370,14 @@ pub(crate) enum Command {
         long_about = "Write a man page for felixctl and each of its commands into DIR."
     )]
     Man(ManArgs),
+
+    /// Print the command reference page as Markdown
+    #[command(
+        hide = true,
+        long_about = "Print the Markdown behind the command reference page in the docs. \
+                      `task docs:felixctl` writes it to the page."
+    )]
+    Reference,
 }
 
 #[derive(Debug, Subcommand)]

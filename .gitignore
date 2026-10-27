@@ -37,6 +37,9 @@ site/
 docs-site/dist/
 docs-site/node_modules/
 docs-site/.astro/
+# Generated from CHANGELOG.md by scripts/gen-release-notes.mjs
+docs-site/src/content/docs/release-notes/index.md
+docs-site/src/content/docs/release-notes/releases/
 .cache/
 data/soak/
 /crates/server/felix-storage/fuzz/target
