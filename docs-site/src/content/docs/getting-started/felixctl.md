@@ -653,3 +653,9 @@ State reads are planned. See
 `felixctl inspect` is coming: connections, the control plane's placement
 decisions, a data directory's records decoded offline, and where one
 record is held ([issue #1077](https://github.com/GetFelix/felix/issues/1077)).
+
+## Where next
+
+- [Pub/Sub Streaming](/features/pubsub/): what streams and subscriptions guarantee
+- [Queues and Consumer Groups](/features/queues/): the group commands in context
+- [Use Cases](/use-cases/overview/): scenarios built from these commands
