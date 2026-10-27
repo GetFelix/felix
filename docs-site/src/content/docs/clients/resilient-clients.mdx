@@ -539,7 +539,7 @@ static FelixStatus publish_checked(struct waiter *w, const FelixClient *client,
 
 A broker that sends error codes attaches a code and a **retry class** to every
 refusal. The class says what you may do about it, and it is the field to
-branch on. Never match a message: it is prose, and it gets reworded. The codes
+branch on. Never match a message where a code is available: it is prose, and it gets reworded. C# and C carry no code, which the stale-claim example below has to work around. The codes
 and their classes are in the [wire protocol](/architecture/wire-protocol/#error)
 and the [error code table](https://github.com/GetFelix/felix/blob/main/docs/protocol.md#error-codes).
 
@@ -2053,8 +2053,10 @@ while (!ct.IsCancellationRequested)
     }
 }
 
-// C# carries no error code, so a lapsed claim is recognised by the broker's message,
-// and only on a settle. Anything else propagates.
+// C# exposes no error code, so this is a match on the broker's wording: "no longer
+// stands" for a claim that lapsed and was redelivered, "claim is stale" for one the
+// broker does not know. It can break if the wording changes (#1596). It is limited to
+// settles, and anything else propagates.
 static async Task<bool> TrySettleAsync(Func<Task> settle, GroupRecord record)
 {
     try
@@ -2063,7 +2065,9 @@ static async Task<bool> TrySettleAsync(Func<Task> settle, GroupRecord record)
         return true;
     }
     catch (FelixException e) when (
-        e.Status == FelixStatus.Error && e.Message.Contains("claim is stale", StringComparison.OrdinalIgnoreCase))
+        e.Status == FelixStatus.Error &&
+        (e.Message.Contains("no longer stands", StringComparison.OrdinalIgnoreCase) ||
+         e.Message.Contains("claim is stale", StringComparison.OrdinalIgnoreCase)))
     {
         Console.Error.WriteLine($"offset {record.Offset}: claim lapsed; it will be delivered again");
         return false;
