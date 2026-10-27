@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793118061637,
+  "lastUpdate": 1793119298099,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -37960,6 +37960,58 @@ window.BENCHMARK_DATA = {
             "range": "70686.51",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1234074.15\nmean: 1209515.22\nstdev: 70686.51\ncv: 5.84%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b2e100b608625aff8334cf3c4f2faa679cdd5a16",
+          "message": "docs(tutorials): Podman, every language, run steps, and the released clients (#1603)\n\n* docs(tutorials): give every container command a Podman form\n\nThe tutorials told Podman users how to run `up` and then used\n`docker compose` everywhere else. Each command now has synced Docker and\nPodman tabs, the setup says what Podman needs, and a port already in use is\ntraced to the container holding it. The compose ready banner says to use\npodman compose with Podman.\n\n* docs(tutorials): say where each language's code goes and how to run it\n\nThe overview now names the file or project for every tutorial in each\nlanguage, and each tutorial has a Run it section with the commands for\nevery mode, in the terminals the expected output assumes. Usage strings\nprint the program name the overview gives.\n\n* docs(tutorials): env file for setup, release-archive C build, Python venv\n\nSetup writes the settings and COMPOSE_FILE to an env file readers source\nin every terminal, so commands work from any directory. The C tabs use\nthe release archive instead of a checkout. Python gets a venv and\npython3, TypeScript installs tsx, Rust adds io-util, and the prerequisite\nand terminal-count wording is fixed.\n\n* docs(tutorials): target the released v0.6.2 clients\n\nDrop the reconnect deadline options, which are not in v0.6.2, and use\nfelix_client_connect in the C programs. Pin the client installs, the\ncompose file and the C archives to v0.6.2.\n\n* test(docs): regenerate the resilient-clients examples\n\nSame one-line change as #1600, so this branch's drift test passes before\nthat lands.",
+          "timestamp": "2026-10-27T09:36:08-07:00",
+          "tree_id": "563ae545230a07b9cd15559d5f1fd82404a98a8e",
+          "url": "https://github.com/GetFelix/felix/commit/b2e100b608625aff8334cf3c4f2faa679cdd5a16"
+        },
+        "date": 1793119296066,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 587144.82,
+            "range": "51167.22",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 587144.82\nmean: 602829.11\nstdev: 51167.22\ncv: 8.49%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 587144.82,
+            "range": "51167.22",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 587144.82\nmean: 602829.11\nstdev: 51167.22\ncv: 8.49%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 124240.41,
+            "range": "725.98",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 124240.41\nmean: 124426.85\nstdev: 725.98\ncv: 0.58%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1242404.13,
+            "range": "7259.85",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1242404.13\nmean: 1244268.54\nstdev: 7259.85\ncv: 0.58%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
