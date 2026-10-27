@@ -6,6 +6,8 @@ on:
       - main
     paths:
       - 'docs-site/**'
+      - 'CHANGELOG.md'
+      - 'scripts/gen-release-notes.mjs'
       - '.github/workflows/pages.yml'
   workflow_run:
     workflows:

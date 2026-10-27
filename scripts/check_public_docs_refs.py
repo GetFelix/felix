@@ -26,6 +26,13 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 PUBLIC_DOCS = REPO / "docs-site" / "src" / "content" / "docs"
 
+# Pages generated from CHANGELOG.md, which records history as written and is
+# not checked here. They are not in git, so only a local build has them.
+GENERATED = (
+    PUBLIC_DOCS / "release-notes" / "index.md",
+    PUBLIC_DOCS / "release-notes" / "releases",
+)
+
 # `M` followed by one or two digits, as its own word.
 MILESTONE = re.compile(r"\bM\d{1,2}\b")
 
@@ -43,6 +50,8 @@ def offending_lines() -> list[tuple[Path, int, str]]:
     found: list[tuple[Path, int, str]] = []
     for path in sorted(PUBLIC_DOCS.rglob("*")):
         if path.suffix.lower() not in {".md", ".mdx"} or not path.is_file():
+            continue
+        if any(path == g or g in path.parents for g in GENERATED):
             continue
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             if not MILESTONE.search(line):

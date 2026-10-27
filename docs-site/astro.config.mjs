@@ -197,6 +197,17 @@ export default defineConfig({
           ],
         },
         {
+          label: 'Release Notes',
+          collapsed: true,
+          // Overview and the per-version pages are generated from CHANGELOG.md
+          // (scripts/gen-release-notes.mjs); version order comes from frontmatter.
+          items: [
+            { label: 'Overview', slug: 'release-notes' },
+            { label: 'Upgrading to 0.7', slug: 'release-notes/upgrading-to-0-7' },
+            { autogenerate: { directory: 'release-notes/releases' } },
+          ],
+        },
+        {
           label: 'Development',
           collapsed: true,
           items: [
