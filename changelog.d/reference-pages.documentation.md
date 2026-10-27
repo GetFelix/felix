@@ -1,0 +1,1 @@
+- Added reference pages for every Prometheus metric, every client error code, retry class and detail reason, and every `felixctl` command and flag. Checks in CI fail when the code and a page disagree, and `task docs:felixctl` regenerates the felixctl page.

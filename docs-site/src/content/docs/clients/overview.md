@@ -353,6 +353,10 @@ worth writing code for.
 | **[C](/clients/c/)** | `libfelix` and `felix.h`, from the GitHub release archives or built from the repository | A C ABI over the Rust client, asynchronous through callbacks. `felix_client_connect_with` takes comma-separated seeds and builds a `ClusterClient`. The base for the C# SDK; download an archive from the release or build it from the repository. |
 | **[C#](/clients/csharp/)** | `Felix.Client` on NuGet | A P/Invoke binding over the C ABI, so `FelixClientOptions.Addrs` is a list of seeds for a `ClusterClient`. Every `felix.h` function is bound, including a token provider that renews the token: publish, subscribe to a shard or every shard, consumer groups, caches, counters and cache watches, atomic commits, idempotent producers, and publisher and timestamp metadata. The package bundles the native library for Linux, macOS and Windows on x64 and arm64. |
 
+Every client reports a broker's refusal as a typed error. The [error codes
+reference](/reference/error-codes/) lists each code, what to do about it and
+what it becomes in every language.
+
 ### Which client to use
 
 In Rust, use `ClusterClient`, on one broker or many. It sends each record
