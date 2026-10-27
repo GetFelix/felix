@@ -18,6 +18,7 @@
 //!   assignments.
 //! - `inspect`: operators' read-only views of what the brokers hold.
 //! - `bench`: the load-test front end.
+//! - `reference`: the Markdown command reference rendered from `cli`.
 //! - `output`, `error`, `help`: printing, exit statuses, completions and man
 //!   pages.
 
@@ -36,6 +37,7 @@ mod manage;
 mod output;
 mod publish;
 mod rbac;
+mod reference;
 mod subscribe;
 mod topology;
 
@@ -70,6 +72,7 @@ async fn run(cli: Cli, out: &Output) -> anyhow::Result<()> {
     let env = |name: &str| std::env::var(name).ok();
     match command {
         Command::Completions(args) => return help::completions(args.shell),
+        Command::Reference => return out.text(&reference::markdown()),
         Command::Man(args) => {
             let written = help::man_pages(&args.out_dir)?;
             return out.done(
@@ -105,7 +108,7 @@ async fn run(cli: Cli, out: &Output) -> anyhow::Result<()> {
         Command::Rbac(command) => rbac::run(command, &settings, out).await,
         Command::Inspect(command) => inspect::run(command, &settings, out).await,
         Command::Bench(command) => bench::run(command, &settings, out).await,
-        Command::Context(_) | Command::Completions(_) | Command::Man(_) => {
+        Command::Context(_) | Command::Completions(_) | Command::Man(_) | Command::Reference => {
             unreachable!("handled above")
         }
     }

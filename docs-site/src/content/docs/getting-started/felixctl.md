@@ -637,7 +637,9 @@ error goes to stderr as `{"error": "...", "exit": N}`.
 ## Help, completions and man pages
 
 `felixctl help <command>` and `felixctl <command> --help` print the same help,
-with examples. `felixctl` alone prints a short overview.
+with examples. `felixctl` alone prints a short overview. The
+[felixctl reference](/reference/felixctl/) lists every command, flag and
+default on one page.
 
 ```bash
 felixctl completions bash > ~/.local/share/bash-completion/completions/felixctl
