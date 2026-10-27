@@ -626,8 +626,11 @@ accept a code it does not know. An `error` can also be the last frame on a
 subscription's or cache watch's event stream, as when the credential it was
 opened with is revoked. `retry` says what the client may do next: send again, wait
 first, go to another broker, send again only if the request is idempotent, or
-give up. What each code means is in
-[Error codes](https://github.com/GetFelix/felix/blob/main/docs/protocol.md#error-codes).
+give up. What each code means, what a client should do about it and how each
+language client surfaces it is in the
+[error codes reference](/reference/error-codes/); the
+[specification](https://github.com/GetFelix/felix/blob/main/docs/protocol.md#error-codes)
+has the normative table.
 
 ## Binary Publish Batch Encoding
 
