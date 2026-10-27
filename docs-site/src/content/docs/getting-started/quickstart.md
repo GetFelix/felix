@@ -451,4 +451,8 @@ See [Troubleshooting Guide](/reference/troubleshooting/) for more help.
 - [felixctl](/getting-started/felixctl/): create streams and publish from the terminal
 - [Demos](/demos/overview/): runnable examples of isolation, queues and failover
 - [Pub/Sub Streaming](/features/pubsub/), [Queues and Consumer Groups](/features/queues/) and [Distributed Cache](/features/cache/): the three ways to use the log
+- [Broker API](/api/broker-api/): the wire-level API
+- [Performance Guide](/features/performance/): tuning
+- [System Design](/architecture/system-design/): the architecture
 - [Deployment](/deployment/local/): run it properly
+- [Contributing](/development/contributing/): the development guide

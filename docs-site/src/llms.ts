@@ -12,12 +12,31 @@ const pageUrl = (id: string, site: URL) =>
 const siteTitle =
   typeof config.title === 'string' ? config.title : Object.values(config.title)[0];
 
+// MDX bodies carry imports and JSX. Drop them, keeping the text inside
+// components, so the file is plain markdown. Code spans and fences are left alone.
+function clean(body: string): string {
+  return body
+    .split(/(^```[\s\S]*?^```|`[^`\n]+`)/m)
+    .map((part, i) =>
+      i % 2
+        ? part
+        : part
+            .replace(/^import .+ from ['"].+['"];?\n/gm, '')
+            .replace(/<(video|script|style)\b[\s\S]*?<\/\1>/g, '')
+            .replace(/<[A-Za-z][^>]*\/>/g, '')
+            .replace(/<\/?[A-Za-z][^>]*>/g, '')
+            .replace(/\n{3,}/g, '\n\n'),
+    )
+    .join('')
+    .trim();
+}
+
 const oneLine = (s: string) => s.replace(/\s+/g, ' ').trim();
 
 // Walks the configured sidebar so sections and page order match the site.
 // Pages not listed in it fall into a trailing "Other" section.
 async function sections(): Promise<Section[]> {
-  const docs = await getCollection('docs');
+  const docs = await getCollection('docs', ({ data }) => !data.draft);
   const byId = new Map(docs.map((d) => [d.id, d]));
   const used = new Set<string>();
   const out: Section[] = [];
@@ -71,7 +90,7 @@ export async function buildFull(site: URL): Promise<string> {
   const parts = [`# ${siteTitle}`, '', `> ${config.description}`];
   for (const section of await sections()) {
     for (const d of section.docs) {
-      parts.push('', `---`, '', `# ${d.data.title}`, '', `Source: ${pageUrl(d.id, site)}`, '', (d.body ?? '').replace(/^import .+ from '.+';\n/gm, '').trim());
+      parts.push('', `---`, '', `# ${d.data.title}`, '', `Source: ${pageUrl(d.id, site)}`, '', clean(d.body ?? ''));
     }
   }
   return parts.join('\n') + '\n';

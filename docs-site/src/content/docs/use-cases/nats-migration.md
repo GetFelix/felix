@@ -8,8 +8,8 @@ fire-and-forget events, JetStream holds the events that must not be lost, and a
 KV bucket holds configuration. The question is what each of those becomes on
 Felix, and which parts of the NATS model have no counterpart.
 
-NATS is a good system, small and fast, and a lot of what it does is outside
-Felix's scope. Read the last two sections before planning a move. For some
+NATS covers request-reply, headers, an object store, MQTT and edge topologies
+that Felix does not. Read the last two sections before planning a move. For some
 workloads the right answer is to keep NATS.
 
 ## How it maps
@@ -95,8 +95,11 @@ Two differences matter for the design:
   worker per shard. A NATS consumer, by contrast, hands any message to any
   worker.
 - **Order is not preserved across workers**, in either system. Redeliveries
-  reorder. If a record's handler is not idempotent, make it so. Neither system
-  offers exactly-once delivery to a consumer.
+  reorder. JetStream deduplicates publishes by message id within a window
+  and offers double-ack for exactly-once-style consumption. Felix deduplicates
+  re-sent batches through idempotent producers, but delivers to consumers at
+  least once, so a handler has to tolerate seeing a record again. See
+  [Semantics](/architecture/semantics/).
 
 See [Queues and Consumer Groups](/features/queues/) and the
 [work queue scenario](/use-cases/work-queues/).
@@ -130,7 +133,11 @@ a partition, and [Semantics](/architecture/semantics/) states the guarantees.
 
 A Felix cache holds keys under a tenant, namespace and cache name.
 
-- A put can carry a TTL. A log-backed cache survives a restart.
+- A put can carry a TTL. Entries survive a restart only when the broker runs
+  with `FELIX_DURABLE_STORAGE_DIR`; without it the cache is in memory. The
+  log-backed cache is marked Partial in
+  [What Felix Is For](/getting-started/what-felix-is-for/) because each shard
+  keeps its whole key index in memory, so memory grows with the key count.
 - `cache_get_versioned` returns a version, and `cache_put_if` and
   `cache_delete_if` write only if the key is absent or still at that version.
   This is the same idea as KV's revision-based create and update, and it is what

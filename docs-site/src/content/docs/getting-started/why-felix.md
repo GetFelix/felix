@@ -199,3 +199,4 @@ per capability and it is the page to trust when another disagrees with it.
 - [Overview](/getting-started/overview/): the components and how a message moves through them
 - [Quickstart](/getting-started/quickstart/): run a broker and publish something
 - [Use Cases](/use-cases/overview/): concrete scenarios, with code and how each compares with other brokers
+- [Projections](/architecture/projections/): the precise version of how one log is read three ways
