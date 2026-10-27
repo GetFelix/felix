@@ -22,7 +22,8 @@ REPO = Path(__file__).resolve().parent.parent
 REFERENCE = REPO / "docs-site/src/content/docs/reference/metrics.md"
 
 # Quoted `felix_*` literals that are not metric names: the Python binding's
-# helper module and the control plane's token format.
+# helper module and the control plane's token format. If the check fails on a
+# name that is not a metric, add the literal here; do not document it.
 NOT_METRICS = {"felix_token", "felix_token_call"}
 
 EXCLUDE = [

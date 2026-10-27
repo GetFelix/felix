@@ -76,7 +76,7 @@ A code this client does not know is kept as an unknown code with its retry class
 
 ## Publish refusal reasons
 
-A conditional or idempotent write that the broker will not append is answered with `publish_refused`, not an error code, because each reason names a different remedy. It answers a `publish_idempotent`, a `publish_if`, or a `commit` that carried `expected_offset`. In the Rust client it arrives as a `PublishRefused` error carrying the reason.
+A conditional or idempotent write that the broker will not append is answered with `publish_refused`, not an error code, because each reason names a different remedy. It answers a `publish_idempotent`, a `publish_if`, or a `commit` that carried `expected_offset`. In the Rust client it arrives as a `PublishRefused` error carrying the reason. The Python and TypeScript bindings have no idempotent or conditional publish, so they never see it. The C ABI reports a refused conditional write as `FELIX_STATUS_OK` with `written` false and the shard's tail.
 
 | Reason | Carries | Meaning | What to do |
 | --- | --- | --- | --- |
@@ -89,7 +89,7 @@ A conditional or idempotent write that the broker will not append is answered wi
 
 ## Cursor error reasons
 
-A subscribe that cannot start where it asked is answered with `subscribe_cursor_error`, also not an error code. It carries the offset requested and the nearest `available` one.
+A subscribe that cannot start where it asked is answered with `subscribe_cursor_error`, also not an error code. It carries the offset requested and the nearest `available` one. The Rust client returns it as a `SubscribeCursorError` with both offsets. Python raises `CursorError`, TypeScript `CursorError` (kind `FELIX_CURSOR`) and C and C# report `FELIX_STATUS_CURSOR`; those three carry the class and not the offsets.
 
 | Reason | Meaning | What to do |
 | --- | --- | --- |
@@ -117,7 +117,7 @@ All clients pick the exception class from the code, except that an `outcome_unkn
 | `internal` | `BrokerError` | `OutcomeUnknownError` | `OutcomeUnknownError` | `FELIX_STATUS_OUTCOME_UNKNOWN` (`OutcomeUnknown`) |
 | `storage` | `BrokerError` | `OutcomeUnknownError` | `OutcomeUnknownError` | `FELIX_STATUS_OUTCOME_UNKNOWN` (`OutcomeUnknown`) |
 | `stale_claim` | `BrokerError` | `FelixError` | `FelixError` | `FELIX_STATUS_ERROR` (`Error`) |
-| `revoked` | `BrokerError` | `AuthError` | `AuthError` | `FELIX_STATUS_ERROR` (`Error`) |
+| `revoked` | `BrokerError` | `AuthError` | `AuthError` | `FELIX_STATUS_ERROR` (`Error`), tracked in [#1592](https://github.com/GetFelix/felix/issues/1592) |
 | `stale_width` | `BrokerError` | `FelixError` | `FelixError` | `FELIX_STATUS_ERROR` (`Error`) |
 
 A few errors come from the client rather than the broker and have no code:
@@ -127,10 +127,10 @@ A few errors come from the client rather than the broker and have no code:
 | Token source failed, or the broker refused the credential | `AuthError` | `AuthError` | `AuthError` | `FELIX_STATUS_AUTH` |
 | Start offset gone or ahead of the tail | `SubscribeCursorError` | `CursorError` | `CursorError` | `FELIX_STATUS_CURSOR` |
 | Subscription connection dropped | `SubscriptionLost` | `ConnectionError` | `ConnectionError` | `FELIX_STATUS_CONNECTION` |
-| Subscription fell behind and records were dropped | `SubscriptionLagged` | see the client page | see the client page | see the client page |
-| Idempotent or conditional publish refused | `PublishRefused` | see the client page | see the client page | see the client page |
+| Subscription fell behind and records were dropped | `SubscriptionLagged` | `SubscriptionLagged` | Rust client only | Rust client only | Rust client only |
+| Idempotent or conditional publish refused | `PublishRefused` | `PublishRefused` | Rust client only | Rust client only | Rust client only |
 | Commit refused before sending | `CommitError` | `CommitError`, `NotOnOwningShardError`, `EventCountError` | `FELIX_COMMIT`, `FELIX_NOT_ON_OWNING_SHARD`, `FELIX_EVENT_COUNT` kinds | `FELIX_STATUS_UNSUPPORTED` or `FELIX_STATUS_INVALID_ARGUMENT` |
-| Bad argument to the client | none | see the client page | `InvalidArgumentError` | `FELIX_STATUS_INVALID_ARGUMENT` |
+| Bad argument to the client | none | `ValueError` | `InvalidArgumentError` | `FELIX_STATUS_INVALID_ARGUMENT` |
 
 ### Rust
 
@@ -146,7 +146,7 @@ Every error carries `code`, `retry`, `detail` and a `retryable` flag that follow
 
 ### C and C#
 
-The C ABI reports a status per call, not the broker's code, so several codes share a status. The statuses are in `crates/sdk/felix-capi/include/felix.h` and listed with their values under [Status codes](/clients/c/#status-codes). The C# client's `FelixException.Status` is the same value, `IsRetryable` is true for `Connection`, `ShardUnavailable` and `Overloaded`, and a cancelled call is an `OperationCanceledException`. A `revoked` credential arrives as `FELIX_STATUS_ERROR` here, not `FELIX_STATUS_AUTH`; read the message to tell it from other generic failures.
+The C ABI reports a status per call, not the broker's code, so several codes share a status. The statuses are in `crates/sdk/felix-capi/include/felix.h` and listed with their values under [Status codes](/clients/c/#status-codes). The C# client's `FelixException.Status` is the same value, `IsRetryable` is true for `Connection`, `ShardUnavailable` and `Overloaded`, and a cancelled call is an `OperationCanceledException`. A `revoked` credential arrives as `FELIX_STATUS_ERROR` here, not `FELIX_STATUS_AUTH` (tracked in [#1592](https://github.com/GetFelix/felix/issues/1592)); read the message to tell it from other generic failures.
 
 | Status | Value | Raised for |
 | --- | --- | --- |

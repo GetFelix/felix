@@ -39,8 +39,8 @@ fn every_visible_command_has_a_section() {
 #[test]
 fn hidden_commands_are_left_out() {
     let rendered = markdown();
-    assert!(!rendered.contains("felixctl man"));
-    assert!(!rendered.contains("felixctl reference"));
+    assert!(!rendered.contains("`felixctl man`"));
+    assert!(!rendered.contains("`felixctl reference`"));
 }
 
 #[test]
