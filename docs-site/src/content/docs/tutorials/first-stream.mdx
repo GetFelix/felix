@@ -27,12 +27,25 @@ client is callback based, so its version is one program at the end.
 A stream has to exist before anything can publish to it. Create one with
 [`felixctl`](/getting-started/felixctl/):
 
+<Tabs syncKey="engine">
+<TabItem label="Docker">
+
 ```bash
 docker compose run --rm felixctl stream create tutorial-events
 ```
 
-With an installed `felixctl`, drop the `docker compose run --rm felixctl`
-prefix. A new stream is durable: its records are written to disk before the
+</TabItem>
+<TabItem label="Podman">
+
+```bash
+podman compose run --rm felixctl stream create tutorial-events
+```
+
+</TabItem>
+</Tabs>
+
+With an installed `felixctl`, drop the `docker compose run --rm felixctl` or
+`podman compose run --rm felixctl` prefix. A new stream is durable: its records are written to disk before the
 broker acknowledges them, and each one gets an offset, its position in the
 stream's log. Offsets only grow, and they are what lets a reader say where it
 stopped.

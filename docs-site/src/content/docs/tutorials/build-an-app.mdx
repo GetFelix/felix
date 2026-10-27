@@ -37,10 +37,24 @@ the same as in the earlier tutorials.
 
 ## 1. Create the stream and the cache
 
+<Tabs syncKey="engine">
+<TabItem label="Docker">
+
 ```bash
 docker compose run --rm felixctl stream create tutorial-orders
 docker compose run --rm felixctl cache create tutorial-cache
 ```
+
+</TabItem>
+<TabItem label="Podman">
+
+```bash
+podman compose run --rm felixctl stream create tutorial-orders
+podman compose run --rm felixctl cache create tutorial-cache
+```
+
+</TabItem>
+</Tabs>
 
 Use `felixctl` directly if you installed it. If you did the previous tutorial,
 the cache exists and the command says so.
@@ -836,9 +850,22 @@ order. The other worker finishes the order about 30 seconds later, on
 `attempt 2`, and the dashboard shows it reach `done`.
 To see the rejection path, publish text that is not an order:
 
+<Tabs syncKey="engine">
+<TabItem label="Docker">
+
 ```bash
 docker compose run --rm felixctl pub tutorial-orders 'not json'
 ```
+
+</TabItem>
+<TabItem label="Podman">
+
+```bash
+podman compose run --rm felixctl pub tutorial-orders 'not json'
+```
+
+</TabItem>
+</Tabs>
 
 A worker prints `rejected a malformed order` and carries on.
 

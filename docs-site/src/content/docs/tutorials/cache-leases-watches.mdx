@@ -27,9 +27,22 @@ those two and their programs have no `lease` mode.
 
 ## 1. Create the cache
 
+<Tabs syncKey="engine">
+<TabItem label="Docker">
+
 ```bash
 docker compose run --rm felixctl cache create tutorial-cache
 ```
+
+</TabItem>
+<TabItem label="Podman">
+
+```bash
+podman compose run --rm felixctl cache create tutorial-cache
+```
+
+</TabItem>
+</Tabs>
 
 Use `felixctl cache create tutorial-cache` if you installed it. With these
 defaults the cache is not replicated, and the leader acknowledges a write alone.

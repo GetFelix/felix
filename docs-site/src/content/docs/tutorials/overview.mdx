@@ -88,15 +88,40 @@ durable storage, and credentials for a tenant named `dev` with a namespace
 named `default`. It needs Docker or Podman. The credentials work on your
 machine only.
 
+Pick your container engine. The choice applies to every command on these
+pages. With Podman, start the machine first on macOS or Windows
+(`podman machine start`), and have `docker-compose` 2.20 or later installed:
+`podman compose` hands the file to it, and `podman-compose` does not run this
+file correctly. [Docker or Podman](/getting-started/containers/) has the
+details.
+
+<Tabs syncKey="engine">
+<TabItem label="Docker">
+
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/GetFelix/felix/main/compose.yaml
 docker compose up
 ```
 
-With Podman, use `PODMAN_COMPOSE_PROVIDER=docker-compose podman compose up`.
-Leave it running. In another terminal in the same directory, copy out the
-client token and the broker's certificate and export the settings every
-tutorial reads:
+</TabItem>
+<TabItem label="Podman">
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/GetFelix/felix/main/compose.yaml
+export PODMAN_COMPOSE_PROVIDER=docker-compose
+podman compose up
+```
+
+</TabItem>
+</Tabs>
+
+The stack stays in the foreground and prints its logs. Leave it running, or add
+`-d` to start it in the background and follow the logs with `logs -f`. In
+another terminal in the same directory, copy out the client token and the
+broker's certificate and export the settings every tutorial reads:
+
+<Tabs syncKey="engine">
+<TabItem label="Docker">
 
 ```bash
 docker compose exec -T felix-broker cat /var/lib/felix/client.jwt > felix-dev.jwt
@@ -108,10 +133,52 @@ export FELIX_AUTH_TOKEN="$(cat felix-dev.jwt)"
 export FELIX_CA_FILE="$PWD/felix-dev.pem"
 ```
 
+</TabItem>
+<TabItem label="Podman">
+
+```bash
+export PODMAN_COMPOSE_PROVIDER=docker-compose
+podman compose exec -T felix-broker cat /var/lib/felix/client.jwt > felix-dev.jwt
+podman compose exec -T felix-broker cat /var/lib/felix/broker-cert.pem > felix-dev.pem
+
+export FELIX_BROKERS=127.0.0.1:5000
+export FELIX_AUTH_TENANT=dev
+export FELIX_AUTH_TOKEN="$(cat felix-dev.jwt)"
+export FELIX_CA_FILE="$PWD/felix-dev.pem"
+```
+
+</TabItem>
+</Tabs>
+
+The stack publishes ports 5000 to 5003 (UDP) and 8080, 8081 and 8443 (TCP) on
+`127.0.0.1`. If `up` fails because a port is in use, another container usually
+holds it, often another Felix stack. On Podman, `lsof` names the holder as
+`gvproxy`, the process that forwards every published port, so ask the engine
+which container it is and stop that stack first:
+
+<Tabs syncKey="engine">
+<TabItem label="Docker">
+
+```bash
+docker ps --format '{{.Names}}\t{{.Ports}}'
+```
+
+</TabItem>
+<TabItem label="Podman">
+
+```bash
+podman ps --format '{{.Names}}\t{{.Ports}}'
+```
+
+</TabItem>
+</Tabs>
+
 The token lasts a day. The broker makes a new certificate every time it starts,
 so copy the file again after a restart. The tutorials create their streams and
 caches with `felixctl`, which the compose file runs for you as
-`docker compose run --rm felixctl`. To use one installed on your machine,
+`docker compose run --rm felixctl`, or `podman compose run --rm felixctl` with
+Podman. Export `PODMAN_COMPOSE_PROVIDER=docker-compose` in every terminal you
+use it from. To use one installed on your machine,
 see [felixctl](/getting-started/felixctl/#install) and the
 [Docker Compose page](/deployment/docker-compose/#try-it-in-one-command) for
 adding a context.

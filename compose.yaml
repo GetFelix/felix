@@ -164,7 +164,7 @@ services:
           tenant dev, namespace default, stream orders, caches config and stats
           brokers 127.0.0.1:5000 (QUIC), control plane http://127.0.0.1:8443
 
-        From this directory:
+        From this directory (with Podman, use podman compose instead of docker compose):
           docker compose run --rm felixctl sub orders
           docker compose run --rm felixctl pub orders 'hello'
 

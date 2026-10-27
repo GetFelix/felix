@@ -26,9 +26,22 @@ is one program at the end.
 
 ## 1. Create the stream
 
+<Tabs syncKey="engine">
+<TabItem label="Docker">
+
 ```bash
 docker compose run --rm felixctl stream create tutorial-jobs
 ```
+
+</TabItem>
+<TabItem label="Podman">
+
+```bash
+podman compose run --rm felixctl stream create tutorial-jobs
+```
+
+</TabItem>
+</Tabs>
 
 Use `felixctl stream create tutorial-jobs` if you installed it. A group needs a
 durable stream, which is what this creates, because the group's position is
