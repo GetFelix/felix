@@ -1,0 +1,762 @@
+---
+title: "Your first stream"
+description: "Create a durable stream, publish to it, read it back with offsets, and resume where you stopped after a restart."
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+You will write a small program that publishes records to a durable stream and
+a second mode of the same program that reads them back. The reader remembers
+the last offset it handled in a file, so after you stop it and start it again
+it carries on with the first record it has not seen.
+
+## Prerequisites
+
+A running broker and the environment variables from the
+[tutorials overview](/tutorials/overview/#set-up-once). That page starts the
+development stack from the [quickstart](/getting-started/quickstart/) and
+exports the broker address, a token and the broker's certificate. You also need
+the client for your language, installed as the
+[Rust](/clients/rust/), [Python](/clients/python/),
+[TypeScript](/clients/typescript/), [C#](/clients/csharp/) or [C](/clients/c/)
+client page describes. The steps show Rust, Python, TypeScript and C#. The C
+client is callback based, so its version is one program at the end.
+
+## 1. Create a stream
+
+A stream has to exist before anything can publish to it. Create one with
+[`felixctl`](/getting-started/felixctl/):
+
+```bash
+docker compose run --rm felixctl stream create tutorial-events
+```
+
+With an installed `felixctl`, drop the `docker compose run --rm felixctl`
+prefix. A new stream is durable: its records are written to disk before the
+broker acknowledges them, and each one gets an offset, its position in the
+stream's log. Offsets only grow, and they are what lets a reader say where it
+stopped.
+
+## 2. Connect
+
+The program takes one argument, `publish` or `read`. This part is shared by
+both. The broker address, token and certificate come from the environment, so
+none of them is written into the code, and the connect call has a time limit.
+
+<Tabs syncKey="lang">
+<TabItem label="Rust">
+
+```rust
+use std::net::SocketAddr;
+use std::sync::Arc;
+
+use anyhow::{Context, Result};
+use felix_client::{ClientConfig, ClusterClient, quic_client_config, root_store_from_pem_file};
+
+// Must match FELIX_AUTH_TENANT.
+const TENANT: &str = "dev";
+const NAMESPACE: &str = "default";
+const STREAM: &str = "tutorial-events";
+
+async fn connect() -> Result<Arc<ClusterClient>> {
+    let ca_file = std::env::var("FELIX_CA_FILE").context("set FELIX_CA_FILE")?;
+    let roots = Arc::new(root_store_from_pem_file(&ca_file)?);
+    // Reads FELIX_AUTH_TENANT and FELIX_AUTH_TOKEN.
+    let config = ClientConfig::from_env_or_yaml(quic_client_config(Some(roots), false)?, None)?;
+
+    let broker = std::env::var("FELIX_BROKERS").unwrap_or_else(|_| "127.0.0.1:5000".into());
+    let seeds: Vec<SocketAddr> = vec![broker.parse().context("FELIX_BROKERS must be ip:port")?];
+    let client = ClusterClient::connect(&seeds, "localhost", config).await?;
+    Ok(Arc::new(client))
+}
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+import os
+import sys
+from pathlib import Path
+
+import felix
+
+# Must match FELIX_AUTH_TENANT.
+TENANT = "dev"
+NAMESPACE = "default"
+STREAM = "tutorial-events"
+
+
+def connect() -> felix.Client:
+    return felix.Client(
+        os.environ.get("FELIX_BROKERS", "127.0.0.1:5000"),
+        tenant_id=TENANT,
+        token=os.environ["FELIX_AUTH_TOKEN"],
+        ca_file=os.environ["FELIX_CA_FILE"],
+        reconnect_deadline=10.0,
+    )
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+import { setTimeout as sleep } from "node:timers/promises";
+import { readFile, rename, writeFile } from "node:fs/promises";
+import {
+  Client,
+  type Event,
+  type StartPosition,
+  type SubscriptionHandle,
+} from "felix-client";
+
+// Must match FELIX_AUTH_TENANT.
+const TENANT = "dev";
+const NAMESPACE = "default";
+const STREAM = "tutorial-events";
+
+function required(name: string): string {
+  const value = process.env[name];
+  if (!value) throw new Error(`set ${name}`);
+  return value;
+}
+
+function connect(): Promise<Client> {
+  return Client.connect(process.env.FELIX_BROKERS ?? "127.0.0.1:5000", TENANT, {
+    token: required("FELIX_AUTH_TOKEN"),
+    caFile: required("FELIX_CA_FILE"),
+    reconnectDeadline: 10_000, // milliseconds
+  });
+}
+```
+
+</TabItem>
+<TabItem label="C#">
+
+```csharp
+using System.Text;
+using Felix;
+
+// Must match FELIX_AUTH_TENANT.
+const string Tenant = "dev";
+const string Namespace = "default";
+const string StreamName = "tutorial-events";
+
+static string Required(string name) =>
+    Environment.GetEnvironmentVariable(name) is { Length: > 0 } value
+        ? value
+        : throw new InvalidOperationException($"set {name}");
+
+static async Task<FelixClient> ConnectAsync(CancellationToken ct) =>
+    await FelixClient.ConnectAsync(new FelixClientOptions
+    {
+        Addrs = [Environment.GetEnvironmentVariable("FELIX_BROKERS") ?? "127.0.0.1:5000"],
+        TenantId = Tenant,
+        Token = Required("FELIX_AUTH_TOKEN"),
+        CaFile = Required("FELIX_CA_FILE"),
+        ReconnectDeadline = TimeSpan.FromSeconds(10),
+    }, ct);
+```
+
+</TabItem>
+</Tabs>
+
+The broker makes its own certificate, which is why a CA file is passed. A
+broker with a certificate from a public CA needs none.
+
+## 3. Publish
+
+Each publish waits for the broker's acknowledgement, which on a durable stream
+comes after the record is on disk. It returns the offset the record was
+written at.
+
+<Tabs syncKey="lang">
+<TabItem label="Rust">
+
+```rust
+use std::time::Duration;
+
+use felix_client::AckMode;
+
+async fn publish_three(client: &ClusterClient) -> Result<()> {
+    for i in 1..=3 {
+        let payload = format!("event {i}").into_bytes();
+        let publish = client.publish(TENANT, NAMESPACE, STREAM, payload, AckMode::PerMessage);
+        let offset = tokio::time::timeout(Duration::from_secs(10), publish)
+            .await
+            .context("the broker did not answer within 10 seconds")??;
+        println!("published event {i} at offset {offset:?}");
+    }
+    Ok(())
+}
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+def publish_three(client: felix.Client) -> None:
+    for i in range(1, 4):
+        offset = client.publish(TENANT, NAMESPACE, STREAM, f"event {i}".encode())
+        print(f"published event {i} at offset {offset}")
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+async function publishThree(client: Client): Promise<void> {
+  for (let i = 1; i <= 3; i++) {
+    const offset = await client.publish(TENANT, NAMESPACE, STREAM, Buffer.from(`event ${i}`));
+    console.log(`published event ${i} at offset ${offset}`);
+  }
+}
+```
+
+</TabItem>
+<TabItem label="C#">
+
+```csharp
+static async Task PublishThreeAsync(FelixClient client, CancellationToken ct)
+{
+    for (var i = 1; i <= 3; i++)
+    {
+        long? offset = await client.PublishAsync(
+            Tenant, Namespace, StreamName, Encoding.UTF8.GetBytes($"event {i}"), cancellationToken: ct);
+        Console.WriteLine($"published event {i} at offset {offset}");
+    }
+}
+```
+
+</TabItem>
+</Tabs>
+
+## 4. Read, and remember where you stopped
+
+A subscription starts at the tail of the stream unless you say otherwise. The
+reader asks for a start position instead: the beginning the first time, and the
+offset after the last one it handled on every run after that. A start offset is
+the first record you have not seen, so a resuming reader passes the last
+offset plus one.
+
+The reader saves the offset after it has handled the record. If it dies
+between handling and saving, the record comes again on the next run, so
+whatever a handler does should be safe to repeat. The reader also stops after
+three idle seconds so the tutorial ends on its own; a service would keep
+reading.
+
+<Tabs syncKey="lang">
+<TabItem label="Rust">
+
+```rust
+use std::path::Path;
+
+use felix_client::StartPosition;
+
+fn load_checkpoint(path: &Path) -> Result<Option<u64>> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text.trim().parse().context("the checkpoint is not an offset")?)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err).context("read the checkpoint"),
+    }
+}
+
+// Write beside the file and rename, so a crash leaves the old checkpoint whole.
+fn save_checkpoint(path: &Path, offset: u64) -> Result<()> {
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, offset.to_string()).context("write the checkpoint")?;
+    std::fs::rename(&tmp, path).context("replace the checkpoint")
+}
+
+async fn read_new(client: &Arc<ClusterClient>, checkpoint: &Path) -> Result<()> {
+    let start = match load_checkpoint(checkpoint)? {
+        Some(offset) => StartPosition::Offset(offset + 1),
+        None => StartPosition::Earliest,
+    };
+    let mut events = client
+        .subscribe_from(TENANT, NAMESPACE, STREAM, Some(start))
+        .await?;
+
+    loop {
+        let next = tokio::time::timeout(Duration::from_secs(3), events.next_event()).await;
+        let Ok(next) = next else {
+            println!("nothing new for 3 seconds, stopping");
+            return Ok(());
+        };
+        let Some(event) = next? else {
+            return Ok(());
+        };
+        let offset = event.offset.context("the stream has no offsets; is it durable?")?;
+        println!("offset {offset}: {}", String::from_utf8_lossy(&event.payload));
+        save_checkpoint(checkpoint, offset)?;
+    }
+}
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+def load_checkpoint(path: Path) -> int | None:
+    try:
+        return int(path.read_text())
+    except FileNotFoundError:
+        return None
+
+
+def save_checkpoint(path: Path, offset: int) -> None:
+    # Write beside the file and rename, so a crash leaves the old checkpoint whole.
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(str(offset))
+    tmp.replace(path)
+
+
+def read_new(client: felix.Client, checkpoint: Path) -> None:
+    saved = load_checkpoint(checkpoint)
+    start = "earliest" if saved is None else saved + 1
+    with client.subscribe(TENANT, NAMESPACE, STREAM, start=start) as events:
+        while (event := events.next_event(timeout=3.0)) is not None:
+            if event.offset is None:
+                raise RuntimeError("the stream has no offsets; is it durable?")
+            print(f"offset {event.offset}: {event.payload.decode(errors='replace')}")
+            save_checkpoint(checkpoint, event.offset)
+    print("nothing new for 3 seconds, stopping")
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+async function loadCheckpoint(path: string): Promise<bigint | null> {
+  try {
+    return BigInt((await readFile(path, "utf8")).trim());
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
+  }
+}
+
+// Write beside the file and rename, so a crash leaves the old checkpoint whole.
+async function saveCheckpoint(path: string, offset: bigint): Promise<void> {
+  await writeFile(`${path}.tmp`, offset.toString());
+  await rename(`${path}.tmp`, path);
+}
+
+// The next event, null when the subscription ends, or "idle" after `ms`.
+async function nextWithin(
+  events: SubscriptionHandle,
+  ms: number,
+): Promise<Event | null | "idle"> {
+  const timer = new AbortController();
+  try {
+    return await Promise.race([
+      events.nextEvent(),
+      sleep(ms, "idle" as const, { signal: timer.signal }),
+    ]);
+  } finally {
+    timer.abort();
+  }
+}
+
+async function readNew(client: Client, checkpoint: string): Promise<void> {
+  const saved = await loadCheckpoint(checkpoint);
+  const start: StartPosition = saved === null ? "earliest" : saved + 1n;
+  const events = await client.subscribe(TENANT, NAMESPACE, STREAM, start);
+  try {
+    for (;;) {
+      const event = await nextWithin(events, 3000);
+      if (event === "idle") {
+        console.log("nothing new for 3 seconds, stopping");
+        return;
+      }
+      if (event === null) return;
+      if (event.offset === null) throw new Error("the stream has no offsets; is it durable?");
+      console.log(`offset ${event.offset}: ${event.payload.toString()}`);
+      await saveCheckpoint(checkpoint, event.offset);
+    }
+  } finally {
+    await events.close();
+  }
+}
+```
+
+</TabItem>
+<TabItem label="C#">
+
+```csharp
+static async Task<long?> LoadCheckpointAsync(string path, CancellationToken ct) =>
+    File.Exists(path) ? long.Parse((await File.ReadAllTextAsync(path, ct)).Trim()) : null;
+
+// Write beside the file and move over it, so a crash leaves the old checkpoint whole.
+static async Task SaveCheckpointAsync(string path, long offset, CancellationToken ct)
+{
+    await File.WriteAllTextAsync(path + ".tmp", offset.ToString(), ct);
+    File.Move(path + ".tmp", path, overwrite: true);
+}
+
+static async Task ReadNewAsync(FelixClient client, string checkpoint, CancellationToken ct)
+{
+    long? saved = await LoadCheckpointAsync(checkpoint, ct);
+    var start = saved is { } last ? StartPosition.FromOffset((ulong)(last + 1)) : StartPosition.Earliest;
+    await using var events = await client.SubscribeAsync(Tenant, Namespace, StreamName, shard: 0, start, ct);
+
+    while (await events.ReadAsync(TimeSpan.FromSeconds(3), ct) is { } ev)
+    {
+        if (ev.Offset is not { } offset)
+        {
+            throw new InvalidOperationException("the stream has no offsets; is it durable?");
+        }
+        Console.WriteLine($"offset {offset}: {Encoding.UTF8.GetString(ev.Payload.Span)}");
+        await SaveCheckpointAsync(checkpoint, offset, ct);
+    }
+    Console.WriteLine("nothing new for 3 seconds, stopping");
+}
+```
+
+</TabItem>
+</Tabs>
+
+## 5. Run it
+
+The last part picks the mode from the command line.
+
+<Tabs syncKey="lang">
+<TabItem label="Rust">
+
+```rust
+use anyhow::bail;
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let client = tokio::time::timeout(Duration::from_secs(10), connect())
+        .await
+        .context("connecting took longer than 10 seconds")??;
+    match std::env::args().nth(1).as_deref() {
+        Some("publish") => publish_three(&client).await,
+        Some("read") => read_new(&client, Path::new("checkpoint")).await,
+        _ => bail!("usage: first-stream publish|read"),
+    }
+}
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+def main() -> None:
+    mode = sys.argv[1] if len(sys.argv) > 1 else ""
+    if mode not in ("publish", "read"):
+        sys.exit("usage: first_stream.py publish|read")
+    with connect() as client:
+        if mode == "publish":
+            publish_three(client)
+        else:
+            read_new(client, Path("checkpoint"))
+
+
+main()
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+async function main(): Promise<void> {
+  const mode = process.argv[2];
+  if (mode !== "publish" && mode !== "read") {
+    throw new Error("usage: first-stream publish|read");
+  }
+  const client = await connect();
+  try {
+    if (mode === "publish") await publishThree(client);
+    else await readNew(client, "checkpoint");
+  } finally {
+    client.close();
+  }
+}
+
+await main();
+```
+
+</TabItem>
+<TabItem label="C#">
+
+```csharp
+var mode = args.Length > 0 ? args[0] : "";
+if (mode is not ("publish" or "read"))
+{
+    Console.Error.WriteLine("usage: first-stream publish|read");
+    return 1;
+}
+
+using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+await using var client = await ConnectAsync(cts.Token);
+if (mode == "publish")
+{
+    await PublishThreeAsync(client, cts.Token);
+}
+else
+{
+    await ReadNewAsync(client, "checkpoint", cts.Token);
+}
+return 0;
+```
+
+</TabItem>
+</Tabs>
+
+## What you should see
+
+Publish three records:
+
+```text
+published event 1 at offset 1
+published event 2 at offset 2
+published event 3 at offset 3
+```
+
+Your offsets may start somewhere else. A new stream's first record is often
+not at offset 0, because a leader writes a marker of its own first. Now read:
+
+```text
+offset 1: event 1
+offset 2: event 2
+offset 3: event 3
+nothing new for 3 seconds, stopping
+```
+
+Run the reader again and it prints only the idle line, because `checkpoint`
+holds 3 and the reader asked to start at 4. Publish again and read again, and
+only the new records appear:
+
+```text
+offset 4: event 1
+offset 5: event 2
+offset 6: event 3
+nothing new for 3 seconds, stopping
+```
+
+The stream still holds all six. Delete the `checkpoint` file and the reader
+starts from the beginning and prints every one of them. That is the difference
+from a subscription that starts at the tail: a durable stream is a log you can
+read from any retained offset, as many times as you like, until its retention
+bound removes old records.
+
+If `read` fails with a cursor error, the offset in your checkpoint is older than
+the stream's retention. See
+[A consumer that survives a restart](/clients/rust/#a-consumer-that-survives-a-restart)
+for how to handle that in a long-running reader.
+
+## C
+
+Each C call returns at once and reports to a callback, so the program below
+wraps each one in a small `waiter` that blocks until the callback has run. It
+is the same two modes as above. See [How calls work](/clients/c/#how-calls-work)
+for the model.
+
+```c
+#include <pthread.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "felix.h"
+
+#define TENANT "dev"
+#define NAMESPACE "default"
+#define STREAM "tutorial-events"
+#define CHECKPOINT "checkpoint"
+
+struct waiter {
+    pthread_mutex_t mu;
+    pthread_cond_t cv;
+    bool done;
+    FelixStatus status;
+    void *handle;
+    bool has_offset;
+    uint64_t offset;
+    char message[256];
+};
+
+static void finish(struct waiter *w, FelixStatus status, const char *message, void *handle) {
+    pthread_mutex_lock(&w->mu);
+    w->done = true;
+    w->status = status;
+    w->handle = handle;
+    snprintf(w->message, sizeof w->message, "%s", message ? message : "");
+    pthread_cond_signal(&w->cv);
+    pthread_mutex_unlock(&w->mu);
+}
+
+/* A refused call never runs its callback, so its error comes from the thread. */
+static FelixStatus wait_for(struct waiter *w, FelixStatus started) {
+    if (started != FELIX_STATUS_OK) {
+        snprintf(w->message, sizeof w->message, "%s", felix_last_error_message());
+        return started;
+    }
+    pthread_mutex_lock(&w->mu);
+    while (!w->done) pthread_cond_wait(&w->cv, &w->mu);
+    w->done = false;
+    FelixStatus status = w->status;
+    pthread_mutex_unlock(&w->mu);
+    return status;
+}
+
+static void on_connect(void *user_data, FelixStatus status, const char *message,
+                       FelixClient *client) {
+    finish(user_data, status, message, client);
+}
+
+static void on_publish(void *user_data, FelixStatus status, const char *message,
+                       bool has_offset, uint64_t offset) {
+    struct waiter *w = user_data;
+    w->has_offset = has_offset;
+    w->offset = offset;
+    finish(w, status, message, NULL);
+}
+
+static void on_subscribe(void *user_data, FelixStatus status, const char *message,
+                         FelixSubscription *subscription) {
+    finish(user_data, status, message, subscription);
+}
+
+static void on_event(void *user_data, FelixStatus status, const char *message,
+                     FelixEvent *event) {
+    finish(user_data, status, message, event);
+}
+
+static int publish_three(const FelixClient *client, struct waiter *w) {
+    for (int i = 1; i <= 3; i++) {
+        char payload[32];
+        int len = snprintf(payload, sizeof payload, "event %d", i);
+        FelixStatus status = wait_for(
+            w, felix_client_publish(client, TENANT, NAMESPACE, STREAM, (const uint8_t *)payload,
+                                    (size_t)len, NULL, 0, FELIX_ACK_PER_MESSAGE,
+                                    FELIX_DELIVERY_AT_MOST_ONCE, NULL, on_publish, w));
+        if (status != FELIX_STATUS_OK) {
+            fprintf(stderr, "publish: %s\n", w->message);
+            return 1;
+        }
+        if (w->has_offset) {
+            printf("published event %d at offset %llu\n", i, (unsigned long long)w->offset);
+        } else {
+            printf("published event %d\n", i);
+        }
+    }
+    return 0;
+}
+
+/* The offset in the checkpoint file, or false when there is none yet. */
+static bool load_checkpoint(uint64_t *offset) {
+    FILE *f = fopen(CHECKPOINT, "r");
+    if (!f) return false;
+    unsigned long long value = 0;
+    bool ok = fscanf(f, "%llu", &value) == 1;
+    fclose(f);
+    *offset = value;
+    return ok;
+}
+
+/* Written beside the file and renamed, so a crash leaves the old one whole. */
+static bool save_checkpoint(uint64_t offset) {
+    FILE *f = fopen(CHECKPOINT ".tmp", "w");
+    if (!f) return false;
+    bool ok = fprintf(f, "%llu\n", (unsigned long long)offset) > 0;
+    ok = (fclose(f) == 0) && ok;
+    return ok && rename(CHECKPOINT ".tmp", CHECKPOINT) == 0;
+}
+
+static int read_new(const FelixClient *client, struct waiter *w) {
+    uint64_t saved = 0;
+    bool resume = load_checkpoint(&saved);
+    FelixSubscription *sub = NULL;
+    int exit_code = 1;
+
+    FelixStatus status = wait_for(
+        w, felix_client_subscribe(client, TENANT, NAMESPACE, STREAM, 0,
+                                  resume ? FELIX_START_OFFSET : FELIX_START_EARLIEST,
+                                  resume ? saved + 1 : 0, NULL, on_subscribe, w));
+    if (status != FELIX_STATUS_OK) {
+        fprintf(stderr, "subscribe: %s\n", w->message);
+        return 1;
+    }
+    sub = w->handle;
+
+    for (;;) {
+        status = wait_for(w, felix_subscription_next(sub, 3000, NULL, on_event, w));
+        if (status == FELIX_STATUS_TIMEOUT) {
+            printf("nothing new for 3 seconds, stopping\n");
+            exit_code = 0;
+            break;
+        }
+        if (status != FELIX_STATUS_OK) {
+            fprintf(stderr, "read: %s\n", w->message);
+            break;
+        }
+        FelixEvent *event = w->handle;
+        uint64_t offset = 0;
+        bool has_offset = false;
+        const uint8_t *data = NULL;
+        size_t len = 0;
+        if (felix_event_offset(event, &offset, &has_offset) != FELIX_STATUS_OK ||
+            felix_event_payload(event, &data, &len) != FELIX_STATUS_OK || !has_offset) {
+            fprintf(stderr, "the event has no offset or payload; is the stream durable?\n");
+            felix_event_free(event);
+            break;
+        }
+        printf("offset %llu: %.*s\n", (unsigned long long)offset, (int)len, (const char *)data);
+        felix_event_free(event);
+        if (!save_checkpoint(offset)) {
+            fprintf(stderr, "could not save the checkpoint\n");
+            break;
+        }
+    }
+    felix_subscription_free(sub);
+    return exit_code;
+}
+
+int main(int argc, char **argv) {
+    const char *token = getenv("FELIX_AUTH_TOKEN");
+    const char *ca_file = getenv("FELIX_CA_FILE");
+    const char *broker = getenv("FELIX_BROKERS");
+    if (argc < 2 || (strcmp(argv[1], "publish") != 0 && strcmp(argv[1], "read") != 0)) {
+        fprintf(stderr, "usage: first_stream publish|read\n");
+        return 1;
+    }
+    if (!token || !*token || !ca_file || !*ca_file) {
+        fprintf(stderr, "set FELIX_AUTH_TOKEN and FELIX_CA_FILE\n");
+        return 1;
+    }
+
+    struct waiter w = {.done = false};
+    pthread_mutex_init(&w.mu, NULL);
+    pthread_cond_init(&w.cv, NULL);
+    int exit_code = 1;
+
+    FelixStatus status = wait_for(
+        &w, felix_client_connect(broker && *broker ? broker : "127.0.0.1:5000", TENANT, token,
+                                 "localhost", ca_file, NULL, on_connect, &w));
+    if (status != FELIX_STATUS_OK) {
+        fprintf(stderr, "connect: %s\n", w.message);
+    } else {
+        FelixClient *client = w.handle;
+        exit_code = strcmp(argv[1], "publish") == 0 ? publish_three(client, &w)
+                                                    : read_new(client, &w);
+        /* Every call has completed, so no callback still holds &w. */
+        felix_client_free(client);
+    }
+    pthread_cond_destroy(&w.cv);
+    pthread_mutex_destroy(&w.mu);
+    return exit_code;
+}
+```
+
+## Where next
+
+[A work queue](/tutorials/work-queue/) reads a stream as jobs, so each record
+goes to one worker and a failed one comes back. The [Rust client page](/clients/rust/#subscribing)
+covers subscribing in more depth, including ranges and what to do when a
+subscription falls behind, and [Durable storage](/architecture/durable-storage/)
+explains how the log, offsets and retention fit together.

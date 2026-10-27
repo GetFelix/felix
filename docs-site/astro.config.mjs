@@ -67,6 +67,16 @@ export default defineConfig({
           ],
         },
         {
+          label: 'Tutorials',
+          items: [
+            { label: 'Overview', slug: 'tutorials/overview' },
+            { label: 'Your First Stream', slug: 'tutorials/first-stream' },
+            { label: 'A Work Queue', slug: 'tutorials/work-queue' },
+            { label: 'Cache, Leases and Watches', slug: 'tutorials/cache-leases-watches' },
+            { label: 'Build an App', slug: 'tutorials/build-an-app' },
+          ],
+        },
+        {
           label: 'Use Cases',
           collapsed: true,
           items: [

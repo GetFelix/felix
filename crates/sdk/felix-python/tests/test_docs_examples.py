@@ -1,4 +1,4 @@
-"""The examples on docs-site's Python page compile and match the binding.
+"""The examples on docs-site's Python page and tutorials compile and match the binding.
 
 Every block is compiled, and every call on a client, a handle or the `felix`
 module is bound against the signatures in `_felix.pyi`, so a renamed method or
@@ -26,6 +26,8 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DOCS_PAGE = ROOT.parents[2] / "docs-site/src/content/docs/clients/python.md"
 STUBS = ROOT / "python/felix/_felix.pyi"
+TUTORIALS = ROOT.parents[2] / "docs-site/src/content/docs/tutorials"
+TUTORIAL_PAGES = ["first-stream", "work-queue", "cache-leases-watches", "build-an-app"]
 
 # Names the examples give to objects, and the stub class each one is.
 RECEIVERS = {
@@ -41,13 +43,27 @@ RECEIVERS = {
 }
 
 
-def blocks():
-    """Every ```python block on the page, with the line it starts on."""
-    page = DOCS_PAGE.read_text()
+def blocks_of(path):
+    """Every ```python block on a page, with the line it starts on."""
+    page = path.read_text()
     found = []
     for match in re.finditer(r"```python\n(.*?)```", page, re.S):
         found.append((page.count("\n", 0, match.start()) + 2, match.group(1)))
     return found
+
+
+def blocks():
+    """Every ```python block on the Python page."""
+    return blocks_of(DOCS_PAGE)
+
+
+def tutorial_blocks():
+    """Every ```python block of every tutorial, as (page, line, source)."""
+    return [
+        (slug, line, source)
+        for slug in TUTORIAL_PAGES
+        for line, source in blocks_of(TUTORIALS / f"{slug}.mdx")
+    ]
 
 
 def block_containing(text):
@@ -125,10 +141,8 @@ def test_every_example_compiles(line, source):
     compile(source, f"python.md:{line}", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
 
 
-@pytest.mark.parametrize("line,source", blocks(), ids=lambda value: str(value)[:12])
-def test_every_example_matches_the_stubs(line, source):
+def check_against_stubs(where, source):
     classes = stubs()
-    where = f"python.md:{line}"
     for node in ast.walk(ast.parse(source)):
         if not isinstance(node, ast.Attribute):
             continue
@@ -168,6 +182,29 @@ def test_every_example_matches_the_stubs(line, source):
             signature = classes[RECEIVERS[func.value.id]][func.attr]
             if signature is not None:
                 _bind(signature, node, where)
+
+
+@pytest.mark.parametrize("line,source", blocks(), ids=lambda value: str(value)[:12])
+def test_every_example_matches_the_stubs(line, source):
+    check_against_stubs(f"python.md:{line}", source)
+
+
+def test_the_tutorials_have_examples():
+    assert {slug for slug, _, _ in tutorial_blocks()} == set(TUTORIAL_PAGES)
+
+
+@pytest.mark.parametrize(
+    "page,line,source", tutorial_blocks(), ids=lambda value: str(value)[:12]
+)
+def test_every_tutorial_example_compiles(page, line, source):
+    compile(source, f"{page}.mdx:{line}", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
+
+
+@pytest.mark.parametrize(
+    "page,line,source", tutorial_blocks(), ids=lambda value: str(value)[:12]
+)
+def test_every_tutorial_example_matches_the_stubs(page, line, source):
+    check_against_stubs(f"{page}.mdx:{line}", source)
 
 
 def test_the_stubs_name_what_the_module_has():

@@ -53,8 +53,8 @@ jobs:
         uses: ./.github/actions/code-changed
         with:
           ignore: '^docs/|^docs-site/|\.md$'
-          # The C page's examples are compiled by a felix-capi test.
-          keep: '^docs/formal/|^docs-site/src/content/docs/clients/c\.md$'
+          # The C page's and the tutorials' examples are compiled by tests.
+          keep: '^docs/formal/|^docs-site/src/content/docs/(clients/c\.md|tutorials/)'
       # TLC reads only the spec, so only a change to it (or to how it is
       # checked) can change the model check's result.
       - id: formal
@@ -69,7 +69,7 @@ jobs:
         uses: ./.github/actions/code-changed
         with:
           ignore: '.*'
-          keep: '^sdks/dotnet/|^docs-site/src/content/docs/clients/csharp\.md$|^scripts/check_csharp_bindings\.py$|^crates/(sdk/felix-capi|sdk/felix-client|protocol/felix-transport|protocol/felix-wire)/|^Cargo\.(toml|lock)$|^rust-toolchain(\.toml)?$|^\.github/workflows/ci\.yml$'
+          keep: '^sdks/dotnet/|^docs-site/src/content/docs/(clients/csharp\.md|tutorials/)|^scripts/check_csharp_bindings\.py$|^crates/(sdk/felix-capi|sdk/felix-client|protocol/felix-transport|protocol/felix-wire)/|^Cargo\.(toml|lock)$|^rust-toolchain(\.toml)?$|^\.github/workflows/ci\.yml$'
 
       # The docs checks need only Python, so a docs-only change runs them too.
       - id: docs
