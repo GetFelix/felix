@@ -1015,26 +1015,19 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      # TLC queues states on disk, and the largest configurations need more
-      # than a hosted runner's root disk holds ("Disk quota exceeded"). Use the
-      # mounted volume with the most room.
+      # TLC queues states in its scratch directory, and the largest
+      # configurations queue tens of gigabytes. The runner's /tmp can be a
+      # memory-backed tmpfs with a quota ("Disk quota exceeded" with the disk
+      # far from full), so keep the scratch directory on the runner's disk.
       - name: Scratch disk for TLC
-        if: runner.environment == 'github-hosted'
         run: |
           set -euo pipefail
-          df -h / /mnt 2>/dev/null || df -h /
-          best=/tmp
-          if [ -d /mnt ]; then
-            root_free=$(df --output=avail -B1 / | tail -n 1)
-            mnt_free=$(df --output=avail -B1 /mnt | tail -n 1)
-            if [ "$mnt_free" -gt "$root_free" ]; then
-              sudo mkdir -p /mnt/tlc
-              sudo chown "$(id -u):$(id -g)" /mnt/tlc
-              best=/mnt/tlc
-            fi
-          fi
-          echo "TLC scratch: $best"
-          echo "TLC_SCRATCH_DIR=$best" >> "$GITHUB_ENV"
+          scratch="$RUNNER_TEMP/tlc"
+          mkdir -p "$scratch"
+          findmnt -no FSTYPE,SIZE,TARGET -T /tmp || true
+          df -h /tmp "$scratch"
+          echo "TLC scratch: $scratch"
+          echo "TLC_SCRATCH_DIR=$scratch" >> "$GITHUB_ENV"
 
       - name: Model-check
         env:
