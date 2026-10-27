@@ -173,6 +173,7 @@ export default defineConfig({
           label: 'Deployment',
           collapsed: true,
           items: [
+            { label: 'Running in Production', slug: 'deployment/production' },
             { label: 'Local Development', slug: 'deployment/local' },
             { label: 'Docker Compose', slug: 'deployment/docker-compose' },
             { label: 'Kubernetes', slug: 'deployment/kubernetes' },

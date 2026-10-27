@@ -360,8 +360,9 @@ safe to group by. The token itself is never logged, including a near miss.
 # Publish rate (a relayed publish is also counted as forwarded)
 rate(felix_publish_requests_total{result!="forwarded"}[1m])
 
-# p99 publish latency
-histogram_quantile(0.99, rate(felix_publish_latency_ms_bucket[5m]))
+# p99 publish latency (telemetry builds). Latencies are exported as summaries,
+# so read the quantile series; there is no _bucket to feed histogram_quantile.
+max by (mode) (felix_publish_latency_ms{quantile="0.99"})
 
 # Records lost to slow consumers
 rate(felix_sub_queue_dropped_total[5m])
@@ -369,6 +370,84 @@ rate(felix_sub_queue_dropped_total[5m])
 # Group-commit effectiveness
 rate(felix_storage_sync_batch_appends_sum[5m]) / rate(felix_storage_sync_batch_appends_count[5m])
 ```
+
+## Dashboard and alert rules
+
+Felix ships a Grafana dashboard and Prometheus alert rules in
+[`deploy/observability/`](https://github.com/GetFelix/felix/tree/main/deploy/observability).
+Every metric in them is one the code registers; `task docs:evidence` fails when
+one is not. Plan capacity with them alongside
+[Running in production](/deployment/production/).
+
+### Dashboard
+
+Import `grafana/felix-dashboard.json` from Grafana's Dashboards, New, Import
+page, or provision it from a file. It asks for a Prometheus data source and
+offers a broker filter. Sections:
+
+- **Traffic**: publish rate by result, payload throughput, delivered rate, and
+  p99 publish latency, Quorum wait, append and flush time.
+- **Subscribers**: dropped records, byte-bound drops, queued bytes, queue and
+  quota pressure, and refused connections.
+- **Durability**: group-commit effectiveness (records per flush), flushes,
+  unsynced bytes, flush failures and full disks.
+- **Replication and leadership**: halted and rebuilding replicas, lag,
+  under-replicated shards, the lease, Quorum failures, leader changes and
+  heartbeat age.
+- **Storage and retention**: append throughput, segments on disk, retention
+  and offload.
+- **Control plane**: brokers by lifecycle, placement health, shard moves, and
+  broker transitions.
+
+The p99 publish latency panel is empty on a default build, because
+`felix_publish_latency_ms` is recorded only with the `telemetry` feature. The
+Quorum wait and append panels are always on. Latencies are exported as
+summaries, which cannot be averaged across brokers, so those panels show the
+worst broker.
+
+### Alert rules
+
+`prometheus/felix-alerts.yaml` is a plain Prometheus rule file; list it under
+`rule_files`. On Kubernetes with the Prometheus Operator,
+set `prometheusRule.enabled=true` on the chart to render the same rules as a
+`PrometheusRule` (and `prometheusRule.labels` to match your operator's rule
+selector). It is off by default.
+
+Each alert carries a `runbook_url`. The thresholds assume the defaults: tune
+the heartbeat alert if you change `FELIX_NODE_EXPIRY_TIMEOUT_MS`, and the
+under-replication alerts if you change `FELIX_SHARD_RESTORE_AFTER_MS`.
+
+| Alert | Fires when | Severity | What it means |
+| --- | --- | --- | --- |
+| `FelixBrokerLeaseLost` | `felix_broker_lease_held` is 0 for 2 minutes | critical | The broker is up but may not serve the shards it leads. |
+| `FelixBrokerLeaseExpired` | `felix_broker_lease_expiries_total` rose in 10 minutes | warning | The lease lapsed once; those shards were unavailable here. |
+| `FelixBrokerMembershipLost` | `felix_broker_membership_live` is 0 for 2 minutes | critical | The control plane does not count the broker as placeable. |
+| `FelixBrokerHeartbeatStale` | Heartbeat age over 10 s for 1 minute | warning | The broker is two beats from being declared down (default expiry 15 s). |
+| `FelixCredentialExpiring` | Less than 300 s left on the node credential | warning | The heartbeat carries it, so expiry stops the broker serving. Keep this below the token lifetime you issue. |
+| `FelixRevocationFeedStale` | No good revocation poll for 60 s | warning | A revoked token is still accepted for new sessions. |
+| `FelixReplicationHalted` | `felix_broker_replication_halted` above 0 for 15 minutes | critical | A replica is in no quorum. See [Which replica stopped](#which-replica-stopped). |
+| `FelixQuorumPublishTimeouts` | Quorum publishes failing as `timed_out` for 5 minutes | warning | No majority acknowledged in time. |
+| `FelixSubscriberDrops` | Subscriber queue drops for 10 minutes | warning | Subscribers are missing records. |
+| `FelixAckedPublishesDropped` | Publishes acknowledged and then not written | critical | Acks on accept lost a record. |
+| `FelixPublishWorkerRestarted` | A publish executor was replaced after a panic | warning | Should stay at zero. |
+| `FelixStorageSyncFailures` | A device flush failed | critical | Acknowledged durability is in doubt. |
+| `FelixStorageFull` | A write was refused on a full disk | critical | Nothing was written by the refused writes. |
+| `FelixRetentionFailing` | A retention pass failed in 30 minutes | warning | Logs grow past their bounds. |
+| `FelixOffloadFailing` | Offload failing for 15 minutes | warning | Local disk grows past retention. |
+| `FelixDrainForced` | A drain deadline cancelled work | warning | Work was dropped at shutdown. |
+| `FelixClientConnectionsRefused` | Connection limit refusals for 5 minutes | warning | A client or per-IP limit is full. |
+| `FelixShardsUnderReplicated` | Under-replicated shards for 15 minutes | warning | See [Under-replicated shards](#under-replicated-shards). |
+| `FelixShardReplicasHalted` | Halted copies for 15 minutes | warning | Placement replaces them after the restore delay. |
+| `FelixShardsUnplaceable` | Shards without an eligible leader for 10 minutes | critical | Capacity or liveness needs attention. |
+| `FelixShardsZoneUnspread` | Shards keep copies in one zone for 1 hour | info | A zone lacks room. |
+| `FelixBrokerMarkedDown` | A node moved from live to down | warning | A failure, as opposed to a drain. |
+| `FelixNoPlacementLeaseHolder` | No instance holds the placement lease for 5 minutes | critical | Nothing places shards or restores copies. |
+| `FelixReconcileFailing` | Placement cannot read the catalog | warning | The control plane's store is unhealthy. |
+| `FelixNodeExpiryFailing` | Expiry sweeps failing | warning | Liveness is stale. |
+| `FelixShardMovesWaiting` | Moves cannot advance for 30 minutes | warning | A successor is not catching up. |
+
+The rules do not include a broker-down alert, because that is `up == 0` on
+whatever job name your scrape config gives the brokers.
 
 ## Shutdown and drain
 

@@ -96,6 +96,7 @@ and `values.schema.json` rejects a misspelt key rather than ignoring it.
 | `broker.config` | `{}` | The broker's config file, as a map. Its keys override the environment, so leave binds and identity to the chart. |
 | `image.registry` / `*.image.digest` | `ghcr.io` / — | Pin by digest in production; a digest wins over a tag. |
 | `serviceMonitor.enabled` | `false` | Prometheus Operator ServiceMonitors for both workloads. |
+| `prometheusRule.enabled` | `false` | A PrometheusRule with Felix's alert rules (the file in `deploy/observability`). `prometheusRule.labels` is for the operator's rule selector. |
 
 ## Refusals
 

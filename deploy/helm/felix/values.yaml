@@ -340,3 +340,9 @@ serviceMonitor:
   enabled: false
   interval: 15s
   labels: {}
+
+# Alerting rules from deploy/observability, as a PrometheusRule. Needs the
+# Prometheus Operator CRDs. Labels are for its ruleSelector.
+prometheusRule:
+  enabled: false
+  labels: {}

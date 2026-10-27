@@ -19,3 +19,5 @@ broker:
     event_batch_max_delay_us: 250
 serviceMonitor:
   enabled: true
+prometheusRule:
+  enabled: true

@@ -1,0 +1,237 @@
+# Prometheus alerting rules for Felix. Every metric name is checked against the
+# code by scripts/check_observability_assets.py. The chart renders this same
+# file as a PrometheusRule when `prometheusRule.enabled` is set.
+groups:
+  - name: felix-broker
+    rules:
+      - alert: FelixBrokerLeaseLost
+        expr: felix_broker_lease_held == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Broker {{ $labels.instance }} holds no lease"
+          description: "The broker is up but may not serve the shards it leads. Check heartbeats and the control plane."
+          runbook_url: "https://docs.getfelix.dev/deployment/diagnosing/#a-shard-is-not-serving-or-refuses-writes"
+      - alert: FelixBrokerLeaseExpired
+        expr: increase(felix_broker_lease_expiries_total[10m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Broker {{ $labels.instance }} let its lease lapse"
+          description: "Its shards were unavailable here for a while. Look at heartbeat age and control-plane reachability."
+          runbook_url: "https://docs.getfelix.dev/deployment/diagnosing/#a-shard-is-not-serving-or-refuses-writes"
+      - alert: FelixBrokerMembershipLost
+        expr: felix_broker_membership_live == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Control plane does not count broker {{ $labels.instance }} as live"
+          description: "The broker gets no shards while this holds. Check its credential and its route to the control plane."
+          runbook_url: "https://docs.getfelix.dev/features/observability/#alert-rules"
+      - alert: FelixBrokerHeartbeatStale
+        # Default expiry is 15 s (FELIX_NODE_EXPIRY_TIMEOUT_MS); keep this
+        # below it, and below the broker's lease of 0.75 times the timeout.
+        expr: felix_broker_heartbeat_age_seconds > 10
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Broker {{ $labels.instance }} last heartbeat was {{ $value | humanizeDuration }} ago"
+          description: "It is about to be declared down. Check the control plane and the credential."
+          runbook_url: "https://docs.getfelix.dev/features/observability/#alert-rules"
+      - alert: FelixCredentialExpiring
+        # Below any token lifetime you actually issue to brokers.
+        expr: felix_broker_credential_expires_in_seconds >= 0 and felix_broker_credential_expires_in_seconds < 300
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Broker {{ $labels.instance }} credential expires in {{ $value | humanizeDuration }}"
+          description: "The heartbeat is the lease renewal; an expired token stops the broker serving. Check the refresh token file."
+          runbook_url: "https://docs.getfelix.dev/features/observability/#alert-rules"
+      - alert: FelixRevocationFeedStale
+        expr: time() - felix_revocation_feed_last_success_seconds > 60
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Broker {{ $labels.instance }} has not polled principal revocations for {{ $value | humanizeDuration }}"
+          description: "A revoked token is accepted for new sessions until it expires. Check the control plane."
+          runbook_url: "https://docs.getfelix.dev/features/observability/#alert-rules"
+      - alert: FelixReplicationHalted
+        # A leader rebuilds halted followers on its own; this outlasts the queue.
+        expr: felix_broker_replication_halted > 0
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Broker {{ $labels.instance }} leads {{ $value }} halted replicas"
+          description: "A halted replica is in no quorum. Run GET /replication/halted on the broker for the reason and remedy."
+          runbook_url: "https://docs.getfelix.dev/deployment/diagnosing/#a-follower-is-lagging-or-halted"
+      - alert: FelixQuorumPublishTimeouts
+        expr: sum by (instance) (rate(felix_broker_publish_quorum_failed_total{reason="timed_out"}[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Broker {{ $labels.instance }} Quorum publishes are timing out"
+          description: "No majority acknowledged within the budget. Check replication lag and the followers' brokers."
+          runbook_url: "https://docs.getfelix.dev/deployment/diagnosing/#quorum-writes-time-out"
+      - alert: FelixSubscriberDrops
+        expr: sum by (instance) (rate(felix_sub_queue_dropped_total[5m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Broker {{ $labels.instance }} is dropping records for slow subscribers"
+          description: "Subscribers are missing records. On a durable stream they can resume from the offset gap."
+          runbook_url: "https://docs.getfelix.dev/deployment/diagnosing/#a-subscriber-misses-records"
+      - alert: FelixAckedPublishesDropped
+        expr: increase(felix_broker_acked_publishes_dropped_total[5m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Broker {{ $labels.instance }} acknowledged publishes it did not write"
+          description: "Happens with acks on accept (FELIX_ACK_ON_COMMIT off). The reason label says why."
+          runbook_url: "https://docs.getfelix.dev/features/observability/#alert-rules"
+      - alert: FelixPublishWorkerRestarted
+        expr: increase(felix_broker_publish_worker_restarts_total[15m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Broker {{ $labels.instance }} replaced a publish executor after a panic"
+          description: "This should stay at zero. Collect the panic from the broker log and report it."
+          runbook_url: "https://docs.getfelix.dev/features/observability/#alert-rules"
+      - alert: FelixStorageSyncFailures
+        expr: increase(felix_storage_sync_failures_total[5m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Broker {{ $labels.instance }} failed to flush to its device"
+          description: "Acknowledged durability is in doubt. Check the disk and the kernel log."
+          runbook_url: "https://docs.getfelix.dev/features/observability/#alert-rules"
+      - alert: FelixStorageFull
+        expr: increase(felix_storage_full_total[5m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Broker {{ $labels.instance }} refused writes on a full disk"
+          description: "Nothing was written by the refused writes. Free space, shorten retention or enlarge the volume."
+          runbook_url: "https://docs.getfelix.dev/deployment/diagnosing/#local-disk-is-filling-while-offload-is-on"
+      - alert: FelixRetentionFailing
+        expr: increase(felix_storage_retention_failures_total[30m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Broker {{ $labels.instance }} retention passes are failing"
+          description: "Logs grow past their bounds until a pass succeeds. The broker log names the cause."
+          runbook_url: "https://docs.getfelix.dev/deployment/diagnosing/#local-disk-is-filling-while-offload-is-on"
+      - alert: FelixOffloadFailing
+        expr: felix_storage_offload_failing_logs > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Broker {{ $labels.instance }} has {{ $value }} logs whose offload keeps failing"
+          description: "Retention keeps segments with no archived copy, so local disk grows past retention."
+          runbook_url: "https://docs.getfelix.dev/deployment/diagnosing/#local-disk-is-filling-while-offload-is-on"
+      - alert: FelixDrainForced
+        expr: increase(felix_drain_forced_total[15m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }} cancelled {{ $labels.subsystem }} when its drain deadline expired"
+          description: "Work was dropped at shutdown. Raise FELIX_SHUTDOWN_DRAIN_TIMEOUT_MS or the pod grace period."
+          runbook_url: "https://docs.getfelix.dev/deployment/graceful-shutdown/"
+      - alert: FelixClientConnectionsRefused
+        expr: sum by (instance, reason) (increase(felix_quic_connections_refused_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Broker {{ $labels.instance }} is refusing client connections ({{ $labels.reason }})"
+          description: "A connection limit is full. Check for a leaking client before raising the limit."
+          runbook_url: "https://docs.getfelix.dev/features/observability/#alert-rules"
+  - name: felix-controlplane
+    rules:
+      - alert: FelixShardsUnderReplicated
+        # FELIX_SHARD_RESTORE_AFTER_MS defaults to 5 minutes, then a copy has to land.
+        expr: felix_shards_under_replicated > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} shards have fewer copies than their replication factor"
+          description: "Run felix-controlplane admin replication to see which shards and where copies are going."
+          runbook_url: "https://docs.getfelix.dev/features/observability/#under-replicated-shards"
+      - alert: FelixShardReplicasHalted
+        expr: felix_shard_replicas_halted > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} replicas have been halted by their leaders"
+          description: "A halted copy is in no quorum. Placement replaces it after the restore delay."
+          runbook_url: "https://docs.getfelix.dev/deployment/diagnosing/#a-follower-is-lagging-or-halted"
+      - alert: FelixShardsUnplaceable
+        expr: felix_shards_unplaceable > 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $value }} shards have no eligible leader"
+          description: "Capacity or liveness needs attention: too few live brokers, max_shards reached, or a region with none."
+          runbook_url: "https://docs.getfelix.dev/deployment/diagnosing/#a-shard-lost-its-leader-and-waits-for-a-replica"
+      - alert: FelixShardsZoneUnspread
+        expr: felix_shards_zone_unspread > 0
+        for: 1h
+        labels:
+          severity: info
+        annotations:
+          summary: "{{ $value }} shards keep copies in one zone"
+          description: "A zone lacks capacity, or a spreading move is waiting for a slot."
+          runbook_url: "https://docs.getfelix.dev/deployment/scaling/"
+      - alert: FelixBrokerMarkedDown
+        expr: increase(felix_node_transitions_total{from="live",to="down"}[5m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "A broker was declared down"
+          description: "live to down is a failure; draining to left is a deploy. Check which broker stopped heartbeating."
+          runbook_url: "https://docs.getfelix.dev/features/observability/#alert-rules"
+      - alert: FelixNoPlacementLeaseHolder
+        expr: sum(felix_placement_lease_held) == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No control-plane instance holds the placement lease"
+          description: "Nothing places shards or restores copies. Check every control-plane instance and its store."
+          runbook_url: "https://docs.getfelix.dev/deployment/control-plane-ha/"
+      - alert: FelixReconcileFailing
+        expr: increase(felix_shard_reconcile_failures_total[10m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Placement passes cannot read the catalog"
+          description: "The control plane's store is unreachable or unhealthy."
+          runbook_url: "https://docs.getfelix.dev/deployment/control-plane-ha/"
+      - alert: FelixNodeExpiryFailing
+        expr: increase(felix_node_expiry_failures_total[10m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Node expiry sweeps are failing"
+          description: "Liveness is stale until a sweep succeeds. Check the control plane's store."
+          runbook_url: "https://docs.getfelix.dev/deployment/control-plane-ha/"
+      - alert: FelixShardMovesWaiting
+        expr: felix_shard_moves_waiting > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} shard moves cannot advance"
+          description: "A successor is not catching up. Look at the leader's replication lag and /replication/halted."
+          runbook_url: "https://docs.getfelix.dev/deployment/scaling/"
