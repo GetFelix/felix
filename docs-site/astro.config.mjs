@@ -28,7 +28,7 @@ export default defineConfig({
         './src/styles/custom.css',
       ],
       title: 'Felix',
-      description: 'Low-latency QUIC-based pub/sub and distributed cache system',
+      description: 'A QUIC-based clustered log serving stream, cache and queue semantics, built for high-fanout delivery, predictable tail latency and strict slow-consumer isolation.',
       // The header renders the logo at ~32px. The full logo — ringed badge, whole
       // cat, and the "Felix" script inside it — carries far too much detail to
       // survive that, and the script is redundant anyway because the site title
@@ -80,6 +80,7 @@ export default defineConfig({
             { label: 'Events and State Together', slug: 'use-cases/event-and-state' },
             { label: 'Audit Logs and Replay', slug: 'use-cases/event-log-and-replay' },
             { label: 'Coming from Kafka', slug: 'use-cases/kafka-migration' },
+            { label: 'Coming from NATS', slug: 'use-cases/nats-migration' },
             { label: 'Multi-tenant SaaS', slug: 'use-cases/multi-tenant-saas' },
             { label: 'Data Residency', slug: 'use-cases/data-residency' },
           ],
