@@ -1,5 +1,5 @@
-// Writes every ```ts block of the TypeScript client page to test/doc-examples/
-// as its own module, so `tsc -p tsconfig.json` checks the page against
+// Writes every ```ts block of the TypeScript client page and the resilience
+// guide to test/doc-examples/ as its own module, so `tsc -p tsconfig.json` checks the page against
 // index.d.ts. Each tutorial page is one module instead, because its blocks are
 // steps of one program. Names a block uses without defining are declared in
 // doc-globals.d.ts. CI runs this before tsc; the output is not checked in.
@@ -10,6 +10,8 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const page = join(here, "../../../../docs-site/src/content/docs/clients/typescript.md");
+const clients = join(here, "../../../../docs-site/src/content/docs/clients");
+const resilient = join(clients, "resilient-clients.mdx");
 const out = join(here, "doc-examples");
 const tutorials = ["first-stream", "work-queue", "cache-leases-watches", "build-an-app"];
 const tutorialPage = (slug) =>
@@ -30,7 +32,7 @@ const TYPES = [
   "ShardMoved", "ShardPositions", "StartPosition", "StateValue", "TokenProvider",
 ];
 
-export function extract(markdown) {
+export function extract(markdown, name = "typescript.md") {
   const blocks = [];
   const lines = markdown.split("\n");
   for (let i = 0; i < lines.length; i++) {
@@ -39,13 +41,15 @@ export function extract(markdown) {
     const start = i + 1;
     const body = [];
     for (i++; i < lines.length && !/^\s*```\s*$/.test(lines[i]); i++) body.push(lines[i]);
-    if (i === lines.length) throw new Error(`typescript.md:${start}: unclosed code block`);
+    if (i === lines.length) throw new Error(`${name}:${start}: unclosed code block`);
     blocks.push({ line: start, code: body.join("\n") });
   }
   return blocks;
 }
 
-export function toModule({ line, code }) {
+// With `inject` false a block gets nothing it does not import itself, so a name
+// the page forgot to import fails the type check.
+export function toModule({ line, code }, file = "clients/typescript.md", inject = true) {
   const imported = new Set();
   const source = code.replace(
     /import\s*\{([^}]*)\}\s*from\s*"felix-client";?/g,
@@ -57,13 +61,15 @@ export function toModule({ line, code }) {
       return `import {${names}} from "../../index";`;
     },
   );
-  const wanted = [
-    ...VALUES.filter((n) => !imported.has(n)),
-    ...TYPES.filter((n) => !imported.has(n)).map((n) => `type ${n}`),
-  ];
+  const wanted = inject
+    ? [
+        ...VALUES.filter((n) => !imported.has(n)),
+        ...TYPES.filter((n) => !imported.has(n)).map((n) => `type ${n}`),
+      ]
+    : [];
   return [
-    `// Generated from docs-site/src/content/docs/clients/typescript.md:${line}.`,
-    `import { ${wanted.join(", ")} } from "../../index";`,
+    `// Generated from docs-site/src/content/docs/${file}:${line}.`,
+    wanted.length > 0 ? `import { ${wanted.join(", ")} } from "../../index";` : "",
     source,
     "export {};",
     "",
@@ -98,10 +104,18 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     const name = `typescript-md-L${String(block.line).padStart(4, "0")}.ts`;
     writeFileSync(join(out, name), toModule(block));
   }
+  const guide = extract(readFileSync(resilient, "utf8"), "resilient-clients.mdx");
+  if (guide.length === 0) throw new Error("resilient-clients.mdx has no ts blocks; has the page moved?");
+  for (const block of guide) {
+    const name = `resilient-clients-mdx-L${String(block.line).padStart(4, "0")}.ts`;
+    writeFileSync(join(out, name), toModule(block, "clients/resilient-clients.mdx", false));
+  }
   for (const slug of tutorials) {
     const steps = extract(readFileSync(tutorialPage(slug), "utf8"));
     if (steps.length === 0) throw new Error(`${slug}.mdx has no ts blocks`);
     writeFileSync(join(out, `tutorial-${slug}.ts`), toModule(joinBlocks(steps)));
   }
-  console.log(`wrote ${blocks.length} examples and ${tutorials.length} tutorials to ${out}`);
+  console.log(
+    `wrote ${blocks.length} examples, ${guide.length} guide examples and ${tutorials.length} tutorials to ${out}`,
+  );
 }

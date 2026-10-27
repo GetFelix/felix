@@ -16,6 +16,9 @@ const CFLAGS: &[&str] = &["-std=c11", "-pthread", "-Wall", "-Wextra", "-Werror"]
 /// The page every tutorial program is checked beside, and the tutorials that
 /// must keep a C program.
 const C_PAGE: &str = "clients/c.md";
+/// The resilience guide has its own prelude, with the waiter helpers its
+/// fragments call.
+const RESILIENT_PAGE: &str = "clients/resilient-clients.mdx";
 const TUTORIALS_WITH_C: &[&str] = &[
     "tutorials/first-stream.mdx",
     "tutorials/work-queue.mdx",
@@ -24,7 +27,7 @@ const TUTORIALS_WITH_C: &[&str] = &[
 
 /// The C page, then every tutorial page. A tutorial may have no C block.
 fn pages(docs: &Path) -> Vec<String> {
-    let mut pages = vec![C_PAGE.to_string()];
+    let mut pages = vec![C_PAGE.to_string(), RESILIENT_PAGE.to_string()];
     let mut tutorials: Vec<String> = std::fs::read_dir(docs.join("tutorials"))
         .expect("read the tutorials directory")
         .filter_map(|entry| {
@@ -107,6 +110,7 @@ fn every_c_example_on_the_docs_pages_compiles() {
     let docs = crate_dir.join("../../../docs-site/src/content/docs");
     let include = crate_dir.join("include");
     let prelude = crate_dir.join("tests/c/doc_prelude.h");
+    let resilient_prelude = crate_dir.join("tests/c/resilient_prelude.h");
     let shared = shared_library();
     let work = Path::new(env!("CARGO_TARGET_TMPDIR")).join("capi-doc-examples");
     std::fs::create_dir_all(&work).expect("create the work directory");
@@ -119,7 +123,9 @@ fn every_c_example_on_the_docs_pages_compiles() {
             .unwrap_or_else(|err| panic!("read {page_name}: {err}"));
         let blocks = c_blocks(&page);
         assert!(
-            !(page_name == C_PAGE || TUTORIALS_WITH_C.contains(&page_name.as_str()))
+            !(page_name == C_PAGE
+                || page_name == RESILIENT_PAGE
+                || TUTORIALS_WITH_C.contains(&page_name.as_str()))
                 || !blocks.is_empty(),
             "no ```c blocks found on {page_name}"
         );
@@ -151,7 +157,12 @@ fn every_c_example_on_the_docs_pages_compiles() {
                     .arg(work.join(&name));
             } else {
                 if !block.code.contains("#include") {
-                    cc.arg("-include").arg(&prelude);
+                    let prelude = if page_name == RESILIENT_PAGE {
+                        &resilient_prelude
+                    } else {
+                        &prelude
+                    };
+                    cc.arg("-include").arg(prelude);
                 }
                 // A fragment's function has no caller.
                 cc.args(["-Wno-unused-function", "-c"])

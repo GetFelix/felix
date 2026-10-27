@@ -130,6 +130,7 @@ export default defineConfig({
           collapsed: true,
           items: [
             { label: 'Choosing a Client', slug: 'clients/overview' },
+            { label: 'Building Resilient Clients', slug: 'clients/resilient-clients' },
             { label: 'Rust', slug: 'clients/rust' },
             { label: 'Python', slug: 'clients/python' },
             { label: 'TypeScript', slug: 'clients/typescript' },

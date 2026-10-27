@@ -1,4 +1,4 @@
-"""The examples on docs-site's Python page and tutorials compile and match the binding.
+"""The examples on docs-site's Python page, tutorials and resilience guide compile and match the binding.
 
 Every block is compiled, and every call on a client, a handle or the `felix`
 module is bound against the signatures in `_felix.pyi`, so a renamed method or
@@ -26,6 +26,7 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DOCS_PAGE = ROOT.parents[2] / "docs-site/src/content/docs/clients/python.md"
 STUBS = ROOT / "python/felix/_felix.pyi"
+RESILIENT_PAGE = ROOT.parents[2] / "docs-site/src/content/docs/clients/resilient-clients.mdx"
 TUTORIALS = ROOT.parents[2] / "docs-site/src/content/docs/tutorials"
 TUTORIAL_PAGES = ["first-stream", "work-queue", "cache-leases-watches", "build-an-app"]
 
@@ -220,6 +221,24 @@ def test_every_tutorial_example_compiles(page, line, source):
 )
 def test_every_tutorial_example_matches_the_stubs(page, line, source):
     check_against_stubs(f"{page}.mdx:{line}", source)
+
+
+def test_the_resilience_guide_has_examples():
+    assert len(blocks_of(RESILIENT_PAGE)) >= 10
+
+
+@pytest.mark.parametrize(
+    "line,source", blocks_of(RESILIENT_PAGE), ids=lambda value: str(value)[:12]
+)
+def test_every_resilience_example_compiles(line, source):
+    compile(source, f"resilient-clients.mdx:{line}", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
+
+
+@pytest.mark.parametrize(
+    "line,source", blocks_of(RESILIENT_PAGE), ids=lambda value: str(value)[:12]
+)
+def test_every_resilience_example_matches_the_stubs(line, source):
+    check_against_stubs(f"resilient-clients.mdx:{line}", source)
 
 
 def test_the_stubs_name_what_the_module_has():

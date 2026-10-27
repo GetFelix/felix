@@ -1070,7 +1070,7 @@ static bool connect_bounded(void) {
 
 A deadline shorter than one attempt's own timeout means no retry happens: the first attempt spends the whole budget and the call returns after trying once. Set it to cover at least one attempt plus the backoff you can afford, and leave it off if you would rather wait out a failover.
 
-The Rust page covers [clusters](/clients/rust/#clusters) in full.
+The Rust page covers [clusters](/clients/rust/#clusters) in full. [Building Resilient Clients](/clients/resilient-clients/) shows reconnection, token refresh, retries, resuming and shutdown side by side in every language.
 
 ### Brokers the client knows
 

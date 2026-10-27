@@ -33,3 +33,8 @@ declare function reconcile(): Promise<void>;
 declare function retry(): Promise<void>;
 declare function giveUp(): Promise<void>;
 declare function createStream(): Promise<void>;
+
+// The resilience guide: the application's own storage and shutdown signal.
+declare const signal: AbortSignal;
+declare function loadPositions(): Promise<import("../index").ShardPositions | undefined>;
+declare function savePositions(positions: import("../index").ShardPositions): Promise<void>;

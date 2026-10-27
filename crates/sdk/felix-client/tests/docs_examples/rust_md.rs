@@ -3,6 +3,7 @@
 // FELIX_BLESS_DOCS=1 cargo test -p felix-client --test docs_examples_sync
 
 /// What a `Body` example has in scope besides its own `use` lines.
+#[allow(unused_imports)]
 mod prelude {
     pub(crate) use anyhow::{Context, Result};
     pub(crate) use bytes::Bytes;

@@ -87,6 +87,10 @@ backoff itself: each uses the Rust default. The
 cover the behaviour in full, and each client's page has a "Connecting to a
 cluster" section with its connect call.
 
+[Building Resilient Clients](/clients/resilient-clients/) puts reconnection, token
+refresh, retry classes, unknown outcomes, resuming, slow consumers, consumer
+groups and shutdown side by side, with an example in each language.
+
 ## The conformance suite
 
 Sharing an implementation removes most divergence. It does not remove all of

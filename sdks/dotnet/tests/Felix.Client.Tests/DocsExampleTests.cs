@@ -6,8 +6,8 @@ using Xunit;
 namespace Felix.Client.Tests;
 
 /// <summary>
-/// Compiles every csharp block on the C# client page against this build of Felix.Client, so the
-/// page cannot drift from the API. Each tutorial page is compiled as one program, because its
+/// Compiles every csharp block on the C# client page and the resilience guide against this build of
+/// Felix.Client, so the pages cannot drift from the API. Each tutorial page is compiled as one program, because its
 /// blocks are steps of it. Nothing is run: most blocks need a broker.
 /// </summary>
 public class DocsExampleTests
@@ -50,6 +50,11 @@ public class DocsExampleTests
             public static void Handle(ReadOnlySpan<byte> payload) => throw new NotImplementedException();
             public static void Store(string key, ReadOnlyMemory<byte> value, DateTimeOffset? expiresAt) => throw new NotImplementedException();
             public static void Remove(string key) => throw new NotImplementedException();
+            public static byte[] payload => throw new NotImplementedException();
+            public static Task<long?> LoadCheckpointAsync() => throw new NotImplementedException();
+            public static Task SaveCheckpointAsync(long offset) => throw new NotImplementedException();
+            public static Task<IReadOnlyList<ShardPosition>> LoadPositionsAsync() => throw new NotImplementedException();
+            public static Task SavePositionsAsync(IReadOnlyList<ShardPosition> positions) => throw new NotImplementedException();
         }
         """;
 
@@ -59,6 +64,14 @@ public class DocsExampleTests
         var blocks = Extract(File.ReadAllText(FindPage(Page)));
         Assert.NotEmpty(blocks);
         AssertCompiles("csharp.md", blocks);
+    }
+
+    [Fact]
+    public void EveryCSharpBlockOnTheResilienceGuideCompiles()
+    {
+        var blocks = Extract(File.ReadAllText(FindPage("docs-site/src/content/docs/clients/resilient-clients.mdx")));
+        Assert.NotEmpty(blocks);
+        AssertCompiles("resilient-clients.mdx", blocks);
     }
 
     [Fact]
