@@ -4,6 +4,17 @@
 groups:
   - name: felix-broker
     rules:
+      - alert: FelixBrokerDown
+        # Edit the job regex to match your scrape config; the chart's
+        # ServiceMonitors name jobs after the Services (<release>-felix-broker).
+        expr: up{job=~".*felix-broker.*"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Broker target {{ $labels.instance }} cannot be scraped"
+          description: "The broker is down or unreachable on its metrics port. Check the pod and its volume."
+          runbook_url: "https://docs.getfelix.dev/deployment/diagnosing/"
       - alert: FelixBrokerLeaseLost
         expr: felix_broker_lease_held == 0
         for: 2m
@@ -14,7 +25,7 @@ groups:
           description: "The broker is up but may not serve the shards it leads. Check heartbeats and the control plane."
           runbook_url: "https://docs.getfelix.dev/deployment/diagnosing/#a-shard-is-not-serving-or-refuses-writes"
       - alert: FelixBrokerLeaseExpired
-        expr: increase(felix_broker_lease_expiries_total[10m]) > 0
+        expr: increase(felix_broker_lease_expiries_total[10m]) > 0 or (felix_broker_lease_expiries_total unless felix_broker_lease_expiries_total offset 10m)
         labels:
           severity: warning
         annotations:
@@ -43,12 +54,13 @@ groups:
           runbook_url: "https://docs.getfelix.dev/features/observability/#alert-rules"
       - alert: FelixCredentialExpiring
         # Below any token lifetime you actually issue to brokers.
-        expr: felix_broker_credential_expires_in_seconds >= 0 and felix_broker_credential_expires_in_seconds < 300
+        # Negative means already expired; -1 means the token carries no exp.
+        expr: felix_broker_credential_expires_in_seconds < 300 unless felix_broker_credential_expires_in_seconds == -1
         for: 2m
         labels:
           severity: warning
         annotations:
-          summary: "Broker {{ $labels.instance }} credential expires in {{ $value | humanizeDuration }}"
+          summary: "Broker {{ $labels.instance }} credential has {{ $value }} s left (negative means expired)"
           description: "The heartbeat is the lease renewal; an expired token stops the broker serving. Check the refresh token file."
           runbook_url: "https://docs.getfelix.dev/features/observability/#alert-rules"
       - alert: FelixRevocationFeedStale
@@ -89,7 +101,7 @@ groups:
           description: "Subscribers are missing records. On a durable stream they can resume from the offset gap."
           runbook_url: "https://docs.getfelix.dev/deployment/diagnosing/#a-subscriber-misses-records"
       - alert: FelixAckedPublishesDropped
-        expr: increase(felix_broker_acked_publishes_dropped_total[5m]) > 0
+        expr: increase(felix_broker_acked_publishes_dropped_total[5m]) > 0 or (felix_broker_acked_publishes_dropped_total unless felix_broker_acked_publishes_dropped_total offset 5m)
         labels:
           severity: critical
         annotations:
@@ -97,7 +109,7 @@ groups:
           description: "Happens with acks on accept (FELIX_ACK_ON_COMMIT off). The reason label says why."
           runbook_url: "https://docs.getfelix.dev/features/observability/#alert-rules"
       - alert: FelixPublishWorkerRestarted
-        expr: increase(felix_broker_publish_worker_restarts_total[15m]) > 0
+        expr: increase(felix_broker_publish_worker_restarts_total[15m]) > 0 or (felix_broker_publish_worker_restarts_total unless felix_broker_publish_worker_restarts_total offset 15m)
         labels:
           severity: warning
         annotations:
@@ -105,7 +117,7 @@ groups:
           description: "This should stay at zero. Collect the panic from the broker log and report it."
           runbook_url: "https://docs.getfelix.dev/features/observability/#alert-rules"
       - alert: FelixStorageSyncFailures
-        expr: increase(felix_storage_sync_failures_total[5m]) > 0
+        expr: increase(felix_storage_sync_failures_total[5m]) > 0 or (felix_storage_sync_failures_total unless felix_storage_sync_failures_total offset 5m)
         labels:
           severity: critical
         annotations:
@@ -113,7 +125,7 @@ groups:
           description: "Acknowledged durability is in doubt. Check the disk and the kernel log."
           runbook_url: "https://docs.getfelix.dev/features/observability/#alert-rules"
       - alert: FelixStorageFull
-        expr: increase(felix_storage_full_total[5m]) > 0
+        expr: increase(felix_storage_full_total[5m]) > 0 or (felix_storage_full_total unless felix_storage_full_total offset 5m)
         labels:
           severity: critical
         annotations:
@@ -121,7 +133,7 @@ groups:
           description: "Nothing was written by the refused writes. Free space, shorten retention or enlarge the volume."
           runbook_url: "https://docs.getfelix.dev/deployment/diagnosing/#local-disk-is-filling-while-offload-is-on"
       - alert: FelixRetentionFailing
-        expr: increase(felix_storage_retention_failures_total[30m]) > 0
+        expr: increase(felix_storage_retention_failures_total[30m]) > 0 or (felix_storage_retention_failures_total unless felix_storage_retention_failures_total offset 30m)
         labels:
           severity: warning
         annotations:
@@ -138,7 +150,7 @@ groups:
           description: "Retention keeps segments with no archived copy, so local disk grows past retention."
           runbook_url: "https://docs.getfelix.dev/deployment/diagnosing/#local-disk-is-filling-while-offload-is-on"
       - alert: FelixDrainForced
-        expr: increase(felix_drain_forced_total[15m]) > 0
+        expr: increase(felix_drain_forced_total[15m]) > 0 or (felix_drain_forced_total unless felix_drain_forced_total offset 15m)
         labels:
           severity: warning
         annotations:
@@ -146,7 +158,7 @@ groups:
           description: "Work was dropped at shutdown. Raise FELIX_SHUTDOWN_DRAIN_TIMEOUT_MS or the pod grace period."
           runbook_url: "https://docs.getfelix.dev/deployment/graceful-shutdown/"
       - alert: FelixClientConnectionsRefused
-        expr: sum by (instance, reason) (increase(felix_quic_connections_refused_total[5m])) > 0
+        expr: sum by (instance, reason) (increase(felix_quic_connections_refused_total[5m]) > 0 or (felix_quic_connections_refused_total unless felix_quic_connections_refused_total offset 5m)) > 0
         for: 5m
         labels:
           severity: warning
@@ -156,6 +168,16 @@ groups:
           runbook_url: "https://docs.getfelix.dev/features/observability/#alert-rules"
   - name: felix-controlplane
     rules:
+      - alert: FelixControlPlaneDown
+        # Edit the job regex to match your scrape config.
+        expr: up{job=~".*felix-controlplane.*"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Control-plane target {{ $labels.instance }} cannot be scraped"
+          description: "A control-plane instance is down or unreachable on its metrics port."
+          runbook_url: "https://docs.getfelix.dev/deployment/control-plane-ha/"
       - alert: FelixShardsUnderReplicated
         # FELIX_SHARD_RESTORE_AFTER_MS defaults to 5 minutes, then a copy has to land.
         expr: felix_shards_under_replicated > 0
@@ -194,7 +216,7 @@ groups:
           description: "A zone lacks capacity, or a spreading move is waiting for a slot."
           runbook_url: "https://docs.getfelix.dev/deployment/scaling/"
       - alert: FelixBrokerMarkedDown
-        expr: increase(felix_node_transitions_total{from="live",to="down"}[5m]) > 0
+        expr: increase(felix_node_transitions_total{from="live",to="down"}[5m]) > 0 or (felix_node_transitions_total{from="live",to="down"} unless felix_node_transitions_total{from="live",to="down"} offset 5m)
         labels:
           severity: warning
         annotations:
@@ -202,7 +224,7 @@ groups:
           description: "live to down is a failure; draining to left is a deploy. Check which broker stopped heartbeating."
           runbook_url: "https://docs.getfelix.dev/features/observability/#alert-rules"
       - alert: FelixNoPlacementLeaseHolder
-        expr: sum(felix_placement_lease_held) == 0
+        expr: sum(felix_placement_lease_held) == 0 or absent(felix_placement_lease_held)
         for: 5m
         labels:
           severity: critical
@@ -211,7 +233,7 @@ groups:
           description: "Nothing places shards or restores copies. Check every control-plane instance and its store."
           runbook_url: "https://docs.getfelix.dev/deployment/control-plane-ha/"
       - alert: FelixReconcileFailing
-        expr: increase(felix_shard_reconcile_failures_total[10m]) > 0
+        expr: increase(felix_shard_reconcile_failures_total[10m]) > 0 or (felix_shard_reconcile_failures_total unless felix_shard_reconcile_failures_total offset 10m)
         labels:
           severity: warning
         annotations:
@@ -219,7 +241,7 @@ groups:
           description: "The control plane's store is unreachable or unhealthy."
           runbook_url: "https://docs.getfelix.dev/deployment/control-plane-ha/"
       - alert: FelixNodeExpiryFailing
-        expr: increase(felix_node_expiry_failures_total[10m]) > 0
+        expr: increase(felix_node_expiry_failures_total[10m]) > 0 or (felix_node_expiry_failures_total unless felix_node_expiry_failures_total offset 10m)
         labels:
           severity: warning
         annotations:

@@ -7,3 +7,8 @@
   fails if the two differ or if either file queries a metric the code does not register.
 
 What each panel and alert means: [Observability](https://docs.getfelix.dev/features/observability/#dashboard-and-alert-rules).
+
+`FelixBrokerDown` and `FelixControlPlaneDown` use `up{job=~".*felix-broker.*"}` and
+`up{job=~".*felix-controlplane.*"}`. Edit those regexes if your scrape jobs are named differently.
+
+`prometheus/felix-alerts.test.yaml` holds `promtool test rules` cases; CI runs it with `promtool check rules`.

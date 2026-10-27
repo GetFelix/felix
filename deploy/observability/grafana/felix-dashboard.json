@@ -31,7 +31,7 @@
           "uid": "${datasource}"
         },
         "query": {
-          "query": "label_values(felix_broker_lease_held, instance)",
+          "query": "label_values(felix_publish_requests_total, instance)",
           "refId": "instance"
         },
         "refresh": 2,
@@ -578,8 +578,68 @@
     },
     {
       "type": "timeseries",
-      "title": "Publish queue pressure",
+      "title": "Cache watch queues",
       "id": 12,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Key and value bytes waiting in cache watch queues (bytes), and watches that fell behind. Compare with FELIX_CACHE_WATCH_MAX_BYTES_TOTAL.",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 26
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "stacking": {
+              "mode": "none"
+            },
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (instance) (felix_cache_watch_queue_bytes{instance=~\"$instance\"})",
+          "legendFormat": "{{instance}}"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (instance) (rate(felix_cache_watch_lagged_total{instance=~\"$instance\"}[5m]))",
+          "legendFormat": "lagged watches/s {{instance}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Publish queue pressure",
+      "id": 13,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -588,7 +648,7 @@
       "gridPos": {
         "h": 8,
         "w": 8,
-        "x": 0,
+        "x": 8,
         "y": 26
       },
       "fieldConfig": {
@@ -639,7 +699,7 @@
     {
       "type": "timeseries",
       "title": "Connection refusals",
-      "id": 13,
+      "id": 14,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -648,7 +708,7 @@
       "gridPos": {
         "h": 8,
         "w": 8,
-        "x": 8,
+        "x": 16,
         "y": 26
       },
       "fieldConfig": {
@@ -690,66 +750,15 @@
     {
       "type": "row",
       "title": "Durability",
-      "id": 14,
+      "id": 15,
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 26
+        "y": 34
       },
       "panels": []
-    },
-    {
-      "type": "timeseries",
-      "title": "Group-commit effectiveness",
-      "id": 15,
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "Records made durable per device flush under on_commit. Near 1 under concurrent single-record publishes means appends serialize on the device instead of sharing a flush.",
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 16,
-        "y": 27
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "custom": {
-            "lineWidth": 1,
-            "fillOpacity": 10,
-            "stacking": {
-              "mode": "none"
-            },
-            "showPoints": "never"
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "sum by (instance) (rate(felix_storage_sync_batch_appends_sum{instance=~\"$instance\"}[5m])) / sum by (instance) (rate(felix_storage_sync_batch_appends_count{instance=~\"$instance\"}[5m]))",
-          "legendFormat": "{{instance}}"
-        }
-      ]
     },
     {
       "type": "timeseries",
@@ -804,59 +813,8 @@
     },
     {
       "type": "timeseries",
-      "title": "Unsynced bytes",
-      "id": 17,
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "Bytes written but not yet flushed: what a machine crash would lose right now.",
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 8,
-        "y": 35
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "bytes",
-          "custom": {
-            "lineWidth": 1,
-            "fillOpacity": 10,
-            "stacking": {
-              "mode": "none"
-            },
-            "showPoints": "never"
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "sum by (instance) (felix_storage_unsynced_bytes{instance=~\"$instance\"})",
-          "legendFormat": "{{instance}}"
-        }
-      ]
-    },
-    {
-      "type": "timeseries",
       "title": "Flush failures and full disk",
-      "id": 18,
+      "id": 17,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -865,7 +823,7 @@
       "gridPos": {
         "h": 8,
         "w": 8,
-        "x": 16,
+        "x": 8,
         "y": 35
       },
       "fieldConfig": {
@@ -915,21 +873,86 @@
     },
     {
       "type": "row",
-      "title": "Replication and leadership",
-      "id": 19,
-      "collapsed": false,
+      "title": "Group commit (on_commit only)",
+      "id": 18,
+      "collapsed": true,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
         "y": 43
       },
+      "panels": [
+        {
+          "type": "timeseries",
+          "title": "Group-commit effectiveness",
+          "id": 19,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "description": "Only recorded under FELIX_DURABLE_FSYNC_MODE=on_commit, so empty under the default periodic mode. Records made durable per device flush. Near 1 under concurrent single-record publishes means appends serialize on the device instead of sharing a flush.",
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 0,
+            "y": 44
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 10,
+                "stacking": {
+                  "mode": "none"
+                },
+                "showPoints": "never"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum by (instance) (rate(felix_storage_sync_batch_appends_sum{instance=~\"$instance\"}[5m])) / sum by (instance) (rate(felix_storage_sync_batch_appends_count{instance=~\"$instance\"}[5m]))",
+              "legendFormat": "{{instance}}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Replication and leadership",
+      "id": 20,
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 44
+      },
       "panels": []
     },
     {
       "type": "timeseries",
       "title": "Halted and rebuilding replicas",
-      "id": 20,
+      "id": 21,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -939,7 +962,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 44
+        "y": 45
       },
       "fieldConfig": {
         "defaults": {
@@ -989,7 +1012,7 @@
     {
       "type": "timeseries",
       "title": "Replication lag",
-      "id": 21,
+      "id": 22,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -999,7 +1022,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 44
+        "y": 45
       },
       "fieldConfig": {
         "defaults": {
@@ -1040,7 +1063,7 @@
     {
       "type": "timeseries",
       "title": "Under-replicated shards",
-      "id": 22,
+      "id": 23,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1050,7 +1073,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 44
+        "y": 45
       },
       "fieldConfig": {
         "defaults": {
@@ -1118,7 +1141,7 @@
     {
       "type": "timeseries",
       "title": "Lease held",
-      "id": 23,
+      "id": 24,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1128,7 +1151,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 52
+        "y": 53
       },
       "fieldConfig": {
         "defaults": {
@@ -1169,7 +1192,7 @@
     {
       "type": "timeseries",
       "title": "Lease expiries and refusals",
-      "id": 24,
+      "id": 25,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1179,7 +1202,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 52
+        "y": 53
       },
       "fieldConfig": {
         "defaults": {
@@ -1229,7 +1252,7 @@
     {
       "type": "timeseries",
       "title": "Quorum publish failures",
-      "id": 25,
+      "id": 26,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1239,7 +1262,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 52
+        "y": 53
       },
       "fieldConfig": {
         "defaults": {
@@ -1280,7 +1303,7 @@
     {
       "type": "timeseries",
       "title": "Leader changes",
-      "id": 26,
+      "id": 27,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1290,7 +1313,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 60
+        "y": 61
       },
       "fieldConfig": {
         "defaults": {
@@ -1340,7 +1363,7 @@
     {
       "type": "timeseries",
       "title": "Heartbeat age",
-      "id": 27,
+      "id": 28,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1350,7 +1373,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 60
+        "y": 61
       },
       "fieldConfig": {
         "defaults": {
@@ -1391,20 +1414,20 @@
     {
       "type": "row",
       "title": "Storage and retention",
-      "id": 28,
+      "id": 29,
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 60
+        "y": 69
       },
       "panels": []
     },
     {
       "type": "timeseries",
       "title": "Append throughput",
-      "id": 29,
+      "id": 30,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1413,8 +1436,8 @@
       "gridPos": {
         "h": 8,
         "w": 8,
-        "x": 16,
-        "y": 61
+        "x": 0,
+        "y": 70
       },
       "fieldConfig": {
         "defaults": {
@@ -1454,57 +1477,6 @@
     },
     {
       "type": "timeseries",
-      "title": "Segments on disk",
-      "id": 30,
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "Grows while retention is unset, a Quorum follower is down, or offload is failing.",
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 0,
-        "y": 69
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "custom": {
-            "lineWidth": 1,
-            "fillOpacity": 10,
-            "stacking": {
-              "mode": "none"
-            },
-            "showPoints": "never"
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "sum by (instance) (felix_storage_segment_count{instance=~\"$instance\"})",
-          "legendFormat": "{{instance}}"
-        }
-      ]
-    },
-    {
-      "type": "timeseries",
       "title": "Retention",
       "id": 31,
       "datasource": {
@@ -1516,7 +1488,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 69
+        "y": 70
       },
       "fieldConfig": {
         "defaults": {
@@ -1576,7 +1548,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 69
+        "y": 70
       },
       "fieldConfig": {
         "defaults": {
@@ -1632,7 +1604,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 77
+        "y": 78
       },
       "panels": []
     },
@@ -1649,7 +1621,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 78
+        "y": 79
       },
       "fieldConfig": {
         "defaults": {
@@ -1700,7 +1672,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 78
+        "y": 79
       },
       "fieldConfig": {
         "defaults": {
@@ -1778,7 +1750,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 78
+        "y": 79
       },
       "fieldConfig": {
         "defaults": {
@@ -1847,7 +1819,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 86
+        "y": 87
       },
       "fieldConfig": {
         "defaults": {
@@ -1898,7 +1870,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 86
+        "y": 87
       },
       "fieldConfig": {
         "defaults": {

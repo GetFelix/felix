@@ -172,14 +172,20 @@ watch the group-commit fan-in:
 felix_storage_append_duration_seconds
 felix_storage_sync_duration_seconds
 felix_storage_sync_batch_appends       # records made durable per device flush
-felix_storage_unsynced_bytes           # what a crash would lose right now
+felix_storage_unsynced_bytes           # what a crash would lose right now, for the log that last reported (see below)
 felix_storage_sync_failures_total      # non-zero: acknowledged durability in doubt
 felix_storage_full_total               # writes refused on a full disk; nothing written
 felix_storage_replica_state_writes_total            # generation, commit offset and hold writes
 felix_storage_replica_state_write_duration_seconds  # each is two flushes and a rename
 ```
 
-If sync dominates append, the fsync policy is the cost. A
+If sync dominates append, the fsync policy is the cost.
+
+`felix_storage_unsynced_bytes` and `felix_storage_segment_count` are gauges
+every log sets in turn, so each reads the value of whichever log wrote last, not
+a total across logs. Neither is on the dashboard. `felix_storage_sync_batch_appends`
+is recorded only under `on_commit`; under the default `periodic` mode it has no
+samples. A
 `sync_batch_appends` near 1 under concurrent single-record publishes means
 appends are serializing on the device instead of sharing a flush. It counts
 records, so a client batch of N reads N on its own.
@@ -387,15 +393,16 @@ offers a broker filter. Sections:
 
 - **Traffic**: publish rate by result, payload throughput, delivered rate, and
   p99 publish latency, Quorum wait, append and flush time.
-- **Subscribers**: dropped records, byte-bound drops, queued bytes, queue and
-  quota pressure, and refused connections.
-- **Durability**: group-commit effectiveness (records per flush), flushes,
-  unsynced bytes, flush failures and full disks.
+- **Subscribers**: dropped records, byte-bound drops, queued bytes, cache watch
+  queues, queue and quota pressure, and refused connections.
+- **Durability**: device flushes, flush failures and full disks, and a
+  collapsed row for group-commit effectiveness (records per flush). That row is
+  empty unless brokers run `FELIX_DURABLE_FSYNC_MODE=on_commit`, because only
+  that mode records the metric.
 - **Replication and leadership**: halted and rebuilding replicas, lag,
   under-replicated shards, the lease, Quorum failures, leader changes and
   heartbeat age.
-- **Storage and retention**: append throughput, segments on disk, retention
-  and offload.
+- **Storage and retention**: append throughput, retention and offload.
 - **Control plane**: brokers by lifecycle, placement health, shard moves, and
   broker transitions.
 
@@ -413,17 +420,28 @@ set `prometheusRule.enabled=true` on the chart to render the same rules as a
 `PrometheusRule` (and `prometheusRule.labels` to match your operator's rule
 selector). It is off by default.
 
+Counters in Felix are created on their first increment, so a counter like
+`felix_storage_sync_failures_total` does not exist until the first failure, and
+`increase()` over a series whose first sample is already 1 reports 0. The
+counter alerts therefore add `or (x unless x offset <window>)`, which is true
+for a series that was not there a window ago. The first event alerts, and the
+alert clears once the window has passed. The sustained alerts built on `rate()`
+(subscriber drops, Quorum timeouts) miss the first event and alert while it
+keeps happening.
+
 Each alert carries a `runbook_url`. The thresholds assume the defaults: tune
 the heartbeat alert if you change `FELIX_NODE_EXPIRY_TIMEOUT_MS`, and the
 under-replication alerts if you change `FELIX_SHARD_RESTORE_AFTER_MS`.
 
 | Alert | Fires when | Severity | What it means |
 | --- | --- | --- | --- |
+| `FelixBrokerDown` | A broker's metrics target is down for 2 minutes | critical | The pod is gone or unreachable. The job regex (`.*felix-broker.*`) matches the job names the chart's ServiceMonitors give with default naming; edit it for other scrape configs. |
+| `FelixControlPlaneDown` | A control-plane target is down for 2 minutes | critical | Same, for `.*felix-controlplane.*`. |
 | `FelixBrokerLeaseLost` | `felix_broker_lease_held` is 0 for 2 minutes | critical | The broker is up but may not serve the shards it leads. |
 | `FelixBrokerLeaseExpired` | `felix_broker_lease_expiries_total` rose in 10 minutes | warning | The lease lapsed once; those shards were unavailable here. |
 | `FelixBrokerMembershipLost` | `felix_broker_membership_live` is 0 for 2 minutes | critical | The control plane does not count the broker as placeable. |
 | `FelixBrokerHeartbeatStale` | Heartbeat age over 10 s for 1 minute | warning | The broker is two beats from being declared down (default expiry 15 s). |
-| `FelixCredentialExpiring` | Less than 300 s left on the node credential | warning | The heartbeat carries it, so expiry stops the broker serving. Keep this below the token lifetime you issue. |
+| `FelixCredentialExpiring` | Less than 300 s left on the node credential, or already expired (a value of -1 means the token has no expiry and is ignored) | warning | The heartbeat carries it, so expiry stops the broker serving. Keep this below the token lifetime you issue. |
 | `FelixRevocationFeedStale` | No good revocation poll for 60 s | warning | A revoked token is still accepted for new sessions. |
 | `FelixReplicationHalted` | `felix_broker_replication_halted` above 0 for 15 minutes | critical | A replica is in no quorum. See [Which replica stopped](#which-replica-stopped). |
 | `FelixQuorumPublishTimeouts` | Quorum publishes failing as `timed_out` for 5 minutes | warning | No majority acknowledged in time. |
@@ -441,13 +459,10 @@ under-replication alerts if you change `FELIX_SHARD_RESTORE_AFTER_MS`.
 | `FelixShardsUnplaceable` | Shards without an eligible leader for 10 minutes | critical | Capacity or liveness needs attention. |
 | `FelixShardsZoneUnspread` | Shards keep copies in one zone for 1 hour | info | A zone lacks room. |
 | `FelixBrokerMarkedDown` | A node moved from live to down | warning | A failure, as opposed to a drain. |
-| `FelixNoPlacementLeaseHolder` | No instance holds the placement lease for 5 minutes | critical | Nothing places shards or restores copies. |
+| `FelixNoPlacementLeaseHolder` | No instance holds the placement lease, or none exports the metric, for 5 minutes | critical | Nothing places shards or restores copies. |
 | `FelixReconcileFailing` | Placement cannot read the catalog | warning | The control plane's store is unhealthy. |
 | `FelixNodeExpiryFailing` | Expiry sweeps failing | warning | Liveness is stale. |
 | `FelixShardMovesWaiting` | Moves cannot advance for 30 minutes | warning | A successor is not catching up. |
-
-The rules do not include a broker-down alert, because that is `up == 0` on
-whatever job name your scrape config gives the brokers.
 
 ## Shutdown and drain
 

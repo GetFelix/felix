@@ -48,12 +48,14 @@ the owner of each shard it uses. Count clients times pool sizes against
 spread over.
 
 Watch these to see how close the cluster runs to its bounds:
-`felix_sub_queue_bytes`, `felix_sub_egress_bytes`, `felix_replay_ring_bytes`,
-`felix_cache_watch_queue_bytes` and `felix_broker_ingress_queue_depth`. A bound
-that fires shows up as `felix_sub_queue_byte_dropped_total` or
-`felix_tenant_publish_queue_full_total`, never as an out-of-memory kill, which
-is the point of setting them. The [Felix dashboard](/features/observability/#dashboard)
-has a panel for each.
+`felix_sub_queue_bytes`, `felix_sub_egress_bytes`, `felix_replay_ring_bytes` and
+`felix_cache_watch_queue_bytes`. A bound that fires shows up as
+`felix_sub_queue_byte_dropped_total` or `felix_tenant_publish_queue_full_total`,
+never as an out-of-memory kill, which is the point of setting them. The
+[Felix dashboard](/features/observability/#dashboard) charts all of these.
+`felix_broker_ingress_queue_depth` also shows publish backlog, but a broker
+records it only when built with the `telemetry` feature, so the dashboard does
+not chart it.
 
 ### Disk
 
