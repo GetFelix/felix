@@ -7,11 +7,20 @@ namespace Felix.Client.Tests;
 
 /// <summary>
 /// Compiles every csharp block on the C# client page against this build of Felix.Client, so the
-/// page cannot drift from the API. Nothing is run: most blocks need a broker.
+/// page cannot drift from the API. Each tutorial page is compiled as one program, because its
+/// blocks are steps of it. Nothing is run: most blocks need a broker.
 /// </summary>
 public class DocsExampleTests
 {
     private const string Page = "docs-site/src/content/docs/clients/csharp.md";
+
+    private static readonly string[] Tutorials =
+    [
+        "first-stream",
+        "work-queue",
+        "cache-leases-watches",
+        "build-an-app",
+    ];
 
     // What the page's blocks use without defining: implicit usings, and the names an earlier block
     // or the surrounding prose supplies. A block that declares one of these shadows it.
@@ -47,9 +56,53 @@ public class DocsExampleTests
     [Fact]
     public void EveryCSharpBlockOnThePageCompiles()
     {
-        var blocks = Extract(File.ReadAllText(FindPage()));
+        var blocks = Extract(File.ReadAllText(FindPage(Page)));
         Assert.NotEmpty(blocks);
+        AssertCompiles("csharp.md", blocks);
+    }
 
+    [Fact]
+    public void EveryTutorialCompilesAsOneProgram()
+    {
+        foreach (var slug in Tutorials)
+        {
+            var path = $"docs-site/src/content/docs/tutorials/{slug}.mdx";
+            var blocks = Extract(File.ReadAllText(FindPage(path)));
+            Assert.NotEmpty(blocks);
+            AssertCompiles($"{slug}.mdx", [Join(blocks)]);
+        }
+    }
+
+    /// <summary>
+    /// The blocks as one file: the <c>using</c> directives first, once each, then the statements
+    /// and local functions of every block in order.
+    /// </summary>
+    internal static (int Line, string Code) Join(List<(int Line, string Code)> blocks)
+    {
+        var usings = new SortedSet<string>(StringComparer.Ordinal);
+        var body = new List<string>();
+        foreach (var (_, code) in blocks)
+        {
+            foreach (var line in code.Split('\n'))
+            {
+                if (Regex.IsMatch(line, @"^using [\w.]+;\s*$"))
+                {
+                    usings.Add(line.Trim());
+                }
+                else
+                {
+                    body.Add(line);
+                }
+            }
+
+            body.Add("");
+        }
+
+        return (blocks[0].Line, string.Join('\n', usings.Concat(body)));
+    }
+
+    private static void AssertCompiles(string label, List<(int Line, string Code)> blocks)
+    {
         var references = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!)
             .Split(Path.PathSeparator)
             .Append(typeof(FelixClient).Assembly.Location)
@@ -64,14 +117,14 @@ public class DocsExampleTests
         foreach (var (line, code) in blocks)
         {
             var compilation = CSharpCompilation.Create(
-                $"csharp_md_L{line}",
+                $"{label.Replace('.', '_').Replace('-', '_')}_L{line}",
                 [CSharpSyntaxTree.ParseText(code, parse), prelude],
                 references,
                 options);
             failures.AddRange(compilation.GetDiagnostics()
                 .Where(d => d.Severity == DiagnosticSeverity.Error || d.Severity == DiagnosticSeverity.Warning)
                 .Where(d => d.Location.SourceTree != prelude)
-                .Select(d => $"csharp.md:{line + d.Location.GetLineSpan().StartLinePosition.Line}: {d.Id}: {d.GetMessage()}"));
+                .Select(d => $"{label}:{line + d.Location.GetLineSpan().StartLinePosition.Line}: {d.Id}: {d.GetMessage()}"));
         }
 
         Assert.True(failures.Count == 0, string.Join('\n', failures));
@@ -99,17 +152,17 @@ public class DocsExampleTests
         return blocks;
     }
 
-    private static string FindPage()
+    private static string FindPage(string page)
     {
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
         {
-            var candidate = Path.Combine(dir.FullName, Page);
+            var candidate = Path.Combine(dir.FullName, page);
             if (File.Exists(candidate))
             {
                 return candidate;
             }
         }
 
-        throw new FileNotFoundException($"{Page} not found above {AppContext.BaseDirectory}");
+        throw new FileNotFoundException($"{page} not found above {AppContext.BaseDirectory}");
     }
 }
