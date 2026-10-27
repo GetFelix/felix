@@ -482,7 +482,9 @@ cd docs-site && npm ci && npm run build
 ```
 
 The build runs the mermaid, diagram and evidence checks before `astro build`.
-`npm run dev` serves the site with live reload.
+`npm run dev` serves the site with live reload. Use these scripts rather than
+running `astro` directly: they first generate the release notes pages from
+`CHANGELOG.md`, which the sidebar needs.
 
 ## Cleaning up
 

@@ -21,7 +21,7 @@ storage format. No new fleet feature has been added. Broker and control-plane
 settings are unchanged. The ordinary upgrade order applies: control plane,
 then brokers one at a time, then clients.
 
-Two changes need attention during the upgrade, both on the control plane.
+One change needs attention during the upgrade, on the control plane.
 
 ## Control plane
 
