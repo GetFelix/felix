@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793121645543,
+  "lastUpdate": 1793130846528,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -38064,6 +38064,58 @@ window.BENCHMARK_DATA = {
             "range": "7645.80",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 831967.53\nmean: 836044.46\nstdev: 7645.80\ncv: 0.91%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "64db117ce8b6eab85e55111b784ad12c1e51c37f",
+          "message": "ci(tla): keep TLC's scratch directory off the runner's tmpfs (#1602)\n\nOn the GitHub-hosted ubuntu-26.04 runners that main's formal jobs now use, /tmp is a 7.8G tmpfs. TLC's scratch directory went there (check_tla.sh used `mktemp -d`), and FelixShardFencedCrashUnprobed filled it after about 30 minutes (\"Disk quota exceeded\"), failing TLA+ model (1/7) on every main run that checked it since #1577. check_tla.sh now takes TLC_SCRATCH_DIR, and the formal job sets it to $RUNNER_TEMP/tlc on the runner's disk and prints /tmp's filesystem type. Coverage is unchanged. Verified: the configuration ran its full 200 minutes with no disk error; its running time is a separate follow-up.",
+          "timestamp": "2026-10-27T19:48:41Z",
+          "tree_id": "60944f0ee501085b4ce6458d6691e198a3757ba5",
+          "url": "https://github.com/GetFelix/felix/commit/64db117ce8b6eab85e55111b784ad12c1e51c37f"
+        },
+        "date": 1793130845914,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 669803.4,
+            "range": "80508.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 669803.40\nmean: 647686.27\nstdev: 80508.54\ncv: 12.43%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 669803.4,
+            "range": "80508.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 669803.40\nmean: 647686.27\nstdev: 80508.54\ncv: 12.43%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 159394.94,
+            "range": "4169.73",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 159394.94\nmean: 159123.37\nstdev: 4169.73\ncv: 2.62%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1593949.38,
+            "range": "41697.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1593949.38\nmean: 1591233.72\nstdev: 41697.31\ncv: 2.62%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
