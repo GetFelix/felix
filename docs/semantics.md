@@ -451,14 +451,15 @@ throughput rather than correctness.
   > `one_shard_failing_over_does_not_stop_the_others`,
   > `a_sharded_subscription_resumes_from_its_per_shard_offsets`.
 
-**Three fields on a stream are declared and not enforced.** The control plane
-accepts them and stores them; the broker reads only `durable`, `shards` and
-`consistency`.
+**Two fields on a stream are declared and not enforced.** The control plane
+accepts and stores them, but the broker reads only `durable`, `shards`,
+`consistency` and `retention`. On a durable stream, `retention`
+(`max_age_seconds`, `max_size_bytes`) applies as set, and a bound left unset
+falls back to the broker's `FELIX_DURABLE_RETENTION_*`.
 
 | Field | What actually decides |
 | --- | --- |
 | `delivery` (`AtMostOnce` / `AtLeastOnce`) | How a client reads: a plain subscription, or a consumer group |
-| `retention` (`max_age_seconds`, `max_size_bytes`) | Itself, for a durable stream. A bound left unset is the broker's `FELIX_DURABLE_RETENTION_*` |
 | `kind` (`Stream` / `Queue` / `Cache`) | Nothing. A queue is a way of *reading* a stream, not a kind of stream |
 
 `kind` is the one most likely to mislead. Creating a stream with `kind: Queue`

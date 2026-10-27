@@ -86,11 +86,12 @@ has to live in the application regardless, because only the application knows
 what makes two records the same. Deduplicate there, keyed on
 something the record carries.
 
-:::caution[Three fields on a stream are declared and not enforced]
+:::caution[Two fields on a stream are declared and not enforced]
 `kind` is the one most likely to mislead: creating a stream with `kind: Queue`
 does not make it a queue, and does not stop it being subscribed to normally.
-Consumer groups work over any durable stream. `retention` is decided by the
-broker-wide `FELIX_DURABLE_RETENTION_*` settings instead. The control plane
+Consumer groups work over any durable stream. `retention` does apply: a bound
+the stream sets wins, and the broker-wide `FELIX_DURABLE_RETENTION_*` settings
+fill any bound it leaves unset. The control plane
 stores `delivery` (`AtMostOnce` or `AtLeastOnce`), but no broker code reads it:
 what a consumer gets depends on whether it reads through a plain subscription
 or a consumer group.
