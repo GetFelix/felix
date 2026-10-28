@@ -60,8 +60,6 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
     // One shard, so its owner is one broker the link interposer can sit in
     // front of.
     const LINK_STREAM: &str = "conformance-link";
-    // Nothing is ever published to it.
-    const EMPTY_STREAM: &str = "conformance-empty";
 
     eprintln!("starting a {node_count}-node cluster for a client conformance suite...");
     let cluster = Cluster::start(ClusterConfig {
@@ -80,7 +78,6 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
             StreamSpec::replicated(MOVABLE_STREAM, 1, node_count as u32),
             StreamSpec::quorum(QUORUM_STREAM, 1, node_count as u32),
             StreamSpec::replicated(LINK_STREAM, 1, node_count as u32),
-            StreamSpec::replicated(EMPTY_STREAM, 1, node_count as u32),
         ],
         caches: vec![
             CacheSpec::replicated(CACHE, 4, node_count as u32),
@@ -162,7 +159,6 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
         missing_stream: MISSING_STREAM.to_string(),
         movable_stream: Some(MOVABLE_STREAM.to_string()),
         quorum_stream: Some(QUORUM_STREAM.to_string()),
-        empty_stream: Some(EMPTY_STREAM.to_string()),
         control_url: Some(control_url.clone()),
         link_addr: Some(link.addr().to_string()),
         link_stream: Some(LINK_STREAM.to_string()),

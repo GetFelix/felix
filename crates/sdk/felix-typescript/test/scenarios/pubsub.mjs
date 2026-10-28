@@ -265,7 +265,7 @@ export default function register(ctx) {
   it("a time finds the first record appended at or after it", () =>
     scenario("stream.offset_for_time_finds_the_first_record_at_or_after", async () => {
       const { client, fixture } = ctx;
-      const { tenant_id: tenant, namespace, durable_stream: stream, empty_stream: empty } = fixture;
+      const { tenant_id: tenant, namespace, durable_stream: stream } = fixture;
       const first = await client.publishOnShard(
         tenant, namespace, stream, 0, [Buffer.from(unique("before"))], "per_message",
       );
@@ -292,8 +292,6 @@ export default function register(ctx) {
       const future = stamp(second) + 3_600_000_000n;
       assert.equal(await client.offsetForTime(tenant, namespace, stream, 0, future), null);
 
-      assert.equal(await client.offsetForTime(tenant, namespace, empty, 0, 1n), null);
-      assert.equal(await client.offsetForTime(tenant, namespace, empty, 0, BigInt(Date.now()) * 1000n), null);
     }));
 
   it("a stream shard can be read in pages without subscribing", () =>

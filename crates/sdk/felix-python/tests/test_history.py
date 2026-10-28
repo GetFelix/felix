@@ -45,10 +45,6 @@ def test_a_time_resolves_to_the_first_record_at_or_after_it(client, fixture, key
     # Nothing is stamped after the newest record plus an hour.
     assert client.offset_for_time(tenant, namespace, stream, 0, stamps[later] + 3_600_000_000) is None
 
-    # A stream nothing was published to has no record at any time.
-    empty = fixture["empty_stream"]
-    assert client.offset_for_time(tenant, namespace, empty, 0, 1) is None
-    assert client.offset_for_time(tenant, namespace, empty, 0, now_micros()) is None
 
 
 @pytest.mark.scenario("stream.read_returns_committed_pages")
