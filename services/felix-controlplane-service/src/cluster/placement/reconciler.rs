@@ -125,12 +125,20 @@ pub(super) struct PlannedPass {
     /// For each placement that promotes a follower, the storage identities
     /// the report it was decided on named, read from the same positions.
     fence_storage: HashMap<ShardKey, BTreeMap<String, String>>,
+    /// No node has registered, so there is nothing to place onto yet. The
+    /// development stack runs this way: its broker serves its own shards.
+    no_nodes: bool,
 }
 
 impl PlannedPass {
     #[cfg(test)]
     pub(super) fn plan(&self) -> &Plan {
         &self.plan
+    }
+
+    #[cfg(test)]
+    pub(super) fn no_nodes(&self) -> bool {
+        self.no_nodes
     }
 
     /// This pass as if planned at `fence`, for a test of the generation
@@ -287,6 +295,7 @@ pub(super) async fn plan_pass(
         .set_give_ups(progress.give_ups(&read.existing));
     let plan = read.plan(policy);
     progress.note_give_ups(&plan, read.positions.as_of_millis());
+    let no_nodes = read.nodes.is_empty();
     let existing = read.existing;
     let positions = read.positions;
     let read = existing
@@ -335,6 +344,7 @@ pub(super) async fn plan_pass(
         staged,
         unseeded,
         fence_storage,
+        no_nodes,
     })
 }
 
@@ -550,14 +560,26 @@ pub(super) async fn apply_pass(
     for (key, reason) in plan.unplaceable() {
         outcome.unplaceable += 1;
         // Warn rather than error: an empty or full cluster is an operational
-        // state to fix, not a control-plane fault.
-        tracing::warn!(
-            kind = %key.kind,
-            name = %key.stream,
-            shard = key.shard,
-            reason = %reason,
-            "shard has no eligible leader",
-        );
+        // state to fix, not a control-plane fault. With no node registered
+        // there is nothing to place onto, so it stays at debug; the
+        // unplaceable gauge and its alert still report it.
+        if pass.no_nodes {
+            tracing::debug!(
+                kind = %key.kind,
+                name = %key.stream,
+                shard = key.shard,
+                reason = %reason,
+                "shard has no eligible leader",
+            );
+        } else {
+            tracing::warn!(
+                kind = %key.kind,
+                name = %key.stream,
+                shard = key.shard,
+                reason = %reason,
+                "shard has no eligible leader",
+            );
+        }
     }
 
     metrics::counter!(SHARDS_PLACED_TOTAL).increment(outcome.placed as u64);
