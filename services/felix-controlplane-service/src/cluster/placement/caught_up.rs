@@ -72,6 +72,13 @@ pub trait CaughtUp {
         None
     }
 
+    /// The nodes the last report for `key` gives a position for, the leader
+    /// that made it included: the set it shipped to at the report's
+    /// generation. Empty with no report.
+    fn reported_members(&self, _key: &ShardKey) -> Vec<&str> {
+        Vec::new()
+    }
+
     /// How far `node_id` had got with a cache's counter log, as last
     /// reported. Only read as progress for a copy being restored. `None` for
     /// streams and from leaders that do not say.

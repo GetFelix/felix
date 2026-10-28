@@ -74,6 +74,22 @@ fn a_reported_follower_is_caught_up_and_others_are_not() {
     assert_eq!(view.reported_offset(&key("orders"), "broker-c"), None);
 }
 
+/// The set a report names is every node it gives a position for, and only
+/// while the report is believed.
+#[test]
+fn a_report_names_the_set_it_was_made_for() {
+    let reports = || vec![report("orders", &["broker-a", "broker-b"], 1_000)];
+    assert_eq!(
+        at(reports(), 1_000).reported_members(&key("orders")),
+        ["broker-a", "broker-b"]
+    );
+    assert!(
+        at(reports(), 1_000 + TTL_MS + 1)
+            .reported_members(&key("orders"))
+            .is_empty()
+    );
+}
+
 /// **Nothing is caught up until a leader says so.** The absence of a report is
 /// not permission to promote.
 #[test]

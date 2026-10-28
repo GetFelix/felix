@@ -507,6 +507,18 @@ impl CaughtUp for ReplicaPositions {
         self.counted(key, node_id)?.offsets.get(node_id).copied()
     }
 
+    fn reported_members(&self, key: &ShardKey) -> Vec<&str> {
+        let Some(report) = self.believed(key) else {
+            return Vec::new();
+        };
+        report
+            .offsets
+            .keys()
+            .map(String::as_str)
+            .filter(|node| self.counted(key, node).is_some())
+            .collect()
+    }
+
     fn reported_counter_offset(&self, key: &ShardKey, node_id: &str) -> Option<u64> {
         self.counted(key, node_id)?
             .counter_offsets

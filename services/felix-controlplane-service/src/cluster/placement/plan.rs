@@ -488,7 +488,16 @@ fn plan_once(
             *load.entry(promoted).or_default() += 1;
             leaders.add(Owner::of(&previous.key), promoted);
             let replicas = if fenced {
-                keep_replicas(previous, promoted, replication_factor, &is_live, &mut load)
+                keep_replicas(
+                    &key,
+                    previous,
+                    promoted,
+                    replication_factor,
+                    &is_live,
+                    &is_serving,
+                    caught_up,
+                    &mut load,
+                )
             } else {
                 choose_replicas(
                     &key,
@@ -720,11 +729,15 @@ fn deposed_by_followers(
 /// replica held. A down member is kept like any down follower, and a
 /// restore or a drain replaces it later through the joining path. `FencedAckAnyReplaced` in
 /// `docs/formal/FelixShard.tla`.
+#[allow(clippy::too_many_arguments)]
 fn keep_replicas<'a>(
+    key: &ShardKey,
     previous: &'a ShardAssignment,
     promoted: &str,
     replication_factor: u32,
     is_live: &dyn Fn(&str) -> bool,
+    is_serving: &dyn Fn(&str) -> bool,
+    caught_up: &'a dyn CaughtUp,
     load: &mut HashMap<&'a str, u32>,
 ) -> Vec<String> {
     // A copy staged on top of the set never counted toward an acknowledgement,
@@ -743,17 +756,53 @@ fn keep_replicas<'a>(
         (added_successor && previous.successor.as_deref() == Some(node))
             || (seated % 2 == 1 && previous.joining.as_deref() == Some(node))
     };
-    let kept: Vec<&'a str> = previous
+    let mut kept: Vec<&'a str> = previous
         .replicas
         .iter()
         .map(String::as_str)
         .filter(|node| *node != promoted && !staged(node))
         .chain(std::iter::once(previous.leader.as_str()))
         .collect();
+    kept.extend(left_unconfirmed(
+        key, previous, promoted, is_serving, caught_up,
+    ));
     for node in kept.iter().filter(|node| is_live(node)) {
         *load.entry(node).or_default() += 1;
     }
     kept.into_iter().map(str::to_string).collect()
+}
+
+/// Copies a set of two dropped at a generation its leader has not reported
+/// at yet, while their brokers still serve.
+///
+/// Seating a newcomer in an RF 2 set shrinks three to two, and at the joining
+/// generation two of the three acknowledged: a record can be on the leader
+/// and the leaving copy alone. If the leader dies before the newcomer has its
+/// whole log, the new set has no majority that holds the record, and the old
+/// leader refuses the newcomer's fence (#1487). Kept in the set, the leaving
+/// copy and the newcomer are a majority that holds it, and the fence takes
+/// the longer log. Once the leader reports at the new generation, that report
+/// names the set as before.
+fn left_unconfirmed<'a>(
+    key: &ShardKey,
+    previous: &ShardAssignment,
+    promoted: &str,
+    is_serving: &dyn Fn(&str) -> bool,
+    caught_up: &'a dyn CaughtUp,
+) -> Vec<&'a str> {
+    let older = caught_up
+        .reported_generation(key)
+        .is_some_and(|reported| reported < previous.generation);
+    if !older || previous.nodes().count() != 2 {
+        return Vec::new();
+    }
+    caught_up
+        .reported_members(key)
+        .into_iter()
+        .filter(|node| {
+            *node != promoted && is_serving(node) && !previous.nodes().any(|held| held == node)
+        })
+        .collect()
 }
 
 /// Added to a shard's class in [`start_order`] while its last move's start

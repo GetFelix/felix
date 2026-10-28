@@ -16,6 +16,9 @@ struct Reports {
     level: BTreeSet<String>,
     offsets: BTreeMap<String, u64>,
     tail: Option<u64>,
+    /// The set the report was made for, and its generation when not 3.
+    members: Vec<String>,
+    generation: Option<u64>,
 }
 
 impl Reports {
@@ -48,7 +51,11 @@ impl CaughtUp for Reports {
     }
 
     fn reported_generation(&self, _key: &ShardKey) -> Option<u64> {
-        Some(3)
+        Some(self.generation.unwrap_or(3))
+    }
+
+    fn reported_members(&self, _key: &ShardKey) -> Vec<&str> {
+        self.members.iter().map(String::as_str).collect()
     }
 
     fn as_of_millis(&self) -> Option<u64> {
@@ -600,6 +607,48 @@ fn a_failover_while_topping_up_keeps_the_newcomer() {
     };
     assert_eq!(leader, "broker-b");
     assert_eq!(replicas, ["broker-c", "broker-a"]);
+}
+
+/// **Leader dies right after an RF 2 seat.** broker-c was seated and
+/// broker-b dropped, but broker-a's last report is from the joining
+/// generation, when broker-a and broker-b were a majority on their own. The
+/// failover keeps broker-b, still serving, so the new leader's fence can take
+/// a record only the two of them held (#1487).
+#[test]
+fn a_failover_before_the_seat_is_reported_keeps_the_leaving_copy() {
+    let nodes = vec![
+        gone("broker-a", 10_000),
+        node("broker-b", NodeLifecycle::Draining, None),
+        node("broker-c", NodeLifecycle::Live, None),
+    ];
+    let stream = Stream {
+        consistency: ConsistencyLevel::Quorum,
+        ..replicated_stream("orders", 1, 2)
+    };
+    let joined = Reports {
+        members: vec!["broker-a".into(), "broker-b".into(), "broker-c".into()],
+        generation: Some(2),
+        ..Reports::level(&["broker-c"])
+    };
+    let seated = assigned("orders", "broker-a", &["broker-c"]);
+    let (decision, _) = decide(stream.clone(), &nodes, seated.clone(), &joined);
+    let Decision::Place(leader, replicas) = decision else {
+        panic!("expected a failover, got {decision:?}");
+    };
+    assert_eq!(leader, "broker-c");
+    assert_eq!(replicas, ["broker-a", "broker-b"]);
+
+    // A report at the seat's generation names the set as it is.
+    let reported = Reports {
+        generation: Some(3),
+        ..joined
+    };
+    let (decision, _) = decide(stream, &nodes, seated, &reported);
+    let Decision::Place(leader, replicas) = decision else {
+        panic!("expected a failover, got {decision:?}");
+    };
+    assert_eq!(leader, "broker-c");
+    assert_eq!(replicas, ["broker-a"]);
 }
 
 /// Paused placement starts no restore of its own.
