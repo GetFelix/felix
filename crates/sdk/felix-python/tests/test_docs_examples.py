@@ -40,6 +40,7 @@ RECEIVERS = {
     "watch": "CacheWatchHandle",
     "stream": "ShardedSubscriptionHandle",
     "receipt": "CommitReceipt",
+    "producer": "Producer",
     "state": "StateValue",
 }
 
@@ -109,6 +110,7 @@ ASYNC_RECEIVERS = {
     "events": "AsyncSubscription",
     "changes": "AsyncCacheWatch",
     "watch": "AsyncCacheWatch",
+    "producer": "AsyncProducer",
 }
 
 

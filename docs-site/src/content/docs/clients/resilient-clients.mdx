@@ -579,8 +579,7 @@ How each client shows the class:
 
 **A connection error on a write is ambiguous.** It carries no class from the
 broker, and a lost acknowledgement after the broker wrote the record can
-surface that way. Resend such a write only with an idempotent producer (Rust,
-C# and C), or after checking, with a conditional publish or by reading the
+surface that way. Resend such a write only with an idempotent producer, or after checking, with a conditional publish or by reading the
 stream back. C#'s `IsRetryable` and TypeScript's `retryable` suit reads, and
 the write loops below test the class or the specific statuses instead.
 
@@ -789,8 +788,8 @@ choose one of three answers.
 - **Idempotent producer.** The producer numbers its batches, the shard's
   leader remembers the last few, and a batch carrying a sequence it already
   holds is answered from memory instead of being appended. A resend after a
-  lost acknowledgement lands once, across reconnects and leader changes. It
-  exists in Rust, C# and C. Python and TypeScript do not wrap it yet.
+  lost acknowledgement lands once, across reconnects and leader changes. Every
+  client has it.
 - **Conditional publish.** `publish_if` writes only if the shard's next
   offset is the one you expect. It suits a single writer that must not append
   after it has been replaced, and a refusal is an answer, not an error.
@@ -798,8 +797,7 @@ choose one of three answers.
 - **At-least-once.** The client resends an ambiguous publish to another
   broker. The record is certain to land and **may land twice**, so the
   consumers must tolerate a duplicate, usually by carrying an id in the
-  payload. Every client has it. In Python and TypeScript it cannot be combined
-  with a routing key.
+  payload. Every client has it, with or without a routing key.
 
 With an idempotent producer, a failure other than a broker refusal leaves the
 batch in doubt. The next call on that shard must carry **the same batch and
@@ -840,32 +838,56 @@ producer.close_within(Duration::from_secs(10)).await?;
 <TabItem label="Python">
 
 ```python
+import time
+
 import felix
 
-# At-least-once: the record is certain to land and may land twice, so put an
-# id in the payload that the consumer can deduplicate on.
-try:
-    client.publish("acme", "prod", "orders", payload, at_least_once=True)
-except felix.FelixError as err:
-    # Every attempt failed. The record may or may not have landed.
-    print(f"publish gave up: {err}")
-    raise
+with client.producer() as producer:
+    for attempt in range(1, 6):
+        try:
+            offset = producer.publish("acme", "prod", "orders", payload)
+            print(f"published exactly once at {offset}")
+            break
+        except felix.PublishRefusedError as err:
+            # The shard refuses this producer (a sequence gap, an unknown
+            # producer): sending the same batch again will not change that.
+            raise RuntimeError(f"the broker refused the producer: {err.reason}") from err
+        except felix.FelixError as err:
+            # In doubt: the same call again is safe, and lands once.
+            if attempt == 5:
+                raise
+            print(f"in doubt, sending the same batch again: {err}")
+            time.sleep(1)
 ```
 
 </TabItem>
 <TabItem label="TypeScript">
 
 ```ts
-import { FelixError } from "felix-client";
+import { PublishRefusedError } from "felix-client";
+import { setTimeout as sleep } from "node:timers/promises";
 
-// At-least-once: the record is certain to land and may land twice, so put an
-// id in the payload that the consumer can deduplicate on.
+const producer = await client.producer();
 try {
-  await client.publish("acme", "prod", "orders", payload, undefined, "per_message", true);
-} catch (err) {
-  // Every attempt failed. The record may or may not have landed.
-  if (err instanceof FelixError) console.error(`publish gave up: ${err.message}`);
-  throw err;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const offset = await producer.publish("acme", "prod", "orders", payload);
+      console.log(`published exactly once at ${offset}`);
+      break;
+    } catch (err) {
+      // The shard refuses this producer (a sequence gap, an unknown producer):
+      // sending the same batch again will not change that.
+      if (err instanceof PublishRefusedError) {
+        throw new Error(`the broker refused the producer: ${err.reason}`);
+      }
+      // In doubt: the same call again is safe, and lands once.
+      if (attempt === 5) throw err;
+      console.warn(`in doubt, sending the same batch again: ${err}`);
+      await sleep(1000);
+    }
+  }
+} finally {
+  await producer.close(10_000);
 }
 ```
 
@@ -950,7 +972,8 @@ static FelixStatus publish_exactly_once(struct waiter *w, const FelixClient *cli
 
 The C `felix_client_publish` takes `FELIX_DELIVERY_AT_LEAST_ONCE` where the
 examples above pass `FELIX_DELIVERY_AT_MOST_ONCE`, and the C# `PublishAsync`
-takes `delivery: Delivery.AtLeastOnce`. In Rust, `publish_at_least_once` is
+takes `delivery: Delivery.AtLeastOnce`. Python passes `at_least_once=True` and
+TypeScript the last positional argument. In Rust, `publish_at_least_once` is
 the call.
 
 ### Conditional publish

@@ -21,10 +21,12 @@
 
 mod cache_watch;
 mod client;
+mod producer;
 mod sharded_subscription;
 mod subscription;
 
 pub(crate) use cache_watch::AsyncCacheWatch;
 pub(crate) use client::AsyncClient;
+pub(crate) use producer::AsyncProducer;
 pub(crate) use sharded_subscription::AsyncShardedSubscription;
 pub(crate) use subscription::AsyncSubscription;

@@ -264,3 +264,51 @@ def _check_delivered(received, payloads):
     assert all(offset is not None for offset in offsets)
     for earlier, later in zip(offsets, offsets[1:]):
         assert later == earlier + 1, f"offsets jumped: {earlier} then {later}"
+
+
+@pytest.mark.scenario("retry.idempotent_producers_re_send_ambiguous_outcomes")
+def test_an_idempotent_producer_settles_a_publish_cut_by_a_dropped_link(fixture, client, linked):
+    """A batch that got no answer is called again unchanged, and lands once."""
+    import felix
+
+    step = _step(fixture, "fault.publish_through_a_dropped_link")
+    tenant, namespace, stream = (
+        fixture["tenant_id"],
+        fixture["namespace"],
+        fixture["link_stream"],
+    )
+    hold = step["hold_ms"] / 1000
+    stamp = f"idempotent-{time.monotonic_ns()}"
+    payloads = [f"{stamp}-{index}".encode() for index in range(step["records"])]
+    with linked.producer() as producer, concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        for index, payload in enumerate(payloads):
+            if index == step["after_records"]:
+                _inject(fixture, step)
+            deadline = time.monotonic() + hold + SETTLE
+            while True:
+                call = pool.submit(producer.publish, tenant, namespace, stream, payload)
+                try:
+                    call.result(timeout=hold + SETTLE)
+                    break
+                except concurrent.futures.TimeoutError:
+                    pytest.fail(f"publish {index} neither returned nor failed")
+                except felix.PublishRefusedError as err:
+                    pytest.fail(f"publish {index} was refused: {err.reason}")
+                except felix.FelixError as err:
+                    # In doubt: the same call again, never a different batch.
+                    if time.monotonic() >= deadline:
+                        pytest.fail(f"publish {index} was never settled: {err!r}")
+                    time.sleep(POLL)
+
+    seen = {payload: 0 for payload in payloads}
+    with client.subscribe(tenant, namespace, stream, start="earliest") as check:
+        deadline = time.monotonic() + SETTLE
+        while time.monotonic() < deadline:
+            event = check.next_event(timeout=1.0)
+            if event is None:
+                if all(seen.values()):
+                    break
+                continue
+            if event.payload in seen:
+                seen[event.payload] += 1
+    assert all(count == 1 for count in seen.values()), f"copies of each batch: {list(seen.values())}"

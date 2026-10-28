@@ -46,11 +46,15 @@ Beyond streams, both surfaces cover:
   ``publish_if`` and ``commit_if`` write only if the shard's next offset is the
   one expected, and ``commit_on_shard`` names the shard. A refusal is a result,
   not an error, and a lost answer is never resent.
+* **Idempotent producers** — ``producer()`` returns a producer whose batches are
+  numbered, so one that got no answer can be sent again and lands once.
+  ``publish_on_shard`` sends a batch to a shard you name.
 """
 
 from ._felix import (
     AsyncCacheWatch,
     AsyncClient,
+    AsyncProducer,
     AsyncShardedSubscription,
     AsyncSubscription,
     AuthError,
@@ -76,6 +80,8 @@ from ._felix import (
     NotOnOwningShardError,
     OutcomeUnknownError,
     OverloadedError,
+    Producer,
+    PublishRefusedError,
     ShardedSubscriptionHandle,
     ShardLost,
     ShardMoved,
@@ -123,6 +129,9 @@ __all__ = [
     "CacheConditionResult",
     "VersionedValue",
     "ConditionalWrite",
+    # Idempotent producers
+    "Producer",
+    "AsyncProducer",
     # Errors
     "FelixError",
     "ConnectionError",
@@ -135,5 +144,6 @@ __all__ = [
     "CommitError",
     "NotOnOwningShardError",
     "EventCountError",
+    "PublishRefusedError",
     "__version__",
 ]

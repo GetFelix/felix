@@ -137,3 +137,37 @@ fn a_typed_auth_error_is_auth_whatever_it_says() {
         assert!(encoded.contains(&message), "{encoded}");
     }
 }
+
+/// A refusal the broker sent is found through the context an error picks up
+/// on the way out, and its reason and fields survive for `errors.js`.
+#[test]
+fn a_publish_refusal_carries_its_reason() {
+    let refused = |reason| {
+        encode(
+            &anyhow::Error::new(PublishRefused {
+                reason,
+                message: "no".to_string(),
+            })
+            .context("publish to orders"),
+        )
+    };
+    let gap = refused(PublishRefusalReason::SequenceGap { expected: 4 });
+    assert!(
+        gap.starts_with(r#"FELIX_PUBLISH_REFUSED {"expected":"4","reason":"sequence_gap"}"#),
+        "{gap}"
+    );
+    let tail = refused(PublishRefusalReason::OffsetMismatch { tail: u64::MAX });
+    assert!(tail.contains(r#""tail":"18446744073709551615""#), "{tail}");
+    let moved = refused(PublishRefusalReason::NotLeader {
+        node_id: "n2".to_string(),
+        addr: Some("10.0.0.2:5000".to_string()),
+    });
+    assert!(moved.contains(r#""node_id":"n2""#), "{moved}");
+    for reason in [
+        PublishRefusalReason::UnknownProducer,
+        PublishRefusalReason::SequenceExpired,
+        PublishRefusalReason::SequenceReused,
+    ] {
+        assert!(refused(reason).starts_with("FELIX_PUBLISH_REFUSED {"));
+    }
+}

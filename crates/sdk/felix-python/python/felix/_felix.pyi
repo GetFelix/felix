@@ -46,6 +46,26 @@ class EventCountError(CommitError):
 
     count: int
 
+class PublishRefusedError(FelixError):
+    """The broker would not append an idempotent publish. Nothing was written."""
+
+    reason: Literal[
+        "sequence_gap",
+        "unknown_producer",
+        "sequence_expired",
+        "sequence_reused",
+        "offset_mismatch",
+        "not_leader",
+    ]
+    expected: int | None
+    """For `sequence_gap`: the sequence the broker would have appended."""
+    tail: int | None
+    """For `offset_mismatch`: the shard's next offset."""
+    node_id: str | None
+    """For `not_leader`: the node that leads the shard."""
+    addr: str | None
+    """For `not_leader`: where that node serves clients, when known."""
+
 class CommitOp:
     """One part of an atomic commit."""
 
@@ -89,6 +109,77 @@ class ConditionalWrite:
     """Where the write landed; None when refused."""
     tail: int | None
     """The shard's next offset when refused; None when written."""
+
+class Producer:
+    id: int
+    closed: bool
+    def publish(
+        self,
+        tenant_id: str,
+        namespace: str,
+        stream: str,
+        payload: bytes,
+        *,
+        key: bytes | None = None,
+    ) -> int | None: ...
+    def publish_batch(
+        self,
+        tenant_id: str,
+        namespace: str,
+        stream: str,
+        payloads: list[bytes],
+        *,
+        key: bytes | None = None,
+    ) -> int | None: ...
+    def publish_batches(
+        self, tenant_id: str, namespace: str, stream: str, batches: list[list[bytes]]
+    ) -> None: ...
+    def abandon_in_doubt(self, tenant_id: str, namespace: str, stream: str) -> None: ...
+    def id_for(self, tenant_id: str, namespace: str, stream: str) -> int: ...
+    def close(self, timeout: float | None = None) -> None: ...
+    def __enter__(self) -> "Producer": ...
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None = None,
+        exc_value: BaseException | None = None,
+        traceback: object | None = None,
+    ) -> bool: ...
+
+class AsyncProducer:
+    id: int
+    async def publish(
+        self,
+        tenant_id: str,
+        namespace: str,
+        stream: str,
+        payload: bytes,
+        *,
+        key: bytes | None = None,
+    ) -> int | None: ...
+    async def publish_batch(
+        self,
+        tenant_id: str,
+        namespace: str,
+        stream: str,
+        payloads: list[bytes],
+        *,
+        key: bytes | None = None,
+    ) -> int | None: ...
+    async def publish_batches(
+        self, tenant_id: str, namespace: str, stream: str, batches: list[list[bytes]]
+    ) -> None: ...
+    async def abandon_in_doubt(self, tenant_id: str, namespace: str, stream: str) -> None: ...
+    def id_for(self, tenant_id: str, namespace: str, stream: str) -> int: ...
+    async def close(self, timeout: float | None = None) -> None: ...
+    @property
+    async def closed(self) -> bool: ...
+    async def __aenter__(self) -> "AsyncProducer": ...
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None = None,
+        exc_value: BaseException | None = None,
+        traceback: object | None = None,
+    ) -> bool: ...
 
 class Event:
     tenant_id: str
@@ -286,6 +377,17 @@ class Client:
         ack: AckMode = "per_message",
         at_least_once: bool = False,
     ) -> int | None: ...
+    def publish_on_shard(
+        self,
+        tenant_id: str,
+        namespace: str,
+        stream: str,
+        shard: int,
+        payloads: list[bytes],
+        *,
+        ack: AckMode = "per_message",
+    ) -> int | None: ...
+    def producer(self) -> Producer: ...
     def subscribe(
         self,
         tenant_id: str,
@@ -499,6 +601,17 @@ class AsyncClient:
         ack: AckMode = "per_message",
         at_least_once: bool = False,
     ) -> int | None: ...
+    async def publish_on_shard(
+        self,
+        tenant_id: str,
+        namespace: str,
+        stream: str,
+        shard: int,
+        payloads: list[bytes],
+        *,
+        ack: AckMode = "per_message",
+    ) -> int | None: ...
+    async def producer(self) -> AsyncProducer: ...
     async def subscribe(
         self,
         tenant_id: str,

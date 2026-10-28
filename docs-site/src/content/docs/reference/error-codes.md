@@ -128,7 +128,7 @@ A few errors come from the client rather than the broker and have no code:
 | Start offset gone or ahead of the tail | `SubscribeCursorError` | `CursorError` | `CursorError` | `FELIX_STATUS_CURSOR` |
 | Subscription connection dropped | `SubscriptionLost` | `ConnectionError` | `ConnectionError` | `FELIX_STATUS_CONNECTION` |
 | Subscription fell behind and records were dropped | `SubscriptionLagged` | `SubscriptionLagged` | Rust client only | Rust client only | Rust client only |
-| Idempotent or conditional publish refused | `PublishRefused` | `PublishRefused` | Rust client only | Rust client only | Rust client only |
+| Idempotent publish refused (a conditional publish returns its refusal as a result) | `PublishRefused` | `PublishRefusedError` with `reason` | `PublishRefusedError` with `reason` (`FELIX_PUBLISH_REFUSED` kind) | `FELIX_STATUS_ERROR` |
 | Commit refused before sending | `CommitError` | `CommitError`, `NotOnOwningShardError`, `EventCountError` | `FELIX_COMMIT`, `FELIX_NOT_ON_OWNING_SHARD`, `FELIX_EVENT_COUNT` kinds | `FELIX_STATUS_UNSUPPORTED` or `FELIX_STATUS_INVALID_ARGUMENT` |
 | Bad argument to the client | none | `ValueError` | `InvalidArgumentError` | `FELIX_STATUS_INVALID_ARGUMENT` |
 

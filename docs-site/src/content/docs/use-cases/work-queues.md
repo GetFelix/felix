@@ -253,7 +253,7 @@ broker settings. A group untouched for ten minutes has its in-memory state
 rebuilt from disk, which redelivers what it still had in flight. Order of
 completion is not guaranteed, and a handler must tolerate seeing a job twice.
 Python and Rust clients have the calls; the Python binding has no sharded
-helper and no idempotent producer. A group needs `group.consume` to poll and
+helper. A group needs `group.consume` to poll and
 settle, and `group.manage` to redrive or discard, which a role can hold on a
 single group.
 

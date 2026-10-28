@@ -74,6 +74,8 @@ Everything the Python binding wraps, with one exception noted below.
 | | |
 |---|---|
 | Publish | `publish(tenant, ns, stream, payload, key?, ack?, atLeastOnce?)` → the record's offset, or `null` when the broker acked before writing it |
+| Named shard | `publishOnShard(tenant, ns, stream, shard, payloads, ack?)` → the first record's offset; a shard the stream lacks is refused and nothing is written |
+| Idempotent producer | `producer()` → a `Producer`: `publish`, `publishBatch(..., key?)`, `publishBatches`, `abandonInDoubt`, `idFor`, `close(timeoutMs?)`. A batch that got no answer is sent again with the same call and lands once; `PublishRefusedError` (`reason`, `expected`, `tail`) ends the producer on that stream |
 | Subscribe | `subscribe(...)` → `nextEvent()`, `close()`, `closed` |
 | Sharded subscribe | `subscribeSharded(..., start?, resume?)` → `nextEvent()`, `positions()`, `shards` |
 | Stream shape | `streamShards(...)`, `endpoints()` |
@@ -144,10 +146,18 @@ await client.publish("t1", "default", "events", payload, undefined, "per_message
 ```
 
 That is the opt-in. The record is then certain to land and **may land twice**.
-It cannot be combined with a routing key: the re-send path does not carry one
-yet, and honouring the key on the first attempt but not the re-send would move
-the duplicate to a different shard, so the combination is refused rather than
-resolved.
+With a routing key it is re-sent to the key's shard. For at-least-once without
+the duplicate, use an idempotent producer:
+
+```ts
+await using producer = await client.producer();
+await producer.publish("t1", "default", "events", payload);
+```
+
+A rejection other than `PublishRefusedError` leaves the batch in doubt: call
+again with the same payloads and key and it lands once. A promise you stop
+waiting for does not cancel the send, so that batch is in doubt too. A
+refusal ends the producer on that stream.
 
 ### Errors carry an identity, not just a message
 
@@ -177,8 +187,6 @@ The Rust client has these and this binding does not yet. The client page lists
 them with what each is for.
 
 - Merged prefix watches across shards (`watch_cache_sharded`).
-- Idempotent producers (`producer_init` / `publish_idempotent`).
-- `at_least_once` with a routing key.
 - Group lease extension and administration (`group_extend`, `group_seek`,
   create, describe, delete).
 - Starting from a time (`offset_for_time`).
@@ -203,8 +211,7 @@ task ts:conformance          # build what it needs, run it, verify the verdict
 task conformance:scenarios   # the catalogue itself
 ```
 
-Two optional scenarios are recorded as skipped with their reason:
-idempotent producers, which this binding does not wrap, and
+One optional scenario is recorded as skipped with its reason:
 `error.bad_offset_is_typed`, which needs a trimmed log that a client has no way
 to produce.
 

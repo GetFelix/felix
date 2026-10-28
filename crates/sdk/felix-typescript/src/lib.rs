@@ -26,6 +26,7 @@ mod client;
 mod commit;
 mod conditional;
 mod errors;
+mod producer;
 mod sharded_subscription;
 mod subscription;
 mod tls;

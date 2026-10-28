@@ -375,8 +375,8 @@ pub struct Fixture {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub records_publishers: bool,
     /// Brokers that answer `auth` and advertise no optional features, so no
-    /// `commit` or `state_get`. A client must refuse both against them without
-    /// sending anything. Absent from a fixture that has none, and a suite then
+    /// `commit`, `state_get` or named-shard publish. A client must refuse each
+    /// against them without sending anything. Absent from a fixture that has none, and a suite then
     /// skips the scenarios that need one rather than claiming them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub no_commit_addrs: Vec<String>,

@@ -41,8 +41,7 @@ index you maintain.
 
 Who wrote a record can be stored with it, and an idempotent producer makes a
 retried write appear once. Together they answer "who changed it" and keep a
-retry from doubling an entry. Both need the options described below, and the
-idempotent producer is Rust only.
+retry from doubling an entry. Both need the options described below.
 
 Integrity is checked in the storage layer. Each record has a CRC, a torn tail
 is repaired, and interior corruption stops the broker from starting instead of
@@ -226,8 +225,8 @@ change to the storage format for the data directory. The Rust client exposes
 publisher identity, `offset_for_time` and range reads. The C ABI and the C# SDK
 expose publisher identity and `offset_for_time` but not range reads. The Python
 and TypeScript bindings document none of them yet, so from those languages use
-the Kafka listener or felixctl for replay. Idempotent producers are in the
-Rust, C and C# clients. Streams are not
+the Kafka listener or felixctl for replay. Idempotent producers are in
+every client. Streams are not
 compacted by key, so a stream grows until retention trims it.
 
 ## Related

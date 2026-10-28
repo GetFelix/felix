@@ -417,10 +417,103 @@ client.publish("t1", "default", "orders", payload, at_least_once=True)
 ```
 
 That is the opt-in. The record is then certain to land and **may land twice**.
-It cannot be combined with `key`: the re-send path does not carry one, and
-honouring the key on the first attempt but not the re-send would put the
-duplicate on a different shard, so the combination raises rather than
-resolving.
+With a `key` it is re-sent to the key's shard, so a duplicate lands next to the
+original. For at-least-once *without* the duplicate, use an
+[idempotent producer](#idempotent-producers).
+
+### Publishing to a named shard
+
+`publish_on_shard` sends a batch to a shard you name instead of hashing a key,
+for a producer that does its own partitioning:
+
+```python
+offset = client.publish_on_shard("t1", "default", "orders", 2, [b"a", b"b"])
+```
+
+The batch is one frame and the call returns the first record's offset, or `None`
+as `publish` does. A shard the stream does not have is refused with
+`invalid_request` and nothing is written. It needs a broker that advertises
+`FEATURE_EXPLICIT_SHARD`; against one that does not, it raises without sending
+anything. Like `publish`, it is not idempotent: a failure that may have
+applied is reported, not re-sent. `AsyncClient.publish_on_shard` is a coroutine.
+
+### Idempotent producers
+
+At-least-once *without* the duplicate. `client.producer()` asks the broker for a
+producer id and returns a `Producer`. It numbers its batches per shard, and the
+shard's leader answers a number it already holds from memory instead of
+appending, so a batch that got no answer can be sent again and lands once, across
+reconnects and leader changes.
+
+```python
+with client.producer() as producer:
+    offset = producer.publish("t1", "default", "orders", b"a")
+    producer.publish_batch("t1", "default", "orders", [b"b", b"c"], key=b"customer-7")
+    producer.publish_batches("t1", "default", "orders", [[b"d", b"e"], [b"f"]])
+```
+
+- `publish` and `publish_batch` take one sequence whatever the batch size and
+  return the first record's offset, or `None` when the leader reported none.
+  `key=` picks the shard as for `Client.publish`; without one the batch goes to
+  shard 0. `publish_batches` sends several batches to shard 0 under consecutive
+  sequences, and keeps them in flight together against a broker that pipelines.
+- **An error leaves the batch in doubt.** Any error but `PublishRefusedError`
+  means the sequence has not advanced and the batch may have landed. Call again
+  with **the same payloads and key**: it goes out under the same sequence and
+  lands once. A different batch raises without being sent until the first one
+  settles. After `publish_batches` fails, the batches already acknowledged stay
+  acknowledged; call again with the same batches to send only the rest.
+- **A refusal ends the producer on that stream.** `PublishRefusedError` means the
+  broker will not append and a re-send cannot mend it. `err.reason` is
+  `sequence_gap` (`err.expected` is the sequence it wanted), `unknown_producer`,
+  `sequence_expired`, `sequence_reused`, `offset_mismatch` (`err.tail`) or
+  `not_leader` (`err.node_id`, `err.addr`). Every later call on that stream
+  fails with the same reason. Decide whether the last batch landed, then start a
+  new producer, or call `abandon_in_doubt(tenant, namespace, stream)`, which
+  numbers the stream afresh under a new id. **A batch given up that way may land
+  twice**, because it may have been appended before.
+- **Cancelling does not cancel the send.** Once a call has handed its batch to
+  the producer it is sent and answered whether or not anyone waits. An asyncio
+  task cancelled mid-`await` (or a `wait_for` that times out) leaves the batch in
+  doubt, so settle it with the same call before sending anything else on that
+  shard. A call cancelled before the hand-off sent nothing.
+- Calls reach the broker in the order they were handed over. Await each call
+  (or call from one thread) when order matters; calls started together, as with
+  `asyncio.gather`, have no order between them.
+- `producer.id` is the id the broker assigned, and `producer.id_for(tenant,
+  namespace, stream)` the id a stream's batches go out under, which differs after
+  `abandon_in_doubt`.
+- `close(timeout=None)` waits for the batches already handed over, then stops;
+  a second close does nothing. After it every publish raises `FelixError`. A close
+  that times out raises, the producer stays closed, and a batch already sent may
+  still land. Leaving a `with` block closes without a timeout.
+
+```python
+import time
+
+import felix
+
+with client.producer() as producer:
+    for attempt in range(1, 6):
+        try:
+            offset = producer.publish("t1", "default", "orders", payload)
+            print(f"published exactly once at {offset}")
+            break
+        except felix.PublishRefusedError as err:
+            # The shard refuses this producer: sending the same batch again
+            # will not change that.
+            raise RuntimeError(f"the broker refused the producer: {err.reason}") from err
+        except felix.FelixError as err:
+            # In doubt: the same call again is safe, and lands once.
+            if attempt == 5:
+                raise
+            print(f"publish in doubt; sending the same batch again: {err}")
+            time.sleep(1)
+```
+
+`AsyncClient.producer()` is a coroutine returning an `AsyncProducer`, which has
+the same methods as coroutines and is an `async with` block. `id_for` is
+synchronous on both.
 
 ## Subscribing
 
@@ -549,6 +642,7 @@ except felix.NotFoundError:
 | `OutcomeUnknownError` | the write may or may not have happened (`quorum_timeout`, `leadership_lost`, `unacknowledged`, or any error sent as `outcome_unknown`) | only if idempotent |
 | `AuthError` | token rejected or revoked, or missing the permission (`unauthenticated`, `forbidden`, `revoked`) | no |
 | `NotFoundError` | no such tenant, namespace, stream or cache (`not_found`) | see `retry` |
+| `PublishRefusedError` | an idempotent producer's batch was refused and nothing written (`reason`: `sequence_gap`, `unknown_producer`, ...); see [idempotent producers](#idempotent-producers) | no; it ends the producer on that stream |
 | `CursorError` | the start offset is gone; retention discarded it | no; restart at `earliest` |
 | `FelixError` | the base, and anything else (`invalid_request`, `limit_exceeded`, a code this client does not know) | see `retry` |
 
@@ -1004,10 +1098,6 @@ These are in the [Rust client](/clients/rust/) and not in this binding yet:
 
 - **Merged prefix watches** (`watch_cache_sharded`). A prefix on a
   multi-shard cache needs one `watch_cache` per shard.
-- **Idempotent producers.** At-least-once without the duplicate; see
-  [the Rust page](/clients/rust/#idempotent-producers).
-- **`at_least_once` with a routing key.** The re-send path does not carry one,
-  and the client refuses the combination rather than silently dropping the key.
 - **Group lease extension and administration.** `group_extend`, `group_seek`,
   and creating, describing or deleting a group. Groups are created with
   `felixctl`.

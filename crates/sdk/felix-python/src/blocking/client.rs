@@ -9,12 +9,13 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
-use super::{CacheWatchHandle, ShardedSubscriptionHandle, SubscriptionHandle};
+use super::{CacheWatchHandle, ProducerHandle, ShardedSubscriptionHandle, SubscriptionHandle};
 use crate::args::{owned4, parse_ack, parse_addrs, parse_start};
 use crate::conditional::{
     CacheCondition, CacheConditionResult, ConditionalWrite, OwnedVersionedValue, VersionedValue,
 };
 use crate::errors::to_py_err;
+use crate::producer::{Core, check_payloads, keyed_at_least_once};
 use crate::runtime::block_on;
 use crate::tls;
 use crate::token::{Flavor, Tokens, resolve};
@@ -191,12 +192,6 @@ impl Client {
         at_least_once: bool,
     ) -> PyResult<Option<u64>> {
         let ack = parse_ack(ack)?;
-        if key.is_some() && at_least_once {
-            return Err(PyValueError::new_err(
-                "at_least_once does not carry a routing key yet; publish the \
-                 keyed record without it, or drop the key",
-            ));
-        }
         let inner = Arc::clone(&self.inner);
         let (tenant_id, namespace, stream) = (
             tenant_id.to_string(),
@@ -207,9 +202,13 @@ impl Client {
         let key = key.map(Bytes::copy_from_slice);
         block_on(py, async move {
             match (key, at_least_once) {
-                (Some(key), _) => {
+                (Some(key), false) => {
                     inner
                         .publish_keyed(&tenant_id, &namespace, &stream, payload, key, ack)
+                        .await
+                }
+                (Some(key), true) => {
+                    keyed_at_least_once(&inner, &tenant_id, &namespace, &stream, key, payload, ack)
                         .await
                 }
                 (None, true) => {
@@ -225,6 +224,50 @@ impl Client {
             }
             .map_err(to_py_err)
         })
+    }
+
+    /// Publish `payloads` (at least one) as one batch to the named shard,
+    /// rather than the shard a key would hash to. For a producer that does its
+    /// own partitioning. A shard the stream does not have is refused with
+    /// `invalid_request` and nothing is written; a broker that does not
+    /// advertise explicit shards fails the call without sending anything.
+    /// Returns the batch's first log offset, or `None` as `publish` does.
+    #[pyo3(signature = (tenant_id, namespace, stream, shard, payloads, *, ack="per_message"))]
+    fn publish_on_shard(
+        &self,
+        py: Python<'_>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        payloads: Vec<Vec<u8>>,
+        ack: &str,
+    ) -> PyResult<Option<u64>> {
+        let ack = parse_ack(ack)?;
+        check_payloads(&payloads)?;
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, stream) = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            stream.to_string(),
+        );
+        block_on(py, async move {
+            inner
+                .publish_batch_on_shard(&tenant_id, &namespace, &stream, shard, payloads, ack)
+                .await
+                .map_err(to_py_err)
+        })
+    }
+
+    /// Ask the broker for a producer id and return a `Producer` that sends
+    /// under it. Its publishes land once, however many times they are sent.
+    /// Close it with `close()` or a `with` block.
+    fn producer(&self, py: Python<'_>) -> PyResult<ProducerHandle> {
+        let inner = Arc::clone(&self.inner);
+        let producer = block_on(py, async move {
+            inner.idempotent_producer().await.map_err(to_py_err)
+        })?;
+        Ok(ProducerHandle::new(Core::new(producer)))
     }
 
     /// Subscribe to a stream.
