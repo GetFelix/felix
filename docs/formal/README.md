@@ -885,7 +885,9 @@ not in the control plane until it is adopted, so a view cannot back a
 promise made to one, and the configuration assumes `Elections = 0`; electing
 without the control plane needs its own guard before it ships (#1331). And it
 takes the routing view to be no older than the control plane was at the
-wipe, which a read from a lagging Raft member can break.
+wipe. A view from a lagging Raft member can be older, so the broker also
+checks a leader-confirmed read of the assignment, taken after the restart
+and so no older than the model's view (#1332).
 
 ### The round that makes a read linearizable
 

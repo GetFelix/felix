@@ -1146,6 +1146,13 @@ impl ControlPlaneStore for FailingStore {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
 
+    async fn confirmed_shard_assignment(
+        &self,
+        _key: &ShardKey,
+    ) -> StoreResult<felix_controlplane_service::store::ConfirmedAssignment> {
+        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
+    }
+
     async fn list_shard_assignments(&self) -> StoreResult<Vec<ShardAssignment>> {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }

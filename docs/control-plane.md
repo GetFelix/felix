@@ -1431,6 +1431,17 @@ there. A broker applies the snapshot and then polls, and the two together
 describe every committed change exactly once: the snapshot is read at a
 consistent point and `next_seq` is the log position at that same point.
 
+**Confirmed reads.** The snapshot and the feed answer from the member's
+applied state, which a lagging Raft member serves behind.
+`GET /v1/shard-assignments/confirmed?tenant_id=&namespace=&stream=&shard=&kind=`
+answers one shard's assignment (`{"assignment": ...}`, `null` when there is
+none) read on the Raft leader after a read-index, so it is no older than any
+write acknowledged before the request. 503 means no leader confirmed it in
+time, 501 that the Raft leader predates it. A broker asks here only for a
+copy with no election promise on disk, before it takes a leader
+([#1332](https://github.com/GetFelix/felix/issues/1332)). It needs
+`node.view:cluster:*`, like the feed.
+
 **Long-poll.** `changes?since=N&wait_ms=M` waits, when there is nothing new,
 for up to `M` ms (capped at 25 000, under the 30 s idle timeout common to
 proxies and HTTP clients) and answers as soon as there is. "Nothing new" means

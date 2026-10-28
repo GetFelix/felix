@@ -82,6 +82,12 @@ pub(crate) enum LeaderRequest {
         tenant_id: String,
         token_id: String,
     },
+    /// A shard's assignment as the leader holds it, for a broker that must
+    /// not answer from a view that lags. A leader that predates it fails to
+    /// read it, and the asker answers that no confirmed read is served.
+    ShardAssignment {
+        key: crate::model::ShardKey,
+    },
 }
 
 /// The leader's soft state and the rules for judging by it.
@@ -270,6 +276,16 @@ impl SoftState {
                     .peek_refresh_token(&tenant_id, &token_id)
                     .await
                     .map(|token| MetaResponse::RefreshToken { token })
+                    .map_err(Into::into))
+            }
+            LeaderRequest::ShardAssignment { key } => {
+                self.confirm_read().await?;
+                Ok(self
+                    .machine
+                    .store()
+                    .get_shard_assignment(&key)
+                    .await
+                    .map(|assignment| MetaResponse::Assignment { assignment })
                     .map_err(Into::into))
             }
         }

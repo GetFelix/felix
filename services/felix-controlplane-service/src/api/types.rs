@@ -469,6 +469,14 @@ pub struct ShardAssignmentSnapshotResponse {
     pub next_seq: u64,
 }
 
+/// One shard's assignment, read no earlier than every write acknowledged
+/// before the request.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ConfirmedShardAssignmentResponse {
+    /// Absent when the shard has no assignment.
+    pub assignment: Option<RoutedShardAssignment>,
+}
+
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ShardAssignmentChangesResponse {
     pub items: Vec<RoutedShardAssignmentChange>,

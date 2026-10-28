@@ -50,6 +50,9 @@ pub struct ReplicaHandler {
     /// Set when this process started after a crash that may have cost it
     /// records it acknowledged. See [`crate::unclean`].
     unclean: Option<Arc<crate::unclean::UncleanStart>>,
+    /// Confirmed reads of the control plane's assignments, for a copy with
+    /// no promise. Without it the routing view answers alone.
+    confirmed: Option<Arc<dyn crate::confirmed::ConfirmedRoutes>>,
     /// Run after an incarnation check passes, to change the catalog between
     /// the check and the open.
     #[cfg(test)]
@@ -74,6 +77,7 @@ impl ReplicaHandler {
             verified: parking_lot::Mutex::new(HashMap::new()),
             mismatched: parking_lot::Mutex::new(HashMap::new()),
             unclean: None,
+            confirmed: None,
             #[cfg(test)]
             incarnation_checked: parking_lot::Mutex::new(None),
         }
@@ -83,6 +87,17 @@ impl ReplicaHandler {
     /// unclean start. See [`Self::fence`].
     pub fn with_unclean_start(mut self, unclean: Arc<crate::unclean::UncleanStart>) -> Self {
         self.unclean = Some(unclean);
+        self
+    }
+
+    /// Have a copy with no promise on disk check the control plane's
+    /// confirmed assignment before it takes a leader. See
+    /// [`crate::confirmed`].
+    pub fn with_confirmed_routes(
+        mut self,
+        confirmed: Arc<dyn crate::confirmed::ConfirmedRoutes>,
+    ) -> Self {
+        self.confirmed = Some(confirmed);
         self
     }
 
@@ -160,6 +175,12 @@ impl ReplicaHandler {
                 "this broker has no log for that shard".to_string(),
             );
         };
+        if let Some(refusal) = self
+            .refuse_unconfirmed(correlation_id, &key, &log, request.shard.generation, sender)
+            .await
+        {
+            return refusal;
+        }
         if let Some(refusal) =
             accept_sender(&log, correlation_id, &key, request.shard.generation, sender).await
         {
@@ -376,6 +397,12 @@ impl ReplicaHandler {
             );
         };
 
+        if let Some(refusal) = self
+            .refuse_unconfirmed(correlation_id, &key, &log, request.shard.generation, sender)
+            .await
+        {
+            return refusal;
+        }
         if let Some(refusal) =
             accept_sender(&log, correlation_id, &key, request.shard.generation, sender).await
         {
@@ -530,6 +557,12 @@ impl ReplicaHandler {
             );
         };
 
+        if let Some(refusal) = self
+            .refuse_unconfirmed(correlation_id, &key, &log, batch.shard.generation, sender)
+            .await
+        {
+            return refusal;
+        }
         if let Some(refusal) =
             accept_sender(&log, correlation_id, &key, batch.shard.generation, sender).await
         {
@@ -1398,7 +1431,7 @@ impl ReplicaHandler {
         if crate::unclean::held(log) {
             return None;
         }
-        match self.router.snapshot().get(key) {
+        let viewed = match self.router.snapshot().get(key) {
             None => Some(unbacked(correlation_id, key, generation)),
             Some(route) if route.generation == generation => match sender {
                 Some(sender) if sender != route.leader.node_id => Some(promised_elsewhere(
@@ -1411,6 +1444,79 @@ impl ReplicaHandler {
                 _ => None,
             },
             Some(_) => None,
+        };
+        if viewed.is_some() {
+            return viewed;
+        }
+        self.refuse_unconfirmed(correlation_id, key, log, generation, sender)
+            .await
+    }
+
+    /// Refuse a leader for a copy with no promise on disk unless the control
+    /// plane's confirmed assignment backs it.
+    ///
+    /// The routing view can lag the control plane: it is seeded from
+    /// whichever member answered, so after a wipe it may still name a leader
+    /// already replaced (#1332). Only ever refuses more than the view does,
+    /// and asks nothing once the copy holds a promise. A control plane that
+    /// does not serve the read leaves the view to answer alone, as before.
+    async fn refuse_unconfirmed(
+        &self,
+        correlation_id: u64,
+        key: &felix_router::ShardKey,
+        log: &felix_broker::StreamLog,
+        generation: u64,
+        sender: Option<&str>,
+    ) -> Option<InternalMessage> {
+        use crate::confirmed::Confirmed;
+        let confirmed = self.confirmed.as_ref()?;
+        if crate::unclean::held(log) {
+            return None;
+        }
+        match confirmed.confirmed(key).await {
+            Confirmed::NotServed => None,
+            // A missing answer backs nothing. Retryable, and nothing is
+            // written, so the copy answers once the control plane does.
+            Confirmed::Unavailable | Confirmed::Unassigned => {
+                Some(unbacked(correlation_id, key, generation))
+            }
+            Confirmed::Assigned {
+                generation: assigned,
+                ..
+            } if assigned > generation => {
+                tracing::warn!(
+                    stream = %key.stream,
+                    shard = key.shard,
+                    assigned,
+                    sender_generation = generation,
+                    "refusing a leader the control plane has replaced",
+                );
+                metrics::record_replicated(metrics::OUTCOME_FENCED);
+                Some(refused(
+                    correlation_id,
+                    ErrorCode::FencedEpoch,
+                    0,
+                    format!(
+                        "the control plane assigned generation {assigned}, the sender is at \
+                         {generation}"
+                    ),
+                ))
+            }
+            Confirmed::Assigned {
+                generation: assigned,
+                leader,
+            } if assigned == generation => match sender {
+                Some(sender) if sender != leader => Some(promised_elsewhere(
+                    correlation_id,
+                    key,
+                    generation,
+                    &leader,
+                    Some(sender),
+                )),
+                _ => None,
+            },
+            // Newer than the control plane: never promised before a wipe.
+            Confirmed::Assigned { .. } => None,
         }
     }
 

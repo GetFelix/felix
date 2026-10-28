@@ -10,8 +10,11 @@
 //! [`ShardKey`] and [`ShardKind`] are re-exported here because all three use
 //! them; they are defined in `felix-replication`, which keys on them too.
 
+mod confirmed;
 pub mod lifecycle;
 pub mod routing;
 pub mod watch;
+
+pub(crate) use confirmed::ControlPlaneRoutes;
 
 pub use felix_replication::{ShardKey, ShardKind};

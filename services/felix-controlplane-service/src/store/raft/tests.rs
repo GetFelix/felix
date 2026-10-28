@@ -1721,6 +1721,89 @@ async fn revocation_cutoffs_are_read_on_the_leader() {
     );
 }
 
+/// A confirmed shard assignment is read on the leader, so a member that has
+/// not applied the latest assignment still answers with it, and a shard with
+/// none answers unassigned. The lagging member is a second store over the
+/// same group whose own state is empty.
+#[tokio::test]
+async fn confirmed_shard_assignments_are_read_on_the_leader() {
+    use crate::model::{ShardKind, ShardState};
+    use crate::store::ConfirmedAssignment;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let leader = single_node_store(dir.path()).await;
+    leader
+        .create_tenant(crate::model::Tenant {
+            tenant_id: "t1".to_string(),
+            display_name: "One".to_string(),
+        })
+        .await
+        .expect("tenant");
+    leader
+        .create_namespace(crate::model::Namespace {
+            tenant_id: "t1".to_string(),
+            namespace: "ns".to_string(),
+            display_name: "Ns".to_string(),
+        })
+        .await
+        .expect("namespace");
+    leader
+        .create_stream(routed_stream("orders", Default::default()))
+        .await
+        .expect("stream");
+    for (id, port) in [("broker-b", 7101), ("broker-c", 7102)] {
+        leader
+            .register_node(crate::store::contract::nodes::node(id, port))
+            .await
+            .expect("register");
+    }
+    let key = ShardKey {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "orders".to_string(),
+        shard: 0,
+        kind: ShardKind::Stream,
+    };
+    let assigned = leader
+        .put_shard_assignment(ShardAssignment {
+            key: key.clone(),
+            leader: "broker-b".to_string(),
+            replicas: vec!["broker-c".to_string()],
+            generation: 2,
+            state: ShardState::Active,
+            successor: None,
+            joining: None,
+            move_started_at_millis: None,
+            move_reason: None,
+            incarnation: 0,
+            fence_storage_ids: Default::default(),
+        })
+        .await
+        .expect("assign");
+    let empty = Arc::new(MetadataStateMachine::new(Arc::new(InMemoryStore::new(
+        StoreConfig {
+            changes_limit: 100,
+            change_retention_max_rows: Some(1_000),
+        },
+    ))));
+    let behind = RaftStore::new(leader.handle.clone(), empty);
+    assert!(matches!(
+        behind.get_shard_assignment(&key).await,
+        Err(StoreError::NotFound(_))
+    ));
+    assert_eq!(
+        behind.confirmed_shard_assignment(&key).await.expect("read"),
+        ConfirmedAssignment::Assigned(assigned)
+    );
+    let unplaced = ShardKey { shard: 1, ..key };
+    assert_eq!(
+        behind
+            .confirmed_shard_assignment(&unplaced)
+            .await
+            .expect("read"),
+        ConfirmedAssignment::Unassigned
+    );
+}
+
 /// With a member that predates the combined entries, an auth change and its
 /// revocation, and a refresh rotation, still go through as the separate
 /// entries that member can apply.

@@ -450,6 +450,10 @@ where
         storage_id,
         registered_watch,
         unclean.clone(),
+        config
+            .controlplane_url
+            .as_deref()
+            .map(|base_url| (&membership_client, base_url, &credential)),
         &peer_listener_shutdown,
     )?;
     let shard_tasks = cluster::spawn_shard_tasks(cluster::ShardTaskDeps {

@@ -41,6 +41,7 @@
 
 pub mod peer;
 
+pub mod confirmed;
 pub mod driver;
 mod follower;
 pub mod halted;

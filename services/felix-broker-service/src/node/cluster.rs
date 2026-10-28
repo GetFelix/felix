@@ -126,6 +126,7 @@ pub(super) fn bind_peer_listener(
     storage_id: felix_storage::StorageId,
     incarnation: tokio::sync::watch::Receiver<Option<u64>>,
     unclean: Option<Arc<replication::unclean::UncleanStart>>,
+    controlplane: Option<(&reqwest::Client, &str, &Option<NodeCredential>)>,
     peer_shutdown: &CancellationToken,
 ) -> Result<Option<JoinHandle<()>>> {
     Ok(
@@ -144,17 +145,18 @@ pub(super) fn bind_peer_listener(
                             Duration::from_millis(config.publish_quorum_timeout_ms.max(1)),
                             Arc::clone(auth),
                         ),
-                        match unclean {
-                            Some(unclean) => replication::ReplicaHandler::new(
-                                Arc::clone(broker),
-                                Arc::clone(router),
-                            )
-                            .with_unclean_start(unclean),
-                            None => replication::ReplicaHandler::new(
-                                Arc::clone(broker),
-                                Arc::clone(router),
-                            ),
-                        },
+                        replica_handler(
+                            broker,
+                            router,
+                            unclean,
+                            controlplane.map(|(client, base_url, credential)| {
+                                crate::shards::ControlPlaneRoutes::new(
+                                    client.clone(),
+                                    base_url,
+                                    credential.clone(),
+                                )
+                            }),
+                        ),
                     )),
                     peer_tls.clone(),
                 )
@@ -187,6 +189,24 @@ pub(super) fn bind_peer_listener(
             _ => None,
         },
     )
+}
+
+/// What answers the peer listener's replication requests.
+fn replica_handler(
+    broker: &Arc<Broker>,
+    router: &Arc<ShardRouter>,
+    unclean: Option<Arc<replication::unclean::UncleanStart>>,
+    confirmed: Option<crate::shards::ControlPlaneRoutes>,
+) -> replication::ReplicaHandler {
+    let handler = replication::ReplicaHandler::new(Arc::clone(broker), Arc::clone(router));
+    let handler = match unclean {
+        Some(unclean) => handler.with_unclean_start(unclean),
+        None => handler,
+    };
+    match confirmed {
+        Some(confirmed) => handler.with_confirmed_routes(Arc::new(confirmed)),
+        None => handler,
+    }
 }
 
 /// The shard watch, the routing feed, and shipping to followers.
