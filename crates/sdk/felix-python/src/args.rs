@@ -114,6 +114,24 @@ pub(crate) fn parse_start(
     }
 }
 
+/// A start position that must be given, as `group_create` and `group_seek`
+/// require: unlike a subscription, a group has no default to fall back on.
+pub(crate) fn parse_required_start(py: Python<'_>, start: Py<PyAny>) -> PyResult<StartPosition> {
+    Ok(parse_start(py, Some(start))?.expect("a given start parses to a position"))
+}
+
+/// A length of time in seconds that must be positive, finite and at most a
+/// year, so `from_secs_f64` cannot panic on what Python passed.
+pub(crate) fn positive_duration(seconds: f64, name: &str) -> PyResult<std::time::Duration> {
+    if seconds.is_finite() && seconds > 0.0 && seconds <= 365.0 * 24.0 * 3600.0 {
+        Ok(std::time::Duration::from_secs_f64(seconds))
+    } else {
+        Err(PyValueError::new_err(format!(
+            "{name} must be a positive number of seconds, not {seconds}"
+        )))
+    }
+}
+
 /// Four scope strings at once — the shape every group call starts with.
 pub(crate) fn owned4(a: &str, b: &str, c: &str, d: &str) -> (String, String, String, String) {
     (a.to_string(), b.to_string(), c.to_string(), d.to_string())

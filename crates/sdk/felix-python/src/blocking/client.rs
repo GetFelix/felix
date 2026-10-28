@@ -10,11 +10,14 @@ use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
 use super::{CacheWatchHandle, ProducerHandle, ShardedSubscriptionHandle, SubscriptionHandle};
-use crate::args::{owned4, parse_ack, parse_addrs, parse_start};
+use crate::args::{
+    owned4, parse_ack, parse_addrs, parse_required_start, parse_start, positive_duration,
+};
 use crate::conditional::{
     CacheCondition, CacheConditionResult, ConditionalWrite, OwnedVersionedValue, VersionedValue,
 };
 use crate::errors::to_py_err;
+use crate::group_admin::{GroupInfo, GroupPosition};
 use crate::producer::{Core, check_payloads};
 use crate::runtime::block_on;
 use crate::tls;
@@ -934,6 +937,136 @@ impl Client {
         block_on(py, async move {
             inner
                 .group_redrive(&tenant_id, &namespace, &stream, shard, &group, offset)
+                .await
+                .map_err(to_py_err)
+        })
+    }
+
+    /// Keep the claim on `record` standing for `extend` seconds from now.
+    ///
+    /// Returns how many seconds it now stands, which is less than asked when
+    /// the broker capped it. Refused with `stale_claim` once the claim has
+    /// lapsed or the record has gone out again, even to this consumer. Needs
+    /// a broker that supports claim control.
+    fn group_extend(
+        &self,
+        py: Python<'_>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        group: &str,
+        record: PyRef<'_, GroupRecord>,
+        extend: f64,
+    ) -> PyResult<f64> {
+        let record = record.delivery();
+        let extend = positive_duration(extend, "extend")?;
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, stream, group) = owned4(tenant_id, namespace, stream, group);
+        let stands = block_on(py, async move {
+            inner
+                .group_extend(
+                    &tenant_id, &namespace, &stream, shard, &group, &record, extend,
+                )
+                .await
+                .map_err(to_py_err)
+        })?;
+        Ok(stands.as_secs_f64())
+    }
+
+    /// Move a group's cursor on one shard to `start`: `"latest"`,
+    /// `"earliest"` or an integer offset.
+    ///
+    /// Records the group had handed out are void and delivered again from the
+    /// new position; dead letters are kept. Needs the `group.manage`
+    /// permission.
+    fn group_seek(
+        &self,
+        py: Python<'_>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        group: &str,
+        start: Py<PyAny>,
+    ) -> PyResult<GroupPosition> {
+        let start = parse_required_start(py, start)?;
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, stream, group) = owned4(tenant_id, namespace, stream, group);
+        block_on(py, async move {
+            inner
+                .group_seek(&tenant_id, &namespace, &stream, shard, &group, start)
+                .await
+                .map(GroupPosition::from)
+                .map_err(to_py_err)
+        })
+    }
+
+    /// Create a group on one shard at `start`, so its first poll begins there.
+    ///
+    /// A group that already exists is left where it is and `moved` is false,
+    /// so this is safe to call on every start. Needs the `group.manage`
+    /// permission.
+    fn group_create(
+        &self,
+        py: Python<'_>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        group: &str,
+        start: Py<PyAny>,
+    ) -> PyResult<GroupPosition> {
+        let start = parse_required_start(py, start)?;
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, stream, group) = owned4(tenant_id, namespace, stream, group);
+        block_on(py, async move {
+            inner
+                .group_create(&tenant_id, &namespace, &stream, shard, &group, start)
+                .await
+                .map(GroupPosition::from)
+                .map_err(to_py_err)
+        })
+    }
+
+    /// Where a group stands on one shard.
+    fn group_describe(
+        &self,
+        py: Python<'_>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        group: &str,
+    ) -> PyResult<GroupInfo> {
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, stream, group) = owned4(tenant_id, namespace, stream, group);
+        block_on(py, async move {
+            inner
+                .group_describe(&tenant_id, &namespace, &stream, shard, &group)
+                .await
+                .map(GroupInfo::from)
+                .map_err(to_py_err)
+        })
+    }
+
+    /// Delete a group on one shard: its cursor, its dead letters and the
+    /// records it has handed out. Returns whether there was anything to
+    /// delete. Needs the `group.manage` permission.
+    fn group_delete(
+        &self,
+        py: Python<'_>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        group: &str,
+    ) -> PyResult<bool> {
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, stream, group) = owned4(tenant_id, namespace, stream, group);
+        block_on(py, async move {
+            inner
+                .group_delete(&tenant_id, &namespace, &stream, shard, &group)
                 .await
                 .map_err(to_py_err)
         })

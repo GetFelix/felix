@@ -731,6 +731,41 @@ for offset in client.group_dead_letters("t1", "default", "orders", shard, "billi
         client.group_discard("t1", "default", "orders", shard, "billing", offset)
 ```
 
+### Long work
+
+A claim stands for the broker's visibility timeout. A consumer still working on a record asks for more time with `group_extend`, which takes the record and a number of seconds and returns how long the claim now stands. That is less than asked when the broker caps it (`FELIX_GROUP_MAX_VISIBILITY_MS`):
+
+```python
+for record in records:
+    while not finished(record):
+        client.group_extend("t1", "default", "orders", shard, "billing", record, 60.0)
+        work_a_while(record)
+    client.group_ack("t1", "default", "orders", shard, "billing", record.offset)
+```
+
+Like a nack, an extension names its delivery. Once the claim has lapsed and the record has gone out again it is refused with `stale_claim`, even if your worker is still running.
+
+### Creating, moving and deleting a group
+
+A group starts at offset 0 on its first poll unless it was created first. These calls need the `group.manage` permission:
+
+```python
+# Left alone if the group already exists, so safe on every start.
+position = client.group_create("t1", "default", "orders", shard, "billing", "latest")
+print(position.offset, position.moved)
+
+# Replay everything the shard still holds. A start is "latest", "earliest" or an offset.
+client.group_seek("t1", "default", "orders", shard, "billing", "earliest")
+
+info = client.group_describe("t1", "default", "orders", shard, "billing")
+print(info.committed, info.tail, info.in_flight, info.lag)
+
+# False if there was no such group.
+existed = client.group_delete("t1", "default", "orders", shard, "billing")
+```
+
+`group_create` and `group_seek` return a `GroupPosition`: the offset the group resumes from, and `moved`, which is `False` when `group_create` found the group already there. A seek voids the claims standing when it lands, so an ack for a record the group now owes fails with `stale_claim`. `group_describe` returns a `GroupInfo`; `committed` is `None` for a group with no cursor, and `in_flight` and `owed` are the shard leader's memory, so they start again from zero when the leader changes. All five calls are on `AsyncClient` too.
+
 ## Cache and counters
 
 ```python
@@ -1103,9 +1138,6 @@ These are in the [Rust client](/clients/rust/) and not in this binding yet:
 
 - **Merged prefix watches** (`watch_cache_sharded`). A prefix on a
   multi-shard cache needs one `watch_cache` per shard.
-- **Group lease extension and administration.** `group_extend`, `group_seek`,
-  and creating, describing or deleting a group. Groups are created with
-  `felixctl`.
 - **Starting from a time** (`offset_for_time`).
 
 The ones the conformance catalogue covers are marked there, so the binding

@@ -17,6 +17,7 @@ declare const events: import("../index").SubscriptionHandle;
 declare const sharded: import("../index").ShardedSubscriptionHandle;
 declare const positions: import("../index").ShardPositions;
 declare const record: import("../index").GroupRecord;
+declare const records: import("../index").GroupRecord[];
 
 declare const payload: Buffer;
 declare const ticks: Buffer[];
@@ -30,6 +31,8 @@ declare const fixedTheCause: boolean;
 declare function handle(payload: Buffer): Promise<void>;
 declare function charge(payload: Buffer): Promise<void>;
 declare function quarantine(record: import("../index").GroupRecord): Promise<void>;
+declare function finished(record: import("../index").GroupRecord): Promise<boolean>;
+declare function workAWhile(record: import("../index").GroupRecord): Promise<void>;
 declare function reconcile(): Promise<void>;
 declare function retry(): Promise<void>;
 declare function giveUp(): Promise<void>;

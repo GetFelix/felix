@@ -211,3 +211,136 @@ def test_two_group_members_do_not_receive_the_same_record(client, fixture, key):
         f"offsets {sorted(overlap)} were claimed by both members at once; a "
         "queue that hands one record to two consumers is not a queue"
     )
+
+
+def scope(fixture):
+    return fixture["tenant_id"], fixture["namespace"], fixture["durable_stream"], 0
+
+
+def poll_for(client, fixture, group, payload):
+    """Poll until the record carrying `payload` shows up, or fail."""
+    for record in poll_until(client, fixture, 0, group, 1):
+        if record.payload == payload:
+            return record
+    raise AssertionError(f"{payload!r} was never handed to {group}")
+
+
+@pytest.mark.scenario("queue.group_create_starts_at_the_chosen_position")
+def test_a_group_created_at_latest_skips_what_came_before(client, fixture, key):
+    group = f"{GROUP}-create-{key}"
+    payload = f"after-{key}".encode()
+    tail = client.group_describe(*scope(fixture), group).tail
+
+    created = client.group_create(*scope(fixture), group, "latest")
+    assert created.moved
+    assert created.offset >= tail
+
+    client.publish(
+        fixture["tenant_id"], fixture["namespace"], fixture["durable_stream"], payload,
+        ack="per_message",
+    )
+    first = poll_until(client, fixture, 0, group, 1)
+    assert first, "the group was handed nothing"
+    assert min(record.offset for record in first) >= created.offset, (
+        "a group created at latest was owed records from before it existed"
+    )
+    assert payload in [record.payload for record in first]
+
+    # A consumer that creates its group on every start must not rewind it.
+    again = client.group_create(*scope(fixture), group, "earliest")
+    assert not again.moved
+
+
+@pytest.mark.scenario("queue.group_seek_replays_from_the_new_position")
+def test_a_seek_delivers_from_the_new_position(client, fixture, key):
+    group = f"{GROUP}-seek-{key}"
+    payload = f"replay-{key}".encode()
+    created = client.group_create(*scope(fixture), group, "latest")
+    client.publish(
+        fixture["tenant_id"], fixture["namespace"], fixture["durable_stream"], payload,
+        ack="per_message",
+    )
+    record = poll_for(client, fixture, group, payload)
+    client.group_ack(*scope(fixture), group, record.offset)
+
+    position = client.group_seek(*scope(fixture), group, created.offset)
+    assert position.offset == created.offset
+    assert position.moved
+
+    again = poll_for(client, fixture, group, payload)
+    assert again.offset == record.offset, "the seek did not replay the record"
+
+
+@pytest.mark.scenario("queue.group_describe_and_delete")
+def test_describe_reports_the_group_and_delete_forgets_it(client, fixture, key):
+    group = f"{GROUP}-describe-{key}"
+    payload = f"described-{key}".encode()
+    created = client.group_create(*scope(fixture), group, "latest")
+    client.publish(
+        fixture["tenant_id"], fixture["namespace"], fixture["durable_stream"], payload,
+        ack="per_message",
+    )
+
+    before = client.group_describe(*scope(fixture), group)
+    assert before.committed == created.offset
+    assert before.tail > created.offset
+    assert before.lag == before.tail - created.offset
+    assert before.in_flight == 0
+
+    poll_for(client, fixture, group, payload)
+    assert client.group_describe(*scope(fixture), group).in_flight >= 1
+
+    assert client.group_delete(*scope(fixture), group) is True
+    gone = client.group_describe(*scope(fixture), group)
+    assert (gone.committed, gone.in_flight) == (None, 0)
+    assert client.group_delete(*scope(fixture), group) is False
+
+
+@pytest.mark.scenario("queue.group_extend_keeps_a_claim")
+def test_extending_a_claim_reports_how_long_it_stands(client, fixture, key):
+    group = f"{GROUP}-extend-{key}"
+    payload = f"extended-{key}".encode()
+    client.group_create(*scope(fixture), group, "latest")
+    client.publish(
+        fixture["tenant_id"], fixture["namespace"], fixture["durable_stream"], payload,
+        ack="per_message",
+    )
+    record = poll_for(client, fixture, group, payload)
+
+    stands = client.group_extend(*scope(fixture), group, record, 60.0)
+    assert isinstance(stands, float)
+    assert stands > 0.0
+
+    client.group_ack(*scope(fixture), group, record.offset)
+
+
+def test_a_bad_start_is_refused_before_it_is_sent(client, fixture, key):
+    group = f"{GROUP}-bad-{key}"
+    with pytest.raises(ValueError):
+        client.group_create(*scope(fixture), group, "middle")
+    with pytest.raises(ValueError):
+        client.group_seek(*scope(fixture), group, "")
+
+
+def test_the_async_client_administers_groups_too(fixture, key):
+    import asyncio
+
+    async def run():
+        client = await felix.AsyncClient.connect(
+            fixture["addrs"],
+            tenant_id=fixture["tenant_id"],
+            token=fixture["token"],
+            ca_file=fixture["ca_file"],
+        )
+        group = f"{GROUP}-async-{key}"
+        created = await client.group_create(*scope(fixture), group, "latest")
+        moved = await client.group_seek(*scope(fixture), group, created.offset)
+        info = await client.group_describe(*scope(fixture), group)
+        deleted = await client.group_delete(*scope(fixture), group)
+        return created, moved, info, deleted
+
+    created, moved, info, deleted = asyncio.run(run())
+    assert created.moved
+    assert moved.offset == created.offset
+    assert info.committed == created.offset
+    assert deleted is True

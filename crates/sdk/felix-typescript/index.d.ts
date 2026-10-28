@@ -305,6 +305,36 @@ export type ConditionalWrite =
   | { written: true; offset: bigint; tail: null }
   | { written: false; offset: null; tail: bigint };
 
+/** Where `groupSeek` or `groupCreate` left a group on one shard. */
+export interface GroupPosition {
+  /** The offset the group resumes from. */
+  offset: bigint;
+  /** `false` when `groupCreate` found the group already there and left it alone. */
+  moved: boolean;
+}
+
+/** Where a group stands on one shard, from `groupDescribe`. */
+export interface GroupInfo {
+  /**
+   * Everything below this is finished. `null` for a group with no cursor on
+   * the shard, which starts at the beginning of the log when polled.
+   */
+  committed: bigint | null;
+  /** The shard's committed tail. */
+  tail: bigint;
+  /**
+   * Records handed out and not yet settled. The shard leader's memory, so it
+   * restarts from zero when the leader changes.
+   */
+  inFlight: bigint;
+  /** Records owed again after a nack or a lapsed claim. Leader memory, like `inFlight`. */
+  owed: bigint;
+  /** Records the group gave up on. */
+  deadLetters: bigint;
+  /** Records published to the shard that the group has not finished. */
+  lag: bigint;
+}
+
 /** A key in a stream shard's state. */
 export interface StateValue {
   /** Absent when the key was never written or was deleted. */
@@ -909,6 +939,73 @@ export declare class Client {
     group: string,
     offset: bigint,
   ): Promise<void>;
+
+  /**
+   * Keep the claim on `record` standing for `extendMs` from now. Resolves with
+   * how many milliseconds it now stands, which is less than asked when the
+   * broker capped it. Pass the record `groupPoll` returned: it names that
+   * delivery, and is refused once the claim has lapsed or the record has gone
+   * out again, even to this consumer.
+   */
+  groupExtend(
+    tenantId: string,
+    namespace: string,
+    stream: string,
+    shard: number,
+    group: string,
+    record: GroupDelivery,
+    extendMs: number,
+  ): Promise<number>;
+
+  /**
+   * Move a group's cursor on one shard to `start`. Records the group had
+   * handed out are void and delivered again from the new position; dead
+   * letters are kept. Needs the `group.manage` permission.
+   */
+  groupSeek(
+    tenantId: string,
+    namespace: string,
+    stream: string,
+    shard: number,
+    group: string,
+    start: StartPosition,
+  ): Promise<GroupPosition>;
+
+  /**
+   * Create a group on one shard at `start`, so its first poll begins there. A
+   * group that already exists is left where it is and `moved` is `false`, so
+   * this is safe to call on every start. Needs the `group.manage` permission.
+   */
+  groupCreate(
+    tenantId: string,
+    namespace: string,
+    stream: string,
+    shard: number,
+    group: string,
+    start: StartPosition,
+  ): Promise<GroupPosition>;
+
+  /** Where a group stands on one shard. */
+  groupDescribe(
+    tenantId: string,
+    namespace: string,
+    stream: string,
+    shard: number,
+    group: string,
+  ): Promise<GroupInfo>;
+
+  /**
+   * Delete a group on one shard: its cursor, its dead letters and the records
+   * it has handed out. Resolves with whether there was anything to delete.
+   * Needs the `group.manage` permission.
+   */
+  groupDelete(
+    tenantId: string,
+    namespace: string,
+    stream: string,
+    shard: number,
+    group: string,
+  ): Promise<boolean>;
 
   /**
    * Release the client. Idempotent.

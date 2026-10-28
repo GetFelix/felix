@@ -1899,9 +1899,9 @@ capacity. Four things go wrong, and each has a tool.
 - **The work takes longer than the timeout.** Extend the claim before it
   lapses. `extend` is for the delivery you hold: once the claim has lapsed and
   the record has gone out again, it is refused with `stale_claim`, even if
-  your worker is still running. Rust, C# and C have `extend`. Python and
-  TypeScript do not wrap it, so size the visibility timeout for the work, or
-  split the work.
+  your worker is still running. Every client has `extend`, named
+  `group_extend` in Rust and Python and `groupExtend` in
+  TypeScript.
 - **A consumer restarts.** A claim belongs to the group, not the process, so a
   restarted consumer would wait out the timeout for its old records. Poll with
   a stable consumer name (1 to 128 bytes, unique per live process) and set

@@ -428,6 +428,7 @@ CONTEXT_NAMES = {
     "payload", "payloads", "orders", "data", "customer_id", "shard", "records",
     "checkpoint", "handle", "alert", "charge", "quarantine", "retry",
     "reconcile", "give_up", "create_stream", "fixed_the_cause",
+    "finished", "work_a_while",
     "RetryableError",
 }
 

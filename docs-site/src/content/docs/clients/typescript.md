@@ -721,6 +721,43 @@ for (const offset of offsets) {
 }
 ```
 
+### Long work
+
+A claim stands for the broker's visibility timeout. A consumer still working on a record asks for more time with `groupExtend`, which takes the record and a number of milliseconds and resolves with how long the claim now stands. That is less than asked when the broker caps it (`FELIX_GROUP_MAX_VISIBILITY_MS`):
+
+```ts
+for (const record of records) {
+  while (!(await finished(record))) {
+    await client.groupExtend("t1", "default", "orders", shard, "billing", record, 60_000);
+    await workAWhile(record);
+  }
+  await client.groupAck("t1", "default", "orders", shard, "billing", record.offset);
+}
+```
+
+Like a nack, an extension names its delivery. Once the claim has lapsed and the record has gone out again it is refused with `stale_claim`, even if your worker is still running.
+
+### Creating, moving and deleting a group
+
+A group starts at offset 0 on its first poll unless it was created first. These calls need the `group.manage` permission:
+
+```ts
+// Left alone if the group already exists, so safe on every start.
+const position = await client.groupCreate("t1", "default", "orders", shard, "billing", "latest");
+console.log(position.offset, position.moved);
+
+// Replay everything the shard still holds. A start is "latest", "earliest" or a bigint offset.
+await client.groupSeek("t1", "default", "orders", shard, "billing", "earliest");
+
+const info = await client.groupDescribe("t1", "default", "orders", shard, "billing");
+console.log(info.committed, info.tail, info.inFlight, info.lag);
+
+// false if there was no such group.
+const existed = await client.groupDelete("t1", "default", "orders", shard, "billing");
+```
+
+`groupCreate` and `groupSeek` resolve with a `GroupPosition`: the offset the group resumes from, and `moved`, which is `false` when `groupCreate` found the group already there. A seek voids the claims standing when it lands, so an ack for a record the group now owes fails with `stale_claim`. `groupDescribe` resolves with a `GroupInfo`; `committed` is `null` for a group with no cursor, and `inFlight` and `owed` are the shard leader's memory, so they start again from zero when the leader changes. Every count is a `bigint`.
+
 ## Cache and counters
 
 ```ts
@@ -1062,9 +1099,6 @@ These are in the [Rust client](/clients/rust/) and not in this binding yet:
 
 - **Merged prefix watches** (`watch_cache_sharded`). A prefix on a
   multi-shard cache needs one `watchCache` per shard.
-- **Group lease extension and administration.** `group_extend`, `group_seek`,
-  and creating, describing or deleting a group. Groups are created with
-  `felixctl`.
 - **Starting from a time** (`offset_for_time`).
 
 The ones the conformance catalogue covers are marked there, so the binding

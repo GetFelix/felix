@@ -8,11 +8,14 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use super::{AsyncCacheWatch, AsyncProducer, AsyncShardedSubscription, AsyncSubscription};
-use crate::args::{owned4, parse_ack, parse_addrs, parse_start};
+use crate::args::{
+    owned4, parse_ack, parse_addrs, parse_required_start, parse_start, positive_duration,
+};
 use crate::conditional::{
     CacheCondition, CacheConditionResult, ConditionalWrite, OwnedVersionedValue,
 };
 use crate::errors::to_py_err;
+use crate::group_admin::{GroupInfo, GroupPosition};
 use crate::producer::{Core, check_payloads};
 use crate::token::{Flavor, Tokens, resolve};
 use crate::types::{CacheWatchFilter, GroupRecord, OwnedGroupRecord};
@@ -841,6 +844,125 @@ impl AsyncClient {
             offset,
             Settle::Redrive,
         )
+    }
+
+    /// Keep the claim on `record` standing for `extend` seconds from now. See
+    /// the synchronous `Client.group_extend`; resolves to how many seconds it
+    /// now stands.
+    fn group_extend<'py>(
+        &self,
+        py: Python<'py>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        group: &str,
+        record: PyRef<'_, GroupRecord>,
+        extend: f64,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let record = record.delivery();
+        let extend = positive_duration(extend, "extend")?;
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, stream, group) = owned4(tenant_id, namespace, stream, group);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let stands = inner
+                .group_extend(
+                    &tenant_id, &namespace, &stream, shard, &group, &record, extend,
+                )
+                .await
+                .map_err(to_py_err)?;
+            Ok(stands.as_secs_f64())
+        })
+    }
+
+    /// Move a group's cursor to `start`. See the synchronous
+    /// `Client.group_seek`.
+    fn group_seek<'py>(
+        &self,
+        py: Python<'py>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        group: &str,
+        start: Py<PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let start = parse_required_start(py, start)?;
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, stream, group) = owned4(tenant_id, namespace, stream, group);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let position = inner
+                .group_seek(&tenant_id, &namespace, &stream, shard, &group, start)
+                .await
+                .map_err(to_py_err)?;
+            Ok(GroupPosition::from(position))
+        })
+    }
+
+    /// Create a group at `start`, leaving an existing one where it is. See the
+    /// synchronous `Client.group_create`.
+    fn group_create<'py>(
+        &self,
+        py: Python<'py>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        group: &str,
+        start: Py<PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let start = parse_required_start(py, start)?;
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, stream, group) = owned4(tenant_id, namespace, stream, group);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let position = inner
+                .group_create(&tenant_id, &namespace, &stream, shard, &group, start)
+                .await
+                .map_err(to_py_err)?;
+            Ok(GroupPosition::from(position))
+        })
+    }
+
+    /// Where a group stands on one shard.
+    fn group_describe<'py>(
+        &self,
+        py: Python<'py>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        group: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, stream, group) = owned4(tenant_id, namespace, stream, group);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let info = inner
+                .group_describe(&tenant_id, &namespace, &stream, shard, &group)
+                .await
+                .map_err(to_py_err)?;
+            Ok(GroupInfo::from(info))
+        })
+    }
+
+    /// Delete a group on one shard. Resolves to whether there was anything to
+    /// delete.
+    fn group_delete<'py>(
+        &self,
+        py: Python<'py>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        group: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, stream, group) = owned4(tenant_id, namespace, stream, group);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            inner
+                .group_delete(&tenant_id, &namespace, &stream, shard, &group)
+                .await
+                .map_err(to_py_err)
+        })
     }
 
     // ---- cache watch -----------------------------------------------------
