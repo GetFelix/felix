@@ -10,9 +10,12 @@ use napi::JsObject;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
-use crate::args::{parse_ack, parse_positions, parse_start, reconnect_policy, seeds, u64_of};
+use crate::args::{
+    MAX_DEADLINE_MS, parse_ack, parse_positions, parse_start, reconnect_policy, seeds, u64_of,
+};
 use crate::cache_watch::CacheWatchHandle;
 use crate::errors::{classify, invalid};
+use crate::group_admin::{GroupInfo, GroupPosition};
 use crate::producer::Producer;
 use crate::sharded_subscription::ShardedSubscriptionHandle;
 use crate::subscription::SubscriptionHandle;
@@ -942,6 +945,128 @@ impl Client {
         let offset = u64_of(offset)?;
         self.cluster()?
             .group_redrive(&tenant_id, &namespace, &stream, shard, &group, offset)
+            .await
+            .map_err(classify)
+    }
+
+    /// Keep the claim on `record` standing for `extendMs` from now. Resolves
+    /// with how many milliseconds it now stands, which is less than asked when
+    /// the broker capped it. Pass the record `groupPoll` returned: it names
+    /// that delivery, and is refused once the claim has lapsed or the record
+    /// has gone out again, even to this consumer.
+    #[napi]
+    pub async fn group_extend(
+        &self,
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        shard: u32,
+        group: String,
+        record: GroupDelivery,
+        extend_ms: f64,
+    ) -> Result<f64> {
+        if !(1.0..=MAX_DEADLINE_MS).contains(&extend_ms) {
+            return Err(invalid(format!(
+                "extendMs must be between 1 millisecond and one year, not {extend_ms}"
+            )));
+        }
+        let record = felix_wire::GroupRecord {
+            offset: u64_of(record.offset)?,
+            payload: Default::default(),
+            attempts: record.attempts,
+            skipped_before: 0,
+            publisher: None,
+            timestamp_micros: None,
+        };
+        let stands = self
+            .cluster()?
+            .group_extend(
+                &tenant_id,
+                &namespace,
+                &stream,
+                shard,
+                &group,
+                &record,
+                std::time::Duration::from_secs_f64(extend_ms / 1000.0),
+            )
+            .await
+            .map_err(classify)?;
+        Ok(stands.as_millis() as f64)
+    }
+
+    /// Move a group's cursor on one shard to `start`: `"latest"`,
+    /// `"earliest"` or an offset. Records the group had handed out are void
+    /// and delivered again from the new position; dead letters are kept.
+    #[napi]
+    pub async fn group_seek(
+        &self,
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        shard: u32,
+        group: String,
+        start: Either<String, BigInt>,
+    ) -> Result<GroupPosition> {
+        let start = parse_start(Some(start))?;
+        self.cluster()?
+            .group_seek(&tenant_id, &namespace, &stream, shard, &group, start)
+            .await
+            .map(GroupPosition::from)
+            .map_err(classify)
+    }
+
+    /// Create a group on one shard at `start`, so its first poll begins
+    /// there. A group that already exists is left where it is and `moved` is
+    /// false, so this is safe to call on every start.
+    #[napi]
+    pub async fn group_create(
+        &self,
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        shard: u32,
+        group: String,
+        start: Either<String, BigInt>,
+    ) -> Result<GroupPosition> {
+        let start = parse_start(Some(start))?;
+        self.cluster()?
+            .group_create(&tenant_id, &namespace, &stream, shard, &group, start)
+            .await
+            .map(GroupPosition::from)
+            .map_err(classify)
+    }
+
+    /// Where a group stands on one shard.
+    #[napi]
+    pub async fn group_describe(
+        &self,
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        shard: u32,
+        group: String,
+    ) -> Result<GroupInfo> {
+        self.cluster()?
+            .group_describe(&tenant_id, &namespace, &stream, shard, &group)
+            .await
+            .map(GroupInfo::from)
+            .map_err(classify)
+    }
+
+    /// Delete a group on one shard: its cursor, its dead letters and the
+    /// records it has handed out. Resolves with whether there was anything to
+    /// delete.
+    #[napi]
+    pub async fn group_delete(
+        &self,
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        shard: u32,
+        group: String,
+    ) -> Result<bool> {
+        self.cluster()?
+            .group_delete(&tenant_id, &namespace, &stream, shard, &group)
             .await
             .map_err(classify)
     }

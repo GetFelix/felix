@@ -7,7 +7,7 @@
 // as a stream goes wrong.
 
 import assert from "node:assert/strict";
-import { it } from "node:test";
+import { after, it } from "node:test";
 
 import { connect, scenario, unique } from "../harness.mjs";
 
@@ -62,6 +62,15 @@ async function drainAndAck(client, fixture, group, rounds = 20) {
 }
 
 export default function register(ctx) {
+  // Creating, moving or deleting a group needs `group.manage`, which the
+  // fixture's ordinary token does not hold.
+  let operator;
+  const groupOperator = async (fixture) => {
+    operator ??= await connect(fixture, { token: fixture.group_operator_token });
+    return operator;
+  };
+  after(() => operator?.close());
+
   it("a poll claims records, and an empty poll is an answer", () =>
     scenario("queue.poll_returns_claimed_records", async () => {
       const { client, fixture } = ctx;
@@ -289,4 +298,131 @@ export default function register(ctx) {
           "record to two consumers is not a queue",
       );
     }));
+
+  it("a group created at latest is not owed what came before", () =>
+    scenario("queue.group_create_starts_at_the_chosen_position", async () => {
+      const { client, fixture } = ctx;
+      const operator = await groupOperator(fixture);
+      const { tenant_id: tenant, namespace, durable_stream: stream } = fixture;
+      const group = unique("group-create");
+      const payload = unique("after");
+      const { tail } = await client.groupDescribe(tenant, namespace, stream, 0, group);
+
+      const created = await operator.groupCreate(tenant, namespace, stream, 0, group, "latest");
+      assert.equal(created.moved, true);
+      assert.ok(created.offset >= tail);
+
+      await client.publish(
+        tenant, namespace, stream, Buffer.from(payload), undefined, "per_message",
+      );
+      const first = await pollUntil(client, fixture, group, 1);
+      assert.ok(first.length > 0, "the group was handed nothing");
+      assert.ok(
+        first.every((record) => record.offset >= created.offset),
+        "a group created at latest was owed records from before it existed",
+      );
+      assert.ok(first.some((record) => record.payload.toString() === payload));
+
+      // A consumer that creates its group on every start must not rewind it.
+      const again = await operator.groupCreate(tenant, namespace, stream, 0, group, "earliest");
+      assert.equal(again.moved, false);
+    }));
+
+  it("a seek delivers from the new position", () =>
+    scenario("queue.group_seek_replays_from_the_new_position", async () => {
+      const { client, fixture } = ctx;
+      const operator = await groupOperator(fixture);
+      const { tenant_id: tenant, namespace, durable_stream: stream } = fixture;
+      const group = unique("group-seek");
+      const payload = unique("replay");
+      const created = await operator.groupCreate(tenant, namespace, stream, 0, group, "latest");
+      await client.publish(
+        tenant, namespace, stream, Buffer.from(payload), undefined, "per_message",
+      );
+      const first = (await pollUntil(client, fixture, group, 1)).find(
+        (record) => record.payload.toString() === payload,
+      );
+      assert.ok(first, "the record was never handed to the group");
+      await client.groupAck(tenant, namespace, stream, 0, group, first.offset);
+
+      const position = await operator.groupSeek(tenant, namespace, stream, 0, group, created.offset);
+      assert.equal(position.offset, created.offset);
+      assert.equal(position.moved, true);
+
+      const again = (await pollUntil(client, fixture, group, 1)).find(
+        (record) => record.payload.toString() === payload,
+      );
+      assert.ok(again, "the seek did not replay the record");
+      assert.equal(again.offset, first.offset);
+      await client.groupAck(tenant, namespace, stream, 0, group, again.offset);
+    }));
+
+  it("describe reports the group and delete forgets it", () =>
+    scenario("queue.group_describe_and_delete", async () => {
+      const { client, fixture } = ctx;
+      const operator = await groupOperator(fixture);
+      const { tenant_id: tenant, namespace, durable_stream: stream } = fixture;
+      const group = unique("group-describe");
+      const payload = unique("described");
+      const created = await operator.groupCreate(tenant, namespace, stream, 0, group, "latest");
+      await client.publish(
+        tenant, namespace, stream, Buffer.from(payload), undefined, "per_message",
+      );
+
+      const before = await client.groupDescribe(tenant, namespace, stream, 0, group);
+      assert.equal(before.committed, created.offset);
+      assert.ok(before.tail > created.offset);
+      assert.equal(before.lag, before.tail - created.offset);
+      assert.equal(before.inFlight, 0n);
+
+      await pollUntil(client, fixture, group, 1);
+      const claimed = await client.groupDescribe(tenant, namespace, stream, 0, group);
+      assert.ok(claimed.inFlight >= 1n);
+
+      assert.equal(await operator.groupDelete(tenant, namespace, stream, 0, group), true);
+      const gone = await client.groupDescribe(tenant, namespace, stream, 0, group);
+      assert.equal(gone.committed, null);
+      assert.equal(gone.inFlight, 0n);
+      assert.equal(await operator.groupDelete(tenant, namespace, stream, 0, group), false);
+    }));
+
+  it("extending a claim reports how long it stands", () =>
+    scenario("queue.group_extend_keeps_a_claim", async () => {
+      const { client, fixture } = ctx;
+      const operator = await groupOperator(fixture);
+      const { tenant_id: tenant, namespace, durable_stream: stream } = fixture;
+      const group = unique("group-extend");
+      const payload = unique("extended");
+      await operator.groupCreate(tenant, namespace, stream, 0, group, "latest");
+      await client.publish(
+        tenant, namespace, stream, Buffer.from(payload), undefined, "per_message",
+      );
+      const record = (await pollUntil(client, fixture, group, 1)).find(
+        (r) => r.payload.toString() === payload,
+      );
+      assert.ok(record, "the record was never handed to the group");
+
+      const stands = await client.groupExtend(tenant, namespace, stream, 0, group, record, 60_000);
+      assert.equal(typeof stands, "number");
+      assert.ok(stands > 0);
+      await client.groupAck(tenant, namespace, stream, 0, group, record.offset);
+    }));
+
+  it("a bad start or extension is refused before it is sent", async () => {
+    const { fixture } = ctx;
+    const { tenant_id: tenant, namespace, durable_stream: stream } = fixture;
+    const operator = await groupOperator(fixture);
+    await assert.rejects(
+      operator.groupCreate(tenant, namespace, stream, 0, unique("group-bad"), "middle"),
+      /start must be/,
+    );
+    const year = 365 * 24 * 3600 * 1000;
+    for (const bad of [0, -1, NaN, Infinity, year + 1]) {
+      await assert.rejects(
+        operator.groupExtend(tenant, namespace, stream, 0, "g", { offset: 0n, attempts: 1 }, bad),
+        /extendMs/,
+        `extendMs ${bad} was accepted`,
+      );
+    }
+  });
 }

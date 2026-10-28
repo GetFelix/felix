@@ -36,7 +36,7 @@ pub(crate) fn seeds(addrs: Vec<String>) -> Result<Vec<Seed>> {
 
 /// The longest reconnect deadline accepted, in milliseconds. Longer is no
 /// deadline in practice, and a huge one would overflow the clock.
-const MAX_DEADLINE_MS: f64 = 365.0 * 24.0 * 3600.0 * 1000.0;
+pub(crate) const MAX_DEADLINE_MS: f64 = 365.0 * 24.0 * 3600.0 * 1000.0;
 
 /// The default reconnect policy with the caller's attempts and deadline (ms).
 ///

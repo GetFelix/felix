@@ -33,7 +33,9 @@ Beyond streams, both surfaces cover:
 
 * **Queues** — ``group_poll`` / ``group_ack`` / ``group_nack``, with
   ``group_dead_letters``, ``group_redrive`` and ``group_discard`` for records
-  that kept failing.
+  that kept failing. ``group_extend`` keeps a claim standing, and
+  ``group_create``, ``group_seek``, ``group_describe`` and ``group_delete``
+  administer a group's position.
 * **Cache watches** — ``watch_cache`` with a key or prefix filter, resumable
   by offset, or ``retained=True`` to receive current state before live changes.
 * **Multi-shard streams** — ``subscribe_sharded`` opens one subscription per
@@ -75,6 +77,8 @@ from ._felix import (
     Event,
     EventCountError,
     FelixError,
+    GroupInfo,
+    GroupPosition,
     GroupRecord,
     NotFoundError,
     NotOnOwningShardError,
@@ -113,6 +117,8 @@ __all__ = [
     "StreamDeleted",
     # Queues
     "GroupRecord",
+    "GroupPosition",
+    "GroupInfo",
     # Cache watches
     "CacheWatchFilter",
     "CacheWatchHandle",

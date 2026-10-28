@@ -54,8 +54,9 @@ acks on enqueue), the stream has no log, or the broker is too old to say.
 
 ## Beyond publish and subscribe
 
-Both surfaces also cover consumer groups (`group_poll` and the four settles,
-sent to the shard's leader by following the broker's redirect),
+Both surfaces also cover consumer groups (`group_poll`, the settles, `group_extend`,
+and `group_create`, `group_seek`, `group_describe` and `group_delete`, sent to the
+shard's leader by following the broker's redirect),
 cache watches (`watch_cache`, including retained watches that hand you current
 state before live changes), and multi-shard subscriptions (`subscribe_sharded`,
 which opens one subscription per shard and merges them). Two things catch

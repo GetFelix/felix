@@ -29,7 +29,7 @@ const VALUES = [
 const TYPES = [
   "AckMode", "CacheChange", "CacheConditionResult", "CacheWatchItem", "CommitReceipt",
   "ConditionalWrite", "ConnectOptions",
-  "Event", "GroupDelivery", "GroupRecord", "IdentityOptions", "ShardEvent",
+  "Event", "GroupDelivery", "GroupInfo", "GroupPosition", "GroupRecord", "IdentityOptions", "ShardEvent",
   "ShardMoved", "ShardPositions", "StartPosition", "StateValue", "TokenProvider", "VersionedValue",
 ];
 

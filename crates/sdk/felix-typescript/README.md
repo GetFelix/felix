@@ -82,7 +82,7 @@ Everything the Python binding wraps, with one exception noted below.
 | Cache | `cachePut` (with TTL), `cacheGet`, `cacheDelete` |
 | Counters | `counterAdd`, `counterGet` |
 | Cache watches | `watchCache(..., key?, prefix?, start?, retained?)` → `recv()`, `retainedCount` |
-| Consumer groups | `groupPoll`, `groupAck`, `groupNack`, `groupDeadLetters`, `groupDiscard`, `groupRedrive` (each follows the broker's redirect to the shard's leader) |
+| Consumer groups | `groupPoll`, `groupAck`, `groupNack`, `groupDeadLetters`, `groupDiscard`, `groupRedrive`, `groupExtend`, `groupSeek`, `groupCreate`, `groupDescribe`, `groupDelete` (each follows the broker's redirect to the shard's leader) |
 | Atomic commits | `commit(tenant, ns, entityKey, [CommitOp.publish \| enqueue, put, delete])` → `{ offset }`, `stateGet(tenant, ns, stream, entityKey, key)` → `{ value, version, asOf }`; `NotOnOwningShardError` and `EventCountError` refuse a commit that is not one record. See [atomic commits](../../../docs/atomic-commit.md) |
 
 Every handle has an idempotent `close()` and implements `Symbol.asyncDispose`,
@@ -187,8 +187,6 @@ The Rust client has these and this binding does not yet. The client page lists
 them with what each is for.
 
 - Merged prefix watches across shards (`watch_cache_sharded`).
-- Group lease extension and administration (`group_extend`, `group_seek`,
-  create, describe, delete).
 - Starting from a time (`offset_for_time`).
 
 ## Conformance

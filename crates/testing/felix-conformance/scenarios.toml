@@ -663,6 +663,49 @@ reprocessing. Optional because a binding may reasonably ship polling and
 settling before the administrative half.
 """
 
+[[scenario]]
+id = "queue.group_create_starts_at_the_chosen_position"
+required = false
+title = "A group created at the tail is not owed what came before"
+detail = """
+Creating a group at the latest position makes its first poll begin there, so
+it is owed only what is published afterwards. Creating a group that already
+exists leaves it where it is and reports that it did not move, which is what
+lets a consumer create its group on every start. Optional because a binding
+may ship polling before group administration.
+"""
+
+[[scenario]]
+id = "queue.group_seek_replays_from_the_new_position"
+required = false
+title = "A seek moves the group and its records are delivered again"
+detail = """
+Seeking a group to an earlier offset reports the position it resumes from, and
+the records from there are delivered again, including ones the group had
+already settled.
+"""
+
+[[scenario]]
+id = "queue.group_describe_and_delete"
+required = false
+title = "Describe reports where a group stands, and delete forgets it"
+detail = """
+Describing a group reports its cursor, the shard's tail and how many records
+are in flight. Deleting it reports whether there was anything to delete, and a
+group deleted twice answers false the second time. A deleted group has no
+cursor and nothing in flight.
+"""
+
+[[scenario]]
+id = "queue.group_extend_keeps_a_claim"
+required = false
+title = "A claim can be extended, and the answer says how long it stands"
+detail = """
+A consumer still working on a record asks for more time on its claim. The
+answer is how long the claim now stands, which may be less than asked when the
+broker caps it, and is never zero.
+"""
+
 # ---------------------------------------------------------------------------
 # Cache watches
 #

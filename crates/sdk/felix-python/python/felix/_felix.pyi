@@ -110,6 +110,23 @@ class ConditionalWrite:
     tail: int | None
     """The shard's next offset when refused; None when written."""
 
+class GroupPosition:
+    offset: int
+    """The offset the group resumes from."""
+    moved: bool
+    """False when `group_create` found the group already there."""
+
+class GroupInfo:
+    committed: int | None
+    """Everything below this is finished; None for a group with no cursor."""
+    tail: int
+    """The shard's committed tail."""
+    in_flight: int
+    owed: int
+    dead_letters: int
+    @property
+    def lag(self) -> int: ...
+
 class Producer:
     id: int
     closed: bool
@@ -516,6 +533,40 @@ class Client:
     def group_redrive(
         self, tenant_id: str, namespace: str, stream: str, shard: int, group: str, offset: int
     ) -> None: ...
+    def group_extend(
+        self,
+        tenant_id: str,
+        namespace: str,
+        stream: str,
+        shard: int,
+        group: str,
+        record: GroupRecord,
+        extend: float,
+    ) -> float: ...
+    def group_seek(
+        self,
+        tenant_id: str,
+        namespace: str,
+        stream: str,
+        shard: int,
+        group: str,
+        start: StartPosition,
+    ) -> GroupPosition: ...
+    def group_create(
+        self,
+        tenant_id: str,
+        namespace: str,
+        stream: str,
+        shard: int,
+        group: str,
+        start: StartPosition,
+    ) -> GroupPosition: ...
+    def group_describe(
+        self, tenant_id: str, namespace: str, stream: str, shard: int, group: str
+    ) -> GroupInfo: ...
+    def group_delete(
+        self, tenant_id: str, namespace: str, stream: str, shard: int, group: str
+    ) -> bool: ...
     def watch_cache(
         self,
         tenant_id: str,
@@ -740,6 +791,40 @@ class AsyncClient:
     async def group_redrive(
         self, tenant_id: str, namespace: str, stream: str, shard: int, group: str, offset: int
     ) -> None: ...
+    async def group_extend(
+        self,
+        tenant_id: str,
+        namespace: str,
+        stream: str,
+        shard: int,
+        group: str,
+        record: GroupRecord,
+        extend: float,
+    ) -> float: ...
+    async def group_seek(
+        self,
+        tenant_id: str,
+        namespace: str,
+        stream: str,
+        shard: int,
+        group: str,
+        start: StartPosition,
+    ) -> GroupPosition: ...
+    async def group_create(
+        self,
+        tenant_id: str,
+        namespace: str,
+        stream: str,
+        shard: int,
+        group: str,
+        start: StartPosition,
+    ) -> GroupPosition: ...
+    async def group_describe(
+        self, tenant_id: str, namespace: str, stream: str, shard: int, group: str
+    ) -> GroupInfo: ...
+    async def group_delete(
+        self, tenant_id: str, namespace: str, stream: str, shard: int, group: str
+    ) -> bool: ...
     async def watch_cache(
         self,
         tenant_id: str,

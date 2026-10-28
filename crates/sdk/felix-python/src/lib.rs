@@ -27,6 +27,7 @@ mod blocking;
 mod commit;
 mod conditional;
 mod errors;
+mod group_admin;
 mod producer;
 mod runtime;
 mod tls;
@@ -69,6 +70,8 @@ fn _felix(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<conditional::CacheConditionResult>()?;
     module.add_class::<conditional::VersionedValue>()?;
     module.add_class::<conditional::ConditionalWrite>()?;
+    module.add_class::<group_admin::GroupPosition>()?;
+    module.add_class::<group_admin::GroupInfo>()?;
 
     errors::register(module)?;
     Ok(())
