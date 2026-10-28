@@ -92,6 +92,13 @@ jobs:
           distribution: temurin
           java-version: "21"
 
+      # The runner's /tmp can be a small tmpfs, and TLC queues states in its
+      # scratch directory; keep that on the runner's disk.
+      - name: Scratch disk for TLC
+        run: |
+          mkdir -p "$RUNNER_TEMP/tlc"
+          echo "TLC_SCRATCH_DIR=$RUNNER_TEMP/tlc" >> "$GITHUB_ENV"
+
       - name: Walk
         env:
           TLA_SIM_MINUTES: ${{ inputs.minutes || '25' }}
@@ -146,6 +153,13 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
+
+      # The runner's /tmp can be a small tmpfs, and TLC queues states in its
+      # scratch directory; keep that on the runner's disk.
+      - name: Scratch disk for TLC
+        run: |
+          mkdir -p "$RUNNER_TEMP/tlc"
+          echo "TLC_SCRATCH_DIR=$RUNNER_TEMP/tlc" >> "$GITHUB_ENV"
 
       # Not registered in check_tla.sh, so each must pass.
       - name: Model-check
