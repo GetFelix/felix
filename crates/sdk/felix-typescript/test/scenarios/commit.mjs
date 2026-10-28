@@ -146,6 +146,14 @@ export default function register(ctx) {
       }
     }));
 
+  /** The stream's last shard, so named-shard tests never name one it lacks. */
+  async function lastShard() {
+    const { client, fixture } = ctx;
+    const count = await client.streamShards(fixture.tenant_id, fixture.namespace, fixture.durable_stream);
+    assert.ok(count >= 1, `the stream reports ${count} shards`);
+    return count - 1;
+  }
+
   // A write at an offset no shard has reached is refused with the tail, one at
   // the tail lands there, and the same offset again is refused past it.
   // `write(expected)` runs the form under test and returns its answer.
@@ -171,7 +179,7 @@ export default function register(ctx) {
       const { client, fixture, felix } = ctx;
       const stream = fixture.durable_stream;
       const { tenant_id: tenant, namespace } = fixture;
-      for (const [what, shard] of [["commitIf", null], ["commitIfOnShard", 2]]) {
+      for (const [what, shard] of [["commitIf", null], ["commitIfOnShard", await lastShard()]]) {
         const tag = unique("cond");
         const ops = [felix.CommitOp.publish(stream, tag), felix.CommitOp.put(stream, tag, "cond")];
         await checkConditional(what, (expected) =>
@@ -188,12 +196,13 @@ export default function register(ctx) {
       const stream = fixture.durable_stream;
       const { tenant_id: tenant, namespace } = fixture;
       const key = unique("shard");
-      const receipt = await client.commitOnShard(tenant, namespace, 2, Buffer.from(key), [
+      const shard = await lastShard();
+      const receipt = await client.commitOnShard(tenant, namespace, shard, Buffer.from(key), [
         felix.CommitOp.publish(stream, `${key}-event`),
         felix.CommitOp.put(stream, key, "shard-value"),
       ]);
       assert.equal(typeof receipt.offset, "bigint");
-      const state = await client.stateGetOnShard(tenant, namespace, stream, 2, key);
+      const state = await client.stateGetOnShard(tenant, namespace, stream, shard, key);
       assert.deepEqual(state.value, Buffer.from("shard-value"));
       assert.equal(state.version, receipt.offset);
     }));
@@ -210,8 +219,9 @@ export default function register(ctx) {
         await checkConditional("publishIf", (expected) =>
           client.publishIf(tenant, namespace, stream, payloads, expected, key),
         );
+        const shard = await lastShard();
         await checkConditional("publishIfOnShard", (expected) =>
-          client.publishIfOnShard(tenant, namespace, stream, 3, payloads, expected),
+          client.publishIfOnShard(tenant, namespace, stream, shard, payloads, expected),
         );
       },
     ));

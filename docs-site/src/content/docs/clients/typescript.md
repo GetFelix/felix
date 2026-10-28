@@ -702,6 +702,8 @@ reject without sending anything.
 A conditional write is never sent again after its answer was lost: the promise
 rejects, and a retry of a put that had applied would be refused by the version
 it wrote. Read the key with `cacheGetVersioned` to find out whether it landed.
+Abandoning the promise after the request went out leaves the write in doubt the
+same way, so read back before retrying.
 See [Conditional writes](/features/cache/#9-conditional-writes).
 
 ## Cache watches

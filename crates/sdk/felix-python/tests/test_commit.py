@@ -136,6 +136,15 @@ def test_a_commit_needs_exactly_one_event(client, fixture, key):
         assert refused.value.count == count
 
 
+def last_shard(client, fixture):
+    """The stream's last shard, so named-shard tests never name one it lacks."""
+    count = client.stream_shards(
+        fixture["tenant_id"], fixture["namespace"], fixture["durable_stream"]
+    )
+    assert count >= 1, f"the stream reports {count} shards"
+    return count - 1
+
+
 def check_conditional(what, write):
     """A write at an offset no shard has reached is refused with the tail, one
     at the tail lands there, and the same offset again is refused past it.
@@ -168,7 +177,7 @@ def test_a_conditional_commit_is_refused_once_the_shard_has_moved_on(client, fix
     check_conditional(
         "commit_if_on_shard",
         lambda expected: client.commit_if_on_shard(
-            tenant, namespace, 2, key.encode(), ops, expected
+            tenant, namespace, last_shard(client, fixture), key.encode(), ops, expected
         ),
     )
 
@@ -177,15 +186,16 @@ def test_a_conditional_commit_is_refused_once_the_shard_has_moved_on(client, fix
 def test_a_commit_to_a_named_shard_is_read_back_from_that_shard(client, fixture, key):
     stream = fixture["durable_stream"]
     tenant, namespace = fixture["tenant_id"], fixture["namespace"]
+    shard = last_shard(client, fixture)
     receipt = client.commit_on_shard(
         tenant,
         namespace,
-        2,
+        shard,
         key.encode(),
         [felix.CommitOp.publish(stream, b"event"), felix.CommitOp.put(stream, key, b"shard-value")],
     )
     assert isinstance(receipt, felix.CommitReceipt)
-    state = client.state_get_on_shard(tenant, namespace, stream, 2, key)
+    state = client.state_get_on_shard(tenant, namespace, stream, shard, key)
     assert state.value == b"shard-value"
     assert state.version == receipt.offset
 
@@ -206,7 +216,7 @@ def test_of_two_conditional_publishes_at_one_offset_the_second_is_refused(client
     check_conditional(
         "publish_if_on_shard",
         lambda expected: client.publish_if_on_shard(
-            tenant, namespace, stream, 3, payloads, expected
+            tenant, namespace, stream, last_shard(client, fixture), payloads, expected
         ),
     )
 
@@ -232,8 +242,9 @@ def test_the_async_client_commits_conditionally_too(fixture, key):
         stale = await client.publish_if(*scope, stream, [b"a"], 2**64 - 1)
         landed = await client.publish_if(*scope, stream, [b"a"], stale.tail)
         ops = [felix.CommitOp.publish(stream, b"x"), felix.CommitOp.put(stream, key, b"x")]
-        on_shard = await client.commit_on_shard(*scope, 2, key.encode(), ops)
-        state = await client.state_get_on_shard(*scope, stream, 2, key)
+        shard = await client.stream_shards(*scope, stream) - 1
+        on_shard = await client.commit_on_shard(*scope, shard, key.encode(), ops)
+        state = await client.state_get_on_shard(*scope, stream, shard, key)
         return stale, landed, on_shard, state
 
     stale, landed, on_shard, state = asyncio.run(run())

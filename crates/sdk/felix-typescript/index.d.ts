@@ -588,7 +588,8 @@ export declare class Client {
   /**
    * Store a value only if the key's entry meets `condition`. A refusal
    * resolves with `applied: false` and the key's current version. Never sent
-   * twice: a lost answer rejects (`OutcomeUnknownError`) rather than retrying.
+   * twice: a lost answer rejects with an error (possibly `ConnectionError`),
+   * so read the key back to learn whether the write landed.
    */
   cachePutIf(
     tenantId: string,

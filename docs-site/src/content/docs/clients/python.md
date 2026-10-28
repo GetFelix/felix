@@ -727,6 +727,8 @@ one they fail without sending anything.
 A conditional write is never sent again after its answer was lost: the call
 raises, and a retry of a put that had applied would be refused by the version it
 wrote. Read the key with `cache_get_versioned` to find out whether it landed.
+Cancelling an asyncio task after the request went out leaves the write in doubt
+the same way, so read back before retrying.
 See [Conditional writes](/features/cache/#9-conditional-writes).
 
 ## Cache watches
