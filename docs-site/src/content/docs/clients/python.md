@@ -876,6 +876,7 @@ you expect, a compare-and-set on the whole shard. They suit a single writer that
 must not append after it has been replaced.
 
 ```python
+ticks = [b"tick-1", b"tick-2"]
 next_offset = 0  # the offset this writer expects to write next
 for tick in ticks:
     result = client.publish_if("acme", "games", "match-7", [tick], next_offset)
