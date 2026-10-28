@@ -102,7 +102,7 @@ pub(crate) fn status_for_code(code: &str, retry: RetryClass) -> FelixStatus {
         return FELIX_STATUS_OUTCOME_UNKNOWN;
     }
     match code {
-        "unauthenticated" | "forbidden" => FELIX_STATUS_AUTH,
+        "unauthenticated" | "forbidden" | "revoked" => FELIX_STATUS_AUTH,
         "not_found" => FELIX_STATUS_NOT_FOUND,
         "shard_unavailable" | "not_leader" => FELIX_STATUS_SHARD_UNAVAILABLE,
         "overloaded" => FELIX_STATUS_OVERLOADED,

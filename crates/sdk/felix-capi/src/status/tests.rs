@@ -13,6 +13,7 @@ fn broker_codes_map_to_their_class() {
     for (code, status) in [
         ("unauthenticated", FELIX_STATUS_AUTH),
         ("forbidden", FELIX_STATUS_AUTH),
+        ("revoked", FELIX_STATUS_AUTH),
         ("not_found", FELIX_STATUS_NOT_FOUND),
         ("shard_unavailable", FELIX_STATUS_SHARD_UNAVAILABLE),
         ("not_leader", FELIX_STATUS_SHARD_UNAVAILABLE),

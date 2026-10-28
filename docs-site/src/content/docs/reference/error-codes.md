@@ -117,7 +117,7 @@ All clients pick the exception class from the code, except that an `outcome_unkn
 | `internal` | `BrokerError` | `OutcomeUnknownError` | `OutcomeUnknownError` | `FELIX_STATUS_OUTCOME_UNKNOWN` (`OutcomeUnknown`) |
 | `storage` | `BrokerError` | `OutcomeUnknownError` | `OutcomeUnknownError` | `FELIX_STATUS_OUTCOME_UNKNOWN` (`OutcomeUnknown`) |
 | `stale_claim` | `BrokerError` | `FelixError` | `FelixError` | `FELIX_STATUS_ERROR` (`Error`) |
-| `revoked` | `BrokerError` | `AuthError` | `AuthError` | `FELIX_STATUS_ERROR` (`Error`), tracked in [#1592](https://github.com/GetFelix/felix/issues/1592) |
+| `revoked` | `BrokerError` | `AuthError` | `AuthError` | `FELIX_STATUS_AUTH` (`Auth`) |
 | `stale_width` | `BrokerError` | `FelixError` | `FelixError` | `FELIX_STATUS_ERROR` (`Error`) |
 
 A few errors come from the client rather than the broker and have no code:
@@ -146,7 +146,7 @@ Every error carries `code`, `retry`, `detail` and a `retryable` flag that follow
 
 ### C and C#
 
-The C ABI reports a status per call, not the broker's code, so several codes share a status. The statuses are in `crates/sdk/felix-capi/include/felix.h` and listed with their values under [Status codes](/clients/c/#status-codes). The C# client's `FelixException.Status` is the same value, `IsRetryable` is true for `Connection`, `ShardUnavailable` and `Overloaded`, and a cancelled call is an `OperationCanceledException`. A `revoked` credential arrives as `FELIX_STATUS_ERROR` here, not `FELIX_STATUS_AUTH` (tracked in [#1592](https://github.com/GetFelix/felix/issues/1592)); read the message to tell it from other generic failures.
+The C ABI reports a status per call, not the broker's code, so several codes share a status. The statuses are in `crates/sdk/felix-capi/include/felix.h` and listed with their values under [Status codes](/clients/c/#status-codes). The C# client's `FelixException.Status` is the same value, `IsRetryable` is true for `Connection`, `ShardUnavailable` and `Overloaded`, and a cancelled call is an `OperationCanceledException`.
 
 | Status | Value | Raised for |
 | --- | --- | --- |
@@ -156,9 +156,9 @@ The C ABI reports a status per call, not the broker's code, so several codes sha
 | `FELIX_STATUS_CANCELLED` | 3 | The call was cancelled. A publish cancelled after it may have been sent reports `FELIX_STATUS_OUTCOME_UNKNOWN` instead. |
 | `FELIX_STATUS_INVALID_ARGUMENT` | 10 | A null pointer, non-UTF-8 string or out-of-range value. Nothing was sent. |
 | `FELIX_STATUS_PANIC` | 11 | The library panicked. A bug worth reporting. |
-| `FELIX_STATUS_ERROR` | 20 | A failure with no more specific class: `invalid_request`, `limit_exceeded`, `stale_claim`, `stale_width`, `revoked` and unknown codes. |
+| `FELIX_STATUS_ERROR` | 20 | A failure with no more specific class: `invalid_request`, `limit_exceeded`, `stale_claim`, `stale_width` and unknown codes. |
 | `FELIX_STATUS_CONNECTION` | 21 | `draining`, an unreachable broker, or a lost connection. |
-| `FELIX_STATUS_AUTH` | 22 | `unauthenticated` and `forbidden`. |
+| `FELIX_STATUS_AUTH` | 22 | `unauthenticated`, `forbidden` and `revoked`. |
 | `FELIX_STATUS_NOT_FOUND` | 23 | `not_found`. |
 | `FELIX_STATUS_CURSOR` | 24 | A cursor error. |
 | `FELIX_STATUS_SHARD_UNAVAILABLE` | 25 | `shard_unavailable` and `not_leader`. |
