@@ -1333,6 +1333,9 @@ Losing the directory does reset them. So a copy with no promise on disk, on
 any broker, answers a fence only as its routing view backs it: with no route
 for the shard it refuses, retryably, and at the view's generation it answers
 only the leader the view names ([#1267](https://github.com/GetFelix/felix/issues/1267)).
+Because the view can lag the control plane, such a copy also checks the
+shard's assignment as the control plane's Raft leader confirms it before it
+takes any leader ([#1332](https://github.com/GetFelix/felix/issues/1332)).
 See `docs/replication-design.md`, "A directory that lost its ballots".
 
 Leaders learn each follower's id in the peer handshake and start its copy

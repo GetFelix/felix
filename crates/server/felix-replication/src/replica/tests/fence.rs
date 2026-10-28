@@ -1199,3 +1199,163 @@ async fn a_copy_with_a_promise_answers_by_its_ballot() {
         ErrorCode::FencedEpoch
     );
 }
+
+/// A control plane that answers a confirmed read with `answer`, counting
+/// how often it was asked.
+struct ConfirmedAs {
+    answer: crate::confirmed::Confirmed,
+    asked: std::sync::atomic::AtomicUsize,
+}
+
+impl ConfirmedAs {
+    fn new(answer: crate::confirmed::Confirmed) -> Arc<Self> {
+        Arc::new(Self {
+            answer,
+            asked: std::sync::atomic::AtomicUsize::new(0),
+        })
+    }
+
+    fn asked(&self) -> usize {
+        self.asked.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::confirmed::ConfirmedRoutes for ConfirmedAs {
+    async fn confirmed(&self, _key: &felix_router::ShardKey) -> crate::confirmed::Confirmed {
+        self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.answer.clone()
+    }
+}
+
+/// **A lagging routing view does not answer for a wiped copy (#1332).** The
+/// view still names broker-a at 5, but the control plane has already put
+/// broker-c at 6. With no promise on disk, the copy refuses broker-a's fence
+/// and its batch, and writes nothing for either.
+#[tokio::test]
+async fn a_copy_with_no_promise_refuses_a_leader_its_lagging_view_still_names() {
+    let (broker, _dir) = broker_with_storage().await;
+    let confirmed = ConfirmedAs::new(crate::confirmed::Confirmed::Assigned {
+        generation: 6,
+        leader: "broker-c".to_string(),
+    });
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5))
+        .with_confirmed_routes(Arc::clone(&confirmed) as _);
+
+    assert_eq!(
+        refusal(&handler.fence(SENDER, fence(5)).await).code,
+        ErrorCode::FencedEpoch
+    );
+    let answer = handler
+        .apply(SENDER, batch(5, 0, &["a"]), felix_broker::LogKind::Stream)
+        .await;
+    assert_eq!(refusal(&answer).code, ErrorCode::FencedEpoch);
+    let log = broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    assert_eq!(log.accepted_generation(), 0);
+    assert!(log.accepted_leader().is_none());
+    assert_eq!(log.tail_offset().await.expect("tail"), 0);
+}
+
+/// The confirmed read only adds refusals. An unanswered read backs nothing
+/// and is retried; a control plane that does not serve it leaves the view to
+/// answer as before; and once the copy holds a promise it is not asked.
+#[tokio::test]
+async fn a_confirmed_read_only_adds_refusals_to_a_copy_with_no_promise() {
+    use crate::confirmed::Confirmed;
+    let (broker, _dir) = broker_with_storage().await;
+    let unavailable = ConfirmedAs::new(Confirmed::Unavailable);
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5))
+        .with_confirmed_routes(Arc::clone(&unavailable) as _);
+    let refused = refusal(&handler.fence(SENDER, fence(5)).await).clone();
+    assert_eq!(refused.code, ErrorCode::StaleRoute);
+    assert!(refused.code.is_retryable());
+
+    let not_served = ConfirmedAs::new(Confirmed::NotServed);
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5))
+        .with_confirmed_routes(Arc::clone(&not_served) as _);
+    assert_eq!(
+        refusal(&handler.fence(Some("broker-c"), fence(5)).await).code,
+        ErrorCode::FencedEpoch,
+        "the view still refuses what it refused before"
+    );
+
+    let current = ConfirmedAs::new(Confirmed::Assigned {
+        generation: 5,
+        leader: "broker-a".to_string(),
+    });
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5))
+        .with_confirmed_routes(Arc::clone(&current) as _);
+    taken(&handler.fence(SENDER, fence(5)).await);
+    let asked = current.asked();
+    assert_eq!(asked, 1);
+    let answer = handler
+        .apply(SENDER, batch(5, 0, &["a"]), felix_broker::LogKind::Stream)
+        .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    taken(&handler.fence(SENDER, fence(5)).await);
+    assert_eq!(current.asked(), asked, "a copy with a promise asks nothing");
+}
+
+/// The same lagging view, for a bootstrap and a rebuild: either would set
+/// the ballot of a copy with no promise from the deposed leader.
+#[tokio::test]
+async fn a_copy_with_no_promise_refuses_a_lagging_views_leader_a_bootstrap() {
+    let (broker, _dir) = broker_with_storage().await;
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5))
+        .with_confirmed_routes(ConfirmedAs::new(crate::confirmed::Confirmed::Assigned {
+            generation: 6,
+            leader: "broker-c".to_string(),
+        }) as _);
+    let answer = handler
+        .bootstrap(
+            SENDER,
+            ReplicateBootstrap {
+                correlation_id: 1,
+                shard: batch(5, 0, &[]).shard,
+                base_offset: 0,
+            },
+            felix_broker::LogKind::Stream,
+        )
+        .await;
+    assert_eq!(refusal(&answer).code, ErrorCode::FencedEpoch);
+    let log = broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    assert_eq!(log.accepted_generation(), 0);
+    assert!(log.accepted_leader().is_none());
+}
+
+#[tokio::test]
+async fn a_copy_with_no_promise_refuses_a_lagging_views_leader_a_rebuild() {
+    let (broker, _dir) = broker_with_storage().await;
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5))
+        .with_confirmed_routes(ConfirmedAs::new(crate::confirmed::Confirmed::Assigned {
+            generation: 6,
+            leader: "broker-c".to_string(),
+        }) as _);
+    let answer = handler
+        .rebuild(
+            SENDER,
+            ReplicateRebuild {
+                correlation_id: 1,
+                shard: batch(5, 0, &[]).shard,
+                log: ReplicaLog::Stream,
+                base_offset: 0,
+            },
+        )
+        .await;
+    assert_eq!(refusal(&answer).code, ErrorCode::FencedEpoch);
+    let log = broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    assert_eq!(log.accepted_generation(), 0);
+    assert!(log.accepted_leader().is_none());
+}

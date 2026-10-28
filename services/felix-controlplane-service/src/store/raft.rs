@@ -841,6 +841,25 @@ impl ControlPlaneStore for RaftStore {
         self.local().get_shard_assignment(key).await
     }
 
+    /// Read on the leader after a read-index. Never from local state: the
+    /// caller asked for a confirmed read because this member's may lag.
+    async fn confirmed_shard_assignment(
+        &self,
+        key: &ShardKey,
+    ) -> StoreResult<crate::store::ConfirmedAssignment> {
+        let asked = self
+            .ask_leader(LeaderRequest::ShardAssignment { key: key.clone() })
+            .await;
+        match asked {
+            Ok(Some(MetaResponse::Assignment { assignment })) => {
+                Ok(crate::store::ConfirmedAssignment::Assigned(assignment))
+            }
+            Ok(Some(_)) => Err(unexpected_shape("assignment")),
+            Ok(None) => Ok(crate::store::ConfirmedAssignment::NotServed),
+            Err(err) => crate::store::ConfirmedAssignment::from_read(Err(err)),
+        }
+    }
+
     async fn list_shard_assignments(&self) -> StoreResult<Vec<ShardAssignment>> {
         self.local().list_shard_assignments().await
     }

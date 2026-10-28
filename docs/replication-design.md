@@ -767,18 +767,33 @@ sent: the refusals are the ones a fence already gets, so old and new peers
 exchange the same frames.
 
 This rests on the view being no older than the control plane was when the
-directory was lost. The watch reads the control plane's local applied
-state, so a snapshot from a lagging Raft member can break that, as it can
-for a batch's check today. Closing it needs a leader-confirmed read of the
-assignments before such a copy answers, which the control plane does not
-serve today. It also does not cover elections: a candidate's generation is
+directory was lost. The watch reads whichever control-plane member answers,
+and a lagging Raft member can hand a restarted broker a view that still
+names the deposed leader ([#1332](https://github.com/GetFelix/felix/issues/1332)).
+So before such a copy takes a leader, by a fence, a batch, a bootstrap or a
+rebuild, it also asks the control plane for the shard's assignment as its
+Raft leader confirms it (`GET /v1/shard-assignments/confirmed`, a
+read-index on the leader; `refuse_unconfirmed` in the same file). A
+generation older than the confirmed one is refused with `FencedEpoch`, at
+the confirmed generation only the leader it names is answered, and a read
+that fails or finds no assignment refuses with `StaleRoute`, retryably,
+writing nothing. The check only adds refusals to the view's, so it cannot
+make a copy take anything it would have refused before. A control plane
+that does not serve the read (404, or 501 while its Raft leader predates
+it) leaves the view to answer alone, as before, so a mixed-version cluster
+behaves as it did until every control-plane member has the route. A
+Postgres or in-memory control plane answers from its one store, which is
+already current.
+
+It also does not cover elections: a candidate's generation is
 not in the control plane until it is adopted, so no view can back a promise
 made to one. The election driver needs its own guard before [electing
 without the control plane](#electing-without-the-control-plane) ships
 ([#1331](https://github.com/GetFelix/felix/issues/1331)).
 
 The cost is a fence round trip or a few while a follower's watch catches up,
-only for copies with no promise: a wiped one, or a new shard's first fence. With one replica of a
+and one control-plane read per answer, only for copies with no promise: a
+wiped one, or a new shard's first fence. With one replica of a
 set of three wiped the other two make the majority anyway. With a majority
 wiped at once their votes wait for their views; once they have them they
 answer, so the shard is not stuck, but what it acknowledged was on those

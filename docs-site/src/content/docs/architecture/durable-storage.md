@@ -178,7 +178,10 @@ A crash keeps the fence promises a broker gave, since those files are synced
 under every policy. A **wiped** data directory loses them, so a copy with no
 promise on disk answers a promoted leader's fence only once its routing view
 has the shard, and at that generation only for the leader the view names
-([#1267](https://github.com/GetFelix/felix/issues/1267)).
+([#1267](https://github.com/GetFelix/felix/issues/1267)). The view can lag
+the control plane, so the copy also checks the assignment the control
+plane's leader confirms before it takes any leader
+([#1332](https://github.com/GetFelix/felix/issues/1332)).
 
 A **follower** that crashed under `periodic` or `none`, or lost its disk, may
 have answered for records it no longer holds. A failover's assignment names

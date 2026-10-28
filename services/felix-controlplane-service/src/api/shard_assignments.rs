@@ -6,17 +6,18 @@ use tokio::time::Instant;
 
 use axum::Json;
 use axum::extract::{Query, State};
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, StatusCode};
 
 use crate::api::AppState;
-use crate::api::error::{ApiError, api_internal};
+use crate::api::error::{ApiError, api_error, api_internal};
 use crate::api::nodes::require_cluster_node_view;
 use crate::api::pagination::{PageParams, list_visible};
 use crate::api::types::{
-    RoutedShardAssignment, RoutedShardAssignmentChange, ShardAssignmentChangesResponse,
-    ShardAssignmentListResponse, ShardAssignmentSnapshotResponse,
+    ConfirmedShardAssignmentResponse, RoutedShardAssignment, RoutedShardAssignmentChange,
+    ShardAssignmentChangesResponse, ShardAssignmentListResponse, ShardAssignmentSnapshotResponse,
 };
 use crate::model::{ShardAssignment, ShardAssignmentChange, ShardKey, StreamRouting};
+use crate::store::{ConfirmedAssignment, StoreError};
 
 /// The longest a changes request waits. Under the usual 30 s idle timeout of
 /// proxies and HTTP clients, so a wait ends in an answer rather than a cut
@@ -101,6 +102,76 @@ pub(crate) async fn shard_assignment_snapshot(
         items: with_routing(&state, snapshot.items).await?,
         next_seq: snapshot.next_seq,
     }))
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/shard-assignments/confirmed",
+    tag = "nodes",
+    params(
+        ("tenant_id" = String, Query, description = "Tenant"),
+        ("namespace" = String, Query, description = "Namespace"),
+        ("stream" = String, Query, description = "Stream or cache name"),
+        ("shard" = u32, Query, description = "Shard"),
+        ("kind" = Option<String>, Query, description = "`stream` (the default) or `cache`")
+    ),
+    responses(
+        (status = 200, description = "The shard's assignment, or none", body = ConfirmedShardAssignmentResponse),
+        (status = 501, description = "This control plane cannot confirm a read yet", body = crate::api::types::ErrorResponse),
+        (status = 503, description = "No leader confirmed the read in time", body = crate::api::types::ErrorResponse)
+    )
+)]
+/// One shard's assignment, no older than any write acknowledged before the
+/// request.
+///
+/// The snapshot and changes feeds answer from the member's applied state,
+/// which a lagging Raft member serves behind. A broker whose copy of a shard
+/// holds no election promise asks here before it answers a leader, so it
+/// does not vote for one the control plane has already replaced.
+///
+/// # Errors
+/// - 501 while the Raft leader predates the request.
+/// - 503 when no leader confirmed the read in time.
+pub(crate) async fn confirmed_shard_assignment(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(key): Query<ShardKey>,
+) -> Result<Json<ConfirmedShardAssignmentResponse>, ApiError> {
+    require_cluster_node_view(&state, &headers).await?;
+    let confirmed = state
+        .store
+        .confirmed_shard_assignment(&key)
+        .await
+        .map_err(|ref err| confirm_failed(err))?;
+    let assignment = match confirmed {
+        ConfirmedAssignment::Assigned(assignment) => {
+            with_routing(&state, vec![assignment]).await?.pop()
+        }
+        ConfirmedAssignment::Unassigned => None,
+        ConfirmedAssignment::NotServed => {
+            return Err(api_error(
+                StatusCode::NOT_IMPLEMENTED,
+                "not_served",
+                "the raft leader cannot confirm a read yet",
+            ));
+        }
+    };
+    Ok(Json(ConfirmedShardAssignmentResponse { assignment }))
+}
+
+/// A confirmed read that did not complete is unavailable, never an answer.
+fn confirm_failed(err: &StoreError) -> ApiError {
+    match err {
+        StoreError::Unexpected(_) => {
+            tracing::warn!(error = ?err, "confirmed shard assignment read failed");
+            api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "no raft leader confirmed the read in time",
+            )
+        }
+        other => api_internal("failed to read shard assignment", other),
+    }
 }
 
 #[utoipa::path(

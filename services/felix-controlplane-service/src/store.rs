@@ -332,6 +332,10 @@ pub trait ControlPlaneStore: Send + Sync {
         fence: u64,
     ) -> StoreResult<AssignmentWrite>;
     async fn get_shard_assignment(&self, key: &ShardKey) -> StoreResult<ShardAssignment>;
+    /// The assignment for `key`, read no earlier than every write
+    /// acknowledged before the call. [`Self::get_shard_assignment`] on a
+    /// Raft member answers from what that member has applied, which can lag.
+    async fn confirmed_shard_assignment(&self, key: &ShardKey) -> StoreResult<ConfirmedAssignment>;
     /// Every assignment, ordered by stream then shard.
     async fn list_shard_assignments(&self) -> StoreResult<Vec<ShardAssignment>>;
     /// Assignments ordered by tenant, namespace, kind, name, then shard, one
@@ -835,6 +839,28 @@ impl From<serde_json::Error> for StoreError {
 }
 
 pub type StoreResult<T> = Result<T, StoreError>;
+
+/// What [`ControlPlaneStore::confirmed_shard_assignment`] found.
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfirmedAssignment {
+    Assigned(ShardAssignment),
+    Unassigned,
+    /// No confirmed read could be made: a Raft leader that predates the
+    /// request, mid-way through a rolling upgrade.
+    NotServed,
+}
+
+impl ConfirmedAssignment {
+    /// From a read of a store every instance writes to, which is current.
+    pub(crate) fn from_read(read: StoreResult<ShardAssignment>) -> StoreResult<Self> {
+        match read {
+            Ok(assignment) => Ok(Self::Assigned(assignment)),
+            Err(StoreError::NotFound(_)) => Ok(Self::Unassigned),
+            Err(err) => Err(err),
+        }
+    }
+}
 
 /// What [`ControlPlaneStore::put_shard_assignment_if`] did.
 // One per write, so the size of the written variant costs nothing worth a box
