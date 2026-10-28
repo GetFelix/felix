@@ -11,6 +11,9 @@ use pyo3::types::PyBytes;
 
 use super::{CacheWatchHandle, ShardedSubscriptionHandle, SubscriptionHandle};
 use crate::args::{owned4, parse_ack, parse_addrs, parse_start};
+use crate::conditional::{
+    CacheCondition, CacheConditionResult, ConditionalWrite, OwnedVersionedValue, VersionedValue,
+};
 use crate::errors::to_py_err;
 use crate::runtime::block_on;
 use crate::tls;
@@ -396,6 +399,273 @@ impl Client {
                 .map_err(to_py_err)
         })?;
         Ok(value.map(|bytes| PyBytes::new(py, &bytes).unbind()))
+    }
+
+    /// Read a value with its version, or `None` if the key is absent or
+    /// expired. Pass the version to `cache_put_if` or `cache_delete_if`.
+    fn cache_get_versioned(
+        &self,
+        py: Python<'_>,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        key: &str,
+    ) -> PyResult<Option<Py<VersionedValue>>> {
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, cache, key) = owned4(tenant_id, namespace, cache, key);
+        let entry = block_on(py, async move {
+            inner
+                .cache_get_versioned(&tenant_id, &namespace, &cache, &key)
+                .await
+                .map_err(to_py_err)
+        })?;
+        entry
+            .map(|entry| Ok(OwnedVersionedValue(entry).into_pyobject(py)?.unbind()))
+            .transpose()
+    }
+
+    /// Store a value only if the key's entry meets `condition`. A refusal is
+    /// a `CacheConditionResult` with `applied` false and the key's current
+    /// version, not an error.
+    ///
+    /// Never sent twice: a retry of a put that applied would be refused by the
+    /// version it wrote, so a lost answer raises instead.
+    #[pyo3(signature = (tenant_id, namespace, cache, key, value, condition, *, ttl=None))]
+    fn cache_put_if(
+        &self,
+        py: Python<'_>,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        key: &str,
+        value: &[u8],
+        condition: PyRef<'_, CacheCondition>,
+        ttl: Option<f64>,
+    ) -> PyResult<CacheConditionResult> {
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, cache, key) = owned4(tenant_id, namespace, cache, key);
+        let value = Bytes::copy_from_slice(value);
+        let condition = condition.inner;
+        let ttl_ms = ttl.map(|seconds| (seconds.max(0.0) * 1000.0) as u64);
+        block_on(py, async move {
+            inner
+                .cache_put_if(
+                    &tenant_id, &namespace, &cache, &key, value, ttl_ms, condition,
+                )
+                .await
+                .map(Into::into)
+                .map_err(to_py_err)
+        })
+    }
+
+    /// Remove a key only if its version is `version`. A refusal is a
+    /// `CacheConditionResult` with `applied` false and the key's current
+    /// version.
+    fn cache_delete_if(
+        &self,
+        py: Python<'_>,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        key: &str,
+        version: u64,
+    ) -> PyResult<CacheConditionResult> {
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, cache, key) = owned4(tenant_id, namespace, cache, key);
+        block_on(py, async move {
+            inner
+                .cache_delete_if(&tenant_id, &namespace, &cache, &key, version)
+                .await
+                .map(Into::into)
+                .map_err(to_py_err)
+        })
+    }
+
+    /// Commit `ops` only if the shard's next offset is `expected_offset`, a
+    /// compare-and-set on the whole shard. A refusal is a `ConditionalWrite`
+    /// with `written` false and the shard's `tail`.
+    fn commit_if(
+        &self,
+        py: Python<'_>,
+        tenant_id: &str,
+        namespace: &str,
+        entity_key: &[u8],
+        ops: Vec<PyRef<'_, crate::commit::CommitOp>>,
+        expected_offset: u64,
+    ) -> PyResult<ConditionalWrite> {
+        let inner = Arc::clone(&self.inner);
+        let ops = crate::commit::ops(ops);
+        let (tenant_id, namespace, entity_key) = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            entity_key.to_vec(),
+        );
+        block_on(py, async move {
+            inner
+                .commit_if(&tenant_id, &namespace, &entity_key, ops, expected_offset)
+                .await
+                .map(Into::into)
+                .map_err(to_py_err)
+        })
+    }
+
+    /// `commit`, to the named shard instead of the one `entity_key` hashes
+    /// to. A shard the stream does not have is refused and nothing is written.
+    fn commit_on_shard(
+        &self,
+        py: Python<'_>,
+        tenant_id: &str,
+        namespace: &str,
+        shard: u32,
+        entity_key: &[u8],
+        ops: Vec<PyRef<'_, crate::commit::CommitOp>>,
+    ) -> PyResult<crate::commit::CommitReceipt> {
+        let inner = Arc::clone(&self.inner);
+        let ops = crate::commit::ops(ops);
+        let (tenant_id, namespace, entity_key) = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            entity_key.to_vec(),
+        );
+        let receipt = block_on(py, async move {
+            inner
+                .commit_on_shard(&tenant_id, &namespace, shard, &entity_key, ops)
+                .await
+                .map_err(to_py_err)
+        })?;
+        Ok(crate::commit::CommitReceipt {
+            offset: receipt.offset,
+        })
+    }
+
+    /// `commit_if`, to the named shard. `expected_offset` is that shard's
+    /// next offset.
+    fn commit_if_on_shard(
+        &self,
+        py: Python<'_>,
+        tenant_id: &str,
+        namespace: &str,
+        shard: u32,
+        entity_key: &[u8],
+        ops: Vec<PyRef<'_, crate::commit::CommitOp>>,
+        expected_offset: u64,
+    ) -> PyResult<ConditionalWrite> {
+        let inner = Arc::clone(&self.inner);
+        let ops = crate::commit::ops(ops);
+        let (tenant_id, namespace, entity_key) = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            entity_key.to_vec(),
+        );
+        block_on(py, async move {
+            inner
+                .commit_if_on_shard(
+                    &tenant_id,
+                    &namespace,
+                    shard,
+                    &entity_key,
+                    ops,
+                    expected_offset,
+                )
+                .await
+                .map(Into::into)
+                .map_err(to_py_err)
+        })
+    }
+
+    /// `key` in the state of the named shard of `stream`, which takes no
+    /// entity key.
+    fn state_get_on_shard(
+        &self,
+        py: Python<'_>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        key: &str,
+    ) -> PyResult<Py<crate::commit::StateValue>> {
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, stream, key) = owned4(tenant_id, namespace, stream, key);
+        let state = block_on(py, async move {
+            inner
+                .state_get_on_shard(&tenant_id, &namespace, &stream, shard, &key)
+                .await
+                .map_err(to_py_err)
+        })?;
+        Ok(crate::commit::OwnedStateValue(state)
+            .into_pyobject(py)?
+            .unbind())
+    }
+
+    /// Publish `payloads` (at least one) only if the shard's next offset is
+    /// `expected_offset`. `key` picks the shard as a plain publish does;
+    /// without one the shard is 0. A refusal is a `ConditionalWrite` with
+    /// `written` false and the shard's `tail`.
+    #[pyo3(signature = (tenant_id, namespace, stream, payloads, expected_offset, *, key=None))]
+    fn publish_if(
+        &self,
+        py: Python<'_>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        payloads: Vec<Vec<u8>>,
+        expected_offset: u64,
+        key: Option<&[u8]>,
+    ) -> PyResult<ConditionalWrite> {
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, stream) = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            stream.to_string(),
+        );
+        let key = key.map(<[u8]>::to_vec);
+        block_on(py, async move {
+            inner
+                .publish_if(
+                    &tenant_id,
+                    &namespace,
+                    &stream,
+                    key.as_deref(),
+                    payloads,
+                    expected_offset,
+                )
+                .await
+                .map(Into::into)
+                .map_err(to_py_err)
+        })
+    }
+
+    /// `publish_if`, to the named shard.
+    fn publish_if_on_shard(
+        &self,
+        py: Python<'_>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        payloads: Vec<Vec<u8>>,
+        expected_offset: u64,
+    ) -> PyResult<ConditionalWrite> {
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, stream) = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            stream.to_string(),
+        );
+        block_on(py, async move {
+            inner
+                .publish_if_on_shard(
+                    &tenant_id,
+                    &namespace,
+                    &stream,
+                    shard,
+                    payloads,
+                    expected_offset,
+                )
+                .await
+                .map(Into::into)
+                .map_err(to_py_err)
+        })
     }
 
     /// Apply a signed delta to a counter and return the sum *including* it.

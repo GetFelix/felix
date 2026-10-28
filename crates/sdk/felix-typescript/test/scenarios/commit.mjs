@@ -145,4 +145,82 @@ export default function register(ctx) {
         );
       }
     }));
+
+  // A write at an offset no shard has reached is refused with the tail, one at
+  // the tail lands there, and the same offset again is refused past it.
+  // `write(expected)` runs the form under test and returns its answer.
+  async function checkConditional(what, write) {
+    const stale = await write(2n ** 64n - 1n);
+    assert.equal(stale.written, false, `${what} at a stale offset was written`);
+    assert.equal(stale.offset, null);
+    assert.equal(typeof stale.tail, "bigint");
+    const tail = stale.tail;
+
+    const landed = await write(tail);
+    assert.equal(landed.written, true, `${what} at the tail ${tail} was refused`);
+    assert.equal(landed.offset, tail);
+    assert.equal(landed.tail, null);
+
+    const again = await write(tail);
+    assert.equal(again.written, false, `${what} again at ${tail} was written`);
+    assert.ok(again.tail > landed.offset, `${what} refused with ${again.tail}, not past ${landed.offset}`);
+  }
+
+  it("a conditional commit is refused once the shard has moved on", () =>
+    scenario("commit.expected_offset_refuses_a_stale_write", async () => {
+      const { client, fixture, felix } = ctx;
+      const stream = fixture.durable_stream;
+      const { tenant_id: tenant, namespace } = fixture;
+      for (const [what, shard] of [["commitIf", null], ["commitIfOnShard", 2]]) {
+        const tag = unique("cond");
+        const ops = [felix.CommitOp.publish(stream, tag), felix.CommitOp.put(stream, tag, "cond")];
+        await checkConditional(what, (expected) =>
+          shard === null
+            ? client.commitIf(tenant, namespace, Buffer.from(tag), ops, expected)
+            : client.commitIfOnShard(tenant, namespace, shard, Buffer.from(tag), ops, expected),
+        );
+      }
+    }));
+
+  it("a commit to a named shard is read back from that shard", () =>
+    scenario("explicit_shard.commit_lands_on_the_named_shard", async () => {
+      const { client, fixture, felix } = ctx;
+      const stream = fixture.durable_stream;
+      const { tenant_id: tenant, namespace } = fixture;
+      const key = unique("shard");
+      const receipt = await client.commitOnShard(tenant, namespace, 2, Buffer.from(key), [
+        felix.CommitOp.publish(stream, `${key}-event`),
+        felix.CommitOp.put(stream, key, "shard-value"),
+      ]);
+      assert.equal(typeof receipt.offset, "bigint");
+      const state = await client.stateGetOnShard(tenant, namespace, stream, 2, key);
+      assert.deepEqual(state.value, Buffer.from("shard-value"));
+      assert.equal(state.version, receipt.offset);
+    }));
+
+  it("of two conditional publishes at one offset, the second is refused", () =>
+    scenario(
+      ["publish_if.lands_at_the_expected_offset", "publish_if.refused_with_the_tail"],
+      async () => {
+        const { client, fixture } = ctx;
+        const stream = fixture.durable_stream;
+        const { tenant_id: tenant, namespace } = fixture;
+        const payloads = [Buffer.from("pi-1"), Buffer.from("pi-2")];
+        const key = Buffer.from(unique("pub"));
+        await checkConditional("publishIf", (expected) =>
+          client.publishIf(tenant, namespace, stream, payloads, expected, key),
+        );
+        await checkConditional("publishIfOnShard", (expected) =>
+          client.publishIfOnShard(tenant, namespace, stream, 3, payloads, expected),
+        );
+      },
+    ));
+
+  it("a conditional publish with no payload is refused before it is sent", async () => {
+    const { client, fixture, felix } = ctx;
+    await assert.rejects(
+      client.publishIf(fixture.tenant_id, fixture.namespace, fixture.durable_stream, [], 0n),
+      (err) => err instanceof felix.FelixError,
+    );
+  });
 }

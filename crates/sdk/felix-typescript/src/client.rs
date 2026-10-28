@@ -449,6 +449,216 @@ impl Client {
         Ok(state.into())
     }
 
+    /// Read a value with its version, or `null` if the key is absent or
+    /// expired. Pass the version to `cachePutIf` or `cacheDeleteIf`.
+    #[napi]
+    pub async fn cache_get_versioned(
+        &self,
+        tenant_id: String,
+        namespace: String,
+        cache: String,
+        key: String,
+    ) -> Result<Option<crate::conditional::VersionedValue>> {
+        let entry = self
+            .cluster()?
+            .cache_get_versioned(&tenant_id, &namespace, &cache, &key)
+            .await
+            .map_err(classify)?;
+        Ok(entry.map(Into::into))
+    }
+
+    /// Store a value only if the key's entry meets `condition`. A refusal
+    /// resolves with `applied: false` and the key's current version.
+    ///
+    /// Never sent twice: a retry of a put that applied would be refused by the
+    /// version it wrote, so a lost answer rejects instead.
+    #[napi]
+    pub async fn cache_put_if(
+        &self,
+        tenant_id: String,
+        namespace: String,
+        cache: String,
+        key: String,
+        value: Buffer,
+        condition: crate::conditional::CacheCondition,
+        ttl_seconds: Option<f64>,
+    ) -> Result<crate::conditional::CacheConditionResult> {
+        let condition = condition.into_client()?;
+        let ttl_ms = ttl_seconds.map(|s| (s.max(0.0) * 1000.0) as u64);
+        let value = Bytes::copy_from_slice(&value);
+        let result = self
+            .cluster()?
+            .cache_put_if(
+                &tenant_id, &namespace, &cache, &key, value, ttl_ms, condition,
+            )
+            .await
+            .map_err(classify)?;
+        Ok(result.into())
+    }
+
+    /// Remove a key only if its version is `version`. A refusal resolves with
+    /// `applied: false` and the key's current version.
+    #[napi]
+    pub async fn cache_delete_if(
+        &self,
+        tenant_id: String,
+        namespace: String,
+        cache: String,
+        key: String,
+        version: BigInt,
+    ) -> Result<crate::conditional::CacheConditionResult> {
+        let version = u64_of(version)?;
+        let result = self
+            .cluster()?
+            .cache_delete_if(&tenant_id, &namespace, &cache, &key, version)
+            .await
+            .map_err(classify)?;
+        Ok(result.into())
+    }
+
+    /// Commit `ops` only if the shard's next offset is `expectedOffset`. A
+    /// refusal resolves with `written: false` and the shard's `tail`.
+    #[napi]
+    pub async fn commit_if(
+        &self,
+        tenant_id: String,
+        namespace: String,
+        entity_key: Buffer,
+        ops: Vec<crate::commit::CommitOp>,
+        expected_offset: BigInt,
+    ) -> Result<crate::conditional::ConditionalWrite> {
+        let ops = ops
+            .into_iter()
+            .map(crate::commit::to_client)
+            .collect::<Result<Vec<_>>>()?;
+        let expected = u64_of(expected_offset)?;
+        let answer = self
+            .cluster()?
+            .commit_if(&tenant_id, &namespace, &entity_key, ops, expected)
+            .await
+            .map_err(classify)?;
+        Ok(answer.into())
+    }
+
+    /// `commit`, to the named shard instead of the one `entityKey` hashes to.
+    #[napi]
+    pub async fn commit_on_shard(
+        &self,
+        tenant_id: String,
+        namespace: String,
+        shard: u32,
+        entity_key: Buffer,
+        ops: Vec<crate::commit::CommitOp>,
+    ) -> Result<crate::commit::CommitReceipt> {
+        let ops = ops
+            .into_iter()
+            .map(crate::commit::to_client)
+            .collect::<Result<Vec<_>>>()?;
+        let receipt = self
+            .cluster()?
+            .commit_on_shard(&tenant_id, &namespace, shard, &entity_key, ops)
+            .await
+            .map_err(classify)?;
+        Ok(crate::commit::CommitReceipt {
+            offset: BigInt::from(receipt.offset),
+        })
+    }
+
+    /// `commitIf`, to the named shard. `expectedOffset` is that shard's next
+    /// offset.
+    #[napi]
+    pub async fn commit_if_on_shard(
+        &self,
+        tenant_id: String,
+        namespace: String,
+        shard: u32,
+        entity_key: Buffer,
+        ops: Vec<crate::commit::CommitOp>,
+        expected_offset: BigInt,
+    ) -> Result<crate::conditional::ConditionalWrite> {
+        let ops = ops
+            .into_iter()
+            .map(crate::commit::to_client)
+            .collect::<Result<Vec<_>>>()?;
+        let expected = u64_of(expected_offset)?;
+        let answer = self
+            .cluster()?
+            .commit_if_on_shard(&tenant_id, &namespace, shard, &entity_key, ops, expected)
+            .await
+            .map_err(classify)?;
+        Ok(answer.into())
+    }
+
+    /// `key` in the state of the named shard of `stream`, which takes no
+    /// entity key.
+    #[napi]
+    pub async fn state_get_on_shard(
+        &self,
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        shard: u32,
+        key: String,
+    ) -> Result<crate::commit::StateValue> {
+        let state = self
+            .cluster()?
+            .state_get_on_shard(&tenant_id, &namespace, &stream, shard, &key)
+            .await
+            .map_err(classify)?;
+        Ok(state.into())
+    }
+
+    /// Publish `payloads` only if the shard's next offset is `expectedOffset`.
+    /// `key` picks the shard as a plain publish does (none is shard 0). A
+    /// refusal resolves with `written: false` and the shard's `tail`.
+    #[napi]
+    pub async fn publish_if(
+        &self,
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        payloads: Vec<Buffer>,
+        expected_offset: BigInt,
+        key: Option<Buffer>,
+    ) -> Result<crate::conditional::ConditionalWrite> {
+        let payloads = payloads.into_iter().map(|p| p.to_vec()).collect();
+        let expected = u64_of(expected_offset)?;
+        let answer = self
+            .cluster()?
+            .publish_if(
+                &tenant_id,
+                &namespace,
+                &stream,
+                key.as_deref(),
+                payloads,
+                expected,
+            )
+            .await
+            .map_err(classify)?;
+        Ok(answer.into())
+    }
+
+    /// `publishIf`, to the named shard.
+    #[napi]
+    pub async fn publish_if_on_shard(
+        &self,
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        shard: u32,
+        payloads: Vec<Buffer>,
+        expected_offset: BigInt,
+    ) -> Result<crate::conditional::ConditionalWrite> {
+        let payloads = payloads.into_iter().map(|p| p.to_vec()).collect();
+        let expected = u64_of(expected_offset)?;
+        let answer = self
+            .cluster()?
+            .publish_if_on_shard(&tenant_id, &namespace, &stream, shard, payloads, expected)
+            .await
+            .map_err(classify)?;
+        Ok(answer.into())
+    }
+
     /// Add to a counter and return its new value. `delta` may be negative.
     #[napi]
     pub async fn counter_add(

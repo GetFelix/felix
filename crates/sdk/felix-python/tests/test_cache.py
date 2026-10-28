@@ -278,3 +278,75 @@ def test_retained_and_start_are_mutually_exclusive(client, fixture, key):
             start=0,
             retained=True,
         )
+
+
+# The conditional calls have no catalogued scenario of their own, so these run
+# against the fixture without a ledger entry.
+
+
+def test_a_conditional_put_writes_only_at_the_version_read(client, fixture, key):
+    tenant, namespace, cache = fixture["tenant_id"], fixture["namespace"], fixture["cache"]
+    assert client.cache_get_versioned(tenant, namespace, cache, key) is None
+
+    first = client.cache_put_if(tenant, namespace, cache, key, b"one", felix.CacheCondition.absent())
+    assert isinstance(first, felix.CacheConditionResult)
+    assert first.applied
+    assert isinstance(first.version, int)
+
+    # Taking an absent key twice: the second is refused with the live version.
+    taken = client.cache_put_if(tenant, namespace, cache, key, b"two", felix.CacheCondition.absent())
+    assert (taken.applied, taken.version) == (False, first.version)
+
+    read = client.cache_get_versioned(tenant, namespace, cache, key)
+    assert isinstance(read, felix.VersionedValue)
+    assert (read.value, read.version) == (b"one", first.version)
+
+    stale = client.cache_put_if(
+        tenant, namespace, cache, key, b"x", felix.CacheCondition.version(read.version + 1)
+    )
+    assert not stale.applied
+    swapped = client.cache_put_if(
+        tenant, namespace, cache, key, b"two", felix.CacheCondition.version(read.version), ttl=60
+    )
+    assert swapped.applied
+    assert swapped.version > read.version
+
+    # A delete at the old version is refused; at the new one it removes the key.
+    refused = client.cache_delete_if(tenant, namespace, cache, key, read.version)
+    assert (refused.applied, refused.version) == (False, swapped.version)
+    assert client.cache_delete_if(tenant, namespace, cache, key, swapped.version).applied
+    assert client.cache_get(tenant, namespace, cache, key) is None
+    gone = client.cache_delete_if(tenant, namespace, cache, key, swapped.version)
+    assert (gone.applied, gone.version) == (False, None)
+
+
+def test_the_async_client_writes_conditionally_too(fixture, key):
+    import asyncio
+
+    async def run():
+        client = await felix.AsyncClient.connect(
+            fixture["addrs"],
+            tenant_id=fixture["tenant_id"],
+            token=fixture["token"],
+            ca_file=fixture["ca_file"],
+        )
+        scope = (fixture["tenant_id"], fixture["namespace"], fixture["cache"])
+        first = await client.cache_put_if(*scope, key, b"one", felix.CacheCondition.absent())
+        read = await client.cache_get_versioned(*scope, key)
+        stale = await client.cache_delete_if(*scope, key, read.version + 1)
+        removed = await client.cache_delete_if(*scope, key, read.version)
+        return first, read, stale, removed
+
+    first, read, stale, removed = asyncio.run(run())
+    assert first.applied
+    assert (read.value, read.version) == (b"one", first.version)
+    assert not stale.applied
+    assert removed.applied
+
+
+def test_a_bad_version_is_refused_before_it_is_sent(client, fixture, key):
+    tenant, namespace, cache = fixture["tenant_id"], fixture["namespace"], fixture["cache"]
+    with pytest.raises(OverflowError):
+        client.cache_delete_if(tenant, namespace, cache, key, -1)
+    with pytest.raises(OverflowError):
+        felix.CacheCondition.version(-1)

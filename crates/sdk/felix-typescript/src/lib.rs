@@ -24,6 +24,7 @@ mod args;
 mod cache_watch;
 mod client;
 mod commit;
+mod conditional;
 mod errors;
 mod sharded_subscription;
 mod subscription;

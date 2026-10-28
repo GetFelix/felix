@@ -41,6 +41,11 @@ Beyond streams, both surfaces cover:
 * **Atomic commits** — ``commit`` writes an event and state updates as one
   record on the shard an entity key routes to, and ``state_get`` reads that
   state with the commit's offset as its version. See docs/atomic-commit.md.
+* **Conditional writes** — ``cache_put_if``, ``cache_delete_if`` and
+  ``cache_get_versioned`` write a cache key only at the version just read.
+  ``publish_if`` and ``commit_if`` write only if the shard's next offset is the
+  one expected, and ``commit_on_shard`` names the shard. A refusal is a result,
+  not an error, and a lost answer is never resent.
 """
 
 from ._felix import (
@@ -50,6 +55,8 @@ from ._felix import (
     AsyncSubscription,
     AuthError,
     CacheChange,
+    CacheCondition,
+    CacheConditionResult,
     CacheWatchFilter,
     CacheWatchHandle,
     CacheWatchLagged,
@@ -58,6 +65,7 @@ from ._felix import (
     CommitError,
     CommitOp,
     CommitReceipt,
+    ConditionalWrite,
     ConnectionError,
     CursorError,
     Event,
@@ -77,6 +85,7 @@ from ._felix import (
     StateValue,
     StreamDeleted,
     SubscriptionHandle,
+    VersionedValue,
     __version__,
 )
 
@@ -109,6 +118,11 @@ __all__ = [
     "CommitOp",
     "CommitReceipt",
     "StateValue",
+    # Conditional writes
+    "CacheCondition",
+    "CacheConditionResult",
+    "VersionedValue",
+    "ConditionalWrite",
     # Errors
     "FelixError",
     "ConnectionError",

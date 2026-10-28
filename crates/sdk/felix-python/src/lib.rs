@@ -25,6 +25,7 @@ mod args;
 mod asyncio;
 mod blocking;
 mod commit;
+mod conditional;
 mod errors;
 mod runtime;
 mod tls;
@@ -61,6 +62,10 @@ fn _felix(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<commit::CommitOp>()?;
     module.add_class::<commit::CommitReceipt>()?;
     module.add_class::<commit::StateValue>()?;
+    module.add_class::<conditional::CacheCondition>()?;
+    module.add_class::<conditional::CacheConditionResult>()?;
+    module.add_class::<conditional::VersionedValue>()?;
+    module.add_class::<conditional::ConditionalWrite>()?;
 
     errors::register(module)?;
     Ok(())
