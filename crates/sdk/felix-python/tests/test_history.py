@@ -22,18 +22,33 @@ def test_a_time_resolves_to_the_first_record_at_or_after_it(client, fixture, key
     tenant, namespace, stream = shard0(fixture)
     earlier = client.publish(tenant, namespace, stream, f"a-{key}".encode(), ack="per_message")
     assert earlier is not None, "the fixture stream reports no offsets"
-    time.sleep(0.1)
-    boundary = now_micros()
-    time.sleep(0.1)
+    time.sleep(0.01)
     later = client.publish(tenant, namespace, stream, f"b-{key}".encode(), ack="per_message")
+    assert later is not None
 
-    assert client.offset_for_time(tenant, namespace, stream, 0, boundary) == later
+    # Times come from the records, so client and broker clocks do not matter.
+    stamps = {
+        r.offset: r.timestamp_micros
+        for r in client.read(tenant, namespace, stream, 0, earlier, end=later + 1).records
+    }
+    assert stamps[earlier] < stamps[later], "the two records share a timestamp"
+
+    # A time just past the first record falls between the two.
+    between = client.offset_for_time(tenant, namespace, stream, 0, stamps[earlier] + 1)
+    assert between is not None and earlier < between <= later
+    # A record's own time finds that record or one stamped identically before it.
+    exact = client.offset_for_time(tenant, namespace, stream, 0, stamps[later])
+    assert exact is not None and between <= exact <= later
     # A time before everything answers with the oldest record, not nothing.
     oldest = client.offset_for_time(tenant, namespace, stream, 0, 1)
     assert oldest is not None and oldest <= earlier
-    # No committed record is that recent yet.
-    future = now_micros() + 3_600_000_000
-    assert client.offset_for_time(tenant, namespace, stream, 0, future) is None
+    # Nothing is stamped after the newest record plus an hour.
+    assert client.offset_for_time(tenant, namespace, stream, 0, stamps[later] + 3_600_000_000) is None
+
+    # A stream nothing was published to has no record at any time.
+    empty = fixture["empty_stream"]
+    assert client.offset_for_time(tenant, namespace, empty, 0, 1) is None
+    assert client.offset_for_time(tenant, namespace, empty, 0, now_micros()) is None
 
 
 @pytest.mark.scenario("stream.read_returns_committed_pages")

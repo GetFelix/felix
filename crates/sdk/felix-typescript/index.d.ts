@@ -565,6 +565,13 @@ export declare class CacheWatchHandle {
    * delivery.
    */
   readonly retainedCount: bigint | null;
+  /**
+   * The `fromOffset` that resumes this watch without a gap, counting
+   * everything handed out so far. Readable while a `recv` is in flight.
+   */
+  readonly resumeFrom: bigint;
+  /** How many times this watch has followed its shard to a new owner. */
+  readonly moves: bigint;
   /** The next item, or `null` once the watch has ended. */
   recv(): Promise<CacheWatchItem | null>;
   close(): Promise<void>;

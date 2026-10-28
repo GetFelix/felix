@@ -4,15 +4,16 @@ use std::sync::Arc;
 
 use pyo3::exceptions::PyStopAsyncIteration;
 use pyo3::prelude::*;
-use tokio::sync::Mutex;
 
+use crate::closable::Closable;
+use crate::producer::timeout_of;
 use crate::sharded_cache_watch::OwnedShardedWatchItem;
 
 /// A prefix watch across every shard of a cache, consumed with `async for`.
 /// See `ShardedCacheWatchHandle` for the items.
 #[pyclass(module = "felix", name = "AsyncShardedCacheWatch")]
 pub struct AsyncShardedCacheWatch {
-    inner: Arc<Mutex<Option<felix_client::ShardedCacheWatch>>>,
+    inner: Arc<Closable<felix_client::ShardedCacheWatch>>,
     #[pyo3(get)]
     shards: u32,
     #[pyo3(get)]
@@ -24,7 +25,7 @@ impl AsyncShardedCacheWatch {
         Self {
             shards: watch.shards(),
             retained_count: watch.retained_count(),
-            inner: Arc::new(Mutex::new(Some(watch))),
+            inner: Arc::new(Closable::new(watch)),
         }
     }
 }
@@ -34,21 +35,22 @@ impl AsyncShardedCacheWatch {
     #[pyo3(signature = (timeout=None))]
     fn recv<'py>(&self, py: Python<'py>, timeout: Option<f64>) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
+        let timeout = timeout_of(timeout)?;
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mut guard = inner.lock().await;
+            let Some(mut guard) = inner.lock().await else {
+                return Ok(None);
+            };
             let Some(watch) = guard.as_mut() else {
                 return Ok(None);
             };
-            let next = match timeout {
-                Some(seconds) => {
-                    let duration = std::time::Duration::from_secs_f64(seconds.max(0.0));
-                    match tokio::time::timeout(duration, watch.recv()).await {
-                        Ok(item) => item,
-                        Err(_elapsed) => return Ok(None),
-                    }
+            let read = async {
+                match timeout {
+                    Some(duration) => tokio::time::timeout(duration, watch.recv()).await.ok(),
+                    None => Some(watch.recv().await),
                 }
-                None => watch.recv().await,
             };
+            // `None` here is a timeout or a close: both read as nothing.
+            let next = inner.until_closed(read).await.flatten().flatten();
             Ok(next.map(OwnedShardedWatchItem::from))
         })
     }
@@ -57,7 +59,9 @@ impl AsyncShardedCacheWatch {
     fn resume_offsets<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let guard = inner.lock().await;
+            let Some(guard) = inner.lock().await else {
+                return Ok(Default::default());
+            };
             Ok(guard
                 .as_ref()
                 .map(felix_client::ShardedCacheWatch::resume_offsets)
@@ -68,7 +72,7 @@ impl AsyncShardedCacheWatch {
     fn close<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            inner.lock().await.take();
+            inner.close();
             Ok(())
         })
     }
@@ -80,13 +84,16 @@ impl AsyncShardedCacheWatch {
     fn __anext__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mut guard = inner.lock().await;
+            let Some(mut guard) = inner.lock().await else {
+                return Err(PyStopAsyncIteration::new_err("watch closed"));
+            };
             let Some(watch) = guard.as_mut() else {
                 return Err(PyStopAsyncIteration::new_err("watch closed"));
             };
-            match watch.recv().await {
-                Some(item) => Ok(OwnedShardedWatchItem::from(item)),
-                None => Err(PyStopAsyncIteration::new_err("watch ended")),
+            match inner.until_closed(watch.recv()).await {
+                Some(Some(item)) => Ok(OwnedShardedWatchItem::from(item)),
+                Some(None) => Err(PyStopAsyncIteration::new_err("watch ended")),
+                None => Err(PyStopAsyncIteration::new_err("watch closed")),
             }
         })
     }
@@ -106,7 +113,7 @@ impl AsyncShardedCacheWatch {
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            inner.lock().await.take();
+            inner.close();
             Ok(false)
         })
     }

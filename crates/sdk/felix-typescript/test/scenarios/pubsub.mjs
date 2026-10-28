@@ -265,27 +265,35 @@ export default function register(ctx) {
   it("a time finds the first record appended at or after it", () =>
     scenario("stream.offset_for_time_finds_the_first_record_at_or_after", async () => {
       const { client, fixture } = ctx;
-      const { tenant_id: tenant, namespace, durable_stream: stream } = fixture;
+      const { tenant_id: tenant, namespace, durable_stream: stream, empty_stream: empty } = fixture;
       const first = await client.publishOnShard(
         tenant, namespace, stream, 0, [Buffer.from(unique("before"))], "per_message",
       );
       assert.equal(typeof first, "bigint", "the publish reported no offset");
-      await sleep(100);
-      const between = BigInt(Date.now()) * 1000n;
-      await sleep(100);
+      await sleep(10);
       const second = await client.publishOnShard(
         tenant, namespace, stream, 0, [Buffer.from(unique("after"))], "per_message",
       );
 
-      const found = await client.offsetForTime(tenant, namespace, stream, 0, between);
-      assert.equal(typeof found, "bigint");
-      assert.ok(found > first && found <= second, `got ${found}, wanted in (${first}, ${second}]`);
+      // Times come from the records, so client and broker clocks do not matter.
+      const page = await client.read(tenant, namespace, stream, 0, first, second + 1n, 1000);
+      const stamp = (offset) => page.records.find((r) => r.offset === offset).timestampMicros;
+      assert.ok(stamp(first) < stamp(second), "the two records share a timestamp");
+
+      const between = await client.offsetForTime(tenant, namespace, stream, 0, stamp(first) + 1n);
+      assert.equal(typeof between, "bigint");
+      assert.ok(between > first && between <= second, `got ${between}, wanted in (${first}, ${second}]`);
+      const exact = await client.offsetForTime(tenant, namespace, stream, 0, stamp(second));
+      assert.ok(exact >= between && exact <= second, `got ${exact}`);
 
       const oldest = await client.offsetForTime(tenant, namespace, stream, 0, 0n);
       assert.ok(oldest <= first, "a time older than every record answers with the oldest");
 
-      const future = BigInt(Date.now() + 3_600_000) * 1000n;
+      const future = stamp(second) + 3_600_000_000n;
       assert.equal(await client.offsetForTime(tenant, namespace, stream, 0, future), null);
+
+      assert.equal(await client.offsetForTime(tenant, namespace, empty, 0, 1n), null);
+      assert.equal(await client.offsetForTime(tenant, namespace, empty, 0, BigInt(Date.now()) * 1000n), null);
     }));
 
   it("a stream shard can be read in pages without subscribing", () =>

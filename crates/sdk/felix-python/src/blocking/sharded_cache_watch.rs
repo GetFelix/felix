@@ -3,8 +3,9 @@
 use std::sync::Arc;
 
 use pyo3::prelude::*;
-use tokio::sync::Mutex;
 
+use crate::closable::Closable;
+use crate::producer::timeout_of;
 use crate::runtime::block_on;
 use crate::sharded_cache_watch::OwnedShardedWatchItem;
 
@@ -17,7 +18,7 @@ use crate::sharded_cache_watch::OwnedShardedWatchItem;
 /// part of the prefix. Order holds per key only.
 #[pyclass(module = "felix")]
 pub struct ShardedCacheWatchHandle {
-    inner: Arc<Mutex<Option<felix_client::ShardedCacheWatch>>>,
+    inner: Arc<Closable<felix_client::ShardedCacheWatch>>,
     #[pyo3(get)]
     shards: u32,
     #[pyo3(get)]
@@ -29,7 +30,7 @@ impl ShardedCacheWatchHandle {
         Self {
             shards: watch.shards(),
             retained_count: watch.retained_count(),
-            inner: Arc::new(Mutex::new(Some(watch))),
+            inner: Arc::new(Closable::new(watch)),
         }
     }
 }
@@ -41,21 +42,22 @@ impl ShardedCacheWatchHandle {
     #[pyo3(signature = (timeout=None))]
     fn recv(&self, py: Python<'_>, timeout: Option<f64>) -> PyResult<Option<Py<PyAny>>> {
         let inner = Arc::clone(&self.inner);
+        let timeout = timeout_of(timeout)?;
         let item = block_on(py, async move {
-            let mut guard = inner.lock().await;
+            let Some(mut guard) = inner.lock().await else {
+                return Ok(None);
+            };
             let Some(watch) = guard.as_mut() else {
                 return Ok(None);
             };
-            let next = match timeout {
-                Some(seconds) => {
-                    let duration = std::time::Duration::from_secs_f64(seconds.max(0.0));
-                    match tokio::time::timeout(duration, watch.recv()).await {
-                        Ok(item) => item,
-                        Err(_elapsed) => return Ok(None),
-                    }
+            let read = async {
+                match timeout {
+                    Some(duration) => tokio::time::timeout(duration, watch.recv()).await.ok(),
+                    None => Some(watch.recv().await),
                 }
-                None => watch.recv().await,
             };
+            // `None` here is a timeout or a close: both read as nothing.
+            let next = inner.until_closed(read).await.flatten().flatten();
             Ok(next.map(OwnedShardedWatchItem::from))
         })?;
         item.map(|item| item.into_pyobject(py).map(|bound| bound.unbind()))
@@ -68,7 +70,9 @@ impl ShardedCacheWatchHandle {
     fn resume_offsets(&self, py: Python<'_>) -> PyResult<std::collections::BTreeMap<u32, u64>> {
         let inner = Arc::clone(&self.inner);
         block_on(py, async move {
-            let guard = inner.lock().await;
+            let Some(guard) = inner.lock().await else {
+                return Ok(Default::default());
+            };
             Ok(guard
                 .as_ref()
                 .map(felix_client::ShardedCacheWatch::resume_offsets)
@@ -76,18 +80,15 @@ impl ShardedCacheWatchHandle {
         })
     }
 
-    fn close(&self, py: Python<'_>) -> PyResult<()> {
-        let inner = Arc::clone(&self.inner);
-        block_on(py, async move {
-            inner.lock().await.take();
-            Ok(())
-        })
+    /// Stop watching. Idempotent, and returns even while another thread is
+    /// blocked in `recv`, which then returns `None`.
+    fn close(&self) {
+        self.inner.close();
     }
 
     #[getter]
-    fn closed(&self, py: Python<'_>) -> PyResult<bool> {
-        let inner = Arc::clone(&self.inner);
-        block_on(py, async move { Ok(inner.lock().await.is_none()) })
+    fn closed(&self) -> bool {
+        self.inner.is_closed()
     }
 
     fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
@@ -105,12 +106,12 @@ impl ShardedCacheWatchHandle {
     #[pyo3(signature = (_exc_type=None, _exc_value=None, _traceback=None))]
     fn __exit__(
         &self,
-        py: Python<'_>,
+        _py: Python<'_>,
         _exc_type: Option<Py<PyAny>>,
         _exc_value: Option<Py<PyAny>>,
         _traceback: Option<Py<PyAny>>,
     ) -> PyResult<bool> {
-        self.close(py)?;
+        self.close();
         Ok(false)
     }
 }

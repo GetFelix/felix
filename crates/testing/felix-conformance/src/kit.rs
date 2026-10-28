@@ -351,6 +351,10 @@ pub struct Fixture {
     /// scenario.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quorum_stream: Option<String>,
+    /// A durable single-shard stream nothing is ever published to, for
+    /// scenarios about an empty log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub empty_stream: Option<String>,
     /// Where to POST `/fence`, `/partition` and `/heal`. Absent from a fixture
     /// that cannot produce those faults, and a suite skips the scenarios that
     /// need them.

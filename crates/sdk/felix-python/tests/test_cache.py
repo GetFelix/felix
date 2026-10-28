@@ -466,3 +466,85 @@ def test_the_async_client_watches_every_shard_too(fixture, key):
     seen, shards = asyncio.run(run())
     assert len(seen) == 6
     assert shards > 1
+
+
+def _closes_while_a_reader_is_parked(make_handle, read):
+    import threading
+
+    handle = make_handle()
+    stopped = threading.Event()
+
+    def reader():
+        try:
+            read(handle)
+        finally:
+            stopped.set()
+
+    thread = threading.Thread(target=reader, daemon=True)
+    thread.start()
+    time.sleep(0.5)
+    assert not stopped.is_set(), "the reader returned before anything was written"
+
+    started = time.monotonic()
+    closer = threading.Thread(target=handle.close, daemon=True)
+    closer.start()
+    closer.join(timeout=5.0)
+    assert not closer.is_alive(), "close() waited on the parked reader"
+    assert time.monotonic() - started < 5.0
+    assert stopped.wait(timeout=5.0), "the reader never stopped after close()"
+    assert handle.closed
+
+
+def test_closing_a_sharded_watch_releases_a_parked_reader(client, fixture, key):
+    _closes_while_a_reader_is_parked(
+        lambda: client.watch_cache_sharded(
+            fixture["tenant_id"], fixture["namespace"], fixture["cache"], f"idle-{key}:"
+        ),
+        lambda watch: watch.recv(),
+    )
+
+
+def test_closing_a_watch_releases_a_parked_reader(client, fixture, key):
+    _closes_while_a_reader_is_parked(
+        lambda: client.watch_cache(
+            fixture["tenant_id"],
+            fixture["namespace"],
+            fixture["cache"],
+            felix.CacheWatchFilter.key(f"idle-{key}"),
+        ),
+        lambda watch: watch.recv(),
+    )
+
+
+def test_closing_a_subscription_releases_a_parked_reader(client, fixture, key):
+    _closes_while_a_reader_is_parked(
+        lambda: client.subscribe(
+            fixture["tenant_id"], fixture["namespace"], fixture["durable_stream"], start="latest"
+        ),
+        lambda sub: sub.next_event(),
+    )
+
+
+def test_an_infinite_or_negative_timeout_is_refused(client, fixture, key):
+    with client.watch_cache_sharded(
+        fixture["tenant_id"], fixture["namespace"], fixture["cache"], f"idle-{key}:"
+    ) as watch:
+        for bad in (float("inf"), float("nan"), -1.0):
+            with pytest.raises(ValueError):
+                watch.recv(timeout=bad)
+
+
+def test_a_watch_reports_how_far_to_resume_and_how_often_it_moved(client, fixture, key):
+    name = f"progress-{key}"
+    with client.watch_cache(
+        fixture["tenant_id"],
+        fixture["namespace"],
+        fixture["cache"],
+        felix.CacheWatchFilter.key(name),
+    ) as watch:
+        before = watch.resume_from
+        client.cache_put(fixture["tenant_id"], fixture["namespace"], fixture["cache"], name, b"v")
+        change = wait_for_change(watch, lambda item: item.key == name)
+        assert change is not None
+        assert watch.resume_from > before
+        assert watch.moves == 0

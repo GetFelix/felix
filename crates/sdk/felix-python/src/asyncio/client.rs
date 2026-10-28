@@ -709,7 +709,7 @@ impl AsyncClient {
             stream.to_string(),
             group.to_string(),
         );
-        let wait = std::time::Duration::from_secs_f64(wait.max(0.0));
+        let wait = non_negative_duration(wait, "wait")?;
         let options = felix_client::GroupPollOptions {
             member: consumer.map(|consumer| felix_client::GroupMember { consumer, reclaim }),
             wait,

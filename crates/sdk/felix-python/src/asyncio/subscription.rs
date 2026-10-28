@@ -5,15 +5,16 @@ use std::sync::Arc;
 use felix_client::ClusterSubscription;
 use pyo3::exceptions::PyStopAsyncIteration;
 use pyo3::prelude::*;
-use tokio::sync::Mutex;
 
+use crate::closable::Closable;
 use crate::errors::to_py_err;
+use crate::producer::timeout_of;
 use crate::types::OwnedEvent;
 
 /// A subscription consumed with `async for`.
 #[pyclass(module = "felix", name = "AsyncSubscription")]
 pub struct AsyncSubscription {
-    inner: Arc<Mutex<Option<ClusterSubscription>>>,
+    inner: Arc<Closable<ClusterSubscription>>,
     /// Where the subscription began, as of when it opened.
     #[pyo3(get)]
     start_offset: Option<u64>,
@@ -27,7 +28,7 @@ impl AsyncSubscription {
         Self {
             start_offset: subscription.start_offset(),
             live_offset: subscription.live_offset(),
-            inner: Arc::new(Mutex::new(Some(subscription))),
+            inner: Arc::new(Closable::new(subscription)),
         }
     }
 }
@@ -46,25 +47,30 @@ impl AsyncSubscription {
         timeout: Option<f64>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
+        let timeout = timeout_of(timeout)?;
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mut guard = inner.lock().await;
+            let Some(mut guard) = inner.lock().await else {
+                return Ok(None);
+            };
             let Some(subscription) = guard.as_mut() else {
                 return Ok(None);
             };
-            let next = match timeout {
-                Some(seconds) => {
-                    let duration = std::time::Duration::from_secs_f64(seconds.max(0.0));
-                    match tokio::time::timeout(duration, subscription.next_event()).await {
-                        Ok(result) => result.map_err(to_py_err)?,
-                        Err(_elapsed) => return Ok(None),
+            let read = async {
+                match timeout {
+                    Some(duration) => {
+                        tokio::time::timeout(duration, subscription.next_event()).await
                     }
+                    None => Ok(subscription.next_event().await),
                 }
-                None => subscription.next_event().await.map_err(to_py_err)?,
+            };
+            let next = match inner.until_closed(read).await {
+                Some(Ok(result)) => result.map_err(to_py_err)?,
+                Some(Err(_)) | None => return Ok(None),
             };
             // The broker ended the stream. Released here so `closed` reads
             // true, which is how a caller tells this `None` from a timeout.
             if next.is_none() {
-                guard.take();
+                guard.end();
             }
             Ok(next.map(OwnedEvent::from))
         })
@@ -73,7 +79,7 @@ impl AsyncSubscription {
     fn close<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            inner.lock().await.take();
+            inner.close();
             Ok(())
         })
     }
@@ -81,10 +87,7 @@ impl AsyncSubscription {
     #[getter]
     fn closed<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
-        pyo3_async_runtimes::tokio::future_into_py(
-            py,
-            async move { Ok(inner.lock().await.is_none()) },
-        )
+        pyo3_async_runtimes::tokio::future_into_py(py, async move { Ok(inner.is_closed()) })
     }
 
     fn __aiter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
@@ -97,16 +100,21 @@ impl AsyncSubscription {
     fn __anext__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mut guard = inner.lock().await;
+            let Some(mut guard) = inner.lock().await else {
+                return Err(PyStopAsyncIteration::new_err("subscription closed"));
+            };
             let Some(subscription) = guard.as_mut() else {
                 return Err(PyStopAsyncIteration::new_err("subscription closed"));
             };
-            match subscription.next_event().await.map_err(to_py_err)? {
-                Some(event) => Ok(OwnedEvent::from(event)),
-                None => {
-                    guard.take();
-                    Err(PyStopAsyncIteration::new_err("stream ended"))
-                }
+            match inner.until_closed(subscription.next_event()).await {
+                Some(result) => match result.map_err(to_py_err)? {
+                    Some(event) => Ok(OwnedEvent::from(event)),
+                    None => {
+                        guard.end();
+                        Err(PyStopAsyncIteration::new_err("stream ended"))
+                    }
+                },
+                None => Err(PyStopAsyncIteration::new_err("subscription closed")),
             }
         })
     }
@@ -126,7 +134,7 @@ impl AsyncSubscription {
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            inner.lock().await.take();
+            inner.close();
             Ok(false)
         })
     }

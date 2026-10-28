@@ -128,6 +128,27 @@ This crate is deliberately outside the Cargo workspace — an extension module
 carries `pyo3/extension-module`, which cannot be linked into a test binary —
 so `task python:check` is what builds it, not `task test`.
 
+## What is not wrapped
+
+The Rust client has more than this binding wraps. What is left out, and why:
+
+- **Subscription counters.** `ClusterSubscription::moves`, `reconnects` and
+  `stream_deleted` have no accessor on a subscription, sharded or not. A read
+  in flight holds the handle, so these need their own shared state. A
+  follow-up is planned; a move still shows up as a `ShardMoved` item on a
+  sharded subscription. A cache watch does expose `moves` and `resume_from`.
+- **The single-connection `Client` and `Publisher` layer** (`topology`,
+  `stream_routing`, `shard_owners`, `inspect_shard`, `supports_*`,
+  `publish_batch_binary*`, `connect_with_transport`). The binding wraps
+  `ClusterClient`, which owns those connections and runs the feature checks
+  itself.
+- **`hand_off_*` and `Handed` on the idempotent producer.** They hand back raw
+  futures; `publish_batches` is the iterator-shaped equivalent.
+- **`ClientConfig` options** such as `publishers` and `timestamps`. They are
+  connection configuration, set once, not calls.
+- **Reconnect backoff.** `ReconnectPolicy.backoff` and `max_backoff` have no
+  option here yet. The client uses their defaults.
+
 ## Conformance
 
 The semantics a Felix client must implement are catalogued in

@@ -25,6 +25,7 @@ mod args;
 mod asyncio;
 mod batch;
 mod blocking;
+mod closable;
 mod commit;
 mod conditional;
 mod errors;
@@ -37,6 +38,7 @@ mod stream_page;
 mod tls;
 mod token;
 mod types;
+mod watch_progress;
 
 use pyo3::prelude::*;
 

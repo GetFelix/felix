@@ -32,3 +32,14 @@ fn a_retained_watch_refuses_a_resume() {
     assert!(check_sharded_watch(true, &None::<()>).is_ok());
     assert!(check_sharded_watch(false, &resume).is_ok());
 }
+
+#[test]
+fn a_read_timeout_must_be_finite_and_not_negative() {
+    use crate::producer::timeout_of;
+
+    assert_eq!(timeout_of(None).unwrap(), None);
+    assert_eq!(timeout_of(Some(0.0)).unwrap(), Some(Duration::ZERO));
+    for bad in [-1.0, YEAR + 1.0, f64::NAN, f64::INFINITY] {
+        assert!(timeout_of(Some(bad)).is_err(), "{bad}");
+    }
+}

@@ -299,6 +299,8 @@ class CacheWatchHandle:
     resume_offset: int
     resnapshot: bool
     retained_count: int | None
+    resume_from: int
+    moves: int
     closed: bool
     def recv(self, timeout: float | None = None) -> WatchItem | None: ...
     def close(self) -> None: ...
@@ -332,6 +334,8 @@ class AsyncCacheWatch:
     resume_offset: int
     resnapshot: bool
     retained_count: int | None
+    resume_from: int
+    moves: int
     async def recv(self, timeout: float | None = None) -> WatchItem | None: ...
     async def close(self) -> None: ...
     def __aiter__(self) -> AsyncIterator[WatchItem]: ...
