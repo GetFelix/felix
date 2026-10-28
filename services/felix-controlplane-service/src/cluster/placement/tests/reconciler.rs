@@ -628,3 +628,29 @@ async fn an_initial_placement_carries_no_storage_ids() {
     assert_eq!(assignments.len(), 3);
     assert!(assignments.iter().all(|a| a.fence_storage_ids.is_empty()));
 }
+
+#[tokio::test]
+async fn a_cluster_with_no_registered_node_is_not_a_warning() {
+    let store = cluster(&[]).await;
+    let planned = super::super::reconciler::plan_pass(
+        &store,
+        &Default::default(),
+        MovePolicy::default(),
+        &mut Default::default(),
+    )
+    .await
+    .expect("plan");
+    assert!(planned.no_nodes());
+    assert_eq!(planned.plan().unplaceable().count(), 3);
+
+    let store = cluster(&["broker-a"]).await;
+    let planned = super::super::reconciler::plan_pass(
+        &store,
+        &Default::default(),
+        MovePolicy::default(),
+        &mut Default::default(),
+    )
+    .await
+    .expect("plan");
+    assert!(!planned.no_nodes());
+}
