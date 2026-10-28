@@ -666,6 +666,71 @@ already moved, and is not sent twice. `stream_shards` moves the same way.
 
 `AsyncClient` has the same methods as coroutines.
 
+### Conditional writes
+
+`cache_put_if` stores a value only if the key is absent or still at the version
+you read, and `cache_delete_if` removes it only at that version. The check and
+the write are one step on the key's owner, so two clients racing for the same
+key cannot both win. `cache_get_versioned` returns the value with its version,
+or `None`.
+
+```python
+import felix
+
+# Take a lease if nobody holds it.
+taken = client.cache_put_if(
+    "acme", "prod", "leases", "endpoint-7", b"worker-1",
+    felix.CacheCondition.absent(), ttl=30.0,
+)
+if not taken.applied:
+    raise RuntimeError(f"held already, at version {taken.version}")
+version = taken.version
+
+# Renew it only if it is still ours.
+renewed = client.cache_put_if(
+    "acme", "prod", "leases", "endpoint-7", b"worker-1",
+    felix.CacheCondition.version(version), ttl=30.0,
+)
+if renewed.applied:
+    version = renewed.version
+
+# Release it only if nobody took it over.
+client.cache_delete_if("acme", "prod", "leases", "endpoint-7", version)
+```
+
+For a read-modify-write, read the version, write with `CacheCondition.version`,
+and read again if the write was refused:
+
+```python
+import felix
+
+while True:
+    current = client.cache_get_versioned("acme", "prod", "config", "endpoints")
+    if current is None:
+        break
+    edited = current.value + b",10.0.0.9"
+    done = client.cache_put_if(
+        "acme", "prod", "config", "endpoints", edited,
+        felix.CacheCondition.version(current.version),
+    )
+    if done.applied:
+        break
+```
+
+A refusal is a result, not an error: `applied` is false and `version` is the
+key's current version (`None` when it has none). An expired entry counts as
+absent. A key's version only grows and is never reused. The calls return
+`CacheConditionResult(applied, version)` and `VersionedValue(value, version)`,
+and need a broker that advertises `FEATURE_CACHE_CONDITIONAL`; against an older
+one they fail without sending anything.
+
+A conditional write is never sent again after its answer was lost: the call
+raises, and a retry of a put that had applied would be refused by the version it
+wrote. Read the key with `cache_get_versioned` to find out whether it landed.
+Cancelling an asyncio task after the request went out leaves the write in doubt
+the same way, so read back before retrying.
+See [Conditional writes](/features/cache/#9-conditional-writes).
+
 ## Cache watches
 
 Watches can resume by offset and report loss explicitly, which makes the cache
@@ -806,6 +871,53 @@ long enough. The stream must be durable, and in a cluster the operator must
 finalize the `atomic_commit` fleet feature first. The full semantics are in
 [`docs/atomic-commit.md`](https://github.com/GetFelix/felix/blob/main/docs/atomic-commit.md).
 
+### Conditional commits and named shards
+
+`commit_if` and `publish_if` write only if the shard's next offset is the one
+you expect, a compare-and-set on the whole shard. They suit a single writer that
+must not append after it has been replaced.
+
+```python
+ticks = [b"tick-1", b"tick-2"]
+next_offset = 0  # the offset this writer expects to write next
+for tick in ticks:
+    result = client.publish_if("acme", "games", "match-7", [tick], next_offset)
+    if not result.written:
+        raise RuntimeError(f"another writer has the stream; its next offset is {result.tail}")
+    next_offset = result.offset + 1
+```
+
+A `ConditionalWrite` has `written`, then `offset` (where it landed) or `tail`
+(the shard's next offset, when refused). A refusal is a result, not an error,
+and writes nothing. `publish_if` takes at least one payload and routes by
+`key=`, or to shard 0 without one. `commit_if(tenant_id, namespace, entity_key,
+ops, expected_offset)` is the same check on a commit. Both need a broker that
+advertises `FEATURE_PUBLISH_CONDITIONAL`. Do not resend one whose answer was
+lost: it raises, and the client does not send it again either. Read the shard at
+the expected offset to find out whether it landed.
+
+`commit_on_shard`, `commit_if_on_shard`, `publish_if_on_shard` and
+`state_get_on_shard` take a shard number instead of hashing a key, for a writer
+that keeps one shard per partition:
+
+```python
+import felix
+
+ops = [
+    felix.CommitOp.publish("ticks", b"tick-9"),
+    felix.CommitOp.put("ticks", "district", b"quiet"),
+]
+# 0: the shard's next offset, as the writer last saw it.
+written = client.commit_if_on_shard("acme", "city", 2, b"district", ops, 0)
+state = client.state_get_on_shard("acme", "city", "ticks", 2, "district")
+```
+
+A keyed `state_get` reads the shard the key hashes to, so it does not find state
+committed to another named shard; read it with `state_get_on_shard`. A shard the
+stream does not have is refused and nothing is written. These need a broker that
+advertises `FEATURE_EXPLICIT_SHARD`. `AsyncClient` has all of them as
+coroutines.
+
 ## Multi-shard streams
 
 A subscription reads one shard. `subscribe_sharded` opens one per shard,
@@ -890,12 +1002,6 @@ with its own connection pool, and they do not share discovery.
 
 These are in the [Rust client](/clients/rust/) and not in this binding yet:
 
-- **Conditional writes.** `cache_put_if`, `cache_delete_if` and
-  `cache_get_versioned` (compare-and-set on a cache key), and the conditional
-  `publish_if` and `commit_if`. Without them a lease or lock cannot be built
-  from Python.
-- **Atomic commits on a named shard** (`commit_on_shard`). `commit` routes by
-  key only.
 - **Merged prefix watches** (`watch_cache_sharded`). A prefix on a
   multi-shard cache needs one `watch_cache` per shard.
 - **Idempotent producers.** At-least-once without the duplicate; see

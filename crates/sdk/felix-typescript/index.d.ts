@@ -238,6 +238,45 @@ export interface CommitReceipt {
   offset: bigint;
 }
 
+/**
+ * What a conditional cache put requires of the key's current entry: no live
+ * entry (never written, deleted or expired), or exactly this version.
+ */
+export type CacheCondition = { kind: "absent" } | { kind: "version"; version: bigint };
+
+/** Builders for `CacheCondition`s; each returns the plain object. */
+export declare const CacheCondition: {
+  /** Write only if the key has no live entry: take a lease, claim a key. */
+  absent(): CacheCondition;
+  /** Write only if the key is at this version, from `cacheGetVersioned`. */
+  version(version: bigint | number): CacheCondition;
+};
+
+/** A cache value and the version a conditional write compares against. */
+export interface VersionedValue {
+  value: Buffer;
+  version: bigint;
+}
+
+/** The answer to `cachePutIf` or `cacheDeleteIf`. A refusal is not an error. */
+export interface CacheConditionResult {
+  /** The condition held and the write was made. */
+  applied: boolean;
+  /**
+   * After an applied put, the version it wrote. Otherwise the key's current
+   * version, `null` when it has no live entry.
+   */
+  version: bigint | null;
+}
+
+/**
+ * The answer to `publishIf`, `commitIf` or their `OnShard` forms. A refusal is
+ * not an error: nothing was written and no offset was consumed.
+ */
+export type ConditionalWrite =
+  | { written: true; offset: bigint; tail: null }
+  | { written: false; offset: null; tail: bigint };
+
 /** A key in a stream shard's state. */
 export interface StateValue {
   /** Absent when the key was never written or was deleted. */
@@ -537,6 +576,104 @@ export declare class Client {
     entityKey: Buffer,
     key: string,
   ): Promise<StateValue>;
+
+  /** Read a value with its version, or `null` if the key is absent or expired. */
+  cacheGetVersioned(
+    tenantId: string,
+    namespace: string,
+    cache: string,
+    key: string,
+  ): Promise<VersionedValue | null>;
+
+  /**
+   * Store a value only if the key's entry meets `condition`. A refusal
+   * resolves with `applied: false` and the key's current version. Never sent
+   * twice: a lost answer rejects with an error (possibly `ConnectionError`),
+   * so read the key back to learn whether the write landed.
+   */
+  cachePutIf(
+    tenantId: string,
+    namespace: string,
+    cache: string,
+    key: string,
+    value: Buffer,
+    condition: CacheCondition,
+    ttlSeconds?: number,
+  ): Promise<CacheConditionResult>;
+
+  /** Remove a key only if its version is `version`. */
+  cacheDeleteIf(
+    tenantId: string,
+    namespace: string,
+    cache: string,
+    key: string,
+    version: bigint,
+  ): Promise<CacheConditionResult>;
+
+  /**
+   * Commit `ops` only if the shard's next offset is `expectedOffset`, a
+   * compare-and-set on the whole shard. A refusal resolves with the shard's
+   * `tail`.
+   */
+  commitIf(
+    tenantId: string,
+    namespace: string,
+    entityKey: Buffer,
+    ops: CommitOp[],
+    expectedOffset: bigint,
+  ): Promise<ConditionalWrite>;
+
+  /** `commit`, to the named shard instead of the one `entityKey` hashes to. */
+  commitOnShard(
+    tenantId: string,
+    namespace: string,
+    shard: number,
+    entityKey: Buffer,
+    ops: CommitOp[],
+  ): Promise<CommitReceipt>;
+
+  /** `commitIf`, to the named shard. `expectedOffset` is that shard's next offset. */
+  commitIfOnShard(
+    tenantId: string,
+    namespace: string,
+    shard: number,
+    entityKey: Buffer,
+    ops: CommitOp[],
+    expectedOffset: bigint,
+  ): Promise<ConditionalWrite>;
+
+  /** `key` in the state of the named shard of `stream`; takes no entity key. */
+  stateGetOnShard(
+    tenantId: string,
+    namespace: string,
+    stream: string,
+    shard: number,
+    key: string,
+  ): Promise<StateValue>;
+
+  /**
+   * Publish `payloads` (at least one) only if the shard's next offset is
+   * `expectedOffset`. `key` picks the shard as a plain publish does; without
+   * one the shard is 0.
+   */
+  publishIf(
+    tenantId: string,
+    namespace: string,
+    stream: string,
+    payloads: Buffer[],
+    expectedOffset: bigint,
+    key?: Buffer,
+  ): Promise<ConditionalWrite>;
+
+  /** `publishIf`, to the named shard. */
+  publishIfOnShard(
+    tenantId: string,
+    namespace: string,
+    stream: string,
+    shard: number,
+    payloads: Buffer[],
+    expectedOffset: bigint,
+  ): Promise<ConditionalWrite>;
 
   /** Add to a counter and return its new value. `delta` may be negative. */
   counterAdd(

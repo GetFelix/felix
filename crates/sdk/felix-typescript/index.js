@@ -171,6 +171,15 @@ const CommitOp = {
   delete: (stream, key) => ({ op: "delete", stream, key }),
 };
 
+/**
+ * Builders for the condition `client.cachePutIf` takes. Each returns a plain
+ * object, so writing the literal by hand works just as well.
+ */
+const CacheCondition = {
+  absent: () => ({ kind: "absent" }),
+  version: (version) => ({ kind: "version", version: BigInt(version) }),
+};
+
 /** The public `Client`: a façade over the native one that types its errors. */
 const Client = {
   async connect(...args) {
@@ -197,6 +206,7 @@ module.exports = {
   NotOnOwningShardError: errors.NotOnOwningShardError,
   EventCountError: errors.EventCountError,
   CommitOp,
+  CacheCondition,
   /** The unwrapped addon, for anyone who wants it. Errors are untyped there. */
   native,
 };

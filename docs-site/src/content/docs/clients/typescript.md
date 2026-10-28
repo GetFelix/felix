@@ -641,6 +641,71 @@ moves to another one: a read (a get) is asked again there, while a write that
 may have landed (a put, delete or add) returns its error with the client
 already moved, and is not sent twice. `streamShards` moves the same way.
 
+### Conditional writes
+
+`cachePutIf` stores a value only if the key is absent or still at the version
+you read, and `cacheDeleteIf` removes it only at that version. The check and
+the write are one step on the key's owner, so two clients racing for the same
+key cannot both win. `cacheGetVersioned` returns the value with its version, or
+`null`.
+
+```ts
+import { CacheCondition } from "felix-client";
+
+async function holdLease(): Promise<void> {
+  // Take a lease if nobody holds it.
+  const taken = await client.cachePutIf(
+    "acme", "prod", "leases", "endpoint-7", Buffer.from("worker-1"),
+    CacheCondition.absent(), 30, // ttlSeconds
+  );
+  if (!taken.applied || taken.version === null) {
+    throw new Error(`held already, at version ${taken.version}`);
+  }
+  let version = taken.version;
+
+  // Renew it only if it is still ours.
+  const renewed = await client.cachePutIf(
+    "acme", "prod", "leases", "endpoint-7", Buffer.from("worker-1"),
+    CacheCondition.version(version), 30,
+  );
+  if (renewed.applied && renewed.version !== null) version = renewed.version;
+
+  // Release it only if nobody took it over.
+  await client.cacheDeleteIf("acme", "prod", "leases", "endpoint-7", version);
+}
+```
+
+For a read-modify-write, read the version, write with `CacheCondition.version`,
+and read again if the write was refused:
+
+```ts
+import { CacheCondition } from "felix-client";
+
+for (;;) {
+  const current = await client.cacheGetVersioned("acme", "prod", "config", "endpoints");
+  if (current === null) break;
+  const edited = Buffer.concat([current.value, Buffer.from(",10.0.0.9")]);
+  const done = await client.cachePutIf(
+    "acme", "prod", "config", "endpoints", edited, CacheCondition.version(current.version),
+  );
+  if (done.applied) break;
+}
+```
+
+A refusal is a result, not an error: `applied` is `false` and `version` is the
+key's current version (`null` when it has none). An expired entry counts as
+absent. A key's version only grows and is never reused. Versions are `bigint`,
+and `CacheCondition.version` takes a `bigint` or a `number`. The calls need a
+broker that advertises `FEATURE_CACHE_CONDITIONAL`; against an older one they
+reject without sending anything.
+
+A conditional write is never sent again after its answer was lost: the promise
+rejects, and a retry of a put that had applied would be refused by the version
+it wrote. Read the key with `cacheGetVersioned` to find out whether it landed.
+Abandoning the promise after the request went out leaves the write in doubt the
+same way, so read back before retrying.
+See [Conditional writes](/features/cache/#9-conditional-writes).
+
 ## Cache watches
 
 Watches can resume by offset and report loss explicitly, which makes the cache
@@ -761,6 +826,51 @@ long enough. The stream must be durable, and in a cluster the operator must
 finalize the `atomic_commit` fleet feature first. The full semantics are in
 [`docs/atomic-commit.md`](https://github.com/GetFelix/felix/blob/main/docs/atomic-commit.md).
 
+### Conditional commits and named shards
+
+`commitIf` and `publishIf` write only if the shard's next offset is the one you
+expect, a compare-and-set on the whole shard. They suit a single writer that
+must not append after it has been replaced.
+
+```ts
+let next = 0n; // the offset this writer expects to write next
+for (const tick of ticks) {
+  const result = await client.publishIf("acme", "games", "match-7", [tick], next);
+  if (!result.written) {
+    throw new Error(`another writer has the stream; its next offset is ${result.tail}`);
+  }
+  next = result.offset + 1n;
+}
+```
+
+A `ConditionalWrite` is `{ written: true, offset, tail: null }` or
+`{ written: false, offset: null, tail }`, where `tail` is the shard's next
+offset. A refusal is a result, not an error, and writes nothing. `publishIf`
+takes at least one payload and routes by the optional `key`, or to shard 0
+without one. `commitIf(tenantId, namespace, entityKey, ops, expectedOffset)` is
+the same check on a commit. Both need a broker that advertises
+`FEATURE_PUBLISH_CONDITIONAL`. Do not resend one whose answer was lost: it
+rejects, and the client does not send it again either. Read the shard at the
+expected offset to find out whether it landed.
+
+`commitOnShard`, `commitIfOnShard`, `publishIfOnShard` and `stateGetOnShard`
+take a shard number instead of hashing a key, for a writer that keeps one shard
+per partition:
+
+```ts
+import { CommitOp } from "felix-client";
+
+const ops = [CommitOp.publish("ticks", "tick-9"), CommitOp.put("ticks", "district", "quiet")];
+// 0n: the shard's next offset, as the writer last saw it.
+const written = await client.commitIfOnShard("acme", "city", 2, Buffer.from("district"), ops, 0n);
+const state = await client.stateGetOnShard("acme", "city", "ticks", 2, "district");
+```
+
+A keyed `stateGet` reads the shard the key hashes to, so it does not find state
+committed to another named shard; read it with `stateGetOnShard`. A shard the
+stream does not have is refused and nothing is written. These need a broker
+that advertises `FEATURE_EXPLICIT_SHARD`.
+
 ## Multi-shard streams
 
 A subscription reads one shard. `subscribeSharded` opens one per shard, follows
@@ -838,12 +948,6 @@ values are plain `number`s, exact up to `Number.MAX_SAFE_INTEGER`.
 
 These are in the [Rust client](/clients/rust/) and not in this binding yet:
 
-- **Conditional writes.** `cache_put_if`, `cache_delete_if` and
-  `cache_get_versioned` (compare-and-set on a cache key), and the conditional
-  `publish_if` and `commit_if`. Without them a lease or lock cannot be built
-  from TypeScript.
-- **Atomic commits on a named shard** (`commit_on_shard`). `commit` routes by
-  key only.
 - **Merged prefix watches** (`watch_cache_sharded`). A prefix on a
   multi-shard cache needs one `watchCache` per shard.
 - **Idempotent producers.** At-least-once without the duplicate; see

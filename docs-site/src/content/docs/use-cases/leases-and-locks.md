@@ -155,9 +155,11 @@ sequenceDiagram
 ## Example
 
 Create a replicated `Quorum` cache and a durable stream once, then run the
-code. `felixctl` is shown in [its guide](/getting-started/felixctl/), and
-conditional writes are not exposed there or in the Python binding yet, so
-this page's code is Rust.
+code. `felixctl` is shown in [its guide](/getting-started/felixctl/) and has
+no conditional writes. This page's code is Rust; the
+[Python](/clients/python/#conditional-writes) and
+[TypeScript](/clients/typescript/#conditional-writes) bindings have the same
+calls.
 
 ```bash
 felixctl cache create leases --shards 1 --replication 3 --consistency quorum

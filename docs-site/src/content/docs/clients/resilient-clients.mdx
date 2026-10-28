@@ -794,7 +794,7 @@ choose one of three answers.
 - **Conditional publish.** `publish_if` writes only if the shard's next
   offset is the one you expect. It suits a single writer that must not append
   after it has been replaced, and a refusal is an answer, not an error.
-  Rust, C# and C have it.
+  Rust, Python, TypeScript, C# and C have it.
 - **At-least-once.** The client resends an ambiguous publish to another
   broker. The record is certain to land and **may land twice**, so the
   consumers must tolerate a duplicate, usually by carrying an id in the
@@ -981,6 +981,32 @@ for tick in ticks {
 ```
 
 </TabItem>
+<TabItem label="Python">
+
+```python
+next_offset = 0  # the offset this writer expects to write next
+for tick in [b"tick-1", b"tick-2"]:
+    result = client.publish_if("acme", "games", "match-7", [tick], next_offset)
+    if not result.written:
+        raise RuntimeError(f"another writer has the stream; its next offset is {result.tail}")
+    next_offset = result.offset + 1
+```
+
+</TabItem>
+<TabItem label="TypeScript">
+
+```ts
+let next = 0n; // the offset this writer expects to write next
+for (const tick of [Buffer.from("tick-1"), Buffer.from("tick-2")]) {
+  const result = await client.publishIf("acme", "games", "match-7", [tick], next);
+  if (!result.written) {
+    throw new Error(`another writer has the stream; its next offset is ${result.tail}`);
+  }
+  next = result.offset + 1n;
+}
+```
+
+</TabItem>
 <TabItem label="C#">
 
 ```csharp
@@ -1039,8 +1065,6 @@ static bool write_if_next(struct conditional *result, const FelixClient *client,
 
 </TabItem>
 </Tabs>
-
-Python and TypeScript do not wrap conditional publishes.
 
 ## Reading without losing your place
 

@@ -221,7 +221,7 @@ mod conditional_publish_1 {
     }
 }
 
-/// resilient-clients.mdx line 1079: "Resume one shard", block 1.
+/// resilient-clients.mdx line 1103: "Resume one shard", block 1.
 mod resume_one_shard_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -329,7 +329,7 @@ mod resume_one_shard_1 {
     }
 }
 
-/// resilient-clients.mdx line 1427: "Resume a sharded stream", block 1.
+/// resilient-clients.mdx line 1451: "Resume a sharded stream", block 1.
 mod resume_a_sharded_stream_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -374,7 +374,7 @@ mod resume_a_sharded_stream_1 {
     }
 }
 
-/// resilient-clients.mdx line 1692: "Slow consumers", block 1.
+/// resilient-clients.mdx line 1716: "Slow consumers", block 1.
 mod slow_consumers_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -413,7 +413,7 @@ mod slow_consumers_1 {
     }
 }
 
-/// resilient-clients.mdx line 1882: "Consumer groups under failure", block 1.
+/// resilient-clients.mdx line 1906: "Consumer groups under failure", block 1.
 mod consumer_groups_under_failure_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -477,7 +477,7 @@ mod consumer_groups_under_failure_1 {
     }
 }
 
-/// resilient-clients.mdx line 2211: "Shutting down cleanly", block 1.
+/// resilient-clients.mdx line 2235: "Shutting down cleanly", block 1.
 mod shutting_down_cleanly_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;

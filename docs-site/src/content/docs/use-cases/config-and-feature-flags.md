@@ -189,8 +189,9 @@ write after a lost answer, because the retry would be refused by the version the
 first one wrote. If a call fails with a transport error, read the key to find
 out which happened before you edit again.
 
-In Python the consumer side is the same shape. The binding has no conditional
-write yet, so writers that need one use the Rust client:
+In Python the consumer side is the same shape. A writer uses
+[`cache_put_if`](/clients/python/#conditional-writes) as in the Rust example
+above:
 
 ```python
 import felix

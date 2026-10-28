@@ -19,6 +19,7 @@ declare const positions: import("../index").ShardPositions;
 declare const record: import("../index").GroupRecord;
 
 declare const payload: Buffer;
+declare const ticks: Buffer[];
 declare const data: Buffer;
 declare const expected: Buffer;
 declare const customerId: string;

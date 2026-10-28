@@ -327,4 +327,65 @@ export default function register(ctx) {
       assert.ok(roster.has(`${prefix}alice`));
       assert.ok(roster.has(`${prefix}bob`));
     }));
+
+  // The conditional calls have no catalogued scenario of their own, so these
+  // run against the fixture without a ledger entry.
+  it("a conditional put writes only when the version is the one read", async () => {
+    const { client, fixture, felix } = ctx;
+    const { tenant_id: tenant, namespace, cache } = fixture;
+    const key = unique("cas");
+
+    assert.equal(await client.cacheGetVersioned(tenant, namespace, cache, key), null);
+    const first = await client.cachePutIf(
+      tenant, namespace, cache, key, Buffer.from("one"), felix.CacheCondition.absent(),
+    );
+    assert.equal(first.applied, true);
+    assert.equal(typeof first.version, "bigint");
+
+    // Taking an absent key twice: the second is refused with the live version.
+    const taken = await client.cachePutIf(
+      tenant, namespace, cache, key, Buffer.from("two"), felix.CacheCondition.absent(),
+    );
+    assert.deepEqual(taken, { applied: false, version: first.version });
+
+    const read = await client.cacheGetVersioned(tenant, namespace, cache, key);
+    assert.deepEqual(read.value, Buffer.from("one"));
+    assert.equal(read.version, first.version);
+
+    const stale = await client.cachePutIf(
+      tenant, namespace, cache, key, Buffer.from("x"), felix.CacheCondition.version(read.version + 1n),
+    );
+    assert.equal(stale.applied, false);
+    const next = await client.cachePutIf(
+      tenant, namespace, cache, key, Buffer.from("two"), felix.CacheCondition.version(read.version),
+    );
+    assert.equal(next.applied, true);
+    assert.ok(next.version > read.version);
+
+    // A delete at the old version is refused; at the new one it removes the key.
+    const refused = await client.cacheDeleteIf(tenant, namespace, cache, key, read.version);
+    assert.deepEqual(refused, { applied: false, version: next.version });
+    const removed = await client.cacheDeleteIf(tenant, namespace, cache, key, next.version);
+    assert.equal(removed.applied, true);
+    assert.equal(await client.cacheGet(tenant, namespace, cache, key), null);
+    const gone = await client.cacheDeleteIf(tenant, namespace, cache, key, next.version);
+    assert.deepEqual(gone, { applied: false, version: null });
+  });
+
+  it("a malformed condition or version is refused before it is sent", async () => {
+    const { client, fixture, felix } = ctx;
+    const { tenant_id: tenant, namespace, cache } = fixture;
+    await assert.rejects(
+      client.cachePutIf(tenant, namespace, cache, "k", Buffer.from("v"), { kind: "later" }),
+      (err) => err instanceof felix.InvalidArgumentError,
+    );
+    await assert.rejects(
+      client.cachePutIf(tenant, namespace, cache, "k", Buffer.from("v"), { kind: "version" }),
+      (err) => err instanceof felix.InvalidArgumentError,
+    );
+    await assert.rejects(
+      client.cacheDeleteIf(tenant, namespace, cache, "k", -1n),
+      (err) => err instanceof felix.InvalidArgumentError,
+    );
+  });
 }

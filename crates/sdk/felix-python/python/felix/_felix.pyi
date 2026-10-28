@@ -66,6 +66,30 @@ class StateValue:
     version: int | None
     as_of: int | None
 
+class CacheCondition:
+    """What a conditional cache put requires of the key's current entry."""
+
+    @staticmethod
+    def absent() -> "CacheCondition": ...
+    @staticmethod
+    def version(version: int) -> "CacheCondition": ...
+
+class CacheConditionResult:
+    applied: bool
+    version: int | None
+    """The version written when applied; otherwise the key's current one, or None."""
+
+class VersionedValue:
+    value: bytes
+    version: int
+
+class ConditionalWrite:
+    written: bool
+    offset: int | None
+    """Where the write landed; None when refused."""
+    tail: int | None
+    """The shard's next offset when refused; None when written."""
+
 class Event:
     tenant_id: str
     namespace: str
@@ -292,6 +316,70 @@ class Client:
     def state_get(
         self, tenant_id: str, namespace: str, stream: str, entity_key: bytes, key: str
     ) -> StateValue: ...
+    def cache_get_versioned(
+        self, tenant_id: str, namespace: str, cache: str, key: str
+    ) -> VersionedValue | None: ...
+    def cache_put_if(
+        self,
+        tenant_id: str,
+        namespace: str,
+        cache: str,
+        key: str,
+        value: bytes,
+        condition: CacheCondition,
+        *,
+        ttl: float | None = None,
+    ) -> CacheConditionResult: ...
+    def cache_delete_if(
+        self, tenant_id: str, namespace: str, cache: str, key: str, version: int
+    ) -> CacheConditionResult: ...
+    def commit_if(
+        self,
+        tenant_id: str,
+        namespace: str,
+        entity_key: bytes,
+        ops: list[CommitOp],
+        expected_offset: int,
+    ) -> ConditionalWrite: ...
+    def commit_on_shard(
+        self,
+        tenant_id: str,
+        namespace: str,
+        shard: int,
+        entity_key: bytes,
+        ops: list[CommitOp],
+    ) -> CommitReceipt: ...
+    def commit_if_on_shard(
+        self,
+        tenant_id: str,
+        namespace: str,
+        shard: int,
+        entity_key: bytes,
+        ops: list[CommitOp],
+        expected_offset: int,
+    ) -> ConditionalWrite: ...
+    def state_get_on_shard(
+        self, tenant_id: str, namespace: str, stream: str, shard: int, key: str
+    ) -> StateValue: ...
+    def publish_if(
+        self,
+        tenant_id: str,
+        namespace: str,
+        stream: str,
+        payloads: list[bytes],
+        expected_offset: int,
+        *,
+        key: bytes | None = None,
+    ) -> ConditionalWrite: ...
+    def publish_if_on_shard(
+        self,
+        tenant_id: str,
+        namespace: str,
+        stream: str,
+        shard: int,
+        payloads: list[bytes],
+        expected_offset: int,
+    ) -> ConditionalWrite: ...
     def counter_add(
         self, tenant_id: str, namespace: str, cache: str, key: str, delta: int
     ) -> int: ...
@@ -441,6 +529,70 @@ class AsyncClient:
     async def state_get(
         self, tenant_id: str, namespace: str, stream: str, entity_key: bytes, key: str
     ) -> StateValue: ...
+    async def cache_get_versioned(
+        self, tenant_id: str, namespace: str, cache: str, key: str
+    ) -> VersionedValue | None: ...
+    async def cache_put_if(
+        self,
+        tenant_id: str,
+        namespace: str,
+        cache: str,
+        key: str,
+        value: bytes,
+        condition: CacheCondition,
+        *,
+        ttl: float | None = None,
+    ) -> CacheConditionResult: ...
+    async def cache_delete_if(
+        self, tenant_id: str, namespace: str, cache: str, key: str, version: int
+    ) -> CacheConditionResult: ...
+    async def commit_if(
+        self,
+        tenant_id: str,
+        namespace: str,
+        entity_key: bytes,
+        ops: list[CommitOp],
+        expected_offset: int,
+    ) -> ConditionalWrite: ...
+    async def commit_on_shard(
+        self,
+        tenant_id: str,
+        namespace: str,
+        shard: int,
+        entity_key: bytes,
+        ops: list[CommitOp],
+    ) -> CommitReceipt: ...
+    async def commit_if_on_shard(
+        self,
+        tenant_id: str,
+        namespace: str,
+        shard: int,
+        entity_key: bytes,
+        ops: list[CommitOp],
+        expected_offset: int,
+    ) -> ConditionalWrite: ...
+    async def state_get_on_shard(
+        self, tenant_id: str, namespace: str, stream: str, shard: int, key: str
+    ) -> StateValue: ...
+    async def publish_if(
+        self,
+        tenant_id: str,
+        namespace: str,
+        stream: str,
+        payloads: list[bytes],
+        expected_offset: int,
+        *,
+        key: bytes | None = None,
+    ) -> ConditionalWrite: ...
+    async def publish_if_on_shard(
+        self,
+        tenant_id: str,
+        namespace: str,
+        stream: str,
+        shard: int,
+        payloads: list[bytes],
+        expected_offset: int,
+    ) -> ConditionalWrite: ...
     async def counter_add(
         self, tenant_id: str, namespace: str, cache: str, key: str, delta: int
     ) -> int: ...

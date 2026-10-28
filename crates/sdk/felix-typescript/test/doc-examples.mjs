@@ -20,16 +20,17 @@ const tutorialPage = (slug) =>
 // Everything index.d.ts exports, so a block can use any of it without the
 // import lines the page leaves out.
 const VALUES = [
-  "AuthError", "Client", "CommitError", "CommitOp", "ConnectionError", "CursorError",
+  "AuthError", "CacheCondition", "Client", "CommitError", "CommitOp", "ConnectionError", "CursorError",
   "EventCountError", "FelixError", "InvalidArgumentError", "NotFoundError",
   "NotOnOwningShardError", "OutcomeUnknownError", "OverloadedError",
   "ShardUnavailableError", "SubscriptionHandle", "ShardedSubscriptionHandle",
   "CacheWatchHandle",
 ];
 const TYPES = [
-  "AckMode", "CacheChange", "CacheWatchItem", "CommitReceipt", "ConnectOptions",
+  "AckMode", "CacheChange", "CacheConditionResult", "CacheWatchItem", "CommitReceipt",
+  "ConditionalWrite", "ConnectOptions",
   "Event", "GroupDelivery", "GroupRecord", "IdentityOptions", "ShardEvent",
-  "ShardMoved", "ShardPositions", "StartPosition", "StateValue", "TokenProvider",
+  "ShardMoved", "ShardPositions", "StartPosition", "StateValue", "TokenProvider", "VersionedValue",
 ];
 
 export function extract(markdown, name = "typescript.md") {

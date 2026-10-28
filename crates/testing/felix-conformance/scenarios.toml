@@ -812,7 +812,7 @@ title = "A commit with an expected offset is refused once the shard has moved on
 detail = """
 A commit carrying an expected offset that is no longer the shard's next is
 refused with publish_refused and offset_mismatch naming the tail, and nothing
-is written. Optional until the bindings expose conditional writes.
+is written.
 """
 
 [[scenario]]

@@ -128,3 +128,6 @@ pub(crate) fn u64_of(value: BigInt) -> Result<u64> {
     }
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests;

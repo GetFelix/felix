@@ -8,7 +8,10 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use super::{AsyncCacheWatch, AsyncShardedSubscription, AsyncSubscription};
-use crate::args::{parse_ack, parse_addrs, parse_start};
+use crate::args::{owned4, parse_ack, parse_addrs, parse_start};
+use crate::conditional::{
+    CacheCondition, CacheConditionResult, ConditionalWrite, OwnedVersionedValue,
+};
 use crate::errors::to_py_err;
 use crate::token::{Flavor, Tokens, resolve};
 use crate::types::{CacheWatchFilter, GroupRecord, OwnedGroupRecord};
@@ -329,6 +332,256 @@ impl AsyncClient {
                 .await
                 .map_err(to_py_err)?;
             Ok(value.map(|bytes| bytes.to_vec()))
+        })
+    }
+
+    /// Read a value with its version, or `None`. See the synchronous
+    /// `Client.cache_get_versioned`.
+    fn cache_get_versioned<'py>(
+        &self,
+        py: Python<'py>,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        key: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, cache, key) = owned4(tenant_id, namespace, cache, key);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let entry = inner
+                .cache_get_versioned(&tenant_id, &namespace, &cache, &key)
+                .await
+                .map_err(to_py_err)?;
+            Ok(entry.map(OwnedVersionedValue))
+        })
+    }
+
+    /// Store a value only if the key's entry meets `condition`. See the
+    /// synchronous `Client.cache_put_if`; a lost answer is never resent.
+    #[pyo3(signature = (tenant_id, namespace, cache, key, value, condition, *, ttl=None))]
+    fn cache_put_if<'py>(
+        &self,
+        py: Python<'py>,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        key: &str,
+        value: &[u8],
+        condition: PyRef<'py, CacheCondition>,
+        ttl: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, cache, key) = owned4(tenant_id, namespace, cache, key);
+        let value = Bytes::copy_from_slice(value);
+        let condition = condition.inner;
+        let ttl_ms = ttl.map(|seconds| (seconds.max(0.0) * 1000.0) as u64);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let result = inner
+                .cache_put_if(
+                    &tenant_id, &namespace, &cache, &key, value, ttl_ms, condition,
+                )
+                .await
+                .map_err(to_py_err)?;
+            Ok(CacheConditionResult::from(result))
+        })
+    }
+
+    /// Remove a key only if its version is `version`.
+    fn cache_delete_if<'py>(
+        &self,
+        py: Python<'py>,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        key: &str,
+        version: u64,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, cache, key) = owned4(tenant_id, namespace, cache, key);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let result = inner
+                .cache_delete_if(&tenant_id, &namespace, &cache, &key, version)
+                .await
+                .map_err(to_py_err)?;
+            Ok(CacheConditionResult::from(result))
+        })
+    }
+
+    /// Commit `ops` only if the shard's next offset is `expected_offset`.
+    fn commit_if<'py>(
+        &self,
+        py: Python<'py>,
+        tenant_id: &str,
+        namespace: &str,
+        entity_key: &[u8],
+        ops: Vec<PyRef<'py, crate::commit::CommitOp>>,
+        expected_offset: u64,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        let ops = crate::commit::ops(ops);
+        let (tenant_id, namespace, entity_key) = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            entity_key.to_vec(),
+        );
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let answer = inner
+                .commit_if(&tenant_id, &namespace, &entity_key, ops, expected_offset)
+                .await
+                .map_err(to_py_err)?;
+            Ok(ConditionalWrite::from(answer))
+        })
+    }
+
+    /// `commit`, to the named shard.
+    fn commit_on_shard<'py>(
+        &self,
+        py: Python<'py>,
+        tenant_id: &str,
+        namespace: &str,
+        shard: u32,
+        entity_key: &[u8],
+        ops: Vec<PyRef<'py, crate::commit::CommitOp>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        let ops = crate::commit::ops(ops);
+        let (tenant_id, namespace, entity_key) = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            entity_key.to_vec(),
+        );
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let receipt = inner
+                .commit_on_shard(&tenant_id, &namespace, shard, &entity_key, ops)
+                .await
+                .map_err(to_py_err)?;
+            Ok(crate::commit::CommitReceipt {
+                offset: receipt.offset,
+            })
+        })
+    }
+
+    /// `commit_if`, to the named shard.
+    fn commit_if_on_shard<'py>(
+        &self,
+        py: Python<'py>,
+        tenant_id: &str,
+        namespace: &str,
+        shard: u32,
+        entity_key: &[u8],
+        ops: Vec<PyRef<'py, crate::commit::CommitOp>>,
+        expected_offset: u64,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        let ops = crate::commit::ops(ops);
+        let (tenant_id, namespace, entity_key) = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            entity_key.to_vec(),
+        );
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let answer = inner
+                .commit_if_on_shard(
+                    &tenant_id,
+                    &namespace,
+                    shard,
+                    &entity_key,
+                    ops,
+                    expected_offset,
+                )
+                .await
+                .map_err(to_py_err)?;
+            Ok(ConditionalWrite::from(answer))
+        })
+    }
+
+    /// `key` in the state of the named shard of `stream`, with no entity key.
+    fn state_get_on_shard<'py>(
+        &self,
+        py: Python<'py>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        key: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, stream, key) = owned4(tenant_id, namespace, stream, key);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let state = inner
+                .state_get_on_shard(&tenant_id, &namespace, &stream, shard, &key)
+                .await
+                .map_err(to_py_err)?;
+            Ok(crate::commit::OwnedStateValue(state))
+        })
+    }
+
+    /// Publish `payloads` only if the shard's next offset is
+    /// `expected_offset`. See the synchronous `Client.publish_if`.
+    #[pyo3(signature = (tenant_id, namespace, stream, payloads, expected_offset, *, key=None))]
+    fn publish_if<'py>(
+        &self,
+        py: Python<'py>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        payloads: Vec<Vec<u8>>,
+        expected_offset: u64,
+        key: Option<&[u8]>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, stream) = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            stream.to_string(),
+        );
+        let key = key.map(<[u8]>::to_vec);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let answer = inner
+                .publish_if(
+                    &tenant_id,
+                    &namespace,
+                    &stream,
+                    key.as_deref(),
+                    payloads,
+                    expected_offset,
+                )
+                .await
+                .map_err(to_py_err)?;
+            Ok(ConditionalWrite::from(answer))
+        })
+    }
+
+    /// `publish_if`, to the named shard.
+    fn publish_if_on_shard<'py>(
+        &self,
+        py: Python<'py>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        payloads: Vec<Vec<u8>>,
+        expected_offset: u64,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, stream) = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            stream.to_string(),
+        );
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let answer = inner
+                .publish_if_on_shard(
+                    &tenant_id,
+                    &namespace,
+                    &stream,
+                    shard,
+                    payloads,
+                    expected_offset,
+                )
+                .await
+                .map_err(to_py_err)?;
+            Ok(ConditionalWrite::from(answer))
         })
     }
 
