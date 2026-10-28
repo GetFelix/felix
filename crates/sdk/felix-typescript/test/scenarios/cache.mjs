@@ -388,4 +388,75 @@ export default function register(ctx) {
       (err) => err instanceof felix.InvalidArgumentError,
     );
   });
+
+  it("a sharded prefix watch sees changes from every shard", () =>
+    scenario("watch.sharded_prefix_covers_every_shard", async () => {
+      const { client, fixture } = ctx;
+      const { tenant_id: tenant, namespace, cache } = fixture;
+      const prefix = `${unique("fan")}:`;
+      const keys = Array.from({ length: 16 }, (_, i) => `${prefix}${i}`);
+
+      const watch = await client.watchCacheSharded(tenant, namespace, cache, prefix);
+      try {
+        assert.ok(watch.shards > 1, "the fixture cache must span several shards");
+        assert.equal(watch.retainedCount, null);
+        for (const key of keys) {
+          await client.cachePut(tenant, namespace, cache, key, Buffer.from(key));
+        }
+
+        const read = reader(watch, "recv");
+        const seen = new Map();
+        while (seen.size < keys.length) {
+          const item = await read.next(10_000);
+          assert.ok(item, `only ${seen.size} of ${keys.length} changes arrived`);
+          if (item.change) seen.set(item.change.key, item.shard);
+        }
+        assert.deepEqual([...seen.keys()].sort(), [...keys].sort());
+        assert.ok(
+          new Set(seen.values()).size > 1,
+          "every key landed on one shard, so this did not exercise the merge",
+        );
+
+        // Resuming is a vector with one entry per shard.
+        const resume = await watch.resumeOffsets();
+        assert.equal(Object.keys(resume).length, watch.shards);
+        for (const offset of Object.values(resume)) assert.equal(typeof offset, "bigint");
+      } finally {
+        await watch.close();
+      }
+    }));
+
+  it("a retained sharded watch marks the moment the state is whole", () =>
+    scenario("watch.sharded_retained_marks_state_complete", async () => {
+      const { client, fixture } = ctx;
+      const { tenant_id: tenant, namespace, cache } = fixture;
+      const prefix = `${unique("roster")}:`;
+      const keys = Array.from({ length: 12 }, (_, i) => `${prefix}${i}`);
+      for (const key of keys) {
+        await client.cachePut(tenant, namespace, cache, key, Buffer.from("here"));
+      }
+
+      const watch = await client.watchCacheSharded(
+        tenant, namespace, cache, prefix, undefined, true,
+      );
+      try {
+        assert.equal(watch.retainedCount, BigInt(keys.length));
+        const read = reader(watch, "recv");
+        const state = new Set();
+        for (;;) {
+          const item = await read.next(10_000);
+          assert.ok(item, "the watch ended before the state was complete");
+          if (item.change) state.add(item.change.key);
+          if (item.stateComplete) break;
+        }
+        assert.deepEqual([...state].sort(), [...keys].sort());
+      } finally {
+        await watch.close();
+      }
+
+      await assert.rejects(
+        client.watchCacheSharded(tenant, namespace, cache, prefix, { 0: 0n }, true),
+        /mutually exclusive/,
+      );
+    }));
 }

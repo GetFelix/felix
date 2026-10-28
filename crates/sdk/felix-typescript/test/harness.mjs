@@ -179,6 +179,9 @@ const NULLABLE_FIELDS = {
   ShardMoved: ["resumeFrom", "nodeId", "addr"],
   CacheWatchItem: ["change", "laggedResumeFrom", "shardMoved"],
   CacheChange: ["value"],
+  ShardedCacheWatchItem: [
+    "shard", "change", "stateComplete", "laggedResumeFrom", "shardMoved", "shardClosed",
+  ],
 };
 
 function assertFieldsNotUndefined(object, kind) {
@@ -191,7 +194,11 @@ function assertFieldsNotUndefined(object, kind) {
 
 /** Throws if a delivered item has `undefined` where the typings promise `null`. */
 export function assertTypedNulls(item) {
-  if ("shard" in item) {
+  if ("stateComplete" in item) {
+    assertFieldsNotUndefined(item, "ShardedCacheWatchItem");
+    if (item.change) assertFieldsNotUndefined(item.change, "CacheChange");
+    if (item.shardMoved) assertFieldsNotUndefined(item.shardMoved, "ShardMoved");
+  } else if ("shard" in item) {
     assertFieldsNotUndefined(item, "ShardEvent");
     if (item.event) assertFieldsNotUndefined(item.event, "Event");
     if (item.shardMoved) assertFieldsNotUndefined(item.shardMoved, "ShardMoved");

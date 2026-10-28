@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 
-import { scenario, take, unique } from "../harness.mjs";
+import { scenario, sleep, take, unique } from "../harness.mjs";
 
 const TIMEOUT = 20_000;
 
@@ -261,4 +261,95 @@ export default function register(ctx) {
           "waits for the broker has turned the cheapest ack mode into the dearest",
       );
     }));
+
+  it("a time finds the first record appended at or after it", () =>
+    scenario("stream.offset_for_time_finds_the_first_record_at_or_after", async () => {
+      const { client, fixture } = ctx;
+      const { tenant_id: tenant, namespace, durable_stream: stream } = fixture;
+      const first = await client.publishOnShard(
+        tenant, namespace, stream, 0, [Buffer.from(unique("before"))], "per_message",
+      );
+      assert.equal(typeof first, "bigint", "the publish reported no offset");
+      await sleep(100);
+      const between = BigInt(Date.now()) * 1000n;
+      await sleep(100);
+      const second = await client.publishOnShard(
+        tenant, namespace, stream, 0, [Buffer.from(unique("after"))], "per_message",
+      );
+
+      const found = await client.offsetForTime(tenant, namespace, stream, 0, between);
+      assert.equal(typeof found, "bigint");
+      assert.ok(found > first && found <= second, `got ${found}, wanted in (${first}, ${second}]`);
+
+      const oldest = await client.offsetForTime(tenant, namespace, stream, 0, 0n);
+      assert.ok(oldest <= first, "a time older than every record answers with the oldest");
+
+      const future = BigInt(Date.now() + 3_600_000) * 1000n;
+      assert.equal(await client.offsetForTime(tenant, namespace, stream, 0, future), null);
+    }));
+
+  it("a stream shard can be read in pages without subscribing", () =>
+    scenario("stream.read_returns_committed_pages", async () => {
+      const { client, fixture } = ctx;
+      const { tenant_id: tenant, namespace, durable_stream: stream } = fixture;
+      const payloads = ["a", "b", "c"].map((p) => `${unique("read")}-${p}`);
+      const from = await client.publishOnShard(
+        tenant, namespace, stream, 0, payloads.map((p) => Buffer.from(p)), "per_message",
+      );
+      assert.equal(typeof from, "bigint");
+      const end = from + 3n;
+
+      const seen = [];
+      let next = from;
+      while (next < end) {
+        const page = await client.read(tenant, namespace, stream, 0, next, end, 2);
+        assert.ok(page.nextOffset > next, "a page must make progress");
+        for (const record of page.records) {
+          assert.ok(record.timestampMicros > 0n);
+          seen.push(record.payload.toString());
+        }
+        next = page.nextOffset;
+      }
+      assert.deepEqual(seen, payloads);
+    }));
+
+  it("keyed records land on the shards their keys hash to", () =>
+    scenario("publish.records_land_on_their_keys_shards", async () => {
+      const { client, fixture } = ctx;
+      const { tenant_id: tenant, namespace, durable_stream: stream } = fixture;
+      const tag = unique("records");
+      const records = Array.from({ length: 12 }, (_, i) => ({
+        key: Buffer.from(`${tag}-key-${i}`),
+        payload: Buffer.from(`${tag}-${i}`),
+      }));
+
+      const report = await client.publishRecords(tenant, namespace, stream, records, "per_message");
+      assert.equal(report.ok, true);
+      assert.deepEqual(report.failedRecords, []);
+      assert.ok(report.shards.length > 1, "the keys did not spread across shards");
+      const placed = report.shards.flatMap((piece) => piece.records).sort((a, b) => a - b);
+      assert.deepEqual(placed, records.map((_, i) => i));
+
+      for (const piece of report.shards) {
+        assert.equal(piece.error, null);
+        assert.equal(typeof piece.offset, "bigint");
+        const wanted = piece.records.map((i) => records[i].payload.toString());
+        const page = await client.read(
+          tenant, namespace, stream, piece.shard, piece.offset,
+          piece.offset + BigInt(wanted.length),
+        );
+        assert.deepEqual(page.records.map((r) => r.payload.toString()), wanted);
+      }
+    }));
+
+  it("a subscription can name its shard and reports where it began", async () => {
+    const { client, fixture } = ctx;
+    const { tenant_id: tenant, namespace, durable_stream: stream } = fixture;
+    const subscription = await client.subscribe(tenant, namespace, stream, "latest", 1);
+    try {
+      assert.equal(typeof subscription.startOffset, "bigint");
+    } finally {
+      await subscription.close();
+    }
+  });
 }

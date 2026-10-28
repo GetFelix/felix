@@ -1919,7 +1919,8 @@ capacity. Four things go wrong, and each has a tool.
   recognises it by the broker's message, on settles only.
 
 `nack` hands a record back for immediate redelivery, or after a delay on a
-broker with claim control. A record that keeps failing is dead-lettered after
+broker with claim control: `group_nack_after` in Rust and Python,
+`groupNackAfter` in TypeScript. A record that keeps failing is dead-lettered after
 `FELIX_GROUP_MAX_ATTEMPTS`. See [Queues](/features/queues/) for dead letters,
 redrive and the broker's side of all of this.
 

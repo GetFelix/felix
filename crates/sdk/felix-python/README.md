@@ -54,19 +54,27 @@ acks on enqueue), the stream has no log, or the broker is too old to say.
 
 ## Beyond publish and subscribe
 
-Both surfaces also cover consumer groups (`group_poll`, the settles, `group_extend`,
-and `group_create`, `group_seek`, `group_describe` and `group_delete`, sent to the
-shard's leader by following the broker's redirect),
+Both surfaces also cover consumer groups (`group_poll`, the settles including
+`group_nack_after` and `group_dead_letter`, `group_extend`, and `group_create`,
+`group_seek`, `group_describe` and `group_delete`, each with a `*_stream` form
+for every shard, sent to the shard's leader by following the broker's redirect;
+`group_sharded` polls every shard through one handle),
 cache watches (`watch_cache`, including retained watches that hand you current
-state before live changes), and multi-shard subscriptions (`subscribe_sharded`,
-which opens one subscription per shard and merges them). Two things catch
+state before live changes, and `watch_cache_sharded`, which merges a prefix
+across every shard), and multi-shard subscriptions (`subscribe_sharded`, which
+opens one subscription per shard and merges them; `subscribe(shard=)` reads one
+named shard). `offset_for_time` finds the offset a time begins at, and `read`
+returns a page of committed records without subscribing. `publish_batch` and
+`publish_records` send ordered batches; the latter splits keyed records by
+shard and returns a `BatchReport` saying which pieces landed. Two things catch
 people out, so they are worth saying here:
 
 - **Publishing without a `key=` puts every record on shard 0.** The key is what
   spreads a stream, and a multi-shard stream published without one behaves
   exactly like a single-shard one.
-- **A prefix watch reads one shard.** Keys sharing a prefix do not share a
-  shard, so watching a whole multi-shard cache means one watch per shard.
+- **`watch_cache` with a prefix reads one shard.** Keys sharing a prefix do not
+  share a shard, so watching a whole multi-shard cache means
+  `watch_cache_sharded`.
 
 Both surfaces also have atomic commits: `commit(tenant_id, namespace,
 entity_key, [CommitOp.publish(...) or CommitOp.enqueue(...), CommitOp.put(...),

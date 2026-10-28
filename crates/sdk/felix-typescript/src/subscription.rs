@@ -19,6 +19,8 @@ use crate::types::{Event, or_null};
 /// the subscription on its way out.
 #[napi]
 pub struct SubscriptionHandle {
+    start_offset: Option<u64>,
+    live_offset: Option<u64>,
     inner: Arc<Mutex<Option<ClusterSubscription>>>,
     closed: watch::Sender<bool>,
 }
@@ -26,6 +28,8 @@ pub struct SubscriptionHandle {
 impl SubscriptionHandle {
     pub(crate) fn new(subscription: ClusterSubscription) -> Self {
         Self {
+            start_offset: subscription.start_offset(),
+            live_offset: subscription.live_offset(),
             inner: Arc::new(Mutex::new(Some(subscription))),
             closed: watch::Sender::new(false),
         }
@@ -34,6 +38,21 @@ impl SubscriptionHandle {
 
 #[napi]
 impl SubscriptionHandle {
+    /// The offset the subscription began at when it opened, or `null` for an
+    /// in-memory stream. After a shard move the subscription resumes where it
+    /// left off, and this does not change.
+    #[napi(getter)]
+    pub fn start_offset(&self) -> Option<BigInt> {
+        self.start_offset.map(BigInt::from)
+    }
+
+    /// The offset live delivery began at when the subscription opened, or
+    /// `null` for an in-memory stream.
+    #[napi(getter)]
+    pub fn live_offset(&self) -> Option<BigInt> {
+        self.live_offset.map(BigInt::from)
+    }
+
     /// The next record, or `null` once the subscription has ended.
     ///
     /// Resolves when a record arrives; there is no timeout argument because a

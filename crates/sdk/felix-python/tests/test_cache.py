@@ -350,3 +350,119 @@ def test_a_bad_version_is_refused_before_it_is_sent(client, fixture, key):
         client.cache_delete_if(tenant, namespace, cache, key, -1)
     with pytest.raises(OverflowError):
         felix.CacheCondition.version(-1)
+
+
+def put_spread(client, fixture, prefix, count=12):
+    """Write `count` keys under `prefix`, enough to land on several shards."""
+    keys = [f"{prefix}{index}" for index in range(count)]
+    for name in keys:
+        client.cache_put(
+            fixture["tenant_id"], fixture["namespace"], fixture["cache"], name, b"v"
+        )
+    return keys
+
+
+@pytest.mark.scenario("watch.sharded_prefix_covers_every_shard")
+def test_a_sharded_prefix_watch_sees_every_shard(client, fixture, key):
+    prefix = f"spread-{key}:"
+    with client.watch_cache_sharded(
+        fixture["tenant_id"], fixture["namespace"], fixture["cache"], prefix
+    ) as watch:
+        assert watch.shards > 1
+        keys = put_spread(client, fixture, prefix)
+
+        seen = {}
+        for _ in range(60):
+            if len(seen) == len(keys):
+                break
+            item = watch.recv(timeout=5.0)
+            if item is None:
+                break
+            if isinstance(item, felix.ShardedCacheChange):
+                seen[item.change.key] = item.shard
+        offsets = watch.resume_offsets()
+
+    missing = sorted(set(keys) - set(seen))
+    assert not missing, (
+        f"{len(missing)} of {len(keys)} changes never arrived; a prefix watch "
+        "on one shard sees only the keys that hash there"
+    )
+    assert len(set(seen.values())) > 1, "every key came from one shard"
+    assert sorted(offsets) == list(range(watch.shards)), "resume_offsets omits a shard"
+
+
+@pytest.mark.scenario("watch.sharded_retained_marks_state_complete")
+def test_a_sharded_retained_watch_marks_when_state_is_whole(client, fixture, key):
+    prefix = f"roster-{key}:"
+    keys = put_spread(client, fixture, prefix)
+
+    with client.watch_cache_sharded(
+        fixture["tenant_id"], fixture["namespace"], fixture["cache"], prefix, retained=True
+    ) as watch:
+        assert watch.retained_count is not None
+        assert watch.retained_count >= len(keys)
+        state = set()
+        complete = False
+        for _ in range(80):
+            item = watch.recv(timeout=10.0)
+            assert item is not None, "the watch ended before the state was complete"
+            if isinstance(item, felix.CacheStateComplete):
+                complete = True
+                break
+            if isinstance(item, felix.ShardedCacheChange):
+                state.add(item.change.key)
+
+    assert complete
+    assert set(keys) <= state, "state was marked complete with keys still to come"
+
+
+def test_a_sharded_watch_cannot_resume_and_retain(client, fixture, key):
+    with pytest.raises(ValueError):
+        client.watch_cache_sharded(
+            fixture["tenant_id"],
+            fixture["namespace"],
+            fixture["cache"],
+            key,
+            resume={0: 0},
+            retained=True,
+        )
+
+
+def test_the_async_client_watches_every_shard_too(fixture, key):
+    import asyncio
+
+    async def run():
+        client = await felix.AsyncClient.connect(
+            fixture["addrs"],
+            tenant_id=fixture["tenant_id"],
+            token=fixture["token"],
+            ca_file=fixture["ca_file"],
+        )
+        prefix = f"async-spread-{key}:"
+        for index in range(6):
+            await client.cache_put(
+                fixture["tenant_id"],
+                fixture["namespace"],
+                fixture["cache"],
+                f"{prefix}{index}",
+                b"v",
+            )
+        async with await client.watch_cache_sharded(
+            fixture["tenant_id"],
+            fixture["namespace"],
+            fixture["cache"],
+            prefix,
+            retained=True,
+        ) as watch:
+            seen = set()
+            while True:
+                item = await watch.recv(timeout=10.0)
+                if item is None or isinstance(item, felix.CacheStateComplete):
+                    break
+                if isinstance(item, felix.ShardedCacheChange):
+                    seen.add(item.change.key)
+            return seen, watch.shards
+
+    seen, shards = asyncio.run(run())
+    assert len(seen) == 6
+    assert shards > 1

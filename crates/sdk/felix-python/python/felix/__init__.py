@@ -35,11 +35,21 @@ Beyond streams, both surfaces cover:
   ``group_dead_letters``, ``group_redrive`` and ``group_discard`` for records
   that kept failing. ``group_extend`` keeps a claim standing, and
   ``group_create``, ``group_seek``, ``group_describe`` and ``group_delete``
-  administer a group's position.
+  administer a group's position, and the ``*_stream`` forms do the same on
+  every shard. ``group_nack_after`` delays a redelivery, ``group_dead_letter``
+  gives a record up, ``group_poll(visibility=...)`` sets how long a claim
+  stands, and ``group_sharded`` polls every shard through one handle.
 * **Cache watches** — ``watch_cache`` with a key or prefix filter, resumable
   by offset, or ``retained=True`` to receive current state before live changes.
+  ``watch_cache_sharded`` merges a prefix across every shard of a cache.
 * **Multi-shard streams** — ``subscribe_sharded`` opens one subscription per
-  shard, follows each shard's own owner, and merges them.
+  shard, follows each shard's own owner, and merges them. ``subscribe(shard=)``
+  reads one named shard.
+* **Reading history** — ``offset_for_time`` finds where a time begins, and
+  ``read`` returns a page of committed records without subscribing.
+* **Batches** — ``publish_batch`` sends one ordered batch, and
+  ``publish_records`` splits keyed records by shard and reports each shard's
+  outcome in a ``BatchReport``.
 * **Atomic commits** — ``commit`` writes an event and state updates as one
   record on the shard an entity key routes to, and ``state_get`` reads that
   state with the commit's offset as its version. See docs/atomic-commit.md.
@@ -54,6 +64,19 @@ Beyond streams, both surfaces cover:
 """
 
 from ._felix import (
+    AsyncShardedCacheWatch,
+    AsyncShardedGroup,
+    BatchReport,
+    CacheShardClosed,
+    CacheShardLagged,
+    CacheStateComplete,
+    ShardPublish,
+    ShardedCacheChange,
+    ShardedCacheWatchHandle,
+    ShardedGroupHandle,
+    ShardedGroupRecord,
+    StreamPage,
+    StreamRecord,
     AsyncCacheWatch,
     AsyncClient,
     AsyncProducer,
@@ -107,6 +130,10 @@ __all__ = [
     "Event",
     "SubscriptionHandle",
     "AsyncSubscription",
+    "StreamPage",
+    "StreamRecord",
+    "BatchReport",
+    "ShardPublish",
     # Multi-shard streams
     "ShardedSubscriptionHandle",
     "AsyncShardedSubscription",
@@ -119,6 +146,9 @@ __all__ = [
     "GroupRecord",
     "GroupPosition",
     "GroupInfo",
+    "ShardedGroupHandle",
+    "AsyncShardedGroup",
+    "ShardedGroupRecord",
     # Cache watches
     "CacheWatchFilter",
     "CacheWatchHandle",
@@ -126,6 +156,12 @@ __all__ = [
     "CacheChange",
     "CacheWatchLagged",
     "CacheWatchShardMoved",
+    "ShardedCacheWatchHandle",
+    "AsyncShardedCacheWatch",
+    "ShardedCacheChange",
+    "CacheStateComplete",
+    "CacheShardLagged",
+    "CacheShardClosed",
     # Atomic commits
     "CommitOp",
     "CommitReceipt",

@@ -14,11 +14,19 @@ use crate::types::OwnedEvent;
 #[pyclass(module = "felix", name = "AsyncSubscription")]
 pub struct AsyncSubscription {
     inner: Arc<Mutex<Option<ClusterSubscription>>>,
+    /// Where the subscription began, as of when it opened.
+    #[pyo3(get)]
+    start_offset: Option<u64>,
+    /// The offset live delivery began at, as of when it opened.
+    #[pyo3(get)]
+    live_offset: Option<u64>,
 }
 
 impl AsyncSubscription {
     pub(crate) fn new(subscription: ClusterSubscription) -> Self {
         Self {
+            start_offset: subscription.start_offset(),
+            live_offset: subscription.live_offset(),
             inner: Arc::new(Mutex::new(Some(subscription))),
         }
     }

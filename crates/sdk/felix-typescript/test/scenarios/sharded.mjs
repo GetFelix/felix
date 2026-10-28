@@ -229,4 +229,27 @@ export default function register(ctx) {
           `got ${kinds.length}`,
       );
     }));
+
+  it("a sharded group reads every shard and settles on the right one", async () => {
+    const { client, fixture } = ctx;
+    const { tenant_id: tenant, namespace, durable_stream: stream } = fixture;
+    const group = unique("group-sharded");
+    const tag = unique("sg");
+    const handle = await client.groupSharded(tenant, namespace, stream, group);
+    assert.ok(handle.shards > 1);
+
+    // The group starts at the oldest retained record, so take everything
+    // already owed and look only for what this test published.
+    await publishKeyed(client, fixture, stream, Array.from({ length: 12 }, (_, i) => `${tag}-${i}`));
+    const mine = new Map();
+    for (let i = 0; i < 60 && mine.size < 12; i++) {
+      for (const record of await handle.poll(64)) {
+        await handle.ack(record);
+        const text = record.payload.toString();
+        if (text.startsWith(tag)) mine.set(text, record.shard);
+      }
+    }
+    assert.equal(mine.size, 12, "the group did not hand out every published record");
+    assert.ok(new Set(mine.values()).size > 1, "every record came from one shard");
+  });
 }

@@ -132,7 +132,34 @@ pub(crate) fn positive_duration(seconds: f64, name: &str) -> PyResult<std::time:
     }
 }
 
+/// Like [`positive_duration`], but zero is allowed: a delay of nothing is a
+/// plain nack.
+pub(crate) fn non_negative_duration(seconds: f64, name: &str) -> PyResult<std::time::Duration> {
+    if seconds.is_finite() && (0.0..=365.0 * 24.0 * 3600.0).contains(&seconds) {
+        Ok(std::time::Duration::from_secs_f64(seconds))
+    } else {
+        Err(PyValueError::new_err(format!(
+            "{name} must be a number of seconds from 0 to one year, not {seconds}"
+        )))
+    }
+}
+
 /// Four scope strings at once — the shape every group call starts with.
 pub(crate) fn owned4(a: &str, b: &str, c: &str, d: &str) -> (String, String, String, String) {
     (a.to_string(), b.to_string(), c.to_string(), d.to_string())
 }
+
+/// A sharded cache watch resumes or delivers retained state, not both: a
+/// resume already replays the state a retained start shortcuts.
+pub(crate) fn check_sharded_watch<T>(retained: bool, resume: &Option<T>) -> PyResult<()> {
+    if retained && resume.is_some() {
+        return Err(PyValueError::new_err(
+            "retained and resume are mutually exclusive: a resume already \
+             replays the state a retained start shortcuts",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests;

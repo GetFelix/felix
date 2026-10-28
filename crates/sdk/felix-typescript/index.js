@@ -114,6 +114,18 @@ function isHandle(value) {
 }
 
 /**
+ * Lift each failed piece of a `publishRecords` report into a typed error, as a
+ * rejected call would have been. The report resolves rather than rejecting, so
+ * the pieces carry the errors.
+ */
+function typedReport(report) {
+  for (const piece of report.shards) {
+    if (piece.error !== null) piece.error = typed(new Error(piece.error));
+  }
+  return report;
+}
+
+/**
  * Wrap a native handle so every rejection arrives typed.
  *
  * A Proxy rather than patching the prototype: napi defines its methods
@@ -149,7 +161,10 @@ function wrap(value) {
           }
           const out = member.apply(target, args);
           if (out && typeof out.then === "function") {
-            return out.then(wrap, (err) => Promise.reject(typed(err)));
+            return out.then(
+              (result) => wrap(prop === "publishRecords" ? typedReport(result) : result),
+              (err) => Promise.reject(typed(err)),
+            );
           }
           return wrap(out);
         } catch (err) {

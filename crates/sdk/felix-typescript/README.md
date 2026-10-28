@@ -69,20 +69,22 @@ https://docs.getfelix.dev/clients/typescript/#getting-and-refreshing-a-token.
 
 ## What it wraps
 
-Everything the Python binding wraps, with one exception noted below.
+Everything the Python binding wraps.
 
 | | |
 |---|---|
 | Publish | `publish(tenant, ns, stream, payload, key?, ack?, atLeastOnce?)` → the record's offset, or `null` when the broker acked before writing it |
 | Named shard | `publishOnShard(tenant, ns, stream, shard, payloads, ack?)` → the first record's offset; a shard the stream lacks is refused and nothing is written |
 | Idempotent producer | `producer()` → a `Producer`: `publish`, `publishBatch(..., key?)`, `publishBatches`, `abandonInDoubt`, `idFor`, `close(timeoutMs?)`. A batch that got no answer is sent again with the same call and lands once; `PublishRefusedError` (`reason`, `expected`, `tail`) ends the producer on that stream |
-| Subscribe | `subscribe(...)` → `nextEvent()`, `close()`, `closed` |
+| Publish batches | `publishBatch(tenant, ns, stream, payloads, key?, ack?)`; `publishRecords(tenant, ns, stream, records, ack?, atLeastOnce?)` splits keyed records by shard and resolves with a per-shard `BatchReport` |
+| Subscribe | `subscribe(tenant, ns, stream, start?, shard?)` → `nextEvent()`, `close()`, `closed`, `startOffset`, `liveOffset` |
+| Time and reads | `offsetForTime(tenant, ns, stream, shard, atMicros)` → the first offset at or after a time, or `null`; `read(tenant, ns, stream, shard, from, end?, maxRecords?)` → a `StreamPage` of committed records |
 | Sharded subscribe | `subscribeSharded(..., start?, resume?)` → `nextEvent()`, `positions()`, `shards` |
-| Stream shape | `streamShards(...)`, `endpoints()` |
+| Stream shape | `streamShards(...)`, `endpoints()`, `refreshTopology()`, `connectionsPerNode()` |
 | Cache | `cachePut` (with TTL), `cacheGet`, `cacheDelete` |
 | Counters | `counterAdd`, `counterGet` |
-| Cache watches | `watchCache(..., key?, prefix?, start?, retained?)` → `recv()`, `retainedCount` |
-| Consumer groups | `groupPoll`, `groupAck`, `groupNack`, `groupDeadLetters`, `groupDiscard`, `groupRedrive`, `groupExtend`, `groupSeek`, `groupCreate`, `groupDescribe`, `groupDelete` (each follows the broker's redirect to the shard's leader) |
+| Cache watches | `watchCache(..., key?, prefix?, start?, retained?)` → `recv()`, `retainedCount`; `watchCacheSharded(tenant, ns, cache, prefix, resume?, retained?)` merges a prefix across every shard → `recv()`, `resumeOffsets()`, `shards`, `retainedCount` |
+| Consumer groups | `groupPoll` (with `visibilityMs`), `groupAck`, `groupNack`, `groupNackAfter`, `groupDeadLetter`, `groupDeadLetters`, `groupDiscard`, `groupRedrive`, `groupExtend`, `groupSeek`, `groupCreate`, `groupDescribe`, `groupDelete` (each follows the broker's redirect to the shard's leader), the stream-wide `groupSeekStream`, `groupCreateStream`, `groupDescribeStream` and `groupDeleteStream`, and `groupSharded` → a `ShardedGroupHandle` that polls and settles across every shard |
 | Atomic commits | `commit(tenant, ns, entityKey, [CommitOp.publish \| enqueue, put, delete])` → `{ offset }`, `stateGet(tenant, ns, stream, entityKey, key)` → `{ value, version, asOf }`; `NotOnOwningShardError` and `EventCountError` refuse a commit that is not one record. See [atomic commits](../../../docs/atomic-commit.md) |
 
 Every handle has an idempotent `close()` and implements `Symbol.asyncDispose`,
@@ -183,11 +185,9 @@ reworded.
 
 ## What is not wrapped
 
-The Rust client has these and this binding does not yet. The client page lists
-them with what each is for.
-
-- Merged prefix watches across shards (`watch_cache_sharded`).
-- Starting from a time (`offset_for_time`).
+The Rust client's reconnect backoff and maximum backoff
+(`ReconnectPolicy.backoff` and `max_backoff`) have no option here yet; the
+client uses their defaults.
 
 ## Conformance
 

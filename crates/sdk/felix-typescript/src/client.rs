@@ -11,13 +11,16 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
 use crate::args::{
-    MAX_DEADLINE_MS, parse_ack, parse_positions, parse_start, reconnect_policy, seeds, u64_of,
+    duration_ms, parse_ack, parse_positions, parse_start, reconnect_policy, seeds, u64_of,
 };
 use crate::cache_watch::CacheWatchHandle;
 use crate::errors::{classify, invalid};
-use crate::group_admin::{GroupInfo, GroupPosition};
+use crate::group_admin::{GroupInfo, GroupPosition, delivery};
 use crate::producer::Producer;
+use crate::sharded_cache_watch::ShardedCacheWatchHandle;
+use crate::sharded_group::ShardedGroupHandle;
 use crate::sharded_subscription::ShardedSubscriptionHandle;
+use crate::stream_read::{BatchReport, ConnectionCount, KeyedRecord, StreamPage};
 use crate::subscription::SubscriptionHandle;
 use crate::tls;
 use crate::token;
@@ -311,11 +314,18 @@ impl Client {
         namespace: String,
         stream: String,
         start: Option<Either<String, BigInt>>,
+        shard: Option<u32>,
     ) -> Result<SubscriptionHandle> {
         let start = parse_start(start)?;
         let inner = self.cluster()?;
         let subscription = inner
-            .subscribe_from(&tenant_id, &namespace, &stream, Some(start))
+            .subscribe_shard(
+                &tenant_id,
+                &namespace,
+                &stream,
+                shard.unwrap_or(0),
+                Some(start),
+            )
             .await
             .map_err(classify)?;
         Ok(SubscriptionHandle::new(subscription))
@@ -807,6 +817,10 @@ impl Client {
     /// The wait is a long poll rather than a spin, because the caller would
     /// otherwise write the spin: a busy loop measures the loop, and a bare
     /// `setTimeout` between polls adds latency to a record that has arrived.
+    ///
+    /// `visibilityMs` sets how long this poll's claims stand, instead of the
+    /// broker's visibility timeout. The broker caps it, and a broker that
+    /// cannot honour it refuses the poll.
     #[napi]
     pub async fn group_poll(
         &self,
@@ -819,24 +833,30 @@ impl Client {
         wait_ms: Option<u32>,
         consumer: Option<String>,
         reclaim: Option<bool>,
+        visibility_ms: Option<f64>,
     ) -> Result<Vec<GroupRecord>> {
         let max_records = max_records.unwrap_or(32);
         let wait_ms = wait_ms.unwrap_or(0);
-        let member = consumer.map(|consumer| felix_client::GroupMember {
-            consumer,
-            reclaim: reclaim.unwrap_or(false),
-        });
+        let options = felix_client::GroupPollOptions {
+            member: consumer.map(|consumer| felix_client::GroupMember {
+                consumer,
+                reclaim: reclaim.unwrap_or(false),
+            }),
+            wait: std::time::Duration::from_millis(u64::from(wait_ms)),
+            visibility: visibility_ms
+                .map(|ms| duration_ms(ms, 1.0, "visibilityMs"))
+                .transpose()?,
+        };
         let records = self
             .cluster()?
-            .group_poll_as(
+            .group_poll_with(
                 &tenant_id,
                 &namespace,
                 &stream,
                 shard,
                 &group,
-                member.as_ref(),
                 max_records,
-                std::time::Duration::from_millis(u64::from(wait_ms)),
+                &options,
             )
             .await
             .map_err(classify)?;
@@ -881,14 +901,7 @@ impl Client {
         group: String,
         record: GroupDelivery,
     ) -> Result<()> {
-        let record = felix_wire::GroupRecord {
-            offset: u64_of(record.offset)?,
-            payload: Default::default(),
-            attempts: record.attempts,
-            skipped_before: 0,
-            publisher: None,
-            timestamp_micros: None,
-        };
+        let record = delivery(record)?;
         self.cluster()?
             .group_nack(&tenant_id, &namespace, &stream, shard, &group, &record)
             .await
@@ -965,29 +978,12 @@ impl Client {
         record: GroupDelivery,
         extend_ms: f64,
     ) -> Result<f64> {
-        if !(1.0..=MAX_DEADLINE_MS).contains(&extend_ms) {
-            return Err(invalid(format!(
-                "extendMs must be between 1 millisecond and one year, not {extend_ms}"
-            )));
-        }
-        let record = felix_wire::GroupRecord {
-            offset: u64_of(record.offset)?,
-            payload: Default::default(),
-            attempts: record.attempts,
-            skipped_before: 0,
-            publisher: None,
-            timestamp_micros: None,
-        };
+        let extend = duration_ms(extend_ms, 1.0, "extendMs")?;
+        let record = delivery(record)?;
         let stands = self
             .cluster()?
             .group_extend(
-                &tenant_id,
-                &namespace,
-                &stream,
-                shard,
-                &group,
-                &record,
-                std::time::Duration::from_secs_f64(extend_ms / 1000.0),
+                &tenant_id, &namespace, &stream, shard, &group, &record, extend,
             )
             .await
             .map_err(classify)?;
@@ -1069,5 +1065,338 @@ impl Client {
             .group_delete(&tenant_id, &namespace, &stream, shard, &group)
             .await
             .map_err(classify)
+    }
+
+    /// Hand `record` back to be redelivered once `delayMs` has passed rather
+    /// than at once, for a consumer that backs off before retrying. A delay
+    /// of `0` is `groupNack`. The broker caps the delay.
+    #[napi]
+    pub async fn group_nack_after(
+        &self,
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        shard: u32,
+        group: String,
+        record: GroupDelivery,
+        delay_ms: f64,
+    ) -> Result<()> {
+        let delay = duration_ms(delay_ms, 0.0, "delayMs")?;
+        let record = delivery(record)?;
+        self.cluster()?
+            .group_nack_after(
+                &tenant_id, &namespace, &stream, shard, &group, &record, delay,
+            )
+            .await
+            .map_err(classify)
+    }
+
+    /// Give up on one record: list it as a dead letter of the group and finish
+    /// it, as the group does once a record runs out of attempts.
+    /// `groupRedrive` puts it back.
+    #[napi]
+    pub async fn group_dead_letter(
+        &self,
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        shard: u32,
+        group: String,
+        offset: BigInt,
+    ) -> Result<()> {
+        let offset = u64_of(offset)?;
+        self.cluster()?
+            .group_dead_letter(&tenant_id, &namespace, &stream, shard, &group, offset)
+            .await
+            .map_err(classify)
+    }
+
+    /// `groupSeek` on every shard of the stream, in shard order. Each entry is
+    /// that shard's position.
+    #[napi]
+    pub async fn group_seek_stream(
+        &self,
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        group: String,
+        start: Either<String, BigInt>,
+    ) -> Result<Vec<GroupPosition>> {
+        let start = parse_start(Some(start))?;
+        let positions = self
+            .cluster()?
+            .group_seek_stream(&tenant_id, &namespace, &stream, &group, start)
+            .await
+            .map_err(classify)?;
+        Ok(positions.into_iter().map(GroupPosition::from).collect())
+    }
+
+    /// `groupCreate` on every shard of the stream. A shard where the group
+    /// already exists is left alone.
+    #[napi]
+    pub async fn group_create_stream(
+        &self,
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        group: String,
+        start: Either<String, BigInt>,
+    ) -> Result<Vec<GroupPosition>> {
+        let start = parse_start(Some(start))?;
+        let positions = self
+            .cluster()?
+            .group_create_stream(&tenant_id, &namespace, &stream, &group, start)
+            .await
+            .map_err(classify)?;
+        Ok(positions.into_iter().map(GroupPosition::from).collect())
+    }
+
+    /// `groupDescribe` for every shard of the stream, indexed by shard.
+    #[napi]
+    pub async fn group_describe_stream(
+        &self,
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        group: String,
+    ) -> Result<Vec<GroupInfo>> {
+        let infos = self
+            .cluster()?
+            .group_describe_stream(&tenant_id, &namespace, &stream, &group)
+            .await
+            .map_err(classify)?;
+        Ok(infos.into_iter().map(GroupInfo::from).collect())
+    }
+
+    /// `groupDelete` on every shard of the stream. Resolves with whether any
+    /// shard had anything to delete.
+    #[napi]
+    pub async fn group_delete_stream(
+        &self,
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        group: String,
+    ) -> Result<bool> {
+        self.cluster()?
+            .group_delete_stream(&tenant_id, &namespace, &stream, &group)
+            .await
+            .map_err(classify)
+    }
+
+    /// The first offset on one shard of a durable stream whose record was
+    /// appended at or after `atMicros` (microseconds since the Unix epoch), or
+    /// `null` when no committed record is that recent yet. Subscribe at it to
+    /// replay from a time.
+    #[napi]
+    pub async fn offset_for_time(
+        &self,
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        shard: u32,
+        at_micros: BigInt,
+    ) -> Result<Option<BigInt>> {
+        let at = u64_of(at_micros)?;
+        Ok(self
+            .cluster()?
+            .offset_for_time(&tenant_id, &namespace, &stream, shard, at)
+            .await
+            .map_err(classify)?
+            .map(BigInt::from))
+    }
+
+    /// Watch a key prefix across **every** shard of a cache, merged into one
+    /// handle. Keys sharing a prefix hash to different shards and a watch reads
+    /// one, so this opens one prefix watch per shard.
+    ///
+    /// `resume` is a `resumeOffsets()` result: a listed shard resumes at that
+    /// offset and the rest watch from now. `retained` instead delivers each
+    /// matching key's current value first; the two are mutually exclusive.
+    #[napi]
+    pub async fn watch_cache_sharded(
+        &self,
+        tenant_id: String,
+        namespace: String,
+        cache: String,
+        prefix: String,
+        resume: Option<HashMap<String, BigInt>>,
+        retained: Option<bool>,
+    ) -> Result<ShardedCacheWatchHandle> {
+        let resume = parse_positions(resume)?;
+        let inner = self.cluster()?;
+        let opened = if retained.unwrap_or(false) {
+            if resume.is_some() {
+                return Err(invalid(
+                    "retained and resume are mutually exclusive: a resume already \
+                     replays the state a retained start shortcuts",
+                ));
+            }
+            inner
+                .watch_cache_sharded_retained(&tenant_id, &namespace, &cache, &prefix)
+                .await
+        } else {
+            inner
+                .watch_cache_sharded(&tenant_id, &namespace, &cache, &prefix, resume)
+                .await
+        }
+        .map_err(classify)?;
+        Ok(ShardedCacheWatchHandle::new(opened))
+    }
+
+    /// Publish `payloads` as one batch, to the shard `key` hashes to or to
+    /// shard 0 without one. Records sharing a key share a shard, so the batch
+    /// is one frame and keeps its order. Retries and failures are those of
+    /// `publish`. Resolves to the first record's log offset, or `null` as
+    /// `publish` does.
+    #[napi]
+    pub async fn publish_batch(
+        &self,
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        payloads: Vec<Buffer>,
+        key: Option<Buffer>,
+        ack: Option<String>,
+    ) -> Result<Option<BigInt>> {
+        let ack = parse_ack(ack.as_deref().unwrap_or("per_message"))?;
+        let payloads: Vec<Vec<u8>> = payloads.iter().map(|p| p.to_vec()).collect();
+        let inner = self.cluster()?;
+        match key {
+            Some(key) => {
+                inner
+                    .publish_batch_keyed(
+                        &tenant_id,
+                        &namespace,
+                        &stream,
+                        Bytes::copy_from_slice(&key),
+                        payloads,
+                        ack,
+                    )
+                    .await
+            }
+            None => {
+                inner
+                    .publish_batch(&tenant_id, &namespace, &stream, payloads, ack)
+                    .await
+            }
+        }
+        .map(|offset| offset.map(BigInt::from))
+        .map_err(classify)
+    }
+
+    /// Publish records that each carry a routing key, split by shard and sent
+    /// to each shard's owner. A shard's records go as one batch, in the order
+    /// given, accepted or refused as a unit; there is no order between shards.
+    ///
+    /// Failure is per shard and does not reject: the report says which
+    /// records each piece held and why a piece failed, and a failed piece does
+    /// not stop the others. Without `atLeastOnce` a piece that may have been
+    /// written is not sent again. With it, such a piece is re-sent after the
+    /// reconnect policy's backoff, so a record may land twice.
+    #[napi]
+    pub async fn publish_records(
+        &self,
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        records: Vec<KeyedRecord>,
+        ack: Option<String>,
+        at_least_once: Option<bool>,
+    ) -> Result<BatchReport> {
+        let ack = parse_ack(ack.as_deref().unwrap_or("per_message"))?;
+        let records: Vec<(Bytes, Vec<u8>)> = records
+            .iter()
+            .map(|r| (Bytes::copy_from_slice(&r.key), r.payload.to_vec()))
+            .collect();
+        let inner = self.cluster()?;
+        let report = if at_least_once.unwrap_or(false) {
+            inner
+                .publish_records_at_least_once(&tenant_id, &namespace, &stream, records, ack)
+                .await
+        } else {
+            inner
+                .publish_records(&tenant_id, &namespace, &stream, records, ack)
+                .await
+        };
+        Ok(BatchReport::from_report(report))
+    }
+
+    /// One page of a durable stream shard's committed records, from `from` and
+    /// stopping before `end`, without subscribing. Read the next page from
+    /// `nextOffset`; the range is done once it reaches `end`. `maxRecords` of
+    /// `0` takes the broker's cap, which also caps a page's size. A page that
+    /// reaches what is committed comes back short or empty rather than
+    /// waiting. Needs the `stream.subscribe` permission.
+    #[napi]
+    pub async fn read(
+        &self,
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        shard: u32,
+        from: BigInt,
+        end: Option<BigInt>,
+        max_records: Option<u32>,
+    ) -> Result<StreamPage> {
+        let from = u64_of(from)?;
+        let end = end.map(u64_of).transpose()?;
+        self.cluster()?
+            .read(
+                &tenant_id,
+                &namespace,
+                &stream,
+                shard,
+                from,
+                end,
+                max_records.unwrap_or(0),
+            )
+            .await
+            .map(StreamPage::from)
+            .map_err(classify)
+    }
+
+    /// A consumer group across every shard of a stream, for a consumer that
+    /// wants the whole stream through one handle.
+    #[napi]
+    pub async fn group_sharded(
+        &self,
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        group: String,
+    ) -> Result<ShardedGroupHandle> {
+        self.cluster()?
+            .group_sharded(&tenant_id, &namespace, &stream, &group)
+            .await
+            .map(ShardedGroupHandle::new)
+            .map_err(classify)
+    }
+
+    /// Ask the broker in use which brokers a client may connect to, and add
+    /// them to the endpoints this client will try. Resolves with how many the
+    /// cluster named, which may be zero. Rejects when the broker predates
+    /// discovery.
+    #[napi]
+    pub async fn refresh_topology(&self) -> Result<u32> {
+        let named = self.cluster()?.refresh_topology().await.map_err(classify)?;
+        Ok(named as u32)
+    }
+
+    /// Live connections to each broker this client holds one for, as
+    /// `[address, count]` pairs. A broker starts at one connection and gains
+    /// more only when its streams are saturated.
+    #[napi]
+    pub async fn connections_per_node(&self) -> Result<Vec<ConnectionCount>> {
+        Ok(self
+            .cluster()?
+            .connections_per_node()
+            .await
+            .into_iter()
+            .map(|(addr, connections)| ConnectionCount {
+                addr: addr.to_string(),
+                connections: connections as u32,
+            })
+            .collect())
     }
 }

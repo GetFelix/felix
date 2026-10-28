@@ -24,13 +24,15 @@ const VALUES = [
   "EventCountError", "FelixError", "InvalidArgumentError", "NotFoundError",
   "NotOnOwningShardError", "OutcomeUnknownError", "OverloadedError", "Producer", "PublishRefusedError",
   "ShardUnavailableError", "SubscriptionHandle", "ShardedSubscriptionHandle",
-  "CacheWatchHandle",
+  "CacheWatchHandle", "ShardedCacheWatchHandle", "ShardedGroupHandle",
 ];
 const TYPES = [
   "AckMode", "CacheChange", "CacheConditionResult", "CacheWatchItem", "CommitReceipt",
   "ConditionalWrite", "ConnectOptions",
-  "Event", "GroupDelivery", "GroupInfo", "GroupPosition", "GroupRecord", "IdentityOptions", "ShardEvent",
-  "ShardMoved", "ShardPositions", "StartPosition", "StateValue", "TokenProvider", "VersionedValue",
+  "BatchReport", "ConnectionCount", "Event", "GroupDelivery", "GroupInfo", "GroupPosition", "GroupRecord", "IdentityOptions", "ShardEvent",
+  "KeyedRecord", "ShardMoved", "ShardPositions", "ShardPublish", "ShardedCacheWatchItem",
+  "ShardedGroupDelivery", "ShardedGroupRecord", "StartPosition", "StateValue", "StreamPage",
+  "StreamRecord", "TokenProvider", "VersionedValue",
 ];
 
 export function extract(markdown, name = "typescript.md") {

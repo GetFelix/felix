@@ -23,6 +23,7 @@
 
 mod args;
 mod asyncio;
+mod batch;
 mod blocking;
 mod commit;
 mod conditional;
@@ -30,6 +31,9 @@ mod errors;
 mod group_admin;
 mod producer;
 mod runtime;
+mod sharded_cache_watch;
+mod sharded_group;
+mod stream_page;
 mod tls;
 mod token;
 mod types;
@@ -44,12 +48,16 @@ fn _felix(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<blocking::SubscriptionHandle>()?;
     module.add_class::<blocking::CacheWatchHandle>()?;
     module.add_class::<blocking::ShardedSubscriptionHandle>()?;
+    module.add_class::<blocking::ShardedCacheWatchHandle>()?;
+    module.add_class::<blocking::ShardedGroupHandle>()?;
     module.add_class::<blocking::ProducerHandle>()?;
 
     module.add_class::<asyncio::AsyncClient>()?;
     module.add_class::<asyncio::AsyncSubscription>()?;
     module.add_class::<asyncio::AsyncCacheWatch>()?;
     module.add_class::<asyncio::AsyncShardedSubscription>()?;
+    module.add_class::<asyncio::AsyncShardedCacheWatch>()?;
+    module.add_class::<asyncio::AsyncShardedGroup>()?;
     module.add_class::<asyncio::AsyncProducer>()?;
 
     module.add_class::<types::Event>()?;
@@ -72,6 +80,15 @@ fn _felix(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<conditional::ConditionalWrite>()?;
     module.add_class::<group_admin::GroupPosition>()?;
     module.add_class::<group_admin::GroupInfo>()?;
+    module.add_class::<sharded_cache_watch::ShardedCacheChange>()?;
+    module.add_class::<sharded_cache_watch::CacheStateComplete>()?;
+    module.add_class::<sharded_cache_watch::CacheShardLagged>()?;
+    module.add_class::<sharded_cache_watch::CacheShardClosed>()?;
+    module.add_class::<sharded_group::ShardedGroupRecord>()?;
+    module.add_class::<stream_page::StreamRecord>()?;
+    module.add_class::<stream_page::StreamPage>()?;
+    module.add_class::<batch::ShardPublish>()?;
+    module.add_class::<batch::BatchReport>()?;
 
     errors::register(module)?;
     Ok(())

@@ -120,3 +120,27 @@ pub struct ShardEvent {
 pub(crate) fn or_null<T>(value: Option<T>) -> Either<T, Null> {
     value.map_or(Either::B(Null), Either::A)
 }
+
+/// An item from a prefix watch across every shard of a cache.
+///
+/// Exactly one of `change`, `stateComplete`, `laggedResumeFrom`, `shardMoved`
+/// and `shardClosed` is set. Losing a shard is an item and not silence: the
+/// other shards keep delivering, and a consumer that ignores these is
+/// choosing to watch part of the prefix. `shard` is `null` only for
+/// `stateComplete`, which concerns the whole watch.
+#[napi(object)]
+pub struct ShardedCacheWatchItem {
+    pub shard: Either<u32, Null>,
+    pub change: Either<CacheChange, Null>,
+    /// Every shard has delivered its current state; everything further is
+    /// live. Only on a retained watch, at most once.
+    pub state_complete: Either<bool, Null>,
+    /// This shard fell behind and its watch ended. `resumeOffsets()` already
+    /// accounts for it.
+    pub lagged_resume_from: Either<BigInt, Null>,
+    /// This shard moved to another broker and its watch is following it.
+    pub shard_moved: Either<ShardMoved, Null>,
+    /// This shard's watch ended without a lag signal, usually because its
+    /// owner went away. The other shards are unaffected.
+    pub shard_closed: Either<bool, Null>,
+}

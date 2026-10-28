@@ -265,7 +265,7 @@ down.
   the offset after the last one it delivered, and where it cannot it rejects
   rather than ending as though the stream had finished.
 - **Knobs.** [Reconnecting](#reconnecting) sets the attempt count and a deadline. `await client.endpoints()` lists the brokers it would try, discovered
-  ones included.
+  ones included. `await client.refreshTopology()` asks the broker in use for the cluster's brokers again and resolves with how many it named (it rejects against a broker that predates discovery), and `await client.connectionsPerNode()` lists the connections held to each broker.
 
 ### Reconnecting
 
@@ -384,6 +384,31 @@ payloads, ack?)`. A shard the stream does not have is refused with
 `FEATURE_EXPLICIT_SHARD`; against one that does not, it rejects without sending
 anything. Like `publish`, it is not idempotent: a failure that may have applied
 is reported, not re-sent.
+
+### Batches
+
+`publishBatch` sends several payloads as one frame to one shard. With a `key` they go to the shard the key hashes to, and without one to shard 0. It resolves to the first record's offset, or `null` as `publish` does. Arguments are `(tenantId, namespace, stream, payloads, key?, ack?)`:
+
+```ts
+const first = await client.publishBatch("t1", "default", "orders", ticks, Buffer.from(customerId));
+```
+
+`publishRecords` takes records that each carry their own key, splits them by shard and sends each shard's records to its owner. Failure is per shard and does not reject: the report says which records each piece held, and a failed piece does not stop the others.
+
+```ts
+const report = await client.publishRecords(
+  "t1", "default", "orders",
+  orders.map((order) => ({ key: Buffer.from(order.customerId), payload: Buffer.from(JSON.stringify(order)) })),
+);
+if (!report.ok) {
+  for (const piece of report.shards) {
+    if (piece.error !== null) console.error(`shard ${piece.shard} refused`, piece.records, piece.error);
+  }
+  await retry();
+}
+```
+
+Each `ShardPublish` has the shard, the positions (in the order you passed) of the records it held, the offset its first record landed at, and `error`, the typed error a rejected call would carry. A piece is all or nothing. Without `atLeastOnce` a piece that may have been written is not sent again, so no record lands twice; pass `true` as the last argument to re-send such a piece after the reconnect backoff, and accept that a record may land twice. There is no order between shards, and none across two calls unless you await the first.
 
 ### Idempotent producers
 
@@ -529,6 +554,35 @@ async function nextWithin(timeoutMs: number) {
 }
 ```
 :::
+
+`subscribe` reads one shard: pass a shard number after `start` for any but shard 0, or use [`subscribeSharded`](#multi-shard-streams) for all of them. `startOffset` and `liveOffset` on the handle say where the subscription began and where live delivery began when it opened, or `null` for an in-memory stream.
+
+### Replaying from a time
+
+`offsetForTime` finds the first offset on one shard whose record was appended at or after a time, given as microseconds since the Unix epoch in a `bigint`. Subscribe at it to replay from then:
+
+```ts
+const since = BigInt(Date.now() - 3_600_000) * 1000n;
+const from = await client.offsetForTime("t1", "default", "orders", shard, since);
+const replay = await client.subscribe("t1", "default", "orders", from ?? "latest", shard);
+```
+
+It resolves to `null` when nothing is that recent yet, which is why the example falls back to `"latest"`. A time older than every record the shard holds answers with the oldest. Times are the clock of the broker that led the shard at append, so if that clock stepped back the answer is near the first such record rather than exactly it. It needs a durable stream and the `stream.subscribe` permission.
+
+### Reading without subscribing
+
+`read` returns one page of a shard's committed records from an offset, up to an optional end, without holding a subscription:
+
+```ts
+let next = 0n;
+while (next < end) {
+  const page = await client.read("t1", "default", "orders", shard, next, end, 500);
+  for (const record of page.records) await handle(record.payload);
+  next = page.nextOffset;
+}
+```
+
+`nextOffset` is where the next page starts. Offsets that hold no record are passed over, so it is not always the last offset plus one. A `maxRecords` of `0` takes the broker's cap. A `from` below what retention kept, or past the tail, is a `CursorError`. Each `StreamRecord` has the `offset`, `payload`, `publisher` (when the broker recorded one) and `timestampMicros`. Only the shard's leader answers, and it needs the `stream.subscribe` permission.
 
 ### Offsets are how you notice a drop
 
@@ -721,6 +775,22 @@ for (const offset of offsets) {
 }
 ```
 
+You can also give up on a claimed record yourself. `groupDeadLetter` takes the offset, lists the record among the group's dead letters and finishes it, as the group does once a record runs out of attempts. `groupRedrive` puts it back. It needs a broker that supports claim control.
+
+```ts
+await client.groupDeadLetter("t1", "default", "orders", shard, "billing", record.offset);
+```
+
+### Retrying later
+
+`groupNackAfter` hands a record back to be redelivered after a delay, in milliseconds, instead of at once. It names the delivery like `groupNack`. A delay of `0` is a plain nack. The broker caps the delay (`FELIX_GROUP_MAX_VISIBILITY_MS`), and until it passes the record still counts against the group's in-flight cap. The delay is the leader's memory, so a failover redelivers the record sooner.
+
+```ts
+await client.groupNackAfter("t1", "default", "orders", shard, "billing", record, 30_000);
+```
+
+`groupPoll` takes the claim length for a poll as its last argument, `visibilityMs`, instead of the broker's visibility timeout. A broker that cannot honour it refuses the poll rather than claiming for its own timeout.
+
 ### Long work
 
 A claim stands for the broker's visibility timeout. A consumer still working on a record asks for more time with `groupExtend`, which takes the record and a number of milliseconds and resolves with how long the claim now stands. That is less than asked when the broker caps it (`FELIX_GROUP_MAX_VISIBILITY_MS`):
@@ -757,6 +827,28 @@ const existed = await client.groupDelete("t1", "default", "orders", shard, "bill
 ```
 
 `groupCreate` and `groupSeek` resolve with a `GroupPosition`: the offset the group resumes from, and `moved`, which is `false` when `groupCreate` found the group already there. A seek voids the claims standing when it lands, so an ack for a record the group now owes fails with `stale_claim`. `groupDescribe` resolves with a `GroupInfo`; `committed` is `null` for a group with no cursor, and `inFlight` and `owed` are the shard leader's memory, so they start again from zero when the leader changes. Every count is a `bigint`.
+
+### The whole stream at once
+
+The administration calls have stream-wide forms that act on every shard in shard order and answer once per shard: `groupCreateStream` and `groupSeekStream` resolve with a `GroupPosition[]`, `groupDescribeStream` with a `GroupInfo[]` indexed by shard, and `groupDeleteStream` with whether any shard had a group to delete.
+
+```ts
+await client.groupCreateStream("t1", "default", "orders", "billing", "latest");
+const lag = (await client.groupDescribeStream("t1", "default", "orders", "billing"))
+  .reduce((sum, info) => sum + info.lag, 0n);
+```
+
+They send one request per shard, not one cut across them, so `"latest"` is each shard's tail when its own request lands. An offset is refused for a stream with more than one shard, because offsets are per shard. A failure partway leaves the earlier shards changed; each call is safe to repeat.
+
+To consume every shard through one handle, `groupSharded` returns a `ShardedGroupHandle`. `poll` takes from the next shard that has records and tags each with its shard; `ack`, `nack`, `nackAfter`, `extend` and `deadLetter` send the settle to that shard. The shards are not merged into one order.
+
+```ts
+const group = await client.groupSharded("t1", "default", "orders", "billing");
+for (const record of await group.poll(32)) {
+  await charge(record.payload);
+  await group.ack(record);
+}
+```
 
 ## Cache and counters
 
@@ -914,7 +1006,41 @@ Three things there matter:
   new owner and carries on, with no change repeated or skipped.
 
 `start` and `retained` are mutually exclusive. A resume already replays the
-state a retained start shortcuts, so asking for both is refused. A prefix watch reads **one shard**.
+state a retained start shortcuts, so asking for both is refused. A prefix watch
+with `watchCache` reads **one shard**; the next section covers a cache with
+several.
+
+### A prefix across every shard
+
+Keys sharing a prefix hash to different shards, and a watch reads one. `watchCacheSharded` opens a prefix watch per shard, follows each shard to its owner and merges them into one handle. It fails if any shard cannot be opened, because a watch covering three shards of four looks complete to everything downstream.
+
+```ts
+const watch = await client.watchCacheSharded("t1", "default", "sessions", "room:42:");
+try {
+  for (;;) {
+    const item = await watch.recv();
+    if (item === null) break;
+    if (item.change !== null) {
+      console.log(item.shard, item.change.key);
+    } else if (item.shardClosed) {
+      // The other shards carry on, so this is part of the prefix gone quiet.
+      console.error(`shard ${item.shard} stopped`);
+    }
+  }
+} finally {
+  await watch.close();
+}
+```
+
+Ordering is per key: a key lives on one shard, so its changes arrive in write order, and keys on different shards have no order between them. Each `offset` belongs to its own shard's log. Losing a shard is an item and not silence: `laggedResumeFrom` (that shard fell behind), `shardMoved` (it is being followed to a new owner) and `shardClosed` (it ended) each name the `shard`.
+
+`resumeOffsets()` is one offset per shard, never ahead of what you have handled. Pass it back as the `resume` argument to continue gaplessly. A shard still delivering its state resumes at `0n`, so no key is missed.
+
+Pass `true` as the last argument to retain: every matching key's current value arrives first, from every shard, and `stateComplete` marks the moment all of them have. `retainedCount` is the total to expect. A retained watch cannot also resume.
+
+```ts
+const roster = await client.watchCacheSharded("t1", "default", "sessions", "room:42:", undefined, true);
+```
 
 ## Atomic commits
 
@@ -1095,14 +1221,10 @@ values are plain `number`s, exact up to `Number.MAX_SAFE_INTEGER`.
 
 ## What is not wrapped
 
-These are in the [Rust client](/clients/rust/) and not in this binding yet:
-
-- **Merged prefix watches** (`watch_cache_sharded`). A prefix on a
-  multi-shard cache needs one `watchCache` per shard.
-- **Starting from a time** (`offset_for_time`).
-
-The ones the conformance catalogue covers are marked there, so the binding
-reports them as unclaimed.
+The [Rust client](/clients/rust/)'s reconnect backoff and maximum backoff
+(`ReconnectPolicy.backoff` and `max_backoff`) have no option here yet. The
+client uses their defaults; [Reconnecting](#reconnecting) sets the attempt count
+and the deadline.
 
 ## Conformance
 
