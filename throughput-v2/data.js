@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793161862883,
+  "lastUpdate": 1793170426997,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -38220,6 +38220,58 @@ window.BENCHMARK_DATA = {
             "range": "2367.23",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 825322.56\nmean: 826134.78\nstdev: 2367.23\ncv: 0.29%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "23de7e14e5c645bcab711b0e06a63e01f789f942",
+          "message": "feat(clients): idempotent producers and named-shard publish in Python and TypeScript (#1607)\n\n* feat(clients): idempotent producers and named-shard publish in Python and TypeScript\n\nPython (blocking and asyncio) and TypeScript wrap the Rust client's idempotent producer, publish_on_shard, and keyed at_least_once. A broker refusal is a PublishRefusedError carrying the Rust refusal reason; an in-doubt batch is settled by the same call again. Tests, conformance claims, client pages, resilience guide and changelog fragment. Part of #1605.\n\n* test(clients): keyed at-least-once is accepted; abandoned stream gets a fresh id",
+          "timestamp": "2026-10-28T06:49:00Z",
+          "tree_id": "8bc7a858d74b7117499277f02eccf3bd8a2519d7",
+          "url": "https://github.com/GetFelix/felix/commit/23de7e14e5c645bcab711b0e06a63e01f789f942"
+        },
+        "date": 1793170426196,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 361666.71,
+            "range": "10522.83",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 361666.71\nmean: 356261.05\nstdev: 10522.83\ncv: 2.95%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 361666.71,
+            "range": "10522.83",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 361666.71\nmean: 356261.05\nstdev: 10522.83\ncv: 2.95%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82483.51,
+            "range": "803.97",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82483.51\nmean: 82320.45\nstdev: 803.97\ncv: 0.98%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 824835.14,
+            "range": "8039.71",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 824835.14\nmean: 823204.49\nstdev: 8039.71\ncv: 0.98%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
