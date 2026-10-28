@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793214497487,
+  "lastUpdate": 1793222590889,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -38324,6 +38324,58 @@ window.BENCHMARK_DATA = {
             "range": "6788.42",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 814590.65\nmean: 813818.54\nstdev: 6788.42\ncv: 0.83%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "37fe7c68933acf72991a41115dffc559561ff508",
+          "message": "feat(clients): consumer-group admin in Python and TypeScript (#1609)\n\n* feat(clients): consumer-group admin in Python and TypeScript\n\nPython (blocking and asyncio) and TypeScript wrap group_extend, group_seek, group_create, group_describe and group_delete. Create and seek return a position, describe returns the group's counts, extend returns how long the claim stands. New optional queue.group_* conformance scenarios claimed by both bindings, client pages, resilience guide and changelog fragment. Part of #1605.\n\n* test(clients): create, seek and delete groups with the group operator token\n\n* fix(clients): bound groupExtend's duration; name the group calls in the Python README",
+          "timestamp": "2026-10-28T14:18:33-07:00",
+          "tree_id": "d0bf9161458485260fe55fa7afabdfea03e429ab",
+          "url": "https://github.com/GetFelix/felix/commit/37fe7c68933acf72991a41115dffc559561ff508"
+        },
+        "date": 1793222590134,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 362151.93,
+            "range": "11189.99",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 362151.93\nmean: 368943.80\nstdev: 11189.99\ncv: 3.03%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 362151.93,
+            "range": "11189.99",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 362151.93\nmean: 368943.80\nstdev: 11189.99\ncv: 3.03%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82505.06,
+            "range": "600.84",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82505.06\nmean: 82656.98\nstdev: 600.84\ncv: 0.73%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 825050.59,
+            "range": "6008.40",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 825050.59\nmean: 826569.79\nstdev: 6008.40\ncv: 0.73%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
