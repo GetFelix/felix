@@ -416,9 +416,13 @@ export default function register(ctx) {
       operator.groupCreate(tenant, namespace, stream, 0, unique("group-bad"), "middle"),
       /start must be/,
     );
-    await assert.rejects(
-      operator.groupExtend(tenant, namespace, stream, 0, "g", { offset: 0n, attempts: 1 }, 0),
-      /extendMs/,
-    );
+    const year = 365 * 24 * 3600 * 1000;
+    for (const bad of [0, -1, NaN, Infinity, year + 1]) {
+      await assert.rejects(
+        operator.groupExtend(tenant, namespace, stream, 0, "g", { offset: 0n, attempts: 1 }, bad),
+        /extendMs/,
+        `extendMs ${bad} was accepted`,
+      );
+    }
   });
 }

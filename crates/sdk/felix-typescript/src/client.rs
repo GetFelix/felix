@@ -10,7 +10,9 @@ use napi::JsObject;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
-use crate::args::{parse_ack, parse_positions, parse_start, reconnect_policy, seeds, u64_of};
+use crate::args::{
+    MAX_DEADLINE_MS, parse_ack, parse_positions, parse_start, reconnect_policy, seeds, u64_of,
+};
 use crate::cache_watch::CacheWatchHandle;
 use crate::errors::{classify, invalid};
 use crate::group_admin::{GroupInfo, GroupPosition};
@@ -961,10 +963,12 @@ impl Client {
         shard: u32,
         group: String,
         record: GroupDelivery,
-        extend_ms: u32,
+        extend_ms: f64,
     ) -> Result<f64> {
-        if extend_ms == 0 {
-            return Err(invalid("extendMs must be at least 1 millisecond"));
+        if !(1.0..=MAX_DEADLINE_MS).contains(&extend_ms) {
+            return Err(invalid(format!(
+                "extendMs must be between 1 millisecond and one year, not {extend_ms}"
+            )));
         }
         let record = felix_wire::GroupRecord {
             offset: u64_of(record.offset)?,
@@ -983,7 +987,7 @@ impl Client {
                 shard,
                 &group,
                 &record,
-                std::time::Duration::from_millis(u64::from(extend_ms)),
+                std::time::Duration::from_secs_f64(extend_ms / 1000.0),
             )
             .await
             .map_err(classify)?;
