@@ -232,26 +232,10 @@ impl Client {
                     .publish_keyed(&tenant_id, &namespace, &stream, payload, key, ack)
                     .await
             }
-            // The client resends keyed records only as a batch; this is a
-            // batch of one.
             (Some(key), true) => {
-                let report = inner
-                    .publish_records_at_least_once(
-                        &tenant_id,
-                        &namespace,
-                        &stream,
-                        vec![(key, payload)],
-                        ack,
-                    )
-                    .await;
-                report
-                    .shards
-                    .into_iter()
-                    .find(|shard| shard.records.contains(&0))
-                    .map_or_else(
-                        || Err(anyhow::anyhow!("the client reported no outcome")),
-                        |shard| shard.outcome,
-                    )
+                inner
+                    .publish_keyed_at_least_once(&tenant_id, &namespace, &stream, key, payload, ack)
+                    .await
             }
             (None, true) => {
                 inner

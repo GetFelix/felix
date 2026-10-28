@@ -20,6 +20,8 @@ use crate::errors::{classify, invalid};
 #[napi]
 pub struct Producer {
     slot: Mutex<Option<IdempotentProducer>>,
+    /// Held for a whole close, so a second close waits for the drain.
+    closing: Mutex<()>,
     id: u64,
     closed: AtomicBool,
 }
@@ -29,6 +31,7 @@ impl Producer {
         Self {
             id: producer.producer_id(),
             slot: Mutex::new(Some(producer)),
+            closing: Mutex::new(()),
             closed: AtomicBool::new(false),
         }
     }
@@ -172,8 +175,11 @@ impl Producer {
 
     /// Wait for the batches already handed over, then stop. `timeoutMs`
     /// bounds the wait; without one it waits as long as it takes. Resolves
-    /// quietly when already closed. On a timeout it rejects and the producer
-    /// stays closed, and a batch already sent may still land.
+    /// quietly when already closed; a close that finds another running waits
+    /// for it to finish. On a timeout it rejects and the producer stays
+    /// closed, and a batch already sent may still land. The timeout also bounds
+    /// the wait behind a publish parked on a full queue; if that wait runs out
+    /// the producer is still open and the error says so.
     #[napi]
     pub async fn close(&self, timeout_ms: Option<f64>) -> Result<()> {
         let timeout = match timeout_ms {
@@ -181,12 +187,29 @@ impl Producer {
             Some(ms) if ms.is_finite() && ms >= 0.0 => Some(Duration::from_secs_f64(ms / 1000.0)),
             Some(ms) => return Err(invalid(format!("timeoutMs must be at least 0, not {ms}"))),
         };
-        let Some(producer) = self.slot.lock().await.take() else {
+        let _closing = self.closing.lock().await;
+        let started = std::time::Instant::now();
+        let taken = match timeout {
+            Some(timeout) => tokio::time::timeout(timeout, self.slot.lock())
+                .await
+                .map_err(|_| {
+                    classify(anyhow::anyhow!(
+                        "close timed out waiting behind a queued publish; the producer is still open"
+                    ))
+                })?
+                .take(),
+            None => self.slot.lock().await.take(),
+        };
+        let Some(producer) = taken else {
             return Ok(());
         };
         self.closed.store(true, Ordering::SeqCst);
         match timeout {
-            Some(timeout) => producer.close_within(timeout).await,
+            Some(timeout) => {
+                producer
+                    .close_within(timeout.saturating_sub(started.elapsed()))
+                    .await
+            }
             None => producer.close().await,
         }
         .map_err(classify)

@@ -470,7 +470,8 @@ with client.producer() as producer:
   `not_leader` (`err.node_id`, `err.addr`). Every later call on that stream
   fails with the same reason. Decide whether the last batch landed, then start a
   new producer, or call `abandon_in_doubt(tenant, namespace, stream)`, which
-  numbers the stream afresh under a new id. **A batch given up that way may land
+  numbers the stream afresh under a new id (every sequence on the stream
+  restarts, whether or not a batch was in doubt). **A batch given up that way may land
   twice**, because it may have been appended before.
 - **Cancelling does not cancel the send.** Once a call has handed its batch to
   the producer it is sent and answered whether or not anyone waits. An asyncio
@@ -484,9 +485,13 @@ with client.producer() as producer:
   namespace, stream)` the id a stream's batches go out under, which differs after
   `abandon_in_doubt`.
 - `close(timeout=None)` waits for the batches already handed over, then stops;
-  a second close does nothing. After it every publish raises `FelixError`. A close
+  a second close waits for the first to finish, then does nothing. After it every publish raises `FelixError`. A close
   that times out raises, the producer stays closed, and a batch already sent may
-  still land. Leaving a `with` block closes without a timeout.
+  still land. The timeout also bounds the wait behind a publish that is parked on
+  a full queue during an outage; if that wait runs out the producer is still open
+  and the error says so. Leaving a `with` or `async with` block closes without a
+  timeout, so during an outage it waits until the batches handed over are
+  answered; call `close(timeout=...)` first to bound it.
 
 ```python
 import time
@@ -512,8 +517,8 @@ with client.producer() as producer:
 ```
 
 `AsyncClient.producer()` is a coroutine returning an `AsyncProducer`, which has
-the same methods as coroutines and is an `async with` block. `id_for` is
-synchronous on both.
+the same methods as coroutines (`id_for` included, so it never blocks the event
+loop) and is an `async with` block.
 
 ## Subscribing
 

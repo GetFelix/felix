@@ -15,7 +15,7 @@ use crate::conditional::{
     CacheCondition, CacheConditionResult, ConditionalWrite, OwnedVersionedValue, VersionedValue,
 };
 use crate::errors::to_py_err;
-use crate::producer::{Core, check_payloads, keyed_at_least_once};
+use crate::producer::{Core, check_payloads};
 use crate::runtime::block_on;
 use crate::tls;
 use crate::token::{Flavor, Tokens, resolve};
@@ -208,7 +208,10 @@ impl Client {
                         .await
                 }
                 (Some(key), true) => {
-                    keyed_at_least_once(&inner, &tenant_id, &namespace, &stream, key, payload, ack)
+                    inner
+                        .publish_keyed_at_least_once(
+                            &tenant_id, &namespace, &stream, key, payload, ack,
+                        )
                         .await
                 }
                 (None, true) => {

@@ -424,7 +424,8 @@ await producer.publishBatches("t1", "default", "orders", [
   Every later call on that stream rejects with the same reason. Decide whether
   the last batch landed, then start a new producer, or call
   `abandonInDoubt(tenantId, namespace, stream)`, which numbers the stream afresh
-  under a new id. **A batch given up that way may land twice**, because it may
+  under a new id (every sequence on the stream restarts, whether or not a batch
+  was in doubt). **A batch given up that way may land twice**, because it may
   have been appended before.
 - **Abandoning a promise does not cancel the send.** Once a call has handed its
   batch to the producer it is sent and answered whether or not anyone waits.
@@ -437,10 +438,14 @@ await producer.publishBatches("t1", "default", "orders", [
 - `producer.id` is the id the broker assigned, and `await producer.idFor(tenantId,
   namespace, stream)` the id a stream's batches go out under, which differs after
   `abandonInDoubt`.
-- `close(timeoutMs?)` waits for the batches already handed over, then stops; a
-  second close does nothing. After it every publish rejects with `FelixError`. A
-  close that times out rejects, the producer stays closed, and a batch already
-  sent may still land. `await using` closes without a timeout.
+- `close(timeoutMs?)` waits for the batches already handed over, then stops. A
+  second close waits for the first to finish, then does nothing. After it every
+  publish rejects with `FelixError`. A close that times out rejects, the producer
+  stays closed, and a batch already sent may still land. The timeout also bounds
+  the wait behind a publish that is parked on a full queue during an outage; if
+  that wait runs out the producer is still open and the error says so. `await
+  using` closes without a timeout, so during an outage it waits until the
+  batches handed over are answered; call `close(timeoutMs)` first to bound it.
 
 ```ts
 import { PublishRefusedError } from "felix-client";

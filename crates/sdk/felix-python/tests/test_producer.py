@@ -96,10 +96,15 @@ def test_a_producer_refuses_empty_input_before_sending(client, fixture):
         assert producer.publish(tenant, namespace, stream, b"after") is not None
 
 
-def test_nothing_in_doubt_means_abandoning_is_a_no_op(client, fixture):
+def test_abandoning_numbers_the_stream_afresh_under_a_new_id(client, fixture):
     tenant, namespace, stream = fixture["tenant_id"], fixture["namespace"], fixture[STREAM]
     with client.producer() as producer:
+        producer.publish(tenant, namespace, stream, b"before")
+        before = producer.id_for(tenant, namespace, stream)
+        # Every sequence on the stream restarts, whether or not a batch was in doubt.
         producer.abandon_in_doubt(tenant, namespace, stream)
+        assert producer.id_for(tenant, namespace, stream) != before
+        assert producer.id == before
         assert producer.publish(tenant, namespace, stream, b"after") is not None
 
 
@@ -203,9 +208,9 @@ def test_the_async_client_publishes_idempotently_and_on_a_shard(fixture, key):
         async with await client.producer() as producer:
             first = await producer.publish_batch(*scope, stream, [b"a", b"b"], key=key.encode())
             await producer.publish_batches(*scope, stream, [[b"c"], [b"d"]])
-            before = producer.id_for(*scope, stream)
+            before = await producer.id_for(*scope, stream)
             await producer.abandon_in_doubt(*scope, stream)
-            after = producer.id_for(*scope, stream)
+            after = await producer.id_for(*scope, stream)
             ident = (producer.id, before, after)
         assert await producer.closed
         with pytest.raises(felix.FelixError):

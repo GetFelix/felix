@@ -312,3 +312,50 @@ def test_an_idempotent_producer_settles_a_publish_cut_by_a_dropped_link(fixture,
             if event.payload in seen:
                 seen[event.payload] += 1
     assert all(count == 1 for count in seen.values()), f"copies of each batch: {list(seen.values())}"
+
+
+def test_a_keyed_at_least_once_publish_survives_a_dropped_link(fixture, client, linked):
+    """The link stream has one shard, so this does not test where a re-send
+    lands (a Rust stub test does); it checks the keyed re-send path completes
+    through a fault and the record is there."""
+    import felix
+
+    step = _step(fixture, "fault.publish_through_a_dropped_link")
+    tenant, namespace, stream = (
+        fixture["tenant_id"],
+        fixture["namespace"],
+        fixture["link_stream"],
+    )
+    hold = step["hold_ms"] / 1000
+    stamp = f"keyed-alo-{time.monotonic_ns()}"
+    key = stamp.encode()
+    acked = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        for index in range(step["records"]):
+            if index == step["after_records"]:
+                _inject(fixture, step)
+            payload = f"{stamp}-{index}".encode()
+            call = pool.submit(
+                linked.publish, tenant, namespace, stream, payload, key=key, at_least_once=True
+            )
+            try:
+                call.result(timeout=hold + SETTLE)
+                acked.append(payload)
+            except concurrent.futures.TimeoutError:
+                pytest.fail(f"publish {index} neither returned nor failed")
+            except felix.FelixError:
+                pass  # every attempt failed; the record may or may not be there
+
+    seen = {payload: 0 for payload in acked}
+    with client.subscribe(tenant, namespace, stream, start="earliest") as check:
+        deadline = time.monotonic() + SETTLE
+        while time.monotonic() < deadline:
+            event = check.next_event(timeout=1.0)
+            if event is None:
+                if all(seen.values()):
+                    break
+                continue
+            if event.payload in seen:
+                seen[event.payload] += 1
+    # At least once: present, and a duplicate is allowed by the contract.
+    assert all(count >= 1 for count in seen.values()), f"copies of each acked record: {seen}"

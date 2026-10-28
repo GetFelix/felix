@@ -151,10 +151,14 @@ export default function register(ctx) {
         producer.publishBatches(tenant, namespace, stream, [[Buffer.from("a")], []]),
         felix.InvalidArgumentError,
       );
-      // Nothing was numbered, so the next batch still goes through, and
-      // giving up with nothing in doubt is a no-op.
-      await producer.abandonInDoubt(tenant, namespace, stream);
+      // Nothing was numbered, so the next batch still goes through.
       assert.equal(typeof (await producer.publish(tenant, namespace, stream, Buffer.from("after"))), "bigint");
+      // Abandoning restarts every sequence on the stream under a fresh id,
+      // whether or not a batch was in doubt.
+      const before = await producer.idFor(tenant, namespace, stream);
+      await producer.abandonInDoubt(tenant, namespace, stream);
+      assert.notEqual(await producer.idFor(tenant, namespace, stream), before);
+      assert.equal(typeof (await producer.publish(tenant, namespace, stream, Buffer.from("again"))), "bigint");
     } finally {
       await producer.close();
     }
@@ -289,6 +293,62 @@ export default function register(ctx) {
     assert.ok(first && second, "a record never reached a subscriber");
     // The key still decides the shard on the re-send path.
     assert.equal(second.shard, first.shard);
+  });
+
+  it("a keyed at-least-once publish survives a dropped link", { timeout: 180_000 }, async () => {
+    // The link stream has one shard, so this does not test where a re-send
+    // lands (a Rust stub test does); it checks the keyed re-send path completes
+    // through a fault and the record is there.
+    const { client: direct, fixture, felix } = ctx;
+    assert.ok(fixture.link_addr && fixture.control_url, "this fixture has no link interposer");
+    const step = (fixture.faults ?? []).find((fault) => fault.id === "fault.publish_through_a_dropped_link");
+    assert.ok(step, "the fixture has no dropped-link step");
+    const { tenant_id: tenant, namespace, link_stream: stream } = fixture;
+    const stamp = `keyed-alo-${process.hrtime.bigint()}`;
+    const key = Buffer.from(stamp);
+    const acked = [];
+    const linked = await connect(fixture, { addrs: [fixture.link_addr] });
+    try {
+      for (let index = 0; index < step.records; index++) {
+        if (index === step.after_records) {
+          await post(fixture, "/link", { fault: step.fault, hold_ms: step.hold_ms });
+        }
+        const payload = Buffer.from(`${stamp}-${index}`);
+        const outcome = await settleWithin(
+          linked.publish(tenant, namespace, stream, payload, key, "per_message", true),
+          step.hold_ms + SETTLE,
+        );
+        if (outcome.kind === PENDING) assert.fail(`publish ${index} neither returned nor failed`);
+        if (outcome.kind === "value") acked.push(payload.toString());
+        else assert.ok(outcome.error instanceof felix.FelixError, `publish ${index} threw ${outcome.error}`);
+      }
+    } finally {
+      linked.close();
+      await post(fixture, "/heal");
+    }
+    const seen = new Map(acked.map((text) => [text, 0]));
+    const check = await direct.subscribe(tenant, namespace, stream, "earliest");
+    try {
+      let pending = null;
+      const until = Date.now() + SETTLE;
+      while (Date.now() < until) {
+        pending ??= check.nextEvent();
+        const outcome = await settleWithin(pending, 1_000);
+        if (outcome.kind === PENDING) {
+          if ([...seen.values()].every((count) => count > 0)) break;
+          continue;
+        }
+        pending = null;
+        if (outcome.kind === "error") throw outcome.error;
+        if (outcome.value === null) break;
+        const text = outcome.value.payload.toString();
+        if (seen.has(text)) seen.set(text, seen.get(text) + 1);
+      }
+    } finally {
+      await check.close();
+    }
+    // At least once: present, and a duplicate is allowed by the contract.
+    for (const [text, count] of seen) assert.ok(count >= 1, `acked record ${text} is not in the stream`);
   });
 
   it(

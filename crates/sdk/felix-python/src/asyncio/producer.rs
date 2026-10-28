@@ -123,16 +123,24 @@ impl AsyncProducer {
         self.core.id()
     }
 
-    fn id_for(
+    fn id_for<'py>(
         &self,
-        py: Python<'_>,
+        py: Python<'py>,
         tenant_id: &str,
         namespace: &str,
         stream: &str,
-    ) -> PyResult<u64> {
+    ) -> PyResult<Bound<'py, PyAny>> {
         let core = Arc::clone(&self.core);
-        py.detach(|| core.id_for(tenant_id, namespace, stream))
-            .map_err(to_py_err)
+        let (tenant_id, namespace, stream) = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            stream.to_string(),
+        );
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            core.id_for(&tenant_id, &namespace, &stream)
+                .await
+                .map_err(to_py_err)
+        })
     }
 
     #[pyo3(signature = (timeout=None))]

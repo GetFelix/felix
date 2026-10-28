@@ -149,8 +149,16 @@ impl ProducerHandle {
         stream: &str,
     ) -> PyResult<u64> {
         let core = Arc::clone(&self.core);
-        py.detach(|| core.id_for(tenant_id, namespace, stream))
-            .map_err(to_py_err)
+        let (tenant_id, namespace, stream) = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            stream.to_string(),
+        );
+        block_on(py, async move {
+            core.id_for(&tenant_id, &namespace, &stream)
+                .await
+                .map_err(to_py_err)
+        })
     }
 
     /// Wait for the batches already handed over, then stop. `timeout` is in

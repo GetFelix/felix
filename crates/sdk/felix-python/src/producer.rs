@@ -17,6 +17,8 @@ use tokio::sync::Mutex;
 /// The producer and the id it was given, `None` in the slot once closed.
 pub(crate) struct Core {
     slot: Mutex<Option<IdempotentProducer>>,
+    /// Held for a whole close, so a second close waits for the drain.
+    closing: Mutex<()>,
     id: u64,
 }
 
@@ -29,6 +31,7 @@ impl Core {
         Self {
             id: producer.producer_id(),
             slot: Mutex::new(Some(producer)),
+            closing: Mutex::new(()),
         }
     }
 
@@ -36,14 +39,15 @@ impl Core {
         self.id
     }
 
-    pub(crate) fn id_for(
+    /// Waits for the lock, which a call parked on a full queue holds, so the
+    /// asyncio surface awaits this rather than blocking its event loop.
+    pub(crate) async fn id_for(
         &self,
         tenant_id: &str,
         namespace: &str,
         stream: &str,
     ) -> anyhow::Result<u64> {
-        // Called from a Python thread, never from inside the runtime.
-        let slot = self.slot.blocking_lock();
+        let slot = self.slot.lock().await;
         Ok(slot
             .as_ref()
             .ok_or_else(closed)?
@@ -106,12 +110,35 @@ impl Core {
     }
 
     /// Wait for what was handed over, then stop. A second close does nothing.
+    ///
+    /// A close that finds another one running waits for it to finish.
+    ///
+    /// `timeout` also bounds the wait for the lock, which a call parked on a
+    /// full queue holds during an outage. If that wait runs out the producer
+    /// is still open and the error says so.
     pub(crate) async fn close(&self, timeout: Option<Duration>) -> anyhow::Result<()> {
-        let Some(producer) = self.slot.lock().await.take() else {
+        let _closing = self.closing.lock().await;
+        let started = std::time::Instant::now();
+        let taken = match timeout {
+            Some(timeout) => tokio::time::timeout(timeout, self.slot.lock())
+                .await
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "close timed out waiting behind a queued publish; the producer is still open"
+                    )
+                })?
+                .take(),
+            None => self.slot.lock().await.take(),
+        };
+        let Some(producer) = taken else {
             return Ok(());
         };
         match timeout {
-            Some(timeout) => producer.close_within(timeout).await,
+            Some(timeout) => {
+                producer
+                    .close_within(timeout.saturating_sub(started.elapsed()))
+                    .await
+            }
             None => producer.close().await,
         }
     }
@@ -146,28 +173,4 @@ pub(crate) fn timeout_of(seconds: Option<f64>) -> PyResult<Option<Duration>> {
             "timeout must be a number of seconds, at least 0, not {s}"
         ))),
     }
-}
-
-/// A keyed record sent at least once. The client re-sends keyed records only
-/// as a batch, so this is a batch of one.
-pub(crate) async fn keyed_at_least_once(
-    cluster: &felix_client::ClusterClient,
-    tenant_id: &str,
-    namespace: &str,
-    stream: &str,
-    key: Bytes,
-    payload: Vec<u8>,
-    ack: felix_client::AckMode,
-) -> anyhow::Result<Option<u64>> {
-    let report = cluster
-        .publish_records_at_least_once(tenant_id, namespace, stream, vec![(key, payload)], ack)
-        .await;
-    report
-        .shards
-        .into_iter()
-        .find(|shard| shard.records.contains(&0))
-        .map_or_else(
-            || Err(anyhow::anyhow!("the client reported no outcome")),
-            |shard| shard.outcome,
-        )
 }
