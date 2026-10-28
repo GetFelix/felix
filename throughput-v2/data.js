@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793229810250,
+  "lastUpdate": 1793230578388,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -38480,6 +38480,58 @@ window.BENCHMARK_DATA = {
             "range": "6195.84",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 830582.88\nmean: 831139.83\nstdev: 6195.84\ncv: 0.75%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "edba255b113ceab6d2869df99e703709955bee04",
+          "message": "fix(replication): a copy with no promise checks the control plane's confirmed assignment (#1332) (#1613)\n\n* fix(replication): a copy with no promise checks the control plane's confirmed assignment (#1332)\n\nA wiped broker answers a fence only as its routing view backs it (#1267).\nThe view is seeded from whichever control-plane member answers, so under\nRaft a lagging member can hand it a view that still names a deposed leader,\nand the wiped copy's vote can complete that leader's majority.\n\nThe control plane now serves GET /v1/shard-assignments/confirmed: one\nshard's assignment read on the Raft leader after a read-index (a new\nleader-only request), or from the one store under Postgres and in-memory.\nA copy with no promise on disk asks it before it takes a leader by fence,\nbatch, bootstrap or rebuild. An older confirmed generation is refused as\nfenced, at the confirmed generation only its leader is answered, and a\nfailed read or no assignment refuses retryably with nothing written. The\ncheck runs after the routing view's and only adds refusals. A control\nplane that does not serve the read (404, or 501 while its Raft leader\npredates it) leaves the view to answer alone, as before.\n\nSpec-Unaffected: FelixShard's Forget under PromiseFromRoutes already seeds the promise from the control plane's current assignment at the wipe; the confirmed read, taken after the restart, makes the code refuse at least as much as that model.\n\n* fix(replication): test the bootstrap and rebuild checks, and say when the check is off (#1332)\n\nBootstrap and rebuild into a copy with no promise each get a test against\nthe lagging view; removing either guard alone now fails one. A control plane\nthat serves no confirmed read is warned about at most once a minute and\ncounted in felix_broker_shard_confirmed_reads_total{outcome}, since the\nrouting view then decides alone. The formal README says so too.\n\nSpec-Unaffected: tests, a log line, a metric and docs; the refusals are unchanged.",
+          "timestamp": "2026-10-28T23:32:31Z",
+          "tree_id": "4c9c40a5b3b41d253a7a46ebaa2463db146f57ad",
+          "url": "https://github.com/GetFelix/felix/commit/edba255b113ceab6d2869df99e703709955bee04"
+        },
+        "date": 1793230577731,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 542717.03,
+            "range": "48189.17",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 542717.03\nmean: 538193.72\nstdev: 48189.17\ncv: 8.95%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 542717.03,
+            "range": "48189.17",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 542717.03\nmean: 538193.72\nstdev: 48189.17\ncv: 8.95%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 125852.86,
+            "range": "8148.63",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 125852.86\nmean: 122309.01\nstdev: 8148.63\ncv: 6.66%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1258528.58,
+            "range": "81486.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1258528.58\nmean: 1223090.09\nstdev: 81486.31\ncv: 6.66%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
