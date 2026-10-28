@@ -215,6 +215,34 @@ export declare class EventCountError extends CommitError {
 }
 
 /**
+ * The broker would not append an idempotent publish, and said why. Nothing was
+ * written, and the producer is finished on that stream.
+ */
+export declare class PublishRefusedError extends FelixError {
+  /**
+   * `sequence_gap` (the producer skipped ahead), `unknown_producer` (the shard
+   * holds nothing for it), `sequence_expired` (a re-send from further back than
+   * the broker remembers), `sequence_reused` (a different batch under a spent
+   * sequence), `offset_mismatch` or `not_leader`.
+   */
+  readonly reason:
+    | "sequence_gap"
+    | "unknown_producer"
+    | "sequence_expired"
+    | "sequence_reused"
+    | "offset_mismatch"
+    | "not_leader";
+  /** For `sequence_gap`: the sequence the broker would have appended. */
+  readonly expected?: bigint;
+  /** For `offset_mismatch`: the shard's next offset. */
+  readonly tail?: bigint;
+  /** For `not_leader`: the node that leads the shard. */
+  readonly nodeId?: string;
+  /** For `not_leader`: where that node serves clients, when known. */
+  readonly addr?: string;
+}
+
+/**
  * One part of an atomic commit. Exactly one op per commit is an event
  * (`publish` or `enqueue`); every op names the same stream.
  */
@@ -319,6 +347,67 @@ export declare class ShardedSubscriptionHandle {
    */
   positions(): Promise<ShardPositions>;
   close(): Promise<void>;
+  readonly closed: boolean;
+  [Symbol.asyncDispose](): Promise<void>;
+}
+
+/**
+ * A producer whose publishes land once, however many times they are sent.
+ * Made by `client.producer()`.
+ *
+ * Any rejection but `PublishRefusedError` leaves the batch in doubt: the
+ * sequence has not advanced and the batch may have landed. Call again with the
+ * same payloads and key to settle it; a different batch is rejected without
+ * being sent until then. A promise you stop waiting for (a timeout race) does
+ * not cancel the batch, which is then in doubt too. A `PublishRefusedError`
+ * ends the producer on that stream.
+ */
+export declare class Producer {
+  /** The id the broker assigned this producer. */
+  readonly id: bigint;
+  /** Publish one payload, once. Resolves to its log offset, or `null`. */
+  publish(
+    tenantId: string,
+    namespace: string,
+    stream: string,
+    payload: Buffer,
+    key?: Buffer,
+  ): Promise<bigint | null>;
+  /**
+   * Publish a batch (at least one payload), once. It takes one sequence
+   * whatever its size. `key` picks the shard as for `client.publish`; without
+   * one it goes to shard 0.
+   */
+  publishBatch(
+    tenantId: string,
+    namespace: string,
+    stream: string,
+    payloads: Buffer[],
+    key?: Buffer,
+  ): Promise<bigint | null>;
+  /**
+   * Publish several batches to shard 0, once each, under consecutive
+   * sequences. After a failure, call again with the same batches to send only
+   * those not yet acknowledged.
+   */
+  publishBatches(
+    tenantId: string,
+    namespace: string,
+    stream: string,
+    batches: Buffer[][],
+  ): Promise<void>;
+  /**
+   * Give up on the stream's batches in doubt and number the stream from 0 under
+   * a fresh producer id. **A batch given up may land twice.**
+   */
+  abandonInDoubt(tenantId: string, namespace: string, stream: string): Promise<void>;
+  /** The id this producer's batches to `stream` go out under. */
+  idFor(tenantId: string, namespace: string, stream: string): Promise<bigint>;
+  /**
+   * Wait for the batches already handed over, then stop. `timeoutMs` bounds the
+   * wait; on a timeout it rejects and the producer stays closed. Idempotent.
+   */
+  close(timeoutMs?: number): Promise<void>;
   readonly closed: boolean;
   [Symbol.asyncDispose](): Promise<void>;
 }
@@ -460,8 +549,8 @@ export declare class Client {
    * re-sent, because nothing downstream can tell the copies apart. With
    * `atLeastOnce` it is re-sent to another broker instead: the record is then
    * certain to land, and may land twice. That is a delivery guarantee you
-   * choose, never one this client assumes — and it cannot be combined with
-   * `key`, which the re-send path does not yet carry.
+   * choose, never one this client assumes. With a `key` the record is re-sent
+   * to the key's shard.
    *
    * Resolves to the record's log offset, or `null` when the broker
    * acknowledged before writing it, the stream has no log, the broker is too
@@ -476,6 +565,28 @@ export declare class Client {
     ack?: AckMode,
     atLeastOnce?: boolean,
   ): Promise<bigint | null>;
+
+  /**
+   * Publish `payloads` (at least one) as one batch to the named shard, rather
+   * than the shard a key would hash to. A shard the stream does not have is
+   * refused with `invalid_request` and nothing is written; a broker that does
+   * not advertise explicit shards rejects the call without sending anything.
+   * Resolves to the batch's first log offset, or `null` as `publish` does.
+   */
+  publishOnShard(
+    tenantId: string,
+    namespace: string,
+    stream: string,
+    shard: number,
+    payloads: Buffer[],
+    ack?: AckMode,
+  ): Promise<bigint | null>;
+
+  /**
+   * Ask the broker for a producer id and return a `Producer` that sends under
+   * it. Its publishes land once, however many times they are sent.
+   */
+  producer(): Promise<Producer>;
 
   /**
    * Subscribe to a stream.

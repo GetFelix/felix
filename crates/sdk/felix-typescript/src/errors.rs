@@ -25,7 +25,8 @@
 //! detail rather than something a caller parses.
 
 use felix_client::{
-    AuthError, BrokerError, CommitError, NotLeaderError, SubscribeCursorError, SubscriptionLost,
+    AuthError, BrokerError, CommitError, NotLeaderError, PublishRefusalReason, PublishRefused,
+    SubscribeCursorError, SubscriptionLost,
 };
 use felix_wire::RetryClass;
 use napi::{Error, Status};
@@ -58,6 +59,8 @@ pub(crate) const KIND_INVALID: &str = "FELIX_INVALID";
 pub(crate) const KIND_COMMIT: &str = "FELIX_COMMIT";
 pub(crate) const KIND_NOT_ON_OWNING_SHARD: &str = "FELIX_NOT_ON_OWNING_SHARD";
 pub(crate) const KIND_EVENT_COUNT: &str = "FELIX_EVENT_COUNT";
+/// The broker would not append an idempotent publish, and said why.
+pub(crate) const KIND_PUBLISH_REFUSED: &str = "FELIX_PUBLISH_REFUSED";
 
 /// Classify an error from the Rust client into a typed one.
 pub(crate) fn classify(err: impl Into<anyhow::Error>) -> Error {
@@ -99,6 +102,12 @@ pub(crate) fn encode(err: &anyhow::Error) -> String {
             _ => format!("{KIND_COMMIT}{KIND_SEPARATOR}{text}"),
         };
     }
+    if let Some(refused) = err.chain().find_map(|e| e.downcast_ref::<PublishRefused>()) {
+        return format!(
+            "{KIND_PUBLISH_REFUSED} {}\n{text}",
+            refusal_meta(&refused.reason)
+        );
+    }
     if let Some(broker) = err.chain().find_map(|e| e.downcast_ref::<BrokerError>()) {
         let mut meta = serde_json::json!({
             "code": broker.code.as_str(),
@@ -139,6 +148,32 @@ pub(crate) fn encode(err: &anyhow::Error) -> String {
         kind_from_text(&text.to_ascii_lowercase())
     };
     format!("{kind}{KIND_SEPARATOR}{text}")
+}
+
+/// The refusal's reason as the wire spells it, with the fields that reason
+/// carries. Offsets travel as strings: a u64 does not survive JSON numbers,
+/// and `errors.js` turns them back into bigints.
+pub(crate) fn refusal_meta(reason: &PublishRefusalReason) -> serde_json::Value {
+    match reason {
+        PublishRefusalReason::SequenceGap { expected } => {
+            serde_json::json!({ "reason": "sequence_gap", "expected": expected.to_string() })
+        }
+        PublishRefusalReason::UnknownProducer => {
+            serde_json::json!({ "reason": "unknown_producer" })
+        }
+        PublishRefusalReason::SequenceExpired => {
+            serde_json::json!({ "reason": "sequence_expired" })
+        }
+        PublishRefusalReason::SequenceReused => {
+            serde_json::json!({ "reason": "sequence_reused" })
+        }
+        PublishRefusalReason::OffsetMismatch { tail } => {
+            serde_json::json!({ "reason": "offset_mismatch", "tail": tail.to_string() })
+        }
+        PublishRefusalReason::NotLeader { node_id, addr } => {
+            serde_json::json!({ "reason": "not_leader", "node_id": node_id, "addr": addr })
+        }
+    }
 }
 
 /// The kind for a broker code.

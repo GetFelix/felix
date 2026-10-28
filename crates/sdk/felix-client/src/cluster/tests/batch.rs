@@ -234,6 +234,49 @@ async fn at_least_once_sends_an_ambiguous_piece_again() -> Result<()> {
     Ok(())
 }
 
+/// **A keyed record sent at least once carries its key on every attempt.**
+/// The first goes straight to the key's shard owner; after an ambiguous
+/// failure the owner is forgotten and the re-send enters through the entry
+/// broker, which routes it by the key it carries. Without the key the re-send
+/// would land on shard 0.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_keyed_at_least_once_record_keeps_its_key_on_the_resend() -> Result<()> {
+    let answered = Arc::new(AtomicUsize::new(0));
+    let flaky = {
+        let answered = Arc::clone(&answered);
+        move |id| match answered.fetch_add(1, Ordering::SeqCst) {
+            0 => refuse(id, ErrorCode::Internal),
+            _ => ok(id),
+        }
+    };
+    // Shard 1 is `b`'s and its first answer is ambiguous.
+    let (cluster, a, b) = pair(ok, flaky).await?;
+    own(&cluster, 1, &b, "b").await;
+    let key = key_on(1, 0);
+    assert_eq!(shard_of(&key), 1);
+
+    cluster
+        .publish_keyed_at_least_once(
+            "t1",
+            "default",
+            "orders",
+            key.clone(),
+            b"r0".to_vec(),
+            AckMode::PerBatch,
+        )
+        .await?;
+
+    let attempts: Vec<_> = b.batches().into_iter().chain(a.batches()).collect();
+    assert_eq!(attempts.len(), 2, "sent twice");
+    assert_eq!(b.batches().len(), 1, "the first attempt went to the owner");
+    for attempt in &attempts {
+        assert_eq!(attempt.0.as_ref(), Some(&key), "an attempt dropped the key");
+        assert_eq!(payloads(attempt), ["r0"]);
+    }
+    Ok(())
+}
+
 /// **At least once still stops at a fatal refusal.**
 #[tokio::test]
 #[serial_test::serial]

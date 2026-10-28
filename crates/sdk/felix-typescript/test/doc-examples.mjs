@@ -22,7 +22,7 @@ const tutorialPage = (slug) =>
 const VALUES = [
   "AuthError", "CacheCondition", "Client", "CommitError", "CommitOp", "ConnectionError", "CursorError",
   "EventCountError", "FelixError", "InvalidArgumentError", "NotFoundError",
-  "NotOnOwningShardError", "OutcomeUnknownError", "OverloadedError",
+  "NotOnOwningShardError", "OutcomeUnknownError", "OverloadedError", "Producer", "PublishRefusedError",
   "ShardUnavailableError", "SubscriptionHandle", "ShardedSubscriptionHandle",
   "CacheWatchHandle",
 ];

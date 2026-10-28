@@ -101,26 +101,19 @@ export default function register(ctx) {
       );
     }));
 
-  it("a routing key and at-least-once are refused together, rather than one being dropped", () =>
-    scenario("retry.ambiguous_outcomes_are_not_silently_retried", async () => {
-      // A re-send does not carry the routing key yet. Accepting both and
-      // honouring one would move the record to a different shard on the
-      // re-send, which is worse than refusing.
-      const { client, fixture } = ctx;
-      const { InvalidArgumentError } = ctx.felix;
-      await assert.rejects(
-        client.publish(
-          fixture.tenant_id,
-          fixture.namespace,
-          fixture.durable_stream,
-          Buffer.from("keyed"),
-          Buffer.from("key"),
-          "per_message",
-          true,
-        ),
-        InvalidArgumentError,
-      );
-    }));
+  it("a routing key and at-least-once are accepted together", async () => {
+    const { client, fixture } = ctx;
+    const offset = await client.publish(
+      fixture.tenant_id,
+      fixture.namespace,
+      fixture.durable_stream,
+      Buffer.from("keyed"),
+      Buffer.from("key"),
+      "per_message",
+      true,
+    );
+    assert.ok(offset === null || typeof offset === "bigint");
+  });
 
   it("a deadline bounds a retried publish and group call", { timeout: 300_000 }, () =>
     scenario("retry.deadline_bounds_an_operation", async () => {

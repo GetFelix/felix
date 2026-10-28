@@ -205,6 +205,7 @@ module.exports = {
   CommitError: errors.CommitError,
   NotOnOwningShardError: errors.NotOnOwningShardError,
   EventCountError: errors.EventCountError,
+  PublishRefusedError: errors.PublishRefusedError,
   CommitOp,
   CacheCondition,
   /** The unwrapped addon, for anyone who wants it. Errors are untyped there. */

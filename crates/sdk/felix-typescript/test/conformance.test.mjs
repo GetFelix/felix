@@ -32,6 +32,7 @@ import registerCluster from "./scenarios/cluster.mjs";
 import registerRetry from "./scenarios/retry.mjs";
 import registerFaults from "./scenarios/faults.mjs";
 import registerCommit from "./scenarios/commit.mjs";
+import registerProducer from "./scenarios/producer.mjs";
 import registerToken from "./scenarios/token.mjs";
 
 // Filled in by `before`, read by the tests at run time. The tests cannot close
@@ -72,15 +73,12 @@ describe("cluster semantics", () => registerCluster(ctx));
 describe("retry classification", () => registerRetry(ctx));
 describe("connection faults", () => registerFaults(ctx));
 describe("atomic commits", () => registerCommit(ctx));
+describe("idempotent producers and named shards", () => registerProducer(ctx));
 describe("token provider", () => registerToken(ctx));
 
 // Semantics this binding does not wrap. Recorded rather than left out, because
 // `verify` distinguishes "not claimed" from "claimed and broken", and a reason
 // is what makes the first one reportable.
-skipScenarios(
-  "retry.idempotent_producers_re_send_ambiguous_outcomes",
-  "this binding does not wrap producerInit/publishIdempotent yet",
-);
 skipScenarios(
   "error.bad_offset_is_typed",
   "no way to trim the fixture's log from a client, so a discarded offset " +

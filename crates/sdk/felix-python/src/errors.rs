@@ -12,7 +12,7 @@
 //! failure inside the client) falls back to reading the message.
 use felix_client::{
     AuthError as ClientAuthError, BrokerError, CommitError as ClientCommitError, NotLeaderError,
-    SubscribeCursorError, SubscriptionLost,
+    PublishRefusalReason, PublishRefused, SubscribeCursorError, SubscriptionLost,
 };
 use felix_wire::RetryClass;
 use pyo3::create_exception;
@@ -86,6 +86,12 @@ create_exception!(
     CommitError,
     "A commit carries exactly one event (publish or enqueue). Carries `count`."
 );
+create_exception!(
+    _felix,
+    PublishRefusedError,
+    FelixError,
+    "The broker would not append an idempotent publish, and said why. Nothing was written. Carries `reason` and, for some reasons, `expected`, `tail`, `node_id` and `addr`. It ends the producer on that stream."
+);
 
 /// Which exception class an error becomes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,6 +107,7 @@ pub(crate) enum Kind {
     Commit,
     NotOnOwningShard,
     EventCount,
+    PublishRefused,
 }
 
 /// An error from the Rust client, decided but not yet a Python object.
@@ -112,6 +119,7 @@ pub(crate) struct Classified {
     pub(crate) retry: Option<&'static str>,
     pub(crate) reason: Option<String>,
     pub(crate) retry_after_ms: Option<u64>,
+    pub(crate) refusal: Option<PublishRefused>,
 }
 
 /// Decide what an error from the Rust client is.
@@ -128,6 +136,7 @@ pub(crate) fn classify(err: &anyhow::Error) -> Classified {
         retry: None,
         reason: None,
         retry_after_ms: None,
+        refusal: None,
     };
 
     // Refused by the client before anything was sent, so there is no code.
@@ -140,6 +149,11 @@ pub(crate) fn classify(err: &anyhow::Error) -> Classified {
             ClientCommitError::EventCount(_) => Kind::EventCount,
             _ => Kind::Commit,
         };
+        return out;
+    }
+    if let Some(refused) = err.chain().find_map(|e| e.downcast_ref::<PublishRefused>()) {
+        out.kind = Kind::PublishRefused;
+        out.refusal = Some(refused.clone());
         return out;
     }
     if let Some(broker) = err.chain().find_map(|e| e.downcast_ref::<BrokerError>()) {
@@ -227,7 +241,13 @@ pub(crate) fn to_py_err(err: anyhow::Error) -> PyErr {
         Kind::Commit => CommitError::new_err(text),
         Kind::NotOnOwningShard => NotOnOwningShardError::new_err(text),
         Kind::EventCount => EventCountError::new_err(text),
+        Kind::PublishRefused => PublishRefusedError::new_err(text),
     };
+    if let Some(refused) = &classified.refusal {
+        Python::attach(|py| {
+            let _ = annotate_refusal(py, &py_err, refused);
+        });
+    }
     if let Some(commit) = err
         .chain()
         .find_map(|e| e.downcast_ref::<ClientCommitError>())
@@ -266,10 +286,15 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
         py.get_type::<NotOnOwningShardError>(),
     )?;
     module.add("EventCountError", py.get_type::<EventCountError>())?;
+    module.add("PublishRefusedError", py.get_type::<PublishRefusedError>())?;
     // Class-level defaults, so an error without a code still answers `None`.
     let base = py.get_type::<FelixError>();
     for name in ["code", "retry", "detail"] {
         base.setattr(name, py.None())?;
+    }
+    let refused = py.get_type::<PublishRefusedError>();
+    for name in ["reason", "expected", "tail", "node_id", "addr"] {
+        refused.setattr(name, py.None())?;
     }
     Ok(())
 }
@@ -316,6 +341,31 @@ fn annotate_commit(py: Python<'_>, err: &PyErr, commit: &ClientCommitError) -> P
         }
         ClientCommitError::EventCount(count) => value.setattr("count", *count)?,
         _ => {}
+    }
+    Ok(())
+}
+
+/// The refusal's reason as the wire spells it, with the fields that reason
+/// carries.
+fn annotate_refusal(py: Python<'_>, err: &PyErr, refused: &PublishRefused) -> PyResult<()> {
+    let value = err.value(py);
+    match &refused.reason {
+        PublishRefusalReason::SequenceGap { expected } => {
+            value.setattr("reason", "sequence_gap")?;
+            value.setattr("expected", *expected)?;
+        }
+        PublishRefusalReason::UnknownProducer => value.setattr("reason", "unknown_producer")?,
+        PublishRefusalReason::SequenceExpired => value.setattr("reason", "sequence_expired")?,
+        PublishRefusalReason::SequenceReused => value.setattr("reason", "sequence_reused")?,
+        PublishRefusalReason::OffsetMismatch { tail } => {
+            value.setattr("reason", "offset_mismatch")?;
+            value.setattr("tail", *tail)?;
+        }
+        PublishRefusalReason::NotLeader { node_id, addr } => {
+            value.setattr("reason", "not_leader")?;
+            value.setattr("node_id", node_id)?;
+            value.setattr("addr", addr.as_deref())?;
+        }
     }
     Ok(())
 }

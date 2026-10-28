@@ -289,6 +289,35 @@ impl ClusterClient {
         report
     }
 
+    /// One keyed record, sent at least once: [`Self::publish_records_at_least_once`]
+    /// with a batch of one. Every attempt carries `key`, so a re-send goes to
+    /// the key's shard and a duplicate lands next to the original.
+    ///
+    /// **This can produce duplicates**; see [`Self::publish_records_at_least_once`].
+    /// Returns the log offset of the attempt that was acknowledged, when there
+    /// is one.
+    pub async fn publish_keyed_at_least_once(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        key: Bytes,
+        payload: Vec<u8>,
+        ack: AckMode,
+    ) -> Result<Option<u64>> {
+        let report = self
+            .publish_records_at_least_once(tenant_id, namespace, stream, vec![(key, payload)], ack)
+            .await;
+        report
+            .shards
+            .into_iter()
+            .find(|shard| shard.records.contains(&0))
+            .map_or_else(
+                || Err(anyhow::anyhow!("the client reported no outcome")),
+                |shard| shard.outcome,
+            )
+    }
+
     /// Split `pending` records by shard and send each piece, concurrently.
     /// Returns every piece, ascending by shard.
     async fn send_pieces(

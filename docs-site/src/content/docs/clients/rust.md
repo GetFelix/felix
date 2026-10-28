@@ -535,7 +535,9 @@ cluster
 
 With this opt-in the record is certain to land and **may land twice**.
 It does not carry a routing key, because the re-send path has nowhere to put
-one, so you can use `publish_keyed` or `publish_at_least_once` but not both.
+one. A keyed record that must be re-sent goes through
+`publish_records_at_least_once` as a batch of one, which is what the Python and
+TypeScript bindings do when `at_least_once` comes with a key.
 
 For at-least-once *without* the duplication, see
 [`IdempotentProducer`](#idempotent-producers).
@@ -804,7 +806,9 @@ shard's leader remembers the last few, and a batch carrying a sequence it
 already holds is answered from memory rather than appended, so a re-send after
 a lost acknowledgement lands once.
 
-Rust only: neither binding wraps this yet.
+The [Python](/clients/python/#idempotent-producers) and
+[TypeScript](/clients/typescript/#idempotent-producers) bindings wrap it too, as
+`producer()`.
 
 The producer keeps a handle on its client, so `idempotent_producer` is called
 on an `Arc<ClusterClient>` (or `Arc<Client>`), and the producer it returns can

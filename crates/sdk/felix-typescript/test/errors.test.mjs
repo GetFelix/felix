@@ -94,3 +94,32 @@ test("a commit refusal carries which op was wrong", () => {
   assert.ok(old instanceof errors.CommitError);
   assert.equal(old.retryable, false);
 });
+
+test("a publish refusal carries its reason and fields", () => {
+  const gap = errors.typed(
+    native('FELIX_PUBLISH_REFUSED {"expected":"4","reason":"sequence_gap"}\nsequence gap'),
+  );
+  assert.ok(gap instanceof errors.PublishRefusedError);
+  assert.ok(gap instanceof errors.FelixError);
+  assert.equal(gap.reason, "sequence_gap");
+  assert.equal(gap.expected, 4n);
+  assert.equal(gap.tail, undefined);
+  assert.equal(gap.retryable, false);
+
+  const mismatch = errors.typed(
+    native('FELIX_PUBLISH_REFUSED {"reason":"offset_mismatch","tail":"18446744073709551615"}\nx'),
+  );
+  assert.equal(mismatch.tail, 2n ** 64n - 1n);
+
+  const moved = errors.typed(
+    native(
+      'FELIX_PUBLISH_REFUSED {"addr":null,"node_id":"n2","reason":"not_leader"}\nnot the leader',
+    ),
+  );
+  assert.equal(moved.nodeId, "n2");
+  assert.equal(moved.addr, undefined);
+
+  const forgotten = errors.typed(native('FELIX_PUBLISH_REFUSED {"reason":"unknown_producer"}\nx'));
+  assert.equal(forgotten.reason, "unknown_producer");
+  assert.equal(forgotten.expected, undefined);
+});

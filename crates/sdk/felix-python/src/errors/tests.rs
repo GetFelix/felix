@@ -131,3 +131,31 @@ fn a_typed_auth_error_is_auth_whatever_it_says() {
         assert_eq!(classified.kind, Kind::Auth);
     }
 }
+
+/// A refusal the broker sent is found through the context an error picks up on
+/// the way out, and keeps its reason.
+#[test]
+fn a_publish_refusal_is_its_own_class_and_keeps_its_reason() {
+    use felix_client::{PublishRefusalReason, PublishRefused};
+
+    for reason in [
+        PublishRefusalReason::SequenceGap { expected: 4 },
+        PublishRefusalReason::UnknownProducer,
+        PublishRefusalReason::SequenceExpired,
+        PublishRefusalReason::SequenceReused,
+        PublishRefusalReason::OffsetMismatch { tail: 9 },
+        PublishRefusalReason::NotLeader {
+            node_id: "n2".to_string(),
+            addr: None,
+        },
+    ] {
+        let err = anyhow::Error::new(PublishRefused {
+            reason: reason.clone(),
+            message: "no".to_string(),
+        })
+        .context("publish to orders");
+        let classified = classify(&err);
+        assert_eq!(classified.kind, Kind::PublishRefused);
+        assert_eq!(classified.refusal.map(|r| r.reason), Some(reason));
+    }
+}

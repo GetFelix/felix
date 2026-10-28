@@ -13,6 +13,7 @@ use napi_derive::napi;
 use crate::args::{parse_ack, parse_positions, parse_start, reconnect_policy, seeds, u64_of};
 use crate::cache_watch::CacheWatchHandle;
 use crate::errors::{classify, invalid};
+use crate::producer::Producer;
 use crate::sharded_subscription::ShardedSubscriptionHandle;
 use crate::subscription::SubscriptionHandle;
 use crate::tls;
@@ -224,17 +225,16 @@ impl Client {
         let at_least_once = at_least_once.unwrap_or(false);
         let payload = payload.to_vec();
         let key = key.map(|k| Bytes::copy_from_slice(&k));
-        if key.is_some() && at_least_once {
-            return Err(invalid(
-                "atLeastOnce does not carry a routing key yet; publish the \
-                 keyed record without it, or drop the key",
-            ));
-        }
         let inner = self.cluster()?;
         match (key, at_least_once) {
-            (Some(key), _) => {
+            (Some(key), false) => {
                 inner
                     .publish_keyed(&tenant_id, &namespace, &stream, payload, key, ack)
+                    .await
+            }
+            (Some(key), true) => {
+                inner
+                    .publish_keyed_at_least_once(&tenant_id, &namespace, &stream, key, payload, ack)
                     .await
             }
             (None, true) => {
@@ -250,6 +250,47 @@ impl Client {
         }
         .map(|offset| offset.map(BigInt::from))
         .map_err(classify)
+    }
+
+    /// Publish `payloads` (at least one) as one batch to the named shard,
+    /// rather than the shard a key would hash to. For a producer that does its
+    /// own partitioning. A shard the stream does not have is refused with
+    /// `invalid_request` and nothing is written; a broker that does not
+    /// advertise explicit shards rejects the call without sending anything.
+    /// Resolves to the batch's first log offset, or `null` as `publish` does.
+    #[napi]
+    pub async fn publish_on_shard(
+        &self,
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        shard: u32,
+        payloads: Vec<Buffer>,
+        ack: Option<String>,
+    ) -> Result<Option<BigInt>> {
+        let ack = parse_ack(ack.as_deref().unwrap_or("per_message"))?;
+        if payloads.is_empty() {
+            return Err(invalid("a batch needs at least one payload"));
+        }
+        let payloads = payloads.into_iter().map(|p| p.to_vec()).collect();
+        self.cluster()?
+            .publish_batch_on_shard(&tenant_id, &namespace, &stream, shard, payloads, ack)
+            .await
+            .map(|offset| offset.map(BigInt::from))
+            .map_err(classify)
+    }
+
+    /// Ask the broker for a producer id and return a `Producer` that sends
+    /// under it. Its publishes land once, however many times they are sent.
+    /// Close it with `close()` or `await using`.
+    #[napi]
+    pub async fn producer(&self) -> Result<Producer> {
+        let producer = self
+            .cluster()?
+            .idempotent_producer()
+            .await
+            .map_err(classify)?;
+        Ok(Producer::new(producer))
     }
 
     /// Subscribe to a stream.

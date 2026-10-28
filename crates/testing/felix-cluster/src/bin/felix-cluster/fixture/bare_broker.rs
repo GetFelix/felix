@@ -2,8 +2,8 @@
 //!
 //! A real broker advertises `FEATURE_ATOMIC_COMMIT` whether or not its fleet
 //! has finalized the feature, so no real broker lets a client prove it holds
-//! back `commit` and `state_get` from a broker that did not advertise them.
-//! This one does, and counts the commits and state reads it was sent so a
+//! back `commit`, `state_get` and shard-named publishes from a broker that did
+//! not advertise them. This one does, and counts the ones it was sent so a
 //! suite can check none arrived.
 
 use std::net::SocketAddr;
@@ -22,7 +22,7 @@ pub(crate) struct BareBroker {
     pub(crate) addr: SocketAddr,
     /// Certificate to add to the trust bundle, PEM.
     pub(crate) cert_pem: String,
-    /// Commits and state reads received.
+    /// Commits, state reads and named-shard publishes received.
     pub(crate) requests: Arc<AtomicUsize>,
     task: tokio::task::JoinHandle<()>,
 }
@@ -107,7 +107,9 @@ async fn serve_stream(
                 let frame = answer.encode().context("encode auth_ok")?;
                 send.write_all(&frame.encode()).await?;
             }
-            Message::Commit { .. } | Message::StateGet { .. } => {
+            Message::Commit { .. }
+            | Message::StateGet { .. }
+            | Message::PublishBatch { shard: Some(_), .. } => {
                 requests.fetch_add(1, Ordering::SeqCst);
             }
             _ => {}

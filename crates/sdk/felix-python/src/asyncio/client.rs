@@ -7,12 +7,13 @@ use felix_client::{ClientConfig, ClusterClient};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-use super::{AsyncCacheWatch, AsyncShardedSubscription, AsyncSubscription};
+use super::{AsyncCacheWatch, AsyncProducer, AsyncShardedSubscription, AsyncSubscription};
 use crate::args::{owned4, parse_ack, parse_addrs, parse_start};
 use crate::conditional::{
     CacheCondition, CacheConditionResult, ConditionalWrite, OwnedVersionedValue,
 };
 use crate::errors::to_py_err;
+use crate::producer::{Core, check_payloads};
 use crate::token::{Flavor, Tokens, resolve};
 use crate::types::{CacheWatchFilter, GroupRecord, OwnedGroupRecord};
 
@@ -142,12 +143,6 @@ impl AsyncClient {
         at_least_once: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let ack = parse_ack(ack)?;
-        if key.is_some() && at_least_once {
-            return Err(PyValueError::new_err(
-                "at_least_once does not carry a routing key yet; publish the \
-                 keyed record without it, or drop the key",
-            ));
-        }
         let inner = Arc::clone(&self.inner);
         let (tenant_id, namespace, stream) = (
             tenant_id.to_string(),
@@ -158,9 +153,16 @@ impl AsyncClient {
         let key = key.map(Bytes::copy_from_slice);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             match (key, at_least_once) {
-                (Some(key), _) => {
+                (Some(key), false) => {
                     inner
                         .publish_keyed(&tenant_id, &namespace, &stream, payload, key, ack)
+                        .await
+                }
+                (Some(key), true) => {
+                    inner
+                        .publish_keyed_at_least_once(
+                            &tenant_id, &namespace, &stream, key, payload, ack,
+                        )
                         .await
                 }
                 (None, true) => {
@@ -175,6 +177,45 @@ impl AsyncClient {
                 }
             }
             .map_err(to_py_err)
+        })
+    }
+
+    /// Publish `payloads` (at least one) as one batch to the named shard. See
+    /// the synchronous `Client.publish_on_shard`.
+    #[pyo3(signature = (tenant_id, namespace, stream, shard, payloads, *, ack="per_message"))]
+    fn publish_on_shard<'py>(
+        &self,
+        py: Python<'py>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        payloads: Vec<Vec<u8>>,
+        ack: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let ack = parse_ack(ack)?;
+        check_payloads(&payloads)?;
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, stream) = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            stream.to_string(),
+        );
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            inner
+                .publish_batch_on_shard(&tenant_id, &namespace, &stream, shard, payloads, ack)
+                .await
+                .map_err(to_py_err)
+        })
+    }
+
+    /// Ask the broker for a producer id, awaiting an `AsyncProducer`. See the
+    /// synchronous `Client.producer`.
+    fn producer<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let producer = inner.idempotent_producer().await.map_err(to_py_err)?;
+            Ok(AsyncProducer::new(Core::new(producer)))
         })
     }
 

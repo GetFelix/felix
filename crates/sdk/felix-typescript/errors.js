@@ -135,6 +135,25 @@ class EventCountError extends CommitError {
   }
 }
 
+/**
+ * The broker would not append an idempotent publish, and said why. Nothing was
+ * written, and the producer is finished on that stream. `reason` is one of
+ * `sequence_gap`, `unknown_producer`, `sequence_expired`, `sequence_reused`,
+ * `offset_mismatch` and `not_leader`. `expected` (a sequence gap) and `tail`
+ * (an offset mismatch) are bigints, `nodeId` and `addr` name the leader for
+ * `not_leader`; the rest are `undefined`.
+ */
+class PublishRefusedError extends FelixError {
+  constructor(kind, message, meta = null) {
+    super(kind, message, null);
+    this.reason = meta?.reason;
+    this.expected = meta?.expected === undefined ? undefined : BigInt(meta.expected);
+    this.tail = meta?.tail === undefined ? undefined : BigInt(meta.tail);
+    this.nodeId = meta?.node_id;
+    this.addr = meta?.addr ?? undefined;
+  }
+}
+
 const CLASSES = new Map([
   ["FELIX_CONNECTION", ConnectionError],
   ["FELIX_AUTH", AuthError],
@@ -147,6 +166,7 @@ const CLASSES = new Map([
   ["FELIX_COMMIT", CommitError],
   ["FELIX_NOT_ON_OWNING_SHARD", NotOnOwningShardError],
   ["FELIX_EVENT_COUNT", EventCountError],
+  ["FELIX_PUBLISH_REFUSED", PublishRefusedError],
   ["FELIX_ERROR", FelixError],
 ]);
 
@@ -185,5 +205,6 @@ module.exports = {
   CommitError,
   NotOnOwningShardError,
   EventCountError,
+  PublishRefusedError,
   typed,
 };

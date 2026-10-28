@@ -27,6 +27,7 @@ mod blocking;
 mod commit;
 mod conditional;
 mod errors;
+mod producer;
 mod runtime;
 mod tls;
 mod token;
@@ -42,11 +43,13 @@ fn _felix(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<blocking::SubscriptionHandle>()?;
     module.add_class::<blocking::CacheWatchHandle>()?;
     module.add_class::<blocking::ShardedSubscriptionHandle>()?;
+    module.add_class::<blocking::ProducerHandle>()?;
 
     module.add_class::<asyncio::AsyncClient>()?;
     module.add_class::<asyncio::AsyncSubscription>()?;
     module.add_class::<asyncio::AsyncCacheWatch>()?;
     module.add_class::<asyncio::AsyncShardedSubscription>()?;
+    module.add_class::<asyncio::AsyncProducer>()?;
 
     module.add_class::<types::Event>()?;
     module.add_class::<types::GroupRecord>()?;
