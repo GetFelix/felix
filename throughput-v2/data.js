@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793226646785,
+  "lastUpdate": 1793229810250,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -38428,6 +38428,58 @@ window.BENCHMARK_DATA = {
             "range": "16505.75",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1661085.14\nmean: 1655990.71\nstdev: 16505.75\ncv: 1.00%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a6266d958286511ad6c8c2d0946581bf0f57f0df",
+          "message": "fix(controlplane): no placement warning before any node registers (#1601) (#1611)\n\n* fix(controlplane): do not warn about unplaceable shards before any node registers (#1601)\n\n* Spec-Unaffected: only the log level of an unplaceable shard changes, no placement decision does\n\n* docs(controlplane): say no node is registered, not never registered\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01Jf7vZqmjBiJjXAKwu7kJLM\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-28T23:18:37Z",
+          "tree_id": "12fad25b09296f4536a30849997d4a5aad59c33d",
+          "url": "https://github.com/GetFelix/felix/commit/a6266d958286511ad6c8c2d0946581bf0f57f0df"
+        },
+        "date": 1793229809578,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 352690.15,
+            "range": "21141.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 352690.15\nmean: 357855.73\nstdev: 21141.38\ncv: 5.91%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 352690.15,
+            "range": "21141.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 352690.15\nmean: 357855.73\nstdev: 21141.38\ncv: 5.91%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 83058.29,
+            "range": "619.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 83058.29\nmean: 83113.98\nstdev: 619.59\ncv: 0.75%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 830582.88,
+            "range": "6195.84",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 830582.88\nmean: 831139.83\nstdev: 6195.84\ncv: 0.75%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
