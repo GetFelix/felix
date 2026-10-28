@@ -560,8 +560,9 @@ pub(super) async fn apply_pass(
     for (key, reason) in plan.unplaceable() {
         outcome.unplaceable += 1;
         // Warn rather than error: an empty or full cluster is an operational
-        // state to fix, not a control-plane fault. With no node ever
-        // registered there is nothing to fix, so it stays at debug.
+        // state to fix, not a control-plane fault. With no node registered
+        // there is nothing to place onto, so it stays at debug; the
+        // unplaceable gauge and its alert still report it.
         if pass.no_nodes {
             tracing::debug!(
                 kind = %key.kind,
