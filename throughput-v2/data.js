@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793136821017,
+  "lastUpdate": 1793161862883,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -38168,6 +38168,58 @@ window.BENCHMARK_DATA = {
             "range": "53690.45",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 972525.53\nmean: 951222.37\nstdev: 53690.45\ncv: 5.64%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b942b344cd172b8f098d38d77979886519ade3ac",
+          "message": "feat(clients): conditional writes in Python and TypeScript (#1606)\n\nPython (blocking and asyncio) and TypeScript wrap cache_put_if, cache_delete_if, cache_get_versioned, publish_if, commit_if and commit_on_shard, plus commit_if_on_shard, publish_if_on_shard and state_get_on_shard. A refusal is a typed result; a lost answer is never resent. Tests, conformance claims, client pages, resilient-clients guide and changelog fragment. Part of #1605.",
+          "timestamp": "2026-10-28T04:26:20Z",
+          "tree_id": "58958b91a8ef9f3a319a3973f8d2087066dbb2f0",
+          "url": "https://github.com/GetFelix/felix/commit/b942b344cd172b8f098d38d77979886519ade3ac"
+        },
+        "date": 1793161862212,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 366873.05,
+            "range": "8096.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 366873.05\nmean: 368906.08\nstdev: 8096.43\ncv: 2.19%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 366873.05,
+            "range": "8096.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 366873.05\nmean: 368906.08\nstdev: 8096.43\ncv: 2.19%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82532.26,
+            "range": "236.72",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82532.26\nmean: 82613.48\nstdev: 236.72\ncv: 0.29%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 825322.56,
+            "range": "2367.23",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 825322.56\nmean: 826134.78\nstdev: 2367.23\ncv: 0.29%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
