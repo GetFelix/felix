@@ -203,8 +203,10 @@ def test_the_async_client_publishes_idempotently_and_on_a_shard(fixture, key):
         async with await client.producer() as producer:
             first = await producer.publish_batch(*scope, stream, [b"a", b"b"], key=key.encode())
             await producer.publish_batches(*scope, stream, [[b"c"], [b"d"]])
+            before = producer.id_for(*scope, stream)
             await producer.abandon_in_doubt(*scope, stream)
-            ident = (producer.id, producer.id_for(*scope, stream))
+            after = producer.id_for(*scope, stream)
+            ident = (producer.id, before, after)
         assert await producer.closed
         with pytest.raises(felix.FelixError):
             await producer.publish(*scope, stream, b"late")
@@ -218,5 +220,7 @@ def test_the_async_client_publishes_idempotently_and_on_a_shard(fixture, key):
         return first, ident, on_shard, refused.value, keyed
 
     first, ident, on_shard, refused, keyed = asyncio.run(run())
-    assert first is not None and ident[0] == ident[1]
+    assert first is not None
+    # A stream given up is numbered afresh under an id of its own.
+    assert ident[0] == ident[1] and ident[2] != ident[0]
     assert refused.code == "invalid_request"
