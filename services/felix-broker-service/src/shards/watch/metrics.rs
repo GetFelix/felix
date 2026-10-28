@@ -20,6 +20,11 @@ pub const STALE_TOTAL: &str = "felix_broker_shard_changes_stale_total";
 pub const RESYNCS_TOTAL: &str = "felix_broker_shard_watch_resyncs_total";
 /// Polls that failed outright.
 pub const FAILURES_TOTAL: &str = "felix_broker_shard_watch_failures_total";
+/// Confirmed assignment reads for a copy with no promise, by `outcome`:
+/// `assigned`, `unassigned`, `not_served` or `unavailable`. `not_served`
+/// means the control plane cannot confirm a read, and the routing view
+/// decides alone.
+pub const CONFIRMED_READS_TOTAL: &str = "felix_broker_shard_confirmed_reads_total";
 
 /// Nodes in the address book this broker can forward to.
 ///
@@ -51,6 +56,10 @@ pub fn record_stale_change() {
 
 pub fn record_failure() {
     metrics::counter!(FAILURES_TOTAL).increment(1);
+}
+
+pub fn record_confirmed_read(outcome: &'static str) {
+    metrics::counter!(CONFIRMED_READS_TOTAL, "outcome" => outcome).increment(1);
 }
 
 pub fn record_resync(reason: super::Resync) {

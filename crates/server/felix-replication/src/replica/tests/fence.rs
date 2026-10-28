@@ -1301,3 +1301,61 @@ async fn a_confirmed_read_only_adds_refusals_to_a_copy_with_no_promise() {
     taken(&handler.fence(SENDER, fence(5)).await);
     assert_eq!(current.asked(), asked, "a copy with a promise asks nothing");
 }
+
+/// The same lagging view, for a bootstrap and a rebuild: either would set
+/// the ballot of a copy with no promise from the deposed leader.
+#[tokio::test]
+async fn a_copy_with_no_promise_refuses_a_lagging_views_leader_a_bootstrap() {
+    let (broker, _dir) = broker_with_storage().await;
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5))
+        .with_confirmed_routes(ConfirmedAs::new(crate::confirmed::Confirmed::Assigned {
+            generation: 6,
+            leader: "broker-c".to_string(),
+        }) as _);
+    let answer = handler
+        .bootstrap(
+            SENDER,
+            ReplicateBootstrap {
+                correlation_id: 1,
+                shard: batch(5, 0, &[]).shard,
+                base_offset: 0,
+            },
+            felix_broker::LogKind::Stream,
+        )
+        .await;
+    assert_eq!(refusal(&answer).code, ErrorCode::FencedEpoch);
+    let log = broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    assert_eq!(log.accepted_generation(), 0);
+    assert!(log.accepted_leader().is_none());
+}
+
+#[tokio::test]
+async fn a_copy_with_no_promise_refuses_a_lagging_views_leader_a_rebuild() {
+    let (broker, _dir) = broker_with_storage().await;
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5))
+        .with_confirmed_routes(ConfirmedAs::new(crate::confirmed::Confirmed::Assigned {
+            generation: 6,
+            leader: "broker-c".to_string(),
+        }) as _);
+    let answer = handler
+        .rebuild(
+            SENDER,
+            ReplicateRebuild {
+                correlation_id: 1,
+                shard: batch(5, 0, &[]).shard,
+                log: ReplicaLog::Stream,
+                base_offset: 0,
+            },
+        )
+        .await;
+    assert_eq!(refusal(&answer).code, ErrorCode::FencedEpoch);
+    let log = broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    assert_eq!(log.accepted_generation(), 0);
+    assert!(log.accepted_leader().is_none());
+}

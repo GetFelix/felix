@@ -887,7 +887,10 @@ without the control plane needs its own guard before it ships (#1331). And it
 takes the routing view to be no older than the control plane was at the
 wipe. A view from a lagging Raft member can be older, so the broker also
 checks a leader-confirmed read of the assignment, taken after the restart
-and so no older than the model's view (#1332).
+and so no older than the model's view (#1332). Only while the control
+plane serves that read: one that answers 404 or 501 (an older build, or a
+Raft leader below the soft-state level) leaves the view to answer alone, and
+a lagging member can then still break the assumption.
 
 ### The round that makes a read linearizable
 

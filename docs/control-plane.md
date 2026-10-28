@@ -1884,6 +1884,7 @@ Broker side:
 | `felix_broker_shard_changes_stale_total` | changes dropped for a stale generation or incarnation; small numbers are routine, and are what makes duplicate delivery harmless |
 | `felix_broker_shard_watch_resyncs_total{reason}` | forced resnapshots: `gap_in_history` or `sequence_reset` |
 | `felix_broker_shard_watch_failures_total` | polls that failed outright |
+| `felix_broker_shard_confirmed_reads_total{outcome}` | confirmed assignment reads for a copy with no promise: `assigned`, `unassigned`, `not_served` (the routing view decides alone) or `unavailable` |
 | `felix_broker_shard_move_seconds` | histogram: a move toward this broker, from being named its destination to serving the shard |
 | `felix_broker_shard_switchover_seconds` | histogram: a move toward this broker, from the fence to serving the shard |
 | `felix_broker_shard_move_held_total` | publishes held for a move's cut-over instead of refused |

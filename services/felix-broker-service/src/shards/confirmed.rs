@@ -13,11 +13,17 @@ use felix_router::{ShardKey, ShardKind};
 /// refusal, so a slow read costs a round, not the shard.
 const READ_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// At most one warning per this long that the control plane serves no
+/// confirmed read.
+const NOT_SERVED_WARN_EVERY: Duration = Duration::from_secs(60);
+
 /// Asks the control plane over its REST API.
 pub(crate) struct ControlPlaneRoutes {
     client: reqwest::Client,
     base_url: String,
     bearer: Option<NodeCredential>,
+    /// When the last not-served warning was logged.
+    warned: parking_lot::Mutex<Option<tokio::time::Instant>>,
 }
 
 #[derive(Deserialize)]
@@ -35,7 +41,35 @@ impl ControlPlaneRoutes {
             client,
             base_url: base_url.trim_end_matches('/').to_string(),
             bearer,
+            warned: parking_lot::Mutex::new(None),
         }
+    }
+
+    /// Count the outcome, and say so when the check is off: without a
+    /// confirmed read a lagging view can still back a deposed leader.
+    fn record(&self, key: &ShardKey, confirmed: &Confirmed) {
+        let outcome = match confirmed {
+            Confirmed::Assigned { .. } => "assigned",
+            Confirmed::Unassigned => "unassigned",
+            Confirmed::NotServed => "not_served",
+            Confirmed::Unavailable => "unavailable",
+        };
+        crate::shards::watch::metrics::record_confirmed_read(outcome);
+        if *confirmed != Confirmed::NotServed {
+            return;
+        }
+        let now = tokio::time::Instant::now();
+        let mut warned = self.warned.lock();
+        if warned.is_some_and(|at| now.duration_since(at) < NOT_SERVED_WARN_EVERY) {
+            return;
+        }
+        *warned = Some(now);
+        tracing::warn!(
+            stream = %key.stream,
+            shard = key.shard,
+            "the control plane serves no confirmed shard assignment read; a copy with no \
+             promise is checked against the routing view alone, which can lag",
+        );
     }
 }
 
@@ -61,14 +95,15 @@ impl ConfirmedRoutes for ControlPlaneRoutes {
         if let Some(bearer) = &self.bearer {
             request = request.bearer_auth(bearer.bearer().as_str());
         }
-        let response = match request.send().await {
-            Ok(response) => response,
+        let confirmed = match request.send().await {
+            Ok(response) => answer(response.status(), response.json::<Response>().await.ok()),
             Err(err) => {
                 tracing::debug!(error = %err, "confirmed shard assignment read failed");
-                return Confirmed::Unavailable;
+                Confirmed::Unavailable
             }
         };
-        answer(response.status(), response.json::<Response>().await.ok())
+        self.record(key, &confirmed);
+        confirmed
     }
 }
 

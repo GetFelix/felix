@@ -167,6 +167,7 @@ How a broker joins the cluster, holds its lease and follows shard assignments.
 | `felix_broker_shard_watch_snapshots_total` | counter | - | Assignment snapshots taken. Rises at start and on every forced resync. |
 | `felix_broker_shard_watch_resyncs_total` | counter | `reason` | Forced resyncs: `gap_in_history` or `sequence_reset`. |
 | `felix_broker_shard_watch_failures_total` | counter | - | Watch polls that failed outright. |
+| `felix_broker_shard_confirmed_reads_total` | counter | `outcome` | Confirmed assignment reads for a copy with no election promise: `assigned`, `unassigned`, `not_served` or `unavailable`. `not_served` means the control plane cannot confirm a read and the routing view decides alone. |
 | `felix_broker_shard_changes_applied_total` | counter | - | Assignment changes applied. |
 | `felix_broker_shard_changes_stale_total` | counter | - | Changes ignored for carrying a generation at or below the one held. Routine in small numbers; it is what makes duplicate delivery harmless. |
 | `felix_broker_shard_stale_events_total` | counter | - | Events ignored for naming a generation at or below the one already acted on. |
