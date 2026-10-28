@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793170423815,
+  "lastUpdate": 1793214491993,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -48576,6 +48576,72 @@ window.BENCHMARK_DATA = {
             "range": "144.31",
             "unit": "us",
             "extra": "trials: 5\nmedian: 509.00\nmean: 574.40\nstdev: 144.31\ncv: 25.12%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3fddb4c5bc05f0fd80c5721232117d640ffdb79f",
+          "message": "ci(tla): keep the walks' TLC scratch directory off the runner's tmpfs (#1608)\n\nThe nightly walk and exhaustive jobs hit the same 'Error: when writing the\ndisk' that #1602 fixed for the per-push job.\n\n\nClaude-Session: https://claude.ai/code/session_01Jf7vZqmjBiJjXAKwu7kJLM\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-28T19:00:48Z",
+          "tree_id": "ee6d65953d78e90e28cacc2e61e2c16e140d4ac7",
+          "url": "https://github.com/GetFelix/felix/commit/3fddb4c5bc05f0fd80c5721232117d640ffdb79f"
+        },
+        "date": 1793214483177,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 152,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 152.00\nmean: 152.20\nstdev: 0.84\ncv: 0.55%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 220,
+            "range": "1.82",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 220.00\nmean: 220.60\nstdev: 1.82\ncv: 0.82%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 264,
+            "range": "17.74",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 264.00\nmean: 268.80\nstdev: 17.74\ncv: 6.60%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 201,
+            "range": "19.22",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 201.00\nmean: 211.40\nstdev: 19.22\ncv: 9.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 404,
+            "range": "354.96",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 404.00\nmean: 596.60\nstdev: 354.96\ncv: 59.50%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 554,
+            "range": "848.66",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 554.00\nmean: 1122.00\nstdev: 848.66\ncv: 75.64%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
