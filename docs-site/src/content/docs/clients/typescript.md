@@ -775,7 +775,7 @@ for (const offset of offsets) {
 }
 ```
 
-You can also give up on a claimed record yourself. `groupDeadLetter` takes the offset, lists the record among the group's dead letters and finishes it, as the group does once a record runs out of attempts. `groupRedrive` puts it back. It needs a broker that supports claim control.
+You can also give up on a claimed record yourself. `groupDeadLetter` takes the offset, lists the record among the group's dead letters and finishes it, as the group does once a record runs out of attempts. `groupRedrive` puts it back. It needs the `group.manage` permission and a broker that supports claim control.
 
 ```ts
 await client.groupDeadLetter("t1", "default", "orders", shard, "billing", record.offset);

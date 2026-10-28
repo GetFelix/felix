@@ -786,7 +786,7 @@ for offset in client.group_dead_letters("t1", "default", "orders", shard, "billi
         client.group_discard("t1", "default", "orders", shard, "billing", offset)
 ```
 
-You can also give up on a claimed record yourself. `group_dead_letter` takes the offset, lists the record among the group's dead letters and finishes it, as the group does once a record runs out of attempts. `group_redrive` puts it back. It needs a broker that supports claim control.
+You can also give up on a claimed record yourself. `group_dead_letter` takes the offset, lists the record among the group's dead letters and finishes it, as the group does once a record runs out of attempts. `group_redrive` puts it back. It needs the `group.manage` permission and a broker that supports claim control.
 
 ```python
 client.group_dead_letter("t1", "default", "orders", shard, "billing", record.offset)

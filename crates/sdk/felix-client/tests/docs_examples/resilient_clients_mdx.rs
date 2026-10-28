@@ -413,7 +413,7 @@ mod slow_consumers_1 {
     }
 }
 
-/// resilient-clients.mdx line 1929: "Consumer groups under failure", block 1.
+/// resilient-clients.mdx line 1930: "Consumer groups under failure", block 1.
 mod consumer_groups_under_failure_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -477,7 +477,7 @@ mod consumer_groups_under_failure_1 {
     }
 }
 
-/// resilient-clients.mdx line 2258: "Shutting down cleanly", block 1.
+/// resilient-clients.mdx line 2259: "Shutting down cleanly", block 1.
 mod shutting_down_cleanly_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;

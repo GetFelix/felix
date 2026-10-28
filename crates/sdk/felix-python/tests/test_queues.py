@@ -396,7 +396,7 @@ def test_a_record_can_be_given_up_on(client, operator, fixture, key):
     )
     record = poll_for(client, fixture, group, payload)
 
-    client.group_dead_letter(*scope(fixture), group, record.offset)
+    operator.group_dead_letter(*scope(fixture), group, record.offset)
     assert record.offset in client.group_dead_letters(*scope(fixture), group)
     again = client.group_poll(*scope(fixture), group, max_records=32, wait=0.2)
     assert payload not in [r.payload for r in again], "a dead letter was handed out again"
