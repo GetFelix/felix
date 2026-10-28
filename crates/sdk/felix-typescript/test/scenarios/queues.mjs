@@ -474,7 +474,7 @@ export default function register(ctx) {
       );
       assert.ok(record, "the record was never handed to the group");
 
-      await operator.groupDeadLetter(tenant, namespace, stream, 0, group, record.offset);
+      await client.groupDeadLetter(tenant, namespace, stream, 0, group, record.offset);
       const listed = await client.groupDeadLetters(tenant, namespace, stream, 0, group);
       assert.ok(listed.includes(record.offset), "the record was not listed as a dead letter");
 
