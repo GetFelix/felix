@@ -877,7 +877,39 @@ fn a_set_above_its_factor_drops_a_dead_copy_under_steady_writes() {
         Decision::Move(MoveStep::TrimFence, fenced.clone())
     );
 
-    let (decision, _) = decide(rf2("orders"), &nodes, fenced.clone(), &drained(writing));
+    let stopped = drained(Reports {
+        offsets: [("broker-b".to_string(), 150)].into(),
+        ..writing
+    });
+    let (decision, _) = decide(rf2("orders"), &nodes, fenced.clone(), &stopped);
+    assert_eq!(decision, trimmed(&fenced, "broker-a"));
+}
+
+/// **Past the mark on the leader alone.** A cancelled write left record 101
+/// on broker-c only, and broker-c reported drained with its tail at 101 and
+/// both followers at the acknowledged mark, 100, so both count as caught up.
+/// broker-b can still confirm 101 after that report and readers see it, and
+/// dropping either follower then leaves 101 on broker-c and one copy that may
+/// not hold it. The trim waits for a drained report with every follower that
+/// stays at broker-c's tail.
+#[test]
+fn a_trim_waits_for_the_followers_to_hold_the_whole_drained_log() {
+    let nodes = live(&["broker-a", "broker-b", "broker-c"]);
+    let kept = assigned("orders", "broker-c", &["broker-a", "broker-b"]);
+    let fenced = trim_fenced(&kept);
+    let at_mark = drained(Reports {
+        tail: Some(101),
+        ..level_at_100(&["broker-a", "broker-b"])
+    });
+    let (decision, _) = decide(rf2("orders"), &nodes, fenced.clone(), &at_mark);
+    assert_eq!(decision, Decision::Waiting(Blocked::OverFactor));
+
+    let mut one_level = drained(Reports {
+        tail: Some(101),
+        ..level_at_100(&["broker-a", "broker-b"])
+    });
+    one_level.offsets.insert("broker-b".to_string(), 101);
+    let (decision, _) = decide(rf2("orders"), &nodes, fenced.clone(), &one_level);
     assert_eq!(decision, trimmed(&fenced, "broker-a"));
 }
 

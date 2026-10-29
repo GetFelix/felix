@@ -2403,7 +2403,9 @@ placement reads. So once a report at the current generation shows every other
 follower caught up to the leader's acknowledged mark, placement fences the
 leader as for a move (`trim_fence`). Once it reports drained, its log no longer
 grows, and placement drops a follower whose leaving leaves every other one
-holding that log. The leader serves again at the next generation, with the
+holding that log: at the leader's own offset in the drained report, not only
+at the acknowledged mark, since a record past the mark on the leader alone can
+still be confirmed and read after the report. The leader serves again at the next generation, with the
 same pause in writes as a move's cut-over (`trim` in `placement/moves.rs`). A
 leader that never reports drained gets the set back at the fence timeout.
 `FelixShardFencedAckSeatPair` and `FelixShardFencedAckTrim` in

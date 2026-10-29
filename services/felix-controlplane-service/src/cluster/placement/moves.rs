@@ -982,7 +982,9 @@ fn trim_fence(
     caught_up: &dyn CaughtUp,
     moves: &mut Moves,
 ) -> Decision {
-    if !leader_live || trim_candidate(existing, is_live, is_draining, caught_up).is_none() {
+    let caught_up_to_mark = |replica: &str| caught_up.is_caught_up(&existing.key, replica);
+    if !leader_live || trim_candidate(existing, is_live, is_draining, &caught_up_to_mark).is_none()
+    {
         return Decision::Waiting(Blocked::OverFactor);
     }
     if let Some(blocked) = moves.backing_off(caught_up, &existing.key) {
@@ -1004,9 +1006,17 @@ fn trim_fence(
 }
 
 /// Drop a follower from a fenced set above its replication factor, once the
-/// leader has reported drained: its log no longer grows, and every follower
-/// that stays holds it. Given back to the leader unchanged at the fence
+/// leader's drained report at this generation shows every follower that
+/// stays at the leader's own offset in that report: its whole log, not only
+/// the acknowledged mark. Given back to the leader unchanged at the fence
 /// timeout.
+///
+/// Caught up is not enough here. For `Quorum` it is the majority's mark, and
+/// a record past it on the leader alone can still be confirmed and read after
+/// the report; a copy dropped then can take the only other copy of it with
+/// it. A drained leader's log does not grow at this generation, so a tail
+/// every remaining follower holds in its report stays held, and the
+/// assignment's generation is all the trim's write needs to be keyed on.
 fn trim(
     existing: &ShardAssignment,
     replication_factor: u32,
@@ -1015,7 +1025,11 @@ fn trim(
     caught_up: &dyn CaughtUp,
     moves: &Moves,
 ) -> Decision {
-    let Some(dropped) = trim_candidate(existing, is_live, is_draining, caught_up) else {
+    let key = &existing.key;
+    let tail = caught_up.leader_offset(key);
+    let holds_tail =
+        |replica: &str| tail.is_some() && caught_up.reported_offset(key, replica) == tail;
+    let Some(dropped) = trim_candidate(existing, is_live, is_draining, &holds_tail) else {
         if moves.fence_timed_out(caught_up, &existing.key, existing.generation) {
             return Decision::Move(
                 MoveStep::FenceTimedOut { successor: None },
@@ -1039,12 +1053,12 @@ fn trim(
 
 /// The follower a set above its factor drops: a draining one first, then one
 /// not live, then in set order. Only one whose leaving leaves every other
-/// follower caught up, by a report at this generation.
+/// follower `holding`, judged by a report at this generation.
 fn trim_candidate<'a>(
     existing: &'a ShardAssignment,
     is_live: &dyn Fn(&str) -> bool,
     is_draining: &dyn Fn(&str) -> bool,
-    caught_up: &dyn CaughtUp,
+    holding: &dyn Fn(&str) -> bool,
 ) -> Option<&'a str> {
     let mut followers: Vec<&str> = existing.replicas.iter().map(String::as_str).collect();
     followers.sort_by_key(|node| (!is_draining(node), is_live(node)));
@@ -1053,7 +1067,7 @@ fn trim_candidate<'a>(
             .replicas
             .iter()
             .filter(|replica| replica != dropped)
-            .all(|replica| caught_up.is_caught_up(&existing.key, replica))
+            .all(|replica| holding(replica))
     })
 }
 
