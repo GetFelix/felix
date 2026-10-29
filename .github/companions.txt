@@ -7,3 +7,4 @@ felix-canvas
 felix-webhook-relay
 felix-metro
 felix-arena
+felixd
