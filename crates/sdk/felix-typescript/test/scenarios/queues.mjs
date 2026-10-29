@@ -425,4 +425,112 @@ export default function register(ctx) {
       );
     }
   });
+
+  it("a delayed nack redelivers once the delay has passed", () =>
+    scenario("queue.group_nack_after_delays_redelivery", async () => {
+      const { client, fixture } = ctx;
+      const operator = await groupOperator(fixture);
+      const { tenant_id: tenant, namespace, durable_stream: stream } = fixture;
+      const group = unique("group-delay");
+      const payload = unique("delayed");
+      await operator.groupCreate(tenant, namespace, stream, 0, group, "latest");
+      await client.publish(
+        tenant, namespace, stream, Buffer.from(payload), undefined, "per_message",
+      );
+      const first = (await pollUntil(client, fixture, group, 1)).find(
+        (record) => record.payload.toString() === payload,
+      );
+      assert.ok(first, "the record was never handed to the group");
+
+      await client.groupNackAfter(tenant, namespace, stream, 0, group, first, 2_000);
+      const soon = await client.groupPoll(tenant, namespace, stream, 0, group, 32, 0);
+      assert.ok(
+        !soon.some((record) => record.payload.toString() === payload),
+        "a record nacked with a delay came back at once",
+      );
+
+      const again = (await pollUntil(client, fixture, group, 1, 20)).find(
+        (record) => record.payload.toString() === payload,
+      );
+      assert.ok(again, "the record never came back after its delay");
+      assert.equal(again.offset, first.offset);
+      assert.ok(again.attempts > first.attempts);
+      await client.groupAck(tenant, namespace, stream, 0, group, again.offset);
+    }));
+
+  it("a record can be given up on by hand", () =>
+    scenario("queue.group_dead_letter_gives_up_a_record", async () => {
+      const { client, fixture } = ctx;
+      const operator = await groupOperator(fixture);
+      const { tenant_id: tenant, namespace, durable_stream: stream } = fixture;
+      const group = unique("group-giveup");
+      const payload = unique("given-up");
+      await operator.groupCreate(tenant, namespace, stream, 0, group, "latest");
+      await client.publish(
+        tenant, namespace, stream, Buffer.from(payload), undefined, "per_message",
+      );
+      const record = (await pollUntil(client, fixture, group, 1)).find(
+        (r) => r.payload.toString() === payload,
+      );
+      assert.ok(record, "the record was never handed to the group");
+
+      await client.groupDeadLetter(tenant, namespace, stream, 0, group, record.offset);
+      const listed = await client.groupDeadLetters(tenant, namespace, stream, 0, group);
+      assert.ok(listed.includes(record.offset), "the record was not listed as a dead letter");
+
+      await operator.groupDiscard(tenant, namespace, stream, 0, group, record.offset);
+      await operator.groupDelete(tenant, namespace, stream, 0, group);
+    }));
+
+  it("the stream-wide group calls cover every shard", () =>
+    scenario("queue.group_stream_forms_cover_every_shard", async () => {
+      const { client, fixture } = ctx;
+      const operator = await groupOperator(fixture);
+      const { tenant_id: tenant, namespace, durable_stream: stream } = fixture;
+      const group = unique("group-wide");
+      const shards = await client.streamShards(tenant, namespace, stream);
+      assert.ok(shards > 1, "the fixture stream must span several shards");
+
+      const created = await operator.groupCreateStream(tenant, namespace, stream, group, "latest");
+      assert.equal(created.length, shards);
+      assert.ok(created.every((position) => position.moved));
+      const again = await operator.groupCreateStream(tenant, namespace, stream, group, "earliest");
+      assert.ok(again.every((position) => !position.moved));
+
+      const infos = await client.groupDescribeStream(tenant, namespace, stream, group);
+      assert.equal(infos.length, shards);
+      infos.forEach((info, shard) => assert.equal(info.committed, created[shard].offset));
+
+      const sought = await operator.groupSeekStream(tenant, namespace, stream, group, "earliest");
+      assert.equal(sought.length, shards);
+
+      // An offset means something different on each shard, so it is refused.
+      await assert.rejects(
+        operator.groupSeekStream(tenant, namespace, stream, group, 0n),
+        /offset/i,
+      );
+
+      assert.equal(await operator.groupDeleteStream(tenant, namespace, stream, group), true);
+      assert.equal(await operator.groupDeleteStream(tenant, namespace, stream, group), false);
+    }));
+
+  it("a bad delay or visibility is refused before it is sent", async () => {
+    const { client, fixture } = ctx;
+    const { tenant_id: tenant, namespace, durable_stream: stream } = fixture;
+    const year = 365 * 24 * 3600 * 1000;
+    for (const bad of [-1, NaN, Infinity, year + 1]) {
+      await assert.rejects(
+        client.groupNackAfter(tenant, namespace, stream, 0, "g", { offset: 0n, attempts: 1 }, bad),
+        /delayMs/,
+        `delayMs ${bad} was accepted`,
+      );
+    }
+    for (const bad of [0, -1, NaN, Infinity, year + 1]) {
+      await assert.rejects(
+        client.groupPoll(tenant, namespace, stream, 0, "g", 1, 0, undefined, undefined, bad),
+        /visibilityMs/,
+        `visibilityMs ${bad} was accepted`,
+      );
+    }
+  });
 }

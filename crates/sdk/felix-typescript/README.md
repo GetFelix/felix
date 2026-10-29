@@ -69,20 +69,22 @@ https://docs.getfelix.dev/clients/typescript/#getting-and-refreshing-a-token.
 
 ## What it wraps
 
-Everything the Python binding wraps, with one exception noted below.
+Everything the Python binding wraps.
 
 | | |
 |---|---|
 | Publish | `publish(tenant, ns, stream, payload, key?, ack?, atLeastOnce?)` → the record's offset, or `null` when the broker acked before writing it |
 | Named shard | `publishOnShard(tenant, ns, stream, shard, payloads, ack?)` → the first record's offset; a shard the stream lacks is refused and nothing is written |
 | Idempotent producer | `producer()` → a `Producer`: `publish`, `publishBatch(..., key?)`, `publishBatches`, `abandonInDoubt`, `idFor`, `close(timeoutMs?)`. A batch that got no answer is sent again with the same call and lands once; `PublishRefusedError` (`reason`, `expected`, `tail`) ends the producer on that stream |
-| Subscribe | `subscribe(...)` → `nextEvent()`, `close()`, `closed` |
+| Publish batches | `publishBatch(tenant, ns, stream, payloads, key?, ack?)`; `publishRecords(tenant, ns, stream, records, ack?, atLeastOnce?)` splits keyed records by shard and resolves with a per-shard `BatchReport` |
+| Subscribe | `subscribe(tenant, ns, stream, start?, shard?)` → `nextEvent()`, `close()`, `closed`, `startOffset`, `liveOffset` |
+| Time and reads | `offsetForTime(tenant, ns, stream, shard, atMicros)` → the first offset at or after a time, or `null`; `read(tenant, ns, stream, shard, from, end?, maxRecords?)` → a `StreamPage` of committed records |
 | Sharded subscribe | `subscribeSharded(..., start?, resume?)` → `nextEvent()`, `positions()`, `shards` |
-| Stream shape | `streamShards(...)`, `endpoints()` |
+| Stream shape | `streamShards(...)`, `endpoints()`, `refreshTopology()`, `connectionsPerNode()` |
 | Cache | `cachePut` (with TTL), `cacheGet`, `cacheDelete` |
 | Counters | `counterAdd`, `counterGet` |
-| Cache watches | `watchCache(..., key?, prefix?, start?, retained?)` → `recv()`, `retainedCount` |
-| Consumer groups | `groupPoll`, `groupAck`, `groupNack`, `groupDeadLetters`, `groupDiscard`, `groupRedrive`, `groupExtend`, `groupSeek`, `groupCreate`, `groupDescribe`, `groupDelete` (each follows the broker's redirect to the shard's leader) |
+| Cache watches | `watchCache(..., key?, prefix?, start?, retained?)` → `recv()`, `retainedCount`; `watchCacheSharded(tenant, ns, cache, prefix, resume?, retained?)` merges a prefix across every shard → `recv()`, `resumeOffsets()`, `shards`, `retainedCount` |
+| Consumer groups | `groupPoll` (with `visibilityMs`), `groupAck`, `groupNack`, `groupNackAfter`, `groupDeadLetter`, `groupDeadLetters`, `groupDiscard`, `groupRedrive`, `groupExtend`, `groupSeek`, `groupCreate`, `groupDescribe`, `groupDelete` (each follows the broker's redirect to the shard's leader), the stream-wide `groupSeekStream`, `groupCreateStream`, `groupDescribeStream` and `groupDeleteStream`, and `groupSharded` → a `ShardedGroupHandle` that polls and settles across every shard |
 | Atomic commits | `commit(tenant, ns, entityKey, [CommitOp.publish \| enqueue, put, delete])` → `{ offset }`, `stateGet(tenant, ns, stream, entityKey, key)` → `{ value, version, asOf }`; `NotOnOwningShardError` and `EventCountError` refuse a commit that is not one record. See [atomic commits](../../../docs/atomic-commit.md) |
 
 Every handle has an idempotent `close()` and implements `Symbol.asyncDispose`,
@@ -183,11 +185,24 @@ reworded.
 
 ## What is not wrapped
 
-The Rust client has these and this binding does not yet. The client page lists
-them with what each is for.
+The Rust client has more than this binding wraps. What is left out, and why:
 
-- Merged prefix watches across shards (`watch_cache_sharded`).
-- Starting from a time (`offset_for_time`).
+- **Subscription counters.** `ClusterSubscription::moves`, `reconnects` and
+  `stream_deleted` have no accessor on a subscription, sharded or not. A read
+  in flight holds the handle, so these need their own shared state. A
+  follow-up is planned; a move still shows up as a `ShardMoved` item on a
+  sharded subscription. A cache watch does expose `moves` and `resume_from`.
+- **The single-connection `Client` and `Publisher` layer** (`topology`,
+  `stream_routing`, `shard_owners`, `inspect_shard`, `supports_*`,
+  `publish_batch_binary*`, `connect_with_transport`). The binding wraps
+  `ClusterClient`, which owns those connections and runs the feature checks
+  itself.
+- **`hand_off_*` and `Handed` on the idempotent producer.** They hand back raw
+  futures; `publish_batches` is the iterator-shaped equivalent.
+- **`ClientConfig` options** such as `publishers` and `timestamps`. They are
+  connection configuration, set once, not calls.
+- **Reconnect backoff.** `ReconnectPolicy.backoff` and `max_backoff` have no
+  option here yet. The client uses their defaults.
 
 ## Conformance
 

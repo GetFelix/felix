@@ -36,7 +36,7 @@ pub(crate) fn seeds(addrs: Vec<String>) -> Result<Vec<Seed>> {
 
 /// The longest reconnect deadline accepted, in milliseconds. Longer is no
 /// deadline in practice, and a huge one would overflow the clock.
-pub(crate) const MAX_DEADLINE_MS: f64 = 365.0 * 24.0 * 3600.0 * 1000.0;
+const MAX_DEADLINE_MS: f64 = 365.0 * 24.0 * 3600.0 * 1000.0;
 
 /// The default reconnect policy with the caller's attempts and deadline (ms).
 ///
@@ -77,6 +77,17 @@ pub(crate) fn parse_ack(ack: &str) -> Result<AckMode> {
             r#"ack must be "none", "per_message" or "per_batch", got {other:?}"#
         ))),
     }
+}
+
+/// A length of time in milliseconds from `min` to one year, so
+/// `from_secs_f64` cannot panic on what JavaScript passed.
+pub(crate) fn duration_ms(ms: f64, min: f64, name: &str) -> Result<Duration> {
+    if !(min..=MAX_DEADLINE_MS).contains(&ms) {
+        return Err(invalid(format!(
+            "{name} must be between {min} milliseconds and one year, not {ms}"
+        )));
+    }
+    Ok(Duration::from_secs_f64(ms / 1000.0))
 }
 
 /// Where a new subscription begins.

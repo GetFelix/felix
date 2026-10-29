@@ -333,7 +333,7 @@ one so the first connection survives a seed being down.
 - **A subscription's broker fails.** On a durable stream it resubscribes from
   the offset after the last one it delivered, and where it cannot it raises
   rather than ending as though the stream had finished.
-- **Knobs.** [Reconnecting](#reconnecting) sets the attempt count and a deadline. `client.endpoints()` (awaited on `AsyncClient`) lists the brokers it would try, discovered
+- **Knobs.** [Reconnecting](#reconnecting) sets the attempt count and a deadline. `client.refresh_topology()` asks the broker in use for the cluster's brokers again and returns how many it named (it raises against a broker that predates discovery), and `client.connections_per_node()` lists the connections held to each broker. `client.endpoints()` (awaited on `AsyncClient`) lists the brokers it would try, discovered
   ones included.
 
 ### Reconnecting
@@ -436,6 +436,30 @@ as `publish` does. A shard the stream does not have is refused with
 `FEATURE_EXPLICIT_SHARD`; against one that does not, it raises without sending
 anything. Like `publish`, it is not idempotent: a failure that may have
 applied is reported, not re-sent. `AsyncClient.publish_on_shard` is a coroutine.
+
+### Batches
+
+`publish_batch` sends several payloads as one frame to one shard. With a `key` they go to the shard the key hashes to, and without one to shard 0. It returns the first record's offset, or `None` as `publish` does:
+
+```python
+first = client.publish_batch("t1", "default", "orders", ticks, key=customer_id.encode())
+```
+
+`publish_records` takes `(key, payload)` pairs, splits them by shard and sends each shard's records to its owner. Failure is per shard and does not raise: the report says which records each piece held, and a failed piece does not stop the others.
+
+```python
+report = client.publish_records(
+    "t1", "default", "orders",
+    [(order.customer_id.encode(), encode(order)) for order in orders],
+)
+if not report.ok:
+    for piece in report.shards:
+        if piece.error is not None:
+            print(f"shard {piece.shard} refused", piece.records, piece.error)
+    retry(report.failed_records())
+```
+
+Each `ShardPublish` has the `shard`, the `records` positions (in the order you passed) it held, the `offset` its first record landed at, and `error`, the exception a raising call would have thrown. A piece is all or nothing. Without `at_least_once` a piece that may have been written is not sent again, so no record lands twice. With `at_least_once=True` such a piece is re-sent after the reconnect backoff, and a record may land twice. There is no order between shards, and none across two calls unless you wait for the first.
 
 ### Idempotent producers
 
@@ -543,6 +567,37 @@ ends it after delivering what it committed and says where to resume; the client
 resubscribes on the new owner and iteration carries on. On a durable stream
 nothing is repeated or skipped; an in-memory stream resumes at the new owner's
 tail.
+
+`subscribe` reads one shard: pass `shard=` for any but shard 0, or use [`subscribe_sharded`](#multi-shard-streams) for all of them. `start_offset` and `live_offset` on the handle say where the subscription began and where live delivery began when it opened, or `None` for an in-memory stream.
+
+### Replaying from a time
+
+`offset_for_time` finds the first offset on one shard whose record was appended at or after a time, given as integer microseconds since the Unix epoch. Subscribe at it to replay from then:
+
+```python
+import time
+
+since = (time.time_ns() // 1000) - 3_600_000_000
+start = client.offset_for_time("t1", "default", "orders", shard, since)
+replay = client.subscribe("t1", "default", "orders", start=start if start is not None else "latest", shard=shard)
+```
+
+It returns `None` when nothing is that recent yet, which is why the example falls back to `"latest"`. A time older than every record the shard holds answers with the oldest. Times are the clock of the broker that led the shard at append, so if that clock stepped back the answer is near the first such record rather than exactly it. It needs a durable stream and the `stream.subscribe` permission.
+
+### Reading without subscribing
+
+`read` returns one page of a shard's committed records from an offset, up to an optional `end`, without holding a subscription:
+
+```python
+position = 0
+while position < end:
+    page = client.read("t1", "default", "orders", shard, position, end=end, max_records=500)
+    for record in page.records:
+        handle(record.payload)
+    position = page.next_offset
+```
+
+`next_offset` is where the next page starts. Offsets that hold no record are passed over, so it is not always the last offset plus one. `max_records=0` takes the broker's cap. A `from_offset` below what retention kept, or past the tail, raises `CursorError`. Each `StreamRecord` has `offset`, `payload`, `publisher` (when the broker recorded one) and `timestamp_micros`. Only the shard's leader answers, and it needs the `stream.subscribe` permission.
 
 ### Offsets are how you notice a drop
 
@@ -731,6 +786,22 @@ for offset in client.group_dead_letters("t1", "default", "orders", shard, "billi
         client.group_discard("t1", "default", "orders", shard, "billing", offset)
 ```
 
+You can also give up on a claimed record yourself. `group_dead_letter` takes the offset, lists the record among the group's dead letters and finishes it, as the group does once a record runs out of attempts. `group_redrive` puts it back. It needs a broker that supports claim control.
+
+```python
+client.group_dead_letter("t1", "default", "orders", shard, "billing", record.offset)
+```
+
+### Retrying later
+
+`group_nack_after` hands a record back to be redelivered after a delay, in seconds, instead of at once. It names the delivery like `group_nack`, and a delay of `0` is a plain nack. The broker caps the delay (`FELIX_GROUP_MAX_VISIBILITY_MS`), and until it passes the record still counts against the group's in-flight cap. The delay is the leader's memory, so a failover redelivers the record sooner.
+
+```python
+client.group_nack_after("t1", "default", "orders", shard, "billing", record, 30.0)
+```
+
+`group_poll` takes `visibility=` (seconds) to set how long that poll's claims stand, instead of the broker's visibility timeout. A broker that cannot honour it refuses the poll rather than claiming for its own timeout.
+
 ### Long work
 
 A claim stands for the broker's visibility timeout. A consumer still working on a record asks for more time with `group_extend`, which takes the record and a number of seconds and returns how long the claim now stands. That is less than asked when the broker caps it (`FELIX_GROUP_MAX_VISIBILITY_MS`):
@@ -765,6 +836,26 @@ existed = client.group_delete("t1", "default", "orders", shard, "billing")
 ```
 
 `group_create` and `group_seek` return a `GroupPosition`: the offset the group resumes from, and `moved`, which is `False` when `group_create` found the group already there. A seek voids the claims standing when it lands, so an ack for a record the group now owes fails with `stale_claim`. `group_describe` returns a `GroupInfo`; `committed` is `None` for a group with no cursor, and `in_flight` and `owed` are the shard leader's memory, so they start again from zero when the leader changes. All five calls are on `AsyncClient` too.
+
+### The whole stream at once
+
+The administration calls have stream-wide forms that act on every shard in shard order and answer once per shard: `group_create_stream` and `group_seek_stream` return a list of `GroupPosition`, `group_describe_stream` a list of `GroupInfo` indexed by shard, and `group_delete_stream` whether any shard had a group to delete.
+
+```python
+client.group_create_stream("t1", "default", "orders", "billing", "latest")
+lag = sum(info.lag for info in client.group_describe_stream("t1", "default", "orders", "billing"))
+```
+
+They send one request per shard, not one cut across them, so `"latest"` is each shard's tail when its own request lands. An offset is refused for a stream with more than one shard, because offsets are per shard. A failure partway leaves the earlier shards changed; each call is safe to repeat. All are on `AsyncClient` too.
+
+To consume every shard through one handle, `group_sharded` returns a `ShardedGroupHandle` (`AsyncShardedGroup` on the async client). `poll` takes from the next shard that has records and tags each with its shard; `ack`, `nack`, `nack_after`, `extend` and `dead_letter` send the settle to that shard. The shards are not merged into one order.
+
+```python
+group = client.group_sharded("t1", "default", "orders", "billing")
+for item in group.poll(max_records=32):
+    charge(item.record.payload)
+    group.ack(item)
+```
 
 ## Cache and counters
 
@@ -929,10 +1020,39 @@ Three things in that example matter:
   follows its shard to the new owner and carries on, with no change repeated
   or skipped.
 
-A prefix watch reads **one shard**, so a prefix spanning a multi-shard cache
-needs one watch per shard. On a multi-shard cache the broker refuses a prefix
-watch that names no shard, rather than quietly reading shard 0. The merged
-helper, `watch_cache_sharded`, is Rust-only for now.
+A prefix watch with `watch_cache` reads **one shard**. On a multi-shard cache
+the broker refuses a prefix watch that names no shard, rather than quietly
+reading shard 0; the next section covers a cache with several.
+
+### A prefix across every shard
+
+Keys sharing a prefix hash to different shards, and a watch reads one. `watch_cache_sharded` opens a prefix watch per shard, follows each shard to its owner and merges them into one handle. It fails if any shard cannot be opened, because a watch covering three shards of four looks complete to everything downstream.
+
+```python
+import felix
+
+with client.watch_cache_sharded("t1", "default", "sessions", "room:42:") as watch:
+    for item in watch:
+        if isinstance(item, felix.ShardedCacheChange):
+            print(item.shard, item.change.key)
+        elif isinstance(item, felix.CacheShardClosed):
+            # The other shards carry on, so this is part of the prefix gone quiet.
+            print(f"shard {item.shard} stopped")
+```
+
+Ordering is per key: a key lives on one shard, so its changes arrive in write order, and keys on different shards have no order between them. Each `offset` belongs to its own shard's log. Losing a shard is an item and not silence: `CacheShardLagged` (that shard fell behind, with its `resume_from`), `ShardMoved` (it is being followed to a new owner) and `CacheShardClosed` (it ended) each name the `shard`.
+
+`resume_offsets()` is one offset per shard, never ahead of what you have handled. Pass it back as `resume=` to continue gaplessly. A shard still delivering its state resumes at `0`, so no key is missed.
+
+`close()` on a watch or subscription returns at once, even while another thread or task is blocked reading it; that reader then gets `None` (or `StopAsyncIteration`). A `timeout` is a number of seconds from 0 to a year, and `inf`, `nan` and negatives raise `ValueError`. A single-key or prefix `CacheWatchHandle` also exposes `resume_from`, the `from_offset` that continues it without a gap, and `moves`, how often it followed its shard to a new owner; both can be read while a `recv()` is in flight.
+
+With `retained=True` every matching key's current value arrives first, from every shard, and `CacheStateComplete` marks the moment all of them have. `retained_count` is the total to expect. A retained watch cannot also resume.
+
+```python
+roster = client.watch_cache_sharded("t1", "default", "sessions", "room:42:", retained=True)
+```
+
+On `AsyncClient` the call is awaited and returns an `AsyncShardedCacheWatch`, consumed with `async for`.
 
 ## Atomic commits
 
@@ -1134,14 +1254,26 @@ with its own connection pool, and they do not share discovery.
 
 ## What is not wrapped
 
-These are in the [Rust client](/clients/rust/) and not in this binding yet:
+The [Rust client](/clients/rust/) has more than this binding wraps. What is
+left out, and why:
 
-- **Merged prefix watches** (`watch_cache_sharded`). A prefix on a
-  multi-shard cache needs one `watch_cache` per shard.
-- **Starting from a time** (`offset_for_time`).
-
-The ones the conformance catalogue covers are marked there, so the binding
-reports them as unclaimed.
+- **Subscription counters.** `ClusterSubscription::moves`, `reconnects` and
+  `stream_deleted` have no accessor on a subscription, sharded or not. A read
+  in flight holds the handle, so these need their own shared state. A
+  follow-up is planned; a move still shows up as a `ShardMoved` item on a
+  sharded subscription. A cache watch does expose `moves` and `resume_from`.
+- **The single-connection `Client` and `Publisher` layer** (`topology`,
+  `stream_routing`, `shard_owners`, `inspect_shard`, `supports_*`,
+  `publish_batch_binary*`, `connect_with_transport`). The binding wraps
+  `ClusterClient`, which owns those connections and runs the feature checks
+  itself.
+- **`hand_off_*` and `Handed` on the idempotent producer.** They hand back raw
+  futures; `publish_batches` is the iterator-shaped equivalent.
+- **`ClientConfig` options** such as `publishers` and `timestamps`. They are
+  connection configuration, set once, not calls.
+- **Reconnect backoff.** `ReconnectPolicy.backoff` and `max_backoff` have no
+  option here yet. The client uses their defaults; [Reconnecting](#reconnecting)
+  sets the attempt count and the deadline.
 
 ## Conformance
 

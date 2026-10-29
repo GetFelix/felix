@@ -5,22 +5,31 @@ use std::sync::Arc;
 use felix_client::ClusterSubscription;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
-use tokio::sync::Mutex;
 
+use crate::closable::Closable;
 use crate::errors::to_py_err;
+use crate::producer::timeout_of;
 use crate::runtime::block_on;
 use crate::types::Event;
 
 /// A live subscription. Iterate it, or call `next_event()`.
 #[pyclass(module = "felix")]
 pub struct SubscriptionHandle {
-    inner: Arc<Mutex<Option<ClusterSubscription>>>,
+    inner: Arc<Closable<ClusterSubscription>>,
+    /// Where the subscription began, as of when it opened.
+    #[pyo3(get)]
+    start_offset: Option<u64>,
+    /// The offset live delivery began at, as of when it opened.
+    #[pyo3(get)]
+    live_offset: Option<u64>,
 }
 
 impl SubscriptionHandle {
     pub(crate) fn new(subscription: ClusterSubscription) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(Some(subscription))),
+            start_offset: subscription.start_offset(),
+            live_offset: subscription.live_offset(),
+            inner: Arc::new(Closable::new(subscription)),
         }
     }
 }
@@ -35,28 +44,34 @@ impl SubscriptionHandle {
     #[pyo3(signature = (timeout=None))]
     fn next_event(&self, py: Python<'_>, timeout: Option<f64>) -> PyResult<Option<Event>> {
         let inner = Arc::clone(&self.inner);
+        let timeout = timeout_of(timeout)?;
         let event = block_on(py, async move {
-            let mut guard = inner.lock().await;
+            let Some(mut guard) = inner.lock().await else {
+                return Ok(None);
+            };
             let Some(subscription) = guard.as_mut() else {
                 return Ok(None);
             };
-            let next = match timeout {
-                Some(seconds) => {
-                    let duration = std::time::Duration::from_secs_f64(seconds.max(0.0));
-                    match tokio::time::timeout(duration, subscription.next_event()).await {
-                        Ok(result) => result.map_err(to_py_err)?,
-                        // A timeout is a "nothing yet", not an end: the
-                        // subscription stays usable and the caller may ask
-                        // again.
-                        Err(_elapsed) => return Ok(None),
+            let read = async {
+                match timeout {
+                    Some(duration) => {
+                        tokio::time::timeout(duration, subscription.next_event()).await
                     }
+                    // Never expires.
+                    None => Ok(subscription.next_event().await),
                 }
-                None => subscription.next_event().await.map_err(to_py_err)?,
+            };
+            let next = match inner.until_closed(read).await {
+                Some(Ok(result)) => result.map_err(to_py_err)?,
+                // A timeout is a "nothing yet", not an end: the subscription
+                // stays usable and the caller may ask again. A close is the
+                // reader's own end.
+                Some(Err(_)) | None => return Ok(None),
             };
             // The broker ended the stream. Released here so `closed` reads
             // true, which is how a caller tells this `None` from a timeout.
             if next.is_none() {
-                guard.take();
+                guard.end();
             }
             Ok(next)
         })?;
@@ -72,18 +87,13 @@ impl SubscriptionHandle {
     }
 
     /// Stop receiving. Idempotent.
-    fn close(&self, py: Python<'_>) -> PyResult<()> {
-        let inner = Arc::clone(&self.inner);
-        block_on(py, async move {
-            inner.lock().await.take();
-            Ok(())
-        })
+    fn close(&self) {
+        self.inner.close();
     }
 
     #[getter]
-    fn closed(&self, py: Python<'_>) -> PyResult<bool> {
-        let inner = Arc::clone(&self.inner);
-        block_on(py, async move { Ok(inner.lock().await.is_none()) })
+    fn closed(&self) -> bool {
+        self.inner.is_closed()
     }
 
     fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
@@ -101,12 +111,12 @@ impl SubscriptionHandle {
     #[pyo3(signature = (_exc_type=None, _exc_value=None, _traceback=None))]
     fn __exit__(
         &self,
-        py: Python<'_>,
+        _py: Python<'_>,
         _exc_type: Option<Py<PyAny>>,
         _exc_value: Option<Py<PyAny>>,
         _traceback: Option<Py<PyAny>>,
     ) -> PyResult<bool> {
-        self.close(py)?;
+        self.close();
         Ok(false)
     }
 }

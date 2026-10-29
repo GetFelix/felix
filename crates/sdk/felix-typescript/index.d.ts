@@ -335,6 +335,101 @@ export interface GroupInfo {
   lag: bigint;
 }
 
+/**
+ * An item from a prefix watch across every shard of a cache.
+ *
+ * Exactly one of `change`, `stateComplete`, `laggedResumeFrom`, `shardMoved`
+ * and `shardClosed` is set. Losing a shard is an item and not silence: the
+ * other shards keep delivering, and a consumer that ignores these is choosing
+ * to watch part of the prefix. `shard` is `null` only for `stateComplete`,
+ * which concerns the whole watch.
+ */
+export interface ShardedCacheWatchItem {
+  shard: number | null;
+  change: CacheChange | null;
+  /**
+   * Every shard has delivered its current state; everything further is live.
+   * Only on a retained watch, at most once, and never if a shard ended first.
+   */
+  stateComplete: boolean | null;
+  /** This shard fell behind and its watch ended. `resumeOffsets()` already accounts for it. */
+  laggedResumeFrom: bigint | null;
+  /** This shard moved to another broker and its watch is following it there. */
+  shardMoved: ShardMoved | null;
+  /** This shard's watch ended without a lag signal, usually because its owner went away. */
+  shardClosed: boolean | null;
+}
+
+/** One committed record from `read`. */
+export interface StreamRecord {
+  offset: bigint;
+  payload: Buffer;
+  /** The principal that published it, when the broker recorded one. */
+  publisher: string | null;
+  /** When the record was appended, in microseconds since the Unix epoch. */
+  timestampMicros: bigint;
+}
+
+/** One page of a shard's committed records. */
+export interface StreamPage {
+  records: StreamRecord[];
+  /**
+   * Where the next page starts. Offsets that hold no record are passed over,
+   * so this is not always the last offset plus one.
+   */
+  nextOffset: bigint;
+}
+
+/** A record for `publishRecords`: the routing key it hashes by, and its payload. */
+export interface KeyedRecord {
+  key: Buffer;
+  payload: Buffer;
+}
+
+/** How one shard's piece of a `publishRecords` call fared. */
+export interface ShardPublish {
+  shard: number;
+  /** Positions, in the order passed, of the records in this piece. */
+  records: number[];
+  /** The log offset of the piece's first record, when the broker reported one. */
+  offset: bigint | null;
+  /** Why the piece was not accepted, as the typed error a rejected call would carry. A piece is all or nothing. */
+  error: FelixError | Error | null;
+}
+
+/** What `publishRecords` did, shard by shard. Every record is in exactly one entry. */
+export interface BatchReport {
+  shards: ShardPublish[];
+  /** Whether every piece was accepted. */
+  ok: boolean;
+  /** Positions of the records in failed pieces, ascending. */
+  failedRecords: number[];
+}
+
+/** One broker's connection count, from `connectionsPerNode`. */
+export interface ConnectionCount {
+  addr: string;
+  connections: number;
+}
+
+/** A record from `ShardedGroupHandle.poll`. */
+export interface ShardedGroupRecord {
+  /** The shard it came from, which settling it has to reach. */
+  shard: number;
+  offset: bigint;
+  payload: Buffer;
+  /** How many times this record has been handed out, this delivery included. */
+  attempts: number;
+  skippedBefore: bigint;
+}
+
+/** What settling a sharded group record needs. A `ShardedGroupRecord` is one. */
+export interface ShardedGroupDelivery {
+  shard: number;
+  offset: bigint;
+  attempts: number;
+}
+
 /** A key in a stream shard's state. */
 export interface StateValue {
   /** Absent when the key was never written or was deleted. */
@@ -347,6 +442,13 @@ export interface StateValue {
 
 /** A live subscription. Read it with `nextEvent`, and `close` it when done. */
 export declare class SubscriptionHandle {
+  /**
+   * The offset the subscription began at when it opened, or `null` for an
+   * in-memory stream. It does not change if the shard later moves.
+   */
+  readonly startOffset: bigint | null;
+  /** The offset live delivery began at when it opened, or `null` for an in-memory stream. */
+  readonly liveOffset: bigint | null;
   /**
    * The next record, or `null` once the subscription has ended.
    *
@@ -463,11 +565,69 @@ export declare class CacheWatchHandle {
    * delivery.
    */
   readonly retainedCount: bigint | null;
+  /**
+   * The `fromOffset` that resumes this watch without a gap, counting
+   * everything handed out so far. Readable while a `recv` is in flight.
+   */
+  readonly resumeFrom: bigint;
+  /** How many times this watch has followed its shard to a new owner. */
+  readonly moves: bigint;
   /** The next item, or `null` once the watch has ended. */
   recv(): Promise<CacheWatchItem | null>;
   close(): Promise<void>;
   readonly closed: boolean;
   [Symbol.asyncDispose](): Promise<void>;
+}
+
+/** A prefix watch across every shard of a cache. Close it when done. */
+export declare class ShardedCacheWatchHandle {
+  /** How many shards this watch covers. */
+  readonly shards: number;
+  /**
+   * How many retained values arrive before live delivery, summed across
+   * shards, on a retained watch. `0n` means the prefix held nothing on any
+   * shard; `stateComplete` marks the moment the state is whole. `null` on a
+   * watch that did not ask for retained delivery.
+   */
+  readonly retainedCount: bigint | null;
+  /**
+   * The next item from any shard, or `null` once every shard has ended.
+   * Changes to one key arrive in write order; changes to keys on different
+   * shards have no order between them, and each `offset` belongs to its own
+   * shard's log.
+   */
+  recv(): Promise<ShardedCacheWatchItem | null>;
+  /**
+   * Where to resume each shard: pass it back as `resume`. Every shard is
+   * listed, and one still delivering its state resumes at `0n` so no key is
+   * missed.
+   */
+  resumeOffsets(): Promise<ShardPositions>;
+  close(): Promise<void>;
+  readonly closed: boolean;
+  [Symbol.asyncDispose](): Promise<void>;
+}
+
+/** A consumer group across every shard of a stream. */
+export declare class ShardedGroupHandle {
+  /** How many shards the group spans. */
+  readonly shards: number;
+  /**
+   * Take up to `maxRecords` (32 by default) from the next shard that has any.
+   * The shards are not merged into one order; each record says which shard it
+   * is from.
+   */
+  poll(maxRecords?: number): Promise<ShardedGroupRecord[]>;
+  /** Finish a record on its shard. */
+  ack(record: ShardedGroupDelivery): Promise<void>;
+  /** Hand a record back for redelivery at once. */
+  nack(record: ShardedGroupDelivery): Promise<void>;
+  /** Hand a record back to be redelivered after `delayMs`. */
+  nackAfter(record: ShardedGroupDelivery, delayMs: number): Promise<void>;
+  /** Keep a record's claim standing for `extendMs` from now. Resolves with how many milliseconds it now stands. */
+  extend(record: ShardedGroupDelivery, extendMs: number): Promise<number>;
+  /** Give up on a record: list it as a dead letter of the group. */
+  deadLetter(record: ShardedGroupDelivery): Promise<void>;
 }
 
 /**
@@ -624,14 +784,15 @@ export declare class Client {
    * `start` is the first record you have *not* seen, so a resuming client
    * passes the offset it last handled plus one.
    *
-   * A subscription reads **one shard**. For a multi-shard stream that is shard
-   * 0; `subscribeSharded` is what reads the whole stream.
+   * A subscription reads **one shard**: `shard`, which is shard 0 by default.
+   * `subscribeSharded` is what reads the whole stream.
    */
   subscribe(
     tenantId: string,
     namespace: string,
     stream: string,
     start?: StartPosition,
+    shard?: number,
   ): Promise<SubscriptionHandle>;
 
   /**
@@ -885,6 +1046,13 @@ export declare class Client {
      */
     consumer?: string,
     reclaim?: boolean,
+    /**
+     * How long this poll's claims stand before the records are owed to the
+     * group again, in milliseconds (1 to a year). The broker's own visibility
+     * timeout when absent; the broker caps it, and a broker that cannot honour
+     * it refuses the poll.
+     */
+    visibilityMs?: number,
   ): Promise<GroupRecord[]>;
 
   /** Finish a record: it will not be handed out again. */
@@ -1006,6 +1174,204 @@ export declare class Client {
     shard: number,
     group: string,
   ): Promise<boolean>;
+
+  /**
+   * Hand `record` back to be redelivered once `delayMs` has passed rather than
+   * at once, for a consumer that backs off before retrying. `0` is
+   * `groupNack`. The broker caps the delay, and it is the leader's memory: a
+   * failover redelivers the record sooner. Pass the record `groupPoll`
+   * returned: it names that delivery, and is refused once the claim has lapsed
+   * or the record has gone out again.
+   */
+  groupNackAfter(
+    tenantId: string,
+    namespace: string,
+    stream: string,
+    shard: number,
+    group: string,
+    record: GroupDelivery,
+    delayMs: number,
+  ): Promise<void>;
+
+  /**
+   * Give up on one record: list it as a dead letter of the group and finish
+   * it, as the group does once a record runs out of attempts. `groupRedrive`
+   * puts it back. Refused for a record already finished.
+   */
+  groupDeadLetter(
+    tenantId: string,
+    namespace: string,
+    stream: string,
+    shard: number,
+    group: string,
+    offset: bigint,
+  ): Promise<void>;
+
+  /**
+   * `groupSeek` on every shard of the stream, in shard order. Resolves with
+   * each shard's position, indexed by shard.
+   *
+   * One request per shard, not one cut across them: `"latest"` is each
+   * shard's tail when its own seek lands. An offset is refused for a stream
+   * with more than one shard, since offsets are per shard. A failure partway
+   * leaves the earlier shards moved; the call is safe to repeat. Needs the
+   * `group.manage` permission.
+   */
+  groupSeekStream(
+    tenantId: string,
+    namespace: string,
+    stream: string,
+    group: string,
+    start: StartPosition,
+  ): Promise<GroupPosition[]>;
+
+  /**
+   * `groupCreate` on every shard of the stream, as `groupSeekStream` does. A
+   * shard where the group already exists is left alone.
+   */
+  groupCreateStream(
+    tenantId: string,
+    namespace: string,
+    stream: string,
+    group: string,
+    start: StartPosition,
+  ): Promise<GroupPosition[]>;
+
+  /** `groupDescribe` for every shard of the stream, indexed by shard. */
+  groupDescribeStream(
+    tenantId: string,
+    namespace: string,
+    stream: string,
+    group: string,
+  ): Promise<GroupInfo[]>;
+
+  /**
+   * `groupDelete` on every shard of the stream. Resolves with whether any
+   * shard had anything to delete. Safe to repeat after a failure partway.
+   */
+  groupDeleteStream(
+    tenantId: string,
+    namespace: string,
+    stream: string,
+    group: string,
+  ): Promise<boolean>;
+
+  /**
+   * A consumer group across every shard of a stream, for a consumer that wants
+   * the whole stream through one handle.
+   */
+  groupSharded(
+    tenantId: string,
+    namespace: string,
+    stream: string,
+    group: string,
+  ): Promise<ShardedGroupHandle>;
+
+  /**
+   * The first offset on one shard of a durable stream whose record was
+   * appended at or after `atMicros` (microseconds since the Unix epoch), or
+   * `null` when no committed record is that recent yet: subscribe at `"latest"`
+   * to wait for one. A time older than every record the shard holds answers
+   * with the oldest. Times are the leading broker's clock at append, so if
+   * that clock stepped back the answer is near the first such record rather
+   * than exactly it. Subscribe at the offset to replay from a time. Needs the
+   * `stream.subscribe` permission.
+   */
+  offsetForTime(
+    tenantId: string,
+    namespace: string,
+    stream: string,
+    shard: number,
+    atMicros: bigint,
+  ): Promise<bigint | null>;
+
+  /**
+   * One page of a durable stream shard's committed records, from `from` and
+   * stopping before `end`, without subscribing. Read the next page from
+   * `nextOffset`; the range is done once it reaches `end`. `maxRecords` of `0`
+   * (the default) takes the broker's cap, which also caps a page's size. A
+   * page that reaches what is committed comes back short or empty rather than
+   * waiting. A `from` below what retention kept, or past the tail, is a
+   * `CursorError`. Needs the `stream.subscribe` permission, and only the
+   * shard's leader answers.
+   */
+  read(
+    tenantId: string,
+    namespace: string,
+    stream: string,
+    shard: number,
+    from: bigint,
+    end?: bigint,
+    maxRecords?: number,
+  ): Promise<StreamPage>;
+
+  /**
+   * Publish `payloads` as one batch to the shard `key` hashes to, or to shard
+   * 0 without a key. Retries and failures are those of `publish`. Resolves
+   * with the first record's log offset, or `null` as `publish` does.
+   */
+  publishBatch(
+    tenantId: string,
+    namespace: string,
+    stream: string,
+    payloads: Buffer[],
+    key?: Buffer,
+    ack?: AckMode,
+  ): Promise<bigint | null>;
+
+  /**
+   * Publish records that each carry a routing key, split by shard and sent to
+   * each shard's owner. A shard's records go as one batch, in the order given,
+   * accepted or refused as a unit; there is no order between shards.
+   *
+   * Failure is per shard and does not reject: the report says which records
+   * each piece held and why a piece failed, and a failed piece does not stop
+   * the others. Without `atLeastOnce` a piece that may have been written is
+   * not sent again. With it, such a piece is re-sent after the reconnect
+   * policy's backoff, so a record may land twice.
+   */
+  publishRecords(
+    tenantId: string,
+    namespace: string,
+    stream: string,
+    records: KeyedRecord[],
+    ack?: AckMode,
+    atLeastOnce?: boolean,
+  ): Promise<BatchReport>;
+
+  /**
+   * Watch a key prefix across **every** shard of a cache, merged into one
+   * handle. Keys sharing a prefix hash to different shards and a watch reads
+   * one, so this opens one prefix watch per shard and follows each shard to its
+   * owner. It fails if any shard cannot be opened.
+   *
+   * `resume` is a `resumeOffsets()` result: a listed shard resumes at that
+   * offset and the rest watch from now. `retained` instead delivers each
+   * matching key's current value first, from every shard; the two are mutually
+   * exclusive.
+   */
+  watchCacheSharded(
+    tenantId: string,
+    namespace: string,
+    cache: string,
+    prefix: string,
+    resume?: ShardPositions,
+    retained?: boolean,
+  ): Promise<ShardedCacheWatchHandle>;
+
+  /**
+   * Ask the broker in use which brokers a client may connect to, and add them
+   * to the endpoints this client will try. Resolves with how many the cluster
+   * named, which may be zero. Rejects when the broker predates discovery.
+   */
+  refreshTopology(): Promise<number>;
+
+  /**
+   * Live connections to each broker this client holds one for. A broker
+   * starts at one connection and gains more only when its streams are
+   * saturated.
+   */
+  connectionsPerNode(): Promise<ConnectionCount[]>;
 
   /**
    * Release the client. Idempotent.

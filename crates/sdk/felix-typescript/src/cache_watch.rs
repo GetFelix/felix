@@ -1,6 +1,7 @@
 //! A cache watch, read with `recv`.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -15,6 +16,8 @@ pub struct CacheWatchHandle {
     resnapshot: bool,
     retained_count: Option<u64>,
     inner: Arc<Mutex<Option<felix_client::ClusterCacheWatch>>>,
+    resume_from: AtomicU64,
+    moves: AtomicU64,
     closed: watch::Sender<bool>,
 }
 
@@ -24,6 +27,8 @@ impl CacheWatchHandle {
             resume_offset: watch.resume_offset(),
             resnapshot: watch.resnapshot(),
             retained_count: watch.retained_count(),
+            resume_from: AtomicU64::new(watch.resume_from()),
+            moves: AtomicU64::new(watch.moves()),
             inner: Arc::new(Mutex::new(Some(watch))),
             closed: watch::Sender::new(false),
         }
@@ -57,6 +62,19 @@ impl CacheWatchHandle {
         self.retained_count.map(BigInt::from)
     }
 
+    /// The `fromOffset` that resumes this watch without a gap, counting
+    /// everything handed out so far. Readable while a `recv` is in flight.
+    #[napi(getter)]
+    pub fn resume_from(&self) -> BigInt {
+        BigInt::from(self.resume_from.load(Ordering::Acquire))
+    }
+
+    /// How many times this watch has followed its shard to a new owner.
+    #[napi(getter)]
+    pub fn moves(&self) -> BigInt {
+        BigInt::from(self.moves.load(Ordering::Acquire))
+    }
+
     /// The next item, or `null` once the watch has ended.
     #[napi]
     pub async fn recv(&self) -> Result<Option<CacheWatchItem>> {
@@ -75,6 +93,9 @@ impl CacheWatchHandle {
                 return Ok(None);
             }
         };
+        self.resume_from
+            .store(handle.resume_from(), Ordering::Release);
+        self.moves.store(handle.moves(), Ordering::Release);
         Ok(item.map(|item| match item {
             felix_client::CacheWatchItem::Change(change) => CacheWatchItem {
                 change: Either::A(CacheChange {

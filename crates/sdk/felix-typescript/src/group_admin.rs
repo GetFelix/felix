@@ -4,7 +4,20 @@
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
-use crate::types::or_null;
+use crate::args::u64_of;
+use crate::types::{GroupDelivery, or_null};
+
+/// The record a settle names: its offset and which delivery of it this was.
+pub(crate) fn delivery(record: GroupDelivery) -> Result<felix_wire::GroupRecord> {
+    Ok(felix_wire::GroupRecord {
+        offset: u64_of(record.offset)?,
+        payload: Default::default(),
+        attempts: record.attempts,
+        skipped_before: 0,
+        publisher: None,
+        timestamp_micros: None,
+    })
+}
 
 /// Where `groupSeek` or `groupCreate` left a group on one shard.
 #[napi(object)]

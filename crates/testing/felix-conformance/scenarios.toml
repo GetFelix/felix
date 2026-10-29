@@ -706,6 +706,38 @@ answer is how long the claim now stands, which may be less than asked when the
 broker caps it, and is never zero.
 """
 
+[[scenario]]
+id = "queue.group_nack_after_delays_redelivery"
+required = false
+title = "A record nacked with a delay comes back after the delay"
+detail = """
+A consumer that backs off before retrying hands a record back with a delay.
+The record is not delivered again at once, and is delivered again, as a later
+attempt, once the delay has passed. Optional because a broker may predate
+claim control.
+"""
+
+[[scenario]]
+id = "queue.group_dead_letter_gives_up_a_record"
+required = false
+title = "A consumer can give up on a record by hand"
+detail = """
+Dead-lettering a claimed record lists it among the group's dead letters and
+finishes it, as the group does once a record runs out of attempts. Optional
+because a broker may predate claim control.
+"""
+
+[[scenario]]
+id = "queue.group_stream_forms_cover_every_shard"
+required = false
+title = "Group administration can address every shard of a stream at once"
+detail = """
+Creating, describing, seeking and deleting a group by stream act on each shard
+in shard order and report one answer per shard. Creating a group that exists
+leaves every shard where it was. An offset is refused for a stream with more
+than one shard, because an offset means something different on each.
+"""
+
 # ---------------------------------------------------------------------------
 # Cache watches
 #
@@ -768,6 +800,28 @@ complete; zero is a definite answer (the prefix is empty), not a silence to
 wait through.
 """
 
+[[scenario]]
+id = "watch.sharded_prefix_covers_every_shard"
+required = false
+title = "A sharded prefix watch sees changes from every shard"
+detail = """
+Keys sharing a prefix hash to different shards and a watch reads one, so a
+prefix watch over a multi-shard cache opens one per shard and merges them. Every
+change under the prefix arrives, whichever shard it landed on, and the watch
+reports where to resume each shard.
+"""
+
+[[scenario]]
+id = "watch.sharded_retained_marks_state_complete"
+required = false
+title = "A retained sharded watch marks the moment the state is whole"
+detail = """
+The shards finish delivering their current values at different times, so the
+merged watch says when all of them have. The count of retained values it
+reported up front is the number it then delivers, and asking to retain and to
+resume at once is refused.
+"""
+
 # ---------------------------------------------------------------------------
 # Multi-shard streams
 #
@@ -819,6 +873,47 @@ detail = """
 The remaining shards keep delivering, so a consumer that is not told has no way
 to know it is now reading part of the stream while believing it reads all of
 it.
+"""
+
+# ---------------------------------------------------------------------------
+# Reading a stream
+#
+# A durable stream's committed records can be found by time and read in pages
+# without holding a subscription, and a batch of keyed records is split by shard
+# and reported shard by shard.
+# ---------------------------------------------------------------------------
+
+[[scenario]]
+id = "stream.offset_for_time_finds_the_first_record_at_or_after"
+required = false
+title = "A time finds the first record appended at or after it"
+detail = """
+Asking one shard for the first offset at or after a time answers the first
+record written after that time, not one written before it. A time older than
+every record answers with the oldest, and a time in the future answers that
+nothing is that recent yet. Optional because a broker may predate record
+timestamps.
+"""
+
+[[scenario]]
+id = "stream.read_returns_committed_pages"
+required = false
+title = "A stream shard can be read in pages without subscribing"
+detail = """
+Reading a range returns the committed records in offset order with the offset
+the next page starts from, and following those offsets to the end of the range
+returns every record exactly once.
+"""
+
+[[scenario]]
+id = "publish.records_land_on_their_keys_shards"
+required = false
+title = "A batch of keyed records is split by shard and reported by shard"
+detail = """
+Records that carry their own routing keys are sent to the shards their keys
+hash to, and the report names which records each shard took and where the
+shard's piece begins. Reading that range back returns those records in the
+order given.
 """
 
 # ---------------------------------------------------------------------------

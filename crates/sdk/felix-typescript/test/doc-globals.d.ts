@@ -26,6 +26,7 @@ declare const expected: Buffer;
 declare const customerId: string;
 declare const orders: { customerId: string }[];
 declare const shard: number;
+declare const end: bigint;
 declare const fixedTheCause: boolean;
 
 declare function handle(payload: Buffer): Promise<void>;

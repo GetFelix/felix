@@ -1043,7 +1043,8 @@ and the oldest record when the time is older than all of them. Times come from
 the leading broker's clock, so the search is exact while that clock only moves
 forward, and close otherwise. `client.supports_offset_for_time()` says whether
 the broker answers it. `ClusterClient::offset_for_time` asks whichever broker
-leads the shard, following redirects.
+leads the shard, following redirects. The [Python](/clients/python/#replaying-from-a-time) and
+[TypeScript](/clients/typescript/#replaying-from-a-time) bindings wrap it.
 
 ### Reading a range and stopping
 
@@ -1646,7 +1647,10 @@ let existed = client
 A seek voids the claims standing when it lands, so an ack for a record the
 group now owes fails with `stale_claim`. `ClusterClient` has the same calls per
 shard, and `group_create_stream`, `group_seek_stream`, `group_describe_stream`
-and `group_delete_stream` for every shard of a stream.
+and `group_delete_stream` for every shard of a stream. The Python and TypeScript
+bindings wrap the per-shard calls and the stream-wide forms
+([Python](/clients/python/#the-whole-stream-at-once),
+[TypeScript](/clients/typescript/#the-whole-stream-at-once)).
 
 A consumer can also manage each claim itself on a broker that advertises
 `FEATURE_GROUP_CLAIM_CONTROL` (`Client::supports_group_claim_control`):
@@ -1698,7 +1702,9 @@ An extension or a nack, delayed or not, is refused with `stale_claim` once the
 claim has lapsed and the record has been handed out again: each names the
 delivery by `record.attempts`. The client refuses a delay or a visibility
 to a broker without the bit, which would ignore it. `ClusterClient` has the
-same calls, and `ShardedGroup` has `extend`, `nack_after` and `dead_letter`.
+same calls, and `ShardedGroup` has `extend`, `nack_after` and `dead_letter`. The Python and TypeScript
+bindings wrap all of them: `group_poll` takes a `visibility` in place of `group_poll_with`'s options, and
+`group_sharded` returns the `ShardedGroup`.
 
 ### What a group needs
 
@@ -1895,7 +1901,8 @@ opens one watch per shard and merges them. The retained version sends
 `ShardedCacheWatchItem::StateComplete` once every shard's current values have
 arrived. A shard that moves is followed to its new owner and reported as
 `ShardedCacheWatchItem::ShardMoved`; its changes carry on from where the old
-owner left off. Needs `FEATURE_CACHE_SHARDS`.
+owner left off. Needs `FEATURE_CACHE_SHARDS`. The [Python](/clients/python/#a-prefix-across-every-shard)
+and [TypeScript](/clients/typescript/#a-prefix-across-every-shard) bindings wrap it, with the same items.
 
 ## Connection Management
 

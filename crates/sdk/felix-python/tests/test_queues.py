@@ -362,3 +362,128 @@ def test_the_async_client_administers_groups_too(fixture, key):
     assert moved.offset == created.offset
     assert info.committed == created.offset
     assert deleted is True
+
+
+@pytest.mark.scenario("queue.group_nack_after_delays_redelivery")
+def test_a_delayed_nack_comes_back_later(client, operator, fixture, key):
+    group = f"{GROUP}-delay-{key}"
+    payload = f"later-{key}".encode()
+    operator.group_create(*scope(fixture), group, "latest")
+    client.publish(
+        fixture["tenant_id"], fixture["namespace"], fixture["durable_stream"], payload,
+        ack="per_message",
+    )
+    record = poll_for(client, fixture, group, payload)
+
+    client.group_nack_after(*scope(fixture), group, record, 2.0)
+    soon = client.group_poll(*scope(fixture), group, max_records=32, wait=0.2)
+    assert payload not in [r.payload for r in soon], "a delayed nack was redelivered at once"
+
+    again = poll_for(client, fixture, group, payload)
+    assert again.offset == record.offset
+    assert again.attempts > record.attempts
+    client.group_ack(*scope(fixture), group, again.offset)
+
+
+@pytest.mark.scenario("queue.group_dead_letter_gives_up_a_record")
+def test_a_record_can_be_given_up_on(client, operator, fixture, key):
+    group = f"{GROUP}-dead-{key}"
+    payload = f"hopeless-{key}".encode()
+    operator.group_create(*scope(fixture), group, "latest")
+    client.publish(
+        fixture["tenant_id"], fixture["namespace"], fixture["durable_stream"], payload,
+        ack="per_message",
+    )
+    record = poll_for(client, fixture, group, payload)
+
+    client.group_dead_letter(*scope(fixture), group, record.offset)
+    assert record.offset in client.group_dead_letters(*scope(fixture), group)
+    again = client.group_poll(*scope(fixture), group, max_records=32, wait=0.2)
+    assert payload not in [r.payload for r in again], "a dead letter was handed out again"
+
+    operator.group_redrive(*scope(fixture), group, record.offset)
+    back = poll_for(client, fixture, group, payload)
+    client.group_ack(*scope(fixture), group, back.offset)
+
+
+def test_a_shorter_visibility_lets_a_claim_lapse_sooner(client, operator, fixture, key):
+    group = f"{GROUP}-visible-{key}"
+    payload = f"lapses-{key}".encode()
+    operator.group_create(*scope(fixture), group, "latest")
+    client.publish(
+        fixture["tenant_id"], fixture["namespace"], fixture["durable_stream"], payload,
+        ack="per_message",
+    )
+    first = None
+    for _ in range(10):
+        for record in client.group_poll(
+            *scope(fixture), group, max_records=32, wait=2.0, visibility=1.0
+        ):
+            if record.payload == payload:
+                first = record
+        if first:
+            break
+    assert first is not None
+    again = poll_for(client, fixture, group, payload)
+    assert again.attempts > first.attempts
+    client.group_ack(*scope(fixture), group, again.offset)
+
+
+@pytest.mark.scenario("queue.group_stream_forms_cover_every_shard")
+def test_the_stream_forms_act_on_every_shard(client, operator, fixture, key):
+    tenant, namespace, stream = fixture["tenant_id"], fixture["namespace"], fixture["durable_stream"]
+    group = f"{GROUP}-all-{key}"
+    shards = client.stream_shards(tenant, namespace, stream)
+    assert shards > 1
+
+    created = operator.group_create_stream(tenant, namespace, stream, group, "latest")
+    assert len(created) == shards
+    assert all(position.moved for position in created)
+
+    described = client.group_describe_stream(tenant, namespace, stream, group)
+    assert len(described) == shards
+    assert [info.committed for info in described] == [p.offset for p in created]
+
+    moved = operator.group_seek_stream(tenant, namespace, stream, group, "latest")
+    assert len(moved) == shards
+    with pytest.raises(felix.FelixError):
+        operator.group_seek_stream(tenant, namespace, stream, group, 0)
+
+    assert operator.group_delete_stream(tenant, namespace, stream, group) is True
+    assert operator.group_delete_stream(tenant, namespace, stream, group) is False
+    assert all(
+        info.committed is None
+        for info in client.group_describe_stream(tenant, namespace, stream, group)
+    )
+
+
+def test_a_sharded_group_polls_and_settles_every_shard(client, operator, fixture, key):
+    tenant, namespace, stream = fixture["tenant_id"], fixture["namespace"], fixture["durable_stream"]
+    group = f"{GROUP}-sharded-{key}"
+    operator.group_create_stream(tenant, namespace, stream, group, "latest")
+    payloads = {f"{key}-{index}".encode() for index in range(16)}
+    for payload in payloads:
+        client.publish(tenant, namespace, stream, payload, key=payload, ack="per_message")
+
+    sharded = client.group_sharded(tenant, namespace, stream, group)
+    assert sharded.shards > 1
+    seen = {}
+    for _ in range(40):
+        for record in sharded.poll(max_records=32):
+            seen[record.record.payload] = record.shard
+            sharded.ack(record)
+        if payloads <= set(seen):
+            break
+    assert payloads <= set(seen), "a shard's records were never polled"
+    assert len(set(seen.values())) > 1
+    operator.group_delete_stream(tenant, namespace, stream, group)
+
+
+def test_a_bad_visibility_is_refused_before_it_is_sent(client, fixture, key):
+    for bad in (-1.0, float("nan"), float("inf"), 365 * 24 * 3600 + 1):
+        with pytest.raises(ValueError):
+            client.group_poll(
+                *scope(fixture), f"{GROUP}-bad-{key}", wait=0.0, visibility=bad
+            )
+    with pytest.raises(ValueError):
+        client.group_poll(*scope(fixture), f"{GROUP}-bad-{key}", wait=0.0, visibility=0.0)

@@ -4,14 +4,15 @@ use std::sync::Arc;
 
 use pyo3::exceptions::PyStopAsyncIteration;
 use pyo3::prelude::*;
-use tokio::sync::Mutex;
 
+use crate::closable::Closable;
+use crate::producer::timeout_of;
 use crate::types::next_shard_event;
 
 /// Every shard of a stream, merged, consumed with `async for`.
 #[pyclass(module = "felix", name = "AsyncShardedSubscription")]
 pub struct AsyncShardedSubscription {
-    inner: Arc<Mutex<Option<felix_client::ShardedSubscription>>>,
+    inner: Arc<Closable<felix_client::ShardedSubscription>>,
     #[pyo3(get)]
     shards: u32,
 }
@@ -20,7 +21,7 @@ impl AsyncShardedSubscription {
     pub(crate) fn new(subscription: felix_client::ShardedSubscription) -> Self {
         Self {
             shards: subscription.shards(),
-            inner: Arc::new(Mutex::new(Some(subscription))),
+            inner: Arc::new(Closable::new(subscription)),
         }
     }
 }
@@ -34,22 +35,26 @@ impl AsyncShardedSubscription {
         timeout: Option<f64>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
+        let timeout = timeout_of(timeout)?;
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mut guard = inner.lock().await;
+            let Some(mut guard) = inner.lock().await else {
+                return Ok(None);
+            };
             let Some(subscription) = guard.as_mut() else {
                 return Ok(None);
             };
-            let next = match timeout {
-                Some(seconds) => {
-                    let duration = std::time::Duration::from_secs_f64(seconds.max(0.0));
-                    match tokio::time::timeout(duration, next_shard_event(subscription)).await {
-                        Ok(event) => event,
-                        Err(_elapsed) => return Ok(None),
+            let read = async {
+                match timeout {
+                    Some(duration) => {
+                        tokio::time::timeout(duration, next_shard_event(subscription))
+                            .await
+                            .ok()
                     }
+                    None => Some(next_shard_event(subscription).await),
                 }
-                None => next_shard_event(subscription).await,
             };
-            Ok(next)
+            // `None` here is a timeout or a close: both read as nothing.
+            Ok(inner.until_closed(read).await.flatten().flatten())
         })
     }
 
@@ -57,7 +62,9 @@ impl AsyncShardedSubscription {
     fn positions<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let guard = inner.lock().await;
+            let Some(guard) = inner.lock().await else {
+                return Ok(Default::default());
+            };
             Ok(guard
                 .as_ref()
                 .map(felix_client::ShardedSubscription::positions)
@@ -68,7 +75,7 @@ impl AsyncShardedSubscription {
     fn close<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            inner.lock().await.take();
+            inner.close();
             Ok(())
         })
     }
@@ -80,13 +87,16 @@ impl AsyncShardedSubscription {
     fn __anext__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mut guard = inner.lock().await;
+            let Some(mut guard) = inner.lock().await else {
+                return Err(PyStopAsyncIteration::new_err("subscription closed"));
+            };
             let Some(subscription) = guard.as_mut() else {
                 return Err(PyStopAsyncIteration::new_err("subscription closed"));
             };
-            match next_shard_event(subscription).await {
-                Some(event) => Ok(event),
-                None => Err(PyStopAsyncIteration::new_err("every shard ended")),
+            match inner.until_closed(next_shard_event(subscription)).await {
+                Some(Some(event)) => Ok(event),
+                Some(None) => Err(PyStopAsyncIteration::new_err("every shard ended")),
+                None => Err(PyStopAsyncIteration::new_err("subscription closed")),
             }
         })
     }
@@ -106,7 +116,7 @@ impl AsyncShardedSubscription {
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            inner.lock().await.take();
+            inner.close();
             Ok(false)
         })
     }

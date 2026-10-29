@@ -7,11 +7,15 @@
 mod cache_watch;
 mod client;
 mod producer;
+mod sharded_cache_watch;
+mod sharded_group;
 mod sharded_subscription;
 mod subscription;
 
 pub(crate) use cache_watch::CacheWatchHandle;
 pub(crate) use client::Client;
 pub(crate) use producer::ProducerHandle;
+pub(crate) use sharded_cache_watch::ShardedCacheWatchHandle;
+pub(crate) use sharded_group::ShardedGroupHandle;
 pub(crate) use sharded_subscription::ShardedSubscriptionHandle;
 pub(crate) use subscription::SubscriptionHandle;

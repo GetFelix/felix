@@ -22,11 +22,15 @@
 mod cache_watch;
 mod client;
 mod producer;
+mod sharded_cache_watch;
+mod sharded_group;
 mod sharded_subscription;
 mod subscription;
 
 pub(crate) use cache_watch::AsyncCacheWatch;
 pub(crate) use client::AsyncClient;
 pub(crate) use producer::AsyncProducer;
+pub(crate) use sharded_cache_watch::AsyncShardedCacheWatch;
+pub(crate) use sharded_group::AsyncShardedGroup;
 pub(crate) use sharded_subscription::AsyncShardedSubscription;
 pub(crate) use subscription::AsyncSubscription;

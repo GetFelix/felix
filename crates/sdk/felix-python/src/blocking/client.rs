@@ -9,10 +9,15 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
-use super::{CacheWatchHandle, ProducerHandle, ShardedSubscriptionHandle, SubscriptionHandle};
-use crate::args::{
-    owned4, parse_ack, parse_addrs, parse_required_start, parse_start, positive_duration,
+use super::{
+    CacheWatchHandle, ProducerHandle, ShardedCacheWatchHandle, ShardedGroupHandle,
+    ShardedSubscriptionHandle, SubscriptionHandle,
 };
+use crate::args::{
+    check_sharded_watch, non_negative_duration, owned4, parse_ack, parse_addrs,
+    parse_required_start, parse_start, positive_duration,
+};
+use crate::batch::{BatchReport, OwnedBatchReport};
 use crate::conditional::{
     CacheCondition, CacheConditionResult, ConditionalWrite, OwnedVersionedValue, VersionedValue,
 };
@@ -20,6 +25,7 @@ use crate::errors::to_py_err;
 use crate::group_admin::{GroupInfo, GroupPosition};
 use crate::producer::{Core, check_payloads};
 use crate::runtime::block_on;
+use crate::stream_page::{OwnedStreamPage, StreamPage};
 use crate::tls;
 use crate::token::{Flavor, Tokens, resolve};
 use crate::types::{CacheWatchFilter, GroupRecord, OwnedGroupRecord};
@@ -282,10 +288,9 @@ impl Client {
     /// the first record you have *not* seen, so a resuming client passes the
     /// offset it last handled plus one.
     ///
-    /// A subscription reads **one shard**. For a multi-shard stream this is
-    /// shard 0; consuming every shard needs one subscription per shard, which
-    /// this binding does not yet wrap.
-    #[pyo3(signature = (tenant_id, namespace, stream, *, start=None))]
+    /// A subscription reads **one shard**: `shard` (default 0). Use
+    /// `subscribe_sharded` to read every shard of a multi-shard stream.
+    #[pyo3(signature = (tenant_id, namespace, stream, *, start=None, shard=0))]
     fn subscribe(
         &self,
         py: Python<'_>,
@@ -293,6 +298,7 @@ impl Client {
         namespace: &str,
         stream: &str,
         start: Option<Py<PyAny>>,
+        shard: u32,
     ) -> PyResult<SubscriptionHandle> {
         let start = parse_start(py, start)?;
         let inner = Arc::clone(&self.inner);
@@ -303,7 +309,7 @@ impl Client {
         );
         let subscription = block_on(py, async move {
             inner
-                .subscribe_from(&tenant_id, &namespace, &stream, start)
+                .subscribe_shard(&tenant_id, &namespace, &stream, shard, start)
                 .await
                 .map_err(to_py_err)
         })?;
@@ -784,7 +790,7 @@ impl Client {
     /// for this group right now. `wait=0` polls without blocking, which spins
     /// if you loop on it — prefer a few seconds so the broker holds the
     /// request open instead.
-    #[pyo3(signature = (tenant_id, namespace, stream, shard, group, *, max_records=32, wait=5.0, consumer=None, reclaim=false))]
+    #[pyo3(signature = (tenant_id, namespace, stream, shard, group, *, max_records=32, wait=5.0, consumer=None, reclaim=false, visibility=None))]
     fn group_poll(
         &self,
         py: Python<'_>,
@@ -797,22 +803,28 @@ impl Client {
         wait: f64,
         consumer: Option<String>,
         reclaim: bool,
+        visibility: Option<f64>,
     ) -> PyResult<Vec<Py<GroupRecord>>> {
         let inner = Arc::clone(&self.inner);
         let (tenant_id, namespace, stream, group) = owned4(tenant_id, namespace, stream, group);
-        let wait = std::time::Duration::from_secs_f64(wait.max(0.0));
-        let member = consumer.map(|consumer| felix_client::GroupMember { consumer, reclaim });
+        let wait = non_negative_duration(wait, "wait")?;
+        let options = felix_client::GroupPollOptions {
+            member: consumer.map(|consumer| felix_client::GroupMember { consumer, reclaim }),
+            wait,
+            visibility: visibility
+                .map(|seconds| positive_duration(seconds, "visibility"))
+                .transpose()?,
+        };
         let records = block_on(py, async move {
             inner
-                .group_poll_as(
+                .group_poll_with(
                     &tenant_id,
                     &namespace,
                     &stream,
                     shard,
                     &group,
-                    member.as_ref(),
                     max_records,
-                    wait,
+                    &options,
                 )
                 .await
                 .map_err(to_py_err)
@@ -1070,6 +1082,397 @@ impl Client {
                 .await
                 .map_err(to_py_err)
         })
+    }
+
+    /// The first offset on one shard of a durable stream whose record was
+    /// appended at or after `at_micros` (microseconds since the Unix epoch),
+    /// or `None` when no committed record is that recent yet.
+    ///
+    /// Subscribe at the answer to replay from a time. A time older than every
+    /// record answers with the oldest. Needs the `stream.subscribe`
+    /// permission.
+    fn offset_for_time(
+        &self,
+        py: Python<'_>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        at_micros: u64,
+    ) -> PyResult<Option<u64>> {
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, stream) = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            stream.to_string(),
+        );
+        block_on(py, async move {
+            inner
+                .offset_for_time(&tenant_id, &namespace, &stream, shard, at_micros)
+                .await
+                .map_err(to_py_err)
+        })
+    }
+
+    /// One page of a durable stream shard's committed records, from
+    /// `from_offset` and stopping before `end`, without subscribing.
+    ///
+    /// Read the next page from `next_offset`. `max_records` of 0 takes the
+    /// broker's cap. A page that reaches what is committed comes back short
+    /// or empty rather than waiting. A `from_offset` below what retention
+    /// kept, or past the tail, raises `CursorError`. Needs the
+    /// `stream.subscribe` permission.
+    #[pyo3(signature = (tenant_id, namespace, stream, shard, from_offset, *, end=None, max_records=0))]
+    fn read(
+        &self,
+        py: Python<'_>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        from_offset: u64,
+        end: Option<u64>,
+        max_records: u32,
+    ) -> PyResult<Py<StreamPage>> {
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, stream) = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            stream.to_string(),
+        );
+        let page = block_on(py, async move {
+            inner
+                .read(
+                    &tenant_id,
+                    &namespace,
+                    &stream,
+                    shard,
+                    from_offset,
+                    end,
+                    max_records,
+                )
+                .await
+                .map_err(to_py_err)
+        })?;
+        Ok(OwnedStreamPage(page).into_pyobject(py)?.unbind())
+    }
+
+    /// Publish `payloads` as one batch, all under `key` when given, else all
+    /// to shard 0 as `publish` does. Records sharing a key share a shard, so
+    /// the batch is one frame to its owner and keeps its order. Returns the
+    /// first record's log offset, or `None` as `publish` does. An empty list
+    /// sends nothing.
+    #[pyo3(signature = (tenant_id, namespace, stream, payloads, *, key=None, ack="per_message"))]
+    fn publish_batch(
+        &self,
+        py: Python<'_>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        payloads: Vec<Vec<u8>>,
+        key: Option<&[u8]>,
+        ack: &str,
+    ) -> PyResult<Option<u64>> {
+        let ack = parse_ack(ack)?;
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, stream) = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            stream.to_string(),
+        );
+        let key = key.map(Bytes::copy_from_slice);
+        block_on(py, async move {
+            match key {
+                Some(key) => {
+                    inner
+                        .publish_batch_keyed(&tenant_id, &namespace, &stream, key, payloads, ack)
+                        .await
+                }
+                None => {
+                    inner
+                        .publish_batch(&tenant_id, &namespace, &stream, payloads, ack)
+                        .await
+                }
+            }
+            .map_err(to_py_err)
+        })
+    }
+
+    /// Publish `(key, payload)` records, splitting them by the shard each key
+    /// hashes to and sending each shard's records to its owner as one batch.
+    ///
+    /// Order holds within a shard, not between shards. Failure is per shard:
+    /// the `BatchReport` says which records each piece held, and a failed
+    /// piece does not stop the others. A piece the broker may have written is
+    /// not sent again unless `at_least_once` is set, which re-sends it and so
+    /// can duplicate. This call does not raise for a failed piece; check
+    /// `report.ok`.
+    #[pyo3(signature = (tenant_id, namespace, stream, records, *, ack="per_message", at_least_once=false))]
+    fn publish_records(
+        &self,
+        py: Python<'_>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        records: Vec<(Vec<u8>, Vec<u8>)>,
+        ack: &str,
+        at_least_once: bool,
+    ) -> PyResult<Py<BatchReport>> {
+        let ack = parse_ack(ack)?;
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, stream) = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            stream.to_string(),
+        );
+        let records: Vec<(Bytes, Vec<u8>)> = records
+            .into_iter()
+            .map(|(key, payload)| (Bytes::from(key), payload))
+            .collect();
+        let report = block_on(py, async move {
+            Ok(if at_least_once {
+                inner
+                    .publish_records_at_least_once(&tenant_id, &namespace, &stream, records, ack)
+                    .await
+            } else {
+                inner
+                    .publish_records(&tenant_id, &namespace, &stream, records, ack)
+                    .await
+            })
+        })?;
+        Ok(OwnedBatchReport(report).into_pyobject(py)?.unbind())
+    }
+
+    /// Ask the broker in use which brokers a client may connect to, and add
+    /// them to the endpoints this client will try. Returns how many the
+    /// cluster named; zero is a legitimate answer. Raises when the broker
+    /// predates discovery.
+    fn refresh_topology(&self, py: Python<'_>) -> PyResult<usize> {
+        let inner = Arc::clone(&self.inner);
+        block_on(py, async move {
+            inner.refresh_topology().await.map_err(to_py_err)
+        })
+    }
+
+    /// Live connections to each broker this client holds one for, as
+    /// `(address, count)` pairs.
+    fn connections_per_node(&self, py: Python<'_>) -> PyResult<Vec<(String, usize)>> {
+        let inner = Arc::clone(&self.inner);
+        block_on(py, async move {
+            Ok(inner
+                .connections_per_node()
+                .await
+                .into_iter()
+                .map(|(addr, count)| (addr.to_string(), count))
+                .collect())
+        })
+    }
+
+    /// Give up on one record: list it as a dead letter of the group and
+    /// finish it, as the group does once a record runs out of attempts.
+    /// `group_redrive` puts it back. Refused for a record already finished.
+    /// Needs a broker that supports claim control.
+    fn group_dead_letter(
+        &self,
+        py: Python<'_>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        group: &str,
+        offset: u64,
+    ) -> PyResult<()> {
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, stream, group) = owned4(tenant_id, namespace, stream, group);
+        block_on(py, async move {
+            inner
+                .group_dead_letter(&tenant_id, &namespace, &stream, shard, &group, offset)
+                .await
+                .map_err(to_py_err)
+        })
+    }
+
+    /// Hand `record` back to be redelivered once `delay` seconds have passed
+    /// rather than at once, for a consumer that backs off before retrying.
+    ///
+    /// A delay of 0 is `group_nack`. The broker caps the delay. Refused with
+    /// `stale_claim` once the claim has lapsed or the record has gone out
+    /// again. A nonzero delay needs a broker that supports claim control.
+    fn group_nack_after(
+        &self,
+        py: Python<'_>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        group: &str,
+        record: PyRef<'_, GroupRecord>,
+        delay: f64,
+    ) -> PyResult<()> {
+        let delay = non_negative_duration(delay, "delay")?;
+        let record = record.delivery();
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, stream, group) = owned4(tenant_id, namespace, stream, group);
+        block_on(py, async move {
+            inner
+                .group_nack_after(
+                    &tenant_id, &namespace, &stream, shard, &group, &record, delay,
+                )
+                .await
+                .map_err(to_py_err)
+        })
+    }
+
+    /// `group_seek` on every shard of the stream, in shard order. Returns each
+    /// shard's position, indexed by shard.
+    ///
+    /// One request per shard, so `"latest"` is each shard's tail when its own
+    /// seek lands. An integer offset is refused for a stream with more than
+    /// one shard, since offsets are per shard. A failure partway leaves the
+    /// earlier shards moved; the call is safe to repeat. Needs the
+    /// `group.manage` permission.
+    fn group_seek_stream(
+        &self,
+        py: Python<'_>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        group: &str,
+        start: Py<PyAny>,
+    ) -> PyResult<Vec<GroupPosition>> {
+        let start = parse_required_start(py, start)?;
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, stream, group) = owned4(tenant_id, namespace, stream, group);
+        block_on(py, async move {
+            inner
+                .group_seek_stream(&tenant_id, &namespace, &stream, &group, start)
+                .await
+                .map(|positions| positions.into_iter().map(GroupPosition::from).collect())
+                .map_err(to_py_err)
+        })
+    }
+
+    /// `group_create` on every shard of the stream, as `group_seek_stream`
+    /// does. A shard where the group already exists is left alone.
+    fn group_create_stream(
+        &self,
+        py: Python<'_>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        group: &str,
+        start: Py<PyAny>,
+    ) -> PyResult<Vec<GroupPosition>> {
+        let start = parse_required_start(py, start)?;
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, stream, group) = owned4(tenant_id, namespace, stream, group);
+        block_on(py, async move {
+            inner
+                .group_create_stream(&tenant_id, &namespace, &stream, &group, start)
+                .await
+                .map(|positions| positions.into_iter().map(GroupPosition::from).collect())
+                .map_err(to_py_err)
+        })
+    }
+
+    /// `group_describe` for every shard of the stream, indexed by shard.
+    fn group_describe_stream(
+        &self,
+        py: Python<'_>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        group: &str,
+    ) -> PyResult<Vec<GroupInfo>> {
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, stream, group) = owned4(tenant_id, namespace, stream, group);
+        block_on(py, async move {
+            inner
+                .group_describe_stream(&tenant_id, &namespace, &stream, &group)
+                .await
+                .map(|infos| infos.into_iter().map(GroupInfo::from).collect())
+                .map_err(to_py_err)
+        })
+    }
+
+    /// `group_delete` on every shard of the stream. Returns whether any shard
+    /// had anything to delete. Safe to repeat after a failure partway. Needs
+    /// the `group.manage` permission.
+    fn group_delete_stream(
+        &self,
+        py: Python<'_>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        group: &str,
+    ) -> PyResult<bool> {
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, stream, group) = owned4(tenant_id, namespace, stream, group);
+        block_on(py, async move {
+            inner
+                .group_delete_stream(&tenant_id, &namespace, &stream, &group)
+                .await
+                .map_err(to_py_err)
+        })
+    }
+
+    /// One consumer group across every shard of a stream. See
+    /// `ShardedGroupHandle`.
+    fn group_sharded(
+        &self,
+        py: Python<'_>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        group: &str,
+    ) -> PyResult<ShardedGroupHandle> {
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, stream, group) = owned4(tenant_id, namespace, stream, group);
+        let sharded = block_on(py, async move {
+            inner
+                .group_sharded(&tenant_id, &namespace, &stream, &group)
+                .await
+                .map_err(to_py_err)
+        })?;
+        Ok(ShardedGroupHandle::new(sharded))
+    }
+
+    /// Watch a key prefix across **every** shard of a cache, merged into one
+    /// handle. Keys sharing a prefix hash to different shards and a watch
+    /// reads one, so this opens one prefix watch per shard.
+    ///
+    /// `resume` is a `resume_offsets()` result: a listed shard resumes at that
+    /// offset and the rest watch from now. `retained=True` instead delivers
+    /// each matching key's current value first, then `CacheStateComplete`; it
+    /// is mutually exclusive with `resume`. Fails if any shard cannot be
+    /// opened.
+    #[pyo3(signature = (tenant_id, namespace, cache, prefix, *, resume=None, retained=false))]
+    fn watch_cache_sharded(
+        &self,
+        py: Python<'_>,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        prefix: &str,
+        resume: Option<std::collections::BTreeMap<u32, u64>>,
+        retained: bool,
+    ) -> PyResult<ShardedCacheWatchHandle> {
+        check_sharded_watch(retained, &resume)?;
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, cache, prefix) = owned4(tenant_id, namespace, cache, prefix);
+        let watch = block_on(py, async move {
+            if retained {
+                inner
+                    .watch_cache_sharded_retained(&tenant_id, &namespace, &cache, &prefix)
+                    .await
+            } else {
+                inner
+                    .watch_cache_sharded(&tenant_id, &namespace, &cache, &prefix, resume)
+                    .await
+            }
+            .map_err(to_py_err)
+        })?;
+        Ok(ShardedCacheWatchHandle::new(watch))
     }
 
     // ---- cache watch -----------------------------------------------------
