@@ -123,6 +123,7 @@ expectations=(
   "FelixShardFencedAckSeat pass"
   "FelixShardFencedAckGrow pass"
   "FelixShardFencedAckSeatPair pass"
+  "FelixShardFencedAckSeatPairOnMajority violates AckedOnMajority"
   "FelixShardFencedAckSeatEarly violates AckedHeldByLeader"
   "FelixShardReadsRound pass"
   "FelixShardReadsNoRound violates NoStaleRead"
