@@ -541,3 +541,132 @@ async fn retiring_a_stream_deletes_its_offloaded_copies() {
         .await
         .expect("retire again");
 }
+
+/// A provider offloading to `archive`, with `stream` at `incarnation` holding
+/// offloaded copies. Returns the stream's copy directory in the archive.
+async fn offloaded(
+    provider: &DiskLogProvider,
+    archive: &std::path::Path,
+    stream: &str,
+    incarnation: u64,
+) -> std::path::PathBuf {
+    provider.set_stream_incarnation("t", "ns", stream, Some(incarnation));
+    let log = provider.open_shard(&shard(stream)).expect("open");
+    for i in 0..24 {
+        log.append(&[record(&format!("record-{i:02}"))])
+            .await
+            .expect("append");
+    }
+    log.sync().await.expect("sync");
+    log.enforce_retention_now().await.expect("offload pass");
+    let name = layout::incarnation_dir_name(&shard(stream), incarnation);
+    let copied = archive.join("node-a").join(name);
+    assert!(
+        std::fs::read_dir(&copied).expect("copies").count() > 0,
+        "{stream}/{incarnation} offloaded nothing"
+    );
+    copied
+}
+
+fn offloading_config(archive: &std::path::Path) -> LogConfig {
+    LogConfig {
+        segment_size_bytes: crate::segment::SEGMENT_HEADER_LEN + 120,
+        retention_check_interval: Duration::from_secs(3600),
+        offload: Some(crate::log::OffloadTarget::LocalDir {
+            dir: archive.to_path_buf(),
+            node: "node-a".into(),
+        }),
+        ..config()
+    }
+}
+
+#[tokio::test]
+async fn retiring_one_incarnation_keeps_the_copies_of_the_others() {
+    let dir = tempdir().expect("dir");
+    let archive = dir.path().join("archive");
+    let provider = DiskLogProvider::new(dir.path().join("logs"), offloading_config(&archive))
+        .expect("provider");
+    let mut copies = Vec::new();
+    for incarnation in [0, 7, 8] {
+        copies.push(offloaded(&provider, &archive, "orders", incarnation).await);
+    }
+
+    provider
+        .retire_stream("t", "ns", "orders", 7)
+        .await
+        .expect("retire");
+    assert!(!copies[1].exists(), "incarnation 7's copies stay");
+    for kept in [&copies[0], &copies[2]] {
+        assert!(
+            std::fs::read_dir(kept).expect("copies").count() > 0,
+            "{} lost its copies",
+            kept.display()
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_manifest_that_cannot_be_read_keeps_the_shard_for_the_retry() {
+    let dir = tempdir().expect("dir");
+    let archive = dir.path().join("archive");
+    let provider = DiskLogProvider::new(dir.path().join("logs"), offloading_config(&archive))
+        .expect("provider");
+    let copied = offloaded(&provider, &archive, "orders", 7).await;
+    let local = layout::incarnation_dir(provider.root(), &shard("orders"), 7);
+    let manifest = super::super::offload::manifest::path_in(&local);
+    let saved = std::fs::read(&manifest).expect("manifest");
+    // A directory in its place reads as an I/O error, not as bad content.
+    std::fs::remove_file(&manifest).expect("remove");
+    std::fs::create_dir(&manifest).expect("dir in its place");
+
+    provider
+        .retire_stream("t", "ns", "orders", 7)
+        .await
+        .expect_err("an unreadable manifest must not retire the shard");
+    assert!(local.exists(), "the local folder went");
+    assert!(manifest.exists(), "the manifest went");
+    assert!(copied.exists(), "the copies went");
+
+    std::fs::remove_dir(&manifest).expect("clear");
+    std::fs::write(&manifest, saved).expect("restore");
+    provider
+        .retire_stream("t", "ns", "orders", 7)
+        .await
+        .expect("retry");
+    assert!(!local.exists() && !copied.exists());
+}
+
+#[tokio::test]
+async fn a_retire_that_fails_partway_completes_on_retry() {
+    let dir = tempdir().expect("dir");
+    let archive = dir.path().join("archive");
+    let provider = DiskLogProvider::new(dir.path().join("logs"), offloading_config(&archive))
+        .expect("provider");
+    let copied = offloaded(&provider, &archive, "orders", 7).await;
+    let local = layout::incarnation_dir(provider.root(), &shard("orders"), 7);
+    let recorded = super::super::offload::manifest::load(&local).expect("manifest");
+    assert!(recorded.entries().len() > 1, "need several copies");
+    // The last recorded copy cannot be removed as a file, after the earlier
+    // ones already were.
+    let last = archive.join(&recorded.entries().last().expect("entry").key);
+    std::fs::remove_file(&last).expect("remove");
+    std::fs::create_dir(&last).expect("dir in its place");
+    std::fs::write(last.join("pin"), b"x").expect("pin");
+
+    provider
+        .retire_stream("t", "ns", "orders", 7)
+        .await
+        .expect_err("the copy that cannot be removed fails the retire");
+    assert!(local.exists(), "the local folder went on a failed retire");
+    assert!(
+        super::super::offload::manifest::path_in(&local).exists(),
+        "the manifest went on a failed retire"
+    );
+
+    std::fs::remove_dir_all(&last).expect("clear");
+    provider
+        .retire_stream("t", "ns", "orders", 7)
+        .await
+        .expect("retry completes, copies already gone count as done");
+    assert!(!local.exists() && !copied.exists());
+}

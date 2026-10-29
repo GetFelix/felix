@@ -882,9 +882,13 @@ incarnation is covered it unregisters it and ends its subscriptions, then
 closes its logs (a handle held elsewhere fails with `StorageError::Closed`).
 With offload on, each covered shard's copies are deleted from the offload
 directory next: every key its manifest records, then its node's prefix for
-that shard, recorded or not. A failure leaves the shard's directory, and its
-manifest, for the retry
-(`retiring_a_stream_deletes_its_offloaded_copies`). Each covered directory is renamed into `.deleted/` under its store's root and
+that shard, recorded or not. A copy that cannot be removed, or a manifest that
+cannot be read for an I/O reason, fails the delete and leaves the shard's
+directory and manifest for the retry; a copy already gone counts as removed.
+A manifest that does not decode is skipped with a warning, so only the
+prefix is cleaned
+(`retiring_a_stream_deletes_its_offloaded_copies`,
+`a_manifest_that_cannot_be_read_keeps_the_shard_for_the_retry`). Each covered directory is renamed into `.deleted/` under its store's root and
 the rename flushed, on the blocking pool rather than an async worker, as are
 the marker and floor reads and writes and every store's directory lookups. One background thread per root removes what
 `.deleted/` holds, listing it again if more arrives while it works, so a
@@ -1039,6 +1043,10 @@ What this does not cover:
   the name is created again at 0, which only happens before the finalize.
 - Offloaded copies of a shard deleted by an earlier release, or while
   offload was off, stay in the offload directory.
+- Offloaded copies of a shard deleted while the offload archive is unmounted.
+  A missing copy counts as removed, so the delete finishes and the copies stay.
+- Recorded copies outside the node's own prefix, when the shard's manifest does
+  not decode.
 - A stream created again at incarnation 0, before the finalize, continues the
   deleted stream's logs on each broker, including the generation each one
   accepted. The control plane refuses that create for a name it recorded as

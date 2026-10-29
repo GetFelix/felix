@@ -577,8 +577,12 @@ printing wrong numbers.
   directory is back, so an outage grows local disk; watch
   `felix_storage_offload_held_bytes` and see
   [Diagnosing a cluster](/deployment/diagnosing/#local-disk-is-filling-while-offload-is-on).
-  Deleting a stream deletes its copies before its local directories; one
-  that fails to remove a copy keeps the local directories and is retried. See `docs/durable-storage.md`, "Tiered storage: offload".
+  Deleting a stream deletes its copies before its local directories. A copy
+  that cannot be removed, or a manifest that cannot be read, keeps the local
+  directories and is retried. Two cases leave copies behind: a delete while the
+  offload directory is unmounted (a missing copy counts as removed), and
+  recorded copies outside the broker's own prefix when the manifest does not
+  decode. See `docs/durable-storage.md`, "Tiered storage: offload".
 - **Single node.** This page describes one broker's storage; replication
   across brokers is layered on top of it, and `seal`'s checksum and
   `read_range`'s bounded paging exist to serve that.

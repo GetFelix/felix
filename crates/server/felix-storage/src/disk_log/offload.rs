@@ -538,10 +538,12 @@ pub(crate) fn remove_copies(target: &OffloadTarget, shard_dir: &Path) -> Result<
         return Ok(());
     };
     // A manifest that does not decode loses only the keys outside the
-    // prefix; it must not keep a deleted stream's directory forever.
+    // prefix; it must not keep a deleted stream's directory forever. Any
+    // other read failure (EIO, EACCES) says nothing about the manifest, so
+    // it fails the retire and the retry sees the manifest again.
     let recorded = match manifest::load(shard_dir) {
         Ok(manifest) => manifest.entries().to_vec(),
-        Err(err) => {
+        Err(StorageError::Io(err)) if err.kind() == std::io::ErrorKind::InvalidData => {
             tracing::warn!(
                 dir = %shard_dir.display(),
                 error = %err,
@@ -549,6 +551,7 @@ pub(crate) fn remove_copies(target: &OffloadTarget, shard_dir: &Path) -> Result<
             );
             Vec::new()
         }
+        Err(err) => return Err(err),
     };
     for entry in &recorded {
         let Some(path) = key_path(root, &entry.key) else {
