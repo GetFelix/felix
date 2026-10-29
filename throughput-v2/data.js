@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793266927692,
+  "lastUpdate": 1793271058681,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -39052,6 +39052,58 @@ window.BENCHMARK_DATA = {
             "range": "9684.96",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 825194.50\nmean: 819499.34\nstdev: 9684.96\ncv: 1.18%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "59d58f3d4c4c1e83f115dd9a80998f01e68f3e7a",
+          "message": "fix(replication): name only the old and new set in a failover's fence ids (#1486) (#1633)\n\nreport_storage_ids took every identity the leader's last report named. That\nreport can predate a set change (an RF 2 seat or restore swapping b for c), so\na failover after a leader crash named the dropped copy too. A crashed leader\nof two answers its successor's fence only when the ids name exactly the two\nmembers the route shows, so it refused and the shard stayed closed until\nabandon.\n\nThe ids are now limited to the old set and the new one. A dropped copy a\nfailover keeps (left_unconfirmed, #1487) is in the new set, so it keeps the\nidentity the report measured. Placement only: brokers apply nothing new.\n\nSpec-Unaffected: the model's fence counts only route members, so a name for a\ncopy outside the route changes nothing it checks, and it has no\nrefuse_short_copy (acknowledged_by_two).",
+          "timestamp": "2026-10-29T03:46:18-07:00",
+          "tree_id": "a89a191d70ff553da51460da6da2bafe20f68102",
+          "url": "https://github.com/GetFelix/felix/commit/59d58f3d4c4c1e83f115dd9a80998f01e68f3e7a"
+        },
+        "date": 1793271057976,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 467459,
+            "range": "20448.71",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 467459.00\nmean: 475836.24\nstdev: 20448.71\ncv: 4.30%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 467459,
+            "range": "20448.71",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 467459.00\nmean: 475836.24\nstdev: 20448.71\ncv: 4.30%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 104983.58,
+            "range": "785.33",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 104983.58\nmean: 104862.58\nstdev: 785.33\ncv: 0.75%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1049835.81,
+            "range": "7853.29",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1049835.81\nmean: 1048625.80\nstdev: 7853.29\ncv: 0.75%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
