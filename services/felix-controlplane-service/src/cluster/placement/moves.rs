@@ -1055,10 +1055,11 @@ fn seated(existing: &ShardAssignment, from: Option<&str>) -> ShardAssignment {
 /// the leader serves again at the next one.
 ///
 /// A newcomer gone or halted, nothing left to replace, an operator's cancel
-/// (no move reason), or a move past its timeout that cannot be seated drops
-/// `joining` only once that report has every other follower at the leader's
-/// offset: beside the even set left, a record may be on the leader and
-/// `joining` alone (#1628). Until then it waits.
+/// (no move reason), or a restore stalled or a move past its timeout that
+/// cannot be seated drops `joining` only once that report has the leader and
+/// followers at the leader's offset as a majority of the set left: beside
+/// the even set left, a record may be on the leader and `joining` alone
+/// (#1628). Until then it waits.
 /// A restore whose set has gone short (the factor was raised while fenced)
 /// replaces nobody and seats `joining` as a top-up instead, as
 /// [`restore_step`] would.
@@ -1084,17 +1085,22 @@ fn seat_after_fence(
     let drained = caught_up.is_drained(key, existing.generation);
     let holds_tail =
         |replica: &str| tail.is_some() && caught_up.reported_offset(key, replica) == tail;
-    let undo = |step: MoveStep| {
-        let rest_hold_tail = existing
+    // The drained leader holds every acknowledged record and a follower at
+    // its tail holds its whole log, so with those a majority of the set
+    // left, every acknowledged record is on a majority of it. A lost
+    // follower need not be among them.
+    let undo = |step: MoveStep, started: Option<u64>| {
+        let rest: Vec<&String> = existing
             .replicas
             .iter()
             .filter(|replica| *replica != joining)
-            .all(|replica| holds_tail(replica));
-        (drained && rest_hold_tail).then(|| {
+            .collect();
+        let holding = 1 + rest.iter().filter(|replica| holds_tail(replica)).count();
+        (drained && 2 * holding > rest.len() + 1).then(|| {
             Decision::Move(
                 step,
                 ShardAssignment {
-                    move_started_at_millis: None,
+                    move_started_at_millis: started,
                     ..serving(undo_replacement(existing, joining))
                 },
             )
@@ -1116,7 +1122,7 @@ fn seat_after_fence(
         None => None,
     };
     if let Some(step) = gave_up {
-        if let Some(undone) = undo(step) {
+        if let Some(undone) = undo(step, None) {
             return undone;
         }
     } else if drained && holds_tail(joining) {
@@ -1127,10 +1133,26 @@ fn seat_after_fence(
             },
             serving(seated(existing, from)),
         );
+    } else if existing.move_reason == Some(MoveReason::Restore)
+        && moves.stalled(caught_up, key, joining)
+    {
+        // The serving path fences a stalled restore to drop it. The start
+        // stays, as there.
+        if let Some(undone) = undo(
+            MoveStep::Stalled {
+                successor: joining.to_string(),
+            },
+            existing.move_started_at_millis,
+        ) {
+            return undone;
+        }
     } else if moves.timed_out(caught_up, existing.move_started_at_millis)
-        && let Some(undone) = undo(MoveStep::TimedOut {
-            successor: joining.to_string(),
-        })
+        && let Some(undone) = undo(
+            MoveStep::TimedOut {
+                successor: joining.to_string(),
+            },
+            None,
+        )
     {
         return undone;
     }

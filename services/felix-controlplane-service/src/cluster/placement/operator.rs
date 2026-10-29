@@ -304,7 +304,9 @@ fn zone_impact(
 ///
 /// A replacement on a fenced stream whose undo leaves an even set is fenced
 /// instead, and placement drops the copy once the leader's drained report
-/// shows the rest holding its log.
+/// shows enough of the rest holding its log. Cancelling again while that
+/// fence is up takes the shard back as after any fence: the copy stays, as
+/// a full member, and a set left above its factor is trimmed back.
 ///
 /// Either way the start time stays, so placement queues this shard behind
 /// others for its next move. Pause placement first to stop it choosing the

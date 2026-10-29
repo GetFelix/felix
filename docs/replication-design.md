@@ -2406,12 +2406,18 @@ Giving a replacement up has the same window the other way round
 ([#1628](https://github.com/GetFelix/felix/issues/1628)): beside an even set,
 the leader and the newcomer alone are a majority of the set the newcomer
 joined, so dropping the newcomer while the leader serves can leave a record on
-the leader only. On a fenced stream such an undo (a timeout, a newcomer that
-halts or goes down, a drain that ends, a lost copy that returns, an operator's
-cancel) fences the leader first (`undo_or_fence`), and the newcomer goes only
-once the drained report has every other follower at the leader's own offset.
-Until then it stays a member, and at the fence timeout the leader serves again
-with the undo still to do. Placement still seats the newcomer instead if it
+the leader only. On a fenced stream such an undo (a timeout, a restore that
+stalls, a newcomer that halts or goes down, a drain that ends, a lost copy
+that returns, an operator's cancel) fences the leader first (`undo_or_fence`),
+and the newcomer goes only once the drained report has the leader and the
+followers at its own offset as a majority of the set left. The drained leader
+holds every acknowledged record and those followers hold its whole log, so
+every acknowledged record is then on a majority of that set. A lost follower
+need not be among them: in an RF 4 set with one copy lost, the leader and the
+two live followers are enough. In an RF 2 set the leader alone is not, so the
+one other follower must hold the tail. Until then the newcomer stays a member,
+and at the fence timeout the leader serves again with the undo still to do,
+fencing again on the next pass. Placement still seats the newcomer instead if it
 holds the whole log and was not cancelled. A failover at the seat's
 generation whose leader has not reported there yet also keeps the leaving
 follower in the set while its broker serves, so the new leader's fence has a
