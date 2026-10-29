@@ -38,7 +38,7 @@ mod connecting_to_a_cluster_1 {
     }
 }
 
-/// resilient-clients.mdx line 204: "Reconnection", block 1.
+/// resilient-clients.mdx line 210: "Reconnection", block 1.
 mod reconnection_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -59,7 +59,7 @@ mod reconnection_1 {
     }
 }
 
-/// resilient-clients.mdx line 319: "Authentication that lasts", block 1.
+/// resilient-clients.mdx line 325: "Authentication that lasts", block 1.
 mod authentication_that_lasts_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -80,7 +80,7 @@ mod authentication_that_lasts_1 {
     }
 }
 
-/// resilient-clients.mdx line 456: "When a broker rejects the token", block 1.
+/// resilient-clients.mdx line 462: "When a broker rejects the token", block 1.
 mod when_a_broker_rejects_the_token_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -106,7 +106,7 @@ mod when_a_broker_rejects_the_token_1 {
     }
 }
 
-/// resilient-clients.mdx line 598: "Errors and retry classes", block 1.
+/// resilient-clients.mdx line 604: "Errors and retry classes", block 1.
 mod errors_and_retry_classes_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -163,7 +163,7 @@ mod errors_and_retry_classes_1 {
     }
 }
 
-/// resilient-clients.mdx line 811: "Writes whose outcome is unknown", block 1.
+/// resilient-clients.mdx line 817: "Writes whose outcome is unknown", block 1.
 mod writes_whose_outcome_is_unknown_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -196,7 +196,7 @@ mod writes_whose_outcome_is_unknown_1 {
     }
 }
 
-/// resilient-clients.mdx line 988: "Conditional publish", block 1.
+/// resilient-clients.mdx line 994: "Conditional publish", block 1.
 mod conditional_publish_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -221,7 +221,7 @@ mod conditional_publish_1 {
     }
 }
 
-/// resilient-clients.mdx line 1126: "Resume one shard", block 1.
+/// resilient-clients.mdx line 1132: "Resume one shard", block 1.
 mod resume_one_shard_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -329,7 +329,7 @@ mod resume_one_shard_1 {
     }
 }
 
-/// resilient-clients.mdx line 1474: "Resume a sharded stream", block 1.
+/// resilient-clients.mdx line 1480: "Resume a sharded stream", block 1.
 mod resume_a_sharded_stream_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -374,7 +374,7 @@ mod resume_a_sharded_stream_1 {
     }
 }
 
-/// resilient-clients.mdx line 1739: "Slow consumers", block 1.
+/// resilient-clients.mdx line 1745: "Slow consumers", block 1.
 mod slow_consumers_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -413,7 +413,7 @@ mod slow_consumers_1 {
     }
 }
 
-/// resilient-clients.mdx line 1930: "Consumer groups under failure", block 1.
+/// resilient-clients.mdx line 1936: "Consumer groups under failure", block 1.
 mod consumer_groups_under_failure_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -477,7 +477,7 @@ mod consumer_groups_under_failure_1 {
     }
 }
 
-/// resilient-clients.mdx line 2259: "Shutting down cleanly", block 1.
+/// resilient-clients.mdx line 2265: "Shutting down cleanly", block 1.
 mod shutting_down_cleanly_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
