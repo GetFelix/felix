@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793250312250,
+  "lastUpdate": 1793250915122,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -38688,6 +38688,58 @@ window.BENCHMARK_DATA = {
             "range": "2900.84",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 812215.32\nmean: 812230.23\nstdev: 2900.84\ncv: 0.36%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e6a53cd5c189bff2b939c0c8298f228225b24440",
+          "message": "test(kafka): charge the produce quota on a paused clock (#1491) (#1618)\n\n* test(kafka): charge the produce quota on a paused clock (#1491)\n\nTenantRates now reads tokio time, so the Kafka quota test runs paused and no real time refills the bucket between the two charges.\n\n* test(broker): keep the tenant rate test on a paused clock\n\nSpec-Unaffected: the clock source is the same outside paused tests; no modelled decision changes.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01Jf7vZqmjBiJjXAKwu7kJLM\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-29T05:10:44Z",
+          "tree_id": "2f25f8d8fb0d2f9a5df12c2200751f5838ff5860",
+          "url": "https://github.com/GetFelix/felix/commit/e6a53cd5c189bff2b939c0c8298f228225b24440"
+        },
+        "date": 1793250914399,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 438618.79,
+            "range": "23895.82",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 438618.79\nmean: 430677.11\nstdev: 23895.82\ncv: 5.55%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 438618.79,
+            "range": "23895.82",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 438618.79\nmean: 430677.11\nstdev: 23895.82\ncv: 5.55%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 103854.8,
+            "range": "1014.11",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 103854.80\nmean: 104452.25\nstdev: 1014.11\ncv: 0.97%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1038548.01,
+            "range": "10141.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1038548.01\nmean: 1044522.48\nstdev: 10141.05\ncv: 0.97%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
