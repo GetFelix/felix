@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793234829417,
+  "lastUpdate": 1793246516657,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -38584,6 +38584,58 @@ window.BENCHMARK_DATA = {
             "range": "8686.90",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 785978.02\nmean: 788516.08\nstdev: 8686.90\ncv: 1.10%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "050be16727add93c7e39f21c171ed4a2df5fb30f",
+          "message": "feat(clients): reconnect backoff in Python, TypeScript, C and C# (#1617)\n\n* feat(clients): reconnect backoff in Python, TypeScript, C and C#\n\n* fix(clients): regenerate the C header, size the C# struct test\n\n* test(clients): regenerate the Rust docs examples for the moved lines\n\n* fix(clients): clamp waits to the max backoff as Rust does, cap C backoffs at a year\n\n* test(python): drop the max-below-backoff refusal tests\n\n* test(python): a max backoff below the backoff is no longer refused",
+          "timestamp": "2026-10-29T03:57:24Z",
+          "tree_id": "1f0bc6c45fb5924112b9216a83bb2435acffd8cd",
+          "url": "https://github.com/GetFelix/felix/commit/050be16727add93c7e39f21c171ed4a2df5fb30f"
+        },
+        "date": 1793246516077,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 345472.91,
+            "range": "8903.01",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 345472.91\nmean: 349061.24\nstdev: 8903.01\ncv: 2.55%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 345472.91,
+            "range": "8903.01",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 345472.91\nmean: 349061.24\nstdev: 8903.01\ncv: 2.55%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 83133.68,
+            "range": "414.40",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 83133.68\nmean: 83243.09\nstdev: 414.40\ncv: 0.50%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 831336.78,
+            "range": "4144.03",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 831336.78\nmean: 832430.94\nstdev: 4144.03\ncv: 0.50%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
