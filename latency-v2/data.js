@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793275297230,
+  "lastUpdate": 1793281468028,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -49764,6 +49764,72 @@ window.BENCHMARK_DATA = {
             "range": "509.04",
             "unit": "us",
             "extra": "trials: 5\nmedian: 534.00\nmean: 742.40\nstdev: 509.04\ncv: 68.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fc7bc7fe50bff3eda3b800ade9b4a3b699aa20e8",
+          "message": "spec(formal): model the crashed leader's short-copy refusal and its set-of-two exception (#1636) (#1637)\n\nRefuseShortCopy models refuse_short_copy and acknowledged_by_two: a leader that crashed and gave its copy up answers no promotion fence from it until a newer leader has shipped to it, unless the set of two it led acknowledged what it may have lost. The exception checks that the copy's last record is from the generation it led, the fencer leads the next one with the same two as its set, and the fence ids (old set and new set, #1633) name exactly those two. Configurations that leave it off are unchanged.\n\nThe model is narrower than the code: the code reads the generation and set from the crashed leader's own routing view and ties neither to the fence's generation or to the sender leading it. No unsafe trace is known from the gap; #1638 tightens the code to the model's rule.\n\nConfigurations:\n- FelixShardShortCopySeatAnySet (set check dropped) violates AckedHeldByLeader, per push.\n- FelixShardShortCopySeat (the #1486 shape), FelixShardShortCopySeatAnyKeys (fence ids' comparison dropped) and FelixShardShortCopyStaged (beside a staged copy, the fix #1635 proposes) pass in the nightly walks (tla-walk.yml, two jobs). Exhaustively they run past 30M distinct states. Walk run 40870290781: all three pass, AnySet reaches its violation.\n\nCloses #1636.",
+          "timestamp": "2026-10-29T06:39:43-07:00",
+          "tree_id": "46c9790f81b79655831bf356e9b17dd435820222",
+          "url": "https://github.com/GetFelix/felix/commit/fc7bc7fe50bff3eda3b800ade9b4a3b699aa20e8"
+        },
+        "date": 1793281461543,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 124,
+            "range": "1.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 124.00\nmean: 124.00\nstdev: 1.00\ncv: 0.81%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 170,
+            "range": "2.17",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 170.00\nmean: 168.80\nstdev: 2.17\ncv: 1.28%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 222,
+            "range": "88.11",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 222.00\nmean: 257.80\nstdev: 88.11\ncv: 34.18%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 171,
+            "range": "1.58",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 171.00\nmean: 171.00\nstdev: 1.58\ncv: 0.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 336,
+            "range": "4.67",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 336.00\nmean: 337.60\nstdev: 4.67\ncv: 1.38%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 502,
+            "range": "89.01",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 502.00\nmean: 525.20\nstdev: 89.01\ncv: 16.95%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
