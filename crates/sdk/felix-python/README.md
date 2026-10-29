@@ -146,8 +146,6 @@ The Rust client has more than this binding wraps. What is left out, and why:
   futures; `publish_batches` is the iterator-shaped equivalent.
 - **`ClientConfig` options** such as `publishers` and `timestamps`. They are
   connection configuration, set once, not calls.
-- **Reconnect backoff.** `ReconnectPolicy.backoff` and `max_backoff` have no
-  option here yet. The client uses their defaults.
 
 ## Conformance
 

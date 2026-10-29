@@ -38,13 +38,16 @@ pub(crate) fn seeds(addrs: Vec<String>) -> Result<Vec<Seed>> {
 /// deadline in practice, and a huge one would overflow the clock.
 const MAX_DEADLINE_MS: f64 = 365.0 * 24.0 * 3600.0 * 1000.0;
 
-/// The default reconnect policy with the caller's attempts and deadline (ms).
+/// The default reconnect policy with the caller's attempts, deadline and
+/// backoff (ms).
 ///
 /// Numbers arrive as `f64` so a fraction or `NaN` is refused instead of being
 /// truncated into something the caller did not ask for.
 pub(crate) fn reconnect_policy(
     attempts: Option<f64>,
     deadline_ms: Option<f64>,
+    backoff_ms: Option<f64>,
+    max_backoff_ms: Option<f64>,
 ) -> Result<ReconnectPolicy> {
     let mut policy = ReconnectPolicy::default();
     if let Some(attempts) = attempts {
@@ -63,6 +66,23 @@ pub(crate) fn reconnect_policy(
             )));
         }
         policy.deadline = Some(Duration::from_secs_f64(ms / 1000.0));
+    }
+    for (name, wanted, slot) in [
+        ("reconnectBackoff", backoff_ms, &mut policy.backoff),
+        (
+            "reconnectMaxBackoff",
+            max_backoff_ms,
+            &mut policy.max_backoff,
+        ),
+    ] {
+        if let Some(ms) = wanted {
+            if !(1.0..=MAX_DEADLINE_MS).contains(&ms) {
+                return Err(invalid(format!(
+                    "{name} must be between 1 millisecond and one year, not {ms}"
+                )));
+            }
+            *slot = Duration::from_secs_f64(ms / 1000.0);
+        }
     }
     Ok(policy)
 }

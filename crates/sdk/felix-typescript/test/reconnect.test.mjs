@@ -29,3 +29,23 @@ test("reconnectDeadline must be a positive number of milliseconds", async () => 
     });
   }
 });
+
+test("reconnectBackoff and reconnectMaxBackoff must be positive milliseconds", async () => {
+  const bad = [
+    { reconnectBackoff: 0 },
+    { reconnectBackoff: 0.5 },
+    { reconnectBackoff: -1 },
+    { reconnectBackoff: Number.NaN },
+    { reconnectBackoff: Number.POSITIVE_INFINITY },
+    { reconnectMaxBackoff: 0 },
+    { reconnectMaxBackoff: Number.NaN },
+    { reconnectMaxBackoff: 400 * 24 * 3600 * 1000 },
+  ];
+  for (const options of bad) {
+    await assert.rejects(connect(options), (err) => {
+      assert.ok(err instanceof InvalidArgumentError, `${JSON.stringify(options)}: ${err}`);
+      assert.match(err.message, /reconnect(Max)?Backoff/);
+      return true;
+    });
+  }
+});

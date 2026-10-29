@@ -24,6 +24,8 @@ internal struct NativeConnectOptions
     public nint TokenRelease;
     public uint ReconnectAttempts;
     public ulong ReconnectDeadlineMs;
+    public ulong ReconnectBackoffMs;
+    public ulong ReconnectMaxBackoffMs;
 }
 
 /// <summary><c>FelixGroupRecord</c>, borrowed for the length of a callback.</summary>

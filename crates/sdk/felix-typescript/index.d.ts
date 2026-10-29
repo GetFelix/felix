@@ -666,6 +666,17 @@ export interface ConnectOptions {
    * whole budget. `withIdentity` clients inherit it.
    */
   reconnectDeadline?: number;
+  /**
+   * The ceiling in milliseconds of the first wait between attempts. It doubles
+   * each attempt up to `reconnectMaxBackoff`, and each wait is a random
+   * fraction of its ceiling. At least 1. Default 200.
+   */
+  reconnectBackoff?: number;
+  /**
+   * The longest any one wait can be, in milliseconds. At least 1 and not below
+   * `reconnectBackoff`. Default 2000.
+   */
+  reconnectMaxBackoff?: number;
 }
 
 /** Options for `Client.withIdentity`. Unknown keys throw a `TypeError`. */
@@ -687,7 +698,7 @@ export declare class Client {
    * use the operating system's trust store.
    *
    * The options go in the last argument: `{ token, tokenProvider, serverName,
-   * caFile, offerAlpn, reconnectAttempts, reconnectDeadline }`. `offerAlpn` offers the `felix/1` ALPN. A broker with
+   * caFile, offerAlpn, reconnectAttempts, reconnectDeadline, reconnectBackoff, reconnectMaxBackoff }`. `offerAlpn` offers the `felix/1` ALPN. A broker with
    * `FELIX_TLS_REQUIRE_ALPN=true` serves only clients that do; a broker older
    * than ALPN support refuses them, which is why it is off by default.
    *
