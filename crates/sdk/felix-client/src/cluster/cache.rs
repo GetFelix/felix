@@ -340,7 +340,7 @@ impl ClusterClient {
     /// known and reachable.
     ///
     /// The owners are asked once per cache and kept until a request to one
-    /// fails. `None` sends the request through the broker in use, which is
+    /// fails or one cannot be connected to. `None` sends the request through the broker in use, which is
     /// always correct: a broker that does not own the shard forwards.
     async fn cache_owner(
         &self,
@@ -367,6 +367,16 @@ impl ClusterClient {
         match self.connect_to(addr).await {
             Ok(client) => Some((shard, node_id, client)),
             Err(err) => {
+                // Asked again next time. Kept, every request would wait out a
+                // connect timeout on a dead owner long after its shard moved.
+                let mut routes = self.cache_routes.write().await;
+                if routes
+                    .get(cache_key)
+                    .is_some_and(|current| Arc::ptr_eq(current, &owners))
+                {
+                    routes.remove(cache_key);
+                }
+                drop(routes);
                 tracing::debug!(
                     owner = %node_id,
                     %addr,

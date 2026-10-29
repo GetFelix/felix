@@ -7,3 +7,4 @@
 
 mod cache_failover;
 mod cache_routing;
+mod dead_broker;

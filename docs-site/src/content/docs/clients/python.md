@@ -1044,7 +1044,7 @@ Ordering is per key: a key lives on one shard, so its changes arrive in write or
 
 `resume_offsets()` is one offset per shard, never ahead of what you have handled. Pass it back as `resume=` to continue gaplessly. A shard still delivering its state resumes at `0`, so no key is missed.
 
-`close()` on a watch or subscription returns at once, even while another thread or task is blocked reading it; that reader then gets `None` (or `StopAsyncIteration`). A `timeout` is a number of seconds from 0 to a year, and `inf`, `nan` and negatives raise `ValueError`. A single-key or prefix `CacheWatchHandle` also exposes `resume_from`, the `from_offset` that continues it without a gap, and `moves`, how often it followed its shard to a new owner; both can be read while a `recv()` is in flight.
+`close()` on a watch or subscription returns at once, even while another thread or task is blocked reading it; that reader then gets `None` (or `StopAsyncIteration`). A `timeout` is a number of seconds from 0 to a year, and `inf`, `nan` and negatives raise `ValueError`. A single-key or prefix `CacheWatchHandle` also exposes `resume_from`, the `from_offset` that continues it without a gap, and `moves`, how often it followed its shard to a new owner; both can be read while a `recv()` is in flight. A watch whose broker dies is reopened on the broker that owns its shard now, from `resume_from`, within the client's reconnect deadline; if none takes it, the watch ends.
 
 With `retained=True` every matching key's current value arrives first, from every shard, and `CacheStateComplete` marks the moment all of them have. `retained_count` is the total to expect. A retained watch cannot also resume.
 

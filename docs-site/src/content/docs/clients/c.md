@@ -893,6 +893,9 @@ A `FelixWatchItem` is borrowed for the callback, and its `kind` says what it is:
 | `FELIX_WATCH_STATE_COMPLETE` | every shard's stored state is delivered (sharded retained watch only) |
 | `FELIX_WATCH_SHARD_CLOSED` | one shard of a sharded watch ended |
 
+A watch whose broker dies is reopened on the shard's current owner without an
+item, within `reconnect_deadline_ms`; if no broker takes it, the watch closes.
+
 Keys are not NUL-terminated, so use `key_len`. After `FELIX_WATCH_LAGGED` a single
 watch's next read is `FELIX_STATUS_CLOSED`, while a sharded watch loses only that
 shard. `felix_cache_watch_resume_offsets` writes each shard's offset for a

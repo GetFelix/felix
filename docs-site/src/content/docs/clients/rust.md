@@ -1454,14 +1454,19 @@ When `recv` returns `None` without either, the broker either closed the
 stream or ended the watch with an error, and `watch.refusal()` holds that error
 as a `BrokerError`. A `revoked` code there means the credential the watch was
 opened with was revoked; watch again with a fresh token. A subscription ended
-for the same reason returns the `BrokerError` from `next_event`.
+for the same reason returns the `BrokerError` from `next_event`. When the
+connection broke instead, because the broker died or the connection timed
+out, `watch.lost()` is set; watch again from the offset after the last change.
 
 A resume whose history compaction has collapsed begins with each matching
 key's current value instead, and `watch.resnapshot()` says so. Needs a broker
 advertising `FEATURE_CACHE_WATCH`, which only brokers with a log-backed cache send.
 `ClusterClient::watch_cache` returns a `ClusterCacheWatch`, which follows a
 moved shard itself: `ShardMoved` arrives as a notice and the changes carry on
-from the new owner, none repeated or skipped. A prefix watch reads one shard; on a multi-shard cache use
+from the new owner, none repeated or skipped. A lost connection is followed
+the same way, without a notice: the watch is reopened on whichever broker owns
+the shard now, under the client's `ReconnectPolicy`. If none takes it before
+the deadline, `recv` returns `None` and `watch.error()` says why. A prefix watch reads one shard; on a multi-shard cache use
 `ClusterClient::watch_cache_sharded` (see [Clusters](#clusters)).
 See [Cache Features](/features/cache/#7-keyed-watch) for the full
 contract.

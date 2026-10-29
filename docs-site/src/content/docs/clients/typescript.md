@@ -1003,7 +1003,9 @@ Three things there matter:
   value. A watcher mirroring a cache has to tell those apart.
 - **`laggedResumeFrom` is a value, not a rejection.** Re-watching from it is
   gapless. `shardMoved` is only a notice: the watch follows its shard to the
-  new owner and carries on, with no change repeated or skipped.
+  new owner and carries on, with no change repeated or skipped. A watch whose
+  broker dies is reopened the same way, without a notice, within the client's
+  reconnect deadline; if no broker takes it, the watch ends.
 
 `start` and `retained` are mutually exclusive. A resume already replays the
 state a retained start shortcuts, so asking for both is refused. A prefix watch
