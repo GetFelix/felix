@@ -150,7 +150,18 @@ export default defineConfig({
             { label: 'felix-metro', slug: 'built-on-felix/metro' },
             { label: 'felix-blocks', slug: 'built-on-felix/blocks' },
             { label: 'felix-agents', slug: 'built-on-felix/agents' },
-            { label: 'felixd', slug: 'built-on-felix/felixd' },
+            {
+              label: 'felixd',
+              collapsed: true,
+              items: [
+                { label: 'Overview', slug: 'built-on-felix/felixd' },
+                { label: 'How it works', slug: 'built-on-felix/felixd/how-it-works' },
+                { label: 'Workload contract', slug: 'built-on-felix/felixd/contract' },
+                { label: 'Record formats', slug: 'built-on-felix/felixd/records' },
+                { label: 'Running felixd', slug: 'built-on-felix/felixd/running' },
+                { label: 'Terminology', slug: 'built-on-felix/felixd/terminology' },
+              ],
+            },
           ],
         },
         {
