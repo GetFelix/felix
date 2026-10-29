@@ -651,6 +651,149 @@ fn a_failover_before_the_seat_is_reported_keeps_the_leaving_copy() {
     assert_eq!(replicas, ["broker-a"]);
 }
 
+/// The keep needs the leaving copy's broker to serve: a gone one could only
+/// raise the fence's majority, so the set stays as it was.
+#[test]
+fn a_failover_after_the_seat_drops_a_leaving_copy_that_is_gone() {
+    let nodes = vec![
+        gone("broker-a", 10_000),
+        gone("broker-b", 10_000),
+        node("broker-c", NodeLifecycle::Live, None),
+    ];
+    let stream = Stream {
+        consistency: ConsistencyLevel::Quorum,
+        ..replicated_stream("orders", 1, 2)
+    };
+    let joined = Reports {
+        members: vec!["broker-a".into(), "broker-b".into(), "broker-c".into()],
+        generation: Some(2),
+        ..Reports::level(&["broker-c"])
+    };
+    let seated = assigned("orders", "broker-a", &["broker-c"]);
+    let (decision, _) = decide(stream, &nodes, seated, &joined);
+    let Decision::Place(leader, replicas) = decision else {
+        panic!("expected a failover, got {decision:?}");
+    };
+    assert_eq!(leader, "broker-c");
+    assert_eq!(replicas, ["broker-a"]);
+}
+
+/// Only a set of two keeps the copy it dropped. Beside three, every majority
+/// that acknowledged still holds a majority of the seated set.
+#[test]
+fn a_failover_after_a_seat_into_three_keeps_only_the_set() {
+    let nodes = vec![
+        gone("broker-a", 10_000),
+        node("broker-b", NodeLifecycle::Draining, None),
+        node("broker-c", NodeLifecycle::Live, None),
+        node("broker-d", NodeLifecycle::Live, None),
+    ];
+    let joined = Reports {
+        members: ["broker-a", "broker-b", "broker-c", "broker-d"]
+            .map(String::from)
+            .to_vec(),
+        generation: Some(2),
+        ..Reports::level(&["broker-c", "broker-d"])
+    };
+    let seated = assigned("orders", "broker-a", &["broker-c", "broker-d"]);
+    let (decision, _) = decide(quorum("orders"), &nodes, seated, &joined);
+    let Decision::Place(leader, mut replicas) = decision else {
+        panic!("expected a failover, got {decision:?}");
+    };
+    replicas.push(leader);
+    replicas.sort();
+    assert_eq!(replicas, ["broker-a", "broker-c", "broker-d"]);
+}
+
+/// Reports at generation 3 from broker-c, leading `followers`, all level at
+/// offset 100.
+fn level_at_100(followers: &[&str]) -> Reports {
+    Reports {
+        offsets: followers.iter().map(|f| (f.to_string(), 100)).collect(),
+        tail: Some(100),
+        ..Reports::level(followers)
+    }
+}
+
+/// **RF 2 drain in three brokers.** A failover right after the seat kept
+/// broker-b, which is draining, so the set is `{c; a, b}` and there is no
+/// fourth broker to reseat it on. Once broker-c reports at this generation
+/// with broker-a level, broker-b goes and its drain can finish. Before that
+/// report nothing goes, and with broker-a behind, broker-a goes instead.
+#[test]
+fn a_set_above_its_factor_drops_the_draining_copy() {
+    let nodes = vec![
+        node("broker-a", NodeLifecycle::Live, None),
+        node("broker-b", NodeLifecycle::Draining, None),
+        node("broker-c", NodeLifecycle::Live, None),
+    ];
+    let stream = Stream {
+        consistency: ConsistencyLevel::Quorum,
+        ..replicated_stream("orders", 1, 2)
+    };
+    let kept = assigned("orders", "broker-c", &["broker-a", "broker-b"]);
+    let decided = |reports: &Reports| decide(stream.clone(), &nodes, kept.clone(), reports).0;
+    let trim = |from: &str, left: &str| {
+        Decision::Move(
+            MoveStep::Trim {
+                from: from.to_string(),
+            },
+            ShardAssignment {
+                replicas: vec![left.to_string()],
+                generation: 0,
+                ..kept.clone()
+            },
+        )
+    };
+
+    let level = level_at_100(&["broker-a", "broker-b"]);
+    assert_eq!(decided(&level), trim("broker-b", "broker-a"));
+
+    let unreported = Reports {
+        generation: Some(2),
+        ..level_at_100(&["broker-a", "broker-b"])
+    };
+    assert_eq!(decided(&unreported), Decision::Waiting(Blocked::OverFactor));
+
+    let mut behind = level_at_100(&["broker-b"]);
+    behind.offsets.insert("broker-a".to_string(), 50);
+    assert_eq!(decided(&behind), trim("broker-a", "broker-b"));
+
+    // Neither can go while the other's position is unknown.
+    let unknown = level_at_100(&[]);
+    assert_eq!(decided(&unknown), Decision::Waiting(Blocked::OverFactor));
+}
+
+/// In a larger cluster, a set above its factor is trimmed one follower a
+/// pass, back to the factor, and nothing else starts on it meanwhile.
+#[test]
+fn a_set_above_its_factor_is_trimmed_back_to_it() {
+    let names = ["broker-a", "broker-b", "broker-c", "broker-d", "broker-e"];
+    let nodes: Vec<Node> = names
+        .iter()
+        .map(|id| node(id, NodeLifecycle::Live, None))
+        .chain(std::iter::once(node("broker-f", NodeLifecycle::Live, None)))
+        .collect();
+    for (factor, followers) in [(2, &names[..2]), (3, &names[..4])] {
+        let stream = Stream {
+            consistency: ConsistencyLevel::Quorum,
+            ..replicated_stream("orders", 1, factor)
+        };
+        let reports = level_at_100(followers);
+        let mut existing = assigned("orders", "broker-e", followers);
+        for _ in 0..followers.len() {
+            match decide(stream.clone(), &nodes, existing.clone(), &reports).0 {
+                Decision::Move(MoveStep::Trim { from }, assignment) => {
+                    assert!(followers.contains(&from.as_str()));
+                    existing = assignment;
+                }
+                _ => break,
+            }
+        }
+        assert_eq!(existing.nodes().count(), factor as usize, "factor {factor}");
+    }
+}
+
 /// Paused placement starts no restore of its own.
 #[test]
 fn a_pause_holds_a_restore() {

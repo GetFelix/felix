@@ -686,3 +686,22 @@ fn a_replica_outside_the_old_set_or_without_an_identity_is_left_unnamed() {
     assert_eq!(ids.get("broker-c"), None);
     assert_eq!(ids.get("broker-d"), None);
 }
+
+/// A member the report names under an identity it no longer has is not one
+/// of the report's set: its copy is not the one the report measured.
+#[test]
+fn a_report_names_no_member_whose_identity_changed() {
+    let report = ReplicaReport {
+        follower_storage: [("broker-b".to_string(), B_STORAGE.to_string())].into(),
+        ..report("orders", &["broker-a", "broker-b"], 1_000)
+    };
+    let view = at(vec![report.clone()], 1_000)
+        .with_nodes(&dead_leader(Some(&"e".repeat(32))), &[led_by_a(4)]);
+    assert_eq!(view.reported_members(&key("orders")), ["broker-a"]);
+
+    let view = at(vec![report], 1_000).with_nodes(&dead_leader(Some(B_STORAGE)), &[led_by_a(4)]);
+    assert_eq!(
+        view.reported_members(&key("orders")),
+        ["broker-a", "broker-b"]
+    );
+}

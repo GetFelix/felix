@@ -134,6 +134,10 @@
 (* lagging follower, a majority of the new set that never saw it           *)
 (* (AckedHeldByLeader).                                                    *)
 (*                                                                         *)
+(* A failover right after a seat into two may keep the dropped copy        *)
+(* (`SeatDropped`), and `TrimSet` takes a set it leaves above the factor   *)
+(* back down.                                                              *)
+(*                                                                         *)
 (* `Grow` tops up a set a failover left short of the replication factor:   *)
 (* a spare joins with nobody leaving, and `Seat` makes it a member. A set  *)
 (* that starts with spares outside it is such a short set.                 *)
@@ -569,7 +573,7 @@ VARIABLES
     out,        \* brokers outside the replica set: the spares, and a leader swapped out
     mine,       \* the replica set each broker was given when it was named leader
     joining,    \* a spare being copied in beside a leaving follower: {} or {j}
-    leaving,    \* the follower it replaces: {} or {o}
+    leaving,    \* the follower it replaces: {} or {o}; once seated, the one the seat dropped
     joinedAt,   \* how much of the leader's log a majority of the set held when it joined
     clog,       \* each broker's counter log, under `Counters`
     chwm,       \* each broker's counter mark, as leader
@@ -1412,6 +1416,12 @@ Named(r, m) ==
     THEN registered[m] - 1
     ELSE r.sids[m]
 
+\* The copy a seat into a set of two dropped, which a failover may keep
+\* (`left_unconfirmed` in placement/plan.rs): it does while the control plane
+\* believes the leader's last report from before the seat, which named it, and
+\* sees its broker serving. Either may not hold, so a failover keeps it or not.
+SeatDropped == IF Cardinality(Brokers \ out) = 2 THEN leaving \cap out ELSE {}
+
 \* Each decision below is made from a read `v` and leaves the planners'
 \* reads as `views`: a held read is used up by the write it decided, one
 \* write per shard per pass. Every write bumps the store's generation.
@@ -1447,14 +1457,18 @@ Promote(v, f, views) ==
     /\ staged' = staged \ {f}
     \* What `choose_replicas` in placement/plan.rs would write: the old set
     \* without the dead leader, plus a spare. `keep_replicas` keeps the set,
-    \* without a replacement still joining unless it is `Counted`; failover
-    \* ends the replacement either way.
+    \* without a replacement still joining unless it is `Counted`, and with
+    \* any of `SeatDropped`; failover ends the replacement either way.
     /\ IF ReplaceOnPromote /\ out /= {}
        THEN \E d \in out :
               /\ out' = (out \ {d}) \cup {v.leader}
               /\ mine' = [mine EXCEPT ![f] = (ReplicaSet \ {v.leader}) \cup {d}]
-       ELSE /\ mine' = [mine EXCEPT ![f] = Counted \cup {f}]
-            /\ out' = out \cup (joining \ (Counted \cup {f}))
+              /\ leaving' = {}
+       ELSE \E kept \in SUBSET SeatDropped :
+              /\ mine' = [mine EXCEPT ![f] = Counted \cup {f} \cup kept]
+              /\ out' = (out \cup (joining \ (Counted \cup {f}))) \ kept
+              \* One not kept may still be at the next failover.
+              /\ leaving' = SeatDropped \ kept
     \* The assignment writes the set at the new generation; its fence carries it.
     /\ setGen' = IF SetCheck THEN [setGen EXCEPT ![f] = gen + 1] ELSE setGen
     \* A change still pending at `f` stays pending, and a set `f` did not know
@@ -1467,7 +1481,6 @@ Promote(v, f, views) ==
     /\ cpNext' = {} /\ cpNextGen' = 0
     /\ UNCHANGED << installed, ackGen >>
     /\ joining' = {}
-    /\ leaving' = {}
     /\ joinedAt' = 0
     \* The new leader persists its generation itself first; with
     \* `FenceOnPromote` it then fences the others before it serves. Under
@@ -1982,9 +1995,31 @@ Seat(v, j, views) ==
     /\ Regenerate(v, views, mine[leader] \ leaving)
     /\ out' = out \cup leaving
     /\ joining' = {}
-    /\ leaving' = {}
     /\ joinedAt' = 0
-    /\ UNCHANGED moves
+    \* `leaving` stays, for `SeatDropped`.
+    /\ UNCHANGED << moves, leaving >>
+
+\* The most of `b`'s log a majority of `S` holds, halted members included.
+MajorityHeld(S, b) ==
+    LET held == { k \in 0..Len(log[b]) : MajorityOf({ m \in S : HoldsPrefix(m, b, k) }, S) }
+    IN CHOOSE k \in held : \A j \in held : j <= k
+
+\* A set a failover left above the size it started at drops a follower `o`,
+\* once a majority of the rest holds what a majority of the set held (`trim`
+\* in placement/moves.rs, which also prefers a draining one). Without `Grow`
+\* only `SeatDropped` makes a set larger. A failover before the leader
+\* reports may keep `o` again, as after a seat.
+TrimSet(v, o, views) ==
+    /\ ~Grow /\ joining = {} /\ staged = {}
+    /\ Cardinality(ReplicaSet) > Cardinality(Brokers \ Spares)
+    /\ o \in mine[leader] \ {leader}
+    /\ LET rest == mine[leader] \ {o}
+       IN MajorityOf({ m \in rest : HoldsPrefix(m, leader, MajorityHeld(mine[leader], leader)) },
+                     rest)
+    /\ Regenerate(v, views, mine[leader] \ {o})
+    /\ out' = out \cup {o}
+    /\ leaving' = {o}
+    /\ UNCHANGED << moves, joining, joinedAt >>
 
 \* Whether `b` leads the set the control plane records, or while a cut-over
 \* is pending, the pending set at its generation.
@@ -2147,6 +2182,7 @@ Decide(v, f, views) ==
     \/ Promote(v, f, views)
     \/ /\ \/ Fence(v, f, views) \/ CutOver(v, f, views) \/ Retake(v, f, views)
           \/ Reseat(v, f, views) \/ GrowSet(v, f, views) \/ Seat(v, f, views)
+          \/ TrimSet(v, f, views)
           \/ Swap(v, f, views) \/ CpAdopt(v, f, views) \/ Reclaim(v, views)
        /\ UNCHANGED << counterVars, expect, inherited, seen, seenInc >>
 

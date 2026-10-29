@@ -117,7 +117,10 @@ impl MoveClock {
                 None
             }
             // Replaces a follower; not a leadership move.
-            MoveStep::Reseat { .. } | MoveStep::Restore { .. } | MoveStep::Seat { .. } => None,
+            MoveStep::Reseat { .. }
+            | MoveStep::Restore { .. }
+            | MoveStep::Seat { .. }
+            | MoveStep::Trim { .. } => None,
         }
     }
 }

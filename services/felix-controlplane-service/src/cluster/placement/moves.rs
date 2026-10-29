@@ -515,6 +515,13 @@ pub(super) fn move_step<'a>(
         );
     }
 
+    // A failover can leave the set above its factor (`left_unconfirmed` in
+    // plan.rs). Nothing starts on it until it is back: a copy staged on top
+    // of it is told from a counted one only by the set's size.
+    if existing.nodes().count() > replication_factor.max(1) as usize {
+        return trim(existing, is_live, is_draining, caught_up);
+    }
+
     // Nothing in progress. A shard missing a copy gets one before anything
     // moves for balance: one more failure could cost it its majority.
     if leader_live
@@ -925,6 +932,75 @@ pub(super) fn holds_what_the_set_held(
     // `majority_of` in felix-replication: the leader and half the followers.
     let needed = old.len().div_ceil(2) + 1;
     held >= positions[needed - 1]
+}
+
+/// Drop one follower from a set above its replication factor: a draining
+/// one first, then one not live, then in set order. Only one whose absence
+/// leaves a majority of the rest holding what a majority of the set held, by
+/// a report at this generation.
+fn trim(
+    existing: &ShardAssignment,
+    is_live: &dyn Fn(&str) -> bool,
+    is_draining: &dyn Fn(&str) -> bool,
+    caught_up: &dyn CaughtUp,
+) -> Decision {
+    let mut followers: Vec<&str> = existing.replicas.iter().map(String::as_str).collect();
+    followers.sort_by_key(|node| (!is_draining(node), is_live(node)));
+    let Some(dropped) = followers
+        .into_iter()
+        .find(|node| holds_without(existing, node, caught_up))
+    else {
+        return Decision::Waiting(Blocked::OverFactor);
+    };
+    let mut replicas = existing.replicas.clone();
+    replicas.retain(|replica| replica != dropped);
+    Decision::Move(
+        MoveStep::Trim {
+            from: dropped.to_string(),
+        },
+        ShardAssignment {
+            replicas,
+            generation: 0,
+            fence_storage_ids: Default::default(),
+            ..existing.clone()
+        },
+    )
+}
+
+/// Whether the set without `dropped` holds what the set held: the position a
+/// majority of the rest has reached is at least the one a majority of the
+/// whole set has. An unreported position counts as the leader's tail for
+/// `dropped` and as nothing for the rest, so a guess never passes.
+fn holds_without(existing: &ShardAssignment, dropped: &str, caught_up: &dyn CaughtUp) -> bool {
+    let key = &existing.key;
+    let Some(tail) = caught_up.leader_offset(key) else {
+        return false;
+    };
+    let reported = |node: &str| {
+        if node == existing.leader {
+            Some(tail)
+        } else {
+            caught_up.reported_offset(key, node)
+        }
+    };
+    let majority_holds = |mut positions: Vec<u64>| {
+        positions.sort_unstable_by(|a, b| b.cmp(a));
+        positions[positions.len() / 2]
+    };
+    let held = majority_holds(
+        existing
+            .nodes()
+            .map(|node| reported(node).unwrap_or(tail))
+            .collect(),
+    );
+    let rest = majority_holds(
+        existing
+            .nodes()
+            .filter(|node| *node != dropped)
+            .map(|node| reported(node).unwrap_or(0))
+            .collect(),
+    );
+    rest >= held
 }
 
 /// The replica set once `target` leads: nodes that already hold a copy first
