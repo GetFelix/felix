@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793271058681,
+  "lastUpdate": 1793274319469,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -39104,6 +39104,58 @@ window.BENCHMARK_DATA = {
             "range": "7853.29",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1049835.81\nmean: 1048625.80\nstdev: 7853.29\ncv: 0.75%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3f46e460f0369621971e270a36f1205d41cc5d18",
+          "message": "ci(python): run the binding's Rust unit tests (#1634)\n\nDrop pyo3's extension-module feature from the crate (maturin enables it from\npyproject.toml, so the wheel is unchanged) so the test binary links libpython.\nRun the tests in the Python CI job via task python:unit and in the coverage\njob via scripts/ci/coverage-python.sh.",
+          "timestamp": "2026-10-29T04:38:15-07:00",
+          "tree_id": "425223ab526e2896131b17f45c0cc208125cd807",
+          "url": "https://github.com/GetFelix/felix/commit/3f46e460f0369621971e270a36f1205d41cc5d18"
+        },
+        "date": 1793274318598,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 378643.67,
+            "range": "27232.69",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 378643.67\nmean: 374635.47\nstdev: 27232.69\ncv: 7.27%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 378643.67,
+            "range": "27232.69",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 378643.67\nmean: 374635.47\nstdev: 27232.69\ncv: 7.27%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 84668.95,
+            "range": "864.48",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 84668.95\nmean: 84974.59\nstdev: 864.48\ncv: 1.02%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 846689.55,
+            "range": "8644.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 846689.55\nmean: 849745.89\nstdev: 8644.79\ncv: 1.02%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
