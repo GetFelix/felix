@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793253340951,
+  "lastUpdate": 1793254775384,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -38792,6 +38792,58 @@ window.BENCHMARK_DATA = {
             "range": "7928.16",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 835532.88\nmean: 831065.82\nstdev: 7928.16\ncv: 0.95%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9c9e1bf868e75a4c48a168a26ba7e10c935f4cf1",
+          "message": "fix(client): follow a cache watch past a dead broker and drop unreachable cache routes (#1619)\n\n* fix(client): follow a cache watch past a dead broker and drop unreachable cache routes\n\nA ClusterCacheWatch ended with a bare None when the broker serving it died.\nIt now reopens on the shard's current owner from resume_from under the\nReconnectPolicy, like ClusterSubscription, and reports why through error()\nwhen no broker takes it. CacheWatch::lost() tells a broken connection from\na clean end.\n\ncache_owner kept a route whose owner it could not connect to, so every\nlater cache request waited out a connect timeout on the dead broker. A\nfailed connect now drops the route.\n\nReported in GetFelix/felixd#68.\n\n* test(client): regenerate the docs examples after the watch doc edits\n\n* fix(client): restart a retained watch's state phase after a loss or move mid-state\n\nA cluster cache watch reopened inside its state phase now asks for retained\nvalues again, so the state starts over on the new owner instead of ending\nwith values missing, and a sharded retained watch no longer announces\nStateComplete before that shard's new state has arrived. ShardClosed carries\nthe cause, and the Python, TypeScript, C and C# watches expose reconnects\nand the error.",
+          "timestamp": "2026-10-29T06:14:47Z",
+          "tree_id": "4d239be8312d99e0d689c6c3dbb81a6fee340836",
+          "url": "https://github.com/GetFelix/felix/commit/9c9e1bf868e75a4c48a168a26ba7e10c935f4cf1"
+        },
+        "date": 1793254774550,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 444812.45,
+            "range": "27448.73",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 444812.45\nmean: 440204.88\nstdev: 27448.73\ncv: 6.24%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 444812.45,
+            "range": "27448.73",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 444812.45\nmean: 440204.88\nstdev: 27448.73\ncv: 6.24%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 99219.25,
+            "range": "615.24",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 99219.25\nmean: 98966.08\nstdev: 615.24\ncv: 0.62%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 992192.5,
+            "range": "6152.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 992192.50\nmean: 989660.74\nstdev: 6152.38\ncv: 0.62%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
