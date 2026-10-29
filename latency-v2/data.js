@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793271054995,
+  "lastUpdate": 1793274315174,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -49632,6 +49632,72 @@ window.BENCHMARK_DATA = {
             "range": "986.58",
             "unit": "us",
             "extra": "trials: 5\nmedian: 445.00\nmean: 1120.00\nstdev: 986.58\ncv: 88.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3f46e460f0369621971e270a36f1205d41cc5d18",
+          "message": "ci(python): run the binding's Rust unit tests (#1634)\n\nDrop pyo3's extension-module feature from the crate (maturin enables it from\npyproject.toml, so the wheel is unchanged) so the test binary links libpython.\nRun the tests in the Python CI job via task python:unit and in the coverage\njob via scripts/ci/coverage-python.sh.",
+          "timestamp": "2026-10-29T04:38:15-07:00",
+          "tree_id": "425223ab526e2896131b17f45c0cc208125cd807",
+          "url": "https://github.com/GetFelix/felix/commit/3f46e460f0369621971e270a36f1205d41cc5d18"
+        },
+        "date": 1793274308653,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 122,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 122.00\nmean: 122.60\nstdev: 0.89\ncv: 0.73%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 166,
+            "range": "3.42",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 166.00\nmean: 167.20\nstdev: 3.42\ncv: 2.05%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 222,
+            "range": "70.90",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 222.00\nmean: 250.60\nstdev: 70.90\ncv: 28.29%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 170,
+            "range": "11.57",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 170.00\nmean: 175.40\nstdev: 11.57\ncv: 6.59%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 329,
+            "range": "383.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 329.00\nmean: 500.60\nstdev: 383.71\ncv: 76.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 439,
+            "range": "1008.47",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 439.00\nmean: 891.40\nstdev: 1008.47\ncv: 113.13%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
