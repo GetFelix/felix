@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793281471595,
+  "lastUpdate": 1793289690614,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -39260,6 +39260,58 @@ window.BENCHMARK_DATA = {
             "range": "21223.20",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 839720.20\nmean: 834999.09\nstdev: 21223.20\ncv: 2.54%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e088f3b3f554a658fb3394bd3bcc2743f75ca866",
+          "message": "fix(storage): delete a deleted stream's offloaded copies (#1209) (#1639)\n\nDeleting a stream now removes its offloaded copies for that incarnation only. A retire fails closed on a manifest read error other than undecodable data, so it retries instead of wiping the prefix. Closes #1209.",
+          "timestamp": "2026-10-29T08:56:30-07:00",
+          "tree_id": "2eddbf98885839221f39738b2b00e3c34e63f29f",
+          "url": "https://github.com/GetFelix/felix/commit/e088f3b3f554a658fb3394bd3bcc2743f75ca866"
+        },
+        "date": 1793289689924,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 429266.74,
+            "range": "5386.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 429266.74\nmean: 425972.59\nstdev: 5386.75\ncv: 1.26%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 429266.74,
+            "range": "5386.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 429266.74\nmean: 425972.59\nstdev: 5386.75\ncv: 1.26%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 96990.02,
+            "range": "2826.60",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 96990.02\nmean: 95626.50\nstdev: 2826.60\ncv: 2.96%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 969900.22,
+            "range": "28265.98",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 969900.22\nmean: 956265.02\nstdev: 28265.98\ncv: 2.96%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
