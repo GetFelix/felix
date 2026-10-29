@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793250915122,
+  "lastUpdate": 1793253340951,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -38740,6 +38740,58 @@ window.BENCHMARK_DATA = {
             "range": "10141.05",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1038548.01\nmean: 1044522.48\nstdev: 10141.05\ncv: 0.97%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0a2acc2e20425446e4760c361fd2b9695051892c",
+          "message": "fix(replication): an RF 2 failover right after a seat keeps the leaving copy, and an over-factor set is trimmed back (#1487) (#1614)\n\nAn RF 2 seat shrinks three members to two, so a record can sit on the leader and the leaving copy alone. A fenced failover before the seat is reported now also keeps the copy the leader's last report names that the assignment dropped (`left_unconfirmed`, placement/plan.rs), so the new leader fences a set that holds every acknowledged record.\n\nThat can leave an RF 2 set with three members. The planner now trims a set above its factor back to it (`trim`, placement/moves.rs), preferring a draining broker, and blocks other moves on that shard until it does. A trim judges from the report at the current generation: the fence step needs every remaining follower caught up to the acknowledged mark, and the drained step needs every remaining follower to hold the drained leader's whole log. This also shrinks sets left above a lowered replication factor.\n\nSpec: docs/formal/FelixShard.tla models both. `Promote` may keep the copy a seat dropped (`SeatDropped`), `Seat` keeps `leaving`, and new `TrimFence`/`TrimSet` actions judge from reports. New configs: FelixShardFencedAckSeatPair and FelixShardFencedAckTrim (AckedOnMajority checked, LoweredFactor on) pass. FelixShardFencedAckSeatPairOnMajority pins the pre-existing seat window as an expected AckedOnMajority violation (#1616). FencedAckSeat grows to 6.9M states and moves out of the PR quick tier.\n\nFiled: #1615 (size heuristic in over-factor sets, now reachable only by operator moves), #1616 (the seat window and the residual crash window).\n\nCloses #1487.",
+          "timestamp": "2026-10-29T05:51:00Z",
+          "tree_id": "6734bc9073c58cd16f4f4697d28bd1400077ff7d",
+          "url": "https://github.com/GetFelix/felix/commit/0a2acc2e20425446e4760c361fd2b9695051892c"
+        },
+        "date": 1793253340386,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 354093.49,
+            "range": "3754.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 354093.49\nmean: 354140.75\nstdev: 3754.12\ncv: 1.06%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 354093.49,
+            "range": "3754.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 354093.49\nmean: 354140.75\nstdev: 3754.12\ncv: 1.06%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 83553.29,
+            "range": "792.82",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 83553.29\nmean: 83106.58\nstdev: 792.82\ncv: 0.95%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 835532.88,
+            "range": "7928.16",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 835532.88\nmean: 831065.82\nstdev: 7928.16\ncv: 0.95%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
