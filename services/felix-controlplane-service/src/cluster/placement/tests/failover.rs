@@ -1227,13 +1227,19 @@ fn a_member_the_report_never_reached_is_named_by_the_inherited_identity() {
         ("broker-c".to_string(), C_WIPED.to_string()),
     ]
     .into();
-    let ids =
-        view(inheriting).report_storage_ids(&assigned("orders", "broker-a", &[]).key, &old_set);
+    let ids = view(inheriting).report_storage_ids(
+        &assigned("orders", "broker-a", &[]).key,
+        &old_set,
+        &[],
+    );
     assert_eq!(ids.get("broker-b").map(String::as_str), Some(B_STORAGE));
     assert_eq!(ids.get("broker-c").map(String::as_str), Some(C_STORAGE));
 
-    let ids =
-        view(unreached()).report_storage_ids(&assigned("orders", "broker-a", &[]).key, &old_set);
+    let ids = view(unreached()).report_storage_ids(
+        &assigned("orders", "broker-a", &[]).key,
+        &old_set,
+        &[],
+    );
     assert_eq!(ids.get("broker-b").map(String::as_str), Some(""));
     assert_eq!(ids.get("broker-c").map(String::as_str), Some(C_STORAGE));
 }

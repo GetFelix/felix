@@ -620,6 +620,100 @@ async fn a_promotion_on_a_report_without_identities_carries_none() {
     assert!(after.fence_storage_ids.is_empty());
 }
 
+/// **A copy a set change dropped is not named (#1486).** An RF 2 seat swaps
+/// broker-b for broker-c, and broker-a dies before reporting at the seat's
+/// generation, so the last report is from the joining one and names
+/// broker-b. broker-b has gone too, so the failover set is `{c; a}`. A
+/// crashed leader of two answers the fence only when the ids name exactly
+/// the two members the route shows, so naming broker-b would keep the shard
+/// closed.
+#[tokio::test]
+async fn a_promotion_after_a_seat_names_only_the_set() {
+    let store = cluster(&["broker-a", "broker-b", "broker-c"]).await;
+    store
+        .delete_stream(&crate::model::StreamKey {
+            tenant_id: "t1".to_string(),
+            namespace: "ns".to_string(),
+            stream: "orders".to_string(),
+        })
+        .await
+        .expect("drop the three-shard stream");
+    store.forget_deleted_names().await;
+    store
+        .create_stream(Stream {
+            consistency: ConsistencyLevel::Quorum,
+            ..replicated_stream("orders", 1, 2)
+        })
+        .await
+        .expect("stream");
+    let mut joined = assigned("orders", "broker-a", &["broker-b", "broker-c"]);
+    joined.generation = 0;
+    joined.state = ShardState::Assigning;
+    joined.joining = Some("broker-c".to_string());
+    let joined = store.put_shard_assignment(joined).await.expect("join");
+    let ids = [
+        ("broker-a", "a".repeat(32)),
+        ("broker-b", "b".repeat(32)),
+        ("broker-c", "c".repeat(32)),
+    ];
+    store
+        .record_replica_report(
+            crate::model::ReplicaReport {
+                inherited_storage: Default::default(),
+                given_up: false,
+                counter_offsets: Default::default(),
+                stream_incarnation: None,
+                by_round: false,
+                leader_incarnation: None,
+                key: shard_zero(),
+                generation: joined.generation,
+                caught_up: ["broker-b", "broker-c"].map(String::from).into(),
+                offsets: [("broker-b", 100), ("broker-c", 100)]
+                    .map(|(node, offset)| (node.to_string(), offset))
+                    .into(),
+                reported_at_millis: store.now_millis().await.expect("clock"),
+                drained: false,
+                leader_offset: Some(100),
+                halted: Default::default(),
+                leader: None,
+                node_incarnations: Default::default(),
+                follower_storage: ids
+                    .iter()
+                    .map(|(node, id)| (node.to_string(), id.clone()))
+                    .collect(),
+            },
+            "broker-a",
+        )
+        .await
+        .expect("report");
+    let mut seated = assigned("orders", "broker-a", &["broker-c"]);
+    seated.generation = joined.generation;
+    // The fenced seat hands the shard back to its leader this way.
+    seated.state = ShardState::Assigning;
+    let seated = store.put_shard_assignment(seated).await.expect("seat");
+    for gone in ["broker-a", "broker-b"] {
+        store
+            .set_node_lifecycle(gone, NodeLifecycle::Down)
+            .await
+            .expect("down");
+    }
+
+    let outcome = reconcile_once(&store, &Default::default(), MovePolicy::default()).await;
+    assert_eq!(outcome.placed, 1, "{outcome:?}");
+
+    let after = store
+        .get_shard_assignment(&shard_zero())
+        .await
+        .expect("assignment");
+    assert_eq!(after.generation, seated.generation + 1);
+    assert_eq!(after.leader, "broker-c");
+    assert_eq!(after.replicas, ["broker-a"]);
+    assert_eq!(
+        after.fence_storage_ids.keys().collect::<Vec<_>>(),
+        ["broker-a", "broker-c"],
+    );
+}
+
 #[tokio::test]
 async fn an_initial_placement_carries_no_storage_ids() {
     let store = cluster(&["broker-a", "broker-b", "broker-c"]).await;

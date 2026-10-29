@@ -430,7 +430,12 @@ impl CaughtUp for ReplicaPositions {
             .is_some_and(|report| self.identity(report, leader) == Identity::Mismatch)
     }
 
-    fn report_storage_ids(&self, key: &ShardKey, old_set: &[&str]) -> BTreeMap<String, String> {
+    fn report_storage_ids(
+        &self,
+        key: &ShardKey,
+        old_set: &[&str],
+        new_set: &[&str],
+    ) -> BTreeMap<String, String> {
         let Some(report) = self.reports.get(key) else {
             return BTreeMap::new();
         };
@@ -438,6 +443,12 @@ impl CaughtUp for ReplicaPositions {
         if ids.is_empty() {
             return ids;
         }
+        // The report can be from before a set change, so it may name a copy
+        // that was dropped since. A crashed leader of two answers only when
+        // the ids name exactly the two it is routed with (#1486). A new-set
+        // member outside the old set is one a failover kept from the report
+        // (`left_unconfirmed`), so its identity stays.
+        ids.retain(|node, _| old_set.contains(&node.as_str()) || new_set.contains(&node.as_str()));
         // A member the report names no identity for had not been reached by
         // its leader, so it acknowledged nothing to that leader. It is named by
         // the identity the leader's own promotion held it to, which covers

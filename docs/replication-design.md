@@ -433,7 +433,8 @@ a successor that never held the record are a majority without it, and once
 the old leader is gone the record is too (#1335). A wiped follower is the same
 case with nothing left. So a failover's assignment carries the storage
 identity the replica report it was decided on named for each replica, the old
-leader's own included (`fence_storage_ids`), and the promoted leader counts an
+leader's own included (`fence_storage_ids`), limited to the old set and the
+new one, and the promoted leader counts an
 answer only when the handshake identity of the connection it came over is
 that one. An answer from another identity, or with none from a replica the
 report named, still takes the promise and so still refuses the old leader
@@ -2700,7 +2701,11 @@ follower is behind it:
   the failover written straight after that generation, and the set that
   failover's `fence_storage_ids` names, taken from the assignment before it,
   must be the same two the route shows, the fencing leader one of them
-  (`acknowledged_by_two` in `replica.rs`). Any other copy is refused. A
+  (`acknowledged_by_two` in `replica.rs`). The report a failover reads can
+  predate a set change and name a copy that change dropped, so placement
+  names only members of the old set and the new one
+  ([#1486](https://github.com/GetFelix/felix/issues/1486)); a dropped copy
+  the failover keeps (see #1487) is in the new set. Any other copy is refused. A
   failover from a control plane that names no identities, or after another
   assignment came between, keeps the shard closed until the operator acts,
   as below.
