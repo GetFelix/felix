@@ -1142,3 +1142,153 @@ async fn a_shard_placed_with_its_leader_alone_is_topped_up_once_brokers_join() {
     held.sort();
     assert_eq!(held, ["broker-b", "broker-c"]);
 }
+
+/// broker-b, on a draining node, being replaced by broker-c in an RF 2 set.
+fn replacing_b(leader: &str) -> ShardAssignment {
+    ShardAssignment {
+        joining: Some("broker-c".to_string()),
+        move_started_at_millis: Some(NOW - 1_000),
+        move_reason: Some(MoveReason::Replace),
+        ..assigned("orders", leader, &["broker-b", "broker-c"])
+    }
+}
+
+/// **RF 2 seat after the report (#1616).** A report at the joining
+/// generation has broker-c level at 100. Seated then, broker-a and broker-b
+/// can still acknowledge 101 before broker-a takes the seat's generation,
+/// and `{a, c}` would hold it on broker-a alone. So broker-a is fenced
+/// first, and broker-c is seated only once broker-a's drained report has it
+/// at broker-a's tail, 101 included.
+#[test]
+fn an_rf2_seat_waits_for_the_drained_leaders_whole_log() {
+    let nodes = vec![
+        node("broker-a", NodeLifecycle::Live, None),
+        node("broker-b", NodeLifecycle::Draining, None),
+        node("broker-c", NodeLifecycle::Live, None),
+    ];
+    let joined = replacing_b("broker-a");
+    let (decision, _) = decide(
+        rf2("orders"),
+        &nodes,
+        joined.clone(),
+        &level_at_100(&["broker-b", "broker-c"]),
+    );
+    let fenced = trim_fenced(&joined);
+    assert_eq!(
+        decision,
+        Decision::Move(
+            MoveStep::SeatFence {
+                to: "broker-c".to_string()
+            },
+            fenced.clone()
+        )
+    );
+
+    // 101 acknowledged on broker-a and broker-b after that report.
+    let mut acked_after = drained(level_at_100(&["broker-b", "broker-c"]));
+    acked_after.tail = Some(101);
+    acked_after.offsets.insert("broker-b".to_string(), 101);
+    let (decision, _) = decide(rf2("orders"), &nodes, fenced.clone(), &acked_after);
+    assert_eq!(decision, Decision::Waiting(Blocked::LeaderStopping));
+
+    acked_after.offsets.insert("broker-c".to_string(), 101);
+    let (decision, _) = decide(rf2("orders"), &nodes, fenced.clone(), &acked_after);
+    assert_eq!(
+        decision,
+        Decision::Move(
+            MoveStep::Seat {
+                from: Some("broker-b".to_string()),
+                to: "broker-c".to_string(),
+            },
+            ShardAssignment {
+                replicas: vec!["broker-c".to_string()],
+                generation: 0,
+                state: ShardState::Assigning,
+                joining: None,
+                move_started_at_millis: None,
+                move_reason: None,
+                ..joined
+            }
+        )
+    );
+}
+
+/// A newcomer that goes down while the leader is fenced for its seat is
+/// dropped, and the leader serves again.
+#[test]
+fn a_fenced_seat_whose_newcomer_died_gives_the_shard_back() {
+    let nodes = vec![
+        node("broker-a", NodeLifecycle::Live, None),
+        node("broker-b", NodeLifecycle::Draining, None),
+        gone("broker-c", 10_000),
+    ];
+    let fenced = trim_fenced(&replacing_b("broker-a"));
+    let (decision, _) = decide(
+        rf2("orders"),
+        &nodes,
+        fenced.clone(),
+        &drained(level_at_100(&["broker-b"])),
+    );
+    let Decision::Move(MoveStep::Abandon { successor }, next) = decision else {
+        panic!("expected the newcomer dropped, got {decision:?}");
+    };
+    assert_eq!(successor, "broker-c");
+    assert_eq!(next.replicas, ["broker-b"]);
+    assert_eq!(next.joining, None);
+    assert_eq!(next.state, ShardState::Assigning);
+}
+
+/// A seat into an odd set needs no fence: a record acknowledged on three of
+/// the four survives losing the leaving copy.
+#[test]
+fn an_rf3_seat_does_not_fence() {
+    let nodes = live(&["broker-a", "broker-b", "broker-c", "broker-d"]);
+    let mut nodes = nodes;
+    nodes[1] = node("broker-b", NodeLifecycle::Draining, None);
+    let joined = ShardAssignment {
+        joining: Some("broker-d".to_string()),
+        move_started_at_millis: Some(NOW - 1_000),
+        move_reason: Some(MoveReason::Replace),
+        ..assigned("orders", "broker-a", &["broker-b", "broker-c", "broker-d"])
+    };
+    let (decision, _) = decide(
+        quorum("orders"),
+        &nodes,
+        joined,
+        &level_at_100(&["broker-b", "broker-c", "broker-d"]),
+    );
+    let Decision::Move(MoveStep::Seat { from, to }, next) = decision else {
+        panic!("expected a seat, got {decision:?}");
+    };
+    assert_eq!(
+        (from.as_deref(), to.as_str()),
+        (Some("broker-b"), "broker-d")
+    );
+    assert_ne!(next.state, ShardState::Draining);
+}
+
+/// A restore that drops a lost follower from an RF 2 set fences too.
+#[test]
+fn an_rf2_restore_in_place_of_a_lost_copy_fences() {
+    let nodes = vec![
+        node("broker-a", NodeLifecycle::Live, None),
+        gone("broker-b", 10 * MINUTE),
+        node("broker-c", NodeLifecycle::Live, None),
+    ];
+    let joined = restoring("broker-a", &["broker-b", "broker-c"], "broker-c");
+    let (decision, _) = decide(
+        rf2("orders"),
+        &nodes,
+        joined.clone(),
+        &level_at_100(&["broker-c"]),
+    );
+    assert_eq!(
+        decision,
+        Decision::Move(
+            MoveStep::SeatFence {
+                to: "broker-c".to_string()
+            },
+            trim_fenced(&joined)
+        )
+    );
+}

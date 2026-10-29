@@ -127,7 +127,6 @@ expectations=(
   "FelixShardFencedAckSeat pass"
   "FelixShardFencedAckGrow pass"
   "FelixShardFencedAckSeatPair pass"
-  "FelixShardFencedAckSeatPairOnMajority violates AckedOnMajority"
   "FelixShardFencedAckTrim pass"
   "FelixShardFencedAckSeatEarly violates AckedHeldByLeader"
   "FelixShardReadsRound pass"

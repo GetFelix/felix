@@ -10,7 +10,7 @@ use felix_router::RegionRouter;
 
 use super::leadership::{Leadership, Owner, Shares};
 use super::rendezvous::{choose_replicas, promote, score};
-use super::restore::{newcomer, restore, restore_step};
+use super::restore::{newcomer, replacing, restore, restore_step};
 use super::zones::{Domain, domain, domain_of, keep_spread};
 use super::{Blocked, CaughtUp, Decision, MoveStep};
 use crate::model::{HaltedCopy, MoveReason, Node, ShardAssignment, ShardKey, ShardState};
@@ -349,6 +349,24 @@ pub(super) fn move_step<'a>(
     let is_halted = |node: &str| caught_up.halted(key, node).is_some();
 
     if existing.state == ShardState::Draining {
+        if existing.successor.is_none()
+            && let Some(joining) = existing.joining.as_deref()
+        {
+            let from = if existing.move_reason == Some(MoveReason::Restore) {
+                replacing(existing, replication_factor, is_lost)
+            } else {
+                departing(existing, joining, eligible, is_draining).map(String::as_str)
+            };
+            return seat_after_fence(
+                existing,
+                joining,
+                from,
+                is_live,
+                halted_now(joining),
+                caught_up,
+                moves,
+            );
+        }
         // The move timeout stops here. The leader has stopped serving, and
         // going back is a new generation and every client following the
         // shard twice; going on waits for at most the lag bound's worth of
@@ -857,11 +875,7 @@ fn replacement_step(
     moves: &Moves,
     fenced: bool,
 ) -> Decision {
-    let departing = existing
-        .replicas
-        .iter()
-        .find(|replica| replica.as_str() != joining && is_draining(replica))
-        .or_else(|| crowded(existing, eligible, Some(joining)));
+    let departing = departing(existing, joining, eligible, is_draining);
     let undo = |step: MoveStep, started| {
         Decision::Move(
             step,
@@ -884,22 +898,13 @@ fn replacement_step(
     if moves.ready_to_fence(caught_up, &existing.key, joining)
         && (!fenced || holds_what_the_set_held(existing, joining, caught_up))
     {
-        let mut replicas = existing.replicas.clone();
-        replicas.retain(|replica| replica != departing);
-        return Decision::Move(
-            MoveStep::Seat {
-                from: Some(departing.clone()),
-                to: joining.to_string(),
-            },
-            ShardAssignment {
-                replicas,
-                generation: 0,
-                joining: None,
-                move_started_at_millis: None,
-                move_reason: None,
-                fence_storage_ids: Default::default(),
-                ..existing.clone()
-            },
+        return seat_or_fence(
+            existing,
+            joining,
+            Some(departing.as_str()),
+            fenced,
+            caught_up,
+            moves,
         );
     }
     if moves.timed_out(caught_up, existing.move_started_at_millis) {
@@ -913,6 +918,147 @@ fn replacement_step(
     Decision::Waiting(Blocked::DestinationCatchingUp {
         successor: joining.to_string(),
     })
+}
+
+/// The follower a replacement takes the place of: one on a draining node,
+/// or else one crowding a zone.
+fn departing<'a>(
+    existing: &'a ShardAssignment,
+    joining: &str,
+    eligible: &[&'a Node],
+    is_draining: &dyn Fn(&str) -> bool,
+) -> Option<&'a String> {
+    existing
+        .replicas
+        .iter()
+        .find(|replica| replica.as_str() != joining && is_draining(replica))
+        .or_else(|| crowded(existing, eligible, Some(joining)))
+}
+
+/// Seat `joining` in place of `from`, or, on a fenced stream where that
+/// leaves an even set, fence the leader first.
+///
+/// Beside the odd set `joining` came into, a record can be acknowledged on
+/// the leader and `from` alone at any point before the seat, after whatever
+/// report placement read, and the even set left would hold it on the leader
+/// only (#1616). A fenced leader's log stops growing, so
+/// [`seat_after_fence`] can check it is all on `joining`.
+/// `FelixShardFencedAckSeatPair` in `docs/formal/FelixShard.tla`.
+pub(super) fn seat_or_fence(
+    existing: &ShardAssignment,
+    joining: &str,
+    from: Option<&str>,
+    fenced: bool,
+    caught_up: &dyn CaughtUp,
+    moves: &Moves,
+) -> Decision {
+    if fenced && from.is_some() && existing.nodes().count() % 2 == 1 {
+        if let Some(blocked) = moves.backing_off(caught_up, &existing.key) {
+            return Decision::Waiting(blocked);
+        }
+        return Decision::Move(
+            MoveStep::SeatFence {
+                to: joining.to_string(),
+            },
+            ShardAssignment {
+                state: ShardState::Draining,
+                generation: 0,
+                fence_storage_ids: Default::default(),
+                ..existing.clone()
+            },
+        );
+    }
+    Decision::Move(
+        MoveStep::Seat {
+            from: from.map(str::to_string),
+            to: joining.to_string(),
+        },
+        seated(existing, from),
+    )
+}
+
+/// The set once the newcomer is seated and `from` has left.
+fn seated(existing: &ShardAssignment, from: Option<&str>) -> ShardAssignment {
+    let mut replicas = existing.replicas.clone();
+    replicas.retain(|replica| Some(replica.as_str()) != from);
+    ShardAssignment {
+        replicas,
+        generation: 0,
+        joining: None,
+        move_started_at_millis: None,
+        move_reason: None,
+        fence_storage_ids: Default::default(),
+        ..existing.clone()
+    }
+}
+
+/// A seat whose leader [`seat_or_fence`] fenced: seat `joining` once the
+/// leader's drained report at this generation has it at the leader's own
+/// offset, its whole log, and the leader serves again at the next one.
+///
+/// A newcomer gone or halted, or nothing left to replace, gives the shard
+/// back to the leader with the replacement undone, as the serving path would.
+/// A leader that never reports drained gets it back at the fence timeout
+/// with the replacement still going, which then waits out its backoff.
+fn seat_after_fence(
+    existing: &ShardAssignment,
+    joining: &str,
+    from: Option<&str>,
+    is_live: &dyn Fn(&str) -> bool,
+    halted: Option<String>,
+    caught_up: &dyn CaughtUp,
+    moves: &Moves,
+) -> Decision {
+    let key = &existing.key;
+    let serving = |assignment: ShardAssignment| ShardAssignment {
+        state: ShardState::Assigning,
+        ..assignment
+    };
+    let undone = || ShardAssignment {
+        move_started_at_millis: None,
+        ..serving(undo_replacement(existing, joining))
+    };
+    if let Some(reason) = halted {
+        return Decision::Move(
+            MoveStep::Halted {
+                successor: joining.to_string(),
+                reason,
+            },
+            undone(),
+        );
+    }
+    let Some(from) = from.filter(|_| is_live(joining)) else {
+        return Decision::Move(
+            MoveStep::Abandon {
+                successor: joining.to_string(),
+            },
+            undone(),
+        );
+    };
+    let tail = caught_up.leader_offset(key);
+    if caught_up.is_drained(key, existing.generation)
+        && tail.is_some()
+        && caught_up.reported_offset(key, joining) == tail
+    {
+        return Decision::Move(
+            MoveStep::Seat {
+                from: Some(from.to_string()),
+                to: joining.to_string(),
+            },
+            serving(seated(existing, Some(from))),
+        );
+    }
+    if moves.fence_timed_out(caught_up, key, existing.generation) {
+        return Decision::Move(
+            MoveStep::FenceTimedOut { successor: None },
+            serving(ShardAssignment {
+                generation: 0,
+                fence_storage_ids: Default::default(),
+                ..existing.clone()
+            }),
+        );
+    }
+    Decision::Waiting(Blocked::LeaderStopping)
 }
 
 /// Whether `joining` holds everything a majority of the set it joined holds,
