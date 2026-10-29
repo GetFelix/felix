@@ -163,7 +163,7 @@ fn a_stream_window_above_the_connection_window_is_refused() {
 }
 
 #[test]
-fn a_receive_window_smaller_than_a_frame_is_refused() {
+fn a_connection_window_smaller_than_a_frame_is_refused() {
     let frame = 16 * 1024 * 1024;
     let conn = BrokerConfig {
         max_frame_bytes: frame,
@@ -173,24 +173,48 @@ fn a_receive_window_smaller_than_a_frame_is_refused() {
     let message = format!("{:#}", conn.validate().expect_err("conn below a frame"));
     assert!(message.contains("pub_conn_recv_window"), "{message}");
     assert!(message.contains("max_frame_bytes"), "{message}");
+}
 
+/// The broker reads a frame as it arrives, so a stream window below the frame
+/// limit only costs a large frame extra window updates.
+#[test]
+fn a_stream_window_smaller_than_a_frame_is_allowed() {
+    let frame = 16 * 1024 * 1024;
     let stream = BrokerConfig {
         max_frame_bytes: frame,
         pub_stream_recv_window: Some(frame as u64 - 1),
         ..BrokerConfig::default()
     };
-    let message = format!("{:#}", stream.validate().expect_err("stream below a frame"));
-    assert!(message.contains("pub_stream_recv_window"), "{message}");
+    stream.validate().expect("stream below a frame");
+}
+
+/// A small budget does not shrink the derived stream window to a few packets.
+#[test]
+fn the_derived_stream_window_has_a_floor() {
+    let config = BrokerConfig {
+        max_frame_bytes: 64 * 1024,
+        event_batch_max_bytes: 64 * 1024,
+        pub_conn_inflight_bytes: 2 * 1024 * 1024,
+        ..BrokerConfig::default()
+    };
+    assert_eq!(config.pub_recv_windows(), (2 * 1024 * 1024, 1024 * 1024));
+
+    let tiny = BrokerConfig {
+        pub_conn_recv_window: Some(512 * 1024),
+        ..config
+    };
+    assert_eq!(tiny.pub_recv_windows(), (512 * 1024, 512 * 1024));
 }
 
 /// Unset, the windows follow the per-connection publish budget rather than
-/// buffering many budgets' worth of unread publishes.
+/// buffering many budgets' worth of unread publishes, and a stream gets a
+/// quarter of its connection's window.
 #[test]
 fn receive_windows_default_to_the_publish_budget() {
     let config = BrokerConfig::default();
     let budget = config.pub_conn_inflight_bytes as u64;
     assert_eq!(budget, 16 * 1024 * 1024);
-    assert_eq!(config.pub_recv_windows(), (budget, budget));
+    assert_eq!(config.pub_recv_windows(), (budget, budget / 4));
     config.validate().expect("defaults validate");
 
     // A larger budget moves both windows with it.
@@ -200,11 +224,11 @@ fn receive_windows_default_to_the_publish_budget() {
     };
     assert_eq!(
         larger.pub_recv_windows(),
-        (32 * 1024 * 1024, 32 * 1024 * 1024)
+        (32 * 1024 * 1024, 8 * 1024 * 1024)
     );
 
-    // A frame limit above the budget raises the floor, so derived values
-    // never fail validation.
+    // A frame limit above the budget raises the connection window's floor, so
+    // derived values never fail validation.
     let big_frames = BrokerConfig {
         max_frame_bytes: 64 * 1024 * 1024,
         event_batch_max_bytes: 64 * 1024,
@@ -212,7 +236,7 @@ fn receive_windows_default_to_the_publish_budget() {
     };
     assert_eq!(
         big_frames.pub_recv_windows(),
-        (64 * 1024 * 1024, 64 * 1024 * 1024)
+        (64 * 1024 * 1024, 16 * 1024 * 1024)
     );
     big_frames
         .validate()

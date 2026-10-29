@@ -74,12 +74,13 @@ impl BrokerConfig {
         Ok(())
     }
 
-    /// Refuse client-listener receive windows that cannot hold one frame, or
-    /// a stream window the connection window could never let it reach.
+    /// Refuse a client-listener connection window that cannot hold one frame,
+    /// or a stream window the connection window could never let it reach.
     ///
     /// A window smaller than a frame does not deadlock, since the broker
-    /// returns credit as it reads, but every large frame then waits on several
-    /// round trips of window updates.
+    /// returns credit as it reads. The stream window may be, so that one
+    /// stopped stream cannot hold a whole connection's credit. A connection
+    /// window that small would make every large frame wait on window updates.
     fn validate_pub_recv_windows(&self) -> Result<()> {
         let (conn, stream) = self.pub_recv_windows();
         let frame = self.max_frame_bytes as u64;
@@ -87,13 +88,6 @@ impl BrokerConfig {
             anyhow::bail!(
                 "pub_conn_recv_window ({conn}) is smaller than max_frame_bytes \
                  ({frame}): one full-size frame would not fit in a connection's \
-                 receive window"
-            );
-        }
-        if stream < frame {
-            anyhow::bail!(
-                "pub_stream_recv_window ({stream}) is smaller than max_frame_bytes \
-                 ({frame}): one full-size frame would not fit in a stream's \
                  receive window"
             );
         }

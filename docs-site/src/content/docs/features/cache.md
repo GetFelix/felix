@@ -839,7 +839,7 @@ let config = ClientConfig {
 # QUIC flow control. One listener carries cache requests and publishes,
 # so its receive windows follow the publish budget (16 MiB by default).
 pub_conn_recv_window: 16777216       # per connection
-pub_stream_recv_window: 16777216     # per stream
+pub_stream_recv_window: 4194304      # per stream, a quarter of the connection
 cache_send_window: 268435456         # send window
 ```
 

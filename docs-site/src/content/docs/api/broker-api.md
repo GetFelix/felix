@@ -798,7 +798,7 @@ publishes, so the receive windows are the publish ones:
 
 ```yaml
 pub_conn_recv_window: 16777216       # 16 MiB per connection
-pub_stream_recv_window: 16777216     # 16 MiB per stream
+pub_stream_recv_window: 4194304      # 4 MiB per stream
 cache_send_window: 268435456         # 256 MiB send window
 ```
 
