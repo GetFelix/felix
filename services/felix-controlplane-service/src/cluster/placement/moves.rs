@@ -10,7 +10,7 @@ use felix_router::RegionRouter;
 
 use super::leadership::{Leadership, Owner, Shares};
 use super::rendezvous::{choose_replicas, promote, score};
-use super::restore::{newcomer, replacing, restore, restore_step};
+use super::restore::{newcomer, replacing, restore, restore_step, short};
 use super::zones::{Domain, domain, domain_of, keep_spread};
 use super::{Blocked, CaughtUp, Decision, MoveStep};
 use crate::model::{HaltedCopy, MoveReason, Node, ShardAssignment, ShardKey, ShardState};
@@ -149,11 +149,14 @@ impl Moves {
             stream_wanted: false,
         };
         for assignment in existing {
-            if assignment.successor.is_some() || assignment.state == ShardState::Draining {
+            // A seat fence is `Draining` with `joining` and no successor:
+            // one copy in flight, counted below.
+            let fencing = assignment.state == ShardState::Draining;
+            if assignment.successor.is_some() || (fencing && assignment.joining.is_none()) {
                 moves.take(&assignment.leader, assignment.successor.as_deref());
             }
             if let Some(joining) = assignment.joining.as_deref()
-                && !unpaced(assignment)
+                && (fencing || !unpaced(assignment))
             {
                 moves.take(&assignment.leader, Some(joining));
             }
@@ -352,7 +355,8 @@ pub(super) fn move_step<'a>(
         if existing.successor.is_none()
             && let Some(joining) = existing.joining.as_deref()
         {
-            let from = if existing.move_reason == Some(MoveReason::Restore) {
+            let restoring = existing.move_reason == Some(MoveReason::Restore);
+            let from = if restoring {
                 replacing(existing, replication_factor, is_lost)
             } else {
                 departing(existing, joining, eligible, is_draining).map(String::as_str)
@@ -361,6 +365,7 @@ pub(super) fn move_step<'a>(
                 existing,
                 joining,
                 from,
+                restoring && short(existing, replication_factor),
                 is_live,
                 halted_now(joining),
                 caught_up,
@@ -998,12 +1003,18 @@ fn seated(existing: &ShardAssignment, from: Option<&str>) -> ShardAssignment {
 ///
 /// A newcomer gone or halted, or nothing left to replace, gives the shard
 /// back to the leader with the replacement undone, as the serving path would.
+/// A restore whose set has gone short (the factor was raised while fenced)
+/// replaces nobody and seats `joining` as a top-up instead, as
+/// [`restore_step`] would: undone, a record acknowledged on the leader and
+/// `joining` alone would be on the leader only.
 /// A leader that never reports drained gets it back at the fence timeout
 /// with the replacement still going, which then waits out its backoff.
+#[allow(clippy::too_many_arguments)]
 fn seat_after_fence(
     existing: &ShardAssignment,
     joining: &str,
     from: Option<&str>,
+    top_up: bool,
     is_live: &dyn Fn(&str) -> bool,
     halted: Option<String>,
     caught_up: &dyn CaughtUp,
@@ -1027,14 +1038,14 @@ fn seat_after_fence(
             undone(),
         );
     }
-    let Some(from) = from.filter(|_| is_live(joining)) else {
+    if !is_live(joining) || (from.is_none() && !top_up) {
         return Decision::Move(
             MoveStep::Abandon {
                 successor: joining.to_string(),
             },
             undone(),
         );
-    };
+    }
     let tail = caught_up.leader_offset(key);
     if caught_up.is_drained(key, existing.generation)
         && tail.is_some()
@@ -1042,10 +1053,10 @@ fn seat_after_fence(
     {
         return Decision::Move(
             MoveStep::Seat {
-                from: Some(from.to_string()),
+                from: from.map(str::to_string),
                 to: joining.to_string(),
             },
-            serving(seated(existing, Some(from))),
+            serving(seated(existing, from)),
         );
     }
     if moves.fence_timed_out(caught_up, key, existing.generation) {

@@ -167,6 +167,10 @@ follower bootstrapped or rebuilt at the leader's base is missing only records
 a majority already held (see "Retention and the quorum mark" in
 `docs/replication-design.md`).
 
+Nor is a replication factor changed during a move. One raised while a restore
+is seat-fenced leaves the set short, and `seat_after_fence` then seats the
+newcomer as a top-up instead of undoing it; that case is a unit test only.
+
 ## What is checked
 
 | Invariant | Says |

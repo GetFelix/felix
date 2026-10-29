@@ -3,8 +3,9 @@
 //! restore survives its destination failing and the control plane restarting.
 use super::reconciler::{cluster, shard_zero};
 use super::*;
+use crate::cluster::placement::moves::Moves;
 use crate::config::NodeLivenessConfig;
-use crate::model::MoveReason;
+use crate::model::{HaltedCopy, MoveReason};
 use crate::store::ControlPlaneStore;
 
 const NOW: u64 = 10_000_000_000;
@@ -21,6 +22,9 @@ struct Reports {
     generation: Option<u64>,
     /// The leader reported drained at the report's generation.
     drained: bool,
+    halted: BTreeMap<String, HaltedCopy>,
+    /// When the fence at the report's generation was first seen.
+    fenced_at: Option<u64>,
 }
 
 impl Reports {
@@ -66,6 +70,15 @@ impl CaughtUp for Reports {
 
     fn as_of_millis(&self) -> Option<u64> {
         Some(NOW)
+    }
+
+    fn halted(&self, _key: &ShardKey, node_id: &str) -> Option<&HaltedCopy> {
+        self.halted.get(node_id)
+    }
+
+    fn fenced_at_millis(&self, key: &ShardKey, generation: u64) -> Option<u64> {
+        self.fenced_at
+            .filter(|_| Some(generation) == self.reported_generation(key))
     }
 }
 
@@ -1291,4 +1304,163 @@ fn an_rf2_restore_in_place_of_a_lost_copy_fences() {
             trim_fenced(&joined)
         )
     );
+}
+
+/// A fenced restore seats its newcomer in the lost copy's place once the
+/// drained leader's report has it at the leader's tail.
+#[test]
+fn a_fenced_rf2_restore_seats_on_the_drained_report() {
+    let nodes = vec![
+        node("broker-a", NodeLifecycle::Live, None),
+        gone("broker-b", 10 * MINUTE),
+        node("broker-c", NodeLifecycle::Live, None),
+    ];
+    let joined = restoring("broker-a", &["broker-b", "broker-c"], "broker-c");
+    let (decision, _) = decide(
+        rf2("orders"),
+        &nodes,
+        trim_fenced(&joined),
+        &drained(level_at_100(&["broker-c"])),
+    );
+    assert_eq!(
+        decision,
+        Decision::Move(
+            MoveStep::Seat {
+                from: Some("broker-b".to_string()),
+                to: "broker-c".to_string(),
+            },
+            ShardAssignment {
+                replicas: vec!["broker-c".to_string()],
+                generation: 0,
+                state: ShardState::Assigning,
+                joining: None,
+                move_started_at_millis: None,
+                move_reason: None,
+                ..joined
+            }
+        )
+    );
+}
+
+/// **Factor raised mid-seat.** broker-c is restoring in place of the lost
+/// broker-b, and records acknowledged on `{a, c}` alone are not on broker-b.
+/// The operator raises the factor to 3 while broker-a is fenced: the set is
+/// now short and replaces nobody. Undoing the restore would leave those
+/// records on broker-a only, so broker-c is seated as a top-up instead, and
+/// only on the drained report, as before.
+#[test]
+fn a_factor_raised_during_a_restore_seat_fence_tops_up() {
+    let nodes = vec![
+        node("broker-a", NodeLifecycle::Live, None),
+        gone("broker-b", 10 * MINUTE),
+        node("broker-c", NodeLifecycle::Live, None),
+    ];
+    let joined = restoring("broker-a", &["broker-b", "broker-c"], "broker-c");
+    let fenced = trim_fenced(&joined);
+    let (decision, _) = decide(
+        quorum("orders"),
+        &nodes,
+        fenced.clone(),
+        &level_at_100(&["broker-c"]),
+    );
+    assert_eq!(decision, Decision::Waiting(Blocked::LeaderStopping));
+
+    let (decision, _) = decide(
+        quorum("orders"),
+        &nodes,
+        fenced,
+        &drained(level_at_100(&["broker-c"])),
+    );
+    assert_eq!(
+        decision,
+        Decision::Move(
+            MoveStep::Seat {
+                from: None,
+                to: "broker-c".to_string(),
+            },
+            ShardAssignment {
+                generation: 0,
+                state: ShardState::Assigning,
+                joining: None,
+                move_started_at_millis: None,
+                move_reason: None,
+                ..joined
+            }
+        )
+    );
+}
+
+/// A seat-fenced leader that never reports drained serves again at the
+/// fence timeout, with the replacement still going.
+#[test]
+fn a_seat_fence_that_times_out_gives_the_shard_back_with_the_newcomer() {
+    let nodes = vec![
+        node("broker-a", NodeLifecycle::Live, None),
+        node("broker-b", NodeLifecycle::Draining, None),
+        node("broker-c", NodeLifecycle::Live, None),
+    ];
+    let joined = replacing_b("broker-a");
+    let reports = Reports {
+        fenced_at: Some(NOW - DEFAULT_FENCE_TIMEOUT_MILLIS - 1),
+        ..level_at_100(&["broker-b", "broker-c"])
+    };
+    let (decision, _) = decide(rf2("orders"), &nodes, trim_fenced(&joined), &reports);
+    assert_eq!(
+        decision,
+        Decision::Move(
+            MoveStep::FenceTimedOut { successor: None },
+            ShardAssignment {
+                generation: 0,
+                state: ShardState::Assigning,
+                ..joined
+            }
+        )
+    );
+}
+
+/// A newcomer its leader reports halted while fenced for its seat is
+/// dropped, and the leader serves again.
+#[test]
+fn a_fenced_seat_whose_newcomer_halted_gives_the_shard_back() {
+    let nodes = vec![
+        node("broker-a", NodeLifecycle::Live, None),
+        node("broker-b", NodeLifecycle::Draining, None),
+        node("broker-c", NodeLifecycle::Live, None),
+    ];
+    let mut reports = drained(level_at_100(&["broker-b", "broker-c"]));
+    reports.halted.insert(
+        "broker-c".to_string(),
+        HaltedCopy {
+            reason: "diverged".to_string(),
+            generation: 3,
+            since_millis: NOW - MINUTE,
+        },
+    );
+    let fenced = trim_fenced(&replacing_b("broker-a"));
+    let (decision, _) = decide(rf2("orders"), &nodes, fenced, &reports);
+    let Decision::Move(MoveStep::Halted { successor, reason }, next) = decision else {
+        panic!("expected the newcomer dropped, got {decision:?}");
+    };
+    assert_eq!(
+        (successor.as_str(), reason.as_str()),
+        ("broker-c", "diverged")
+    );
+    assert_eq!(next.replicas, ["broker-b"]);
+    assert_eq!(next.joining, None);
+    assert_eq!(next.state, ShardState::Assigning);
+}
+
+/// A seat fence is one copy in flight, not two.
+#[test]
+fn a_seat_fence_takes_one_move_slot() {
+    let fenced = trim_fenced(&replacing_b("broker-a"));
+    let mut moves = Moves::counting(
+        &[fenced],
+        MovePolicy {
+            max_concurrent: 2,
+            ..MovePolicy::default()
+        },
+        &|_| false,
+    );
+    assert_eq!(moves.begin("broker-d", "broker-e"), Ok(()));
 }

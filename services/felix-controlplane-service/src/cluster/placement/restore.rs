@@ -320,7 +320,7 @@ fn lost_follower<'e>(
 
 /// Whether the seated set is smaller than the replication factor, as a
 /// failover that had too few live brokers to choose from leaves it.
-fn short(existing: &ShardAssignment, replication_factor: u32) -> bool {
+pub(super) fn short(existing: &ShardAssignment, replication_factor: u32) -> bool {
     seated(existing).count() < replication_factor.max(1) as usize
 }
 
