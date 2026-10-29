@@ -6,7 +6,7 @@ name: Release C library archives
 # release that predates the archives; it builds the TAG's source, so the
 # libraries match what was released, and only uploads files to the release:
 #
-#   gh workflow run release-capi-archives.yml -f tag=v0.6.2 -f dry_run=false
+#   gh workflow run release-capi-archives.yml -f tag=v0.7.0-preview.1 -f dry_run=false
 on:
   workflow_dispatch:
     inputs:

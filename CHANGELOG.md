@@ -11,6 +11,142 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+## [0.7.0-preview.1] - 2026-10-29
+
+0.7.0-preview.1 is the first 0.7 release. Python and TypeScript now wrap the
+Rust client's conditional writes, idempotent producers, group administration
+and reads, and every binding takes the reconnect attempt count, deadline and
+backoff. Cache and group calls in `ClusterClient` follow `ReconnectPolicy`, and
+a cluster cache watch survives the death of its broker. Replication fixes close
+several ways an RF 2 shard could stay closed or hold an acknowledged record on
+its leader alone during a failover, replacement or cancelled move (#1486, #1487,
+#1574, #1616, #1628), and a wiped broker no longer helps a deposed leader back
+in (#1332). A client stream the broker has stopped reading no longer stalls the
+rest of its connection (#1478). Each GitHub release now carries prebuilt
+`libfelix` archives, and a Grafana dashboard and Prometheus alert rules ship in
+`deploy/observability/`.
+
+### Added
+- Python and TypeScript wrap the Rust client's conditional writes (#1605): `cache_put_if`, `cache_delete_if` and `cache_get_versioned`, `publish_if` and `commit_if`, and the named-shard forms `commit_on_shard`, `commit_if_on_shard`, `publish_if_on_shard` and `state_get_on_shard` (camelCase in TypeScript, on `Client` and `AsyncClient` in Python). A refused write is a typed result (`CacheConditionResult`, `ConditionalWrite` with the shard's `tail`), not an error, and a write whose answer was lost is never resent. Both bindings claim `commit.expected_offset_refuses_a_stale_write`, `explicit_shard.commit_lands_on_the_named_shard` and `publish_if.*` in the conformance suite.
+- Python and TypeScript wrap the Rust client's consumer-group administration (#1605): `group_extend`, `group_seek`, `group_create`, `group_describe` and `group_delete` (camelCase in TypeScript, on `Client` and `AsyncClient` in Python). Create and seek return a `GroupPosition` (`offset`, `moved`), describe returns a `GroupInfo` (`committed`, `tail`, `in_flight`, `owed`, `dead_letters`, `lag`), and extend returns how long the claim now stands. Both bindings claim the new optional `queue.group_*` scenarios in the conformance suite.
+- Python and TypeScript wrap idempotent producers, named-shard publishes and keyed at-least-once (#1605). `Client.producer()` (`AsyncClient.producer()` in Python) returns a `Producer` with `publish`, `publish_batch` (with a routing key), `publish_batches`, `abandon_in_doubt`, `id` and `id_for`, and `close`. A batch that got no answer is in doubt: the same call again goes out under the same sequence and lands once. A broker refusal is a `PublishRefusedError` carrying the Rust `PublishRefusalReason` (`reason`, `expected`, `tail`, `node_id`, `addr`) and ends the producer on that stream. `publish_on_shard` sends a batch to a named shard, and `at_least_once` now takes a routing key and re-sends to the key's shard. Both bindings claim `explicit_shard.negotiated`, `explicit_shard.out_of_range_is_refused`, `ack.carries_the_offset` and `retry.idempotent_producers_re_send_ambiguous_outcomes` in the conformance suite, and the fixture's bare broker now counts named-shard publishes.
+- Python and TypeScript wrap the rest of the Rust client's reads and group calls (#1605): `watch_cache_sharded` (a prefix watch merged across every shard of a cache, with per-shard resume offsets and a state-complete marker on retained watches), `offset_for_time`, `read` (pages of committed records), `group_nack_after`, `group_dead_letter`, a `visibility` option on `group_poll`, and the stream-wide `group_seek_stream`, `group_create_stream`, `group_describe_stream` and `group_delete_stream`. The audit against the Rust client also added `subscribe` on a named shard, `publish_batch`, `publish_records` (a per-shard `BatchReport`), `group_sharded`, `refresh_topology`, `connections_per_node` and `start_offset` / `live_offset` on subscriptions. Both bindings claim the new optional scenarios in the conformance suite.
+- The Python, TypeScript, C and C# clients take the reconnect backoff and max backoff, as the Rust client always has, with the Rust defaults (200 ms and 2 s) when unset: Python `reconnect_backoff` and `reconnect_max_backoff` in seconds, TypeScript `reconnectBackoff` and `reconnectMaxBackoff` in milliseconds, C `reconnect_backoff_ms` and `reconnect_max_backoff_ms`, C# `ReconnectBackoff` and `ReconnectMaxBackoff`. Every wait is capped at the max backoff, as in Rust. `FelixConnectOptions` grew two fields after `reconnect_deadline_ms`; callers built against the older header keep the defaults.
+- Every client binding takes two reconnect options, with the Rust defaults when unset: an attempt count (Python `reconnect_attempts`, TypeScript `reconnectAttempts`, C `reconnect_attempts`, C# `ReconnectAttempts`) and a deadline for one retried call across all its attempts and waits (`reconnect_deadline` in seconds, `reconnectDeadline` in milliseconds, `reconnect_deadline_ms`, `ReconnectDeadline`). `FelixConnectOptions` grew two fields after `token_release`; callers built against the older header keep the defaults. The conformance catalogue gains `retry.deadline_bounds_an_operation`.
+- Each GitHub release now carries prebuilt `libfelix` C libraries, shared and static with `felix.h` and a `LINKING.txt`, for Linux, macOS and Windows on x64 and arm64.
+- A Grafana dashboard and Prometheus alert rules ship in `deploy/observability/`. The Helm chart renders the rules as a `PrometheusRule` when `prometheusRule.enabled` is set (off by default). `task docs:evidence` fails when either references a metric the code does not register.
+
+### Fixed
+- Deleting a stream now deletes its offloaded copies (#1209). With
+  `FELIX_DURABLE_OFFLOAD_DIR` set, a broker retiring a deleted stream's shards
+  removes every copy their manifests record, and anything else under the
+  shard's prefix for that node, before it moves the local directories out of
+  service. Copies left by a delete from an earlier release stay.
+- A broker whose data directory was wiped no longer takes a deposed leader on
+  the word of a lagging control-plane member (#1332). Its routing view is
+  seeded from whichever member answers, which under Raft can still name a
+  leader already replaced, and its vote could then complete that leader's
+  majority. A copy with no election promise on disk now also checks the
+  shard's assignment as the control plane's Raft leader confirms it, through
+  the new `GET /v1/shard-assignments/confirmed`, before it takes a leader. A
+  control plane without the route leaves the routing view to answer as before.
+- A client stream the broker has stopped reading no longer stalls the other streams on its
+  connection (#1478). `pub_stream_recv_window` now defaults to a quarter of the connection
+  window (4 MiB with the defaults) instead of the whole of it, so a stopped stream holds only
+  its share of the connection's flow-control credit. The connection window still follows the
+  publish budget (#923). A stream window below `max_frame_bytes` is now accepted, since the
+  broker reads a frame as it arrives. Set `FELIX_BROKER_PUB_STREAM_RECV_WINDOW` to restore
+  the old value.
+- An RF 2 shard no longer stays closed after its leader crashes right after a
+  set change (#1486). The failover named every copy the leader's last report
+  did, and that report could predate the change and name a copy already
+  dropped. The crashed leader of a set of two then refused the new leader's
+  fence until the operator ran `felixctl placement abandon`. A failover now
+  names only copies in the old set or the new one.
+- A failover right after an RF 2 replacement seats its newcomer no longer leaves
+  the shard closed (#1487). While the old leader had not yet reported at the
+  seat's generation, a record could be on it and the leaving copy alone; the
+  failover now keeps the leaving copy in the set while its broker serves, so the
+  new leader's fence reaches a majority that holds the record. A set left above
+  its factor that way, or by lowering the factor, is trimmed back: placement
+  fences the leader as for a move, and once it reports drained drops a
+  follower whose leaving leaves the rest holding its log. A drain in a
+  three-broker cluster then still finishes.
+- Cache and consumer-group calls in `ClusterClient` now follow `ReconnectPolicy` like publishes do (#1565). The attempt limit, backoff and deadline bound the whole call, re-routes included, in every binding. A write is sent again only after a refusal that says nothing was applied. The `retry.deadline_bounds_an_operation` scenario now also covers a group call.
+- A second failover soon after the first no longer leaves the shard closed
+  (#1574). A leader promoted by a failover that dies before it has reached a
+  follower left that follower named by no storage identity, so the next
+  promoted leader could not count its fence answer and waited for good when it
+  needed it for a majority. A report now carries, for each follower its leader
+  has not reached, the identity the leader's own promotion named it by, and
+  the next failover names the follower by that. A Postgres control plane runs
+  migration `0037` on start; under Raft the field waits for metadata level 20.
+- A revoked token now reaches C and C# callers as an auth failure
+  (`FELIX_STATUS_AUTH`) instead of a generic error (#1592), matching the Python
+  and TypeScript bindings.
+- A `stale_claim` refusal is no longer retried by the cluster client, and every
+  client reports its retry class as `fatal`, so a consumer loop that logs it
+  does not stall for the backoff (#1596). A publish written before the
+  connection dropped, whose acknowledgement never arrived, now surfaces as an
+  unknown outcome (`AckLost` in Rust, `OutcomeUnknownError` in Python and
+  TypeScript, `FELIX_STATUS_OUTCOME_UNKNOWN` in C and C#) instead of a
+  connection error. The wire format is unchanged.
+- The development stack no longer logs a "shard has no eligible leader" warning
+  every five seconds for every shard (#1601). While no node is
+  registered, as with a broker run without `FELIX_NODE_ID`, the control plane
+  reports it at debug; it still warns when nodes exist but none can take a shard.
+- Python: `close()` on a subscription or cache watch (blocking, async, and their sharded forms) returns while another thread or task is blocked reading it, and that reader then ends. A read `timeout` or group `wait` of `inf` or `nan` raises `ValueError` instead of panicking. Cache watches in Python and TypeScript gain `resume_from` and `moves`; the `offset_for_time` conformance scenarios are checked against record timestamps.
+- An RF 2 replacement on a `Quorum` stream no longer seats its newcomer while a
+  record may be on the leader alone (#1616). Up to the seat, a record could be
+  acknowledged on the leader and the leaving copy after the report placement
+  read, and the new set held it only on the leader. Placement now fences the
+  leader before any seat that leaves an even set and seats the newcomer once
+  the drained leader's report shows it holding the whole log, with the same
+  short pause in writes as a leader move. Restores that replace a lost copy in
+  an RF 2 set do the same.
+- Giving up a follower replacement on a durable `Quorum` stream or `Quorum`
+  cache no longer risks an acknowledged record (#1628). When dropping the copy
+  being added leaves an even set, an RF 2 set being the common case, a record
+  could have been acknowledged on the leader and that copy alone, and the set
+  left would hold it on the leader only. Placement now fences the leader first
+  and drops the copy only once the drained leader's report shows the leader
+  and the followers holding its whole log as a majority of the set left. This
+  covers a timeout, a stalled restore, a newcomer that halts or goes down, a
+  drain that is cancelled or a lost copy that returns, and an operator's
+  cancel. Until that report arrives
+  the copy stays, and writes pause for one fence as they do for a move.
+- A cluster client's cache watch no longer ends when the broker serving it dies. It is reopened on
+  whichever broker owns its shard now, from the offset after the last change it delivered, under the
+  client's `ReconnectPolicy`, and the Python, TypeScript, C# and C watches get the same. If no broker
+  takes it in time, `recv` returns `None` and `ClusterCacheWatch::error` says why. A bare
+  `CacheWatch` reports a broken connection through the new `lost()` (GetFelix/felixd#68).
+- A retained cluster cache watch that moves or loses its broker during its state phase is reopened
+  retained, so its state phase starts over on the new owner instead of ending with values missing.
+  A sharded retained watch no longer sends `StateComplete` before that shard's state has all
+  arrived. Values already handed out may arrive again inside the restarted state phase;
+  `ClusterCacheWatch::in_state_phase` says when it is over.
+- `ShardedCacheWatchItem::ShardClosed` now carries an `error` saying why the shard could not be
+  followed. Cache watches expose their reconnect count and end cause in every binding: `reconnects`
+  and `error` in Python and TypeScript (plus `CacheShardClosed.error` and `shardClosedError`),
+  `felix_cache_watch_reconnects` and the closing read's message in C, and `Reconnects`, `Error` and
+  `WatchItem.Error` in C#.
+- A cluster client no longer keeps routing cache requests to a shard owner it cannot connect to. A
+  failed connect drops the cached route, so the next request asks who owns the shard instead of
+  waiting out a connect timeout on the dead broker every time (GetFelix/felixd#68).
+
+### Documentation
+- Added a "Coming from NATS" page to the docs, publish `/llms.txt` and `/llms-full.txt` from the docs build, and end each Getting Started page with a "Where next" section.
+- New "Running in Production" guide: sizing a broker's memory, disk, CPU and network from the settings that bound them, choosing fsync mode, consistency, replication factor and zones for a durability need, and a hardening checklist.
+- The observability page's p99 publish latency example no longer uses `_bucket`; Felix exports latencies as summaries, so it reads the `quantile` series.
+- Added reference pages for every Prometheus metric, every client error code, retry class and detail reason, and every `felixctl` command and flag. Checks in CI fail when the code and a page disagree, and `task docs:felixctl` regenerates the felixctl page.
+- The docs site has a [Release notes](https://docs.getfelix.dev/release-notes/) section: one page per released version, generated from this changelog when the site is built, and an [Upgrading to 0.7](https://docs.getfelix.dev/release-notes/upgrading-to-0-7/) page for the line in development.
+- The Building Resilient Clients guide marks the reconnect deadline, and the attempt count outside Rust, as new in 0.7, and says how to bound a call on 0.6.2.
+- Added "Building Resilient Clients", a cross-language guide to seeds, reconnection, token refresh, retry classes, unknown outcomes, resuming, slow consumers, consumer groups and shutdown. Its Rust, Python, TypeScript, C# and C examples are compiled by the same checks as the client pages.
+- A new [Terminology](https://docs.getfelix.dev/reference/terminology/) page explains the words used across the docs, code and tools, including the ones that mean different things in different places.
+- The semantics pages no longer say a stream's `retention` field is ignored. It applies, and the broker-wide `FELIX_DURABLE_RETENTION_*` settings fill any bound it leaves unset.
+- The tutorials work with the released 0.6.2 clients and with Podman: every container command has a Podman form, each language gets its own file per tutorial with the command to run it, every tutorial has a "Run it" section, setup writes the settings to a file every terminal sources, and the C programs build against the release archive.
+- A Tutorials section in the docs site: building a durable stream, a work queue, a lease with a cache watch, and a small order pipeline, with code in Rust, Python, TypeScript, C# and C. The examples are compiled by the same checks as the client pages.
+
 ## [0.6.2] - 2026-10-25
 
 0.6.2 is the last 0.6 release. Every client now takes a token provider with one

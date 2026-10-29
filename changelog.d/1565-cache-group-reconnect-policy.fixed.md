@@ -1,1 +1,0 @@
-- Cache and consumer-group calls in `ClusterClient` now follow `ReconnectPolicy` like publishes do (#1565). The attempt limit, backoff and deadline bound the whole call, re-routes included, in every binding. A write is sent again only after a refusal that says nothing was applied. The `retry.deadline_bounds_an_operation` scenario now also covers a group call.

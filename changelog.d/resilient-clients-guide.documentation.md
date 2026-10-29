@@ -1,1 +1,0 @@
-- Added "Building Resilient Clients", a cross-language guide to seeds, reconnection, token refresh, retry classes, unknown outcomes, resuming, slow consumers, consumer groups and shutdown. Its Rust, Python, TypeScript, C# and C examples are compiled by the same checks as the client pages.
