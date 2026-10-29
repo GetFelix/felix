@@ -140,6 +140,13 @@
 (* alone, and without the fence TLC finds `{a, c}` holding one on a alone  *)
 (* (AckedOnMajority, #1616).                                               *)
 (*                                                                         *)
+(* A replacement given up beside an even set fences the leader first       *)
+(* (`UndoFence`) and drops the copy joining only once the drained report   *)
+(* has every other follower holding the leader's whole log (`Undo`).       *)
+(* Dropped while the leader serves, TLC finds a record acknowledged on     *)
+(* the leader and that copy alone left on the leader only                  *)
+(* (AckedOnMajority, #1628).                                               *)
+(*                                                                         *)
 (* A failover right after a seat into two may keep the dropped copy        *)
 (* (`SeatDropped`). A set above the factor is fenced (`TrimFence`) and,    *)
 (* once its leader reports drained, drops a follower the rest can do       *)
@@ -685,6 +692,12 @@ Counted == ReplicaSet \cup (IF Cardinality(ReplicaSet) % 2 = 0 THEN joining ELSE
 \* `LoweredFactor`: the replication factor is one below the starting set.
 \* A definition, so configurations without it need not name it.
 LoweredFactor == FALSE
+
+\* `Undoes`: placement may give a replacement up and drop the copy joining
+\* (`undo_or_fence` in placement/moves.rs). `UndoUnfenced` drops it while
+\* the leader serves, as placement did before #1628.
+Undoes == FALSE
+UndoUnfenced == FALSE
 
 \* The replication factor, and a set above it with nothing else in progress.
 \* Without `Grow` or `LoweredFactor` a set grows only by a failover: one that
@@ -2058,6 +2071,50 @@ Seat(v, j, views) ==
     \* `leaving` stays, for `SeatDropped`.
     /\ UNCHANGED << moves, leaving >>
 
+\* With `Undoes`, a replacement given up beside an even set first fences the
+\* leader (`undo_or_fence` in placement/moves.rs): the leader and the copy
+\* joining alone are a majority of the set it joined, so dropping the copy
+\* while the leader serves can leave a record on the leader only (#1628).
+UndoFence(v, j, views) ==
+    /\ Undoes /\ ~UndoUnfenced
+    /\ j \in joining
+    /\ Cardinality(ReplicaSet) % 2 = 0
+    /\ ~v.draining /\ ~v.lapsed /\ v.leader = leader
+    /\ cpNext = {}
+    /\ Cas(v)
+    /\ ver' = ver + 1
+    /\ cpView' = views
+    /\ draining' = TRUE
+    /\ successor' = leader
+    /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry, hbOut,
+                    hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit, stopped,
+                    moves, staged, out, mine, joining, leaving, joinedAt >>
+    /\ UNCHANGED fenceVars
+
+\* The copy joining goes and the set is the one it joined. Beside an even
+\* set, only once the fenced leader reports drained with every other
+\* follower holding its whole log (`seat_after_fence`), and the leader serves
+\* again at the next generation. A failover before the leader reports again
+\* may keep the dropped copy, as after a seat.
+Undo(v, j, views) ==
+    /\ Undoes
+    /\ j \in joining
+    /\ IF Cardinality(ReplicaSet) % 2 = 0 /\ ~UndoUnfenced
+       THEN /\ v.draining /\ v.successor = v.leader
+            /\ v.report.gen = v.gen /\ v.report.drained
+            /\ (mine[leader] \ {leader, j}) \subseteq v.report.holders
+            /\ RegenerateSet(v, views, mine[leader] \ {j})
+            /\ draining' = FALSE
+            /\ stopped' = [stopped EXCEPT ![leader] = FALSE]
+            /\ UNCHANGED successor
+       ELSE /\ ~v.draining
+            /\ Regenerate(v, views, mine[leader] \ {j})
+    /\ out' = out \cup {j}
+    /\ joining' = {}
+    /\ leaving' = {j}
+    /\ joinedAt' = 0
+    /\ UNCHANGED moves
+
 \* The followers report `r` lets a trim drop: every other follower is in it
 \* caught up (`trim_candidate` in placement/moves.rs).
 TrimDroppable(r) ==
@@ -2262,6 +2319,7 @@ Decide(v, f, views) ==
     \/ /\ \/ Fence(v, f, views) \/ CutOver(v, f, views) \/ Retake(v, f, views)
           \/ Reseat(v, f, views) \/ GrowSet(v, f, views) \/ Seat(v, f, views)
           \/ SeatFence(v, f, views) \/ TrimFence(v, views) \/ TrimSet(v, f, views)
+          \/ UndoFence(v, f, views) \/ Undo(v, f, views)
           \/ Swap(v, f, views) \/ CpAdopt(v, f, views) \/ Reclaim(v, views)
        /\ UNCHANGED << counterVars, expect, inherited, seen, seenInc >>
 
