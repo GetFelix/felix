@@ -42,6 +42,7 @@ on:
       - docs/formal/FelixShardWalk*.cfg
       - docs/formal/FelixShardFenced*NamesByInheritance.cfg
       - docs/formal/FelixShardFenced*InheritedCounts.cfg
+      - docs/formal/FelixShardShortCopy*.cfg
       - docs/formal/FelixShard.tla
 
 permissions:
@@ -82,8 +83,11 @@ jobs:
             configs: FelixShardFencedWipeNamesByInheritance FelixShardFencedWipeInheritedCounts FelixShardFencedLeaderCrashNamesByInheritance FelixShardFencedLeaderCrashInheritedCounts
           # A crashed leader's refusal and its set-of-two exception: past 30M
           # distinct states exhaustively.
-          - family: short-copy
-            configs: FelixShardShortCopySeat FelixShardShortCopySeatAnySet FelixShardShortCopyStaged
+          # Split so each job's pass configurations fit its hour.
+          - family: short-copy-seat
+            configs: FelixShardShortCopySeat FelixShardShortCopySeatAnySet
+          - family: short-copy-keys
+            configs: FelixShardShortCopySeatAnyKeys FelixShardShortCopyStaged
     steps:
       - name: Checkout
         uses: actions/checkout@v7
