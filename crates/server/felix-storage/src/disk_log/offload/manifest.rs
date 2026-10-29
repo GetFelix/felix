@@ -58,7 +58,6 @@ pub(crate) struct Manifest {
 }
 
 impl Manifest {
-    #[cfg(test)]
     pub(crate) fn entries(&self) -> &[ManifestEntry] {
         &self.entries
     }
@@ -268,7 +267,7 @@ pub(crate) fn store(dir: &Path, manifest: &Manifest) -> Result<()> {
     Ok(())
 }
 
-fn path_in(dir: &Path) -> PathBuf {
+pub(crate) fn path_in(dir: &Path) -> PathBuf {
     dir.join(FILE_NAME)
 }
 
