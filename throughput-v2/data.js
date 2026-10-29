@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793275300652,
+  "lastUpdate": 1793281471595,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -39208,6 +39208,58 @@ window.BENCHMARK_DATA = {
             "range": "8126.25",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 817091.87\nmean: 817437.61\nstdev: 8126.25\ncv: 0.99%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fc7bc7fe50bff3eda3b800ade9b4a3b699aa20e8",
+          "message": "spec(formal): model the crashed leader's short-copy refusal and its set-of-two exception (#1636) (#1637)\n\nRefuseShortCopy models refuse_short_copy and acknowledged_by_two: a leader that crashed and gave its copy up answers no promotion fence from it until a newer leader has shipped to it, unless the set of two it led acknowledged what it may have lost. The exception checks that the copy's last record is from the generation it led, the fencer leads the next one with the same two as its set, and the fence ids (old set and new set, #1633) name exactly those two. Configurations that leave it off are unchanged.\n\nThe model is narrower than the code: the code reads the generation and set from the crashed leader's own routing view and ties neither to the fence's generation or to the sender leading it. No unsafe trace is known from the gap; #1638 tightens the code to the model's rule.\n\nConfigurations:\n- FelixShardShortCopySeatAnySet (set check dropped) violates AckedHeldByLeader, per push.\n- FelixShardShortCopySeat (the #1486 shape), FelixShardShortCopySeatAnyKeys (fence ids' comparison dropped) and FelixShardShortCopyStaged (beside a staged copy, the fix #1635 proposes) pass in the nightly walks (tla-walk.yml, two jobs). Exhaustively they run past 30M distinct states. Walk run 40870290781: all three pass, AnySet reaches its violation.\n\nCloses #1636.",
+          "timestamp": "2026-10-29T06:39:43-07:00",
+          "tree_id": "46c9790f81b79655831bf356e9b17dd435820222",
+          "url": "https://github.com/GetFelix/felix/commit/fc7bc7fe50bff3eda3b800ade9b4a3b699aa20e8"
+        },
+        "date": 1793281470773,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 371571.12,
+            "range": "15135.30",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 371571.12\nmean: 367760.96\nstdev: 15135.30\ncv: 4.12%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 371571.12,
+            "range": "15135.30",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 371571.12\nmean: 367760.96\nstdev: 15135.30\ncv: 4.12%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 83972.02,
+            "range": "2122.32",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 83972.02\nmean: 83499.91\nstdev: 2122.32\ncv: 2.54%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 839720.2,
+            "range": "21223.20",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 839720.20\nmean: 834999.09\nstdev: 21223.20\ncv: 2.54%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
