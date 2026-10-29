@@ -70,6 +70,10 @@ pub enum MoveStep {
     /// On a fenced stream, the leader stops serving before a seat that
     /// leaves an even set, so `to` can be seen holding its whole log first.
     SeatFence { to: String },
+    /// On a fenced stream, the leader stops serving before a replacement is
+    /// undone beside an even set, so the rest can be seen holding its whole
+    /// log before `successor` leaves.
+    UndoFence { successor: String },
     /// The leader of a set above the replication factor stops serving, so
     /// a follower can leave once the rest hold its whole log.
     TrimFence,
@@ -106,6 +110,7 @@ impl MoveStep {
             Self::Restore { .. } => "restore",
             Self::Seat { .. } => "seat",
             Self::SeatFence { .. } => "seat_fence",
+            Self::UndoFence { .. } => "undo_fence",
             Self::TrimFence => "trim_fence",
             Self::Trim { .. } => "trim",
             Self::Cancel { .. } => "cancel",

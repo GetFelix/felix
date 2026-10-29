@@ -25,6 +25,8 @@ struct Reports {
     halted: BTreeMap<String, HaltedCopy>,
     /// When the fence at the report's generation was first seen.
     fenced_at: Option<u64>,
+    /// When the joining copy was last seen to move.
+    progressed_at: Option<u64>,
 }
 
 impl Reports {
@@ -79,6 +81,9 @@ impl CaughtUp for Reports {
     fn fenced_at_millis(&self, key: &ShardKey, generation: u64) -> Option<u64> {
         self.fenced_at
             .filter(|_| Some(generation) == self.reported_generation(key))
+    }
+    fn progressed_at_millis(&self, _key: &ShardKey, _node_id: &str) -> Option<u64> {
+        self.progressed_at
     }
 }
 
@@ -1463,4 +1468,334 @@ fn a_seat_fence_takes_one_move_slot() {
         &|_| false,
     );
     assert_eq!(moves.begin("broker-d", "broker-e"), Ok(()));
+}
+
+/// Reports from broker-a fenced at generation 3: tail 101, which broker-a
+/// acknowledged on broker-c alone, broker-c at 101 and broker-b at 100.
+fn acked_on_a_and_c() -> Reports {
+    let mut reports = drained(level_at_100(&["broker-b", "broker-c"]));
+    reports.tail = Some(101);
+    reports.offsets.insert("broker-c".to_string(), 101);
+    reports
+}
+
+/// **Undo beside an even set (#1628).** broker-c joins `{a, b}` to replace
+/// broker-b, and broker-b is undrained, so the replacement is undone. Two of
+/// the three acknowledge, so a record can be on broker-a and broker-c alone
+/// after any report; dropped while broker-a serves, `{a, b}` would hold it
+/// on broker-a only. So broker-a is fenced first, and broker-c goes only once
+/// the drained report has broker-b at broker-a's tail.
+#[test]
+fn an_undo_beside_an_even_set_fences_first() {
+    let nodes = live(&["broker-a", "broker-b", "broker-c"]);
+    let joined = replacing_b("broker-a");
+    let (decision, _) = decide(
+        rf2("orders"),
+        &nodes,
+        joined.clone(),
+        &level_at_100(&["broker-b", "broker-c"]),
+    );
+    let fenced = trim_fenced(&joined);
+    assert_eq!(
+        decision,
+        Decision::Move(
+            MoveStep::UndoFence {
+                successor: "broker-c".to_string()
+            },
+            fenced.clone()
+        )
+    );
+
+    let mut reports = acked_on_a_and_c();
+    let (decision, _) = decide(rf2("orders"), &nodes, fenced.clone(), &reports);
+    assert_eq!(decision, Decision::Waiting(Blocked::LeaderStopping));
+
+    reports.offsets.insert("broker-b".to_string(), 101);
+    let (decision, _) = decide(rf2("orders"), &nodes, fenced, &reports);
+    assert_eq!(
+        decision,
+        Decision::Move(
+            MoveStep::Abandon {
+                successor: "broker-c".to_string()
+            },
+            ShardAssignment {
+                replicas: vec!["broker-b".to_string()],
+                generation: 0,
+                state: ShardState::Assigning,
+                joining: None,
+                move_started_at_millis: None,
+                move_reason: None,
+                ..joined
+            }
+        )
+    );
+}
+
+/// An undo beside an odd set needs no fence: a record acknowledged on three
+/// of the four is still on two of the three left.
+#[test]
+fn an_undo_beside_an_odd_set_does_not_fence() {
+    let nodes = live(&["broker-a", "broker-b", "broker-c", "broker-d"]);
+    let joined = ShardAssignment {
+        joining: Some("broker-d".to_string()),
+        move_started_at_millis: Some(NOW - 1_000),
+        move_reason: Some(MoveReason::Replace),
+        ..assigned("orders", "broker-a", &["broker-b", "broker-c", "broker-d"])
+    };
+    let (decision, _) = decide(
+        quorum("orders"),
+        &nodes,
+        joined,
+        &level_at_100(&["broker-b", "broker-c", "broker-d"]),
+    );
+    let Decision::Move(MoveStep::Abandon { successor }, next) = decision else {
+        panic!("expected the newcomer dropped, got {decision:?}");
+    };
+    assert_eq!(successor, "broker-d");
+    assert_eq!(next.replicas, ["broker-b", "broker-c"]);
+}
+
+/// **Halted while seat-fenced (#1628).** broker-c halts while broker-a is
+/// fenced for its seat, after 101 was acknowledged on broker-a and broker-c
+/// alone. Dropping broker-c then leaves 101 on broker-a only, so it waits
+/// until the drained report has broker-b at 101.
+#[test]
+fn a_fenced_seat_whose_newcomer_halted_waits_for_the_rest_to_hold_the_log() {
+    let nodes = vec![
+        node("broker-a", NodeLifecycle::Live, None),
+        node("broker-b", NodeLifecycle::Draining, None),
+        node("broker-c", NodeLifecycle::Live, None),
+    ];
+    let mut reports = acked_on_a_and_c();
+    reports.halted.insert(
+        "broker-c".to_string(),
+        HaltedCopy {
+            reason: "diverged".to_string(),
+            generation: 3,
+            since_millis: NOW - MINUTE,
+        },
+    );
+    let fenced = trim_fenced(&replacing_b("broker-a"));
+    let (decision, _) = decide(rf2("orders"), &nodes, fenced.clone(), &reports);
+    assert_eq!(decision, Decision::Waiting(Blocked::LeaderStopping));
+
+    reports.offsets.insert("broker-b".to_string(), 101);
+    let (decision, _) = decide(rf2("orders"), &nodes, fenced, &reports);
+    let Decision::Move(MoveStep::Halted { successor, .. }, next) = decision else {
+        panic!("expected the newcomer dropped, got {decision:?}");
+    };
+    assert_eq!(successor, "broker-c");
+    assert_eq!(next.replicas, ["broker-b"]);
+    assert_eq!(next.state, ShardState::Assigning);
+}
+
+/// **Lost copy back while seat-fenced (#1628).** broker-c is restoring in
+/// place of the lost broker-b, and broker-b comes back while broker-a is
+/// fenced, so the restore is not needed. 101 is on broker-a and broker-c
+/// alone, so broker-c goes only once broker-b holds 101 too.
+#[test]
+fn a_fenced_restore_whose_lost_copy_came_back_waits_for_it_to_hold_the_log() {
+    let nodes = live(&["broker-a", "broker-b", "broker-c"]);
+    let fenced = trim_fenced(&restoring(
+        "broker-a",
+        &["broker-b", "broker-c"],
+        "broker-c",
+    ));
+    let mut reports = acked_on_a_and_c();
+    let (decision, _) = decide(rf2("orders"), &nodes, fenced.clone(), &reports);
+    assert_eq!(decision, Decision::Waiting(Blocked::LeaderStopping));
+
+    reports.offsets.insert("broker-b".to_string(), 101);
+    let (decision, _) = decide(rf2("orders"), &nodes, fenced, &reports);
+    let Decision::Move(MoveStep::Abandon { successor }, next) = decision else {
+        panic!("expected the newcomer dropped, got {decision:?}");
+    };
+    assert_eq!(successor, "broker-c");
+    assert_eq!(next.replicas, ["broker-b"]);
+    assert_eq!(next.state, ShardState::Assigning);
+}
+
+/// An operator's cancel beside an even set fences with no move reason, and
+/// placement then drops the newcomer even though it could be seated.
+#[test]
+fn a_fenced_cancel_drops_the_newcomer_rather_than_seating_it() {
+    let nodes = vec![
+        node("broker-a", NodeLifecycle::Live, None),
+        node("broker-b", NodeLifecycle::Draining, None),
+        node("broker-c", NodeLifecycle::Live, None),
+    ];
+    let cancelled = ShardAssignment {
+        move_reason: None,
+        ..trim_fenced(&replacing_b("broker-a"))
+    };
+    let mut reports = acked_on_a_and_c();
+    reports.offsets.insert("broker-b".to_string(), 101);
+    let (decision, _) = decide(rf2("orders"), &nodes, cancelled, &reports);
+    let Decision::Move(MoveStep::Abandon { successor }, next) = decision else {
+        panic!("expected the newcomer dropped, got {decision:?}");
+    };
+    assert_eq!(successor, "broker-c");
+    assert_eq!(next.replicas, ["broker-b"]);
+}
+
+/// A seat-fenced replacement past its move timeout is still seated when it
+/// can be, and dropped otherwise only once the rest hold the leader's log.
+#[test]
+fn a_fenced_seat_past_its_timeout_drops_the_newcomer_on_evidence() {
+    let nodes = vec![
+        node("broker-a", NodeLifecycle::Live, None),
+        node("broker-b", NodeLifecycle::Draining, None),
+        node("broker-c", NodeLifecycle::Live, None),
+    ];
+    let timeout = MovePolicy::default().timeout_millis.expect("a default");
+    let fenced = ShardAssignment {
+        move_started_at_millis: Some(NOW - timeout - 1),
+        ..trim_fenced(&replacing_b("broker-a"))
+    };
+    let mut reports = drained(level_at_100(&["broker-b", "broker-c"]));
+    reports.tail = Some(101);
+    reports.offsets.insert("broker-b".to_string(), 101);
+    let (decision, _) = decide(rf2("orders"), &nodes, fenced.clone(), &reports);
+    let Decision::Move(MoveStep::TimedOut { successor }, next) = decision else {
+        panic!("expected the newcomer dropped, got {decision:?}");
+    };
+    assert_eq!(successor, "broker-c");
+    assert_eq!(next.replicas, ["broker-b"]);
+
+    reports.offsets.insert("broker-b".to_string(), 100);
+    let (decision, _) = decide(rf2("orders"), &nodes, fenced, &reports);
+    assert_eq!(decision, Decision::Waiting(Blocked::LeaderStopping));
+}
+
+/// RF 3 `{a, b}` topping up into broker-c, which has stopped moving 5,000
+/// records behind a tail of 10,000.
+fn stalled_top_up() -> (Stream, Vec<Node>, ShardAssignment, Reports) {
+    let existing = restoring("broker-a", &["broker-b", "broker-c"], "broker-c");
+    let mut reports = level_at_100(&["broker-b"]);
+    reports.tail = Some(10_000);
+    reports.offsets.insert("broker-b".to_string(), 10_000);
+    reports.offsets.insert("broker-c".to_string(), 5_000);
+    reports.progressed_at = Some(NOW - 3 * MINUTE);
+    (
+        quorum("orders"),
+        live(&["broker-a", "broker-b", "broker-c"]),
+        existing,
+        reports,
+    )
+}
+
+/// **RF 3 top-up undone (#1628).** Dropping broker-c leaves `{a, b}`, so a
+/// stalled top-up is fenced first, as a replacement beside an even set is.
+#[test]
+fn a_stalled_top_up_beside_an_even_set_fences_first() {
+    let (stream, nodes, existing, reports) = stalled_top_up();
+    let (decision, _) = decide(stream, &nodes, existing.clone(), &reports);
+    assert_eq!(
+        decision,
+        Decision::Move(
+            MoveStep::UndoFence {
+                successor: "broker-c".to_string()
+            },
+            trim_fenced(&existing)
+        )
+    );
+}
+
+/// **Stalled while undo-fenced (#1628).** The fence was for the stall, so the
+/// first drained report with broker-b at the tail drops broker-c rather than
+/// waiting out the move timeout. The start stays, as for a stall unfenced.
+#[test]
+fn a_fenced_stalled_restore_is_dropped_once_the_rest_hold_the_log() {
+    let (stream, nodes, existing, mut reports) = stalled_top_up();
+    let fenced = trim_fenced(&existing);
+    reports.drained = true;
+    reports.offsets.insert("broker-b".to_string(), 9_999);
+    let (decision, _) = decide(stream.clone(), &nodes, fenced.clone(), &reports);
+    assert_eq!(decision, Decision::Waiting(Blocked::LeaderStopping));
+
+    reports.offsets.insert("broker-b".to_string(), 10_000);
+    let (decision, _) = decide(stream, &nodes, fenced, &reports);
+    let Decision::Move(MoveStep::Stalled { successor }, next) = decision else {
+        panic!("expected the newcomer dropped, got {decision:?}");
+    };
+    assert_eq!(successor, "broker-c");
+    assert_eq!(next.replicas, ["broker-b"]);
+    assert_eq!(next.state, ShardState::Assigning);
+    assert_eq!(next.move_started_at_millis, existing.move_started_at_millis);
+}
+
+/// A stalled restore's fence that times out gives the shard back with the
+/// copy in place; the next pass fences again, and that fence's drained report
+/// drops it.
+#[test]
+fn a_stalled_restore_fenced_again_after_a_fence_timeout_converges() {
+    let (stream, nodes, existing, mut reports) = stalled_top_up();
+    reports.fenced_at = Some(NOW - DEFAULT_FENCE_TIMEOUT_MILLIS - 1);
+    let (decision, _) = decide(stream.clone(), &nodes, trim_fenced(&existing), &reports);
+    let Decision::Move(MoveStep::FenceTimedOut { successor: None }, back) = decision else {
+        panic!("expected the shard given back, got {decision:?}");
+    };
+    assert_eq!(back.joining.as_deref(), Some("broker-c"));
+    assert_eq!(back.state, ShardState::Assigning);
+
+    reports.fenced_at = None;
+    let (decision, _) = decide(stream.clone(), &nodes, back.clone(), &reports);
+    let Decision::Move(MoveStep::UndoFence { .. }, fenced) = decision else {
+        panic!("expected a second fence, got {decision:?}");
+    };
+
+    reports.drained = true;
+    let (decision, _) = decide(stream, &nodes, fenced, &reports);
+    let Decision::Move(MoveStep::Stalled { successor }, next) = decision else {
+        panic!("expected the newcomer dropped, got {decision:?}");
+    };
+    assert_eq!(successor, "broker-c");
+    assert_eq!(next.replicas, ["broker-b"]);
+}
+
+/// **A lost member does not block the undo (#1628).** RF 4 `{a, b, c, d}`
+/// with broker-d lost, restoring into broker-e, which halts while broker-a
+/// is fenced. The leader with broker-b and broker-c at its tail is a majority
+/// of `{a, b, c, d}`, so broker-e goes without broker-d. With only broker-b
+/// at the tail it is two of four, and it waits.
+#[test]
+fn a_fenced_undo_needs_a_majority_of_the_rest_not_all_of_it() {
+    let nodes = vec![
+        node("broker-a", NodeLifecycle::Live, None),
+        node("broker-b", NodeLifecycle::Live, None),
+        node("broker-c", NodeLifecycle::Live, None),
+        gone("broker-d", 10 * MINUTE),
+        node("broker-e", NodeLifecycle::Live, None),
+    ];
+    let stream = Stream {
+        consistency: ConsistencyLevel::Quorum,
+        ..replicated_stream("orders", 1, 4)
+    };
+    let fenced = trim_fenced(&restoring(
+        "broker-a",
+        &["broker-b", "broker-c", "broker-d", "broker-e"],
+        "broker-e",
+    ));
+    let mut reports = drained(level_at_100(&["broker-b", "broker-c", "broker-e"]));
+    reports.tail = Some(101);
+    reports.offsets.insert("broker-b".to_string(), 101);
+    reports.halted.insert(
+        "broker-e".to_string(),
+        HaltedCopy {
+            reason: "diverged".to_string(),
+            generation: 3,
+            since_millis: NOW - MINUTE,
+        },
+    );
+    let (decision, _) = decide(stream.clone(), &nodes, fenced.clone(), &reports);
+    assert_eq!(decision, Decision::Waiting(Blocked::LeaderStopping));
+
+    reports.offsets.insert("broker-c".to_string(), 101);
+    let (decision, _) = decide(stream, &nodes, fenced, &reports);
+    let Decision::Move(MoveStep::Halted { successor, .. }, next) = decision else {
+        panic!("expected the newcomer dropped, got {decision:?}");
+    };
+    assert_eq!(successor, "broker-e");
+    assert_eq!(next.replicas, ["broker-b", "broker-c", "broker-d"]);
+    assert_eq!(next.state, ShardState::Assigning);
 }

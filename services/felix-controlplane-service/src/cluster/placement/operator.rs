@@ -8,13 +8,14 @@
 //! That is how a request on any instance keeps to the same limits as the
 //! lease holder's placement.
 use super::moves::{
-    AtGeneration, MovePolicy, Moves, retake, spread_if_led_by, start, undo_replacement, undo_staged,
+    AtGeneration, MovePolicy, Moves, retake, spread_if_led_by, start, undo_fenced,
+    undo_needs_fence, undo_replacement, undo_staged,
 };
 use super::plan::{assignment_for, owner_of, plan_abandoning, replication_factors};
 use super::{Blocked, CaughtUp, Decision, MoveStep, Unplaceable, zones};
 use crate::model::{
-    Cache, MoveReason, Node, NodeLifecycle, ShardAssignment, ShardKey, ShardKind, ShardState,
-    Stream,
+    Cache, ConsistencyLevel, MoveReason, Node, NodeLifecycle, ShardAssignment, ShardKey, ShardKind,
+    ShardState, Stream,
 };
 
 /// What an operator's request is decided against: one read of the catalog.
@@ -301,6 +302,12 @@ fn zone_impact(
 /// and the ones still in flight when it stopped land in the same log. Once
 /// the move has cut over there is nothing to cancel.
 ///
+/// A replacement on a fenced stream whose undo leaves an even set is fenced
+/// instead, and placement drops the copy once the leader's drained report
+/// shows enough of the rest holding its log. Cancelling again while that
+/// fence is up takes the shard back as after any fence: the copy stays, as
+/// a full member, and a set left above its factor is trimmed back.
+///
 /// Either way the start time stays, so placement queues this shard behind
 /// others for its next move. Pause placement first to stop it choosing the
 /// same move again.
@@ -330,11 +337,21 @@ pub fn cancel_move(catalog: &Catalog<'_>, key: &ShardKey) -> Result<OperatorStep
             undo_staged(existing, successor, replication_factor),
         )
     } else if let Some(joining) = existing.joining.as_deref() {
+        // See `undo_or_fence`. With no move reason, placement drops the copy
+        // after the fence rather than seating it.
+        let assignment = if undo_needs_fence(existing, fenced_of(catalog, key)) {
+            ShardAssignment {
+                move_reason: None,
+                ..undo_fenced(existing)
+            }
+        } else {
+            undo_replacement(existing, joining)
+        };
         (
             MoveStep::Cancel {
                 successor: joining.to_string(),
             },
-            undo_replacement(existing, joining),
+            assignment,
         )
     } else {
         return Err(Refused::NotMoving);
@@ -444,6 +461,27 @@ fn placeable_of<'a>(
             })
             .filter(|c| key.shard < c.shards)
             .map(|c| (c.replication_factor.max(1), true, None)),
+    }
+}
+
+/// Whether `key`'s failover fences a majority of its set: a durable `Quorum`
+/// stream or a `Quorum` cache, as placement decides it.
+fn fenced_of(catalog: &Catalog<'_>, key: &ShardKey) -> bool {
+    let quorum = |consistency: &ConsistencyLevel| matches!(consistency, ConsistencyLevel::Quorum);
+    match key.kind {
+        ShardKind::Stream => catalog.streams.iter().any(|s| {
+            s.tenant_id == key.tenant_id
+                && s.namespace == key.namespace
+                && s.stream == key.stream
+                && s.durable
+                && quorum(&s.consistency)
+        }),
+        ShardKind::Cache => catalog.caches.iter().any(|c| {
+            c.tenant_id == key.tenant_id
+                && c.namespace == key.namespace
+                && c.cache == key.stream
+                && quorum(&c.consistency)
+        }),
     }
 }
 

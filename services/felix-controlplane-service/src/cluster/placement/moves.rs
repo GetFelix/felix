@@ -527,15 +527,17 @@ pub(super) fn move_step<'a>(
 
     if let Some(joining) = existing.joining.as_deref() {
         if let Some(reason) = halted_now(joining) {
-            return Decision::Move(
+            return undo_or_fence(
+                existing,
+                joining,
                 MoveStep::Halted {
                     successor: joining.to_string(),
                     reason,
                 },
-                ShardAssignment {
-                    move_started_at_millis: None,
-                    ..undo_replacement(existing, joining)
-                },
+                None,
+                fenced,
+                caught_up,
+                moves,
             );
         }
         if existing.move_reason == Some(MoveReason::Restore) {
@@ -784,6 +786,62 @@ pub(super) fn undo_staged(
     }
 }
 
+/// Undo a replacement, or, on a fenced stream where dropping `joining`
+/// leaves an even set, fence the leader first.
+///
+/// Beside an even set, the leader and `joining` alone are a majority of the
+/// set `joining` came into, so a record can be acknowledged on just those two
+/// after any report placement read. Dropped then, it is on the leader only
+/// (#1628). A fenced leader's log stops growing, and [`seat_after_fence`]
+/// drops `joining` once the drained report has the rest holding all of it.
+/// `FelixShardFencedAckUndoPair` in `docs/formal/FelixShard.tla`.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn undo_or_fence(
+    existing: &ShardAssignment,
+    joining: &str,
+    step: MoveStep,
+    started: Option<u64>,
+    fenced: bool,
+    caught_up: &dyn CaughtUp,
+    moves: &Moves,
+) -> Decision {
+    if undo_needs_fence(existing, fenced) {
+        if let Some(blocked) = moves.backing_off(caught_up, &existing.key) {
+            return Decision::Waiting(blocked);
+        }
+        return Decision::Move(
+            MoveStep::UndoFence {
+                successor: joining.to_string(),
+            },
+            undo_fenced(existing),
+        );
+    }
+    Decision::Move(
+        step,
+        ShardAssignment {
+            move_started_at_millis: started,
+            ..undo_replacement(existing, joining)
+        },
+    )
+}
+
+/// Whether dropping the copy joining `existing` leaves an even set on a
+/// fenced stream, so it waits for a fence ([`undo_or_fence`]).
+pub(super) fn undo_needs_fence(existing: &ShardAssignment, fenced: bool) -> bool {
+    fenced && existing.joining.is_some() && existing.nodes().count() % 2 == 1
+}
+
+/// `existing` fenced so its joining copy can be dropped. [`seat_after_fence`]
+/// decides again from the reports which, and seats the copy if it can.
+pub(super) fn undo_fenced(existing: &ShardAssignment) -> ShardAssignment {
+    ShardAssignment {
+        state: ShardState::Draining,
+        generation: 0,
+        fence_storage_ids: Default::default(),
+        ..existing.clone()
+    }
+}
+
 /// A replacement without the follower it was copying in. The start stays,
 /// as for [`undo_staged`].
 pub(super) fn undo_replacement(existing: &ShardAssignment, joining: &str) -> ShardAssignment {
@@ -882,13 +940,7 @@ fn replacement_step(
 ) -> Decision {
     let departing = departing(existing, joining, eligible, is_draining);
     let undo = |step: MoveStep, started| {
-        Decision::Move(
-            step,
-            ShardAssignment {
-                move_started_at_millis: started,
-                ..undo_replacement(existing, joining)
-            },
-        )
+        undo_or_fence(existing, joining, step, started, fenced, caught_up, moves)
     };
     // Nothing to replace any more (the node was undrained), or nowhere to
     // put the copy: the follower that was staying stays.
@@ -997,16 +1049,20 @@ fn seated(existing: &ShardAssignment, from: Option<&str>) -> ShardAssignment {
     }
 }
 
-/// A seat whose leader [`seat_or_fence`] fenced: seat `joining` once the
-/// leader's drained report at this generation has it at the leader's own
-/// offset, its whole log, and the leader serves again at the next one.
+/// A seat whose leader [`seat_or_fence`] fenced, or an undo whose leader
+/// [`undo_or_fence`] fenced: seat `joining` once the leader's drained report
+/// at this generation has it at the leader's own offset, its whole log, and
+/// the leader serves again at the next one.
 ///
-/// A newcomer gone or halted, or nothing left to replace, gives the shard
-/// back to the leader with the replacement undone, as the serving path would.
+/// A newcomer gone or halted, nothing left to replace, an operator's cancel
+/// (no move reason), or a restore stalled or a move past its timeout that
+/// cannot be seated drops `joining` only once that report has the leader and
+/// followers at the leader's offset as a majority of the set left: beside
+/// the even set left, a record may be on the leader and `joining` alone
+/// (#1628). Until then it waits.
 /// A restore whose set has gone short (the factor was raised while fenced)
 /// replaces nobody and seats `joining` as a top-up instead, as
-/// [`restore_step`] would: undone, a record acknowledged on the leader and
-/// `joining` alone would be on the leader only.
+/// [`restore_step`] would.
 /// A leader that never reports drained gets it back at the fence timeout
 /// with the replacement still going, which then waits out its backoff.
 #[allow(clippy::too_many_arguments)]
@@ -1025,32 +1081,51 @@ fn seat_after_fence(
         state: ShardState::Assigning,
         ..assignment
     };
-    let undone = || ShardAssignment {
-        move_started_at_millis: None,
-        ..serving(undo_replacement(existing, joining))
-    };
-    if let Some(reason) = halted {
-        return Decision::Move(
-            MoveStep::Halted {
-                successor: joining.to_string(),
-                reason,
-            },
-            undone(),
-        );
-    }
-    if !is_live(joining) || (from.is_none() && !top_up) {
-        return Decision::Move(
-            MoveStep::Abandon {
-                successor: joining.to_string(),
-            },
-            undone(),
-        );
-    }
     let tail = caught_up.leader_offset(key);
-    if caught_up.is_drained(key, existing.generation)
-        && tail.is_some()
-        && caught_up.reported_offset(key, joining) == tail
-    {
+    let drained = caught_up.is_drained(key, existing.generation);
+    let holds_tail =
+        |replica: &str| tail.is_some() && caught_up.reported_offset(key, replica) == tail;
+    // The drained leader holds every acknowledged record and a follower at
+    // its tail holds its whole log, so with those a majority of the set
+    // left, every acknowledged record is on a majority of it. A lost
+    // follower need not be among them.
+    let undo = |step: MoveStep, started: Option<u64>| {
+        let rest: Vec<&String> = existing
+            .replicas
+            .iter()
+            .filter(|replica| *replica != joining)
+            .collect();
+        let holding = 1 + rest.iter().filter(|replica| holds_tail(replica)).count();
+        (drained && 2 * holding > rest.len() + 1).then(|| {
+            Decision::Move(
+                step,
+                ShardAssignment {
+                    move_started_at_millis: started,
+                    ..serving(undo_replacement(existing, joining))
+                },
+            )
+        })
+    };
+    let gave_up = match halted {
+        Some(reason) => Some(MoveStep::Halted {
+            successor: joining.to_string(),
+            reason,
+        }),
+        None if existing.move_reason.is_none()
+            || !is_live(joining)
+            || (from.is_none() && !top_up) =>
+        {
+            Some(MoveStep::Abandon {
+                successor: joining.to_string(),
+            })
+        }
+        None => None,
+    };
+    if let Some(step) = gave_up {
+        if let Some(undone) = undo(step, None) {
+            return undone;
+        }
+    } else if drained && holds_tail(joining) {
         return Decision::Move(
             MoveStep::Seat {
                 from: from.map(str::to_string),
@@ -1058,6 +1133,28 @@ fn seat_after_fence(
             },
             serving(seated(existing, from)),
         );
+    } else if existing.move_reason == Some(MoveReason::Restore)
+        && moves.stalled(caught_up, key, joining)
+    {
+        // The serving path fences a stalled restore to drop it. The start
+        // stays, as there.
+        if let Some(undone) = undo(
+            MoveStep::Stalled {
+                successor: joining.to_string(),
+            },
+            existing.move_started_at_millis,
+        ) {
+            return undone;
+        }
+    } else if moves.timed_out(caught_up, existing.move_started_at_millis)
+        && let Some(undone) = undo(
+            MoveStep::TimedOut {
+                successor: joining.to_string(),
+            },
+            None,
+        )
+    {
+        return undone;
     }
     if moves.fence_timed_out(caught_up, key, existing.generation) {
         return Decision::Move(

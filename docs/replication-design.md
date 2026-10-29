@@ -2399,9 +2399,26 @@ once the drained leader's report at that generation has it at the leader's
 own offset: its whole log, so every acknowledged record is on both members of
 the new set. The leader then serves again at the next generation, with the
 same pause in writes as a move's cut-over. A newcomer that goes down or halts
-while the leader is fenced is dropped and the leader serves again; a leader
-that never reports drained gets the shard back at the fence timeout with the
-replacement still going (`seat_after_fence`). A failover at the seat's
+while the leader is fenced is dropped as an undo is (below), and the
+leader serves again; a leader that never reports drained gets the shard back
+at the fence timeout with the replacement still going (`seat_after_fence`).
+Giving a replacement up has the same window the other way round
+([#1628](https://github.com/GetFelix/felix/issues/1628)): beside an even set,
+the leader and the newcomer alone are a majority of the set the newcomer
+joined, so dropping the newcomer while the leader serves can leave a record on
+the leader only. On a fenced stream such an undo (a timeout, a restore that
+stalls, a newcomer that halts or goes down, a drain that ends, a lost copy
+that returns, an operator's cancel) fences the leader first (`undo_or_fence`),
+and the newcomer goes only once the drained report has the leader and the
+followers at its own offset as a majority of the set left. The drained leader
+holds every acknowledged record and those followers hold its whole log, so
+every acknowledged record is then on a majority of that set. A lost follower
+need not be among them: in an RF 4 set with one copy lost, the leader and the
+two live followers are enough. In an RF 2 set the leader alone is not, so the
+one other follower must hold the tail. Until then the newcomer stays a member,
+and at the fence timeout the leader serves again with the undo still to do,
+fencing again on the next pass. Placement still seats the newcomer instead if it
+holds the whole log and was not cancelled. A failover at the seat's
 generation whose leader has not reported there yet also keeps the leaving
 follower in the set while its broker serves, so the new leader's fence has a
 majority without the dead leader (`left_unconfirmed` in `placement/plan.rs`,
@@ -2426,8 +2443,9 @@ at the acknowledged mark, since a record past the mark on the leader alone can
 still be confirmed and read after the report. The leader serves again at the next generation, with the
 same pause in writes as a move's cut-over (`trim` in `placement/moves.rs`). A
 leader that never reports drained gets the set back at the fence timeout.
-`FelixShardFencedAckSeatPair` and `FelixShardFencedAckTrim` in
-`docs/formal/FelixShard.tla` model the fenced seat, the keep and the trim. The same holds for a
+`FelixShardFencedAckSeatPair`, `FelixShardFencedAckUndoPair` and
+`FelixShardFencedAckTrim` in `docs/formal/FelixShard.tla` model the fenced
+seat, the fenced undo, the keep and the trim. The same holds for a
 `Quorum` cache. A seated member counts toward the majority, so the newcomer
 must also be one the report names caught up, which is the leader's offer of a
 successor. Offsets cover only the shard's own log. On a `Quorum` cache the
