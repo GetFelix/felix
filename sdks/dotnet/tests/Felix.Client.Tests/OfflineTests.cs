@@ -40,6 +40,34 @@ public class OptionsTests
         }));
     }
 
+    public static TheoryData<double?, double?> BadBackoffs => new()
+    {
+        { 0, null },
+        { -1, null },
+        { 400.0 * 24 * 3600 * 1000, null },
+        { null, 0 },
+        { null, -1 },
+        { null, 400.0 * 24 * 3600 * 1000 },
+        { 500, 100 },
+        // The default ceiling is 2000 ms and the default backoff 200 ms.
+        { 5000, null },
+        { null, 100 },
+    };
+
+    [Theory]
+    [MemberData(nameof(BadBackoffs))]
+    public async Task BackoffOptionsAreValidatedBeforeAnythingIsSent(double? backoffMs, double? maxBackoffMs)
+    {
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => FelixClient.ConnectAsync(new FelixClientOptions
+        {
+            Addrs = ["127.0.0.1:1"],
+            TenantId = "t",
+            Token = "x",
+            ReconnectBackoff = backoffMs is { } b ? TimeSpan.FromMilliseconds(b) : null,
+            ReconnectMaxBackoff = maxBackoffMs is { } m ? TimeSpan.FromMilliseconds(m) : null,
+        }));
+    }
+
     [Fact]
     public async Task ACancelledTokenFailsBeforeAnythingIsSent()
     {

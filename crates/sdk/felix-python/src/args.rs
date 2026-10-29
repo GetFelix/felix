@@ -47,10 +47,23 @@ pub(crate) fn parse_addrs(py: Python<'_>, addrs: &Py<PyAny>) -> PyResult<Vec<See
 /// in practice, and a huge one would overflow the clock.
 const MAX_DEADLINE_SECS: f64 = 365.0 * 24.0 * 3600.0;
 
-/// The default reconnect policy with the caller's attempts and deadline.
+/// A backoff in seconds: above 0 and at most a year.
+fn backoff_secs(name: &str, seconds: f64) -> PyResult<Duration> {
+    if !(seconds > 0.0 && seconds <= MAX_DEADLINE_SECS) {
+        return Err(PyValueError::new_err(format!(
+            "{name} must be a number of seconds above 0 and at most one year, not {seconds}"
+        )));
+    }
+    Ok(Duration::from_secs_f64(seconds))
+}
+
+/// The default reconnect policy with the caller's attempts, deadline and
+/// backoff.
 pub(crate) fn reconnect_policy(
     attempts: Option<&Bound<'_, PyAny>>,
     deadline: Option<f64>,
+    backoff: Option<f64>,
+    max_backoff: Option<f64>,
 ) -> PyResult<ReconnectPolicy> {
     let mut policy = ReconnectPolicy::default();
     if let Some(attempts) = attempts {
@@ -79,6 +92,19 @@ pub(crate) fn reconnect_policy(
         }
         // Positive, finite and bounded above, so this cannot fail.
         policy.deadline = Some(Duration::from_secs_f64(seconds));
+    }
+    if let Some(seconds) = backoff {
+        policy.backoff = backoff_secs("reconnect_backoff", seconds)?;
+    }
+    if let Some(seconds) = max_backoff {
+        policy.max_backoff = backoff_secs("reconnect_max_backoff", seconds)?;
+    }
+    if policy.max_backoff < policy.backoff {
+        return Err(PyValueError::new_err(format!(
+            "reconnect_max_backoff ({}s) must be at least reconnect_backoff ({}s)",
+            policy.max_backoff.as_secs_f64(),
+            policy.backoff.as_secs_f64()
+        )));
     }
     Ok(policy)
 }

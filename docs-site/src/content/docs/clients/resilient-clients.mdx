@@ -174,8 +174,8 @@ nothing was applied.
 - **Backoff** and **max backoff** shape the wait between attempts: the first
   retry waits a random time up to the backoff, the ceiling doubles each
   attempt up to the maximum, and the jitter keeps every client of a cluster
-  from retrying in step. The defaults are 200 ms and 2 s. Only the Rust client
-  exposes them.
+  from retrying in step. The defaults are 200 ms and 2 s, and the max backoff
+  cannot be below the backoff.
 
 A deadline shorter than one attempt's own timeout means no retry happens: the
 first attempt spends the whole budget. Set it to cover at least one attempt
@@ -184,16 +184,16 @@ plus the backoff you can afford, or leave it off to wait out a failover.
 | Language | Attempts | Deadline | Backoff |
 | --- | --- | --- | --- |
 | Rust | `ReconnectPolicy.attempts` | `deadline: Option<Duration>` | `backoff`, `max_backoff` |
-| Python | `reconnect_attempts` | `reconnect_deadline` (seconds) | |
-| TypeScript | `reconnectAttempts` | `reconnectDeadline` (milliseconds) | |
-| C# | `ReconnectAttempts` | `ReconnectDeadline` (`TimeSpan`) | |
-| C | `reconnect_attempts` | `reconnect_deadline_ms` | |
+| Python | `reconnect_attempts` | `reconnect_deadline` (seconds) | `reconnect_backoff`, `reconnect_max_backoff` (seconds) |
+| TypeScript | `reconnectAttempts` | `reconnectDeadline` (milliseconds) | `reconnectBackoff`, `reconnectMaxBackoff` (milliseconds) |
+| C# | `ReconnectAttempts` | `ReconnectDeadline` (`TimeSpan`) | `ReconnectBackoff`, `ReconnectMaxBackoff` (`TimeSpan`) |
+| C | `reconnect_attempts` | `reconnect_deadline_ms` | `reconnect_backoff_ms`, `reconnect_max_backoff_ms` |
 
 :::note[New in 0.7, not yet released]
-The deadline, and the attempt count outside Rust, arrive with 0.7. In 0.6.2,
-the current release, Rust's `ReconnectPolicy` has `attempts`, `backoff` and
-`max_backoff` but no `deadline`, and the Python, TypeScript, C# and C clients
-take neither option: they retry with the Rust defaults. On 0.6.2, bound a call
+The deadline, and the attempt count and backoff outside Rust, arrive with 0.7.
+In 0.6.2, the current release, Rust's `ReconnectPolicy` has `attempts`,
+`backoff` and `max_backoff` but no `deadline`, and the Python, TypeScript, C#
+and C clients take none of these options: they retry with the Rust defaults. On 0.6.2, bound a call
 yourself with a timeout around it, as the [tutorials](/tutorials/overview/#time-limits)
 do. See [Upgrading to 0.7](/release-notes/upgrading-to-0-7/).
 :::
@@ -229,6 +229,8 @@ with felix.Client(
     token=os.environ["FELIX_TOKEN"],
     reconnect_attempts=8,
     reconnect_deadline=30.0,
+    reconnect_backoff=0.25,
+    reconnect_max_backoff=4.0,
 ) as client:
     client.publish("acme", "prod", "orders", b"hello")
 ```
@@ -246,6 +248,8 @@ const bounded = await Client.connect(
     token: process.env.FELIX_TOKEN,
     reconnectAttempts: 8,
     reconnectDeadline: 30_000,
+    reconnectBackoff: 250,
+    reconnectMaxBackoff: 4_000,
   },
 );
 bounded.close();
@@ -262,6 +266,8 @@ await using var bounded = await FelixClient.ConnectAsync(new FelixClientOptions
     Token = Environment.GetEnvironmentVariable("FELIX_TOKEN"),
     ReconnectAttempts = 8,
     ReconnectDeadline = TimeSpan.FromSeconds(30),
+    ReconnectBackoff = TimeSpan.FromMilliseconds(250),
+    ReconnectMaxBackoff = TimeSpan.FromSeconds(4),
 });
 ```
 
@@ -274,6 +280,8 @@ static FelixClient *connect_bounded(struct waiter *w, const char *token) {
         .size = sizeof options,
         .reconnect_attempts = 8,
         .reconnect_deadline_ms = 30000,
+        .reconnect_backoff_ms = 250,
+        .reconnect_max_backoff_ms = 4000,
     };
     FelixStatus started = felix_client_connect_with(
         "felix-0.felix.svc:5000,felix-1.felix.svc:5000", "acme", token,

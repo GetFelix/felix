@@ -333,17 +333,19 @@ one so the first connection survives a seed being down.
 - **A subscription's broker fails.** On a durable stream it resubscribes from
   the offset after the last one it delivered, and where it cannot it raises
   rather than ending as though the stream had finished.
-- **Knobs.** [Reconnecting](#reconnecting) sets the attempt count and a deadline. `client.refresh_topology()` asks the broker in use for the cluster's brokers again and returns how many it named (it raises against a broker that predates discovery), and `client.connections_per_node()` lists the connections held to each broker. `client.endpoints()` (awaited on `AsyncClient`) lists the brokers it would try, discovered
+- **Knobs.** [Reconnecting](#reconnecting) sets the attempt count, a deadline and the backoff. `client.refresh_topology()` asks the broker in use for the cluster's brokers again and returns how many it named (it raises against a broker that predates discovery), and `client.connections_per_node()` lists the connections held to each broker. `client.endpoints()` (awaited on `AsyncClient`) lists the brokers it would try, discovered
   ones included.
 
 ### Reconnecting
 
-Publishes, opening and following subscriptions, commits, `publish_if`, state reads, cache calls and consumer-group calls retry under these options. A read, and a group describe or dead-letter listing, retries on any error that is not terminal. A write, including a group poll, which claims records, retries only on a broker's retryable refusal, which says nothing was applied, so a write that may have applied is never sent twice. The deadline covers re-routes and, for a call over every shard of a stream, all its shards together. Two options tune the retrying, and both default to the Rust client's own policy, so a client that sets neither behaves as it always did.
+Publishes, opening and following subscriptions, commits, `publish_if`, state reads, cache calls and consumer-group calls retry under these options. A read, and a group describe or dead-letter listing, retries on any error that is not terminal. A write, including a group poll, which claims records, retries only on a broker's retryable refusal, which says nothing was applied, so a write that may have applied is never sent twice. The deadline covers re-routes and, for a call over every shard of a stream, all its shards together. Four options tune the retrying, and all default to the Rust client's own policy, so a client that sets none of them behaves as it always did.
 
 - **Attempts** is how many times a call tries to reach a broker before it gives up. Each attempt tries every broker the client knows. The default is 5, and the minimum is 1.
 - **Deadline** is a ceiling on one call across every attempt and every wait between them. It is off by default, and it is checked between attempts, before each backoff sleep, so a call can last the deadline plus one attempt's own timeout. Attempt counts alone do not bound time: five attempts against a broker that takes its full publish timeout to answer is minutes.
+- **Backoff** is the ceiling of the first wait between attempts. It doubles each attempt up to the max backoff, and each wait is a random fraction of its ceiling, so every client of a cluster does not retry in step. The default is 200 ms.
+- **Max backoff** is the longest any one wait can be. The default is 2 s. It cannot be below the backoff in effect.
 
-Pass them as `reconnect_attempts` (an int) and `reconnect_deadline` (seconds, a float) to `Client(...)` or `AsyncClient.connect(...)`. The attempt count must be at least 1 and the deadline above 0 and at most one year; anything else, including an int too large for a machine word, raises `ValueError`.
+Pass them as `reconnect_attempts` (an int), `reconnect_deadline`, `reconnect_backoff` and `reconnect_max_backoff` (seconds, floats) to `Client(...)` or `AsyncClient.connect(...)`. The attempt count must be at least 1; each time must be above 0 and at most one year, and the max backoff at least the backoff. Anything else, including an int too large for a machine word, raises `ValueError`.
 
 ```python
 import felix
@@ -354,6 +356,8 @@ with felix.Client(
     token=tok,
     reconnect_attempts=10,
     reconnect_deadline=30.0,
+    reconnect_backoff=0.25,
+    reconnect_max_backoff=4.0,
 ) as client:
     try:
         # Stops retrying once 30 s have passed, checked between attempts, and raises the last error.
@@ -1271,9 +1275,6 @@ left out, and why:
   futures; `publish_batches` is the iterator-shaped equivalent.
 - **`ClientConfig` options** such as `publishers` and `timestamps`. They are
   connection configuration, set once, not calls.
-- **Reconnect backoff.** `ReconnectPolicy.backoff` and `max_backoff` have no
-  option here yet. The client uses their defaults; [Reconnecting](#reconnecting)
-  sets the attempt count and the deadline.
 
 ## Conformance
 

@@ -116,6 +116,19 @@ public sealed class FelixClientOptions
     /// tries every known endpoint. Null is the default, 5. At least 1.
     /// </summary>
     public int? ReconnectAttempts { get; init; }
+
+    /// <summary>
+    /// The ceiling of the first wait between attempts. It doubles each attempt up to
+    /// <see cref="ReconnectMaxBackoff"/>, and each wait is a random fraction of its ceiling.
+    /// Null is the default, 200 ms. Whole milliseconds, at least one.
+    /// </summary>
+    public TimeSpan? ReconnectBackoff { get; init; }
+
+    /// <summary>
+    /// The longest any one wait can be. Null is the default, 2 s. Whole milliseconds, at least
+    /// one, and not below the backoff in effect.
+    /// </summary>
+    public TimeSpan? ReconnectMaxBackoff { get; init; }
 }
 
 /// <summary>One record delivered to a subscription, copied out of the native event.</summary>

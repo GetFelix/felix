@@ -132,6 +132,8 @@ fn a_field_is_read_only_when_size_covers_it() {
         token_release: None,
         reconnect_attempts: 0,
         reconnect_deadline_ms: 0,
+        reconnect_backoff_ms: 0,
+        reconnect_max_backoff_ms: 0,
     };
     let options = read(&full);
     assert!(options.publishers && options.timestamps);
@@ -163,8 +165,10 @@ fn reconnect_options_default_and_apply() {
         token_release: None,
         reconnect_attempts: 0,
         reconnect_deadline_ms: 0,
+        reconnect_backoff_ms: 0,
+        reconnect_max_backoff_ms: 0,
     };
-    let policy = read(&full).reconnect_policy();
+    let policy = read(&full).reconnect_policy().unwrap();
     let default = felix_client::ReconnectPolicy::default();
     assert_eq!(policy.attempts, default.attempts);
     assert_eq!(policy.deadline, None);
@@ -172,10 +176,14 @@ fn reconnect_options_default_and_apply() {
     let set = FelixConnectOptions {
         reconnect_attempts: 2,
         reconnect_deadline_ms: 1500,
+        reconnect_backoff_ms: 50,
+        reconnect_max_backoff_ms: 400,
         ..full
     };
-    let policy = read(&set).reconnect_policy();
+    let policy = read(&set).reconnect_policy().unwrap();
     assert_eq!(policy.attempts, 2);
+    assert_eq!(policy.backoff, std::time::Duration::from_millis(50));
+    assert_eq!(policy.max_backoff, std::time::Duration::from_millis(400));
     assert_eq!(
         policy.deadline,
         Some(std::time::Duration::from_millis(1500))
@@ -186,9 +194,51 @@ fn reconnect_options_default_and_apply() {
         size: std::mem::offset_of!(FelixConnectOptions, reconnect_attempts),
         ..set
     };
-    let policy = read(&older).reconnect_policy();
+    let policy = read(&older).reconnect_policy().unwrap();
     assert_eq!(policy.attempts, default.attempts);
     assert_eq!(policy.deadline, None);
+    assert_eq!(policy.backoff, default.backoff);
+    assert_eq!(policy.max_backoff, default.max_backoff);
+
+    // A caller built with attempts and a deadline but no backoff fields.
+    let before_backoff = FelixConnectOptions {
+        size: std::mem::offset_of!(FelixConnectOptions, reconnect_backoff_ms),
+        ..set
+    };
+    let policy = read(&before_backoff).reconnect_policy().unwrap();
+    assert_eq!(policy.attempts, 2);
+    assert_eq!(policy.backoff, default.backoff);
+    assert_eq!(policy.max_backoff, default.max_backoff);
+}
+
+#[test]
+fn a_max_backoff_below_the_backoff_is_refused() {
+    let base = FelixConnectOptions {
+        size: size_of::<FelixConnectOptions>(),
+        publishers: false,
+        timestamps: false,
+        token_fetch: None,
+        token_user_data: std::ptr::null_mut(),
+        token_release: None,
+        reconnect_attempts: 0,
+        reconnect_deadline_ms: 0,
+        reconnect_backoff_ms: 500,
+        reconnect_max_backoff_ms: 100,
+    };
+    assert!(read(&base).reconnect_policy().is_err());
+    // Only the max set, below the default backoff of 200 ms.
+    let only_max = FelixConnectOptions {
+        reconnect_backoff_ms: 0,
+        ..base
+    };
+    assert!(read(&only_max).reconnect_policy().is_err());
+    // Only the backoff set, above the default max of 2 s.
+    let only_backoff = FelixConnectOptions {
+        reconnect_backoff_ms: 5000,
+        reconnect_max_backoff_ms: 0,
+        ..base
+    };
+    assert!(read(&only_backoff).reconnect_policy().is_err());
 }
 
 #[test]
@@ -202,6 +252,8 @@ fn a_size_smaller_than_the_size_field_is_refused() {
         token_release: None,
         reconnect_attempts: 0,
         reconnect_deadline_ms: 0,
+        reconnect_backoff_ms: 0,
+        reconnect_max_backoff_ms: 0,
     };
     // SAFETY: a live struct.
     let failure = unsafe { ConnectOptions::read(&bad) }.unwrap_err();
@@ -237,6 +289,8 @@ mod tokens {
             token_release: Some(release),
             reconnect_attempts: 0,
             reconnect_deadline_ms: 0,
+            reconnect_backoff_ms: 0,
+            reconnect_max_backoff_ms: 0,
         }
     }
 

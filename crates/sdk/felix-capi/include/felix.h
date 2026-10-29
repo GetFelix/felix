@@ -228,6 +228,14 @@ typedef struct FelixConnectOptions {
   // shorter than one attempt's own timeout leaves the call a single attempt,
   // since that attempt spends the whole budget.
   uint64_t reconnect_deadline_ms;
+  // The ceiling in milliseconds of the first wait between attempts. It
+  // doubles each attempt up to `reconnect_max_backoff_ms`, and each wait is a
+  // random fraction of its ceiling. Zero is the default, 200.
+  uint64_t reconnect_backoff_ms;
+  // The longest any one wait can be, in milliseconds. Zero is the default,
+  // 2000. Below the backoff in effect, connect fails with
+  // FELIX_STATUS_INVALID_ARGUMENT.
+  uint64_t reconnect_max_backoff_ms;
 } FelixConnectOptions;
 
 // Called once when `felix_client_connect` or `felix_client_connect_with`

@@ -79,9 +79,9 @@ language that means the client:
   it delivered, or reports the loss, and never ends it as though the stream had
   finished.
 
-Every client exposes two reconnect options, the attempt count and a deadline for
-one call, and each page has a "Reconnecting" section for them. None exposes the
-backoff itself: each uses the Rust default. The
+Every client exposes four reconnect options, the attempt count, a deadline for
+one call, and the backoff and max backoff between attempts, and each page has a
+"Reconnecting" section for them. The
 [Rust page](/clients/rust/#clusters) and
 [Multi-node client](https://github.com/GetFelix/felix/blob/main/docs/multi-node-client.md)
 cover the behaviour in full, and each client's page has a "Connecting to a

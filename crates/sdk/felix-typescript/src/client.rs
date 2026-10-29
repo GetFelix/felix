@@ -72,10 +72,13 @@ impl Client {
     /// many times a call tries to reach a broker before it gives up.
     /// `reconnectDeadline` (milliseconds, default none) bounds one call across
     /// every attempt and wait. A deadline shorter than one attempt's own
-    /// timeout leaves the call a single attempt. Both apply to `withIdentity`
-    /// clients too.
+    /// timeout leaves the call a single attempt. `reconnectBackoff` (default
+    /// 200) is the ceiling of the first wait in milliseconds, and it doubles
+    /// each attempt up to `reconnectMaxBackoff` (default 2000), which must not
+    /// be below it. Each wait is a random fraction of its ceiling. All apply to
+    /// `withIdentity` clients too.
     #[napi(
-        ts_args_type = "addrs: string | string[], tenantId: string, token?: string | null, serverName?: string, caFile?: string, offerAlpn?: boolean, tokenProvider?: (signal: AbortSignal) => Promise<string>, reconnectAttempts?: number, reconnectDeadline?: number",
+        ts_args_type = "addrs: string | string[], tenantId: string, token?: string | null, serverName?: string, caFile?: string, offerAlpn?: boolean, tokenProvider?: (signal: AbortSignal) => Promise<string>, reconnectAttempts?: number, reconnectDeadline?: number, reconnectBackoff?: number, reconnectMaxBackoff?: number",
         ts_return_type = "Promise<Client>"
     )]
     pub fn connect(
@@ -89,8 +92,15 @@ impl Client {
         token_provider: Option<JsFunction>,
         reconnect_attempts: Option<f64>,
         reconnect_deadline: Option<f64>,
+        reconnect_backoff: Option<f64>,
+        reconnect_max_backoff: Option<f64>,
     ) -> Result<JsObject> {
-        let policy = reconnect_policy(reconnect_attempts, reconnect_deadline)?;
+        let policy = reconnect_policy(
+            reconnect_attempts,
+            reconnect_deadline,
+            reconnect_backoff,
+            reconnect_max_backoff,
+        )?;
         let addrs = match addrs {
             Either::A(one) => vec![one],
             Either::B(many) => many,

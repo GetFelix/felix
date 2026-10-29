@@ -277,6 +277,14 @@ pub struct FelixConnectOptions {
     /// shorter than one attempt's own timeout leaves the call a single attempt,
     /// since that attempt spends the whole budget.
     pub reconnect_deadline_ms: u64,
+    /// The ceiling in milliseconds of the first wait between attempts. It
+    /// doubles each attempt up to `reconnect_max_backoff_ms`, and each wait is
+    /// a random fraction of its ceiling. Zero is the default, 200.
+    pub reconnect_backoff_ms: u64,
+    /// The longest any one wait can be, in milliseconds. Zero is the default,
+    /// 2000. Below the backoff in effect, connect fails with
+    /// `FELIX_STATUS_INVALID_ARGUMENT`.
+    pub reconnect_max_backoff_ms: u64,
 }
 
 /// The options a connect applies, read out of [`FelixConnectOptions`].
@@ -289,17 +297,31 @@ struct ConnectOptions {
     token_release: FelixTokenRelease,
     reconnect_attempts: Option<usize>,
     reconnect_deadline: Option<Duration>,
+    reconnect_backoff: Option<Duration>,
+    reconnect_max_backoff: Option<Duration>,
 }
 
 impl ConnectOptions {
-    /// The default policy with the caller's attempts and deadline applied.
-    fn reconnect_policy(&self) -> ReconnectPolicy {
+    /// The default policy with the caller's attempts, deadline and backoff
+    /// applied. A maximum backoff below the backoff is refused.
+    fn reconnect_policy(&self) -> Result<ReconnectPolicy, Failure> {
         let mut policy = ReconnectPolicy::default();
         if let Some(attempts) = self.reconnect_attempts {
             policy.attempts = attempts;
         }
         policy.deadline = self.reconnect_deadline;
-        policy
+        if let Some(backoff) = self.reconnect_backoff {
+            policy.backoff = backoff;
+        }
+        if let Some(max) = self.reconnect_max_backoff {
+            policy.max_backoff = max;
+        }
+        if policy.max_backoff < policy.backoff {
+            return Err(Failure::invalid(
+                "reconnect_max_backoff_ms is below the reconnect backoff",
+            ));
+        }
+        Ok(policy)
     }
 }
 
@@ -313,6 +335,8 @@ impl Default for ConnectOptions {
             token_release: None,
             reconnect_attempts: None,
             reconnect_deadline: None,
+            reconnect_backoff: None,
+            reconnect_max_backoff: None,
         }
     }
 }
@@ -348,6 +372,8 @@ impl ConnectOptions {
         let release = std::mem::offset_of!(FelixConnectOptions, token_release);
         let attempts = std::mem::offset_of!(FelixConnectOptions, reconnect_attempts);
         let deadline = std::mem::offset_of!(FelixConnectOptions, reconnect_deadline_ms);
+        let backoff = std::mem::offset_of!(FelixConnectOptions, reconnect_backoff_ms);
+        let max_backoff = std::mem::offset_of!(FelixConnectOptions, reconnect_max_backoff_ms);
         Ok(Self {
             publishers: flag(std::mem::offset_of!(FelixConnectOptions, publishers)),
             timestamps: flag(std::mem::offset_of!(FelixConnectOptions, timestamps)),
@@ -366,6 +392,14 @@ impl ConnectOptions {
                 .filter(|&n| n != 0)
                 .map(|n| n as usize),
             reconnect_deadline: at(deadline, size_of::<u64>())
+                .map(|p| unsafe { p.cast::<u64>().read_unaligned() })
+                .filter(|&ms| ms != 0)
+                .map(Duration::from_millis),
+            reconnect_backoff: at(backoff, size_of::<u64>())
+                .map(|p| unsafe { p.cast::<u64>().read_unaligned() })
+                .filter(|&ms| ms != 0)
+                .map(Duration::from_millis),
+            reconnect_max_backoff: at(max_backoff, size_of::<u64>())
                 .map(|p| unsafe { p.cast::<u64>().read_unaligned() })
                 .filter(|&ms| ms != 0)
                 .map(Duration::from_millis),
@@ -468,7 +502,7 @@ pub unsafe extern "C" fn felix_client_connect_with(
         if let Some(tokens) = &tokens {
             config.token_provider = Some(provider(tokens, token));
         }
-        let policy = options.reconnect_policy();
+        let policy = options.reconnect_policy()?;
         let shared = Arc::new(Shared::new(runtime).with_tokens(tokens));
         let task_shared = Arc::clone(&shared);
         shared.spawn(done, move |done| async move {
