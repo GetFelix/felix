@@ -1,4 +1,6 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use tokio::time::Instant;
 
 use super::*;
 use crate::config::{LimitsConfig, TenantQuota};

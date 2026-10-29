@@ -8,9 +8,10 @@
 //! unpublishable at any rate.
 
 use std::collections::BTreeMap;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use dashmap::DashMap;
+use tokio::time::Instant;
 
 use crate::config::{LimitsConfig, TenantQuota};
 
