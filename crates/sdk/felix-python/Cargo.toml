@@ -1,11 +1,10 @@
 # Deliberately outside the workspace, like the crates under demos/.
 #
-# A PyO3 extension is built with `pyo3/extension-module`, which leaves the
-# Python symbols to be resolved by the interpreter at import time. That is
-# correct for an extension and fatal for a test binary, so a crate carrying
-# that feature cannot be linked by `cargo test --workspace --all-features`.
-# Its own workspace keeps the main one buildable; `task python:check` is what
-# builds and tests this.
+# pyo3's `extension-module` feature is not enabled here: it leaves the Python
+# symbols to the interpreter, which is right for the wheel and fatal for a
+# test binary. maturin turns it on from pyproject.toml, so the wheel is
+# unchanged, and `cargo test` links libpython. `task python:unit` runs the
+# tests; its own workspace keeps the main one from needing a Python.
 [workspace]
 
 [package]
@@ -33,7 +32,7 @@ pyo3-build-config = "0.29"
 felix-client = { path = "../felix-client", version = "0.7.0-preview.1" }
 felix-wire = { path = "../../protocol/felix-wire", version = "0.7.0-preview.1" }
 bytes = "1"
-pyo3 = { version = "0.29", features = ["extension-module", "abi3-py39"] }
+pyo3 = { version = "0.29", features = ["abi3-py39"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 anyhow = "1"
 tokio-util = "0.7"
