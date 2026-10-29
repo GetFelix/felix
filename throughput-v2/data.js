@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793274319469,
+  "lastUpdate": 1793275300652,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -39156,6 +39156,58 @@ window.BENCHMARK_DATA = {
             "range": "8644.79",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 846689.55\nmean: 849745.89\nstdev: 8644.79\ncv: 1.02%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0c86d835744ae0799a4cde6b6bb89b547a3e88e9",
+          "message": "fix(broker): give each client stream a quarter of the connection window (#923, #1478) (#1629)\n\nThe client listeners' stream receive window defaulted to the connection\nwindow. A control stream the broker stops reading (its parked publishes at\nthe cap, or the byte budget spent) could then hold all of the connection's\nQUIC credit and stall every other stream on it. The stream window now\ndefaults to a quarter of the connection window, at most the publish budget\nand at least 1 MiB, so a stopped stream holds only its share. The\nconnection window still follows the publish budget, which bounds what a\npublisher can park in the broker (#923).\n\nThe stream window may now be smaller than max_frame_bytes: the broker reads\na frame as it arrives and returns credit as it reads, so a large frame costs\nextra window updates, not a deadlock.\n\nSpec-Unaffected: only the default QUIC stream receive window and its\nvalidation change, plus a test under serving/. Admission order, the ingress\nqueue, parking and every replication path the model describes are unchanged.",
+          "timestamp": "2026-10-29T04:57:05-07:00",
+          "tree_id": "bef6a83d4e6063e76c895704854aaa474a2dae77",
+          "url": "https://github.com/GetFelix/felix/commit/0c86d835744ae0799a4cde6b6bb89b547a3e88e9"
+        },
+        "date": 1793275300054,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 348456.93,
+            "range": "12402.47",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 348456.93\nmean: 351395.13\nstdev: 12402.47\ncv: 3.53%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 348456.93,
+            "range": "12402.47",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 348456.93\nmean: 351395.13\nstdev: 12402.47\ncv: 3.53%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81709.19,
+            "range": "812.63",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81709.19\nmean: 81743.76\nstdev: 812.63\ncv: 0.99%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 817091.87,
+            "range": "8126.25",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 817091.87\nmean: 817437.61\nstdev: 8126.25\ncv: 0.99%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
