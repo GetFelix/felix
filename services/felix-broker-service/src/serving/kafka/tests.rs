@@ -78,7 +78,8 @@ async fn a_connection_past_the_per_address_cap_is_closed_on_arrival() {
     let _ = tokio::time::timeout(Duration::from_secs(5), serving).await;
 }
 
-#[tokio::test]
+// Paused so no real time refills the bucket between the two charges.
+#[tokio::test(start_paused = true)]
 async fn a_produce_is_charged_to_the_tenants_quota() {
     let quotas = Arc::new(TenantRates::new(&LimitsConfig {
         tenant_publish_default: TenantQuota {
