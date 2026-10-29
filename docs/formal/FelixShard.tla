@@ -681,7 +681,8 @@ Counted == ReplicaSet \cup (IF Cardinality(ReplicaSet) % 2 = 0 THEN joining ELSE
 LoweredFactor == FALSE
 
 \* The replication factor, and a set above it with nothing else in progress.
-\* Without `Grow` or `LoweredFactor` only `SeatDropped` makes a set larger.
+\* Without `Grow` or `LoweredFactor` a set grows only by a failover: one that
+\* keeps `SeatDropped`, or one that names the copy still joining.
 Factor == Cardinality(Brokers \ Spares) - (IF LoweredFactor THEN 1 ELSE 0)
 OverFactor == ~Grow /\ joining = {} /\ staged = {} /\ Cardinality(ReplicaSet) > Factor
 
@@ -2012,9 +2013,8 @@ Seat(v, j, views) ==
     /\ out' = out \cup leaving
     /\ joining' = {}
     /\ joinedAt' = 0
-    \* `leaving` stays for `SeatDropped`, which reads it only in a set of two.
-    /\ leaving' = IF Cardinality(Brokers \ out') = 2 THEN leaving ELSE {}
-    /\ UNCHANGED moves
+    \* `leaving` stays, for `SeatDropped`.
+    /\ UNCHANGED << moves, leaving >>
 
 \* The followers report `r` lets a trim drop: every other follower is in it
 \* caught up (`trim_candidate` in placement/moves.rs).
