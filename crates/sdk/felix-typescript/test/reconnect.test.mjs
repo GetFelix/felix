@@ -30,7 +30,7 @@ test("reconnectDeadline must be a positive number of milliseconds", async () => 
   }
 });
 
-test("reconnectBackoff and reconnectMaxBackoff must be positive milliseconds, max not below backoff", async () => {
+test("reconnectBackoff and reconnectMaxBackoff must be positive milliseconds", async () => {
   const bad = [
     { reconnectBackoff: 0 },
     { reconnectBackoff: 0.5 },
@@ -40,10 +40,6 @@ test("reconnectBackoff and reconnectMaxBackoff must be positive milliseconds, ma
     { reconnectMaxBackoff: 0 },
     { reconnectMaxBackoff: Number.NaN },
     { reconnectMaxBackoff: 400 * 24 * 3600 * 1000 },
-    { reconnectBackoff: 500, reconnectMaxBackoff: 100 },
-    // The default ceiling is 2000.
-    { reconnectBackoff: 5000 },
-    { reconnectMaxBackoff: 100 },
   ];
   for (const options of bad) {
     await assert.rejects(connect(options), (err) => {

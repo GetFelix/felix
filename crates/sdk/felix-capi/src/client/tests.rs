@@ -212,7 +212,7 @@ fn reconnect_options_default_and_apply() {
 }
 
 #[test]
-fn a_max_backoff_below_the_backoff_is_refused() {
+fn a_max_backoff_below_the_backoff_is_allowed_and_a_year_caps_both() {
     let base = FelixConnectOptions {
         size: size_of::<FelixConnectOptions>(),
         publishers: false,
@@ -225,20 +225,32 @@ fn a_max_backoff_below_the_backoff_is_refused() {
         reconnect_backoff_ms: 500,
         reconnect_max_backoff_ms: 100,
     };
-    assert!(read(&base).reconnect_policy().is_err());
+    let policy = read(&base).reconnect_policy().unwrap();
+    assert_eq!(policy.backoff, std::time::Duration::from_millis(500));
+    assert_eq!(policy.max_backoff, std::time::Duration::from_millis(100));
     // Only the max set, below the default backoff of 200 ms.
     let only_max = FelixConnectOptions {
         reconnect_backoff_ms: 0,
         ..base
     };
-    assert!(read(&only_max).reconnect_policy().is_err());
+    assert!(read(&only_max).reconnect_policy().is_ok());
     // Only the backoff set, above the default max of 2 s.
     let only_backoff = FelixConnectOptions {
         reconnect_backoff_ms: 5000,
         reconnect_max_backoff_ms: 0,
         ..base
     };
-    assert!(read(&only_backoff).reconnect_policy().is_err());
+    assert!(read(&only_backoff).reconnect_policy().is_ok());
+    // u64::MAX milliseconds counts as a year, so no wait can overflow the clock.
+    let huge = FelixConnectOptions {
+        reconnect_backoff_ms: u64::MAX,
+        reconnect_max_backoff_ms: u64::MAX,
+        ..base
+    };
+    let policy = read(&huge).reconnect_policy().unwrap();
+    let year = std::time::Duration::from_secs(365 * 24 * 3600);
+    assert_eq!(policy.backoff, year);
+    assert_eq!(policy.max_backoff, year);
 }
 
 #[test]

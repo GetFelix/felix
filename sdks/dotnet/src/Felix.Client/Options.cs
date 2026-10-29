@@ -126,7 +126,7 @@ public sealed class FelixClientOptions
 
     /// <summary>
     /// The longest any one wait can be. Null is the default, 2 s. Whole milliseconds, at least
-    /// one, and not below the backoff in effect.
+    /// one. Every wait is capped at it, even when the backoff is larger.
     /// </summary>
     public TimeSpan? ReconnectMaxBackoff { get; init; }
 }

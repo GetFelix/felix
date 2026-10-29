@@ -84,13 +84,6 @@ pub(crate) fn reconnect_policy(
             *slot = Duration::from_secs_f64(ms / 1000.0);
         }
     }
-    if policy.max_backoff < policy.backoff {
-        return Err(invalid(format!(
-            "reconnectMaxBackoff ({}ms) must be at least reconnectBackoff ({}ms)",
-            policy.max_backoff.as_millis(),
-            policy.backoff.as_millis()
-        )));
-    }
     Ok(policy)
 }
 

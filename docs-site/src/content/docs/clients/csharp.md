@@ -305,9 +305,9 @@ Publishes, opening and following subscriptions, commits, `publish_if`, state rea
 - **Attempts** is how many times a call tries to reach a broker before it gives up. Each attempt tries every broker the client knows. The default is 5, and the minimum is 1.
 - **Deadline** is a ceiling on one call across every attempt and every wait between them. It is off by default, and it is checked between attempts, before each backoff sleep, so a call can last the deadline plus one attempt's own timeout. Attempt counts alone do not bound time: five attempts against a broker that takes its full publish timeout to answer is minutes.
 - **Backoff** is the ceiling of the first wait between attempts. It doubles each attempt up to the max backoff, and each wait is a random fraction of its ceiling, so every client of a cluster does not retry in step. The default is 200 ms.
-- **Max backoff** is the longest any one wait can be. The default is 2 s. It cannot be below the backoff in effect.
+- **Max backoff** is the longest any one wait can be. The default is 2 s. Every wait is capped at it, even when the backoff is larger.
 
-Set them as `FelixClientOptions.ReconnectAttempts` (`int?`), `ReconnectDeadline`, `ReconnectBackoff` and `ReconnectMaxBackoff` (`TimeSpan?`). All are null by default. There is no per-user handle to carry the policy to. An attempt count below 1, a time under one millisecond or over one year, or a max backoff below the backoff in effect throws `ArgumentOutOfRangeException`.
+Set them as `FelixClientOptions.ReconnectAttempts` (`int?`), `ReconnectDeadline`, `ReconnectBackoff` and `ReconnectMaxBackoff` (`TimeSpan?`). All are null by default. There is no per-user handle to carry the policy to. An attempt count below 1, or a time under one millisecond or over one year throws `ArgumentOutOfRangeException`.
 
 ```csharp
 await using var client = await FelixClient.ConnectAsync(new FelixClientOptions

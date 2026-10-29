@@ -24,6 +24,17 @@ public sealed partial class FelixClient : IAsyncDisposable, IDisposable
         this.tokens = tokens;
     }
 
+    internal static unsafe NativeConnectOptions NativeOptionsOf(FelixClientOptions options) => new()
+    {
+        Size = (nuint)sizeof(NativeConnectOptions),
+        Publishers = options.Publishers ? (byte)1 : (byte)0,
+        Timestamps = options.Timestamps ? (byte)1 : (byte)0,
+        ReconnectAttempts = (uint)(options.ReconnectAttempts ?? 0),
+        ReconnectDeadlineMs = options.ReconnectDeadline is { } window ? (ulong)window.TotalMilliseconds : 0,
+        ReconnectBackoffMs = options.ReconnectBackoff is { } first ? (ulong)first.TotalMilliseconds : 0,
+        ReconnectMaxBackoffMs = options.ReconnectMaxBackoff is { } longest ? (ulong)longest.TotalMilliseconds : 0,
+    };
+
     /// <summary>Connects to a cluster.</summary>
     /// <exception cref="FelixException">The connect failed.</exception>
     /// <exception cref="OperationCanceledException">The token was cancelled; no client is handed out.</exception>
@@ -72,12 +83,6 @@ public sealed partial class FelixClient : IAsyncDisposable, IDisposable
             throw new ArgumentOutOfRangeException(nameof(options), "ReconnectMaxBackoff must be between 1 millisecond and one year");
         }
 
-        // The defaults are 200 ms and 2 s.
-        if ((options.ReconnectMaxBackoff ?? TimeSpan.FromSeconds(2)) < (options.ReconnectBackoff ?? TimeSpan.FromMilliseconds(200)))
-        {
-            throw new ArgumentOutOfRangeException(nameof(options), "ReconnectMaxBackoff must not be below ReconnectBackoff");
-        }
-
         cancellationToken.ThrowIfCancellationRequested();
         var state = new CallState<FelixClientHandle>(cancellationToken);
         var tokens = options.TokenProvider is { } provider ? new TokenSource(provider) : null;
@@ -87,16 +92,7 @@ public sealed partial class FelixClient : IAsyncDisposable, IDisposable
         {
             var userData = state.Pin();
             // The library reads the struct during the call; its size says which fields we know.
-            NativeConnectOptions native = new()
-            {
-                Size = (nuint)sizeof(NativeConnectOptions),
-                Publishers = options.Publishers ? (byte)1 : (byte)0,
-                Timestamps = options.Timestamps ? (byte)1 : (byte)0,
-                ReconnectAttempts = (uint)(options.ReconnectAttempts ?? 0),
-                ReconnectDeadlineMs = options.ReconnectDeadline is { } window ? (ulong)window.TotalMilliseconds : 0,
-                ReconnectBackoffMs = options.ReconnectBackoff is { } first ? (ulong)first.TotalMilliseconds : 0,
-                ReconnectMaxBackoffMs = options.ReconnectMaxBackoff is { } longest ? (ulong)longest.TotalMilliseconds : 0,
-            };
+            var native = NativeOptionsOf(options);
             if (tokens is not null)
             {
                 native.TokenFetch = (nint)(delegate* unmanaged[Cdecl]<nint, nint, void>)&Callbacks.OnTokenFetch;

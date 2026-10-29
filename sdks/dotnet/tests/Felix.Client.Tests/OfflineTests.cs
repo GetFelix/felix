@@ -48,10 +48,6 @@ public class OptionsTests
         { null, 0 },
         { null, -1 },
         { null, 400.0 * 24 * 3600 * 1000 },
-        { 500, 100 },
-        // The default ceiling is 2000 ms and the default backoff 200 ms.
-        { 5000, null },
-        { null, 100 },
     };
 
     [Theory]
@@ -66,6 +62,29 @@ public class OptionsTests
             ReconnectBackoff = backoffMs is { } b ? TimeSpan.FromMilliseconds(b) : null,
             ReconnectMaxBackoff = maxBackoffMs is { } m ? TimeSpan.FromMilliseconds(m) : null,
         }));
+    }
+
+    [Fact]
+    public void TheNativeOptionsCarryEachConfiguredValueInItsOwnField()
+    {
+        var native = FelixClient.NativeOptionsOf(new FelixClientOptions
+        {
+            Addrs = ["127.0.0.1:1"],
+            TenantId = "t",
+            Token = "x",
+            ReconnectAttempts = 7,
+            ReconnectDeadline = TimeSpan.FromMilliseconds(1500),
+            ReconnectBackoff = TimeSpan.FromMilliseconds(50),
+            ReconnectMaxBackoff = TimeSpan.FromMilliseconds(400),
+        });
+        Assert.Equal(7u, native.ReconnectAttempts);
+        Assert.Equal(1500ul, native.ReconnectDeadlineMs);
+        Assert.Equal(50ul, native.ReconnectBackoffMs);
+        Assert.Equal(400ul, native.ReconnectMaxBackoffMs);
+
+        var unset = FelixClient.NativeOptionsOf(new FelixClientOptions { Addrs = ["127.0.0.1:1"], TenantId = "t", Token = "x" });
+        Assert.Equal(0ul, unset.ReconnectBackoffMs);
+        Assert.Equal(0ul, unset.ReconnectMaxBackoffMs);
     }
 
     [Fact]

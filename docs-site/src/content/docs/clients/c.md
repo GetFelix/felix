@@ -1048,9 +1048,9 @@ Publishes, opening and following subscriptions, commits, `publish_if`, state rea
 - **Attempts** is how many times a call tries to reach a broker before it gives up. Each attempt tries every broker the client knows. The default is 5, and the minimum is 1.
 - **Deadline** is a ceiling on one call across every attempt and every wait between them. It is off by default, and it is checked between attempts, before each backoff sleep, so a call can last the deadline plus one attempt's own timeout. Attempt counts alone do not bound time: five attempts against a broker that takes its full publish timeout to answer is minutes.
 - **Backoff** is the ceiling of the first wait between attempts. It doubles each attempt up to the max backoff, and each wait is a random fraction of its ceiling, so every client of a cluster does not retry in step. The default is 200 ms.
-- **Max backoff** is the longest any one wait can be. The default is 2 s. It cannot be below the backoff in effect.
+- **Max backoff** is the longest any one wait can be. The default is 2 s. Every wait is capped at it, even when the backoff is larger.
 
-Set them as `reconnect_attempts` (zero is the default), `reconnect_deadline_ms` (zero is no deadline; a larger value than a year counts as a year), `reconnect_backoff_ms` and `reconnect_max_backoff_ms` (zero is the default for each) in `FelixConnectOptions`. They follow `token_release` in the struct, so a caller built against an older header gets the defaults. A max backoff below the backoff in effect fails the connect with `FELIX_STATUS_INVALID_ARGUMENT`.
+Set them as `reconnect_attempts` (zero is the default), `reconnect_deadline_ms` (zero is no deadline; a larger value than a year counts as a year), `reconnect_backoff_ms` and `reconnect_max_backoff_ms` (zero is the default for each; a larger value than a year counts as a year) in `FelixConnectOptions`. They follow `token_release` in the struct, so a caller built against an older header gets the defaults. 
 
 ```c
 static bool connect_bounded(void) {

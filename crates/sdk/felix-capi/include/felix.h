@@ -233,8 +233,8 @@ typedef struct FelixConnectOptions {
   // a random fraction of its ceiling. Zero is the default, 200.
   uint64_t reconnect_backoff_ms;
   // The longest any one wait can be, in milliseconds. Zero is the default,
-  // 2000. Below the backoff in effect, connect fails with
-  // `FELIX_STATUS_INVALID_ARGUMENT`.
+  // 2000. Every wait is capped at it, even when the backoff is larger.
+  // Both backoff fields count anything past a year as a year.
   uint64_t reconnect_max_backoff_ms;
 } FelixConnectOptions;
 

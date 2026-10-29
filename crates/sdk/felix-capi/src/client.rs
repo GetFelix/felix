@@ -282,8 +282,8 @@ pub struct FelixConnectOptions {
     /// a random fraction of its ceiling. Zero is the default, 200.
     pub reconnect_backoff_ms: u64,
     /// The longest any one wait can be, in milliseconds. Zero is the default,
-    /// 2000. Below the backoff in effect, connect fails with
-    /// `FELIX_STATUS_INVALID_ARGUMENT`.
+    /// 2000. Every wait is capped at it, even when the backoff is larger.
+    /// Both backoff fields count anything past a year as a year.
     pub reconnect_max_backoff_ms: u64,
 }
 
@@ -303,23 +303,19 @@ struct ConnectOptions {
 
 impl ConnectOptions {
     /// The default policy with the caller's attempts, deadline and backoff
-    /// applied. A maximum backoff below the backoff is refused.
+    /// applied. Backoffs are capped at a year so a wait cannot overflow the clock.
     fn reconnect_policy(&self) -> Result<ReconnectPolicy, Failure> {
+        const A_YEAR: Duration = Duration::from_secs(365 * 24 * 3600);
         let mut policy = ReconnectPolicy::default();
         if let Some(attempts) = self.reconnect_attempts {
             policy.attempts = attempts;
         }
         policy.deadline = self.reconnect_deadline;
         if let Some(backoff) = self.reconnect_backoff {
-            policy.backoff = backoff;
+            policy.backoff = backoff.min(A_YEAR);
         }
         if let Some(max) = self.reconnect_max_backoff {
-            policy.max_backoff = max;
-        }
-        if policy.max_backoff < policy.backoff {
-            return Err(Failure::invalid(
-                "reconnect_max_backoff_ms is below the reconnect backoff",
-            ));
+            policy.max_backoff = max.min(A_YEAR);
         }
         Ok(policy)
     }

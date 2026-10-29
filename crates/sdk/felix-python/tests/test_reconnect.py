@@ -122,6 +122,202 @@ def test_reconnect_backoff_must_be_a_positive_number(seconds):
         _connect(reconnect_max_backoff=seconds)
 
 
+def test_the_async_client_validates_too(deadline):
+    async def connect(**options):
+        await felix.AsyncClient.connect(
+            "127.0.0.1:1", tenant_id="t", token="x", **options
+        )
+
+    with pytest.raises(ValueError, match="reconnect_deadline"):
+        asyncio.run(connect(reconnect_deadline=deadline))
+    with pytest.raises(ValueError, match="reconnect_attempts"):
+        asyncio.run(connect(reconnect_attempts=0))
+
+
+@pytest.mark.scenario("retry.deadline_bounds_an_operation")
+def test_a_deadline_bounds_a_retried_publish(disposable_fixture):
+    """A fenced shard refuses at once and every refusal is retryable, so only
+    the deadline stops an at-least-once publish with a large attempt budget.
+    The same deadline bounds a group call to that owner."""
+    fixture = disposable_fixture
+    if not fixture.get("control_url"):
+        pytest.skip("this fixture has no control endpoint")
+    # Longer than the policy's largest backoff step (2 s), so a client that made
+    # one attempt and gave up is told apart from one that kept going.
+    deadline = 6.0
+    request = urllib.request.Request(
+        fixture["control_url"] + "/fence", data=b"", method="POST"
+    )
+    with urllib.request.urlopen(request, timeout=120) as response:
+        owner = json.loads(response.read())
+    try:
+        with felix.Client(
+            owner["addr"],
+            tenant_id=fixture["tenant_id"],
+            token=fixture["token"],
+            ca_file=fixture["ca_file"],
+            reconnect_attempts=40,
+            reconnect_deadline=deadline,
+        ) as client:
+            started = time.monotonic()
+            with pytest.raises(felix.ShardUnavailableError):
+                client.publish(
+                    fixture["tenant_id"],
+                    fixture["namespace"],
+                    fixture["movable_stream"],
+                    b"bounded",
+                    at_least_once=True,
+                )
+            elapsed = time.monotonic() - started
+            # A settle is refused by the fenced owner before it looks the group
+            # up, so the group need not exist.
+            began = time.monotonic()
+            with pytest.raises(felix.ShardUnavailableError):
+                client.group_ack(
+                    fixture["tenant_id"],
+                    fixture["namespace"],
+                    fixture["movable_stream"],
+                    0,
+                    "bounded-group",
+                    0,
+                )
+            group_elapsed = time.monotonic() - began
+    finally:
+        heal = urllib.request.Request(
+            fixture["control_url"] + "/heal", data=b"", method="POST"
+        )
+        urllib.request.urlopen(heal, timeout=120).read()
+    assert elapsed < deadline + 8.0, (
+        f"the publish took {elapsed:.1f}s against a {deadline}s deadline: "
+        "it spent its attempts instead"
+    )
+    assert group_elapsed >= deadline - 2.0 - 0.25, (
+        f"the group call took {group_elapsed:.1f}s: it gave up before the "
+        f"{deadline}s deadline was in reach"
+    )
+    assert group_elapsed < deadline + 2.0, (
+        f"the group call took {group_elapsed:.1f}s against a {deadline}s deadline: "
+        "it spent its attempts instead"
+    )
+
+
+BAD_BACKOFFS = [0, 0.0, -1.0, float("nan"), float("inf"), 1e19, 400 * 24 * 3600.0]
+
+
+@pytest.mark.parametrize("seconds", BAD_BACKOFFS)
+def test_reconnect_backoff_must_be_a_positive_number(seconds):
+    with pytest.raises(ValueError, match="reconnect_backoff"):
+        _connect(reconnect_backoff=seconds)
+    with pytest.raises(ValueError, match="reconnect_max_backoff"):
+        _connect(reconnect_max_backoff=seconds)
+
+
+def test_a_max_backoff_below_the_backoff_is_accepted():
+    # Rust clamps every wait to the max, so a connect with these must not be refused
+    # for its values. Nothing listens on port 1, so it fails on the network, not ValueError.
+    for options in (
+        {"reconnect_backoff": 0.5, "reconnect_max_backoff": 0.1},
+        {"reconnect_backoff": 5.0},
+        {"reconnect_max_backoff": 0.1},
+    ):
+        try:
+            _connect(**options)
+        except ValueError:
+            raise
+        except Exception:
+            pass
+
+
+def test_the_async_client_validates_too(deadline):
+    async def connect(**options):
+        await felix.AsyncClient.connect(
+            "127.0.0.1:1", tenant_id="t", token="x", **options
+        )
+
+    with pytest.raises(ValueError, match="reconnect_deadline"):
+        asyncio.run(connect(reconnect_deadline=deadline))
+    with pytest.raises(ValueError, match="reconnect_attempts"):
+        asyncio.run(connect(reconnect_attempts=0))
+
+
+@pytest.mark.scenario("retry.deadline_bounds_an_operation")
+def test_a_deadline_bounds_a_retried_publish(disposable_fixture):
+    """A fenced shard refuses at once and every refusal is retryable, so only
+    the deadline stops an at-least-once publish with a large attempt budget.
+    The same deadline bounds a group call to that owner."""
+    fixture = disposable_fixture
+    if not fixture.get("control_url"):
+        pytest.skip("this fixture has no control endpoint")
+    # Longer than the policy's largest backoff step (2 s), so a client that made
+    # one attempt and gave up is told apart from one that kept going.
+    deadline = 6.0
+    request = urllib.request.Request(
+        fixture["control_url"] + "/fence", data=b"", method="POST"
+    )
+    with urllib.request.urlopen(request, timeout=120) as response:
+        owner = json.loads(response.read())
+    try:
+        with felix.Client(
+            owner["addr"],
+            tenant_id=fixture["tenant_id"],
+            token=fixture["token"],
+            ca_file=fixture["ca_file"],
+            reconnect_attempts=40,
+            reconnect_deadline=deadline,
+        ) as client:
+            started = time.monotonic()
+            with pytest.raises(felix.ShardUnavailableError):
+                client.publish(
+                    fixture["tenant_id"],
+                    fixture["namespace"],
+                    fixture["movable_stream"],
+                    b"bounded",
+                    at_least_once=True,
+                )
+            elapsed = time.monotonic() - started
+            # A settle is refused by the fenced owner before it looks the group
+            # up, so the group need not exist.
+            began = time.monotonic()
+            with pytest.raises(felix.ShardUnavailableError):
+                client.group_ack(
+                    fixture["tenant_id"],
+                    fixture["namespace"],
+                    fixture["movable_stream"],
+                    0,
+                    "bounded-group",
+                    0,
+                )
+            group_elapsed = time.monotonic() - began
+    finally:
+        heal = urllib.request.Request(
+            fixture["control_url"] + "/heal", data=b"", method="POST"
+        )
+        urllib.request.urlopen(heal, timeout=120).read()
+    assert elapsed < deadline + 8.0, (
+        f"the publish took {elapsed:.1f}s against a {deadline}s deadline: "
+        "it spent its attempts instead"
+    )
+    assert group_elapsed >= deadline - 2.0 - 0.25, (
+        f"the group call took {group_elapsed:.1f}s: it gave up before the "
+        f"{deadline}s deadline was in reach"
+    )
+    assert group_elapsed < deadline + 2.0, (
+        f"the group call took {group_elapsed:.1f}s against a {deadline}s deadline: "
+        "it spent its attempts instead"
+    )
+
+
+BAD_BACKOFFS = [0, 0.0, -1.0, float("nan"), float("inf"), 1e19, 400 * 24 * 3600.0]
+
+
+@pytest.mark.parametrize("seconds", BAD_BACKOFFS)
+def test_reconnect_backoff_must_be_a_positive_number(seconds):
+    with pytest.raises(ValueError, match="reconnect_backoff"):
+        _connect(reconnect_backoff=seconds)
+    with pytest.raises(ValueError, match="reconnect_max_backoff"):
+        _connect(reconnect_max_backoff=seconds)
+
+
 @pytest.mark.parametrize(
     "options",
     [
@@ -144,5 +340,5 @@ def test_the_async_client_validates_backoff_too():
 
     with pytest.raises(ValueError, match="reconnect_backoff"):
         asyncio.run(connect(reconnect_backoff=0))
-    with pytest.raises(ValueError, match="at least reconnect_backoff"):
-        asyncio.run(connect(reconnect_max_backoff=0.05))
+    with pytest.raises(ValueError, match="reconnect_max_backoff"):
+        asyncio.run(connect(reconnect_max_backoff=0))

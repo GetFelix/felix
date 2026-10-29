@@ -99,13 +99,6 @@ pub(crate) fn reconnect_policy(
     if let Some(seconds) = max_backoff {
         policy.max_backoff = backoff_secs("reconnect_max_backoff", seconds)?;
     }
-    if policy.max_backoff < policy.backoff {
-        return Err(PyValueError::new_err(format!(
-            "reconnect_max_backoff ({}s) must be at least reconnect_backoff ({}s)",
-            policy.max_backoff.as_secs_f64(),
-            policy.backoff.as_secs_f64()
-        )));
-    }
     Ok(policy)
 }
 
