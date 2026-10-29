@@ -300,12 +300,21 @@ fn not_serving(
         Phase::Fencing => (
             Some("fencing"),
             Some(match fence {
-                // The count says it all unless the attempt stopped for
-                // another reason, such as a replica on a newer generation.
-                Some((took, of, Some(why))) if !why.contains("replicas took the fence") => {
-                    format!("{took} of {of} replicas took the fence; {why}")
+                // The board's count, then why the attempt stopped: another
+                // reason, such as a replica on a newer generation, or what
+                // follows the attempt's own count, such as a replica's refusal.
+                Some((took, of, Some(why))) => {
+                    let reason = if why.contains("replicas took the fence") {
+                        why.split_once("; ").map(|(_, reason)| reason)
+                    } else {
+                        Some(why)
+                    };
+                    match reason {
+                        Some(reason) => format!("{took} of {of} replicas took the fence; {reason}"),
+                        None => format!("{took} of {of} replicas took the fence"),
+                    }
                 }
-                Some((took, of, _)) => format!("{took} of {of} replicas took the fence"),
+                Some((took, of, None)) => format!("{took} of {of} replicas took the fence"),
                 None => "waiting for the first fence attempt to finish".to_string(),
             }),
         ),

@@ -1366,6 +1366,7 @@ dependencies = [
  "felix-wire",
  "futures",
  "metrics",
+ "metrics-exporter-prometheus",
  "parking_lot",
  "quinn",
  "rcgen",

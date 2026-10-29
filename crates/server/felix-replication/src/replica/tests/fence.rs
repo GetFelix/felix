@@ -969,6 +969,66 @@ async fn a_crashed_leader_of_a_set_that_shrank_to_two_refuses_the_fence() {
     );
 }
 
+/// **A staged successor in the fence ids is named in the refusal (#1635).**
+/// The set of two is right but the ids also name broker-c, so the copy
+/// refuses, as it must: the leader may have counted broker-c. No retry ends
+/// that, so the refusal names broker-c and `abandon`, and it is counted.
+/// A refusal for another reason says neither.
+#[tokio::test]
+async fn a_crashed_leader_beside_a_staged_successor_names_it_and_the_way_out() {
+    let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+    let handle = recorder.handle();
+    let _local = ::metrics::set_default_local_recorder(&recorder);
+    let dir = tempfile::tempdir().expect("tempdir");
+    led_with_its_start_record(dir.path()).await;
+    let broker = broker_on(dir.path());
+    let handler = ReplicaHandler::new(
+        Arc::clone(&broker),
+        failover_router(&[LOCAL], 6, &["broker-a", LOCAL, "broker-c"]),
+    )
+    .with_unclean_start(unclean());
+
+    let answer = handler.fence(SENDER, fence(6)).await;
+
+    let refused = refusal(&answer);
+    assert_eq!(refused.code, ErrorCode::Unavailable);
+    assert!(refused.detail.contains("broker-c"), "{}", refused.detail);
+    assert!(
+        refused.detail.contains("felixctl placement abandon"),
+        "{}",
+        refused.detail
+    );
+    assert!(
+        handle.render().contains(&format!(
+            "{} 1",
+            crate::peer::metrics::FENCE_REFUSED_STAGED_TOTAL
+        )),
+        "{}",
+        handle.render()
+    );
+
+    // Without the start record nothing says the losses are the two's: the
+    // plain refusal, not counted.
+    let dir = tempfile::tempdir().expect("tempdir");
+    led_before_a_crash(dir.path()).await;
+    let broker = broker_on(dir.path());
+    let handler = ReplicaHandler::new(
+        Arc::clone(&broker),
+        failover_router(&[LOCAL], 6, &["broker-a", LOCAL, "broker-c"]),
+    )
+    .with_unclean_start(unclean());
+    let answer = handler.fence(SENDER, fence(6)).await;
+    assert!(!refusal(&answer).detail.contains("abandon"), "{answer:?}");
+    assert!(
+        handle.render().contains(&format!(
+            "{} 1",
+            crate::peer::metrics::FENCE_REFUSED_STAGED_TOTAL
+        )),
+        "{}",
+        handle.render()
+    );
+}
+
 /// Without the start record of the generation it led, the crash may have
 /// cost this broker records of an earlier generation, whose set nothing
 /// here names: refused even with two copies now.

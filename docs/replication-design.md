@@ -2708,7 +2708,17 @@ follower is behind it:
   the failover keeps (see #1487) is in the new set. Any other copy is refused. A
   failover from a control plane that names no identities, or after another
   assignment came between, keeps the shard closed until the operator acts,
-  as below.
+  as below. After an RF 2 move whose staged successor the failover
+  dropped, the fence ids still name the successor, so the crashed leader
+  refuses even though the set is two. That refusal is needed: a leader
+  that never saw the successor added, such as one restarted cleanly, counts it toward a `Quorum` write, and the successor may hold a
+  record nobody else does (`FelixShardShortCopyStagedVotes.cfg`,
+  [#1635](https://github.com/GetFelix/felix/issues/1635)). The copy logs a
+  warning naming the successor, counts
+  `felix_broker_fence_refused_staged_successor_total`, and its refusal shows
+  in the promoted leader's `felixctl inspect shard` reason. The way out is
+  `felixctl placement abandon`, as below; it loses what only the successor
+  held.
 
 Which of the two happens does not depend on whether placement sees the new
 identity or the probe's report first. A follower the report from before the
