@@ -324,7 +324,7 @@ weights=(
   "FelixShardRealMargins 4"
   "FelixShardRealMarginsLease 4"
   "FelixShardFencedAckSeat 15"
-  "FelixShardFencedAckSeatPair 8"
+  "FelixShardFencedAckSeatPair 12"
   "FelixShardFencedAckTrim 9"
   "FelixShardFollowerLabels 3"
   "FelixShardHandoff 3"
