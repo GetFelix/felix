@@ -1039,6 +1039,47 @@ stream's only replica, has written and reported, and unable to acknowledge it
 until the destination has copied it, which on a real shard is the whole
 copy.
 
+### A crashed leader's own refusal
+
+A leader that crashed under a relaxed fsync mode and gave its copy up still
+holds its promise, so it could answer its successor's fence, and counted
+there its short log could stand in for the follower that holds what it lost.
+The broker refuses that fence until a newer leader has shipped to it
+(`refuse_short_copy`), except where a set of two acknowledged what it may
+have lost (`acknowledged_by_two`, #1484). `RefuseShortCopy` models both:
+`ShortCopy` is the given-up copy no newer leader has had promise since, and
+`AckedByTwo` the exception, keyed as the code keys it: the copy's last record
+is from the generation it led, the fencer leads the next one, its set is the
+same two, and the failover's fence ids name exactly those two (`FenceIds`,
+the old set and the new one as #1633 names them, from the last report the
+control plane took, which a set change does not clear). Configurations that
+leave it off are unchanged: every variable it adds stays at its initial value.
+
+Identities are left out of these configurations (`StorageIds = FALSE`), so
+every fence answer counts as from the copy the ids name. In the code a
+rotated copy named by its old identity is never counted at all, and the
+exception changes the outcome only where the ids name the copy the crashed
+leader answers from, as after its own given-up report.
+
+`FelixShardShortCopySeat.cfg` is the RF 2 seat with the crash before the
+seat's generation is reported, the shape of #1486. `FelixShardShortCopyStaged.cfg`
+is a failover beside a staged destination, #1635: there the code's fence ids
+name the staged copy and the exception refuses, so the configuration drops
+the ids' comparison to check that naming only the set that acknowledged
+would be safe. Both reach an open on the exception: a temporary invariant
+saying no leader opens counting a short copy's answer fails in each.
+`AckedOnMajority` is not checked: a lost copy is a lost copy, and a record
+two acknowledged is on one of them until the new leader ships it.
+
+Dropping the whole set check (`ShortCopyChecksSet`) loses a record:
+`FelixShardShortCopySeatAnySet.cfg`. Dropping only the ids' comparison
+(`ShortCopyChecksKeys`) does not in the model. No failover there shrinks the
+voting set, so a fencer with a set of two at the generation after the one the
+crashed leader led has the two it led; the comparison only refuses more,
+around copies that never counted (a staged destination, a dropped copy a
+report still names). It stays in the code against placement that would
+shrink a set at a failover.
+
 ### The ordering that is load-bearing
 
 This is a counterexample with the fix taken out, not a bug in the broker. With
