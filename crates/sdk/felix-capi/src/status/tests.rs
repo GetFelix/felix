@@ -88,3 +88,12 @@ fn commit_refusals_are_classified() {
         FELIX_STATUS_ERROR
     );
 }
+
+#[test]
+fn a_publish_whose_ack_was_lost_is_outcome_unknown() {
+    let err = anyhow::Error::new(felix_client::AckLost {
+        reason: "connection lost".into(),
+    })
+    .context("publish to orders");
+    assert_eq!(classify(&err), FELIX_STATUS_OUTCOME_UNKNOWN);
+}

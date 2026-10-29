@@ -8,7 +8,7 @@
 //! caller does next: retry, give up, or resend only if idempotent.
 
 use felix_client::{
-    AuthError, BrokerError, CommitError, NotLeaderError, RetryClass, SubscribeCursorError,
+    AckLost, AuthError, BrokerError, CommitError, NotLeaderError, RetryClass, SubscribeCursorError,
     SubscriptionLost,
 };
 
@@ -82,6 +82,10 @@ pub(crate) fn classify(err: &anyhow::Error) -> FelixStatus {
     }
     if err.chain().any(|e| e.is::<SubscribeCursorError>()) {
         return FELIX_STATUS_CURSOR;
+    }
+    // Written, but the connection failed before the ack came back.
+    if err.chain().any(|e| e.is::<AckLost>()) {
+        return FELIX_STATUS_OUTCOME_UNKNOWN;
     }
     if err.chain().any(|e| e.is::<SubscriptionLost>()) {
         return FELIX_STATUS_CONNECTION;

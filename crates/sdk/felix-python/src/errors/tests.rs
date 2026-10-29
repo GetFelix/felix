@@ -91,6 +91,15 @@ fn a_code_is_found_under_added_context() {
 }
 
 #[test]
+fn a_publish_whose_ack_was_lost_is_outcome_unknown() {
+    let err = anyhow::Error::new(felix_client::AckLost {
+        reason: "connection lost".to_string(),
+    })
+    .context("publish to orders");
+    assert_eq!(classify(&err).kind, Kind::OutcomeUnknown);
+}
+
+#[test]
 fn a_lost_subscription_is_a_connection_error() {
     let err = anyhow::Error::new(felix_client::SubscriptionLost {
         reason: "reset by peer".to_string(),

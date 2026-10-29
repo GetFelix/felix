@@ -84,6 +84,15 @@ fn a_typed_refusal_carries_its_code_on_a_line_of_its_own() {
 }
 
 #[test]
+fn a_publish_whose_ack_was_lost_is_outcome_unknown() {
+    let err = anyhow::Error::new(felix_client::AckLost {
+        reason: "connection lost".to_string(),
+    })
+    .context("publish to orders");
+    assert!(encode(&err).starts_with(&format!("{KIND_OUTCOME_UNKNOWN}{KIND_SEPARATOR}")));
+}
+
+#[test]
 fn a_lost_subscription_is_a_connection_error() {
     let err = anyhow::Error::new(felix_client::SubscriptionLost {
         reason: "reset by peer".to_string(),

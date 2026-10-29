@@ -591,15 +591,17 @@ How each client shows the class:
 | C# | `FelixException.Status`, `IsRetryable` and `OutcomeUnknown`. The class is folded into the status, and `IsRetryable` is also true for a connection error. |
 | C | The `FelixStatus` of the callback. The class is folded into the status. |
 
-**A connection error on a write is ambiguous.** It carries no class from the
-broker, and a lost acknowledgement after the broker wrote the record can
-surface that way. Resend such a write only with an idempotent producer, or after checking, with a conditional publish or by reading the
+**A lost acknowledgement is an unknown outcome.** A publish that was written
+before the connection failed reports `outcome_unknown` (Rust `AckLost`, Python
+and TypeScript `OutcomeUnknownError`, `FELIX_STATUS_OUTCOME_UNKNOWN`), not a
+connection error. A connection error that remains means the write was not
+sent, or the failure came before it. Resend an unknown outcome only with an idempotent producer, or after checking, with a conditional publish or by reading the
 stream back. C#'s `IsRetryable` and TypeScript's `retryable` suit reads, and
 the write loops below test the class or the specific statuses instead.
 
-**A stale settle surfaces late.** The cluster client retries a `stale_claim`
-refusal of an ack or nack with backoff, so it reaches you only after the
-reconnect policy's attempts. Log it and move on
+**A stale settle is final.** The cluster client does not retry a `stale_claim`
+refusal, and reports its retry class as `fatal` whatever the broker sent, so
+every client sees it at once. Log it and move on
 ([Consumer groups under failure](#consumer-groups-under-failure)).
 
 A broker that predates error codes sends none. Rust then gives you no

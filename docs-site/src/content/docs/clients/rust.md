@@ -773,8 +773,8 @@ success. The codes and their classes are listed under
 - `Retry` and `Redirect` (`shard_unavailable`, `draining`, `not_leader`) from a
   cached shard owner drop that owner and go straight to the entry broker, even
   from `publish`, since nothing was applied. From the entry broker the retrying
-  paths back off. `stale_claim` and `stale_width` back off too: neither says
-  the owner is wrong.
+  paths back off. `stale_width` backs off too: it does not say the owner is
+  wrong. `stale_claim` is never retried; the client marks it `fatal`.
 - `RetryAfter` backs off for at least `retry_after_ms`. `not_found` is retried
   for 5 s from the first one, long enough for a newly promoted broker to hear
   about the stream from the control plane and no longer.

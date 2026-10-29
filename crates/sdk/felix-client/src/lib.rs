@@ -84,8 +84,8 @@ pub use cluster::{
 pub use commit::{CommitError, CommitOp, CommitReceipt, StateValue};
 pub use config::{ClientConfig, ClientSubQueuePolicy};
 pub use error::{
-    AuthError, AuthErrorKind, BrokerError, NotLeaderError, PublishRefused, SubscribeCursorError,
-    SubscriptionLagged, SubscriptionLost,
+    AckLost, AuthError, AuthErrorKind, BrokerError, NotLeaderError, PublishRefused,
+    SubscribeCursorError, SubscriptionLagged, SubscriptionLost,
 };
 pub use publish::{Handed, IdempotentProducer, PublishSharding, Publisher};
 pub use subscribe::{Event, ShardMoved, Subscription};
