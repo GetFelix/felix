@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793274315174,
+  "lastUpdate": 1793275297230,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -49698,6 +49698,72 @@ window.BENCHMARK_DATA = {
             "range": "1008.47",
             "unit": "us",
             "extra": "trials: 5\nmedian: 439.00\nmean: 891.40\nstdev: 1008.47\ncv: 113.13%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0c86d835744ae0799a4cde6b6bb89b547a3e88e9",
+          "message": "fix(broker): give each client stream a quarter of the connection window (#923, #1478) (#1629)\n\nThe client listeners' stream receive window defaulted to the connection\nwindow. A control stream the broker stops reading (its parked publishes at\nthe cap, or the byte budget spent) could then hold all of the connection's\nQUIC credit and stall every other stream on it. The stream window now\ndefaults to a quarter of the connection window, at most the publish budget\nand at least 1 MiB, so a stopped stream holds only its share. The\nconnection window still follows the publish budget, which bounds what a\npublisher can park in the broker (#923).\n\nThe stream window may now be smaller than max_frame_bytes: the broker reads\na frame as it arrives and returns credit as it reads, so a large frame costs\nextra window updates, not a deadlock.\n\nSpec-Unaffected: only the default QUIC stream receive window and its\nvalidation change, plus a test under serving/. Admission order, the ingress\nqueue, parking and every replication path the model describes are unchanged.",
+          "timestamp": "2026-10-29T04:57:05-07:00",
+          "tree_id": "bef6a83d4e6063e76c895704854aaa474a2dae77",
+          "url": "https://github.com/GetFelix/felix/commit/0c86d835744ae0799a4cde6b6bb89b547a3e88e9"
+        },
+        "date": 1793275291491,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 151,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 151.00\nmean: 151.20\nstdev: 0.84\ncv: 0.55%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 219,
+            "range": "4.88",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 219.00\nmean: 220.40\nstdev: 4.88\ncv: 2.21%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 288,
+            "range": "100.56",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 288.00\nmean: 347.80\nstdev: 100.56\ncv: 28.91%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 199,
+            "range": "10.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 199.00\nmean: 204.20\nstdev: 10.55\ncv: 5.16%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 388,
+            "range": "167.75",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 388.00\nmean: 453.80\nstdev: 167.75\ncv: 36.97%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 534,
+            "range": "509.04",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 534.00\nmean: 742.40\nstdev: 509.04\ncv: 68.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
