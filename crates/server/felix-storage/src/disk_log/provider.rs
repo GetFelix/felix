@@ -178,8 +178,9 @@ impl DiskLogProvider {
 
     /// Close every log of one incarnation of a stream and move all its shard
     /// directories out of service. Their records are gone once this returns:
-    /// nothing opens them again, and they are deleted in the background. Safe
-    /// to repeat.
+    /// nothing opens them again, and they are deleted in the background. With
+    /// offload on, their copies in the offload directory are deleted first.
+    /// Safe to repeat.
     pub async fn retire_stream(
         &self,
         tenant: &str,
@@ -201,6 +202,28 @@ impl DiskLogProvider {
                     |log: DiskLog| async move { log.close().await },
                 )
                 .await?;
+        }
+        // After the logs closed, so no offload pass is still copying, and
+        // before the directories move, so a failure leaves the manifests for
+        // the retry.
+        if let Some(target) = self.config.offload.clone() {
+            let dirs = std::sync::Arc::clone(&self.dirs);
+            let root = self.root.clone();
+            let scope = (
+                tenant.to_string(),
+                namespace.to_string(),
+                stream.to_string(),
+            );
+            crate::task::blocking(move || {
+                let (tenant, namespace, stream) = &scope;
+                for (_, held, name) in dirs.stream_dirs(&root, tenant, namespace, stream)? {
+                    if held == incarnation {
+                        super::offload::remove_copies(&target, &root.join(name))?;
+                    }
+                }
+                Ok(())
+            })
+            .await?;
         }
         self.dirs
             .retire_stream_off_runtime(&self.root, tenant, namespace, stream, incarnation)

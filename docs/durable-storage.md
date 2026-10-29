@@ -880,7 +880,11 @@ The order is fixed. The broker first writes the marker with `retiring 1` and
 the deleted incarnation; that write is the commit point. If the registered
 incarnation is covered it unregisters it and ends its subscriptions, then
 closes its logs (a handle held elsewhere fails with `StorageError::Closed`).
-Each covered directory is renamed into `.deleted/` under its store's root and
+With offload on, each covered shard's copies are deleted from the offload
+directory next: every key its manifest records, then its node's prefix for
+that shard, recorded or not. A failure leaves the shard's directory, and its
+manifest, for the retry
+(`retiring_a_stream_deletes_its_offloaded_copies`). Each covered directory is renamed into `.deleted/` under its store's root and
 the rename flushed, on the blocking pool rather than an async worker, as are
 the marker and floor reads and writes and every store's directory lookups. One background thread per root removes what
 `.deleted/` holds, listing it again if more arrives while it works, so a
@@ -1033,7 +1037,8 @@ What this does not cover:
 - Data of a name deleted before the finalize and never deleted again after it
   stays on the broker, as it did before incarnations. Nothing opens it unless
   the name is created again at 0, which only happens before the finalize.
-- Copies in the offload directory are not deleted.
+- Offloaded copies of a shard deleted by an earlier release, or while
+  offload was off, stay in the offload directory.
 - A stream created again at incarnation 0, before the finalize, continues the
   deleted stream's logs on each broker, including the generation each one
   accepted. The control plane refuses that create for a name it recorded as
@@ -1707,6 +1712,9 @@ copy.
 offsets at or after the cut, and a reset drops them all. The manifest is
 written before the log is cut, so an entry never outlives the records it
 describes. The objects stay in the store, unrecorded.
+
+**Deleting a stream** deletes its copies too, before its local directories
+go (see [Deleting a stream](#deleting-a-stream)).
 
 **Cost.** A pass reads each segment twice, once to upload it and once to verify
 the copy, in 8 MiB chunks, so its memory does not grow with segment size. The

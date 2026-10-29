@@ -524,6 +524,68 @@ impl LogInner {
     }
 }
 
+/// Delete every copy offloaded from `shard_dir`, for a shard being retired:
+/// the copies its manifest records, wherever their keys put them (an earlier
+/// node id, or 0.6.0-preview.3's keys without one), and everything under its
+/// prefix for this node, recorded or not. Copies already gone are fine, so
+/// this is safe to repeat.
+///
+/// Runs before the shard directory is moved out of service, so a failure
+/// keeps the directory and its manifest for the retry.
+pub(crate) fn remove_copies(target: &OffloadTarget, shard_dir: &Path) -> Result<()> {
+    let OffloadTarget::LocalDir { dir: root, node } = target;
+    let Some(shard) = shard_dir.file_name() else {
+        return Ok(());
+    };
+    // A manifest that does not decode loses only the keys outside the
+    // prefix; it must not keep a deleted stream's directory forever.
+    let recorded = match manifest::load(shard_dir) {
+        Ok(manifest) => manifest.entries().to_vec(),
+        Err(err) => {
+            tracing::warn!(
+                dir = %shard_dir.display(),
+                error = %err,
+                "deleting a retired shard's offloaded copies without its manifest"
+            );
+            Vec::new()
+        }
+    };
+    for entry in &recorded {
+        let Some(path) = key_path(root, &entry.key) else {
+            continue;
+        };
+        match std::fs::remove_file(&path) {
+            Ok(()) => {
+                if let Some(parent) = path.parent() {
+                    crate::io::sync_dir(parent).map_err(StorageError::Io)?;
+                }
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(StorageError::Io(err)),
+        }
+    }
+    let node_dir = root.join(node);
+    match std::fs::remove_dir_all(node_dir.join(shard)) {
+        Ok(()) => crate::io::sync_dir(&node_dir).map_err(StorageError::Io)?,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(StorageError::Io(err)),
+    }
+    Ok(())
+}
+
+/// Where the local backend keeps `key` under `root`, or `None` for a key that
+/// could name something outside it.
+fn key_path(root: &Path, key: &str) -> Option<PathBuf> {
+    let mut path = root.to_path_buf();
+    for part in key.split('/') {
+        if part.is_empty() || part == "." || part == ".." || part.contains('\\') {
+            return None;
+        }
+        path.push(part);
+    }
+    Some(path)
+}
+
 async fn blocking<T, F>(work: F) -> Result<T>
 where
     F: FnOnce() -> Result<T> + Send + 'static,

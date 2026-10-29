@@ -58,7 +58,6 @@ pub(crate) struct Manifest {
 }
 
 impl Manifest {
-    #[cfg(test)]
     pub(crate) fn entries(&self) -> &[ManifestEntry] {
         &self.entries
     }

@@ -488,3 +488,56 @@ async fn a_directory_opened_after_the_index_was_read_is_still_retired() {
         .expect("retire");
     assert!(!layout::incarnation_dir(dir.path(), &shard("orders"), 7).exists());
 }
+
+#[tokio::test]
+async fn retiring_a_stream_deletes_its_offloaded_copies() {
+    let dir = tempdir().expect("dir");
+    let archive = dir.path().join("archive");
+    let config = LogConfig {
+        segment_size_bytes: crate::segment::SEGMENT_HEADER_LEN + 120,
+        retention_check_interval: Duration::from_secs(3600),
+        offload: Some(crate::log::OffloadTarget::LocalDir {
+            dir: archive.clone(),
+            node: "node-a".into(),
+        }),
+        ..config()
+    };
+    let provider = DiskLogProvider::new(dir.path().join("logs"), config).expect("provider");
+    let mut copies = Vec::new();
+    for stream in ["orders", "payments"] {
+        provider.set_stream_incarnation("t", "ns", stream, Some(7));
+        let log = provider.open_shard(&shard(stream)).expect("open");
+        for i in 0..24 {
+            log.append(&[record(&format!("record-{i:02}"))])
+                .await
+                .expect("append");
+        }
+        log.sync().await.expect("sync");
+        log.enforce_retention_now().await.expect("offload pass");
+        let name = layout::incarnation_dir(provider.root(), &shard(stream), 7)
+            .file_name()
+            .expect("name")
+            .to_owned();
+        let copied = archive.join("node-a").join(name);
+        assert!(
+            std::fs::read_dir(&copied).expect("copies").count() > 0,
+            "{stream} offloaded nothing"
+        );
+        copies.push(copied);
+    }
+
+    provider
+        .retire_stream("t", "ns", "orders", 7)
+        .await
+        .expect("retire");
+    assert!(!copies[0].exists(), "the deleted stream's copies stay");
+    assert!(
+        std::fs::read_dir(&copies[1]).expect("copies").count() > 0,
+        "another stream's copies went too"
+    );
+    // Again, with nothing left to do.
+    provider
+        .retire_stream("t", "ns", "orders", 7)
+        .await
+        .expect("retire again");
+}
