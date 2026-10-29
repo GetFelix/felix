@@ -19,6 +19,7 @@ felixd issue.
 | Page | What it covers |
 |---|---|
 | [How it works](/built-on-felix/felixd/how-it-works/) | The life of a workload: leases, epochs, fenced output, snapshots, failover, resume, replay and checking |
+| [Submitting work](/built-on-felix/felixd/submitting-work/) | Writing a workload, `felixd run` step by step, feeding it input, reading its output, and changing, stopping or fixing it |
 | [The workload contract](/built-on-felix/felixd/contract/) | What a workload exports, what it receives, what it may return and what happens when it breaks the rules |
 | [Record formats](/built-on-felix/felixd/records/) | The output and snapshot records, the cache values, and which versions are still read |
 | [Running felixd](/built-on-felix/felixd/running/) | The subcommands and flags, what felixd needs from Felix, and a quickstart |

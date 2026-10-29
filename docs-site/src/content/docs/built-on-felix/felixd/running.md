@@ -47,6 +47,8 @@ and its agent.
 
 ### `felixd run`
 
+[Submitting work](/built-on-felix/felixd/submitting-work/) walks through a whole submission.
+
 ```bash
 felixd run --id counter --input orders --replication-factor 1 counter.wasm
 ```

@@ -58,6 +58,8 @@ workload under the same ones and fails it at the same step. `felixd run` writes
 the spec last, after the module, the streams and the caches exist, so an agent
 that sees the spec finds everything else.
 
+[Submitting work](/built-on-felix/felixd/submitting-work/) shows how to write and submit one.
+
 Running `felixd run` again for the same id replaces the spec, and a running
 workload restarts under the new one. A new module or a new input is refused
 once the output or snapshot stream holds a record, because the next owner would
@@ -335,7 +337,7 @@ seconds.
 [needs-operator](/built-on-felix/felixd/terminology/#needs-operator) state, not
 failed: the limit can be raised and the workload resumed. Today that is a logged
 error on the node. It is not yet a recorded state
-([#73](https://github.com/GetFelix/felixd/issues/73)). Raising
+([#112](https://github.com/GetFelix/felixd/issues/112)). Raising
 `--snapshot-fuel` with `felixd run` for the same id writes a new spec, and the
 agent restarts the workload under it.
 
