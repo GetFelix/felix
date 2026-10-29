@@ -683,6 +683,17 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install Task
+        uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
+        with:
+          version: 3.53.1
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # The binding is outside the workspace, so `task test` never reaches its
+      # Rust unit tests. They link libpython, which setup-python provides.
+      - name: Binding unit tests
+        run: task python:unit
+
       # The suite starts these.
       - name: Build the broker and cluster harness
         id: harness

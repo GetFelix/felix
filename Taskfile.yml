@@ -5,6 +5,12 @@ vars:
   # environment overrides it. Exported to the tests that run containers too.
   CONTAINER_ENGINE:
     sh: scripts/container_engine.sh
+  # Left out of the coverage report. The Python binding's glue is only driven
+  # by its pytest suite, which runs against an installed wheel and is not
+  # instrumented; counting it would report thousands of unexecuted lines. Its
+  # Rust unit tests do run (scripts/ci/coverage-python.sh), and the files they
+  # cover (args, closable, errors) stay in the report.
+  COVERAGE_IGNORE: '(^|/)(demos)(/|$)|(^|/)src/bin/|(^|/)felix-python/src/(asyncio|blocking|batch|commit|conditional|group_admin|lib|producer|runtime|sharded_cache_watch|sharded_group|stream_page|tls|token|types|watch_progress)([/]|[.]rs$)'
 
 tasks:
   fmt:
@@ -174,8 +180,10 @@ tasks:
       # workspace tests alone leave felix-capi mostly uncovered. This run adds
       # its profiles before the report.
       - "bash scripts/ci/coverage-capi.sh"
-      - "cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex '(^|/)(demos)(/|$)|(^|/)src/bin/'"
-      - "cargo llvm-cov report --summary-only --ignore-filename-regex '(^|/)(demos)(/|$)|(^|/)src/bin/'"
+      # Same for the Python binding, which has its own workspace.
+      - "bash scripts/ci/coverage-python.sh"
+      - "cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex '{{.COVERAGE_IGNORE}}'"
+      - "cargo llvm-cov report --summary-only --ignore-filename-regex '{{.COVERAGE_IGNORE}}'"
       - |
         if [ -z "${CI:-}" ]; then
           task pg:down
@@ -569,6 +577,15 @@ tasks:
       - cargo fmt -- --check
       - cargo clippy --all-targets -- -D warnings
       - cargo build
+      - task: python:unit
+  python:unit:
+    desc: >
+      Run the binding's Rust unit tests. The crate does not enable pyo3's
+      `extension-module` (maturin adds it from pyproject.toml), so the test
+      binary links libpython; it needs a Python with its shared library.
+    dir: crates/sdk/felix-python
+    cmds:
+      - cargo test --locked
   python:build:
     desc: Build the Python wheel with maturin (needs `pip install maturin`).
     dir: crates/sdk/felix-python

@@ -69,6 +69,11 @@ jobs:
           # install fails with "API rate limit exceeded" before any code runs.
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # The binding's Rust unit tests link libpython (scripts/ci/coverage-python.sh).
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@32e16a23c68a001a1621efca19f131f965d4d122 # cargo-llvm-cov
         env:
