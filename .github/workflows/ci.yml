@@ -17,6 +17,10 @@ on:
       tla_timeout_minutes:
         description: "Per-job timeout, in minutes (at most 360)"
         default: "60"
+      tla_coverage:
+        description: "Non-empty prints how often each action fired (TLC -coverage)"
+        required: false
+        default: ""
 
 concurrency:
   # A manual model-check run stands alone, so a second one does not cancel it.
@@ -1033,6 +1037,7 @@ jobs:
         env:
           TLA_SHARD: ${{ matrix.shard }}/7
           TLA_CONFIGS: ${{ inputs.tla_configs }}
+          TLA_COVERAGE: ${{ inputs.tla_coverage }}
           TLA_QUICK: ${{ github.event_name == 'pull_request' && '1' || '' }}
           # The merge commit's first parent is main; a changed .cfg runs
           # whatever its weight.

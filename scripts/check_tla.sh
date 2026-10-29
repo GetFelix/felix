@@ -15,6 +15,8 @@
 # `TLA_SHARD=1/3` checks the second of three shards, balanced by the time each
 # configuration takes (`weights` below), so CI can split the set across
 # parallel jobs. `TLA_QUICK=1` checks only the shorter ones (see below).
+# `TLA_COVERAGE=1` prints how often each action fired, to show a configuration
+# reaches the behaviour it was written for.
 #
 # `scripts/check_tla.sh --simulate` runs the long random walks instead (`walks`
 # below): TLC's simulation mode, each configuration for `TLA_SIM_MINUTES`
@@ -124,6 +126,7 @@ expectations=(
   "FelixShardFencedAckGrow pass"
   "FelixShardFencedAckSeatPair pass"
   "FelixShardFencedAckSeatPairOnMajority violates AckedOnMajority"
+  "FelixShardFencedAckTrim pass"
   "FelixShardFencedAckSeatEarly violates AckedHeldByLeader"
   "FelixShardReadsRound pass"
   "FelixShardReadsNoRound violates NoStaleRead"
@@ -321,6 +324,7 @@ weights=(
   "FelixShardRealMarginsLease 4"
   "FelixShardFencedAckSeat 3"
   "FelixShardFencedAckSeatPair 1"
+  "FelixShardFencedAckTrim 1"
   "FelixShardFollowerLabels 3"
   "FelixShardHandoff 3"
   "FelixShardIdempotentHandoff 3"
@@ -404,9 +408,14 @@ for entry in "${selected[@]}"; do
   else
     echo "== $cfg (expected: $expect)"
   fi
+  if [ -n "${TLA_COVERAGE:-}" ]; then extra+=(-coverage 60); fi
   output="$(tlc "$cfg" ${extra[@]+"${extra[@]}"} 2>&1)" && status=0 || status=$?
   summary="$(echo "$output" | grep -E "Running Random Simulation|states generated|depth of the complete|Error:|is violated|Finished in" | tail -5 || true)"
   echo "$summary"
+  # How often each action fired, from the report TLC prints at the end.
+  if [ -n "${TLA_COVERAGE:-}" ]; then
+    echo "$output" | grep -E '^<[A-Za-z0-9_]+ line' | tail -n 80 || true
+  fi
   # A walk that ran out its budget without a violation is a clean run.
   clean=0
   if [ "$status" -eq 0 ]; then clean=1; fi

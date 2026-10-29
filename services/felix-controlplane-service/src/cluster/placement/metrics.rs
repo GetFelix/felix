@@ -120,6 +120,7 @@ impl MoveClock {
             MoveStep::Reseat { .. }
             | MoveStep::Restore { .. }
             | MoveStep::Seat { .. }
+            | MoveStep::TrimFence
             | MoveStep::Trim { .. } => None,
         }
     }

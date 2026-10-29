@@ -135,8 +135,11 @@
 (* (AckedHeldByLeader).                                                    *)
 (*                                                                         *)
 (* A failover right after a seat into two may keep the dropped copy        *)
-(* (`SeatDropped`), and `TrimSet` takes a set it leaves above the factor   *)
-(* back down.                                                              *)
+(* (`SeatDropped`). A set above the factor is fenced (`TrimFence`) and,    *)
+(* once its leader reports drained, drops a follower the rest can do       *)
+(* without (`TrimSet`). `LoweredFactor` starts the set one above the       *)
+(* factor, as after the factor is lowered, so the trim and the keep are    *)
+(* checked without a seat.                                                 *)
 (*                                                                         *)
 (* `Grow` tops up a set a failover left short of the replication factor:   *)
 (* a spare joins with nobody leaving, and `Seat` makes it a member. A set  *)
@@ -360,6 +363,7 @@ CONSTANTS
     ReportFromAnswers, \* whether the report counts a follower by its answers, or by its log
     ReportFloor,    \* whether the report never names a follower short of the leader's inherited log
     Grow,           \* whether placement may add a spare to the set with nobody leaving
+    LoweredFactor,  \* whether the replication factor is one below the starting set
     PromoteDestination, \* whether a failover may name a move's destination leader
     Counters,       \* whether the shard is a cache shard with a counter log beside its log
     CounterCatchUp, \* whether the fence takes the counter log furthest ahead too
@@ -394,7 +398,7 @@ ASSUME PromoteDestination \in BOOLEAN
 \* Only a promotion or a replacement changes the set, so spares are checked
 \* with follower acks (no handoff, no cancel) and no staged copy.
 ASSUME Spares \subseteq Brokers /\ ReplaceOnPromote \in BOOLEAN /\ SeatHoldsCopy \in BOOLEAN
-ASSUME Grow \in BOOLEAN
+ASSUME Grow \in BOOLEAN /\ LoweredFactor \in BOOLEAN
 ASSUME Spares /= {} => AckByFollowers /\ ~StageMove /\ ~Handoff /\ ~Cancel
 ASSUME ReplaceOnPromote => Spares /= {} /\ MaxMoves = 0
 \* No lease anywhere on a `Quorum` write's path: not at admission (see
@@ -672,6 +676,11 @@ QuorumSet == IF LearnerVotes THEN Brokers ELSE ReplicaSet
 \* the newcomer alone, so a failover keeps it (`keep_replicas`). Beside an
 \* odd number every majority still holds a majority of the old set.
 Counted == ReplicaSet \cup (IF Cardinality(ReplicaSet) % 2 = 0 THEN joining ELSE {})
+
+\* The replication factor, and a set above it with nothing else in progress.
+\* Without `Grow` or `LoweredFactor` only `SeatDropped` makes a set larger.
+Factor == Cardinality(Brokers \ Spares) - (IF LoweredFactor THEN 1 ELSE 0)
+OverFactor == ~Grow /\ joining = {} /\ staged = {} /\ Cardinality(ReplicaSet) > Factor
 
 MajorityOf(S, of) == Cardinality(S \cap of) * 2 > Cardinality(of)
 Majority(S) == MajorityOf(S, QuorumSet)
@@ -1256,9 +1265,10 @@ ReportAt(b) ==
     ELSE Len(log[b])
 
 \* With follower acks and a promotion that does not read it, nothing reads the
-\* report, so it is not sent: that keeps the fenced configurations small.
+\* report but a trim, so it is sent only for one: that keeps the fenced
+\* configurations small.
 Report(b) ==
-    /\ AckByFollowers => Promotion = "leader-report"
+    /\ AckByFollowers => Promotion = "leader-report" \/ OverFactor
     /\ LeaseValid(b)
     \* Nothing runs the shard's replication pass until the fence is done.
     /\ ~fencing[b]
@@ -1923,7 +1933,7 @@ OldSetLen(b) ==
 \* on the new set, carrying the new set's generation, and with `JointFence`
 \* on a majority of the old set too. Under `Elections` it may already have
 \* promised that generation to a candidate, and then it does not take it.
-Regenerate(v, views, set) ==
+RegenerateSet(v, views, set) ==
     /\ v.leader = leader /\ ~v.lapsed
     /\ bgen[leader] = gen /\ ~fencing[leader]
     \* Placement changes one set at a time; a cut-over's pending set comes first.
@@ -1949,8 +1959,11 @@ Regenerate(v, views, set) ==
             /\ UNCHANGED << setGen, oldSet, fencing, answered >>
     /\ UNCHANGED << installed, nextVars, ackGen >>
     /\ UNCHANGED << now, clock, leader, cpExpiry, inflight, bexpiry, hbOut, hbAt, hwm, halted,
-                    queued, pending, acked, writes, staleCommit, draining, successor, stopped,
-                    staged >>
+                    queued, pending, acked, writes, staleCommit, staged >>
+
+Regenerate(v, views, set) ==
+    /\ RegenerateSet(v, views, set)
+    /\ UNCHANGED << draining, successor, stopped >>
 
 \* A spare joins beside the follower `o`, and counts toward the quorum from
 \* here: a record is acknowledged on three of the four.
@@ -1999,27 +2012,47 @@ Seat(v, j, views) ==
     \* `leaving` stays, for `SeatDropped`.
     /\ UNCHANGED << moves, leaving >>
 
-\* The most of `b`'s log a majority of `S` holds, halted members included.
-MajorityHeld(S, b) ==
-    LET held == { k \in 0..Len(log[b]) : MajorityOf({ m \in S : HoldsPrefix(m, b, k) }, S) }
-    IN CHOOSE k \in held : \A j \in held : j <= k
+\* The followers report `r` lets a trim drop: every other follower is in it
+\* caught up (`trim_candidate` in placement/moves.rs).
+TrimDroppable(r) ==
+    { o \in mine[leader] \ {leader} : (mine[leader] \ {leader, o}) \subseteq r.holders }
 
-\* A set a failover left above the size it started at drops a follower `o`,
-\* once a majority of the rest holds what a majority of the set held (`trim`
-\* in placement/moves.rs, which also prefers a draining one). Without `Grow`
-\* only `SeatDropped` makes a set larger. A failover before the leader
-\* reports may keep `o` again, as after a seat.
+\* The leader of a set above the factor is fenced, as for a move, once a
+\* report at this generation shows a follower the rest can do without
+\* (`trim_fence`). The trim names no destination: `successor` is the leader.
+TrimFence(v, views) ==
+    /\ OverFactor
+    /\ ~v.draining /\ ~v.lapsed /\ v.leader = leader
+    /\ cpNext = {}
+    /\ v.report.gen = v.gen
+    /\ TrimDroppable(v.report) /= {}
+    /\ Cas(v)
+    /\ ver' = ver + 1
+    /\ cpView' = views
+    /\ draining' = TRUE
+    /\ successor' = leader
+    /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry, hbOut,
+                    hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit, stopped,
+                    moves, staged, out, mine, joining, leaving, joinedAt >>
+    /\ UNCHANGED fenceVars
+
+\* Once the fenced leader reports drained, a follower goes whose leaving
+\* leaves every other one holding the leader's whole log, and the leader
+\* serves again at the next generation (`trim`). Judged from the report, as
+\* the code judges it: while the leader served, a record could be
+\* acknowledged after the report on the leader and the copy that goes alone.
+\* A failover before the leader reports again may keep `o`, as after a seat.
 TrimSet(v, o, views) ==
-    /\ ~Grow /\ joining = {} /\ staged = {}
-    /\ Cardinality(ReplicaSet) > Cardinality(Brokers \ Spares)
-    /\ o \in mine[leader] \ {leader}
-    /\ LET rest == mine[leader] \ {o}
-       IN MajorityOf({ m \in rest : HoldsPrefix(m, leader, MajorityHeld(mine[leader], leader)) },
-                     rest)
-    /\ Regenerate(v, views, mine[leader] \ {o})
+    /\ OverFactor
+    /\ v.draining /\ v.successor = v.leader
+    /\ v.report.gen = v.gen /\ v.report.drained
+    /\ o \in TrimDroppable(v.report)
+    /\ RegenerateSet(v, views, mine[leader] \ {o})
+    /\ draining' = FALSE
+    /\ stopped' = [stopped EXCEPT ![leader] = FALSE]
     /\ out' = out \cup {o}
     /\ leaving' = {o}
-    /\ UNCHANGED << moves, joining, joinedAt >>
+    /\ UNCHANGED << successor, moves, joining, joinedAt >>
 
 \* Whether `b` leads the set the control plane records, or while a cut-over
 \* is pending, the pending set at its generation.
@@ -2182,7 +2215,7 @@ Decide(v, f, views) ==
     \/ Promote(v, f, views)
     \/ /\ \/ Fence(v, f, views) \/ CutOver(v, f, views) \/ Retake(v, f, views)
           \/ Reseat(v, f, views) \/ GrowSet(v, f, views) \/ Seat(v, f, views)
-          \/ TrimSet(v, f, views)
+          \/ TrimFence(v, views) \/ TrimSet(v, f, views)
           \/ Swap(v, f, views) \/ CpAdopt(v, f, views) \/ Reclaim(v, views)
        /\ UNCHANGED << counterVars, expect, inherited, seen, seenInc >>
 

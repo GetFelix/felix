@@ -67,7 +67,11 @@ pub enum MoveStep {
     /// The replacement has caught up, and the follower it replaces leaves.
     /// A restore that only tops the set up replaces nobody.
     Seat { from: Option<String>, to: String },
-    /// A set a failover left above the replication factor drops `from`.
+    /// The leader of a set above the replication factor stops serving, so
+    /// a follower can leave once the rest hold its whole log.
+    TrimFence,
+    /// A set above the replication factor drops `from`, and its leader
+    /// serves again.
     Trim { from: String },
     /// An operator cancelled a move or replacement before the fence: its
     /// destination is dropped, as for `TimedOut`.
@@ -98,6 +102,7 @@ impl MoveStep {
             Self::Reseat { .. } => "reseat",
             Self::Restore { .. } => "restore",
             Self::Seat { .. } => "seat",
+            Self::TrimFence => "trim_fence",
             Self::Trim { .. } => "trim",
             Self::Cancel { .. } => "cancel",
             Self::Retake { .. } => "retake",
@@ -130,7 +135,8 @@ pub enum Blocked {
     /// A move is wanted, and placement is paused.
     Paused,
     /// The set is above the replication factor, and no follower can go yet:
-    /// the rest do not hold what the set held, by a report at this generation.
+    /// a report at this generation does not show the rest caught up without
+    /// one of them.
     OverFactor,
     /// A move is wanted, and this shard's last `given_up` moves in a row
     /// were given up at the fence: the next starts at `until_millis`, on the

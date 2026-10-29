@@ -3,5 +3,7 @@
   seat's generation, a record could be on it and the leaving copy alone; the
   failover now keeps the leaving copy in the set while its broker serves, so the
   new leader's fence reaches a majority that holds the record. A set left above
-  its factor that way is trimmed back once the rest hold what it held, so a
-  drain in a three-broker cluster still finishes.
+  its factor that way, or by lowering the factor, is trimmed back: placement
+  fences the leader as for a move, and once it reports drained drops a
+  follower whose leaving leaves the rest holding its log. A drain in a
+  three-broker cluster then still finishes.
