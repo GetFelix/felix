@@ -10,7 +10,7 @@
 //! instance picks a restore up from the store where the last one left it.
 use std::collections::{BTreeSet, HashMap};
 
-use super::moves::{Moves, holds_what_the_set_held, seat_or_fence, undo_replacement};
+use super::moves::{Moves, holds_what_the_set_held, seat_or_fence, undo_or_fence};
 use super::plan::{owner_of, replication_factors};
 use super::rendezvous::score;
 use super::zones::{Domain, domain, domain_of};
@@ -165,13 +165,7 @@ pub(super) fn restore_step(
     fenced: bool,
 ) -> Decision {
     let undo = |step: MoveStep, started| {
-        Decision::Move(
-            step,
-            ShardAssignment {
-                move_started_at_millis: started,
-                ..undo_replacement(existing, joining)
-            },
-        )
+        undo_or_fence(existing, joining, step, started, fenced, caught_up, moves)
     };
     let lost = replacing(existing, replication_factor, is_lost);
     // A destination that went down is dropped and the next pass picks another.

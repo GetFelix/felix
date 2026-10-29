@@ -541,6 +541,47 @@ fn cancelling_a_replacement_drops_the_follower_being_copied_in() {
     assert_eq!(decided.assignment.move_reason, None);
 }
 
+/// **Cancel beside an even set (#1628).** On a `Quorum` stream the leader
+/// and broker-c alone can have acknowledged a record, so the cancel fences
+/// the leader instead of dropping broker-c, and clears the move reason so
+/// placement drops it once the rest hold the leader's log.
+#[test]
+fn cancelling_a_replacement_beside_an_even_set_fences_first() {
+    let streams = vec![Stream {
+        consistency: ConsistencyLevel::Quorum,
+        ..replicated_stream("s1", 1, 2)
+    }];
+    let nodes = vec![
+        node("broker-a", NodeLifecycle::Live, None),
+        node("broker-b", NodeLifecycle::Draining, None),
+        node("broker-c", NodeLifecycle::Live, None),
+    ];
+    let mut replacing = shard("s1", "broker-a", &["broker-b", "broker-c"]);
+    replacing.joining = Some("broker-c".to_string());
+    replacing.move_reason = Some(MoveReason::Replace);
+    let existing = vec![replacing.clone()];
+    let decided = cancel_move(
+        &catalog(
+            &streams,
+            &nodes,
+            &existing,
+            &Positions::default(),
+            MovePolicy::default(),
+        ),
+        &key("s1"),
+    )
+    .expect("cancel");
+    assert_eq!(
+        decided.assignment,
+        ShardAssignment {
+            state: ShardState::Draining,
+            generation: 0,
+            move_reason: None,
+            ..replacing
+        }
+    );
+}
+
 /// Nothing to cancel on a shard that is not moving, which is also what a
 /// move that has cut over looks like.
 #[test]
