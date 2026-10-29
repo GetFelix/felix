@@ -57,7 +57,7 @@ function fetchFrom(tokenProvider) {
   };
 }
 
-const CONNECT_OPTIONS = ["token", "tokenProvider", "serverName", "caFile", "offerAlpn", "reconnectAttempts", "reconnectDeadline"];
+const CONNECT_OPTIONS = ["token", "tokenProvider", "serverName", "caFile", "offerAlpn", "reconnectAttempts", "reconnectDeadline", "reconnectBackoff", "reconnectMaxBackoff"];
 const IDENTITY_OPTIONS = ["token", "tokenProvider"];
 
 /** The options object, checked: unknown keys are a mistake, not something to drop. */
@@ -79,7 +79,7 @@ function optionsOf(method, args, count, allowed) {
 /** `connect(addrs, tenantId, options)` as the addon's positional call. */
 function connectArgs(args) {
   const o = optionsOf("Client.connect", args, 2, CONNECT_OPTIONS);
-  return [args[0], args[1], o.token, o.serverName, o.caFile, o.offerAlpn, fetchFrom(o.tokenProvider), o.reconnectAttempts, o.reconnectDeadline];
+  return [args[0], args[1], o.token, o.serverName, o.caFile, o.offerAlpn, fetchFrom(o.tokenProvider), o.reconnectAttempts, o.reconnectDeadline, o.reconnectBackoff, o.reconnectMaxBackoff];
 }
 
 /** `withIdentity(tenantId, options)` as the addon's positional call. */

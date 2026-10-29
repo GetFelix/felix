@@ -480,6 +480,8 @@ class Client:
         offer_alpn: bool = False,
         reconnect_attempts: int | None = None,
         reconnect_deadline: float | None = None,
+        reconnect_backoff: float | None = None,
+        reconnect_max_backoff: float | None = None,
     ) -> None:
         """Pass ``token``, ``token_provider``, or both (``token`` is then the first token).
 
@@ -819,6 +821,8 @@ class AsyncClient:
         offer_alpn: bool = False,
         reconnect_attempts: int | None = None,
         reconnect_deadline: float | None = None,
+        reconnect_backoff: float | None = None,
+        reconnect_max_backoff: float | None = None,
     ) -> "AsyncClient":
         """``token_provider`` must be an ``async def`` (or return an awaitable); one returning a ``str`` fails with ``AuthError``.
 

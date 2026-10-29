@@ -91,6 +91,8 @@ impl Client {
         offer_alpn=false,
         reconnect_attempts=None,
         reconnect_deadline=None,
+        reconnect_backoff=None,
+        reconnect_max_backoff=None,
     ))]
     fn new(
         py: Python<'_>,
@@ -103,6 +105,8 @@ impl Client {
         offer_alpn: bool,
         reconnect_attempts: Option<Bound<'_, PyAny>>,
         reconnect_deadline: Option<f64>,
+        reconnect_backoff: Option<f64>,
+        reconnect_max_backoff: Option<f64>,
     ) -> PyResult<Self> {
         let seeds = parse_addrs(py, &addrs)?;
         if seeds.is_empty() {
@@ -110,8 +114,12 @@ impl Client {
                 "at least one broker address is required",
             ));
         }
-        let policy =
-            crate::args::reconnect_policy(reconnect_attempts.as_ref(), reconnect_deadline)?;
+        let policy = crate::args::reconnect_policy(
+            reconnect_attempts.as_ref(),
+            reconnect_deadline,
+            reconnect_backoff,
+            reconnect_max_backoff,
+        )?;
         let quinn = tls::client_config(ca_file, offer_alpn)?;
         let mut config = ClientConfig::optimized_defaults(quinn);
         config.auth_tenant_id = Some(tenant_id.to_string());

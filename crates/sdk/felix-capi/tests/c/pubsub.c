@@ -2479,6 +2479,25 @@ static void connect_options(const struct fixture *f, const char *run) {
   REQUIRE_OK(connect_with_sync(f, &both, &asking));
   REQUIRE_OK(connect_with_sync(f, &size_only, &older));
 
+  /* Backoffs are read in full: a max below the backoff is accepted, and
+     UINT64_MAX counts as a year instead of reaching the clock. */
+  {
+    FelixConnectOptions backoffs = {.size = sizeof(FelixConnectOptions),
+                                    .reconnect_backoff_ms = 500,
+                                    .reconnect_max_backoff_ms = 100};
+    FelixConnectOptions huge = {.size = sizeof(FelixConnectOptions),
+                                .reconnect_backoff_ms = UINT64_MAX,
+                                .reconnect_max_backoff_ms = UINT64_MAX};
+    FelixClient *tuned = NULL, *capped = NULL;
+    FelixStatus status = connect_with_sync(f, &backoffs, &tuned);
+    CHECK(status == FELIX_STATUS_OK, "backoff above max gave %d", (int)status);
+    status = connect_with_sync(f, &huge, &capped);
+    CHECK(status == FELIX_STATUS_OK, "UINT64_MAX backoffs gave %d",
+          (int)status);
+    felix_client_free(tuned);
+    felix_client_free(capped);
+  }
+
   FelixSubscription *subs[3] = {NULL, NULL, NULL};
   FelixClient *clients[3] = {plain, asking, older};
   for (int i = 0; i < 3; i++) {

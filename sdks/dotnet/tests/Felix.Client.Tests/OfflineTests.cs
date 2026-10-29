@@ -40,6 +40,53 @@ public class OptionsTests
         }));
     }
 
+    public static TheoryData<double?, double?> BadBackoffs => new()
+    {
+        { 0, null },
+        { -1, null },
+        { 400.0 * 24 * 3600 * 1000, null },
+        { null, 0 },
+        { null, -1 },
+        { null, 400.0 * 24 * 3600 * 1000 },
+    };
+
+    [Theory]
+    [MemberData(nameof(BadBackoffs))]
+    public async Task BackoffOptionsAreValidatedBeforeAnythingIsSent(double? backoffMs, double? maxBackoffMs)
+    {
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => FelixClient.ConnectAsync(new FelixClientOptions
+        {
+            Addrs = ["127.0.0.1:1"],
+            TenantId = "t",
+            Token = "x",
+            ReconnectBackoff = backoffMs is { } b ? TimeSpan.FromMilliseconds(b) : null,
+            ReconnectMaxBackoff = maxBackoffMs is { } m ? TimeSpan.FromMilliseconds(m) : null,
+        }));
+    }
+
+    [Fact]
+    public void TheNativeOptionsCarryEachConfiguredValueInItsOwnField()
+    {
+        var native = FelixClient.NativeOptionsOf(new FelixClientOptions
+        {
+            Addrs = ["127.0.0.1:1"],
+            TenantId = "t",
+            Token = "x",
+            ReconnectAttempts = 7,
+            ReconnectDeadline = TimeSpan.FromMilliseconds(1500),
+            ReconnectBackoff = TimeSpan.FromMilliseconds(50),
+            ReconnectMaxBackoff = TimeSpan.FromMilliseconds(400),
+        });
+        Assert.Equal(7u, native.ReconnectAttempts);
+        Assert.Equal(1500ul, native.ReconnectDeadlineMs);
+        Assert.Equal(50ul, native.ReconnectBackoffMs);
+        Assert.Equal(400ul, native.ReconnectMaxBackoffMs);
+
+        var unset = FelixClient.NativeOptionsOf(new FelixClientOptions { Addrs = ["127.0.0.1:1"], TenantId = "t", Token = "x" });
+        Assert.Equal(0ul, unset.ReconnectBackoffMs);
+        Assert.Equal(0ul, unset.ReconnectMaxBackoffMs);
+    }
+
     [Fact]
     public async Task ACancelledTokenFailsBeforeAnythingIsSent()
     {

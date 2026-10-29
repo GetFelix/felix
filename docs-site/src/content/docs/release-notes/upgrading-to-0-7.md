@@ -43,11 +43,13 @@ soon after the first no longer leaves the shard closed (#1574).
 
 Both changes below are additive. Existing code keeps working without edits.
 
-- Every client binding takes two reconnect options: an attempt count and a
-  deadline for one retried call. When unset they keep the Rust defaults. The C
-  struct `FelixConnectOptions` gained two fields, `reconnect_attempts` and
-  `reconnect_deadline_ms`, after `token_release`. A program built against the
-  older `felix.h` keeps the defaults, since zero means default for both.
+- Every client binding takes four reconnect options: an attempt count, a
+  deadline for one retried call, and the backoff and max backoff between
+  attempts. When unset they keep the Rust defaults. The C struct
+  `FelixConnectOptions` gained four fields, `reconnect_attempts`,
+  `reconnect_deadline_ms`, `reconnect_backoff_ms` and
+  `reconnect_max_backoff_ms`, after `token_release`. A program built against
+  the older `felix.h` keeps the defaults, since zero means default for all.
 - Cache and consumer-group calls on `ClusterClient` now follow
   `ReconnectPolicy`, as publishes already did. The attempt limit, backoff and
   deadline bound the whole call, re-routes included. A write is sent again only

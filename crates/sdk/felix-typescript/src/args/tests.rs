@@ -1,6 +1,6 @@
 use napi::bindgen_prelude::BigInt;
 
-use super::{duration_ms, u64_of};
+use super::{duration_ms, reconnect_policy, u64_of};
 
 #[test]
 fn a_bigint_in_range_converts() {
@@ -32,4 +32,34 @@ fn a_duration_is_kept_between_its_floor_and_a_year() {
         assert!(duration_ms(bad, 1.0, "x").is_err(), "{bad} was accepted");
     }
     assert!(duration_ms(-1.0, 0.0, "x").is_err());
+}
+
+#[test]
+fn the_backoffs_reach_the_policy_and_a_max_below_the_backoff_is_kept() {
+    let policy = reconnect_policy(None, None, Some(50.0), Some(400.0)).unwrap();
+    assert_eq!(policy.backoff.as_millis(), 50);
+    assert_eq!(policy.max_backoff.as_millis(), 400);
+
+    let policy = reconnect_policy(None, None, Some(5000.0), Some(100.0)).unwrap();
+    assert_eq!(policy.backoff.as_millis(), 5000);
+    assert_eq!(policy.max_backoff.as_millis(), 100);
+
+    let default = reconnect_policy(None, None, None, None).unwrap();
+    assert_eq!(default.backoff.as_millis(), 200);
+    assert_eq!(default.max_backoff.as_millis(), 2000);
+}
+
+#[test]
+fn a_backoff_must_be_a_millisecond_to_a_year() {
+    let year = 365.0 * 24.0 * 3600.0 * 1000.0;
+    for bad in [0.0, 0.5, -1.0, year + 1.0, f64::NAN, f64::INFINITY] {
+        assert!(
+            reconnect_policy(None, None, Some(bad), None).is_err(),
+            "{bad}"
+        );
+        assert!(
+            reconnect_policy(None, None, None, Some(bad)).is_err(),
+            "{bad}"
+        );
+    }
 }

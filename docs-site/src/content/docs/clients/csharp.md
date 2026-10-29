@@ -295,17 +295,19 @@ down. An empty list throws `ArgumentException`.
 - **A subscription's broker fails.** On a durable stream it resubscribes from
   the offset after the last one it delivered, and where it cannot it throws
   rather than ending the enumeration as though the stream had finished.
-- **Knobs.** [Reconnecting](#reconnecting) sets the attempt count and a deadline. `GetEndpointsAsync` lists the brokers it would try, discovered ones
+- **Knobs.** [Reconnecting](#reconnecting) sets the attempt count, a deadline and the backoff. `GetEndpointsAsync` lists the brokers it would try, discovered ones
   included.
 
 ### Reconnecting
 
-Publishes, opening and following subscriptions, commits, `publish_if`, state reads, cache calls and consumer-group calls retry under these options. A read, and a group describe or dead-letter listing, retries on any error that is not terminal. A write, including a group poll, which claims records, retries only on a broker's retryable refusal, which says nothing was applied, so a write that may have applied is never sent twice. The deadline covers re-routes and, for a call over every shard of a stream, all its shards together. Two options tune the retrying, and both default to the Rust client's own policy, so a client that sets neither behaves as it always did.
+Publishes, opening and following subscriptions, commits, `publish_if`, state reads, cache calls and consumer-group calls retry under these options. A read, and a group describe or dead-letter listing, retries on any error that is not terminal. A write, including a group poll, which claims records, retries only on a broker's retryable refusal, which says nothing was applied, so a write that may have applied is never sent twice. The deadline covers re-routes and, for a call over every shard of a stream, all its shards together. Four options tune the retrying, and all default to the Rust client's own policy, so a client that sets none of them behaves as it always did.
 
 - **Attempts** is how many times a call tries to reach a broker before it gives up. Each attempt tries every broker the client knows. The default is 5, and the minimum is 1.
 - **Deadline** is a ceiling on one call across every attempt and every wait between them. It is off by default, and it is checked between attempts, before each backoff sleep, so a call can last the deadline plus one attempt's own timeout. Attempt counts alone do not bound time: five attempts against a broker that takes its full publish timeout to answer is minutes.
+- **Backoff** is the ceiling of the first wait between attempts. It doubles each attempt up to the max backoff, and each wait is a random fraction of its ceiling, so every client of a cluster does not retry in step. The default is 200 ms.
+- **Max backoff** is the longest any one wait can be. The default is 2 s. Every wait is capped at it, even when the backoff is larger.
 
-Set them as `FelixClientOptions.ReconnectAttempts` (`int?`) and `FelixClientOptions.ReconnectDeadline` (`TimeSpan?`). Both are null by default. There is no per-user handle to carry the policy to. An attempt count below 1, or a deadline under one millisecond or over one year, throws `ArgumentOutOfRangeException`.
+Set them as `FelixClientOptions.ReconnectAttempts` (`int?`), `ReconnectDeadline`, `ReconnectBackoff` and `ReconnectMaxBackoff` (`TimeSpan?`). All are null by default. There is no per-user handle to carry the policy to. An attempt count below 1, or a time under one millisecond or over one year throws `ArgumentOutOfRangeException`.
 
 ```csharp
 await using var client = await FelixClient.ConnectAsync(new FelixClientOptions
@@ -315,6 +317,8 @@ await using var client = await FelixClient.ConnectAsync(new FelixClientOptions
     Token = token,
     ReconnectAttempts = 10,
     ReconnectDeadline = TimeSpan.FromSeconds(30),
+    ReconnectBackoff = TimeSpan.FromMilliseconds(250),
+    ReconnectMaxBackoff = TimeSpan.FromSeconds(4),
 });
 try
 {

@@ -109,3 +109,26 @@ def test_a_deadline_bounds_a_retried_publish(disposable_fixture):
         f"the group call took {group_elapsed:.1f}s against a {deadline}s deadline: "
         "it spent its attempts instead"
     )
+
+
+BAD_BACKOFFS = [0, 0.0, -1.0, float("nan"), float("inf"), 1e19, 400 * 24 * 3600.0]
+
+
+@pytest.mark.parametrize("seconds", BAD_BACKOFFS)
+def test_reconnect_backoff_must_be_a_positive_number(seconds):
+    with pytest.raises(ValueError, match="reconnect_backoff"):
+        _connect(reconnect_backoff=seconds)
+    with pytest.raises(ValueError, match="reconnect_max_backoff"):
+        _connect(reconnect_max_backoff=seconds)
+
+
+def test_the_async_client_validates_backoff_too():
+    async def connect(**options):
+        await felix.AsyncClient.connect(
+            "127.0.0.1:1", tenant_id="t", token="x", **options
+        )
+
+    with pytest.raises(ValueError, match="reconnect_backoff"):
+        asyncio.run(connect(reconnect_backoff=0))
+    with pytest.raises(ValueError, match="reconnect_max_backoff"):
+        asyncio.run(connect(reconnect_max_backoff=0))
