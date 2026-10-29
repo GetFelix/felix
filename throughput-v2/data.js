@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793230578388,
+  "lastUpdate": 1793234829417,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -38532,6 +38532,58 @@ window.BENCHMARK_DATA = {
             "range": "81486.31",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1258528.58\nmean: 1223090.09\nstdev: 81486.31\ncv: 6.66%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1e469fc0cc757d92469d19731bd60e7768d3237d",
+          "message": "feat(clients): sharded watches, offset_for_time and the remaining group calls in Python and TypeScript (#1612)\n\n* feat(clients): sharded watches, offset_for_time and the remaining group calls in Python and TypeScript\n\nPart of #1605.\n\n* fix(clients): dead-lettering by hand needs group.manage; bless the Rust docs examples\n\n* test(clients): settle a dead letter as the consumer, redrive as the operator\n\n* fix(clients): close interrupts a parked Python reader, validated read timeouts, cache watch resume_from and moves, offset_for_time conformance on record timestamps\n\n* test(clients): drop the empty-stream fixture, the startup probe publishes to every stream",
+          "timestamp": "2026-10-29T00:42:17Z",
+          "tree_id": "a4a2285dd107b1d12a0775b2b871afd403fa5330",
+          "url": "https://github.com/GetFelix/felix/commit/1e469fc0cc757d92469d19731bd60e7768d3237d"
+        },
+        "date": 1793234828852,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 346888.75,
+            "range": "29385.37",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 346888.75\nmean: 338387.94\nstdev: 29385.37\ncv: 8.68%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 346888.75,
+            "range": "29385.37",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 346888.75\nmean: 338387.94\nstdev: 29385.37\ncv: 8.68%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 78597.8,
+            "range": "868.69",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 78597.80\nmean: 78851.61\nstdev: 868.69\ncv: 1.10%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 785978.02,
+            "range": "8686.90",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 785978.02\nmean: 788516.08\nstdev: 8686.90\ncv: 1.10%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
