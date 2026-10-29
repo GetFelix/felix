@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793259311413,
+  "lastUpdate": 1793259550608,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -38896,6 +38896,58 @@ window.BENCHMARK_DATA = {
             "range": "9773.40",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 798721.57\nmean: 797604.85\nstdev: 9773.40\ncv: 1.23%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c6f9d25ee1a3b66fc275307ed1a8480c14738732",
+          "message": "test(conformance): a new connection on a reset source port starts a new interposer flow (#1586) (#1627)\n\n* test(conformance): start a new interposer flow on a fresh Initial and log discards (#1586)\n\n* test(conformance): log the first discard per run, and honor server connection IDs (#1586)",
+          "timestamp": "2026-10-29T07:32:53Z",
+          "tree_id": "58774a715820c12a4aa71039f8168e733ab15a31",
+          "url": "https://github.com/GetFelix/felix/commit/c6f9d25ee1a3b66fc275307ed1a8480c14738732"
+        },
+        "date": 1793259550121,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 548169.78,
+            "range": "27475.03",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 548169.78\nmean: 533646.03\nstdev: 27475.03\ncv: 5.15%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 548169.78,
+            "range": "27475.03",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 548169.78\nmean: 533646.03\nstdev: 27475.03\ncv: 5.15%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 124470.32,
+            "range": "5158.39",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 124470.32\nmean: 122119.90\nstdev: 5158.39\ncv: 4.22%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1244703.24,
+            "range": "51583.91",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1244703.24\nmean: 1221199.00\nstdev: 51583.91\ncv: 4.22%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
