@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793253337494,
+  "lastUpdate": 1793254771935,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -49236,6 +49236,72 @@ window.BENCHMARK_DATA = {
             "range": "1059.71",
             "unit": "us",
             "extra": "trials: 5\nmedian: 562.00\nmean: 1292.60\nstdev: 1059.71\ncv: 81.98%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9c9e1bf868e75a4c48a168a26ba7e10c935f4cf1",
+          "message": "fix(client): follow a cache watch past a dead broker and drop unreachable cache routes (#1619)\n\n* fix(client): follow a cache watch past a dead broker and drop unreachable cache routes\n\nA ClusterCacheWatch ended with a bare None when the broker serving it died.\nIt now reopens on the shard's current owner from resume_from under the\nReconnectPolicy, like ClusterSubscription, and reports why through error()\nwhen no broker takes it. CacheWatch::lost() tells a broken connection from\na clean end.\n\ncache_owner kept a route whose owner it could not connect to, so every\nlater cache request waited out a connect timeout on the dead broker. A\nfailed connect now drops the route.\n\nReported in GetFelix/felixd#68.\n\n* test(client): regenerate the docs examples after the watch doc edits\n\n* fix(client): restart a retained watch's state phase after a loss or move mid-state\n\nA cluster cache watch reopened inside its state phase now asks for retained\nvalues again, so the state starts over on the new owner instead of ending\nwith values missing, and a sharded retained watch no longer announces\nStateComplete before that shard's new state has arrived. ShardClosed carries\nthe cause, and the Python, TypeScript, C and C# watches expose reconnects\nand the error.",
+          "timestamp": "2026-10-29T06:14:47Z",
+          "tree_id": "4d239be8312d99e0d689c6c3dbb81a6fee340836",
+          "url": "https://github.com/GetFelix/felix/commit/9c9e1bf868e75a4c48a168a26ba7e10c935f4cf1"
+        },
+        "date": 1793254765068,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 104,
+            "range": "4.72",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 104.00\nmean: 104.40\nstdev: 4.72\ncv: 4.52%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 148,
+            "range": "10.18",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 148.00\nmean: 147.80\nstdev: 10.18\ncv: 6.89%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 184,
+            "range": "19.83",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 184.00\nmean: 185.40\nstdev: 19.83\ncv: 10.70%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 126,
+            "range": "10.12",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 126.00\nmean: 130.00\nstdev: 10.12\ncv: 7.79%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 270,
+            "range": "306.39",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 270.00\nmean: 417.00\nstdev: 306.39\ncv: 73.47%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 419,
+            "range": "958.22",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 419.00\nmean: 846.80\nstdev: 958.22\ncv: 113.16%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
