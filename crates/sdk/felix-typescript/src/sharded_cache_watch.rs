@@ -108,6 +108,7 @@ fn shaped(item: Item) -> ShardedCacheWatchItem {
         lagged_resume_from: Either::B(Null),
         shard_moved: Either::B(Null),
         shard_closed: Either::B(Null),
+        shard_closed_error: Either::B(Null),
     };
     match item {
         Item::Change { shard, change } => ShardedCacheWatchItem {
@@ -131,8 +132,9 @@ fn shaped(item: Item) -> ShardedCacheWatchItem {
             shard_moved: Either::A(moved.into()),
             ..empty(Some(shard))
         },
-        Item::ShardClosed { shard } => ShardedCacheWatchItem {
+        Item::ShardClosed { shard, error } => ShardedCacheWatchItem {
             shard_closed: Either::A(true),
+            shard_closed_error: or_null(error),
             ..empty(Some(shard))
         },
     }

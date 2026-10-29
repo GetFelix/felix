@@ -459,7 +459,11 @@ await foreach (var item in watch)
 - Enumerating yields every item, `Lagged` included, and ends when the feed does: after a lag on a single
   watch, and once every shard of a sharded watch has ended. A lag on a sharded watch ends only
   `Shard`; `ShardClosed` reports a shard whose feed ended, and `ShardMoved` that the watch is following
-  a shard to another broker by itself.
+  a shard to another broker by itself. A watch whose broker dies is reopened on the shard's current
+  owner without an item, within `ReconnectDeadline`, and a single watch's `Reconnects` counts how often.
+  If no broker takes it, the feed ends and `Error` says why; on a sharded watch the shard's
+  `ShardClosed` item carries it in `WatchItem.Error`. A move or loss during a retained watch's state
+  phase starts the state over on the new owner, so values already seen may arrive again.
 - `ReadAsync(timeout)` returns null on a timeout and loses nothing when it times out or is cancelled.
   One read may be pending at a time. Disposing the watch ends a pending read as cancelled.
 - To resume, pass `fromOffset` on a single watch: the first offset not yet seen, which is the last handled

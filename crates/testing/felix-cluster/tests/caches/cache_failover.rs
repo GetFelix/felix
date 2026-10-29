@@ -31,7 +31,7 @@ fn replicated_cache() -> ClusterConfig {
 /// Killing a leader that has shipped nothing tests startup, not failover. The
 /// baseline has to be sampled before the write, because the counter only moves
 /// on a real exchange and an idle pass leaves it alone.
-async fn replication_settled(cluster: &Cluster, leader: &str, before: f64) {
+pub(crate) async fn replication_settled(cluster: &Cluster, leader: &str, before: f64) {
     felix_cluster::wait::until(
         Duration::from_secs(30),
         "the cache write to reach every follower",
@@ -64,7 +64,7 @@ async fn replication_settled(cluster: &Cluster, leader: &str, before: f64) {
 ///
 /// The harness's control plane does not run the reconciler on a timer, so a
 /// failure test has to step placement itself.
-async fn failover_from(cluster: &Cluster, gone: &str, budget: Duration) -> bool {
+pub(crate) async fn failover_from(cluster: &Cluster, gone: &str, budget: Duration) -> bool {
     felix_cluster::wait::until(budget, "a new cache shard owner", || async {
         cluster.place_shards().await;
         match cluster.shard_owner_of("cache", CACHE, 0).await {

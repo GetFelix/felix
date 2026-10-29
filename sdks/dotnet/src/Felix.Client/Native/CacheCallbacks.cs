@@ -75,7 +75,7 @@ internal static unsafe partial class Callbacks
         {
             if (status == 0)
             {
-                state.Succeed(CopyWatchItem(item));
+                state.Succeed(CopyWatchItem(item, message));
             }
             else if (status == (int)FelixStatus.Timeout)
             {
@@ -118,7 +118,7 @@ internal static unsafe partial class Callbacks
         return item->Key is null || item->KeyLen == 0 ? string.Empty : Encoding.UTF8.GetString(item->Key, checked((int)item->KeyLen));
     }
 
-    internal static WatchItem CopyWatchItem(NativeWatchItem* item) =>
+    internal static WatchItem CopyWatchItem(NativeWatchItem* item, byte* message) =>
         new(
             (WatchItemKind)item->Kind,
             item->HasShard != 0 ? item->Shard : null,
@@ -126,5 +126,6 @@ internal static unsafe partial class Callbacks
             CopyOptional(item->HasValue != 0, item->Value, item->ValueLen),
             unchecked((long)item->Offset),
             item->ExpiresAtMillis != 0 ? unchecked((long)item->ExpiresAtMillis) : null,
-            item->HasResumeFrom != 0 ? unchecked((long)item->ResumeFrom) : null);
+            item->HasResumeFrom != 0 ? unchecked((long)item->ResumeFrom) : null,
+            NativeMethods.Utf8(message));
 }

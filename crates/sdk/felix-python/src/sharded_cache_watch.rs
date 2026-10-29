@@ -56,17 +56,22 @@ impl CacheShardLagged {
     }
 }
 
-/// One shard's watch ended without a lag signal, usually because its owner
-/// went away. The other shards are unaffected.
+/// One shard's watch ended without a lag signal. `error` says why when it
+/// could not be reopened on another broker in time. The other shards are
+/// unaffected.
 #[pyclass(module = "felix", frozen, get_all)]
 pub struct CacheShardClosed {
     pub shard: u32,
+    pub error: Option<String>,
 }
 
 #[pymethods]
 impl CacheShardClosed {
     fn __repr__(&self) -> String {
-        format!("CacheShardClosed(shard={})", self.shard)
+        format!(
+            "CacheShardClosed(shard={}, error={:?})",
+            self.shard, self.error
+        )
     }
 }
 
@@ -121,7 +126,9 @@ impl<'py> IntoPyObject<'py> for OwnedShardedWatchItem {
                 },
             )?
             .into_any(),
-            Item::ShardClosed { shard } => Bound::new(py, CacheShardClosed { shard })?.into_any(),
+            Item::ShardClosed { shard, error } => {
+                Bound::new(py, CacheShardClosed { shard, error })?.into_any()
+            }
         })
     }
 }

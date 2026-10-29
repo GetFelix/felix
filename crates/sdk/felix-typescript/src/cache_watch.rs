@@ -1,7 +1,7 @@
 //! A cache watch, read with `recv`.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -18,6 +18,8 @@ pub struct CacheWatchHandle {
     inner: Arc<Mutex<Option<felix_client::ClusterCacheWatch>>>,
     resume_from: AtomicU64,
     moves: AtomicU64,
+    reconnects: AtomicU64,
+    error: StdMutex<Option<String>>,
     closed: watch::Sender<bool>,
 }
 
@@ -29,6 +31,8 @@ impl CacheWatchHandle {
             retained_count: watch.retained_count(),
             resume_from: AtomicU64::new(watch.resume_from()),
             moves: AtomicU64::new(watch.moves()),
+            reconnects: AtomicU64::new(watch.reconnects()),
+            error: StdMutex::new(None),
             inner: Arc::new(Mutex::new(Some(watch))),
             closed: watch::Sender::new(false),
         }
@@ -75,6 +79,19 @@ impl CacheWatchHandle {
         BigInt::from(self.moves.load(Ordering::Acquire))
     }
 
+    /// How many times this watch was reopened after losing its connection.
+    #[napi(getter)]
+    pub fn reconnects(&self) -> BigInt {
+        BigInt::from(self.reconnects.load(Ordering::Acquire))
+    }
+
+    /// Why the watch ended, when it could not be reopened on another broker
+    /// within the reconnect deadline; otherwise `null`.
+    #[napi(getter)]
+    pub fn error(&self) -> Option<String> {
+        self.error.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
     /// The next item, or `null` once the watch has ended.
     #[napi]
     pub async fn recv(&self) -> Result<Option<CacheWatchItem>> {
@@ -96,6 +113,11 @@ impl CacheWatchHandle {
         self.resume_from
             .store(handle.resume_from(), Ordering::Release);
         self.moves.store(handle.moves(), Ordering::Release);
+        self.reconnects
+            .store(handle.reconnects(), Ordering::Release);
+        if let Some(err) = handle.error() {
+            *self.error.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!("{err:#}"));
+        }
         Ok(item.map(|item| match item {
             felix_client::CacheWatchItem::Change(change) => CacheWatchItem {
                 change: Either::A(CacheChange {

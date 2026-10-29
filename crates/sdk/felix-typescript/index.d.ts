@@ -356,8 +356,10 @@ export interface ShardedCacheWatchItem {
   laggedResumeFrom: bigint | null;
   /** This shard moved to another broker and its watch is following it there. */
   shardMoved: ShardMoved | null;
-  /** This shard's watch ended without a lag signal, usually because its owner went away. */
+  /** This shard's watch ended without a lag signal. */
   shardClosed: boolean | null;
+  /** With `shardClosed`, why the shard could not be reopened on another broker in time, when that is why it ended. */
+  shardClosedError: string | null;
 }
 
 /** One committed record from `read`. */
@@ -572,6 +574,13 @@ export declare class CacheWatchHandle {
   readonly resumeFrom: bigint;
   /** How many times this watch has followed its shard to a new owner. */
   readonly moves: bigint;
+  /** How many times this watch was reopened after losing its connection. */
+  readonly reconnects: bigint;
+  /**
+   * Why the watch ended, when it could not be reopened on another broker
+   * within the reconnect deadline; otherwise `null`.
+   */
+  readonly error: string | null;
   /** The next item, or `null` once the watch has ended. */
   recv(): Promise<CacheWatchItem | null>;
   close(): Promise<void>;

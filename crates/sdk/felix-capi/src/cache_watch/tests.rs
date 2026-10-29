@@ -69,7 +69,12 @@ fn sharded_items_name_their_shard_except_state_complete() {
     assert_eq!(complete.kind, FELIX_WATCH_STATE_COMPLETE);
     assert!(!complete.has_shard);
 
-    let closed = Item::from_sharded(ShardedCacheWatchItem::ShardClosed { shard: 3 }).row();
+    let closed = Item::from_sharded(ShardedCacheWatchItem::ShardClosed {
+        shard: 3,
+        error: Some("unreachable".into()),
+    });
+    assert_eq!(closed.error.as_deref(), Some("unreachable"));
+    let closed = closed.row();
     assert_eq!(closed.kind, FELIX_WATCH_SHARD_CLOSED);
     assert!(closed.has_shard && closed.shard == 3);
 

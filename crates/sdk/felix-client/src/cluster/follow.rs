@@ -9,7 +9,7 @@
 mod cache_watch;
 
 pub use cache_watch::ClusterCacheWatch;
-pub(crate) use cache_watch::{WatchProgress, WatchTarget};
+pub(crate) use cache_watch::{WatchProgress, WatchStep, WatchTarget};
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -291,6 +291,32 @@ impl ClusterClient {
         shard: u32,
         start: StartPosition,
     ) -> Result<(Arc<Client>, Subscription)> {
+        self.reopen_after_loss(lost_client, || {
+            self.subscribe_shard_following_redirects(
+                tenant_id,
+                namespace,
+                stream,
+                shard,
+                Some(start),
+            )
+        })
+        .await
+        .with_context(|| {
+            format!("resubscribe to shard {shard} of {stream} after losing the connection")
+        })
+    }
+
+    /// Open a reader again with `open` after its connection to `lost_client`
+    /// was lost, retrying under the client's policy until a broker takes it.
+    pub(crate) async fn reopen_after_loss<T, F, Fut>(
+        &self,
+        lost_client: &Arc<Client>,
+        open: F,
+    ) -> Result<T>
+    where
+        F: Fn() -> Fut,
+        Fut: Future<Output = Result<T>>,
+    {
         let deadline = Instant::now() + self.policy.budget(FOLLOW_DEADLINE);
         let mut attempt = 0usize;
         loop {
@@ -300,31 +326,18 @@ impl ClusterClient {
             if (attempt > 0 || Arc::ptr_eq(&current, lost_client))
                 && let Err(err) = self.reconnect(&current).await
             {
-                tracing::debug!(error = %err, "no broker answered while resubscribing");
+                tracing::debug!(error = %err, "no broker answered while reopening");
             }
-            let error = match self
-                .subscribe_shard_following_redirects(
-                    tenant_id,
-                    namespace,
-                    stream,
-                    shard,
-                    Some(start),
-                )
-                .await
-            {
-                Ok(resumed) => return Ok(resumed),
+            let error = match open().await {
+                Ok(reopened) => return Ok(reopened),
                 Err(err) => err,
             };
             if next_step(&error, Attempt::default()) == Next::Fail {
-                return Err(error.context(format!(
-                    "resubscribe to shard {shard} of {stream} after losing the connection"
-                )));
+                return Err(error);
             }
             let delay = self.policy.delay_before(attempt);
             if Instant::now() + delay >= deadline {
-                return Err(error.context(format!(
-                    "no broker took shard {shard} of {stream} back before the deadline"
-                )));
+                return Err(error.context("no broker took it back before the deadline"));
             }
             tokio::time::sleep(delay).await;
             attempt += 1;

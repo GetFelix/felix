@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::cache::{CacheWatch, CacheWatchFilter, CacheWatchItem};
 use crate::client::Client;
@@ -25,10 +25,20 @@ use crate::subscribe::ShardMoved;
 /// compacted away on the new owner first, in which case the watch resnapshots
 /// as any resume from that offset would.
 ///
+/// A lost connection, a broker killed under the watch for one, is followed
+/// the same way, without a notice: the next [`Self::recv`] opens a watch on
+/// whichever broker owns the shard now, from [`Self::resume_from`].
+///
+/// A retained watch that moves or loses its connection inside its state
+/// phase is reopened retained, and the state phase starts over with the new
+/// owner's current values. Values handed out before the reopen may then
+/// arrive again before [`Self::in_state_phase`] turns false. Outside the
+/// state phase nothing is repeated.
+///
 /// A [`CacheWatchItem::Lagged`] still ends the watch, as on a
 /// [`CacheWatch`]. So does failing to reach the new owner within the client's
-/// reconnect deadline; [`Self::resume_from`] is then where a new watch should
-/// start.
+/// reconnect deadline; [`Self::error`] then says why, and
+/// [`Self::resume_from`] is where a new watch should start.
 ///
 /// Dropping this ends the watch.
 pub struct ClusterCacheWatch {
@@ -41,7 +51,13 @@ pub struct ClusterCacheWatch {
     /// Set by a `ShardMoved` and cleared once the new owner is watched, so a
     /// `recv` cancelled while following tries again next time.
     following: Option<ShardMoved>,
+    /// Set when the connection broke and cleared once a broker is watched
+    /// again, for the same reason as `following`.
+    lost: bool,
+    /// Why the watch could not be followed, once it could not.
+    error: Option<anyhow::Error>,
     moves: u64,
+    reconnects: u64,
     resume_offset: u64,
     resnapshot: bool,
     retained_count: Option<u64>,
@@ -66,7 +82,10 @@ impl ClusterCacheWatch {
                 watch.resnapshot(),
             ),
             following: None,
+            lost: false,
+            error: None,
             moves: 0,
+            reconnects: 0,
             resume_offset: watch.resume_offset(),
             resnapshot: watch.resnapshot(),
             retained_count: watch.retained_count(),
@@ -77,33 +96,95 @@ impl ClusterCacheWatch {
     /// The next item, or `None` once the watch has ended.
     ///
     /// Following a move happens inside this call, after the
-    /// [`CacheWatchItem::ShardMoved`] notice has been handed out. It is
-    /// cancel-safe: a call dropped mid-follow leaves the follow to the next.
+    /// [`CacheWatchItem::ShardMoved`] notice has been handed out, and so does
+    /// following a lost connection. It is cancel-safe: a call dropped
+    /// mid-follow leaves the follow to the next. When a follow fails this
+    /// returns `None` and [`Self::error`] says why; calling again after a lost
+    /// connection tries again.
     pub async fn recv(&mut self) -> Option<CacheWatchItem> {
-        if let Some(moved) = self.following.clone() {
-            let followed = self.follow(&moved).await;
-            self.following = None;
-            if let Err(err) = followed {
-                tracing::warn!(
-                    error = %format!("{err:#}"),
-                    resume_from = self.progress.resume_from,
-                    "a cache watch could not follow its shard to the new owner",
-                );
+        loop {
+            if let WatchStep::Item(item) = self.step().await? {
+                return Some(item);
+            }
+        }
+    }
+
+    /// Like [`Self::recv`], but also says when the watch was reopened, so a
+    /// caller tracking [`Self::progress`] sees a state phase that restarted
+    /// or ended without an item.
+    pub(crate) async fn step(&mut self) -> Option<WatchStep> {
+        loop {
+            if let Some(moved) = self.following.clone() {
+                let followed = self.follow(&moved).await;
+                self.following = None;
+                if let Err(err) = followed {
+                    tracing::warn!(
+                        error = %format!("{err:#}"),
+                        resume_from = self.progress.resume_from,
+                        "a cache watch could not follow its shard to the new owner",
+                    );
+                    self.error = Some(err);
+                    return None;
+                }
+                return Some(WatchStep::Reopened);
+            }
+            if self.lost {
+                match self.reopen().await {
+                    Ok(()) => {
+                        self.lost = false;
+                        return Some(WatchStep::Reopened);
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            error = %format!("{err:#}"),
+                            resume_from = self.progress.resume_from,
+                            "a cache watch could not be reopened after losing its connection",
+                        );
+                        self.error = Some(err);
+                        return None;
+                    }
+                }
+            }
+            let Some(item) = self.watch.recv().await else {
+                // A clean end is final. A broken connection is not: the shard
+                // is still served somewhere, often by a promoted replica.
+                if self.watch.lost().is_some() {
+                    self.lost = true;
+                    continue;
+                }
                 return None;
+            };
+            match &item {
+                CacheWatchItem::Change(change) => {
+                    self.progress.observe_change(change.offset);
+                }
+                CacheWatchItem::Lagged { resume_from } => self.progress.observe_lag(*resume_from),
+                CacheWatchItem::ShardMoved(moved) => {
+                    self.progress.observe_move(moved.resume_from);
+                    self.following = Some(moved.clone());
+                }
             }
+            return Some(WatchStep::Item(item));
         }
-        let item = self.watch.recv().await?;
-        match &item {
-            CacheWatchItem::Change(change) => {
-                self.progress.observe_change(change.offset);
-            }
-            CacheWatchItem::Lagged { resume_from } => self.progress.observe_lag(*resume_from),
-            CacheWatchItem::ShardMoved(moved) => {
-                self.progress.observe_move(moved.resume_from);
-                self.following = Some(moved.clone());
-            }
-        }
-        Some(item)
+    }
+
+    /// Why the watch ended, when it ended because it could not be followed to
+    /// another broker within the client's reconnect deadline.
+    pub fn error(&self) -> Option<&anyhow::Error> {
+        self.error.as_ref()
+    }
+
+    /// How many times this watch has been reopened after losing its
+    /// connection.
+    pub fn reconnects(&self) -> u64 {
+        self.reconnects
+    }
+
+    /// True while a retained watch's current values are still to come. It
+    /// turns false once they have all been handed out, and can turn true
+    /// again when a move or a lost connection restarts the state phase.
+    pub fn in_state_phase(&self) -> bool {
+        self.progress.in_state_phase()
     }
 
     /// The `from_offset` that resumes this watch without a gap, counting
@@ -147,17 +228,51 @@ impl ClusterCacheWatch {
 
     async fn follow(&mut self, moved: &ShardMoved) -> Result<()> {
         let from = self.progress.resume_from;
+        // Retained values still to come can sit anywhere below where live
+        // delivery began, so only a fresh state phase is sure to hold them.
+        let retained = self.progress.in_state_phase();
         let (cluster, target) = (&self.cluster, &self.target);
         let (client, watch) = cluster
             .on_new_owner(moved, |first| {
-                cluster.watch_via(first, target, Some(from), false)
+                cluster.watch_via(first, target, Some(from), retained)
             })
             .await?;
-        self.progress
-            .rebase(watch.resume_offset(), watch.resnapshot());
+        self.progress.reopened(
+            watch.resume_offset(),
+            watch.resnapshot(),
+            retained.then(|| watch.retained_count().unwrap_or(0)),
+        );
         self.client = client;
         self.watch = watch;
         self.moves += 1;
+        Ok(())
+    }
+
+    async fn reopen(&mut self) -> Result<()> {
+        let from = self.progress.resume_from;
+        let retained = self.progress.in_state_phase();
+        let (cluster, target) = (&self.cluster, &self.target);
+        let (client, watch) = cluster
+            .reopen_after_loss(&self.client, || async {
+                cluster
+                    .watch_via(cluster.client().await, target, Some(from), retained)
+                    .await
+            })
+            .await
+            .with_context(|| {
+                format!(
+                    "reopen the watch on cache {} after losing the connection",
+                    target.cache
+                )
+            })?;
+        self.progress.reopened(
+            watch.resume_offset(),
+            watch.resnapshot(),
+            retained.then(|| watch.retained_count().unwrap_or(0)),
+        );
+        self.client = client;
+        self.watch = watch;
+        self.reconnects += 1;
         Ok(())
     }
 }
@@ -168,9 +283,18 @@ impl std::fmt::Debug for ClusterCacheWatch {
             .field("target", &self.target)
             .field("progress", &self.progress)
             .field("following", &self.following)
+            .field("lost", &self.lost)
             .field("moves", &self.moves)
             .finish_non_exhaustive()
     }
+}
+
+/// One step of a [`ClusterCacheWatch`].
+pub(crate) enum WatchStep {
+    Item(CacheWatchItem),
+    /// The watch was reopened on another broker, without an item to show for
+    /// it yet.
+    Reopened,
 }
 
 /// What a watch reads: which cache, which keys, and which shard when the
@@ -276,8 +400,17 @@ impl WatchProgress {
         }
     }
 
-    /// The watch was reopened from `resume_from` on the new owner. It asks
-    /// for no retained values, so whatever state phase was left is over.
+    /// The watch was reopened on another broker. A reopen that asked for
+    /// retained values, `retained` of them, starts the state phase over; one
+    /// that did not resumes from `resume_from`.
+    pub(crate) fn reopened(&mut self, live_from: u64, resnapshot: bool, retained: Option<u64>) {
+        match retained {
+            Some(count) => *self = Self::new(live_from, None, Some(count), resnapshot),
+            None => self.rebase(live_from, resnapshot),
+        }
+    }
+
+    /// The watch was reopened from `resume_from` without retained values.
     pub(crate) fn rebase(&mut self, live_from: u64, resnapshot: bool) {
         self.live_from = live_from;
         self.in_log_order = !resnapshot;

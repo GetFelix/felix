@@ -51,8 +51,8 @@ pub use cache_watch::{
     FELIX_WATCH_SHARD_CLOSED, FELIX_WATCH_SHARD_MOVED, FELIX_WATCH_STATE_COMPLETE, FelixCacheWatch,
     FelixCacheWatchCallback, FelixWatchFilter, FelixWatchItem, FelixWatchItemCallback,
     FelixWatchItemKind, felix_cache_watch_free, felix_cache_watch_next,
-    felix_cache_watch_resume_offsets, felix_cache_watch_retained_count, felix_client_watch_cache,
-    felix_client_watch_cache_sharded,
+    felix_cache_watch_reconnects, felix_cache_watch_resume_offsets,
+    felix_cache_watch_retained_count, felix_client_watch_cache, felix_client_watch_cache_sharded,
 };
 pub use cancel::{
     FelixCancelToken, felix_cancel_token_cancel, felix_cancel_token_free, felix_cancel_token_new,

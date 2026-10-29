@@ -253,11 +253,15 @@ owner from the larger of the old owner's `resume_from` and the offset after the
 last change handed out. The cache log moves with the shard and keeps its
 offsets, so no change is repeated or skipped; the one exception is a resume
 point the new owner has already compacted past, where the watch resnapshots as
-any resume from that offset would. A `Lagged` still ends the watch, and so does
-not reaching the new owner by the deadline; `resume_from()` is then where to
-start a new one. A sharded cache watch follows each shard the same way and
-reports `ShardedCacheWatchItem::ShardMoved`, or `ShardClosed` if that shard
-could not be followed.
+any resume from that offset would. A lost connection is followed the same way,
+without a notice. A retained watch that moves or loses its connection inside
+its state phase is reopened retained and its state phase starts over, so values
+already handed out may arrive again until `in_state_phase()` turns false. A
+`Lagged` still ends the watch, and so does not reaching the new owner by the
+deadline; `error()` says why and `resume_from()` is where to start a new one. A
+sharded cache watch follows each shard the same way and reports
+`ShardedCacheWatchItem::ShardMoved`, or `ShardClosed` with the `error` if that
+shard could not be followed.
 
 **With `Client`, you resume.** The subscription ends: `next_event` returns
 `None` with `Subscription::shard_moved()` set to the `ShardMoved` it received.
@@ -358,7 +362,7 @@ while let Some(item) = watch.recv().await {
         ShardedCacheWatchItem::StateComplete => { /* every shard's state is in */ }
         ShardedCacheWatchItem::Lagged { shard, .. } => { /* that shard ended */ }
         ShardedCacheWatchItem::ShardMoved { shard, .. } => { /* followed to its new owner */ }
-        ShardedCacheWatchItem::ShardClosed { shard } => { /* that shard ended */ }
+        ShardedCacheWatchItem::ShardClosed { shard, error } => { /* that shard ended; error says why */ }
     }
 }
 # Ok(())
@@ -374,10 +378,13 @@ while let Some(item) = watch.recv().await {
 - **Resume per shard.** `resume_offsets()` has one offset per shard; pass it
   back to `watch_cache_sharded`. A shard that hadn't finished its retained
   values resumes at 0.
-- **A shard that ends is reported, not reconnected.** You get `Lagged`,
-  `ShardMoved` or `ShardClosed` for it and the other shards carry on. After
-  `Lagged` or `ShardMoved`, `resume_offsets()` already says where that shard
-  resumes.
+- **A shard that moves or loses its broker is followed.** A move is reported
+  as `ShardMoved`; a lost connection is followed silently. Either one inside
+  the state phase restarts that shard's state phase, so `StateComplete` waits
+  for its new state. A shard that ends is reported as `Lagged` or
+  `ShardClosed` (with the `error` when it could not be followed) and the other
+  shards carry on. After `Lagged` or `ShardMoved`, `resume_offsets()` already
+  says where that shard resumes.
 - **If any shard can't be reached, the call fails**, as with
   `subscribe_sharded`.
 

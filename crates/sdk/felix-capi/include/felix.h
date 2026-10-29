@@ -620,7 +620,9 @@ typedef void (*FelixOffsetCallback)(void *user_data,
 // changes. Only a sharded retained watch reports it.
 #define FELIX_WATCH_STATE_COMPLETE 4
 
-// One shard's feed has ended and delivers no more. Other shards go on.
+// One shard's feed has ended and delivers no more. Other shards go on. When
+// it ended because it could not be reopened on another broker in time, the
+// read's `message` says why.
 #define FELIX_WATCH_SHARD_CLOSED 5
 
 // The commit's event, delivered to the stream's subscribers. Reads `stream`
@@ -970,7 +972,9 @@ FelixStatus felix_client_watch_cache_sharded(const struct FelixClient *client,
 // `FELIX_STATUS_TIMEOUT` when `timeout_ms` passed with nothing (the watch
 // stays usable); `FELIX_STATUS_CLOSED` once the feed has ended, as after
 // `FELIX_WATCH_LAGGED` on a single watch or once every shard of a sharded
-// watch has ended; or `FELIX_STATUS_CANCELLED`. A cancelled or
+// watch has ended; or `FELIX_STATUS_CANCELLED`. A single watch that ended
+// because it could not be reopened on another broker within the reconnect
+// deadline reports `FELIX_STATUS_CLOSED` with a message saying why. A cancelled or
 // timed-out read loses nothing; the next read gets the item.
 //
 // A negative `timeout_ms` waits indefinitely; zero only takes an item that
@@ -986,6 +990,17 @@ FelixStatus felix_cache_watch_next(const struct FelixCacheWatch *watch,
                                    const struct FelixCancelToken *cancel,
                                    FelixWatchItemCallback callback,
                                    void *user_data);
+
+// How many times a single watch has been reopened after losing its
+// connection, as of the last read.
+//
+// Only a single watch has this; a sharded watch is
+// `FELIX_STATUS_INVALID_ARGUMENT`. It may be called while a read is pending.
+//
+// # Safety
+//
+// `watch` is a live watch and `out` is null or writable.
+FelixStatus felix_cache_watch_reconnects(const struct FelixCacheWatch *watch, uint64_t *out);
 
 // How many entries a retained watch started from, for sizing a cache that is
 // loaded from its watch.

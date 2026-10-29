@@ -619,6 +619,9 @@ internal static unsafe partial class NativeMethods
     internal static partial int felix_cache_watch_retained_count(nint watch, ulong* count, byte* has);
 
     [LibraryImport(Lib)]
+    internal static partial int felix_cache_watch_reconnects(nint watch, ulong* reconnects);
+
+    [LibraryImport(Lib)]
     internal static partial int felix_cache_watch_resume_offsets(nint watch, uint* shards, ulong* offsets, nuint cap, nuint* count);
 
     [LibraryImport(Lib)]

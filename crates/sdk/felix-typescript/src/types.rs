@@ -140,7 +140,10 @@ pub struct ShardedCacheWatchItem {
     pub lagged_resume_from: Either<BigInt, Null>,
     /// This shard moved to another broker and its watch is following it.
     pub shard_moved: Either<ShardMoved, Null>,
-    /// This shard's watch ended without a lag signal, usually because its
-    /// owner went away. The other shards are unaffected.
+    /// This shard's watch ended without a lag signal. The other shards are
+    /// unaffected.
     pub shard_closed: Either<bool, Null>,
+    /// With `shardClosed`, why the shard could not be reopened on another
+    /// broker in time, when that is why it ended.
+    pub shard_closed_error: Either<String, Null>,
 }

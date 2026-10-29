@@ -149,6 +149,12 @@ static FelixClient *connect_cluster(struct waiter *w, const char *token) {
   without applying are retried on another broker. A write that may have been
   applied is reported as an unknown outcome and not sent again
   ([Writes whose outcome is unknown](#writes-whose-outcome-is-unknown)).
+  A cache watch open on that broker is reopened on whichever broker owns its
+  shard now, from the offset after the last change it delivered, under the
+  same policy as a subscription. If no broker takes it before the deadline,
+  the watch ends and reports why. A cache request that cannot connect to the
+  shard's owner goes through another broker and asks again who owns the
+  shard, rather than waiting on the dead owner every time.
 - **A shard moves.** A publish that reaches the old owner is redirected to the
   new one, and the client remembers where each shard lives. A subscription
   follows its shard to the new owner and carries on.

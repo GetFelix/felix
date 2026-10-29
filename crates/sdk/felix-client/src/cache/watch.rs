@@ -21,6 +21,7 @@ pub struct CacheWatch {
     resnapshot: bool,
     retained_count: Option<u64>,
     refusal: std::sync::Arc<std::sync::OnceLock<crate::BrokerError>>,
+    lost: std::sync::Arc<std::sync::OnceLock<crate::SubscriptionLost>>,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -38,9 +39,11 @@ impl CacheWatch {
         let (tx, rx) = mpsc::channel(queue_capacity.max(1));
         let refusal = std::sync::Arc::new(std::sync::OnceLock::new());
         let pump_refusal = std::sync::Arc::clone(&refusal);
+        let lost = std::sync::Arc::new(std::sync::OnceLock::new());
+        let pump_lost = std::sync::Arc::clone(&lost);
         let task = tokio::spawn(async move {
             let _lease = lease;
-            run_watch_pump(recv, tx, max_frame_bytes, pump_refusal).await
+            run_watch_pump(recv, tx, max_frame_bytes, pump_refusal, pump_lost).await
         });
         Self {
             items: rx,
@@ -48,6 +51,7 @@ impl CacheWatch {
             resnapshot,
             retained_count,
             refusal,
+            lost,
             task,
         }
     }
@@ -55,7 +59,8 @@ impl CacheWatch {
     /// The next item, or `None` once the watch has ended — the connection
     /// closed, or the broker ended it (a [`CacheWatchItem::Lagged`] or
     /// [`CacheWatchItem::ShardMoved`] is delivered first when it ended by
-    /// falling behind or because its shard moved).
+    /// falling behind or because its shard moved). [`Self::lost`] says
+    /// whether the connection broke.
     pub async fn recv(&mut self) -> Option<CacheWatchItem> {
         self.items.recv().await
     }
@@ -66,6 +71,13 @@ impl CacheWatch {
     /// sends error codes fills it.
     pub fn refusal(&self) -> Option<&crate::BrokerError> {
         self.refusal.get()
+    }
+
+    /// Set when the watch ended because its connection broke (the broker died,
+    /// or the connection timed out or was reset) rather than because the broker
+    /// ended it. Set before [`Self::recv`] returns `None`.
+    pub fn lost(&self) -> Option<&crate::SubscriptionLost> {
+        self.lost.get()
     }
 
     /// The offset live delivery began at. Everything the broker delivered
@@ -153,6 +165,7 @@ async fn run_watch_pump(
     tx: mpsc::Sender<CacheWatchItem>,
     max_frame_bytes: usize,
     refusal: std::sync::Arc<std::sync::OnceLock<crate::BrokerError>>,
+    lost: std::sync::Arc<std::sync::OnceLock<crate::SubscriptionLost>>,
 ) {
     let mut frame_scratch = BytesMut::with_capacity(16 * 1024);
     loop {
@@ -160,10 +173,19 @@ async fn run_watch_pump(
             match read_message_with_limit(&mut recv, &mut frame_scratch, max_frame_bytes).await {
                 Ok(Some(message)) => message,
                 // EOF, or a broken stream: either way the watch is over, and
-                // the closed channel is what tells the application.
+                // the closed channel is what tells the application. A broken
+                // transport is recorded first, so a follower can tell it from
+                // a clean end.
                 Ok(None) => break,
                 Err(err) => {
                     tracing::debug!(error = %err, "cache watch stream failed");
+                    if err.chain().any(|cause| {
+                        cause.is::<quinn::ReadError>() || cause.is::<quinn::ReadExactError>()
+                    }) {
+                        let _ = lost.set(crate::SubscriptionLost {
+                            reason: format!("{err:#}"),
+                        });
+                    }
                     break;
                 }
             };

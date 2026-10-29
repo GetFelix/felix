@@ -1005,7 +1005,13 @@ Three things there matter:
   value. A watcher mirroring a cache has to tell those apart.
 - **`laggedResumeFrom` is a value, not a rejection.** Re-watching from it is
   gapless. `shardMoved` is only a notice: the watch follows its shard to the
-  new owner and carries on, with no change repeated or skipped.
+  new owner and carries on, with no change repeated or skipped. A watch whose
+  broker dies is reopened the same way, without a notice, within the client's
+  reconnect deadline, and `reconnects` counts how often. If no broker takes it,
+  the watch ends and `error` says why; on a sharded watch that shard's
+  `shardClosed` item carries it as `shardClosedError`. A move or loss during a
+  retained watch's state phase starts the state over on the new owner, so
+  values already seen may arrive again before it is complete.
 
 `start` and `retained` are mutually exclusive. A resume already replays the
 state a retained start shortcuts, so asking for both is refused. A prefix watch
@@ -1232,7 +1238,7 @@ left out, and why:
   `stream_deleted` have no accessor on a subscription, sharded or not. A read
   in flight holds the handle, so these need their own shared state. A
   follow-up is planned; a move still shows up as a `ShardMoved` item on a
-  sharded subscription. A cache watch does expose `moves` and `resume_from`.
+  sharded subscription. A cache watch does expose `moves`, `reconnects`, `error` and `resume_from`.
 - **The single-connection `Client` and `Publisher` layer** (`topology`,
   `stream_routing`, `shard_owners`, `inspect_shard`, `supports_*`,
   `publish_batch_binary*`, `connect_with_transport`). The binding wraps
