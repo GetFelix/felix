@@ -254,7 +254,7 @@ it finds anything.
 
 **Changing.** Run `felixd run` again with the same id. It writes a new spec and the
 agent restarts the workload under it, resuming from its latest snapshot. Limits,
-snapshot settings and the replication factor of new resources can change freely.
+and snapshot settings can change freely.
 The module and the input cannot change once `wl.<id>.out` or `wl.<id>.snap` holds a
 record: `felixd run` refuses with a message to submit the change under a new id,
 because the new code would not reproduce what is already written. A new module
@@ -286,7 +286,7 @@ built ([#17](https://github.com/GetFelix/felixd/issues/17)).
 | The step returns `reject` for an input | A rejection record on `wl.<id>.out` for that input. The workload keeps running | Look at the record's error code and detail. The input is skipped and nothing else is needed |
 | The step returns `poison`, traps, runs out of fuel or breaks the contract | A failure record on the output stream, then `state` `failed` and a `failure` reason in the spec | Fix the module and submit it under a new id. There is no recorded way past a poison input ([#98](https://github.com/GetFelix/felixd/issues/98)) |
 | Fuel or memory is too low, but the code is right | The same failure | Raise `--fuel` or `--max-memory` and run `felixd run` again for the same id |
-| The module is built for contract 0.1, or a restore runs out of `snapshot_fuel` | [Needs operator](/built-on-felix/felixd/terminology/#needs-operator). The agent logs `the workload needs an operator, not running it` and releases the lease. Nothing is marked failed | Rebuild against 0.2, or raise `--snapshot-fuel` and run `felixd run` again for the same id. The agent starts the workload when the spec changes |
+| The module is built for contract 0.1, or a restore runs out of `snapshot_fuel` | [Needs operator](/built-on-felix/felixd/terminology/#needs-operator). The agent logs `the workload needs an operator, not running it`, and releases the lease if it held one. Nothing is marked failed | Rebuild against 0.2, or raise `--snapshot-fuel` and run `felixd run` again for the same id. The agent starts the workload when the spec changes |
 
 Needs-operator is only a log line on the agent that tried. It is not a recorded
 state ([#73](https://github.com/GetFelix/felixd/issues/73)), so `felixd check` does
