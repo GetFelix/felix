@@ -1274,14 +1274,14 @@ export FELIX_BROKER_PUB_CONN_RECV_WINDOW="16777216"
 
 ### `FELIX_BROKER_PUB_STREAM_RECV_WINDOW`
 
-**Description**: QUIC per-stream receive window of the broker's client listeners. Must be at least `FELIX_MAX_FRAME_BYTES`, so one full-size frame fits, and no larger than `FELIX_BROKER_PUB_CONN_RECV_WINDOW`, or startup fails.
+**Description**: QUIC per-stream receive window of the broker's client listeners: how much one stream the broker has stopped reading can hold of its connection's credit. Smaller than the connection window, so the connection's other streams keep moving; one stream moves at most this much per round trip. It may be smaller than `FELIX_MAX_FRAME_BYTES`, since the broker reads a frame as it arrives. Larger than `FELIX_BROKER_PUB_CONN_RECV_WINDOW` and startup fails.
 
 **Type**: Positive integer (bytes)
 
-**Default**: the smaller of the connection window and `FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES` (16 MiB), never below `FELIX_MAX_FRAME_BYTES`
+**Default**: a quarter of the connection window (4 MiB), at most `FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES` and at least 1 MiB, or the connection window if that is smaller
 
 ```bash
-export FELIX_BROKER_PUB_STREAM_RECV_WINDOW="16777216"
+export FELIX_BROKER_PUB_STREAM_RECV_WINDOW="4194304"
 ```
 
 ### `FELIX_BROKER_PUBLISH_WINDOW`

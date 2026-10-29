@@ -377,7 +377,7 @@ services:
 
       # Client listener flow control (defaults follow the publish budget)
       - FELIX_BROKER_PUB_CONN_RECV_WINDOW=16777216
-      - FELIX_BROKER_PUB_STREAM_RECV_WINDOW=16777216
+      - FELIX_BROKER_PUB_STREAM_RECV_WINDOW=4194304
 
       - RUST_LOG=info
 ```

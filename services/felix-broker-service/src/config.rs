@@ -361,17 +361,29 @@ impl BrokerConfig {
     /// The `(connection, stream)` QUIC receive windows the client listeners
     /// are built with.
     ///
-    /// An explicit setting wins. Unset, both follow `pub_conn_inflight_bytes`:
-    /// a client whose publishes are waiting on ingress can then park at most
-    /// one more budget's worth in the broker's receive buffers before QUIC
-    /// flow control holds it back. The 16 MiB default still covers the
-    /// bandwidth-delay product of a 10 Gbit/s path up to about 13 ms of round
-    /// trip. Neither goes below `max_frame_bytes`, so one frame always fits in
-    /// a window; `validate` refuses explicit values that break that.
+    /// An explicit setting wins. Unset, the connection window follows
+    /// `pub_conn_inflight_bytes`: a client whose publishes are waiting on
+    /// ingress can then park at most one more budget's worth in the broker's
+    /// receive buffers before QUIC flow control holds it back. It never goes
+    /// below `max_frame_bytes`, and `validate` refuses explicit values that do.
+    ///
+    /// The stream window defaults to a quarter of the connection window, no
+    /// larger than the budget and no smaller than 1 MiB (or the connection
+    /// window, if that is smaller). A stream the broker stops reading then
+    /// holds a quarter of the connection's credit, not all of it, so its other
+    /// streams keep moving. It may be smaller than a frame: the broker reads a
+    /// frame as it arrives and returns credit as it goes.
     pub fn pub_recv_windows(&self) -> (u64, u64) {
-        let budget = (self.pub_conn_inflight_bytes as u64).max(self.max_frame_bytes as u64);
-        let conn = self.pub_conn_recv_window.unwrap_or(budget);
-        let stream = self.pub_stream_recv_window.unwrap_or(conn.min(budget));
+        let budget = self.pub_conn_inflight_bytes as u64;
+        let conn = self
+            .pub_conn_recv_window
+            .unwrap_or(budget.max(self.max_frame_bytes as u64));
+        let stream = self.pub_stream_recv_window.unwrap_or_else(|| {
+            (conn / PUB_STREAM_WINDOW_SHARES)
+                .min(budget)
+                .max(MIN_PUB_STREAM_RECV_WINDOW)
+                .min(conn)
+        });
         (conn, stream)
     }
 

@@ -182,11 +182,12 @@ do not mean more concurrent callers contending on shared stream state.
    which is slower than waiting on the queue.
 
    The trade-off is isolation. A stream whose fire-and-forget publishes hit
-   one full shard stops reading after 16 frames, and since
-   `pub_stream_recv_window` defaults to the connection window, its unread
-   bytes can take the whole connection's flow-control credit and stall the
-   connection's other streams. A larger cap reaches the same state once the
-   byte budget runs out; the small cap reaches it sooner. On a stream that
+   one full shard stops reading after 16 frames. Its unread bytes then hold
+   up to `pub_stream_recv_window` of the connection's flow-control credit,
+   which defaults to a quarter of the connection window, so the connection's
+   other streams keep moving unless four of its streams are stopped at once.
+   A larger cap reaches the same state once the byte budget runs out; the
+   small cap reaches it sooner. On a stream that
    carries both kinds, acked frames behind the 17th unacked publish wait
    with it. Parked publishes are counted in
    `felix_broker_ingress_parked_total`.

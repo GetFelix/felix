@@ -287,8 +287,11 @@ Example:
 
 These are the client's windows. On the broker side, `pub_conn_recv_window` and
 `pub_stream_recv_window` bound how much unread publish data one client
-connection can leave in the broker. They default to `pub_conn_inflight_bytes`
-(16 MiB), so backpressure reaches a publisher soon after ingress fills.
+connection, and one stream on it, can leave in the broker. The connection
+window defaults to `pub_conn_inflight_bytes` (16 MiB), so backpressure reaches a
+publisher soon after ingress fills. The stream window defaults to a quarter of
+it (4 MiB), so one stream the broker stopped reading cannot take the whole
+connection's credit. One stream moves at most its window per round trip.
 
 #### Batching Parameters
 

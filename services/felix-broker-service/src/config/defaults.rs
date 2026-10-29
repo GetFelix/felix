@@ -110,6 +110,13 @@ pub(super) const DEFAULT_MAX_SUBSCRIPTIONS_PER_CONN: usize = 4096;
 // never reaches it; a client acting for many users can serve four at their
 // full share before they compete.
 pub(super) const IDENTITIES_PER_CONN: usize = 4;
+// Unset, a client stream's receive window is this fraction of the connection
+// window, so a stream the broker has stopped reading holds only its share of
+// the connection's credit and the connection's other streams keep moving.
+pub(super) const PUB_STREAM_WINDOW_SHARES: u64 = 4;
+// Never derive a stream window below this, so a small publish budget does not
+// leave one stream a window of a few packets.
+pub(super) const MIN_PUB_STREAM_RECV_WINDOW: u64 = 1024 * 1024;
 pub(super) const DEFAULT_SUBSCRIBER_QUEUE_POLICY: SubQueuePolicy = SubQueuePolicy::DropNew;
 pub(super) const DEFAULT_SUBSCRIBER_WRITER_LANES: usize = 4;
 pub(super) const DEFAULT_SUBSCRIBER_LANE_QUEUE_DEPTH: usize = 64;
