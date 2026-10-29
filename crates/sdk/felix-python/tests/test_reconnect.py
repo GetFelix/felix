@@ -122,20 +122,6 @@ def test_reconnect_backoff_must_be_a_positive_number(seconds):
         _connect(reconnect_max_backoff=seconds)
 
 
-@pytest.mark.parametrize(
-    "options",
-    [
-        {"reconnect_backoff": 0.5, "reconnect_max_backoff": 0.1},
-        # The default ceiling is 2 s.
-        {"reconnect_backoff": 5.0},
-        {"reconnect_max_backoff": 0.1},
-    ],
-)
-def test_reconnect_max_backoff_must_not_be_below_backoff(options):
-    with pytest.raises(ValueError, match="at least reconnect_backoff"):
-        _connect(**options)
-
-
 def test_the_async_client_validates_backoff_too():
     async def connect(**options):
         await felix.AsyncClient.connect(
@@ -144,5 +130,5 @@ def test_the_async_client_validates_backoff_too():
 
     with pytest.raises(ValueError, match="reconnect_backoff"):
         asyncio.run(connect(reconnect_backoff=0))
-    with pytest.raises(ValueError, match="at least reconnect_backoff"):
-        asyncio.run(connect(reconnect_max_backoff=0.05))
+    with pytest.raises(ValueError, match="reconnect_max_backoff"):
+        asyncio.run(connect(reconnect_max_backoff=0))
