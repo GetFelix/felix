@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793261827959,
+  "lastUpdate": 1793266923366,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -49500,6 +49500,72 @@ window.BENCHMARK_DATA = {
             "range": "70.76",
             "unit": "us",
             "extra": "trials: 5\nmedian: 331.00\nmean: 355.00\nstdev: 70.76\ncv: 19.93%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c7635fd8b49a574e9020802ff33bc5d070903c32",
+          "message": "fix(replication): undoing a replacement beside an even set fences the leader first (#1628) (#1632)\n\nUndoing a replacement could drop a joining copy and leave a record acknowledged on the leader and that copy alone on the leader alone. Every serving-path undo now goes through undo_or_fence (placement/moves.rs, restore.rs): on a fenced stream where dropping the joining copy leaves an even set, the leader is fenced first (MoveStep::UndoFence). In seat_after_fence, the copy is dropped only once the drained report at the current generation has the leader plus enough followers at its tail to be a majority of the set left; until then it waits, and at the fence timeout the leader serves again with the copy kept. A fenced restore that stalls is dropped on the first such report. An operator cancel beside an even set writes the fence with no move reason, and placement then always drops that copy rather than seating it. Placement only; no broker gating.\n\nSpec: docs/formal/FelixShard.tla adds UndoFence and Undo next to SeatFence. FelixShardFencedAckUndoPair passes AckedOnMajority (11.1M states, weight 26); FelixShardFencedAckUndoPairUnfenced pins the old behaviour as a violation. The model is RF 2 only; the majority rule for larger sets is argued in docs/replication-design.md.\n\nCloses #1628.",
+          "timestamp": "2026-10-29T02:37:20-07:00",
+          "tree_id": "b25b1d27a56f20be16c052b35051df70be21a82e",
+          "url": "https://github.com/GetFelix/felix/commit/c7635fd8b49a574e9020802ff33bc5d070903c32"
+        },
+        "date": 1793266917617,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 155,
+            "range": "1.48",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 155.00\nmean: 155.20\nstdev: 1.48\ncv: 0.96%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 225,
+            "range": "5.46",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 225.00\nmean: 226.60\nstdev: 5.46\ncv: 2.41%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 285,
+            "range": "392.59",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 285.00\nmean: 454.80\nstdev: 392.59\ncv: 86.32%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 202,
+            "range": "1.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 202.00\nmean: 202.80\nstdev: 1.64\ncv: 0.81%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 404,
+            "range": "7.97",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 404.00\nmean: 401.00\nstdev: 7.97\ncv: 1.99%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 607,
+            "range": "368.67",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 607.00\nmean: 761.20\nstdev: 368.67\ncv: 48.43%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
