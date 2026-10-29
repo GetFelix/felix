@@ -32,12 +32,19 @@ pub trait CaughtUp {
     }
 
     /// The storage identity a promotion of `key` hands the new leader for the
-    /// old set's members, `old_set`, by node id, so its fence counts a member
-    /// only from that copy: the one the report names, the old leader's own
-    /// included, and an empty one, which nothing matches, for a member the
-    /// report names none for but that is registered with one. Empty when
-    /// there is no report or it names none.
-    fn report_storage_ids(&self, _key: &ShardKey, _old_set: &[&str]) -> BTreeMap<String, String> {
+    /// old set's members, `old_set`, and the new set's, `new_set`, by node id,
+    /// so its fence counts a member only from that copy: the one the report
+    /// names, the old leader's own included, and an empty one, which nothing
+    /// matches, for an old member the report names none for but that is
+    /// registered with one. A copy in neither set is not named, even if the
+    /// report (which may predate a set change) does. Empty when there is no
+    /// report or it names none.
+    fn report_storage_ids(
+        &self,
+        _key: &ShardKey,
+        _old_set: &[&str],
+        _new_set: &[&str],
+    ) -> BTreeMap<String, String> {
         BTreeMap::new()
     }
 

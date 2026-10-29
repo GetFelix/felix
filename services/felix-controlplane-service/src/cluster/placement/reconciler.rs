@@ -328,12 +328,18 @@ pub(super) async fn plan_pass(
                 .get(key)
                 .is_some_and(|previous| previous.leader != *leader)
         })
-        .map(|(key, _, _)| {
+        .map(|(key, leader, replicas)| {
             let old_set: Vec<&str> = previous
                 .get(key)
                 .map(|previous| previous.nodes().map(String::as_str).collect())
                 .unwrap_or_default();
-            (key.clone(), positions.report_storage_ids(key, &old_set))
+            let new_set: Vec<&str> = std::iter::once(leader)
+                .chain(replicas.iter().map(String::as_str))
+                .collect();
+            (
+                key.clone(),
+                positions.report_storage_ids(key, &old_set, &new_set),
+            )
         })
         .filter(|(_, ids)| !ids.is_empty())
         .collect();

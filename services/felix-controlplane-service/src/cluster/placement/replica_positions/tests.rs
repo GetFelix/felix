@@ -665,7 +665,7 @@ fn an_unvouched_member_of_the_old_set_is_named_with_no_identity() {
     let nodes = [node_at("broker-c", Some(&"c".repeat(32)), false, 1_000)];
     let view = at(vec![c_unnamed()], 1_000).with_nodes(&nodes, &[led_by_a(4)]);
 
-    let ids = view.report_storage_ids(&key("orders"), &["broker-a", "broker-c"]);
+    let ids = view.report_storage_ids(&key("orders"), &["broker-a", "broker-c"], &[]);
 
     assert_eq!(ids.get("broker-a"), Some(&"a".repeat(32)));
     assert_eq!(ids.get("broker-c"), Some(&String::new()));
@@ -681,10 +681,35 @@ fn a_replica_outside_the_old_set_or_without_an_identity_is_left_unnamed() {
     ];
     let view = at(vec![c_unnamed()], 1_000).with_nodes(&nodes, &[led_by_a(4)]);
 
-    let ids = view.report_storage_ids(&key("orders"), &["broker-a", "broker-d"]);
+    let ids = view.report_storage_ids(&key("orders"), &["broker-a", "broker-d"], &[]);
 
     assert_eq!(ids.get("broker-c"), None);
     assert_eq!(ids.get("broker-d"), None);
+}
+
+/// **A copy the report names that neither set holds is not named (#1486)**:
+/// the report predates the set change that dropped it. A copy the new set
+/// kept from the report keeps the identity the report measured.
+#[test]
+fn a_copy_outside_both_sets_is_not_named() {
+    let report = ReplicaReport {
+        follower_storage: [
+            ("broker-a".to_string(), "a".repeat(32)),
+            ("broker-b".to_string(), B_STORAGE.to_string()),
+            ("broker-c".to_string(), "c".repeat(32)),
+        ]
+        .into(),
+        ..report("orders", &["broker-b", "broker-c"], 1_000)
+    };
+    let view = at(vec![report], 1_000).with_nodes(&[], &[led_by_a(4)]);
+    let old_set = ["broker-a", "broker-c"];
+
+    let ids = view.report_storage_ids(&key("orders"), &old_set, &["broker-c", "broker-a"]);
+    assert_eq!(ids.keys().collect::<Vec<_>>(), ["broker-a", "broker-c"]);
+
+    let kept = ["broker-c", "broker-a", "broker-b"];
+    let ids = view.report_storage_ids(&key("orders"), &old_set, &kept);
+    assert_eq!(ids.get("broker-b").map(String::as_str), Some(B_STORAGE));
 }
 
 /// A member the report names under an identity it no longer has is not one
