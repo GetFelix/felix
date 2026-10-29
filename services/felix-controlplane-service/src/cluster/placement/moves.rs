@@ -187,11 +187,23 @@ impl Moves {
     /// Take a slot for a copy an operator asked for. Pausing placement does
     /// not stop these; the limits do.
     pub(super) fn begin_requested(&mut self, from: &str, to: &str) -> Result<(), Blocked> {
+        self.reserve(from, Some(to))
+    }
+
+    /// Take a slot for a trim's fence, which stops `leader` as a move's does.
+    pub(super) fn begin_trim(&mut self, leader: &str) -> Result<(), Blocked> {
+        if self.policy.paused {
+            return Err(Blocked::Paused);
+        }
+        self.reserve(leader, None)
+    }
+
+    fn reserve(&mut self, from: &str, to: Option<&str>) -> Result<(), Blocked> {
         if self.in_flight >= self.policy.max_concurrent {
             return Err(Blocked::MoveLimit);
         }
         if let Some(max) = self.policy.max_per_node {
-            for node in [from, to] {
+            for node in std::iter::once(from).chain(to) {
                 if self.per_node.get(node).copied().unwrap_or(0) >= max {
                     return Err(Blocked::NodeMoveLimit {
                         node: node.to_string(),
@@ -199,7 +211,7 @@ impl Moves {
                 }
             }
         }
-        self.take(from, Some(to));
+        self.take(from, to);
         Ok(())
     }
 
@@ -380,6 +392,18 @@ pub(super) fn move_step<'a>(
             }
             return Decision::Waiting(Blocked::LeaderStopping);
         }
+        if existing.successor.is_none()
+            && existing.nodes().count() > replication_factor.max(1) as usize
+        {
+            return trim(
+                existing,
+                replication_factor,
+                is_live,
+                is_draining,
+                caught_up,
+                moves,
+            );
+        }
         // Whoever leads next must hold everything the leader held.
         let target = existing
             .successor
@@ -512,6 +536,20 @@ pub(super) fn move_step<'a>(
             caught_up,
             moves,
             fenced,
+        );
+    }
+
+    // A failover can leave the set above its factor (`left_unconfirmed` in
+    // plan.rs). Nothing starts on it until it is back: a copy staged on top
+    // of it is told from a counted one only by the set's size.
+    if existing.nodes().count() > replication_factor.max(1) as usize {
+        return trim_fence(
+            existing,
+            leader_live,
+            is_live,
+            is_draining,
+            caught_up,
+            moves,
         );
     }
 
@@ -925,6 +963,112 @@ pub(super) fn holds_what_the_set_held(
     // `majority_of` in felix-replication: the leader and half the followers.
     let needed = old.len().div_ceil(2) + 1;
     held >= positions[needed - 1]
+}
+
+/// Stop the leader of a set above its replication factor, so that a
+/// follower can leave once the rest hold its whole log ([`trim`]).
+///
+/// Not while it serves. A record can then be acknowledged on the leader and
+/// the follower that leaves alone after any report placement reads, and in a
+/// set of two the one left would hold it on the leader only (#1487). Fenced
+/// only once a report at this generation shows a follower the rest could do
+/// without, all caught up to the leader's acknowledged mark, so a lagging or
+/// unreported follower is the one dropped rather than one the trim waits on.
+fn trim_fence(
+    existing: &ShardAssignment,
+    leader_live: bool,
+    is_live: &dyn Fn(&str) -> bool,
+    is_draining: &dyn Fn(&str) -> bool,
+    caught_up: &dyn CaughtUp,
+    moves: &mut Moves,
+) -> Decision {
+    let caught_up_to_mark = |replica: &str| caught_up.is_caught_up(&existing.key, replica);
+    if !leader_live || trim_candidate(existing, is_live, is_draining, &caught_up_to_mark).is_none()
+    {
+        return Decision::Waiting(Blocked::OverFactor);
+    }
+    if let Some(blocked) = moves.backing_off(caught_up, &existing.key) {
+        return Decision::Waiting(blocked);
+    }
+    if let Err(blocked) = moves.begin_trim(&existing.leader) {
+        return Decision::Waiting(blocked);
+    }
+    Decision::Move(
+        MoveStep::TrimFence,
+        ShardAssignment {
+            state: ShardState::Draining,
+            successor: None,
+            generation: 0,
+            fence_storage_ids: Default::default(),
+            ..existing.clone()
+        },
+    )
+}
+
+/// Drop a follower from a fenced set above its replication factor, once the
+/// leader's drained report at this generation shows every follower that
+/// stays at the leader's own offset in that report: its whole log, not only
+/// the acknowledged mark. Given back to the leader unchanged at the fence
+/// timeout.
+///
+/// Caught up is not enough here. For `Quorum` it is the majority's mark, and
+/// a record past it on the leader alone can still be confirmed and read after
+/// the report; a copy dropped then can take the only other copy of it with
+/// it. A drained leader's log does not grow at this generation, so a tail
+/// every remaining follower holds in its report stays held, and the
+/// assignment's generation is all the trim's write needs to be keyed on.
+fn trim(
+    existing: &ShardAssignment,
+    replication_factor: u32,
+    is_live: &dyn Fn(&str) -> bool,
+    is_draining: &dyn Fn(&str) -> bool,
+    caught_up: &dyn CaughtUp,
+    moves: &Moves,
+) -> Decision {
+    let key = &existing.key;
+    let tail = caught_up.leader_offset(key);
+    let holds_tail =
+        |replica: &str| tail.is_some() && caught_up.reported_offset(key, replica) == tail;
+    let Some(dropped) = trim_candidate(existing, is_live, is_draining, &holds_tail) else {
+        if moves.fence_timed_out(caught_up, &existing.key, existing.generation) {
+            return Decision::Move(
+                MoveStep::FenceTimedOut { successor: None },
+                retake(existing, replication_factor),
+            );
+        }
+        return Decision::Waiting(Blocked::OverFactor);
+    };
+    let mut replicas = existing.replicas.clone();
+    replicas.retain(|replica| replica != dropped);
+    Decision::Move(
+        MoveStep::Trim {
+            from: dropped.to_string(),
+        },
+        ShardAssignment {
+            replicas,
+            ..retake(existing, replication_factor)
+        },
+    )
+}
+
+/// The follower a set above its factor drops: a draining one first, then one
+/// not live, then in set order. Only one whose leaving leaves every other
+/// follower `holding`, judged by a report at this generation.
+fn trim_candidate<'a>(
+    existing: &'a ShardAssignment,
+    is_live: &dyn Fn(&str) -> bool,
+    is_draining: &dyn Fn(&str) -> bool,
+    holding: &dyn Fn(&str) -> bool,
+) -> Option<&'a str> {
+    let mut followers: Vec<&str> = existing.replicas.iter().map(String::as_str).collect();
+    followers.sort_by_key(|node| (!is_draining(node), is_live(node)));
+    followers.into_iter().find(|dropped| {
+        existing
+            .replicas
+            .iter()
+            .filter(|replica| replica != dropped)
+            .all(|replica| holding(replica))
+    })
 }
 
 /// The replica set once `target` leads: nodes that already hold a copy first

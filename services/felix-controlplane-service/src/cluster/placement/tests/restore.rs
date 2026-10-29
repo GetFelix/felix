@@ -16,6 +16,11 @@ struct Reports {
     level: BTreeSet<String>,
     offsets: BTreeMap<String, u64>,
     tail: Option<u64>,
+    /// The set the report was made for, and its generation when not 3.
+    members: Vec<String>,
+    generation: Option<u64>,
+    /// The leader reported drained at the report's generation.
+    drained: bool,
 }
 
 impl Reports {
@@ -48,7 +53,15 @@ impl CaughtUp for Reports {
     }
 
     fn reported_generation(&self, _key: &ShardKey) -> Option<u64> {
-        Some(3)
+        Some(self.generation.unwrap_or(3))
+    }
+
+    fn reported_members(&self, _key: &ShardKey) -> Vec<&str> {
+        self.members.iter().map(String::as_str).collect()
+    }
+
+    fn is_drained(&self, _key: &ShardKey, generation: u64) -> bool {
+        self.drained && Some(generation) == self.reported_generation(_key)
     }
 
     fn as_of_millis(&self) -> Option<u64> {
@@ -600,6 +613,340 @@ fn a_failover_while_topping_up_keeps_the_newcomer() {
     };
     assert_eq!(leader, "broker-b");
     assert_eq!(replicas, ["broker-c", "broker-a"]);
+}
+
+/// **Leader dies right after an RF 2 seat.** broker-c was seated and
+/// broker-b dropped, but broker-a's last report is from the joining
+/// generation, when broker-a and broker-b were a majority on their own. The
+/// failover keeps broker-b, still serving, so the new leader's fence can take
+/// a record only the two of them held (#1487).
+#[test]
+fn a_failover_before_the_seat_is_reported_keeps_the_leaving_copy() {
+    let nodes = vec![
+        gone("broker-a", 10_000),
+        node("broker-b", NodeLifecycle::Draining, None),
+        node("broker-c", NodeLifecycle::Live, None),
+    ];
+    let stream = Stream {
+        consistency: ConsistencyLevel::Quorum,
+        ..replicated_stream("orders", 1, 2)
+    };
+    let joined = Reports {
+        members: vec!["broker-a".into(), "broker-b".into(), "broker-c".into()],
+        generation: Some(2),
+        ..Reports::level(&["broker-c"])
+    };
+    let seated = assigned("orders", "broker-a", &["broker-c"]);
+    let (decision, _) = decide(stream.clone(), &nodes, seated.clone(), &joined);
+    let Decision::Place(leader, replicas) = decision else {
+        panic!("expected a failover, got {decision:?}");
+    };
+    assert_eq!(leader, "broker-c");
+    assert_eq!(replicas, ["broker-a", "broker-b"]);
+
+    // A report at the seat's generation names the set as it is.
+    let reported = Reports {
+        generation: Some(3),
+        ..joined
+    };
+    let (decision, _) = decide(stream, &nodes, seated, &reported);
+    let Decision::Place(leader, replicas) = decision else {
+        panic!("expected a failover, got {decision:?}");
+    };
+    assert_eq!(leader, "broker-c");
+    assert_eq!(replicas, ["broker-a"]);
+}
+
+/// The keep needs the leaving copy's broker to serve: a gone one could only
+/// raise the fence's majority, so the set stays as it was.
+#[test]
+fn a_failover_after_the_seat_drops_a_leaving_copy_that_is_gone() {
+    let nodes = vec![
+        gone("broker-a", 10_000),
+        gone("broker-b", 10_000),
+        node("broker-c", NodeLifecycle::Live, None),
+    ];
+    let stream = Stream {
+        consistency: ConsistencyLevel::Quorum,
+        ..replicated_stream("orders", 1, 2)
+    };
+    let joined = Reports {
+        members: vec!["broker-a".into(), "broker-b".into(), "broker-c".into()],
+        generation: Some(2),
+        ..Reports::level(&["broker-c"])
+    };
+    let seated = assigned("orders", "broker-a", &["broker-c"]);
+    let (decision, _) = decide(stream, &nodes, seated, &joined);
+    let Decision::Place(leader, replicas) = decision else {
+        panic!("expected a failover, got {decision:?}");
+    };
+    assert_eq!(leader, "broker-c");
+    assert_eq!(replicas, ["broker-a"]);
+}
+
+/// Only a set of two keeps the copy it dropped. Beside three, every majority
+/// that acknowledged still holds a majority of the seated set.
+#[test]
+fn a_failover_after_a_seat_into_three_keeps_only_the_set() {
+    let nodes = vec![
+        gone("broker-a", 10_000),
+        node("broker-b", NodeLifecycle::Draining, None),
+        node("broker-c", NodeLifecycle::Live, None),
+        node("broker-d", NodeLifecycle::Live, None),
+    ];
+    let joined = Reports {
+        members: ["broker-a", "broker-b", "broker-c", "broker-d"]
+            .map(String::from)
+            .to_vec(),
+        generation: Some(2),
+        ..Reports::level(&["broker-c", "broker-d"])
+    };
+    let seated = assigned("orders", "broker-a", &["broker-c", "broker-d"]);
+    let (decision, _) = decide(quorum("orders"), &nodes, seated, &joined);
+    let Decision::Place(leader, mut replicas) = decision else {
+        panic!("expected a failover, got {decision:?}");
+    };
+    replicas.push(leader);
+    replicas.sort();
+    assert_eq!(replicas, ["broker-a", "broker-c", "broker-d"]);
+}
+
+/// Reports at generation 3 from broker-c, leading `followers`, all level at
+/// offset 100.
+fn level_at_100(followers: &[&str]) -> Reports {
+    Reports {
+        offsets: followers.iter().map(|f| (f.to_string(), 100)).collect(),
+        tail: Some(100),
+        ..Reports::level(followers)
+    }
+}
+
+/// The same reports, as a leader that stopped for a trim's fence makes them.
+fn drained(reports: Reports) -> Reports {
+    Reports {
+        drained: true,
+        ..reports
+    }
+}
+
+/// `existing` fenced for a trim, as the store writes it.
+fn trim_fenced(existing: &ShardAssignment) -> ShardAssignment {
+    ShardAssignment {
+        state: ShardState::Draining,
+        generation: 0,
+        ..existing.clone()
+    }
+}
+
+/// `existing` without `from`, its leader serving again.
+fn trimmed(existing: &ShardAssignment, from: &str) -> Decision {
+    let mut replicas = existing.replicas.clone();
+    replicas.retain(|replica| replica != from);
+    Decision::Move(
+        MoveStep::Trim {
+            from: from.to_string(),
+        },
+        ShardAssignment {
+            replicas,
+            generation: 0,
+            state: ShardState::Assigning,
+            ..existing.clone()
+        },
+    )
+}
+
+fn rf2(name: &str) -> Stream {
+    Stream {
+        consistency: ConsistencyLevel::Quorum,
+        ..replicated_stream(name, 1, 2)
+    }
+}
+
+/// **RF 2 drain in three brokers.** A failover right after the seat kept
+/// broker-b, which is draining, so the set is `{c; a, b}` and there is no
+/// fourth broker to reseat it on. Once broker-c reports at this generation
+/// with broker-a level, broker-c is fenced, and once it reports drained
+/// broker-b goes and its drain can finish. Before that report nothing
+/// happens, and with broker-a behind, broker-a goes instead.
+#[test]
+fn a_set_above_its_factor_drops_the_draining_copy() {
+    let nodes = vec![
+        node("broker-a", NodeLifecycle::Live, None),
+        node("broker-b", NodeLifecycle::Draining, None),
+        node("broker-c", NodeLifecycle::Live, None),
+    ];
+    let kept = assigned("orders", "broker-c", &["broker-a", "broker-b"]);
+    let fenced = trim_fenced(&kept);
+    let decided = |existing: &ShardAssignment, reports: &Reports| {
+        decide(rf2("orders"), &nodes, existing.clone(), reports).0
+    };
+    let fence = Decision::Move(MoveStep::TrimFence, fenced.clone());
+
+    let level = level_at_100(&["broker-a", "broker-b"]);
+    assert_eq!(decided(&kept, &level), fence);
+    assert_eq!(
+        decided(&fenced, &drained(level)),
+        trimmed(&fenced, "broker-b")
+    );
+
+    let unreported = Reports {
+        generation: Some(2),
+        ..level_at_100(&["broker-a", "broker-b"])
+    };
+    assert_eq!(
+        decided(&kept, &unreported),
+        Decision::Waiting(Blocked::OverFactor)
+    );
+
+    let mut behind = level_at_100(&["broker-b"]);
+    behind.offsets.insert("broker-a".to_string(), 50);
+    assert_eq!(decided(&kept, &behind), fence);
+    assert_eq!(
+        decided(&fenced, &drained(behind)),
+        trimmed(&fenced, "broker-a")
+    );
+
+    // Neither can go while the other is not known to be caught up.
+    let unknown = level_at_100(&[]);
+    assert_eq!(
+        decided(&kept, &unknown),
+        Decision::Waiting(Blocked::OverFactor)
+    );
+    assert_eq!(
+        decided(&fenced, &drained(unknown)),
+        Decision::Waiting(Blocked::OverFactor)
+    );
+}
+
+/// **Acknowledged after the report.** At the report, broker-a is behind
+/// and broker-b level, so broker-a looks like the copy to drop. Then broker-c
+/// and broker-a acknowledge 101..150 while broker-b lags. Dropped there,
+/// broker-a would leave those records on broker-c alone of `{c; b}`, and a
+/// failover before broker-b caught up could not fence without broker-c. So
+/// the set changes only once broker-c has stopped and says who holds its
+/// log: there broker-b goes, and broker-a, which holds it all, stays.
+#[test]
+fn a_trim_waits_for_records_acknowledged_after_its_report() {
+    let nodes = vec![
+        node("broker-a", NodeLifecycle::Live, None),
+        node("broker-b", NodeLifecycle::Live, None),
+        node("broker-c", NodeLifecycle::Live, None),
+    ];
+    let kept = assigned("orders", "broker-c", &["broker-a", "broker-b"]);
+    let mut report = level_at_100(&["broker-b"]);
+    report.offsets.insert("broker-a".to_string(), 50);
+    let (decision, _) = decide(rf2("orders"), &nodes, kept.clone(), &report);
+    let fenced = trim_fenced(&kept);
+    assert_eq!(
+        decision,
+        Decision::Move(MoveStep::TrimFence, fenced.clone())
+    );
+
+    let after = drained(Reports {
+        offsets: [("broker-a", 150), ("broker-b", 100)]
+            .map(|(node, at)| (node.to_string(), at))
+            .into(),
+        tail: Some(150),
+        ..Reports::level(&["broker-a"])
+    });
+    let (decision, _) = decide(rf2("orders"), &nodes, fenced.clone(), &after);
+    assert_eq!(decision, trimmed(&fenced, "broker-b"));
+}
+
+/// **A dead follower under steady writes.** broker-a stopped following, so
+/// the report gives it no position, and the leader's tail is always ahead of
+/// broker-b's copy. broker-b holds everything acknowledged, which is what the
+/// trim needs, so broker-a goes.
+#[test]
+fn a_set_above_its_factor_drops_a_dead_copy_under_steady_writes() {
+    let nodes = vec![
+        gone("broker-a", 10_000),
+        node("broker-b", NodeLifecycle::Live, None),
+        node("broker-c", NodeLifecycle::Live, None),
+    ];
+    let kept = assigned("orders", "broker-c", &["broker-a", "broker-b"]);
+    let writing = Reports {
+        offsets: [("broker-b".to_string(), 140)].into(),
+        tail: Some(150),
+        ..Reports::level(&["broker-b"])
+    };
+    let (decision, _) = decide(rf2("orders"), &nodes, kept.clone(), &writing);
+    let fenced = trim_fenced(&kept);
+    assert_eq!(
+        decision,
+        Decision::Move(MoveStep::TrimFence, fenced.clone())
+    );
+
+    let stopped = drained(Reports {
+        offsets: [("broker-b".to_string(), 150)].into(),
+        ..writing
+    });
+    let (decision, _) = decide(rf2("orders"), &nodes, fenced.clone(), &stopped);
+    assert_eq!(decision, trimmed(&fenced, "broker-a"));
+}
+
+/// **Past the mark on the leader alone.** A cancelled write left record 101
+/// on broker-c only, and broker-c reported drained with its tail at 101 and
+/// both followers at the acknowledged mark, 100, so both count as caught up.
+/// broker-b can still confirm 101 after that report and readers see it, and
+/// dropping either follower then leaves 101 on broker-c and one copy that may
+/// not hold it. The trim waits for a drained report with every follower that
+/// stays at broker-c's tail.
+#[test]
+fn a_trim_waits_for_the_followers_to_hold_the_whole_drained_log() {
+    let nodes = live(&["broker-a", "broker-b", "broker-c"]);
+    let kept = assigned("orders", "broker-c", &["broker-a", "broker-b"]);
+    let fenced = trim_fenced(&kept);
+    let at_mark = drained(Reports {
+        tail: Some(101),
+        ..level_at_100(&["broker-a", "broker-b"])
+    });
+    let (decision, _) = decide(rf2("orders"), &nodes, fenced.clone(), &at_mark);
+    assert_eq!(decision, Decision::Waiting(Blocked::OverFactor));
+
+    let mut one_level = drained(Reports {
+        tail: Some(101),
+        ..level_at_100(&["broker-a", "broker-b"])
+    });
+    one_level.offsets.insert("broker-b".to_string(), 101);
+    let (decision, _) = decide(rf2("orders"), &nodes, fenced.clone(), &one_level);
+    assert_eq!(decision, trimmed(&fenced, "broker-a"));
+}
+
+/// In a larger cluster, a set above its factor is trimmed one follower a
+/// fence, back to the factor, and nothing else starts on it meanwhile.
+#[test]
+fn a_set_above_its_factor_is_trimmed_back_to_it() {
+    let names = ["broker-a", "broker-b", "broker-c", "broker-d", "broker-e"];
+    let nodes: Vec<Node> = names
+        .iter()
+        .map(|id| node(id, NodeLifecycle::Live, None))
+        .chain(std::iter::once(node("broker-f", NodeLifecycle::Live, None)))
+        .collect();
+    for (factor, followers) in [(2, &names[..2]), (3, &names[..4])] {
+        let stream = Stream {
+            consistency: ConsistencyLevel::Quorum,
+            ..replicated_stream("orders", 1, factor)
+        };
+        let mut existing = assigned("orders", "broker-e", followers);
+        for _ in 0..2 * followers.len() {
+            let reports = level_at_100(followers);
+            let reports = if existing.state == ShardState::Draining {
+                drained(reports)
+            } else {
+                reports
+            };
+            match decide(stream.clone(), &nodes, existing.clone(), &reports).0 {
+                Decision::Move(MoveStep::TrimFence, assignment) => existing = assignment,
+                Decision::Move(MoveStep::Trim { from }, assignment) => {
+                    assert!(followers.contains(&from.as_str()));
+                    existing = assignment;
+                }
+                _ => break,
+            }
+        }
+        assert_eq!(existing.nodes().count(), factor as usize, "factor {factor}");
+    }
 }
 
 /// Paused placement starts no restore of its own.

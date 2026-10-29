@@ -15,6 +15,10 @@
 # `TLA_SHARD=1/3` checks the second of three shards, balanced by the time each
 # configuration takes (`weights` below), so CI can split the set across
 # parallel jobs. `TLA_QUICK=1` checks only the shorter ones (see below).
+# `TLA_COVERAGE=1` prints how often each action fired, to show a configuration
+# reaches the behaviour it was written for. Operator names in place of `1`
+# (`TLA_COVERAGE="TrimSet Promote"`) also print the count for each expression
+# in those FelixShard.tla definitions, which shows a branch was taken.
 #
 # `scripts/check_tla.sh --simulate` runs the long random walks instead (`walks`
 # below): TLC's simulation mode, each configuration for `TLA_SIM_MINUTES`
@@ -122,6 +126,9 @@ expectations=(
   "FelixShardFencedAckAnyReplaced violates AckedHeldByLeader"
   "FelixShardFencedAckSeat pass"
   "FelixShardFencedAckGrow pass"
+  "FelixShardFencedAckSeatPair pass"
+  "FelixShardFencedAckSeatPairOnMajority violates AckedOnMajority"
+  "FelixShardFencedAckTrim pass"
   "FelixShardFencedAckSeatEarly violates AckedHeldByLeader"
   "FelixShardReadsRound pass"
   "FelixShardReadsNoRound violates NoStaleRead"
@@ -317,7 +324,9 @@ weights=(
   "FelixShardFigure8 4"
   "FelixShardRealMargins 4"
   "FelixShardRealMarginsLease 4"
-  "FelixShardFencedAckSeat 3"
+  "FelixShardFencedAckSeat 15"
+  "FelixShardFencedAckSeatPair 8"
+  "FelixShardFencedAckTrim 9"
   "FelixShardFollowerLabels 3"
   "FelixShardHandoff 3"
   "FelixShardIdempotentHandoff 3"
@@ -401,9 +410,23 @@ for entry in "${selected[@]}"; do
   else
     echo "== $cfg (expected: $expect)"
   fi
+  if [ -n "${TLA_COVERAGE:-}" ]; then extra+=(-coverage 60); fi
   output="$(tlc "$cfg" ${extra[@]+"${extra[@]}"} 2>&1)" && status=0 || status=$?
   summary="$(echo "$output" | grep -E "Running Random Simulation|states generated|depth of the complete|Error:|is violated|Finished in" | tail -5 || true)"
   echo "$summary"
+  # How often each action fired, from the report TLC prints at the end.
+  if [ -n "${TLA_COVERAGE:-}" ]; then
+    echo "$output" | grep -E '^<[A-Za-z0-9_]+ line' | tail -n 80 || true
+    for op in $TLA_COVERAGE; do
+      [ "$op" = 1 ] && continue
+      # The definition runs from its first line to the next blank one.
+      range="$(awk -v op="$op" '$0 ~ "^" op "(\\(| ==)" { s = NR } s && !e && NR > s && /^$/ { e = NR } END { print s, e }' "$SPEC_DIR/FelixShard.tla")"
+      echo "-- $op (FelixShard.tla lines $range)"
+      echo "$output" | awk -v r="$range" 'BEGIN { split(r, a, " ") }
+        match($0, /line [0-9]+, col [0-9]+ to line [0-9]+, col [0-9]+ of module FelixShard:/) {
+          split(substr($0, RSTART + 5), n, ","); if (n[1] + 0 >= a[1] && n[1] + 0 < a[2]) print }' | head -n 120 || true
+    done
+  fi
   # A walk that ran out its budget without a violation is a clean run.
   clean=0
   if [ "$status" -eq 0 ]; then clean=1; fi
