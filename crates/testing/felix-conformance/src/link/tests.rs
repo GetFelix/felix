@@ -136,7 +136,7 @@ async fn a_new_initial_on_a_reset_source_port_gets_through() {
 }
 
 #[tokio::test]
-async fn a_reset_still_kills_a_live_flow_with_a_new_initial_during_a_drop() {
+async fn a_new_flow_still_obeys_an_active_drop() {
     let link = Interposer::start(echo().await).await.expect("start");
     let socket = client().await;
     assert!(round_trip(&socket, link.addr(), &initial(b"one"), QUICK).await);
@@ -144,4 +144,60 @@ async fn a_reset_still_kills_a_live_flow_with_a_new_initial_during_a_drop() {
     link.inject(LinkFault::Drop, Duration::from_secs(60));
     // The fresh flow is still subject to the drop.
     assert!(!round_trip(&socket, link.addr(), &initial(b"two"), QUICK).await);
+}
+
+/// An upstream that answers any datagram with a long-header packet whose
+/// source connection ID is `scid`.
+async fn server_with_scid(scid: &'static [u8]) -> SocketAddr {
+    let socket = UdpSocket::bind("127.0.0.1:0").await.expect("bind server");
+    let addr = socket.local_addr().expect("server addr");
+    tokio::spawn(async move {
+        let mut buf = vec![0u8; MAX_DATAGRAM];
+        while let Ok((_, from)) = socket.recv_from(&mut buf).await {
+            let mut reply = vec![0xc0, 0, 0, 0, 1, 0, scid.len() as u8];
+            reply.extend_from_slice(scid);
+            let _ = socket.send_to(&reply, from).await;
+        }
+    });
+    addr
+}
+
+#[tokio::test]
+async fn an_initial_addressed_to_the_server_connection_id_does_not_revive_a_killed_flow() {
+    let link = Interposer::start(server_with_scid(b"server-cid").await)
+        .await
+        .expect("start");
+    let socket = client().await;
+    let mut buf = vec![0u8; MAX_DATAGRAM];
+    socket
+        .send_to(&initial(b"first"), link.addr())
+        .await
+        .expect("send");
+    tokio::time::timeout(QUICK, socket.recv_from(&mut buf))
+        .await
+        .expect("reply")
+        .expect("recv");
+
+    link.inject(LinkFault::Reset, Duration::ZERO);
+    // A later Initial of the same handshake is addressed to the server's ID.
+    socket
+        .send_to(&initial(b"server-cid"), link.addr())
+        .await
+        .expect("send");
+    assert!(
+        tokio::time::timeout(QUICK, socket.recv_from(&mut buf))
+            .await
+            .is_err(),
+        "the dead connection was revived"
+    );
+
+    // A genuinely new connection still gets through.
+    socket
+        .send_to(&initial(b"brand-new"), link.addr())
+        .await
+        .expect("send");
+    tokio::time::timeout(QUICK, socket.recv_from(&mut buf))
+        .await
+        .expect("reply")
+        .expect("recv");
 }
