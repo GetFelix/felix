@@ -14,6 +14,8 @@
 //! through.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
+use std::collections::hash_map::Entry;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -74,6 +76,7 @@ impl Interposer {
         let shared = Arc::new(Shared {
             upstream,
             state: Mutex::new(State::default()),
+            discards: Mutex::new(HashMap::new()),
         });
         let (stop, stopped) = watch::channel(false);
         tokio::spawn(serve(Arc::new(listener), Arc::clone(&shared), stopped));
@@ -102,6 +105,8 @@ impl Interposer {
         let mut state = self.shared.state.lock().expect("interposer lock");
         state.drop_until = None;
         state.stall_until = None;
+        drop(state);
+        self.shared.flush_discards(|_| true);
     }
 }
 
@@ -114,6 +119,9 @@ impl Drop for Interposer {
 struct Shared {
     upstream: SocketAddr,
     state: Mutex<State>,
+    /// Discards since the last log line, per (flow, reason). Only the first
+    /// of a run is printed, so a long drop does not flood the output.
+    discards: Mutex<HashMap<(String, &'static str), u64>>,
 }
 
 #[derive(Default)]
@@ -126,14 +134,46 @@ struct State {
 
 impl Shared {
     /// When a datagram on a flow of `generation` may leave, or `None` to
-    /// discard it.
-    fn verdict(&self, generation: u64) -> Option<Instant> {
+    /// discard it. A discard is logged with the flow and the reason, so a
+    /// connect that times out can be traced to the fault that ate it.
+    fn verdict(&self, flow: &str, generation: u64) -> Option<Instant> {
         let state = self.state.lock().expect("interposer lock");
         let now = Instant::now();
-        if generation != state.generation || state.drop_until.is_some_and(|until| now < until) {
-            return None;
+        let why = if generation != state.generation {
+            "flow killed by a reset"
+        } else if state.drop_until.is_some_and(|until| now < until) {
+            "link dropping"
+        } else {
+            return Some(state.stall_until.map_or(now, |until| until.max(now)));
+        };
+        let current = state.generation;
+        drop(state);
+        let mut discards = self.discards.lock().expect("interposer lock");
+        match discards.entry((flow.to_string(), why)) {
+            Entry::Occupied(mut seen) => *seen.get_mut() += 1,
+            Entry::Vacant(first) => {
+                eprintln!(
+                    "interposer: discard on {flow}: {why} (flow generation {generation}, current {current})"
+                );
+                first.insert(0);
+            }
         }
-        Some(state.stall_until.map_or(now, |until| until.max(now)))
+        None
+    }
+
+    /// Print the suppressed counts for the flows `matching` selects and start
+    /// their next run of discards afresh.
+    fn flush_discards(&self, matching: impl Fn(&str) -> bool) {
+        let mut discards = self.discards.lock().expect("interposer lock");
+        discards.retain(|(flow, why), more| {
+            if !matching(flow) {
+                return true;
+            }
+            if *more > 0 {
+                eprintln!("interposer: discard on {flow}: {why}: dropped {more} more");
+            }
+            false
+        });
     }
 
     fn generation(&self) -> u64 {
@@ -145,6 +185,12 @@ type Queued = (Instant, Vec<u8>);
 
 struct Flow {
     generation: u64,
+    /// Destination connection ID of the Initial that opened the flow, if it
+    /// was one. Retransmissions repeat it; a new connection picks a new one.
+    initial_dcid: Option<Vec<u8>>,
+    /// Source connection IDs the broker has used on this flow. A client's later
+    /// Initials are addressed to one of these, so they are not a new connection.
+    server_scids: Arc<Mutex<HashSet<Vec<u8>>>>,
     to_upstream: mpsc::UnboundedSender<Queued>,
 }
 
@@ -160,19 +206,60 @@ async fn serve(listener: Arc<UdpSocket>, shared: Arc<Shared>, mut stopped: watch
                 Err(_) => continue,
             },
         };
+        let datagram = &buf[..len];
+        // A reset leaves the flow dead for good, but a new connection can reuse
+        // the source port. Its Initial, with a connection ID the dead flow never
+        // saw, starts a fresh flow; anything else on the dead flow stays dropped.
+        if let (Some(old), Some(dcid)) = (flows.get(&source), initial_dcid(datagram))
+            && old.generation != shared.generation()
+            && old.initial_dcid.as_deref() != Some(dcid)
+            && !old.server_scids.lock().expect("scid lock").contains(dcid)
+        {
+            let label = source.to_string();
+            shared.flush_discards(|flow| flow == label || flow == format!("replies to {source}"));
+            flows.remove(&source);
+        }
         let flow = match flows.get(&source) {
             Some(flow) => flow,
             None => match open(source, &listener, &shared, stopped.clone()).await {
-                Ok(flow) => flows.entry(source).or_insert(flow),
+                Ok(mut flow) => {
+                    flow.initial_dcid = initial_dcid(datagram).map(<[u8]>::to_vec);
+                    flows.entry(source).or_insert(flow)
+                }
                 // Out of sockets; the client retransmits, and the next
                 // datagram tries again.
                 Err(_) => continue,
             },
         };
-        if let Some(due) = shared.verdict(flow.generation) {
+        if let Some(due) = shared.verdict(&source.to_string(), flow.generation) {
             let _ = flow.to_upstream.send((due, buf[..len].to_vec()));
         }
     }
+}
+
+/// The destination connection ID of a QUIC v1 Initial, or `None` for any other
+/// datagram.
+fn initial_dcid(datagram: &[u8]) -> Option<&[u8]> {
+    let [first, version @ .., dcid_len] = datagram.get(..6)? else {
+        return None;
+    };
+    // Long header, fixed bit set, packet type Initial (0b00).
+    if first & 0xf0 != 0xc0 || version != [0, 0, 0, 1] {
+        return None;
+    }
+    datagram.get(6..6 + usize::from(*dcid_len))
+}
+
+/// The source connection ID of a long-header packet, or `None` for a short
+/// header or a truncated one.
+fn long_header_scid(datagram: &[u8]) -> Option<&[u8]> {
+    if datagram.first()? & 0x80 == 0 {
+        return None;
+    }
+    let dcid_len = usize::from(*datagram.get(5)?);
+    let scid_at = 6 + dcid_len;
+    let scid_len = usize::from(*datagram.get(scid_at)?);
+    datagram.get(scid_at + 1..scid_at + 1 + scid_len)
 }
 
 /// Start a flow for `source`: its own upstream socket, a queue each way, and a
@@ -189,6 +276,7 @@ async fn open(
             .context("bind an interposer upstream socket")?,
     );
     let generation = shared.generation();
+    let server_scids = Arc::new(Mutex::new(HashSet::new()));
 
     let (to_upstream, queue) = mpsc::unbounded_channel();
     tokio::spawn(deliver(queue, stopped.clone(), {
@@ -215,13 +303,17 @@ async fn open(
 
     tokio::spawn(replies(
         upstream,
+        source,
         generation,
+        Arc::clone(&server_scids),
         to_source,
         Arc::clone(shared),
         stopped,
     ));
     Ok(Flow {
         generation,
+        initial_dcid: None,
+        server_scids,
         to_upstream,
     })
 }
@@ -229,7 +321,9 @@ async fn open(
 /// Read what the broker sends back on one flow and queue it for the client.
 async fn replies(
     upstream: Arc<UdpSocket>,
+    source: SocketAddr,
     generation: u64,
+    server_scids: Arc<Mutex<HashSet<Vec<u8>>>>,
     to_source: mpsc::UnboundedSender<Queued>,
     shared: Arc<Shared>,
     mut stopped: watch::Receiver<bool>,
@@ -243,10 +337,16 @@ async fn replies(
                 Err(_) => continue,
             },
         };
-        if let Some(due) = shared.verdict(generation)
-            && to_source.send((due, buf[..len].to_vec())).is_err()
-        {
-            return;
+        if let Some(due) = shared.verdict(&format!("replies to {source}"), generation) {
+            if let Some(scid) = long_header_scid(&buf[..len]) {
+                server_scids
+                    .lock()
+                    .expect("scid lock")
+                    .insert(scid.to_vec());
+            }
+            if to_source.send((due, buf[..len].to_vec())).is_err() {
+                return;
+            }
         }
     }
 }
