@@ -58,6 +58,8 @@ workload under the same ones and fails it at the same step. `felixd run` writes
 the spec last, after the module, the streams and the caches exist, so an agent
 that sees the spec finds everything else.
 
+[Submitting work](/built-on-felix/felixd/submitting-work/) shows how to write and submit one.
+
 Running `felixd run` again for the same id replaces the spec, and a running
 workload restarts under the new one. A new module or a new input is refused
 once the output or snapshot stream holds a record, because the next owner would
