@@ -104,6 +104,11 @@ impl TwoShards {
         let addr = server.local_addr()?;
         let mut config = felix_broker_service::config::BrokerConfig::from_env()?;
         config.ack_on_commit = true;
+        // Without a waiting reader a full shard queue sheds unacked publishes,
+        // and the order test expects all 400 to land. The shallow queue makes
+        // a missing wait fail every run.
+        config.pub_ingress_wait = true;
+        config.pub_queue_depth = 1;
         let auth = auth_fixture("t1", vec!["stream.publish:stream:t1/*/*".to_string()]);
         let limit = felix_broker_service::serving::quic::ConnectionLimit::new(
             config.max_client_connections,
