@@ -165,7 +165,6 @@ expectations=(
   "FelixShardFencedWipeCountsWiped violates AckedHeldByLeader"
   "FelixShardFencedCrash pass"
   "FelixShardFencedCrashCountsRotated violates AckedHeldByLeader"
-  "FelixShardFencedCrashUnprobed pass"
   "FelixShardFencedCrashCountsUnnamed violates AckedHeldByLeader"
   "FelixShardFencedCrashNamesByRegistration violates AckedHeldByLeader"
   "FelixShardFencedCrashInheritedCounts violates NoInheritedCount"
@@ -244,7 +243,9 @@ expectations=(
 # configurations with promotions on suspicion are here too: they outgrow a
 # runner's disk exhaustively, so sampling them is what is left, as are the
 # crashed leader's refusal beside a seat (with and without the fence ids'
-# comparison) and beside a staged copy.
+# comparison) and beside a staged copy. So is the unprobed crash, which no
+# longer finishes in a runner's six hours exhaustively (#1584); ci.yml walks it
+# per push, with its twin, which also stays an exhaustive check.
 walks=(
   "FelixShardWalkSpares pass"
   "FelixShardWalkSparesSeatEarly violates AckedHeldByLeader"
@@ -266,6 +267,8 @@ walks=(
   "FelixShardShortCopySeatAnyKeys pass"
   "FelixShardShortCopySeatAnySet violates AckedHeldByLeader"
   "FelixShardShortCopyStaged pass"
+  "FelixShardFencedCrashUnprobed pass"
+  "FelixShardFencedCrashCountsUnnamed violates AckedHeldByLeader"
 )
 registered=("${expectations[@]}")
 if [ "$mode" = simulate ]; then registered=("${walks[@]}"); fi
@@ -320,7 +323,6 @@ weights=(
   "FelixShardLeaderCrashReclaim 3"
   "FelixShardFencedWipe 25"
   "FelixShardFencedCrash 26"
-  "FelixShardFencedCrashUnprobed 31"
   "FelixShardFencedCrashInheritedCounts 3"
   "FelixShardFencedLeaderCrashTwiceNamesByInheritance 21"
   "FelixShardFencedPromotion 7"
@@ -399,6 +401,8 @@ shards=()
 while read -r s; do shards+=("$s"); done < <(assign_shards)
 
 WALK_DIR="target/tla/walk"
+LOG_DIR="target/tla/log"
+if [ "$mode" = simulate ]; then LOG_DIR="$WALK_DIR"; fi
 if [ "$mode" = simulate ] && command -v java >/dev/null 2>&1 && ! command -v timeout >/dev/null 2>&1; then
   echo "check_tla.sh --simulate needs timeout (GNU coreutils)" >&2
   exit 1
@@ -420,7 +424,20 @@ for entry in "${selected[@]}"; do
     echo "== $cfg (expected: $expect)"
   fi
   if [ -n "${TLA_COVERAGE:-}" ]; then extra+=(-coverage 60); fi
-  output="$(tlc "$cfg" ${extra[@]+"${extra[@]}"} 2>&1)" && status=0 || status=$?
+  # TLC's whole output goes to a file, and its progress lines (state counts
+  # about once a minute) to the log as they come, so a run stopped at the job
+  # limit still shows how far it got.
+  log="$LOG_DIR/$cfg.out"
+  mkdir -p "$LOG_DIR"
+  if tlc "$cfg" ${extra[@]+"${extra[@]}"} 2>&1 | tee "$log" \
+    | awk '/^Progress|^Finished computing initial states|^Running Random Simulation/ { print "   " $0; fflush() }'; then
+    status=0
+  else
+    status="${PIPESTATUS[0]}"
+    # TLC passed but the log did not get its output.
+    if [ "$status" -eq 0 ]; then status=1; fi
+  fi
+  output="$(cat "$log")"
   summary="$(echo "$output" | grep -E "Running Random Simulation|states generated|depth of the complete|Error:|is violated|Finished in" | tail -5 || true)"
   echo "$summary"
   # How often each action fired, from the report TLC prints at the end.
@@ -440,8 +457,6 @@ for entry in "${selected[@]}"; do
   clean=0
   if [ "$status" -eq 0 ]; then clean=1; fi
   if [ "$mode" = simulate ]; then
-    mkdir -p "$WALK_DIR"
-    echo "$output" >"$WALK_DIR/$cfg.out"
     if [ "$status" -eq 124 ] && grep -q "Running Random Simulation" <<<"$output" \
       && ! grep -q "^Error:" <<<"$output"; then
       clean=1
