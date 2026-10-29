@@ -80,6 +80,10 @@ jobs:
             configs: FelixShardFencedCrashNamesByInheritance FelixShardFencedCrashInheritedCounts
           - family: inherited-wipe
             configs: FelixShardFencedWipeNamesByInheritance FelixShardFencedWipeInheritedCounts FelixShardFencedLeaderCrashNamesByInheritance FelixShardFencedLeaderCrashInheritedCounts
+          # A crashed leader's refusal and its set-of-two exception: past 30M
+          # distinct states exhaustively.
+          - family: short-copy
+            configs: FelixShardShortCopySeat FelixShardShortCopySeatAnySet FelixShardShortCopyStaged
     steps:
       - name: Checkout
         uses: actions/checkout@v7

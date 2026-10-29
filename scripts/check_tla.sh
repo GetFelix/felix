@@ -174,9 +174,7 @@ expectations=(
   "FelixShardFencedLeaderCrash pass"
   "FelixShardFencedLeaderCrashKeepsGen violates AckedHeldByLeader"
   "FelixShardFencedLeaderCrashCountsRotated violates AckedHeldByLeader"
-  "FelixShardShortCopySeat pass"
   "FelixShardShortCopySeatAnySet violates AckedHeldByLeader"
-  "FelixShardShortCopyStaged pass"
   "FelixShard pass"
   "FelixShardHandoff pass"
   "FelixShardHandoffNoWait violates AtMostOneServing"
@@ -244,7 +242,8 @@ expectations=(
 # of set changes, and its negative twin, which must reach its violation
 # within the budget to show the walks get that far at all. The inherited-name
 # configurations with promotions on suspicion are here too: they outgrow a
-# runner's disk exhaustively, so sampling them is what is left.
+# runner's disk exhaustively, so sampling them is what is left, as are the
+# crashed leader's refusal beside a seat and a staged copy.
 walks=(
   "FelixShardWalkSpares pass"
   "FelixShardWalkSparesSeatEarly violates AckedHeldByLeader"
@@ -262,6 +261,9 @@ walks=(
   "FelixShardFencedWipeInheritedCounts violates NoInheritedCount"
   "FelixShardFencedLeaderCrashNamesByInheritance pass"
   "FelixShardFencedLeaderCrashInheritedCounts violates NoInheritedCount"
+  "FelixShardShortCopySeat pass"
+  "FelixShardShortCopySeatAnySet violates AckedHeldByLeader"
+  "FelixShardShortCopyStaged pass"
 )
 registered=("${expectations[@]}")
 if [ "$mode" = simulate ]; then registered=("${walks[@]}"); fi

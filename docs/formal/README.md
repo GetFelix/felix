@@ -300,6 +300,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardFencedCrashCountsRotated.cfg` | the same counting the rotated copy, as before #1335: under `Periodic` with three replicas, a record acknowledged on the leader and the follower that lost it is gone once the leader is replaced | violate `AckedHeldByLeader` |
 | `FelixShardFencedLeaderCrash.cfg` | `FelixShardLeaderCrashGivesUp.cfg` on the fenced, follower-acked path, no suspicion: the crashed leader's copy still holds its promise and answers the successor's fence, and only the identity check keeps it out (the model has no `refuse_short_copy`) | pass `AckedHeldByLeader`, `AckedAgree`, `NoTruncationBelowHwm` (state count and time to be measured in CI) |
 | `FelixShardFencedLeaderCrashCountsRotated.cfg` | `FelixShardFencedLeaderCrash.cfg` counting every fence answer (`FenceChecksIds <- No`): the crashed leader's short copy counts in its successor's fence | violate `AckedHeldByLeader` |
+| `FelixShardShortCopySeatAnySet.cfg` | `FelixShardShortCopySeat.cfg` (a nightly walk: the crashed leader's refusal, `RefuseShortCopy`, after an RF 2 seat) with the set-of-two exception's set check dropped (`ShortCopyChecksSet <- No`): the crashed leader of `{a, b, c}` answers its successor's fence at the next generation | violate `AckedHeldByLeader` (255K distinct states, depth 14, under a minute) |
 | `FelixShardFencedLeaderCrashKeepsGen.cfg` | the same without the give-up (`GiveUpOnCrash`): the crashed leader keeps leading at its generation without the record | violate `AckedHeldByLeader` |
 | `FelixShardHandoff.cfg` | a planned move off a live leader: fence, drained report, cut over; writes hold the fence from admission | pass every invariant (2.39M distinct states) |
 | `FelixShardHandoffNoWait.cfg` | the same move cutting over without waiting for the drained report | violate `AtMostOneServing` |
@@ -1067,7 +1068,9 @@ is a failover beside a staged destination, #1635: there the code's fence ids
 name the staged copy and the exception refuses, so the configuration drops
 the ids' comparison to check that naming only the set that acknowledged
 would be safe. Both reach an open on the exception: a temporary invariant
-saying no leader opens counting a short copy's answer fails in each.
+saying no leader opens counting a short copy's answer fails in each. Neither
+finishes exhaustively in the time CI has (past 30M distinct states, start
+records on, without an end in sight), so they are nightly walks, sampled.
 `AckedOnMajority` is not checked: a lost copy is a lost copy, and a record
 two acknowledged is on one of them until the new leader ships it.
 
@@ -1253,6 +1256,9 @@ per family:
 | `FelixShardFencedWipeInheritedCounts.cfg` | its witness | violate `NoInheritedCount` |
 | `FelixShardFencedLeaderCrashNamesByInheritance.cfg` | a leader crash and a second promotion on suspicion | pass `AckedHeldByLeader`, `AckedAgree`, `NoTruncationBelowHwm` |
 | `FelixShardFencedLeaderCrashInheritedCounts.cfg` | its witness | violate `NoInheritedCount` |
+| `FelixShardShortCopySeat.cfg` | a crashed leader's refusal and its set-of-two exception after an RF 2 seat (see [A crashed leader's own refusal](#a-crashed-leaders-own-refusal)) | pass `AckedHeldByLeader`, `AckedAgree`, `NoTruncationBelowHwm` |
+| `FelixShardShortCopySeatAnySet.cfg` | its twin, the exception without its set check | violate `AckedHeldByLeader` |
+| `FelixShardShortCopyStaged.cfg` | the refusal beside a staged destination, the ids' comparison dropped | pass the same invariants |
 
 Every walk runs with ballots and every change of leader fenced
 (`Ballots`, `FenceEveryChange`), as the broker ships, and all but the
