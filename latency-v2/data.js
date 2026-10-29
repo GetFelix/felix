@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793254771935,
+  "lastUpdate": 1793259306824,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -49302,6 +49302,72 @@ window.BENCHMARK_DATA = {
             "range": "958.22",
             "unit": "us",
             "extra": "trials: 5\nmedian: 419.00\nmean: 846.80\nstdev: 958.22\ncv: 113.16%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ec4f0aee56c3ec3ae8d0e9b503c715d0145686cc",
+          "message": "fix(replication): an RF 2 seat fences the leader first, so the seated set holds every acknowledged record (#1616) (#1626)\n\nOn a fenced stream, a seat that drops a member and leaves an even set (an RF 2 drain, or a restore replacing a lost copy) could leave a record acknowledged after the joining report on the leader alone. A crash then closed the shard, and with the leader's disk lost, acknowledged records were gone.\n\nSuch a seat now fences the leader first (MoveStep::SeatFence, placement/moves.rs). The newcomer is seated only when the drained report at that generation has it at the leader's tail, and the leader then serves at the next generation. A newcomer that dies or halts while fenced, or a copy that no longer needs replacing, is undone; a fence timeout hands the shard back with the replacement still running. If the factor is raised while fenced, the newcomer is seated as a top-up. RF 3 seats are unchanged. Placement only; brokers already handle a Draining assignment with no successor. RF 2 seats on fenced streams pause writes for one fence cycle, like a leader move.\n\nSpec: docs/formal/FelixShard.tla adds SeatsIntoEven, SeatFenced and SeatFence; Seat into an even set needs the drained report naming the newcomer. FelixShardFencedAckSeatPair now checks AckedOnMajority and passes (9.3M states, weight 12); FelixShardFencedAckSeatPairOnMajority is removed. An RF change mid-move is not modelled (docs/formal/README.md).\n\nThe residual crash window in #1616 is now an outage only, never a loss. Follow-up: #1628 (undoing a replacement beside an even set).\n\nCloses #1616.",
+          "timestamp": "2026-10-29T07:30:16Z",
+          "tree_id": "c07a2e95cce6d730aff71e93aca39808dc753882",
+          "url": "https://github.com/GetFelix/felix/commit/ec4f0aee56c3ec3ae8d0e9b503c715d0145686cc"
+        },
+        "date": 1793259300508,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 153,
+            "range": "1.34",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 153.00\nmean: 152.40\nstdev: 1.34\ncv: 0.88%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 219,
+            "range": "7.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 219.00\nmean: 220.60\nstdev: 7.64\ncv: 3.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 268,
+            "range": "151.50",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 268.00\nmean: 331.20\nstdev: 151.50\ncv: 45.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 201,
+            "range": "1.22",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 201.00\nmean: 201.00\nstdev: 1.22\ncv: 0.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 395,
+            "range": "18.36",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 395.00\nmean: 398.80\nstdev: 18.36\ncv: 4.60%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 568,
+            "range": "944.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 568.00\nmean: 964.80\nstdev: 944.14\ncv: 97.86%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
