@@ -1647,8 +1647,9 @@ ShortCopy(f) == gaveUp[f] > 0 /\ promised[f] = gaveUp[f] /\ bgen[f] = 0
 \* the generation it led, so its losses are all from there; `b` leads the
 \* generation straight after; and `b`'s set is the two, with the fence ids
 \* naming exactly them, the previous assignment's set. The code reads the
-\* route from its own routing view; the model takes `b`'s, which is the
-\* newest that view can show.
+\* route from `f`'s routing view and ties it neither to the fence's
+\* generation nor to `b` leading it; the model keys on `b`'s own, which is
+\* narrower (README, "A crashed leader's own refusal").
 AckedByTwo(b, f) ==
     /\ LastGen(f) = promised[f]
     /\ bgen[b] = promised[f] + 1

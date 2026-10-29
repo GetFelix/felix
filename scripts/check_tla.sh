@@ -243,7 +243,8 @@ expectations=(
 # within the budget to show the walks get that far at all. The inherited-name
 # configurations with promotions on suspicion are here too: they outgrow a
 # runner's disk exhaustively, so sampling them is what is left, as are the
-# crashed leader's refusal beside a seat and a staged copy.
+# crashed leader's refusal beside a seat (with and without the fence ids'
+# comparison) and beside a staged copy.
 walks=(
   "FelixShardWalkSpares pass"
   "FelixShardWalkSparesSeatEarly violates AckedHeldByLeader"
@@ -262,6 +263,7 @@ walks=(
   "FelixShardFencedLeaderCrashNamesByInheritance pass"
   "FelixShardFencedLeaderCrashInheritedCounts violates NoInheritedCount"
   "FelixShardShortCopySeat pass"
+  "FelixShardShortCopySeatAnyKeys pass"
   "FelixShardShortCopySeatAnySet violates AckedHeldByLeader"
   "FelixShardShortCopyStaged pass"
 )

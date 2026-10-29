@@ -1049,12 +1049,17 @@ The broker refuses that fence until a newer leader has shipped to it
 (`refuse_short_copy`), except where a set of two acknowledged what it may
 have lost (`acknowledged_by_two`, #1484). `RefuseShortCopy` models both:
 `ShortCopy` is the given-up copy no newer leader has had promise since, and
-`AckedByTwo` the exception, keyed as the code keys it: the copy's last record
-is from the generation it led, the fencer leads the next one, its set is the
-same two, and the failover's fence ids name exactly those two (`FenceIds`,
+`AckedByTwo` the exception: the copy's last record is from the generation
+it led, the fencer leads the next one, its set is the same two, and the failover's fence ids name exactly those two (`FenceIds`,
 the old set and the new one as #1633 names them, from the last report the
 control plane took, which a set change does not clear). Configurations that
 leave it off are unchanged: every variable it adds stays at its initial value.
+
+The model is narrower than the code here. The code reads the generation and
+the set from the crashed leader's own routing view, checks the sender is in
+that set, and ties neither to the fence's generation or to the sender leading
+it. The model keys on the fencer's own generation and set. No unsafe trace is
+known from the gap, but the exception is only argued for the narrower rule.
 
 Identities are left out of these configurations (`StorageIds = FALSE`), so
 every fence answer counts as from the copy the ids name. In the code a
@@ -1076,7 +1081,9 @@ two acknowledged is on one of them until the new leader ships it.
 
 Dropping the whole set check (`ShortCopyChecksSet`) loses a record:
 `FelixShardShortCopySeatAnySet.cfg`. Dropping only the ids' comparison
-(`ShortCopyChecksKeys`) does not in the model. No failover there shrinks the
+(`ShortCopyChecksKeys`) does not in the model:
+`FelixShardShortCopySeatAnyKeys.cfg` passes (sampled nightly, like the Seat
+shape it drops the comparison from). No failover there shrinks the
 voting set, so a fencer with a set of two at the generation after the one the
 crashed leader led has the two it led; the comparison only refuses more,
 around copies that never counted (a staged destination, a dropped copy a
