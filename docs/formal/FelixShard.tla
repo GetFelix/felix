@@ -134,6 +134,12 @@
 (* lagging follower, a majority of the new set that never saw it           *)
 (* (AckedHeldByLeader).                                                    *)
 (*                                                                         *)
+(* A seat into an even set fences the leader first (`SeatFence`) and       *)
+(* waits for its drained report to name the newcomer holding its whole     *)
+(* log: up to the seat a record can be on the leader and the leaving copy  *)
+(* alone, and without the fence TLC finds `{a, c}` holding one on a alone  *)
+(* (AckedOnMajority, #1616).                                               *)
+(*                                                                         *)
 (* A failover right after a seat into two may keep the dropped copy        *)
 (* (`SeatDropped`). A set above the factor is fenced (`TrimFence`) and,    *)
 (* once its leader reports drained, drops a follower the rest can do       *)
@@ -685,6 +691,14 @@ LoweredFactor == FALSE
 \* keeps `SeatDropped`, or one that names the copy still joining.
 Factor == Cardinality(Brokers \ Spares) - (IF LoweredFactor THEN 1 ELSE 0)
 OverFactor == ~Grow /\ joining = {} /\ staged = {} /\ Cardinality(ReplicaSet) > Factor
+
+\* A seat that leaves an even set: beside the odd set it joined, a record
+\* can be acknowledged on the leader and the leaving copy alone at any time
+\* up to the seat, after any report placement reads (#1616).
+SeatsIntoEven == leaving /= {} /\ Cardinality(mine[leader] \ leaving) % 2 = 0
+
+\* The leader fenced for such a seat (`SeatFence`).
+SeatFenced == draining /\ successor = leader /\ joining /= {}
 
 MajorityOf(S, of) == Cardinality(S \cap of) * 2 > Cardinality(of)
 Majority(S) == MajorityOf(S, QuorumSet)
@@ -1269,10 +1283,10 @@ ReportAt(b) ==
     ELSE Len(log[b])
 
 \* With follower acks and a promotion that does not read it, nothing reads the
-\* report but a trim, so it is sent only for one: that keeps the fenced
-\* configurations small.
+\* report but a trim or a fenced seat, so it is sent only for those: that
+\* keeps the fenced configurations small.
 Report(b) ==
-    /\ AckByFollowers => Promotion = "leader-report" \/ OverFactor
+    /\ AckByFollowers => Promotion = "leader-report" \/ OverFactor \/ SeatFenced
     /\ LeaseValid(b)
     \* Nothing runs the shard's replication pass until the fence is done.
     /\ ~fencing[b]
@@ -2003,13 +2017,41 @@ GrowSet(v, d, views) ==
     /\ joinedAt' = OldSetLen(leader)
     /\ moves' = moves + 1
 
+\* With `SeatHoldsCopy`, a seat into an even set first fences the leader
+\* (`seat_fence` in placement/moves.rs), so its log stops growing.
+SeatFence(v, j, views) ==
+    /\ SeatHoldsCopy /\ SeatsIntoEven
+    /\ j \in joining
+    /\ HoldsPrefix(j, leader, joinedAt)
+    /\ ~v.draining /\ ~v.lapsed /\ v.leader = leader
+    /\ cpNext = {}
+    /\ Cas(v)
+    /\ ver' = ver + 1
+    /\ cpView' = views
+    /\ draining' = TRUE
+    /\ successor' = leader
+    /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry, hbOut,
+                    hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit, stopped,
+                    moves, staged, out, mine, joining, leaving, joinedAt >>
+    /\ UNCHANGED fenceVars
+
 \* The leaving follower goes. With `SeatHoldsCopy`, only once the newcomer
 \* holds what a majority of the set held when it joined; a record
 \* acknowledged since is on three of the four, and survives losing one.
+\* Into an even set, only once the fenced leader reports drained with the
+\* newcomer holding its whole log (`seat_after_fence`), and the leader
+\* serves again at the next generation.
 Seat(v, j, views) ==
     /\ j \in joining
     /\ SeatHoldsCopy => HoldsPrefix(j, leader, joinedAt)
-    /\ Regenerate(v, views, mine[leader] \ leaving)
+    /\ IF SeatHoldsCopy /\ SeatsIntoEven
+       THEN /\ v.draining /\ v.successor = v.leader
+            /\ v.report.gen = v.gen /\ v.report.drained /\ j \in v.report.holders
+            /\ RegenerateSet(v, views, mine[leader] \ leaving)
+            /\ draining' = FALSE
+            /\ stopped' = [stopped EXCEPT ![leader] = FALSE]
+            /\ UNCHANGED successor
+       ELSE Regenerate(v, views, mine[leader] \ leaving)
     /\ out' = out \cup leaving
     /\ joining' = {}
     /\ joinedAt' = 0
@@ -2219,7 +2261,7 @@ Decide(v, f, views) ==
     \/ Promote(v, f, views)
     \/ /\ \/ Fence(v, f, views) \/ CutOver(v, f, views) \/ Retake(v, f, views)
           \/ Reseat(v, f, views) \/ GrowSet(v, f, views) \/ Seat(v, f, views)
-          \/ TrimFence(v, views) \/ TrimSet(v, f, views)
+          \/ SeatFence(v, f, views) \/ TrimFence(v, views) \/ TrimSet(v, f, views)
           \/ Swap(v, f, views) \/ CpAdopt(v, f, views) \/ Reclaim(v, views)
        /\ UNCHANGED << counterVars, expect, inherited, seen, seenInc >>
 

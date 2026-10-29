@@ -2386,15 +2386,33 @@ newcomer holds at least what a majority of the set it joined holds, counting a
 member the report leaves out as level with the leader
 (`holds_what_the_set_held` in `placement/moves.rs`). A record acknowledged
 before the join is then on the newcomer too, and one acknowledged since is on
-three of the four, so either survives dropping one. An RF 2 set is the
-exception: the newcomer joins two, two of the three acknowledge, and a record
-acknowledged since can be on the leader and the leaving follower alone. A
-failover at the seat's generation whose leader has not reported there yet keeps
-the leaving follower in the set while its broker serves, so the new leader's
-fence reaches a majority holding the record and takes the longer log
-(`left_unconfirmed` in `placement/plan.rs`). Without it the newcomer's fence
-can only wait for the old leader, which refuses a copy it may have lost records
-from ([#1487](https://github.com/GetFelix/felix/issues/1487)). That leaves the
+three of the four, so either survives dropping one. A seat that leaves an
+even set is the exception, an RF 2 set being the common case: the newcomer
+joins two, two of the three acknowledge, and a record can be acknowledged on
+the leader and the leaving follower alone at any point before the seat, after
+whatever report placement read. Seated then, `{leader, newcomer}` holds it on
+the leader alone, and losing the leader's disk loses it
+([#1616](https://github.com/GetFelix/felix/issues/1616)). No report closes
+that while the leader serves, so placement fences the leader first, as for a
+move (`seat_or_fence` in `placement/moves.rs`), and seats the newcomer only
+once the drained leader's report at that generation has it at the leader's
+own offset: its whole log, so every acknowledged record is on both members of
+the new set. The leader then serves again at the next generation, with the
+same pause in writes as a move's cut-over. A newcomer that goes down or halts
+while the leader is fenced is dropped and the leader serves again; a leader
+that never reports drained gets the shard back at the fence timeout with the
+replacement still going (`seat_after_fence`). A failover at the seat's
+generation whose leader has not reported there yet also keeps the leaving
+follower in the set while its broker serves, so the new leader's fence has a
+majority without the dead leader (`left_unconfirmed` in `placement/plan.rs`,
+[#1487](https://github.com/GetFelix/felix/issues/1487)). After the leader's
+first report at the seat's generation the set is `{leader, newcomer}`, and a
+leader that dies before the newcomer holds that generation's start record
+still leaves the newcomer's fence waiting on it: an outage until the leader
+returns or an operator abandons the old copy, but no acknowledged record is
+lost, since the newcomer holds them all. Keeping the leaving copy there too
+needs the report to say which followers hold its generation's start record,
+which brokers do not send yet. That leaves the
 set above its factor, as does lowering the factor. Nothing else starts on such
 a set until placement drops a follower again: a draining one first, then one
 not live. It cannot drop one while the leader serves, since a record can then
@@ -2409,7 +2427,7 @@ still be confirmed and read after the report. The leader serves again at the nex
 same pause in writes as a move's cut-over (`trim` in `placement/moves.rs`). A
 leader that never reports drained gets the set back at the fence timeout.
 `FelixShardFencedAckSeatPair` and `FelixShardFencedAckTrim` in
-`docs/formal/FelixShard.tla` model both. The same holds for a
+`docs/formal/FelixShard.tla` model the fenced seat, the keep and the trim. The same holds for a
 `Quorum` cache. A seated member counts toward the majority, so the newcomer
 must also be one the report names caught up, which is the leader's offer of a
 successor. Offsets cover only the shard's own log. On a `Quorum` cache the

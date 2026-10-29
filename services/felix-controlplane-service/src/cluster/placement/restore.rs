@@ -10,7 +10,7 @@
 //! instance picks a restore up from the store where the last one left it.
 use std::collections::{BTreeSet, HashMap};
 
-use super::moves::{Moves, holds_what_the_set_held, undo_replacement};
+use super::moves::{Moves, holds_what_the_set_held, seat_or_fence, undo_replacement};
 use super::plan::{owner_of, replication_factors};
 use super::rendezvous::score;
 use super::zones::{Domain, domain, domain_of};
@@ -188,25 +188,7 @@ pub(super) fn restore_step(
     if moves.ready_to_fence(caught_up, &existing.key, joining)
         && (!fenced || holds_what_the_set_held(existing, joining, caught_up))
     {
-        let mut replicas = existing.replicas.clone();
-        if let Some(lost) = lost {
-            replicas.retain(|replica| replica != lost);
-        }
-        return Decision::Move(
-            MoveStep::Seat {
-                from: lost.map(str::to_string),
-                to: joining.to_string(),
-            },
-            ShardAssignment {
-                replicas,
-                generation: 0,
-                joining: None,
-                move_started_at_millis: None,
-                move_reason: None,
-                fence_storage_ids: Default::default(),
-                ..existing.clone()
-            },
-        );
+        return seat_or_fence(existing, joining, lost, fenced, caught_up, moves);
     }
     // One that has stopped moving would otherwise hold the slot every other
     // short shard needs until the move timeout. Its start stays, which puts
@@ -311,7 +293,7 @@ pub(super) fn newcomer<'a>(
 /// lost follower's place would leave a record acknowledged on the leader and
 /// that follower on half the set. Beside the odd set a factor of three gives,
 /// every majority keeps a majority of the old set, as for a drain.
-fn replacing<'e>(
+pub(super) fn replacing<'e>(
     existing: &'e ShardAssignment,
     replication_factor: u32,
     is_lost: &dyn Fn(&str) -> bool,
@@ -338,7 +320,7 @@ fn lost_follower<'e>(
 
 /// Whether the seated set is smaller than the replication factor, as a
 /// failover that had too few live brokers to choose from leaves it.
-fn short(existing: &ShardAssignment, replication_factor: u32) -> bool {
+pub(super) fn short(existing: &ShardAssignment, replication_factor: u32) -> bool {
     seated(existing).count() < replication_factor.max(1) as usize
 }
 
