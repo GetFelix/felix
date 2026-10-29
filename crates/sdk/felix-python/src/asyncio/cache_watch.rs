@@ -75,6 +75,19 @@ impl AsyncCacheWatch {
         self.progress.moves()
     }
 
+    /// How many times this watch was reopened after losing its connection.
+    #[getter]
+    fn reconnects(&self) -> u64 {
+        self.progress.reconnects()
+    }
+
+    /// Why the watch ended, when it could not be reopened on another broker
+    /// within the reconnect deadline; otherwise `None`.
+    #[getter]
+    fn error(&self) -> Option<String> {
+        self.progress.error()
+    }
+
     fn close<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = Arc::clone(&self.inner);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {

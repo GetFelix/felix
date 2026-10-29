@@ -3,6 +3,7 @@
 
 use std::ffi::{c_char, c_void};
 use std::ptr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -48,7 +49,9 @@ pub const FELIX_WATCH_SHARD_MOVED: FelixWatchItemKind = 3;
 /// Every shard's retained state has been delivered, and what follows is live
 /// changes. Only a sharded retained watch reports it.
 pub const FELIX_WATCH_STATE_COMPLETE: FelixWatchItemKind = 4;
-/// One shard's feed has ended and delivers no more. Other shards go on.
+/// One shard's feed has ended and delivers no more. Other shards go on. When
+/// it ended because it could not be reopened on another broker in time, the
+/// read's `message` says why.
 pub const FELIX_WATCH_SHARD_CLOSED: FelixWatchItemKind = 5;
 
 /// One item of a watch.
@@ -116,6 +119,10 @@ pub struct FelixCacheWatch {
     /// caller saw and can be read while another read is pending.
     positions: Option<Arc<Mutex<ShardOffsets>>>,
     retained_count: Option<u64>,
+    /// A single watch's reconnect count as of the last read.
+    reconnects: Option<Arc<AtomicU64>>,
+    /// Why the feed ended, when it could not be followed to another broker.
+    ended: Arc<Mutex<Option<String>>>,
     /// Cancelled when this handle is freed, which ends a pending read.
     cancel: CancellationToken,
     shared: Arc<Shared>,
@@ -168,6 +175,20 @@ impl Inner {
         }
     }
 
+    fn reconnects(&self) -> Option<u64> {
+        match self {
+            Self::Single(watch) => Some(watch.reconnects()),
+            Self::Sharded(_) => None,
+        }
+    }
+
+    fn error(&self) -> Option<String> {
+        match self {
+            Self::Single(watch) => watch.error().map(|err| format!("{err:#}")),
+            Self::Sharded(_) => None,
+        }
+    }
+
     /// Cancel-safe, as the watches' own `recv` are. `positions` is set before
     /// the item is returned, so it never runs ahead of what is handed out.
     async fn recv(&mut self, positions: Option<&Mutex<ShardOffsets>>) -> Option<Item> {
@@ -193,6 +214,8 @@ pub(crate) struct Item {
     offset: u64,
     expires_at_millis: u64,
     resume_from: Option<u64>,
+    /// Handed to C as the read's message.
+    error: Option<String>,
 }
 
 impl Item {
@@ -205,6 +228,7 @@ impl Item {
             offset: 0,
             expires_at_millis: 0,
             resume_from: None,
+            error: None,
         }
     }
 
@@ -244,9 +268,10 @@ impl Item {
                 resume_from: moved.resume_from,
                 ..Self::new(FELIX_WATCH_SHARD_MOVED, Some(shard))
             },
-            ShardedCacheWatchItem::ShardClosed { shard } => {
-                Self::new(FELIX_WATCH_SHARD_CLOSED, Some(shard))
-            }
+            ShardedCacheWatchItem::ShardClosed { shard, error } => Self {
+                error,
+                ..Self::new(FELIX_WATCH_SHARD_CLOSED, Some(shard))
+            },
         }
     }
 
@@ -540,6 +565,10 @@ impl FelixCacheWatch {
         };
         Self {
             retained_count: inner.retained_count(),
+            reconnects: inner
+                .reconnects()
+                .map(|count| Arc::new(AtomicU64::new(count))),
+            ended: Arc::new(Mutex::new(None)),
             positions,
             slot: Arc::new(Mutex::new(Slot::Idle(inner))),
             cancel: shared.cancel_token(),
@@ -554,7 +583,9 @@ impl FelixCacheWatch {
 /// `FELIX_STATUS_TIMEOUT` when `timeout_ms` passed with nothing (the watch
 /// stays usable); `FELIX_STATUS_CLOSED` once the feed has ended, as after
 /// `FELIX_WATCH_LAGGED` on a single watch or once every shard of a sharded
-/// watch has ended; or `FELIX_STATUS_CANCELLED`. A cancelled or
+/// watch has ended; or `FELIX_STATUS_CANCELLED`. A single watch that ended
+/// because it could not be reopened on another broker within the reconnect
+/// deadline reports `FELIX_STATUS_CLOSED` with a message saying why. A cancelled or
 /// timed-out read loses nothing; the next read gets the item.
 ///
 /// A negative `timeout_ms` waits indefinitely; zero only takes an item that
@@ -581,6 +612,8 @@ pub unsafe extern "C" fn felix_cache_watch_next(
         let wait = u64::try_from(timeout_ms).ok().map(Duration::from_millis);
         let handle = watch.cancel.clone();
         let positions = watch.positions.clone();
+        let reconnects = watch.reconnects.clone();
+        let ended = Arc::clone(&watch.ended);
 
         let mut slot = lock(&watch.slot);
         let lease = match std::mem::replace(&mut *slot, Slot::Reading) {
@@ -607,7 +640,7 @@ pub unsafe extern "C" fn felix_cache_watch_next(
         };
         watch.shared.spawn(done, move |done| async move {
             let Some(mut lease) = lease else {
-                return done.status(FELIX_STATUS_CLOSED);
+                return closed(done, &ended);
             };
             let inner = lease.watch.as_mut().expect("a lease holds the watch");
             let timeout = async {
@@ -622,9 +655,13 @@ pub unsafe extern "C" fn felix_cache_watch_next(
                 next = inner.recv(positions.as_deref()) => Ok(next),
                 () = timeout => Err(FELIX_STATUS_TIMEOUT),
             };
+            if let Some(reconnects) = &reconnects {
+                reconnects.store(inner.reconnects().unwrap_or(0), Ordering::Release);
+            }
             let outcome = match next {
                 Ok(Some(item)) => Ok(item),
                 Ok(None) => {
+                    *lock(&ended) = inner.error();
                     lease.watch = None;
                     Err(FELIX_STATUS_CLOSED)
                 }
@@ -634,10 +671,52 @@ pub unsafe extern "C" fn felix_cache_watch_next(
             // start the next read.
             drop(lease);
             match outcome {
-                Ok(item) => done.ok(item),
+                Ok(item) => {
+                    let message = item.error.clone();
+                    done.with_status(FELIX_STATUS_OK, message, item);
+                }
+                Err(FELIX_STATUS_CLOSED) => closed(done, &ended),
                 Err(status) => done.status(status),
             }
         });
+        Ok(FELIX_STATUS_OK)
+    })
+}
+
+/// The end of the feed, with why it ended when it could not be followed.
+fn closed(done: Completion<Item>, ended: &Mutex<Option<String>>) {
+    match lock(ended).clone() {
+        Some(message) => done.fail(Failure {
+            status: FELIX_STATUS_CLOSED,
+            message,
+        }),
+        None => done.status(FELIX_STATUS_CLOSED),
+    }
+}
+
+/// How many times a single watch has been reopened after losing its
+/// connection, as of the last read.
+///
+/// Only a single watch has this; a sharded watch is
+/// `FELIX_STATUS_INVALID_ARGUMENT`. It may be called while a read is pending.
+///
+/// # Safety
+///
+/// `watch` is a live watch and `out` is null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn felix_cache_watch_reconnects(
+    watch: *const FelixCacheWatch,
+    out: *mut u64,
+) -> FelixStatus {
+    guard(|| {
+        // SAFETY: null or a live watch, per the contract above.
+        let watch = unsafe { watch.as_ref() }.ok_or_else(|| Failure::invalid("watch is null"))?;
+        let reconnects = watch
+            .reconnects
+            .as_ref()
+            .ok_or_else(|| Failure::invalid("only a single watch has a reconnect count"))?;
+        // SAFETY: null or writable, per the contract above.
+        unsafe { write_optional(out, reconnects.load(Ordering::Acquire)) };
         Ok(FELIX_STATUS_OK)
     })
 }

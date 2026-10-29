@@ -1048,7 +1048,7 @@ Ordering is per key: a key lives on one shard, so its changes arrive in write or
 
 `resume_offsets()` is one offset per shard, never ahead of what you have handled. Pass it back as `resume=` to continue gaplessly. A shard still delivering its state resumes at `0`, so no key is missed.
 
-`close()` on a watch or subscription returns at once, even while another thread or task is blocked reading it; that reader then gets `None` (or `StopAsyncIteration`). A `timeout` is a number of seconds from 0 to a year, and `inf`, `nan` and negatives raise `ValueError`. A single-key or prefix `CacheWatchHandle` also exposes `resume_from`, the `from_offset` that continues it without a gap, and `moves`, how often it followed its shard to a new owner; both can be read while a `recv()` is in flight. A watch whose broker dies is reopened on the broker that owns its shard now, from `resume_from`, within the client's reconnect deadline; if none takes it, the watch ends.
+`close()` on a watch or subscription returns at once, even while another thread or task is blocked reading it; that reader then gets `None` (or `StopAsyncIteration`). A `timeout` is a number of seconds from 0 to a year, and `inf`, `nan` and negatives raise `ValueError`. A single-key or prefix `CacheWatchHandle` also exposes `resume_from`, the `from_offset` that continues it without a gap, `moves`, how often it followed its shard to a new owner, and `reconnects`, how often it was reopened after losing its broker; all three can be read while a `recv()` is in flight. A watch whose broker dies is reopened on the broker that owns its shard now, from `resume_from`, within the client's reconnect deadline; if none takes it, the watch ends and `error` says why. A loss or move during a retained watch's state phase starts the state over on the new owner, so values already seen may arrive again before it is complete. On a sharded watch a shard that cannot be followed arrives as `CacheShardClosed` with its `error`.
 
 With `retained=True` every matching key's current value arrives first, from every shard, and `CacheStateComplete` marks the moment all of them have. `retained_count` is the total to expect. A retained watch cannot also resume.
 
@@ -1265,7 +1265,7 @@ left out, and why:
   `stream_deleted` have no accessor on a subscription, sharded or not. A read
   in flight holds the handle, so these need their own shared state. A
   follow-up is planned; a move still shows up as a `ShardMoved` item on a
-  sharded subscription. A cache watch does expose `moves` and `resume_from`.
+  sharded subscription. A cache watch does expose `moves`, `reconnects`, `error` and `resume_from`.
 - **The single-connection `Client` and `Publisher` layer** (`topology`,
   `stream_routing`, `shard_owners`, `inspect_shard`, `supports_*`,
   `publish_batch_binary*`, `connect_with_transport`). The binding wraps

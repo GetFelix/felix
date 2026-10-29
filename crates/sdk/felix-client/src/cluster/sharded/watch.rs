@@ -15,7 +15,7 @@ use tokio::task::JoinHandle;
 use super::ShardOffsets;
 use crate::cache::{CacheChange, CacheWatchFilter, CacheWatchItem};
 use crate::cluster::ClusterClient;
-use crate::cluster::follow::{ClusterCacheWatch, WatchProgress, WatchTarget};
+use crate::cluster::follow::{ClusterCacheWatch, WatchProgress, WatchStep, WatchTarget};
 use crate::subscribe::ShardMoved;
 
 /// A prefix watch over every shard of one cache, merged into a single handle.
@@ -30,7 +30,8 @@ use crate::subscribe::ShardMoved;
 /// [`ClusterClient::watch_cache_sharded`] to resume.
 ///
 /// **A shard that moves is followed.** Its watch reopens on the new owner
-/// where it left off, announced by [`ShardedCacheWatchItem::ShardMoved`].
+/// where it left off, announced by [`ShardedCacheWatchItem::ShardMoved`]. A
+/// lost connection is followed the same way, without a notice.
 ///
 /// Dropping this ends every shard's watch.
 #[derive(Debug)]
@@ -83,26 +84,33 @@ impl ShardedCacheWatch {
     /// `None` once every shard's watch has ended and its items have been
     /// handed out.
     pub async fn recv(&mut self) -> Option<ShardedCacheWatchItem> {
-        if self.retained && self.state_pending == 0 && !self.state_announced {
-            self.state_announced = true;
-            return Some(ShardedCacheWatchItem::StateComplete);
-        }
-        let (shard, item, after) = self.items.recv().await?;
-        let progress = &mut self.progress[shard as usize];
-        if progress.in_state_phase() && !after.in_state_phase() {
-            self.state_pending -= 1;
-        }
-        *progress = after;
-        Some(match item {
-            Some(CacheWatchItem::Change(change)) => ShardedCacheWatchItem::Change { shard, change },
-            Some(CacheWatchItem::Lagged { resume_from }) => {
-                ShardedCacheWatchItem::Lagged { shard, resume_from }
+        loop {
+            if self.retained && self.state_pending == 0 && !self.state_announced {
+                self.state_announced = true;
+                return Some(ShardedCacheWatchItem::StateComplete);
             }
-            Some(CacheWatchItem::ShardMoved(moved)) => {
-                ShardedCacheWatchItem::ShardMoved { shard, moved }
+            let (shard, item, after) = self.items.recv().await?;
+            let progress = &mut self.progress[shard as usize];
+            // A shard whose state phase restarted after a reopen stays in it,
+            // so it stays pending until its new state has all been handed out.
+            if progress.in_state_phase() && !after.in_state_phase() {
+                self.state_pending -= 1;
             }
-            None => ShardedCacheWatchItem::ShardClosed { shard },
-        })
+            *progress = after;
+            return Some(match item {
+                ShardStep::Item(CacheWatchItem::Change(change)) => {
+                    ShardedCacheWatchItem::Change { shard, change }
+                }
+                ShardStep::Item(CacheWatchItem::Lagged { resume_from }) => {
+                    ShardedCacheWatchItem::Lagged { shard, resume_from }
+                }
+                ShardStep::Item(CacheWatchItem::ShardMoved(moved)) => {
+                    ShardedCacheWatchItem::ShardMoved { shard, moved }
+                }
+                ShardStep::Reopened => continue,
+                ShardStep::Closed(error) => ShardedCacheWatchItem::ShardClosed { shard, error },
+            });
+        }
     }
 }
 
@@ -135,15 +143,30 @@ pub enum ShardedCacheWatchItem {
     /// This shard moved to another broker, and its watch is following it
     /// there. The changes that follow resume where the old owner left off; if
     /// the new owner cannot be reached in time, a
-    /// [`ShardedCacheWatchItem::ShardClosed`] comes next.
+    /// [`ShardedCacheWatchItem::ShardClosed`] comes next. A move inside a
+    /// retained watch's state phase restarts that shard's state phase on the
+    /// new owner, so its values may arrive again before
+    /// [`ShardedCacheWatchItem::StateComplete`].
     ShardMoved { shard: u32, moved: ShardMoved },
-    /// This shard's watch ended without a lag signal, usually because its
-    /// owner went away. The other shards are unaffected.
-    ShardClosed { shard: u32 },
+    /// This shard's watch ended without a lag signal: the broker ended it, or
+    /// it could not be followed to another broker within the client's
+    /// reconnect deadline, and `error` then says why. The other shards are
+    /// unaffected.
+    ShardClosed { shard: u32, error: Option<String> },
 }
 
-/// One shard's item, with that shard's position once it is handed out.
-type ShardItem = (u32, Option<CacheWatchItem>, WatchProgress);
+/// One shard's step, with that shard's position once it is handed out.
+type ShardItem = (u32, ShardStep, WatchProgress);
+
+enum ShardStep {
+    Item(CacheWatchItem),
+    /// Carries only the new position, which matters when a reopen restarted
+    /// or ended the state phase.
+    Reopened,
+    /// The watch ended without a lag signal, with the cause when there was
+    /// one.
+    Closed(Option<String>),
+}
 
 /// Open one prefix watch per shard and forward all of them into one channel.
 ///
@@ -224,19 +247,25 @@ pub(crate) async fn watch_sharded(
     })
 }
 
-/// Pump one shard's watch into the shared channel. `None` says it ended
-/// without a lag signal.
+/// Pump one shard's watch into the shared channel.
 async fn forward_shard(shard: u32, mut watch: ClusterCacheWatch, tx: mpsc::Sender<ShardItem>) {
-    while let Some(item) = watch.recv().await {
-        let lagged = matches!(item, CacheWatchItem::Lagged { .. });
-        if tx
-            .send((shard, Some(item), watch.progress()))
-            .await
-            .is_err()
-            || lagged
-        {
+    while let Some(step) = watch.step().await {
+        let (step, lagged) = match step {
+            WatchStep::Item(item) => {
+                let lagged = matches!(item, CacheWatchItem::Lagged { .. });
+                (ShardStep::Item(item), lagged)
+            }
+            WatchStep::Reopened => (ShardStep::Reopened, false),
+        };
+        if tx.send((shard, step, watch.progress())).await.is_err() || lagged {
             return;
         }
     }
-    let _ = tx.send((shard, None, watch.progress())).await;
+    let error = watch.error().map(|err| format!("{err:#}"));
+    let _ = tx
+        .send((shard, ShardStep::Closed(error), watch.progress()))
+        .await;
 }
+
+#[cfg(test)]
+mod tests;

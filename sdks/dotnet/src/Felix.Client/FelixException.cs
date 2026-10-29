@@ -37,6 +37,11 @@ public sealed class FelixException : Exception
             return new OperationCanceledException(message ?? "the call was cancelled", token);
         }
 
-        return new FelixException(code, string.IsNullOrEmpty(message) ? $"felix call failed ({code})" : message);
+        return string.IsNullOrEmpty(message)
+            ? new FelixException(code, $"felix call failed ({code})")
+            : new FelixException(code, message) { FromNative = true };
     }
+
+    /// <summary>Whether the message came from the native call rather than being made up here.</summary>
+    internal bool FromNative { get; private init; }
 }

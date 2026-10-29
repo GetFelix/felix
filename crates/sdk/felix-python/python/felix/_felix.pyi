@@ -301,6 +301,8 @@ class CacheWatchHandle:
     retained_count: int | None
     resume_from: int
     moves: int
+    reconnects: int
+    error: str | None
     closed: bool
     def recv(self, timeout: float | None = None) -> WatchItem | None: ...
     def close(self) -> None: ...
@@ -336,6 +338,8 @@ class AsyncCacheWatch:
     retained_count: int | None
     resume_from: int
     moves: int
+    reconnects: int
+    error: str | None
     async def recv(self, timeout: float | None = None) -> WatchItem | None: ...
     async def close(self) -> None: ...
     def __aiter__(self) -> AsyncIterator[WatchItem]: ...
@@ -429,6 +433,7 @@ class CacheShardClosed:
     """One shard's watch ended without a lag signal; others are unaffected."""
 
     shard: int
+    error: str | None
 
 ShardedWatchItem = (
     ShardedCacheChange | CacheStateComplete | CacheShardLagged | ShardMoved | CacheShardClosed

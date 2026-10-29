@@ -181,6 +181,7 @@ const NULLABLE_FIELDS = {
   CacheChange: ["value"],
   ShardedCacheWatchItem: [
     "shard", "change", "stateComplete", "laggedResumeFrom", "shardMoved", "shardClosed",
+    "shardClosedError",
   ],
 };
 

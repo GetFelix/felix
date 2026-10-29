@@ -2,10 +2,13 @@
 //! open on it carries on, and requests stop going to it.
 //!
 //! Run with `cargo test -p felix-cluster --test caches dead_broker::`.
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use felix_client::{CacheCondition, CacheWatchFilter, CacheWatchItem, ClusterClient};
+use felix_client::{
+    CacheCondition, CacheWatchFilter, CacheWatchItem, ClusterClient, ShardedCacheWatchItem,
+};
 use felix_cluster::{CacheSpec, Cluster, ClusterConfig};
 use serial_test::serial;
 
@@ -208,6 +211,156 @@ async fn cache_requests_stop_going_to_a_killed_owner() {
             "request {i} took {elapsed:?}: still waiting on the dead owner"
         );
     }
+
+    cluster.shutdown().await;
+}
+
+/// **A shard that loses its broker mid-state does not complete the state
+/// early.** The killed owner's shard holds more retained values than the
+/// watcher's client buffers, and the watcher stops reading after its first
+/// value, so the kill lands inside that shard's state phase. `StateComplete`
+/// must wait for the reopened shard's full state.
+#[serial]
+#[tokio::test]
+async fn a_sharded_retained_watch_restarts_a_state_phase_cut_by_a_kill() {
+    const KEYS: usize = 3000;
+    // About 24 MiB a shard, past the 16 MiB stream window the watcher's
+    // client is held to, so the killed owner cannot have sent its whole state
+    // before it dies.
+    const VALUE_BYTES: usize = 16 * 1024;
+
+    let mut cluster = Cluster::start(ClusterConfig {
+        nodes: 3,
+        caches: vec![CacheSpec::replicated(CACHE, 2, 3)],
+        ..Default::default()
+    })
+    .await
+    .expect("start cluster");
+    let (tenant, namespace) = (cluster.tenant_id.clone(), cluster.namespace.clone());
+    let leader = cluster
+        .shard_owner_of("cache", CACHE, 0)
+        .await
+        .expect("cache shard owner");
+    let shipped_before = cluster
+        .metric(&leader, "felix_broker_replication_shipped_total")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(0.0);
+    let addrs: Vec<_> = cluster
+        .node_ids()
+        .iter()
+        .map(|node| cluster.node(node).expect("node").client_addr)
+        .collect();
+    let writer = Arc::new(
+        felix_cluster::client::connect_cluster(&addrs, &tenant, &cluster.client_token())
+            .await
+            .expect("connect writer"),
+    );
+    let value = bytes::Bytes::from(vec![7u8; VALUE_BYTES]);
+    for start in (0..KEYS).step_by(64) {
+        let mut puts = tokio::task::JoinSet::new();
+        for i in start..(start + 64).min(KEYS) {
+            let (writer, tenant, namespace, value) = (
+                Arc::clone(&writer),
+                tenant.clone(),
+                namespace.clone(),
+                value.clone(),
+            );
+            puts.spawn(async move {
+                writer
+                    .cache_put(
+                        &tenant,
+                        &namespace,
+                        CACHE,
+                        &format!("p:{i:05}"),
+                        value,
+                        None,
+                    )
+                    .await
+            });
+        }
+        while let Some(put) = puts.join_next().await {
+            put.expect("put task").expect("cache put");
+        }
+    }
+    replication_settled(&cluster, &leader, shipped_before).await;
+
+    let seed = cluster
+        .node_ids()
+        .into_iter()
+        .find(|node| *node != leader)
+        .expect("a broker that does not own shard 0");
+    let watcher = Arc::new(
+        felix_cluster::client::connect_cluster_with(
+            &[cluster.node(&seed).expect("seed").client_addr],
+            &tenant,
+            &cluster.client_token(),
+            |config| {
+                config.client_sub_queue_capacity = 1;
+                // A shared connection's floor, the transport default, is then
+                // what bounds a stream.
+                config.event_stream_recv_window = 0;
+                config.cache_stream_recv_window = 0;
+            },
+        )
+        .await
+        .expect("connect watcher"),
+    );
+    let mut watch = watcher
+        .watch_cache_sharded_retained(&tenant, &namespace, CACHE, "p:")
+        .await
+        .expect("watch");
+    assert_eq!(watch.retained_count(), Some(KEYS as u64));
+
+    let mut seen = HashSet::new();
+    let mut delivered = 0usize;
+    let mut record = |item: &ShardedCacheWatchItem| {
+        if let ShardedCacheWatchItem::Change { change, .. } = item {
+            seen.insert(change.key.clone());
+            delivered += 1;
+        }
+    };
+    loop {
+        let item = tokio::time::timeout(Duration::from_secs(10), watch.recv())
+            .await
+            .expect("a retained value")
+            .expect("the watch ended");
+        record(&item);
+        if matches!(item, ShardedCacheWatchItem::Change { shard: 0, .. }) {
+            break;
+        }
+    }
+
+    cluster.kill_node(&leader).expect("kill shard 0's owner");
+    assert!(
+        failover_from(&cluster, &leader, Duration::from_secs(30)).await,
+        "no replica was promoted"
+    );
+
+    let deadline =
+        tokio::time::Instant::now() + felix_cluster::wait::budget(Duration::from_secs(90));
+    loop {
+        match tokio::time::timeout_at(deadline, watch.recv()).await {
+            Ok(Some(ShardedCacheWatchItem::StateComplete)) => break,
+            Ok(Some(ShardedCacheWatchItem::ShardClosed { shard, error })) => {
+                panic!("shard {shard} closed instead of following: {error:?}")
+            }
+            Ok(Some(item)) => record(&item),
+            Ok(None) => panic!("the watch ended before its state was complete"),
+            Err(_) => panic!("the state never completed after the kill"),
+        }
+    }
+    assert_eq!(
+        seen.len(),
+        KEYS,
+        "StateComplete arrived with {} of {KEYS} keys delivered",
+        seen.len()
+    );
+    assert!(
+        delivered > KEYS,
+        "only {delivered} values arrived, so the kill missed the state phase and tested nothing"
+    );
 
     cluster.shutdown().await;
 }

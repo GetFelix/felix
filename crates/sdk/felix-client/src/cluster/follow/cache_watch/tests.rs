@@ -96,14 +96,27 @@ fn a_resnapshot_after_a_move_only_moves_the_position_once_live() {
     assert_eq!(watch.resume_from, 42);
 }
 
+/// A reopen inside the state phase asks for retained values again, so the
+/// phase starts over with the new owner's count instead of ending.
 #[test]
-fn a_move_mid_state_replays_from_the_start_in_log_order() {
+fn a_retained_reopen_mid_state_restarts_the_state_phase() {
     let mut watch = WatchProgress::new(100, None, Some(3), false);
     watch.observe_change(70);
-    watch.observe_move(Some(100));
+    watch.reopened(120, false, Some(2));
+    assert!(watch.in_state_phase());
     assert_eq!(watch.resume_from, 0);
-    watch.rebase(120, false);
+    assert!(!watch.observe_change(90));
+    assert!(
+        watch.observe_change(110),
+        "the new owner's last value ends it"
+    );
+    assert_eq!(watch.resume_from, 120);
+}
+
+#[test]
+fn a_retained_reopen_onto_an_empty_state_ends_the_phase() {
+    let mut watch = WatchProgress::new(100, None, Some(3), false);
+    watch.reopened(120, false, Some(0));
     assert!(!watch.in_state_phase());
-    watch.observe_change(5);
-    assert_eq!(watch.resume_from, 6);
+    assert_eq!(watch.resume_from, 120);
 }

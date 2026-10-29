@@ -9,7 +9,7 @@
 mod cache_watch;
 
 pub use cache_watch::ClusterCacheWatch;
-pub(crate) use cache_watch::{WatchProgress, WatchTarget};
+pub(crate) use cache_watch::{WatchProgress, WatchStep, WatchTarget};
 
 use std::net::SocketAddr;
 use std::sync::Arc;

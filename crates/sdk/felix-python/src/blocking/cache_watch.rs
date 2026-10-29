@@ -83,6 +83,19 @@ impl CacheWatchHandle {
         self.progress.moves()
     }
 
+    /// How many times this watch was reopened after losing its connection.
+    #[getter]
+    fn reconnects(&self) -> u64 {
+        self.progress.reconnects()
+    }
+
+    /// Why the watch ended, when it could not be reopened on another broker
+    /// within the reconnect deadline; otherwise `None`.
+    #[getter]
+    fn error(&self) -> Option<String> {
+        self.progress.error()
+    }
+
     /// Stop watching. Idempotent, and returns even while another thread is
     /// blocked in `recv`, which then returns `None`.
     fn close(&self) {

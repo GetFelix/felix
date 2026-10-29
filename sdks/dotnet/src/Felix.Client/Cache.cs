@@ -28,7 +28,10 @@ public enum WatchItemKind
     ShardMoved = 3,
     /// <summary>Every shard's retained state has been delivered; live changes follow. Sharded retained watches only.</summary>
     StateComplete = 4,
-    /// <summary>One shard's feed has ended and delivers no more. Other shards go on.</summary>
+    /// <summary>
+    /// One shard's feed has ended and delivers no more. Other shards go on. <see cref="WatchItem.Error"/>
+    /// says why when it could not be reopened on another broker in time.
+    /// </summary>
     ShardClosed = 5,
 }
 
@@ -43,6 +46,10 @@ public enum WatchItemKind
 /// </param>
 /// <param name="ExpiresAtMillis">Unix milliseconds the value expires at; null for a value that never does.</param>
 /// <param name="ResumeFrom">An offset to resume from, on <see cref="WatchItemKind.Lagged"/> and sometimes <see cref="WatchItemKind.ShardMoved"/>.</param>
+/// <param name="Error">
+/// On <see cref="WatchItemKind.ShardClosed"/>, why the shard could not be reopened on another broker in
+/// time, when that is why it ended.
+/// </param>
 public sealed record WatchItem(
     WatchItemKind Kind,
     uint? Shard,
@@ -50,7 +57,8 @@ public sealed record WatchItem(
     ReadOnlyMemory<byte>? Value,
     long Offset,
     long? ExpiresAtMillis,
-    long? ResumeFrom)
+    long? ResumeFrom,
+    string? Error = null)
 {
     /// <summary>Whether this is a change that removed its key.</summary>
     public bool IsDelete => Kind == WatchItemKind.Change && Value is null;

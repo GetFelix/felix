@@ -45,7 +45,18 @@ pub async fn connect_cluster(
     tenant_id: &str,
     token: &str,
 ) -> Result<felix_client::ClusterClient> {
-    let config = client_config(tenant_id, token)?;
+    connect_cluster_with(addrs, tenant_id, token, |_| {}).await
+}
+
+/// [`connect_cluster`] with the client's configuration adjusted by `tune`.
+pub async fn connect_cluster_with(
+    addrs: &[SocketAddr],
+    tenant_id: &str,
+    token: &str,
+    tune: impl FnOnce(&mut ClientConfig),
+) -> Result<felix_client::ClusterClient> {
+    let mut config = client_config(tenant_id, token)?;
+    tune(&mut config);
     felix_client::ClusterClient::connect(addrs, "localhost", config)
         .await
         .with_context(|| format!("connect a cluster client to any of {addrs:?}"))

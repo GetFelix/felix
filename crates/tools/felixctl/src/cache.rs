@@ -206,9 +206,10 @@ async fn watch(
                 "shard {shard} moved to {}",
                 moved.node_id.as_deref().unwrap_or("another broker")
             ),
-            ShardedCacheWatchItem::ShardClosed { shard } => {
-                eprintln!("shard {shard}'s watch ended");
-            }
+            ShardedCacheWatchItem::ShardClosed { shard, error } => match error {
+                Some(error) => eprintln!("shard {shard}'s watch ended: {error}"),
+                None => eprintln!("shard {shard}'s watch ended"),
+            },
         }
     }
     Ok(())

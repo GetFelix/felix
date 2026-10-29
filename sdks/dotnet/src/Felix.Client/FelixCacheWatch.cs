@@ -38,6 +38,33 @@ public sealed class FelixCacheWatch : IAsyncEnumerable<WatchItem>, IAsyncDisposa
     public long? RetainedCount { get; }
 
     /// <summary>
+    /// Why a single watch ended, when it could not be reopened on another broker within the reconnect
+    /// deadline. Set when a read ends with <see cref="FelixStatus.Closed"/>; null otherwise.
+    /// </summary>
+    public string? Error { get; private set; }
+
+    /// <summary>
+    /// How many times a single watch has been reopened after losing its connection, as of the last
+    /// read. A sharded watch throws <see cref="FelixException"/> with
+    /// <see cref="FelixStatus.InvalidArgument"/>. May be read while a read is pending.
+    /// </summary>
+    public unsafe long Reconnects
+    {
+        get
+        {
+            using var call = new HandleLease(handle);
+            ulong count;
+            var status = NativeMethods.felix_cache_watch_reconnects(call.Pointer, &count);
+            if (status != 0)
+            {
+                throw FelixException.FromStatus(status, NativeMethods.LastError());
+            }
+
+            return unchecked((long)count);
+        }
+    }
+
+    /// <summary>
     /// Where each shard has reached, in ascending shard order and never ahead of what reads have
     /// handed out, for <see cref="FelixCache.WatchShardedAsync"/>. Sharded watches only; a single watch fails
     /// with <see cref="FelixStatus.InvalidArgument"/>. May be called while a read is pending.
@@ -112,6 +139,11 @@ public sealed class FelixCacheWatch : IAsyncEnumerable<WatchItem>, IAsyncDisposa
         try
         {
             return await StartRead(timeoutMs, cancellationToken).ConfigureAwait(false);
+        }
+        catch (FelixException e) when (e.Status == FelixStatus.Closed && e.FromNative)
+        {
+            Error = e.Message;
+            throw;
         }
         finally
         {

@@ -1463,10 +1463,11 @@ key's current value instead, and `watch.resnapshot()` says so. Needs a broker
 advertising `FEATURE_CACHE_WATCH`, which only brokers with a log-backed cache send.
 `ClusterClient::watch_cache` returns a `ClusterCacheWatch`, which follows a
 moved shard itself: `ShardMoved` arrives as a notice and the changes carry on
-from the new owner, none repeated or skipped. A lost connection is followed
-the same way, without a notice: the watch is reopened on whichever broker owns
-the shard now, under the client's `ReconnectPolicy`. If none takes it before
-the deadline, `recv` returns `None` and `watch.error()` says why. A prefix watch reads one shard; on a multi-shard cache use
+from the new owner, none repeated or skipped outside a retained watch's state
+phase. A lost connection is followed the same way, without a notice: the watch
+is reopened on whichever broker owns the shard now, under the client's
+`ReconnectPolicy`, and `watch.reconnects()` counts how often. If none takes it
+before the deadline, `recv` returns `None` and `watch.error()` says why. A prefix watch reads one shard; on a multi-shard cache use
 `ClusterClient::watch_cache_sharded` (see [Clusters](#clusters)).
 See [Cache Features](/features/cache/#7-keyed-watch) for the full
 contract.
@@ -1493,7 +1494,12 @@ let state_size = watch
 ```
 
 Needs `FEATURE_CACHE_WATCH_RETAINED`, a separate bit so an older watch-capable
-broker is never asked for state it would silently not deliver. Mutually
+broker is never asked for state it would silently not deliver. Through a
+`ClusterClient`, a move or a lost connection inside the state phase reopens the
+watch retained and the state phase starts over on the new owner, so values
+already handed out may arrive again. `watch.in_state_phase()` turns false once
+the state is complete; count against `retained_count()` only on a bare
+`Client` watch. Mutually
 exclusive with `from_offset`, because a resume already replays what a retained start
 shortcuts.
 
@@ -1906,7 +1912,10 @@ opens one watch per shard and merges them. The retained version sends
 `ShardedCacheWatchItem::StateComplete` once every shard's current values have
 arrived. A shard that moves is followed to its new owner and reported as
 `ShardedCacheWatchItem::ShardMoved`; its changes carry on from where the old
-owner left off. Needs `FEATURE_CACHE_SHARDS`. The [Python](/clients/python/#a-prefix-across-every-shard)
+owner left off. A lost connection is followed the same way, without a notice,
+and a move or loss inside the state phase restarts that shard's state phase,
+so `StateComplete` waits for its new state. A shard that cannot be followed
+ends with `ShardClosed`, whose `error` says why. Needs `FEATURE_CACHE_SHARDS`. The [Python](/clients/python/#a-prefix-across-every-shard)
 and [TypeScript](/clients/typescript/#a-prefix-across-every-shard) bindings wrap it, with the same items.
 
 ## Connection Management
