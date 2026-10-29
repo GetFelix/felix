@@ -153,7 +153,9 @@ sequenceDiagram
     B->>L: cache_put_if absent, with TTL
     B->>L: take epoch 8, rewrite the lease with it
     B->>O: publish_if claim record, epoch 8, at the tail
-    B->>S: read the latest snapshot and restore it
+    B->>S: read the latest snapshot manifest
+    B->>O: read the last output, compute the fold
+    B->>S: read the chunks and restore them
     B->>I: subscribe_from the next input
     B->>O: publish_if outputs at the tail
     Note over A: node A wakes up
@@ -277,17 +279,19 @@ A new owner picks a workload up in this order.
 
 1. Append the claim record, as above.
 2. Read the latest manifest on `wl.<id>.snap`, passing over chunk records, and
-   stop if its last record is from a later epoch than the owner's own. With no
-   snapshot the workload starts from its initial state at input offset 0.
-3. Restore the snapshot: read each chunk at the offset the manifest names,
-   check its sha256, and hand the chunks to `restore` on a fresh instance. A
-   chunk that does not match its hash fails the workload.
-4. Read the last output or rejection record on `wl.<id>.out`, passing over
+   stop if its last record is from a later epoch than the owner's own. No chunk
+   is read yet.
+3. Read the last output or rejection record on `wl.<id>.out`, passing over
    claims and failures, and stop if it is from a later epoch.
-5. Compute the **fold**: which input offset to subscribe from (the snapshot's
-   input offset plus one), and which outputs the stream already holds, those at
-   or before the last record's input offset and index, starting at the
-   snapshot's output tail.
+4. Compute the **fold**: which input offset to subscribe from (the snapshot's
+   input offset plus one, or 0 with no snapshot), and which outputs the stream
+   already holds, those at or before the last record's input offset and index,
+   starting at the snapshot's output tail. The fold's checks below run here,
+   before any chunk is read.
+5. With a snapshot, restore it: read each chunk at the offset the manifest
+   names, check its sha256, and hand the chunks to `restore` on a fresh
+   instance. A chunk that does not match its hash fails the workload. Without
+   one the workload starts from its initial state.
 6. Subscribe to the input with `subscribe_from`. For inputs the stream already
    has outputs for, run `step`, compare each output with the record in its place,
    and drop it. From the first missing output on, write.
@@ -306,13 +310,13 @@ take offsets that hold no output.
 ```mermaid
 flowchart TD
     A["Claim record appended"] --> B["Read the latest snapshot manifest"]
-    B --> C{"A snapshot?"}
+    B --> F["Read the last output record on wl.id.out"]
+    F --> G["Fold: next input, which outputs are already written, consistency checks"]
+    G --> C{"A snapshot?"}
     C -- yes --> D["Read its chunks, check each sha256, restore on a fresh instance"]
     C -- no --> E["Start from the initial state at input 0"]
-    D --> F["Read the last output record on wl.id.out"]
-    E --> F
-    F --> G["Fold: next input, and which outputs are already written"]
-    G --> H["subscribe_from the next input"]
+    D --> H["subscribe_from the next input"]
+    E --> H
     H --> I{"Output already on the stream?"}
     I -- yes --> J["Run step, compare with the record in its place, drop the output"]
     I -- no --> K["Run step, publish_if the output"]

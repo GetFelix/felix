@@ -146,7 +146,8 @@ instructions execute, roughly one unit per instruction, and traps when it reache
 zero. It counts instructions and not time, so the same code on the same input burns
 the same fuel on any machine. felixd uses it to fail a runaway step at the same
 point on every node and to bound a call that would otherwise run for ever. Fuel is
-set again before each call. Running out in a `step` fails the workload, in a snapshot
+set again before each step; a snapshot or a restore gets one budget for all of
+its calls. Running out in a `step` fails the workload, in a snapshot
 skips the snapshot, and in a restore leaves the workload to an operator. See
 [What fuel is](/built-on-felix/felixd/contract/#what-fuel-is).
 
@@ -286,8 +287,9 @@ each chunk.
 
 ### Resume
 
-What a new owner does to pick a workload up: claim, restore the latest snapshot,
-read the last output, compute the fold and subscribe to the input. See
+What a new owner does to pick a workload up: claim, read the latest snapshot
+manifest and the last output, compute the fold, restore the snapshot if there is
+one, and subscribe to the input. See
 [Resume](/built-on-felix/felixd/how-it-works/#resume).
 
 ### Fold
