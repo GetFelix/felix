@@ -244,7 +244,7 @@ expectations=(
 # configurations with promotions on suspicion are here too: they outgrow a
 # runner's disk exhaustively, so sampling them is what is left, as are the
 # crashed leader's refusal beside a seat (with and without the fence ids'
-# comparison) and beside a staged copy.
+# comparison) and beside a staged copy, voting or not.
 walks=(
   "FelixShardWalkSpares pass"
   "FelixShardWalkSparesSeatEarly violates AckedHeldByLeader"
@@ -266,6 +266,8 @@ walks=(
   "FelixShardShortCopySeatAnyKeys pass"
   "FelixShardShortCopySeatAnySet violates AckedHeldByLeader"
   "FelixShardShortCopyStaged pass"
+  "FelixShardShortCopyStagedVotes pass"
+  "FelixShardShortCopyStagedVotesSetOnly violates AckedHeldByLeader"
 )
 registered=("${expectations[@]}")
 if [ "$mode" = simulate ]; then registered=("${walks[@]}"); fi

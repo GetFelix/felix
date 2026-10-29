@@ -88,6 +88,8 @@ jobs:
             configs: FelixShardShortCopySeat FelixShardShortCopySeatAnySet
           - family: short-copy-keys
             configs: FelixShardShortCopySeatAnyKeys FelixShardShortCopyStaged
+          - family: short-copy-staged-votes
+            configs: FelixShardShortCopyStagedVotes FelixShardShortCopyStagedVotesSetOnly
     steps:
       - name: Checkout
         uses: actions/checkout@v7
