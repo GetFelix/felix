@@ -11,8 +11,8 @@
 //! chosen from that. Only an error without a code (an older broker, or a
 //! failure inside the client) falls back to reading the message.
 use felix_client::{
-    AuthError as ClientAuthError, BrokerError, CommitError as ClientCommitError, NotLeaderError,
-    PublishRefusalReason, PublishRefused, SubscribeCursorError, SubscriptionLost,
+    AckLost, AuthError as ClientAuthError, BrokerError, CommitError as ClientCommitError,
+    NotLeaderError, PublishRefusalReason, PublishRefused, SubscribeCursorError, SubscriptionLost,
 };
 use felix_wire::RetryClass;
 use pyo3::create_exception;
@@ -182,6 +182,11 @@ pub(crate) fn classify(err: &anyhow::Error) -> Classified {
         .any(|e| e.downcast_ref::<SubscribeCursorError>().is_some())
     {
         out.kind = Kind::Cursor;
+        return out;
+    }
+    // Written, but the connection failed before the ack came back.
+    if err.chain().any(|e| e.is::<AckLost>()) {
+        out.kind = Kind::OutcomeUnknown;
         return out;
     }
     // A subscription whose broker went away, which a caller retries against

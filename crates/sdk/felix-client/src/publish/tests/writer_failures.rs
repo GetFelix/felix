@@ -492,3 +492,56 @@ async fn a_refused_publish_leaves_the_stream_serving_later_ones() -> Result<()> 
     }
     Ok(())
 }
+
+/// **A publish written before the connection dropped is "outcome unknown",
+/// not a plain transport error.** The broker may have appended it.
+#[tokio::test]
+async fn a_publish_written_then_dropped_reports_a_lost_ack() -> Result<()> {
+    let (server_config, cert) = build_server_config()?;
+    let transport = TransportConfig::default();
+    let server = QuicServer::bind("127.0.0.1:0".parse()?, server_config, transport.clone())?;
+    let addr = server.local_addr()?;
+
+    let server_task = tokio::spawn(async move {
+        let connection = server.accept().await?;
+        let (_send, mut recv) = connection.accept_bi().await?;
+        let mut scratch = BytesMut::new();
+        crate::frame_io::read_frame_into(&mut recv, &mut scratch, false)
+            .await?
+            .context("missing publish frame")?;
+        connection.close(0u32.into(), b"going away");
+        Ok::<(), anyhow::Error>(())
+    });
+
+    let client = QuicClient::bind("0.0.0.0:0".parse()?, quinn_client_config(cert)?, transport)?;
+    let connection = client.connect(addr, "localhost").await?;
+    let (send, recv) = connection.open_bi().await?;
+    let (tx, rx) = mpsc::channel(4);
+    let writer_task = tokio::spawn(run_publisher_writer(send, recv, rx, 1024));
+
+    let (response, answer) = oneshot::channel();
+    tx.send(PublishRequest::Message {
+        message: Message::Publish {
+            shard: None,
+            tenant_id: "t1".to_string(),
+            namespace: "ns".to_string(),
+            stream: "s".to_string(),
+            payload: b"lost".to_vec(),
+            key: None,
+            request_id: Some(1),
+            ack: Some(AckMode::PerMessage),
+        },
+        ack: AckMode::PerMessage,
+        request_id: Some(1),
+        _permit: test_publish_permit(),
+        response,
+    })
+    .await
+    .context("send request")?;
+    let err = answer.await.context("response dropped")?.unwrap_err();
+    assert!(err.is::<crate::AckLost>(), "{err:#}");
+    drop(tx);
+    let _ = writer_task.await;
+    server_task.await??;
+    Ok(())
+}

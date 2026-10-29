@@ -64,7 +64,7 @@ fn every_code_from_the_entry_broker() {
         (ErrorCode::Unacknowledged, Next::Fail),
         (ErrorCode::Internal, Next::Fail),
         (ErrorCode::Storage, Next::Fail),
-        (ErrorCode::StaleClaim, BACKOFF),
+        (ErrorCode::StaleClaim, Next::Fail),
         (ErrorCode::Revoked, Next::Fail),
         (ErrorCode::StaleWidth, BACKOFF),
     ];
@@ -109,7 +109,10 @@ fn a_routed_retry_or_redirect_reroutes() {
     assert!(!route_went_stale(&coded(ErrorCode::Overloaded)));
     assert!(!route_went_stale(&coded(ErrorCode::Forbidden)));
     // Nor is a stale group claim: the leader answered, and knows the shard.
-    assert_eq!(next_step(&coded(ErrorCode::StaleClaim), routed()), BACKOFF);
+    assert_eq!(
+        next_step(&coded(ErrorCode::StaleClaim), routed()),
+        Next::Fail
+    );
     assert!(!route_went_stale(&coded(ErrorCode::StaleClaim)));
     assert_eq!(next_step(&coded(ErrorCode::StaleWidth), routed()), BACKOFF);
 }
@@ -269,4 +272,19 @@ fn an_enormous_deadline_does_not_overflow_the_clock() {
     let _ = std::time::Instant::now() + budget;
     let none = ReconnectPolicy::default().budget(Duration::from_secs(30));
     assert_eq!(none, Duration::from_secs(30));
+}
+
+/// **A stale claim is final even when the broker sends it as `retry`.**
+/// Resending cannot succeed, so the caller must not wait out the backoff.
+#[test]
+fn a_stale_claim_is_never_retried() {
+    let err = crate::error::refused(
+        "group ack failed",
+        "no such claim".into(),
+        Some(ErrorCode::StaleClaim),
+        Some(RetryClass::Retry),
+        None,
+    );
+    assert_eq!(next_step(&err, entry()), Next::Fail);
+    assert_eq!(next_step(&err, routed()), Next::Fail);
 }

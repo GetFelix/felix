@@ -186,6 +186,19 @@ pub struct SubscriptionLost {
     pub reason: String,
 }
 
+/// A publish was written, but the connection failed before its
+/// acknowledgement arrived.
+///
+/// The broker may have appended the record, so the outcome is unknown, the
+/// same fact an `outcome_unknown` retry class states. Resend only an
+/// idempotent publish. Recover it from an `anyhow::Error` with `downcast_ref`.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("publish acknowledgement lost, the write may have been applied: {reason}")]
+pub struct AckLost {
+    /// What the transport reported.
+    pub reason: String,
+}
+
 /// A durable-stream subscription fell behind and records were dropped,
 /// by the broker's queue for it or by this client's own.
 ///
@@ -251,7 +264,13 @@ pub(crate) fn refused(
 ) -> anyhow::Error {
     match code {
         Some(code) => BrokerError {
-            retry: retry.unwrap_or_else(|| code.default_retry()),
+            // The group no longer knows the claim, so sending it again cannot
+            // succeed whatever class the broker attached.
+            retry: if code == ErrorCode::StaleClaim {
+                RetryClass::Fatal
+            } else {
+                retry.unwrap_or_else(|| code.default_retry())
+            },
             code,
             detail,
             message,

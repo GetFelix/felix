@@ -137,7 +137,11 @@ pub(crate) async fn run_publisher_writer_with_limit(
                         .pub_items_out_err
                         .fetch_add(stale.item_count, Ordering::Relaxed);
                 }
-                let _ = stale.response.send(Err(anyhow::anyhow!(message.clone())));
+                // Written but unanswered: the broker may have applied it.
+                let _ = stale.response.send(Err(crate::AckLost {
+                    reason: message.clone(),
+                }
+                .into()));
             }
             drain_publish_queue(&mut rx, &message).await;
             return Err(anyhow::anyhow!(message));

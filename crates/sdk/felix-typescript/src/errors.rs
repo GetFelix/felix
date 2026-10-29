@@ -25,8 +25,8 @@
 //! detail rather than something a caller parses.
 
 use felix_client::{
-    AuthError, BrokerError, CommitError, NotLeaderError, PublishRefusalReason, PublishRefused,
-    SubscribeCursorError, SubscriptionLost,
+    AckLost, AuthError, BrokerError, CommitError, NotLeaderError, PublishRefusalReason,
+    PublishRefused, SubscribeCursorError, SubscriptionLost,
 };
 use felix_wire::RetryClass;
 use napi::{Error, Status};
@@ -136,6 +136,8 @@ pub(crate) fn encode(err: &anyhow::Error) -> String {
         .any(|e| e.downcast_ref::<SubscribeCursorError>().is_some())
     {
         KIND_CURSOR
+    } else if err.chain().any(|e| e.is::<AckLost>()) {
+        KIND_OUTCOME_UNKNOWN
     } else if err
         .chain()
         .any(|e| e.downcast_ref::<SubscriptionLost>().is_some())

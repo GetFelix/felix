@@ -260,10 +260,11 @@ pub(crate) struct Attempt {
 /// - `retry` / `redirect` (`shard_unavailable`, `draining`, `not_leader`):
 ///   nothing was applied. Through a cached route that route is stale, so drop
 ///   it and go through the entry broker at once; from the entry broker itself,
-///   back off, since it is the cluster that has to settle. `stale_claim` and
-///   `stale_width` are `retry` too, but say nothing about the route: back
-///   off. A `stale_width` publish has already dropped the width it was
-///   routed by, so the retry asks for the stream's current one.
+///   back off, since it is the cluster that has to settle. `stale_width` is
+///   `retry` too, but says nothing about the route: back off. A `stale_width`
+///   publish has already dropped the width it was routed by, so the retry
+///   asks for the stream's current one. `stale_claim` is made `fatal` when the
+///   error is built, since the group no longer knows the claim.
 /// - `retry_after` (`overloaded`, `not_found`): back off, for at least as long
 ///   as the broker asked; `not_found` only within [`NOT_FOUND_GRACE`].
 ///
