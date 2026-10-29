@@ -126,14 +126,23 @@ struct State {
 
 impl Shared {
     /// When a datagram on a flow of `generation` may leave, or `None` to
-    /// discard it.
-    fn verdict(&self, generation: u64) -> Option<Instant> {
+    /// discard it. A discard is logged with the flow and the reason, so a
+    /// connect that times out can be traced to the fault that ate it.
+    fn verdict(&self, flow: &str, generation: u64) -> Option<Instant> {
         let state = self.state.lock().expect("interposer lock");
         let now = Instant::now();
-        if generation != state.generation || state.drop_until.is_some_and(|until| now < until) {
-            return None;
-        }
-        Some(state.stall_until.map_or(now, |until| until.max(now)))
+        let why = if generation != state.generation {
+            "flow killed by a reset"
+        } else if state.drop_until.is_some_and(|until| now < until) {
+            "link dropping"
+        } else {
+            return Some(state.stall_until.map_or(now, |until| until.max(now)));
+        };
+        eprintln!(
+            "interposer: discard on {flow}: {why} (flow generation {generation}, current {})",
+            state.generation
+        );
+        None
     }
 
     fn generation(&self) -> u64 {
@@ -145,6 +154,9 @@ type Queued = (Instant, Vec<u8>);
 
 struct Flow {
     generation: u64,
+    /// Destination connection ID of the Initial that opened the flow, if it
+    /// was one. Retransmissions repeat it; a new connection picks a new one.
+    initial_dcid: Option<Vec<u8>>,
     to_upstream: mpsc::UnboundedSender<Queued>,
 }
 
@@ -160,19 +172,45 @@ async fn serve(listener: Arc<UdpSocket>, shared: Arc<Shared>, mut stopped: watch
                 Err(_) => continue,
             },
         };
+        let datagram = &buf[..len];
+        // A reset leaves the flow dead for good, but a new connection can reuse
+        // the source port. Its Initial, with a connection ID the dead flow never
+        // saw, starts a fresh flow; anything else on the dead flow stays dropped.
+        if let (Some(old), Some(dcid)) = (flows.get(&source), initial_dcid(datagram))
+            && old.generation != shared.generation()
+            && old.initial_dcid.as_deref() != Some(dcid)
+        {
+            flows.remove(&source);
+        }
         let flow = match flows.get(&source) {
             Some(flow) => flow,
             None => match open(source, &listener, &shared, stopped.clone()).await {
-                Ok(flow) => flows.entry(source).or_insert(flow),
+                Ok(mut flow) => {
+                    flow.initial_dcid = initial_dcid(datagram).map(<[u8]>::to_vec);
+                    flows.entry(source).or_insert(flow)
+                }
                 // Out of sockets; the client retransmits, and the next
                 // datagram tries again.
                 Err(_) => continue,
             },
         };
-        if let Some(due) = shared.verdict(flow.generation) {
+        if let Some(due) = shared.verdict(&source.to_string(), flow.generation) {
             let _ = flow.to_upstream.send((due, buf[..len].to_vec()));
         }
     }
+}
+
+/// The destination connection ID of a QUIC v1 Initial, or `None` for any other
+/// datagram.
+fn initial_dcid(datagram: &[u8]) -> Option<&[u8]> {
+    let [first, version @ .., dcid_len] = datagram.get(..6)? else {
+        return None;
+    };
+    // Long header, fixed bit set, packet type Initial (0b00).
+    if first & 0xf0 != 0xc0 || version != [0, 0, 0, 1] {
+        return None;
+    }
+    datagram.get(6..6 + usize::from(*dcid_len))
 }
 
 /// Start a flow for `source`: its own upstream socket, a queue each way, and a
@@ -215,6 +253,7 @@ async fn open(
 
     tokio::spawn(replies(
         upstream,
+        source,
         generation,
         to_source,
         Arc::clone(shared),
@@ -222,6 +261,7 @@ async fn open(
     ));
     Ok(Flow {
         generation,
+        initial_dcid: None,
         to_upstream,
     })
 }
@@ -229,6 +269,7 @@ async fn open(
 /// Read what the broker sends back on one flow and queue it for the client.
 async fn replies(
     upstream: Arc<UdpSocket>,
+    source: SocketAddr,
     generation: u64,
     to_source: mpsc::UnboundedSender<Queued>,
     shared: Arc<Shared>,
@@ -243,7 +284,7 @@ async fn replies(
                 Err(_) => continue,
             },
         };
-        if let Some(due) = shared.verdict(generation)
+        if let Some(due) = shared.verdict(&format!("replies to {source}"), generation)
             && to_source.send((due, buf[..len].to_vec())).is_err()
         {
             return;
