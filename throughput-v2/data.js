@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793261830835,
+  "lastUpdate": 1793266927692,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -39000,6 +39000,58 @@ window.BENCHMARK_DATA = {
             "range": "32072.88",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1203811.05\nmean: 1214402.06\nstdev: 32072.88\ncv: 2.64%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c7635fd8b49a574e9020802ff33bc5d070903c32",
+          "message": "fix(replication): undoing a replacement beside an even set fences the leader first (#1628) (#1632)\n\nUndoing a replacement could drop a joining copy and leave a record acknowledged on the leader and that copy alone on the leader alone. Every serving-path undo now goes through undo_or_fence (placement/moves.rs, restore.rs): on a fenced stream where dropping the joining copy leaves an even set, the leader is fenced first (MoveStep::UndoFence). In seat_after_fence, the copy is dropped only once the drained report at the current generation has the leader plus enough followers at its tail to be a majority of the set left; until then it waits, and at the fence timeout the leader serves again with the copy kept. A fenced restore that stalls is dropped on the first such report. An operator cancel beside an even set writes the fence with no move reason, and placement then always drops that copy rather than seating it. Placement only; no broker gating.\n\nSpec: docs/formal/FelixShard.tla adds UndoFence and Undo next to SeatFence. FelixShardFencedAckUndoPair passes AckedOnMajority (11.1M states, weight 26); FelixShardFencedAckUndoPairUnfenced pins the old behaviour as a violation. The model is RF 2 only; the majority rule for larger sets is argued in docs/replication-design.md.\n\nCloses #1628.",
+          "timestamp": "2026-10-29T02:37:20-07:00",
+          "tree_id": "b25b1d27a56f20be16c052b35051df70be21a82e",
+          "url": "https://github.com/GetFelix/felix/commit/c7635fd8b49a574e9020802ff33bc5d070903c32"
+        },
+        "date": 1793266927117,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 353403.8,
+            "range": "8230.28",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 353403.80\nmean: 351158.27\nstdev: 8230.28\ncv: 2.34%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 353403.8,
+            "range": "8230.28",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 353403.80\nmean: 351158.27\nstdev: 8230.28\ncv: 2.34%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82519.45,
+            "range": "968.50",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82519.45\nmean: 81949.94\nstdev: 968.50\ncv: 1.18%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 825194.5,
+            "range": "9684.96",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 825194.50\nmean: 819499.34\nstdev: 9684.96\ncv: 1.18%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
