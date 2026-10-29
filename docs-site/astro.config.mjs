@@ -156,6 +156,7 @@ export default defineConfig({
               items: [
                 { label: 'Overview', slug: 'built-on-felix/felixd' },
                 { label: 'Submitting work', slug: 'built-on-felix/felixd/submitting-work' },
+                { label: 'Example workloads', slug: 'built-on-felix/felixd/examples' },
                 { label: 'How it works', slug: 'built-on-felix/felixd/how-it-works' },
                 { label: 'Workload contract', slug: 'built-on-felix/felixd/contract' },
                 { label: 'Record formats', slug: 'built-on-felix/felixd/records' },
