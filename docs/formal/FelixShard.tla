@@ -363,7 +363,6 @@ CONSTANTS
     ReportFromAnswers, \* whether the report counts a follower by its answers, or by its log
     ReportFloor,    \* whether the report never names a follower short of the leader's inherited log
     Grow,           \* whether placement may add a spare to the set with nobody leaving
-    LoweredFactor,  \* whether the replication factor is one below the starting set
     PromoteDestination, \* whether a failover may name a move's destination leader
     Counters,       \* whether the shard is a cache shard with a counter log beside its log
     CounterCatchUp, \* whether the fence takes the counter log furthest ahead too
@@ -398,7 +397,7 @@ ASSUME PromoteDestination \in BOOLEAN
 \* Only a promotion or a replacement changes the set, so spares are checked
 \* with follower acks (no handoff, no cancel) and no staged copy.
 ASSUME Spares \subseteq Brokers /\ ReplaceOnPromote \in BOOLEAN /\ SeatHoldsCopy \in BOOLEAN
-ASSUME Grow \in BOOLEAN /\ LoweredFactor \in BOOLEAN
+ASSUME Grow \in BOOLEAN
 ASSUME Spares /= {} => AckByFollowers /\ ~StageMove /\ ~Handoff /\ ~Cancel
 ASSUME ReplaceOnPromote => Spares /= {} /\ MaxMoves = 0
 \* No lease anywhere on a `Quorum` write's path: not at admission (see
@@ -676,6 +675,10 @@ QuorumSet == IF LearnerVotes THEN Brokers ELSE ReplicaSet
 \* the newcomer alone, so a failover keeps it (`keep_replicas`). Beside an
 \* odd number every majority still holds a majority of the old set.
 Counted == ReplicaSet \cup (IF Cardinality(ReplicaSet) % 2 = 0 THEN joining ELSE {})
+
+\* `LoweredFactor`: the replication factor is one below the starting set.
+\* A definition, so configurations without it need not name it.
+LoweredFactor == FALSE
 
 \* The replication factor, and a set above it with nothing else in progress.
 \* Without `Grow` or `LoweredFactor` only `SeatDropped` makes a set larger.
@@ -2009,8 +2012,9 @@ Seat(v, j, views) ==
     /\ out' = out \cup leaving
     /\ joining' = {}
     /\ joinedAt' = 0
-    \* `leaving` stays, for `SeatDropped`.
-    /\ UNCHANGED << moves, leaving >>
+    \* `leaving` stays for `SeatDropped`, which reads it only in a set of two.
+    /\ leaving' = IF Cardinality(Brokers \ out') = 2 THEN leaving ELSE {}
+    /\ UNCHANGED moves
 
 \* The followers report `r` lets a trim drop: every other follower is in it
 \* caught up (`trim_candidate` in placement/moves.rs).

@@ -16,7 +16,9 @@
 # configuration takes (`weights` below), so CI can split the set across
 # parallel jobs. `TLA_QUICK=1` checks only the shorter ones (see below).
 # `TLA_COVERAGE=1` prints how often each action fired, to show a configuration
-# reaches the behaviour it was written for.
+# reaches the behaviour it was written for. Operator names in place of `1`
+# (`TLA_COVERAGE="TrimSet Promote"`) also print the count for each expression
+# in those FelixShard.tla definitions, which shows a branch was taken.
 #
 # `scripts/check_tla.sh --simulate` runs the long random walks instead (`walks`
 # below): TLC's simulation mode, each configuration for `TLA_SIM_MINUTES`
@@ -323,8 +325,8 @@ weights=(
   "FelixShardRealMargins 4"
   "FelixShardRealMarginsLease 4"
   "FelixShardFencedAckSeat 3"
-  "FelixShardFencedAckSeatPair 1"
-  "FelixShardFencedAckTrim 1"
+  "FelixShardFencedAckSeatPair 8"
+  "FelixShardFencedAckTrim 9"
   "FelixShardFollowerLabels 3"
   "FelixShardHandoff 3"
   "FelixShardIdempotentHandoff 3"
@@ -415,6 +417,15 @@ for entry in "${selected[@]}"; do
   # How often each action fired, from the report TLC prints at the end.
   if [ -n "${TLA_COVERAGE:-}" ]; then
     echo "$output" | grep -E '^<[A-Za-z0-9_]+ line' | tail -n 80 || true
+    for op in $TLA_COVERAGE; do
+      [ "$op" = 1 ] && continue
+      # The definition runs from its first line to the next blank one.
+      range="$(awk -v op="$op" '$0 ~ "^" op "(\\(| ==)" { s = NR } s && !e && NR > s && /^$/ { e = NR } END { print s, e }' "$SPEC_DIR/FelixShard.tla")"
+      echo "-- $op (FelixShard.tla lines $range)"
+      echo "$output" | awk -v r="$range" 'BEGIN { split(r, a, " ") }
+        match($0, /line [0-9]+, col [0-9]+ to line [0-9]+, col [0-9]+ of module FelixShard:/) {
+          split(substr($0, RSTART + 5), n, ","); if (n[1] + 0 >= a[1] && n[1] + 0 < a[2]) print }' | head -n 120 || true
+    done
   fi
   # A walk that ran out its budget without a violation is a clean run.
   clean=0

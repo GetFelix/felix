@@ -18,7 +18,7 @@ on:
         description: "Per-job timeout, in minutes (at most 360)"
         default: "60"
       tla_coverage:
-        description: "Non-empty prints how often each action fired (TLC -coverage)"
+        description: "Non-empty prints how often each action fired (TLC -coverage); FelixShard.tla operator names also print their expression counts"
         required: false
         default: ""
 
