@@ -337,7 +337,7 @@ seconds.
 [needs-operator](/built-on-felix/felixd/terminology/#needs-operator) state, not
 failed: the limit can be raised and the workload resumed. Today that is a logged
 error on the node. It is not yet a recorded state
-([#73](https://github.com/GetFelix/felixd/issues/73)). Raising
+([#112](https://github.com/GetFelix/felixd/issues/112)). Raising
 `--snapshot-fuel` with `felixd run` for the same id writes a new spec, and the
 agent restarts the workload under it.
 

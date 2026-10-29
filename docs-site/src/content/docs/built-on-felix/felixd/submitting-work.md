@@ -289,6 +289,6 @@ built ([#17](https://github.com/GetFelix/felixd/issues/17)).
 | The module is built for contract 0.1, or a restore runs out of `snapshot_fuel` | [Needs operator](/built-on-felix/felixd/terminology/#needs-operator). The agent logs `the workload needs an operator, not running it`, and releases the lease if it held one. Nothing is marked failed | Rebuild against 0.2, or raise `--snapshot-fuel` and run `felixd run` again for the same id. The agent starts the workload when the spec changes |
 
 Needs-operator is only a log line on the agent that tried. It is not a recorded
-state ([#73](https://github.com/GetFelix/felixd/issues/73)), so `felixd check` does
+state ([#112](https://github.com/GetFelix/felixd/issues/112)), so `felixd check` does
 not show it. A workload that never starts producing, with no failure record, is
 worth looking for in the agents' logs.

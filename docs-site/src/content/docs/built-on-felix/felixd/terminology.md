@@ -126,7 +126,7 @@ A workload that no node can run through no fault of its own and that a person ha
 fix: a module built against contract 0.1, or a restore that ran out of
 `snapshot_fuel`. It is not marked failed. Today it is a logged error on the agent,
 and the agent leaves the workload alone until its spec changes. It is not yet a
-recorded state ([#73](https://github.com/GetFelix/felixd/issues/73)).
+recorded state ([#112](https://github.com/GetFelix/felixd/issues/112)).
 
 ### Failed and degraded
 
