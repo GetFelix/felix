@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793259550608,
+  "lastUpdate": 1793261830835,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -38948,6 +38948,58 @@ window.BENCHMARK_DATA = {
             "range": "51583.91",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1244703.24\nmean: 1221199.00\nstdev: 51583.91\ncv: 4.22%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "989a6d924682b88d6b69a705789d364eccd03c46",
+          "message": "fix(client): stale_claim is final, lost publish ack is outcome unknown (#1596) (#1631)\n\n* fix(client): stale_claim is final and a lost publish ack is an unknown outcome (#1596)\n\n* docs(client): regenerate resilient-clients examples (#1596)",
+          "timestamp": "2026-10-29T08:13:19Z",
+          "tree_id": "90782e90cf528aba6402733f997b27f45d9b825d",
+          "url": "https://github.com/GetFelix/felix/commit/989a6d924682b88d6b69a705789d364eccd03c46"
+        },
+        "date": 1793261830115,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 517872.47,
+            "range": "30158.06",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 517872.47\nmean: 532214.09\nstdev: 30158.06\ncv: 5.67%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 517872.47,
+            "range": "30158.06",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 517872.47\nmean: 532214.09\nstdev: 30158.06\ncv: 5.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 120381.1,
+            "range": "3207.29",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 120381.10\nmean: 121440.21\nstdev: 3207.29\ncv: 2.64%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1203811.05,
+            "range": "32072.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1203811.05\nmean: 1214402.06\nstdev: 32072.88\ncv: 2.64%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
