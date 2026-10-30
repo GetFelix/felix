@@ -539,9 +539,13 @@ PromiseFromRoutes == FALSE
 \* with the fence ids naming exactly them. Without it, only the generation
 \* and the last record are checked.
 \* `ShortCopyChecksKeys`: of that, the fence ids naming exactly the two.
+\* `FenceIdsSetOnly`: a failover's fence ids leave out the old set's staged
+\* copy, the fix #1635 proposed. Unsafe beside a leader that counts that copy
+\* (FelixShardShortCopyStagedVotesSetOnly.cfg).
 RefuseShortCopy == FALSE
 ShortCopyChecksSet == TRUE
 ShortCopyChecksKeys == TRUE
+FenceIdsSetOnly == FALSE
 
 \* There only the leader loses records, so a report may count followers by
 \* their logs.
@@ -1501,10 +1505,11 @@ SeatDropped == IF Cardinality(Brokers \ out) = 2 THEN leaving \cap out ELSE {}
 \* set and the new one the last report named, and every old member, which is
 \* named by inheritance or with no identity where the report names none
 \* (`report_storage_ids` in placement/replica_positions.rs, #1486). The old
-\* set is the previous assignment's, a joining or staged copy included. None
-\* when the last report named none.
+\* set is the previous assignment's, a joining or staged copy included, or
+\* without the staged copy under `FenceIdsSetOnly`. None when the last report
+\* named none.
 FenceIds(new) ==
-    LET old == Brokers \ out
+    LET old == Brokers \ (out \cup (IF FenceIdsSetOnly THEN staged ELSE {}))
     IN IF named = {} THEN {}
        ELSE (named \cap (old \cup new)) \cup { m \in old : registered[m] /= 0 }
 

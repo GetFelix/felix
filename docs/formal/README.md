@@ -1072,7 +1072,7 @@ seat's generation is reported, the shape of #1486. `FelixShardShortCopyStaged.cf
 is a failover beside a staged destination, #1635: there the code's fence ids
 name the staged copy and the exception refuses, so the configuration drops
 the ids' comparison to check that naming only the set that acknowledged
-would be safe. Both reach an open on the exception: a temporary invariant
+would be safe while the staged copy never votes. Both reach an open on the exception: a temporary invariant
 saying no leader opens counting a short copy's answer fails in each. Neither
 finishes exhaustively in the time CI has (past 30M distinct states, start
 records on, without an end in sight), so they are nightly walks, sampled.
@@ -1086,9 +1086,23 @@ Dropping the whole set check (`ShortCopyChecksSet`) loses a record:
 shape it drops the comparison from). No failover there shrinks the
 voting set, so a fencer with a set of two at the generation after the one the
 crashed leader led has the two it led; the comparison only refuses more,
-around copies that never counted (a staged destination, a dropped copy a
-report still names). It stays in the code against placement that would
-shrink a set at a failover.
+around copies outside the set (a staged destination, a dropped copy a report
+still names). It stays in the code against placement that would shrink a set
+at a failover.
+
+A staged destination can still count. The broker leaves it out of the quorum
+only if the leading process saw it added (`staged_learner`), so a leader
+restarted cleanly at that generation counts it toward a `Quorum` write
+(`LearnerVotes`). `FelixShardShortCopyStagedVotes.cfg` is that shape at RF 2:
+the set is `{a, b}` with c staged, a acknowledges a write on a and c, crashes
+without it, and the failover sets `{b, a}` and drops c. The code's fence ids
+still name c, so a refuses b's fence and the shard stays closed until
+`abandon`. It passes, and that refusal is what keeps the write. Its twin
+`FelixShardShortCopyStagedVotesSetOnly.cfg` takes the fix #1635 proposed, ids
+without the staged copy (`FenceIdsSetOnly`), and violates
+`AckedHeldByLeader`: a answers, and b opens without the write. Both are
+nightly walks. The fix waits until every leader treats a staged copy the same
+way.
 
 ### The ordering that is load-bearing
 
@@ -1271,6 +1285,8 @@ per family:
 | `FelixShardShortCopySeat.cfg` | a crashed leader's refusal and its set-of-two exception after an RF 2 seat (see [A crashed leader's own refusal](#a-crashed-leaders-own-refusal)) | pass `AckedHeldByLeader`, `AckedAgree`, `NoTruncationBelowHwm` |
 | `FelixShardShortCopySeatAnySet.cfg` | its twin, the exception without its set check | violate `AckedHeldByLeader` |
 | `FelixShardShortCopyStaged.cfg` | the refusal beside a staged destination, the ids' comparison dropped | pass the same invariants |
+| `FelixShardShortCopyStagedVotes.cfg` | the refusal beside a staged destination that votes, the code's fence ids | pass the same invariants |
+| `FelixShardShortCopyStagedVotesSetOnly.cfg` | its twin, fence ids without the staged copy (#1635's proposed fix) | violate `AckedHeldByLeader` |
 | `FelixShardFencedCrashUnprobed.cfg` | a follower crash with a new identity, the first leader not yet knowing either follower's identity (the table above). Per push | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `NoTruncationBelowHwm` |
 | `FelixShardFencedCrashCountsUnnamed.cfg` | its twin, counting a replica the report named no identity for. Per push | violate `AckedHeldByLeader` |
 
