@@ -15,34 +15,34 @@ It is a base for bindings: any language with a C FFI can bind to it, C# included
 ## Install
 
 Every GitHub release attaches an archive per platform, with a `.sha256` beside
-it: `libfelix-v0.6.2-<rid>.tar.gz` for `linux-x64`, `linux-arm64`, `osx-x64` and
-`osx-arm64`, and `libfelix-v0.6.2-<rid>.zip` for `win-x64` and `win-arm64`.
+it: `libfelix-v0.7.0-preview.1-<rid>.tar.gz` for `linux-x64`, `linux-arm64`, `osx-x64` and
+`osx-arm64`, and `libfelix-v0.7.0-preview.1-<rid>.zip` for `win-x64` and `win-arm64`.
 Later releases follow the same naming with their own tag. With the GitHub CLI:
 
 ```bash
 gh release download -R GetFelix/felix -p 'libfelix-*-linux-x64.*'
 ```
 
-Or with a plain URL, here for v0.6.2 on Linux x64:
+Or with a plain URL, here for v0.7.0-preview.1 on Linux x64:
 
 ```bash
-curl -fLO https://github.com/GetFelix/felix/releases/download/v0.6.2/libfelix-v0.6.2-linux-x64.tar.gz
-curl -fLO https://github.com/GetFelix/felix/releases/download/v0.6.2/libfelix-v0.6.2-linux-x64.tar.gz.sha256
+curl -fLO https://github.com/GetFelix/felix/releases/download/v0.7.0-preview.1/libfelix-v0.7.0-preview.1-linux-x64.tar.gz
+curl -fLO https://github.com/GetFelix/felix/releases/download/v0.7.0-preview.1/libfelix-v0.7.0-preview.1-linux-x64.tar.gz.sha256
 ```
 
 Check the checksum, then unpack (on macOS use `shasum -a 256 -c`; on Windows
 compare `Get-FileHash` with the `.sha256` file and use `Expand-Archive`):
 
 ```bash
-sha256sum -c libfelix-v0.6.2-linux-x64.tar.gz.sha256
-tar xzf libfelix-v0.6.2-linux-x64.tar.gz
-cd libfelix-v0.6.2-linux-x64
+sha256sum -c libfelix-v0.7.0-preview.1-linux-x64.tar.gz.sha256
+tar xzf libfelix-v0.7.0-preview.1-linux-x64.tar.gz
+cd libfelix-v0.7.0-preview.1-linux-x64
 ```
 
 The archive holds:
 
 ```text
-libfelix-v0.6.2-linux-x64/
+libfelix-v0.7.0-preview.1-linux-x64/
   include/felix.h
   lib/            libfelix.so and libfelix.a (.dylib on macOS; felix.dll,
                   felix.dll.lib and felix.lib on Windows)
