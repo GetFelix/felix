@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793335852650,
+  "lastUpdate": 1793345258840,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -39728,6 +39728,58 @@ window.BENCHMARK_DATA = {
             "range": "9874.02",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1127999.85\nmean: 1131517.73\nstdev: 9874.02\ncv: 0.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "56031313723915984f38cb911216af84e4db44b0",
+          "message": "feat(client)!: make the cluster-aware client the default Rust client (#1470) (#1658)\n\n* feat(client)!: make the cluster-aware client the default Rust client (#1470)\n\nClient is now the cluster-aware client (was ClusterClient); the\nsingle-connection type is Connection. Python, TypeScript, C and C# already\nexposed the cluster client as Client, so only Rust callers change.\n\n* docs: fix single-connection references and add the rename to the 0.7 upgrade notes (#1470)",
+          "timestamp": "2026-10-30T00:22:29-07:00",
+          "tree_id": "338046838a4714d5944c1d8e97842585c596e60f",
+          "url": "https://github.com/GetFelix/felix/commit/56031313723915984f38cb911216af84e4db44b0"
+        },
+        "date": 1793345258001,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 347259.87,
+            "range": "14088.70",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 347259.87\nmean: 346257.97\nstdev: 14088.70\ncv: 4.07%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 347259.87,
+            "range": "14088.70",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 347259.87\nmean: 346257.97\nstdev: 14088.70\ncv: 4.07%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80354.11,
+            "range": "609.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80354.11\nmean: 80190.74\nstdev: 609.26\ncv: 0.76%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 803541.13,
+            "range": "6092.62",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 803541.13\nmean: 801907.41\nstdev: 6092.62\ncv: 0.76%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
