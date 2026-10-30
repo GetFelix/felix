@@ -211,7 +211,7 @@ expectations=(
   "FelixHeadTrimApplyOnStore violates NeverMoreThanAsked"
   "FelixHeadTrimDeleteAboveCommit violates NothingLostAboveFloor"
   "FelixHeadTrimUnconditional violates StaleTrimRefused"
-  "FelixHeadTrimResumeAtEarliest violates StaleTrimRefused"
+  "FelixHeadTrimHiddenTrims violates StaleTrimRefused"
   "FelixShardFencedAckTwoPromotionsStart pass"
   "FelixShardFencedAckStagedMoveDestination violates AckedHeldByLeader"
   "FelixShardFencedAckMoveShort pass"

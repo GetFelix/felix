@@ -15,10 +15,12 @@
 (*                                                                         *)
 (* Two lease holders write to the stream, as felixd does: epoch 1, then    *)
 (* epoch 2 after a takeover. Every write and trim names the tail its       *)
-(* holder expects. A new holder's first action is a fenced write, and it   *)
-(* trims only once that write is acknowledged. A holder that learns the    *)
-(* tail again reads from where it last was; a record from a newer epoch,   *)
-(* or a read refused as trimmed, tells it it has lost the lease.           *)
+(* holder expects and carries its epoch. A new holder's first action is a  *)
+(* fenced write, and it trims only once that write is acknowledged. A      *)
+(* holder that learns the tail again reads the committed records from      *)
+(* where it last was, or from the floor; a record from a newer epoch tells *)
+(* it it has lost the lease. Readers see trim records and the epoch on     *)
+(* them.                                                                   *)
 (*                                                                         *)
 (* NoReadBelowAckedTrim  -- the serving leader never serves a record below *)
 (*                          an acknowledged trim's floor.                  *)
@@ -40,8 +42,11 @@
 (*   DeleteAboveCommit -- deletion follows the floor of every stored trim, *)
 (*                        committed or not.                               *)
 (*   Unconditional     -- a trim lands at whatever the tail is.            *)
-(*   ResumeAtEarliest  -- a holder whose read is refused as trimmed        *)
-(*                        resumes at the floor instead of stepping down.  *)
+(*   HiddenTrims       -- readers skip trim records, as the design first   *)
+(*                        had it. A new holder that trimmed past its own   *)
+(*                        fenced write leaves nothing a stale holder can   *)
+(*                        see, and the stale holder writes and trims after *)
+(*                        it.                                              *)
 (*                                                                         *)
 (* Leadership is Raft-shaped, as in FelixAtomicCommit.tla: a candidate at  *)
 (* least as up to date as a majority takes the next generation and writes  *)
@@ -62,11 +67,11 @@ CONSTANTS
     ApplyOnStore,
     DeleteAboveCommit,
     Unconditional,
-    ResumeAtEarliest
+    HiddenTrims
 
 ASSUME /\ Local \in BOOLEAN /\ FloorFromBase \in BOOLEAN /\ ApplyOnStore \in BOOLEAN
        /\ DeleteAboveCommit \in BOOLEAN /\ Unconditional \in BOOLEAN
-       /\ ResumeAtEarliest \in BOOLEAN
+       /\ HiddenTrims \in BOOLEAN
 
 VARIABLES
     log,        \* each broker's log; positions below `base` are deleted and kept only as history
@@ -189,19 +194,17 @@ Trim(h, f) ==
                     acked, writes >>
 
 \* A holder reads the serving leader's committed records from where it last
-\* was, skipping trim and start records as readers do. A holder that has
-\* never written starts at the readable start. One that has finds out it
-\* lost the lease from a newer epoch's write, or from a read refused as
-\* trimmed; otherwise it takes the committed tail as the one it expects.
+\* was, or from the readable start if that is later. A record from a newer
+\* epoch tells it it lost the lease; otherwise it takes the committed tail
+\* as the one it expects. Start records carry no epoch.
 Refresh(h) ==
     /\ Active(h)
     /\ Serving(leader)
     /\ commit[leader] > expected[h]
-    /\ LET from == expected[h] + 1
-           rs == ReadableStart(leader)
-           newer == { i \in Max(from, rs)..commit[leader] :
-                        log[leader][i].k = "w" /\ log[leader][i].h > h }
-       IN IF (expected[h] > 0 /\ rs > from /\ ~ResumeAtEarliest) \/ newer /= {}
+    /\ LET l == log[leader]
+           newer == { i \in Max(expected[h] + 1, ReadableStart(leader))..commit[leader] :
+                        l[i].h > h /\ (l[i].k = "w" \/ ~HiddenTrims) }
+       IN IF newer /= {}
              THEN /\ retired' = [retired EXCEPT ![h] = TRUE]
                   /\ UNCHANGED expected
              ELSE /\ expected' = [expected EXCEPT ![h] = commit[leader]]
