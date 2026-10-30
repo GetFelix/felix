@@ -232,7 +232,10 @@ async fn broker_instructions_per_message() {
                 serde_json::json!({
                     "batch": batch,
                     "messages": total,
-                    "user_per_message": median(&mut user.clone()),
+                    // The lowest repetition: noise only ever adds instructions, so the
+                    // minimum is the steadiest figure from run to run.
+                    "user_per_message": user.iter().cloned().fold(f64::MAX, f64::min),
+                    "user_median_per_message": median(&mut user.clone()),
                     "user_spread_pct": spread(&user),
                     "user_reps": user,
                 }),
