@@ -1545,34 +1545,43 @@ one it expects. Nothing in this section is implemented yet; the client call,
 the record kind and the `head` file below do not exist in the code.
 
 The trim is a log record (`RecordMark::Trim`) that carries the exact `before`
-the client asked for. It is appended under the same lock and tail check as
-`publish_if` (see [A conditional append](#a-conditional-append)), so a trim
-from a writer whose expected tail is stale writes nothing and consumes no
-offset. `before` may be at most the offset the record lands at.
+the client asked for and the caller's headers. It is appended under the same
+lock and tail check as `publish_if` (see
+[A conditional append](#a-conditional-append)), so a trim from a writer whose
+expected tail is stale writes nothing and consumes no offset. `before` may be
+at most the offset the record lands at. A trim with `before` at or below the
+current floor writes nothing either, but the tail is checked first: a no-op
+from a stale writer is refused like any other trim.
 
 Each log keeps two numbers. The logical floor is the largest `before` among
-trim records at or below its commit offset (on the leader, its read bound),
-and reads below it get `Trimmed`, which the broker turns into `CursorTooOld`
-as retention does. The physical base is where its oldest segment starts.
+trims at or below its commit offset (on the leader, its read bound), and
+reads below it get `Trimmed`, which the broker turns into `CursorTooOld` as
+retention does. The physical base is where its oldest segment starts.
 Readers start at whichever is higher, so `earliest` resolves to the floor. A
 log deletes only whole sealed segments that end below both the floor and its
 commit offset, with the same oldest-first unlinks as retention. Segment
 boundaries differ between replicas, so the base can stay below the floor for
 a while; the floor is what a reader sees, and the active segment is never
-deleted. A trim deletes less than it asks for, never more.
+deleted. A trim deletes less than it asks for, never more. Readers skip trim
+records, as they skip generation-start records.
 
-The trim record itself stays readable: it is delivered as a record with the
-caller's headers and no payload, so a writer fenced by the tail can see that
-a newer writer trimmed (see the replication design below).
+`CursorTooOld` below the floor carries the headers of the trim that set it,
+as an optional field that is absent by default, so a reader that predates
+trims sees the same frame as before. That is how a writer fenced by the tail
+learns that a newer writer trimmed past it (see the replication design
+below).
 
 The floor is kept in a `head` file beside `epochs`, one `(record offset,
-floor)` entry per trim, written before its record. It is derived: at open,
-entries whose record is missing are dropped, truncation drops entries at or
-above the cut, and a lost or corrupt file is rebuilt by scanning the log.
-Retention, compaction and recovery are unchanged, and a torn trim record is
-cut like any other torn record. The new kind needs a segment format version
-7, written only once the fleet has finalized a `head_trim` feature, since an
-older broker cannot read it.
+floor, headers)` entry per trim, written before its record. At open, entries
+whose record is missing are dropped, and truncation drops entries at or above
+the cut. While the trim records are on disk the file is derived: a lost or
+corrupt file is rebuilt by scanning the log. The headers of a trim whose
+segment has been deleted cannot be rebuilt that way, so the entry that set
+the floor is the one part of the file that is not derived. Retention,
+compaction and recovery are unchanged, and a torn trim record is cut like any
+other torn record. The new kind needs a segment format version 7, written
+only once the fleet has finalized a `head_trim` feature, since an older
+broker cannot read it.
 
 How it survives a failover, and the model that checks it, are in
 [Conditional head trim](replication-design.md#conditional-head-trim-designed-not-built)

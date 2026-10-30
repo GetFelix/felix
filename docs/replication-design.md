@@ -2817,22 +2817,33 @@ lease the broker cannot see, as felixd does, gets two things from the
 condition. Of a stale holder's trim and the new holder's write at the same
 tail, exactly one lands. And the new holder must make one fenced write when
 it takes over, before any trim, so the stale holder's expected tail is
-behind. A stale holder that is refused reads the log again to learn the
-tail, and a record from a newer epoch tells it to stop.
+behind. A stale holder that is refused reads the log again from its own
+cursor to learn the tail, and a write from a newer epoch tells it to stop.
 
-That last step needs the trim record to be readable. As first designed,
-readers skipped trim records the way they skip generation-start records, and
-the model found the hole: a holder that has taken the lease but not yet
-written loses it, the new holder makes its fenced write and then trims past
-it, and the old holder reads from the floor, finds no newer epoch, writes at
-the tail and trims after the new holder. So a trim carries the caller's
-headers, which is where felixd puts its epoch, and is delivered to readers as
-a record with no payload. The trim that set the floor sits at or above it, so a
-holder reading from anywhere at or past the floor sees it.
+That is not enough on its own. As first designed, readers skipped trim
+records and `CursorTooOld` said only where the log now starts, and the model
+found the hole: a holder that has taken the lease but not yet written loses
+it, the new holder makes its fenced write and then trims past it, and the
+old holder, refused as too old, resumes at the floor, finds no newer epoch,
+writes at the tail and trims after the new holder. So `TrimBefore` carries
+headers, which is where felixd puts its epoch, and `CursorTooOld` returns
+the headers of the trim that set the floor, kept in the `head` entry so they
+outlive the record. The stale holder sees the newer epoch in the refusal.
+Readers still skip trim records.
 
-`docs/formal/FelixHeadTrim.tla` models this: three brokers, two promotions,
-two lease holders, writes and trims at an expected tail, followers that start
-again at the leader's base, and deletion anywhere up to its bound. It checks
+The model holds felixd to three rules. It re-reads from its own cursor, never from `earliest`, so a
+trim past its cursor reaches it as `CursorTooOld`. It never takes the tail
+from an `OffsetMismatch` refusal, only from what it reads or from its own
+acknowledged answers. And its streams run with retention off: retention can
+delete the new holder's fenced write with no trim involved, and the stale
+holder's `CursorTooOld` then carries no tag. A no-op trim, one at or below
+the floor, checks the tail before it answers, since felixd takes its next
+tail from the answer.
+
+`docs/formal/FelixHeadTrim.tla` models this: three brokers, up to two promotions,
+a deposed leader that keeps taking writes, a broker crash, two lease
+holders, writes, trims and no-op trims at an expected tail, followers that
+start again at the leader's base, and deletion anywhere up to its bound. It checks
 `NoReadBelowAckedTrim`, `NothingLostAboveFloor`, `NeverMoreThanAsked` and
 `StaleTrimRefused`, and a configuration per rule shows TLC breaking an
 invariant without it; see [`docs/formal/README.md`](formal/README.md),

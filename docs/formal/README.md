@@ -331,8 +331,9 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixAtomicCommit.cfg` | `FelixAtomicCommit.tla`: two atomic commits, each one record, applied whole by three views on every broker, across two promotions | pass `NoPartialCommit` and `CommitSurvives` (21.8K distinct states) |
 | `FelixAtomicCommitSplitRecords.cfg` | the same with each part written as its own record, the mark stopping only at a commit's end | violate `NoPartialCommit` |
 | `FelixAtomicCommitPartialApply.cfg` | the same with the views applying a record one part at a time | violate `NoPartialCommit` |
-| `FelixHeadTrim.cfg` | `FelixHeadTrim.tla`: a conditional head trim as a replicated record, two lease holders, two writes and three trims or no-ops across two promotions, deposed leaders still taking writes, followers rebuilt at the leader's base | pass `NoReadBelowAckedTrim`, `NothingLostAboveFloor`, `NeverMoreThanAsked` and `StaleTrimRefused` (PASS1) |
-| `FelixHeadTrimCrash.cfg` | the same with one broker crash, its commit offset read back behind, and two trims or no-ops | pass the same (PASS2) |
+| `FelixHeadTrim.cfg` | `FelixHeadTrim.tla`: a conditional head trim as a replicated record, two lease holders, two writes and three trims or no-ops across one promotion, the deposed leader still taking writes and trims, followers rebuilt at the leader's base | pass `NoReadBelowAckedTrim`, `NothingLostAboveFloor`, `NeverMoreThanAsked` and `StaleTrimRefused` (11,182,310 distinct states, about 16 minutes) |
+| `FelixHeadTrimCrash.cfg` | the same with one broker crash, its commit offset read back behind, and two trims or no-ops | pass the same (13,157,515 distinct states, about 7 minutes) |
+| `FelixHeadTrimTwoPromotions.cfg` | the same across two promotions, with one trim or no-op | pass the same |
 | `FelixHeadTrimLocal.cfg` | the floor kept as the leader's own state, not a record | violate `NoReadBelowAckedTrim` |
 | `FelixHeadTrimFloorFromBase.cfg` | a broker's readable start taken from where its segments start | violate `NoReadBelowAckedTrim` |
 | `FelixHeadTrimApplyOnStore.cfg` | the floor applied when the record is stored, before it commits | violate `NothingLostAboveFloor` |
@@ -1198,9 +1199,11 @@ fenced write before it trims. A holder learns the tail by reading from its
 own cursor and stops on a newer epoch, in a write or in the refusal's tag. A
 trim at or below the floor is a no-op that checks the tail and answers with
 it. A deposed leader keeps taking writes and trims until a newer generation
-reaches it, a commit and its answer are separate steps, and in
-`FelixHeadTrimCrash.cfg` a broker crashes and reads its commit offset back
-behind.
+reaches it, and a commit and its answer are separate steps. The passing
+run is split in three, since together they do not finish in an hour:
+`FelixHeadTrim.cfg` has three trims or no-ops and one promotion,
+`FelixHeadTrimCrash.cfg` adds a broker crash that reads its commit offset
+back behind, and `FelixHeadTrimTwoPromotions.cfg` has a second promotion.
 
 `NoReadBelowAckedTrim` says the serving leader serves nothing below an
 acknowledged trim's floor, `NothingLostAboveFloor` that it holds every
