@@ -65,7 +65,9 @@ fn loadgen_binary() -> Result<PathBuf> {
 }
 
 /// Run the ingest scenario and return the records the broker acknowledged.
-fn run_ingest(cluster: &Cluster, batch: usize, total: usize) -> Result<u64> {
+/// A measured run must be clean: retries and failed sends add work the
+/// baseline did not have. A warm-up only has to finish.
+fn run_ingest(cluster: &Cluster, batch: usize, total: usize, must_be_clean: bool) -> Result<u64> {
     let node = &cluster.nodes[0];
     let output = Command::new(loadgen_binary()?)
         .args(["--brokers", &node.client_addr.to_string()])
@@ -102,7 +104,7 @@ fn run_ingest(cluster: &Cluster, batch: usize, total: usize) -> Result<u64> {
     let row: serde_json::Value = serde_json::from_str(line)?;
     let acked = row["acked_records"].as_u64().unwrap_or(0);
     let failed = row["failed_sends"].as_u64().unwrap_or(0);
-    if failed > 0 || row["publish_retries"].as_u64().unwrap_or(0) > 0 {
+    if must_be_clean && (failed > 0 || row["publish_retries"].as_u64().unwrap_or(0) > 0) {
         bail!("the run was not clean, so its count is not comparable: {row}");
     }
     Ok(acked)
@@ -207,11 +209,11 @@ async fn broker_instructions_per_message() {
     let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value> {
         let mut cells = serde_json::Map::new();
         for (name, batch, total) in CELLS {
-            run_ingest(&cluster, batch, total * WARMUP_FACTOR)?;
+            run_ingest(&cluster, batch, total * WARMUP_FACTOR, false)?;
             let mut user = Vec::new();
             for rep in 0..reps {
                 let (u, acked) =
-                    count_instructions(&dir, pid, || run_ingest(&cluster, batch, total))?;
+                    count_instructions(&dir, pid, || run_ingest(&cluster, batch, total, true))?;
                 if acked == 0 {
                     bail!("cell {name} rep {rep}: nothing was acknowledged");
                 }
