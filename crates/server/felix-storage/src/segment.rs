@@ -19,11 +19,11 @@ mod test_support;
 
 pub use format::{
     BASELINE_VERSION, DecodedRecord, FORMAT_VERSION, IndexEntry, IndexHeader, MAX_PAYLOAD_BYTES,
-    OLDEST_READABLE_VERSION, PRODUCER_TAG_LEN, RECORD_HEADER_LEN, RecordHeader, SEGMENT_HEADER_LEN,
-    SegmentHeader, record_len,
+    OLDEST_READABLE_VERSION, PRODUCER_TAG_LEN, RECORD_HEADER_LEN, RecordHeader, RecordKind,
+    SEGMENT_HEADER_LEN, SegmentHeader, TRIM_TAG_LEN, TRIM_VERSION, record_len,
 };
 pub use index::{IndexWriter, SparseIndex};
-pub use reader::{ReadBudget, SegmentReader};
+pub use reader::{ReadBudget, SegmentReader, TrimRecords};
 pub use scan::{
     ScanOutcome, ScanStart, TailRepair, TornTail, read_segment_header, scan_segment,
     scan_segment_with,

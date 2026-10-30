@@ -3,7 +3,7 @@ use tempfile::tempdir;
 
 use super::*;
 use crate::segment::cursor::READ_CHUNK_BYTES;
-use crate::segment::format::encode_record;
+use crate::segment::format::{OLDEST_READABLE_VERSION, TRIM_TAG_LEN, TRIM_VERSION, encode_record};
 use crate::segment::test_support::{read_all, scan, write_segment};
 
 #[test]
@@ -380,4 +380,123 @@ fn zeros_starting_mid_sector_in_the_last_record_are_not_a_torn_tail() {
     std::fs::write(&path, &bytes).expect("write");
 
     scan_strict(&path).expect_err("rot on a complete record is not a torn write");
+}
+
+/// A v7 segment of `before` plain records, then a trim with floor 1, then
+/// `after` plain records. Returns the bytes and where the trim starts.
+fn write_trim_segment(path: &std::path::Path, version: u16, after: u64) -> (Vec<u8>, u64) {
+    let mut bytes = SegmentHeader::at_version(0, 1, version).encode().to_vec();
+    encode_record(&mut bytes, 0, 100, b"payload-0", None, &Default::default());
+    encode_record(&mut bytes, 1, 101, b"payload-1", None, &Default::default());
+    let trim_at = bytes.len() as u64;
+    encode_record(
+        &mut bytes,
+        2,
+        102,
+        b"headers",
+        None,
+        &RecordMark::Trim { floor: 1 },
+    );
+    for i in 0..after {
+        encode_record(
+            &mut bytes,
+            3 + i,
+            103 + i,
+            b"payload",
+            None,
+            &Default::default(),
+        );
+    }
+    std::fs::write(path, &bytes).expect("write");
+    (bytes, trim_at)
+}
+
+#[test]
+fn a_trim_record_scans_like_any_other() {
+    let dir = tempdir().expect("dir");
+    let path = dir.path().join("a.log");
+    write_trim_segment(&path, TRIM_VERSION, 1);
+    let outcome = scan(&path).expect("scan");
+    assert_eq!(outcome.record_count, 4);
+    assert!(outcome.torn_tail.is_none());
+    assert_eq!(
+        outcome
+            .marks
+            .iter()
+            .map(|(offset, mark, _)| (*offset, *mark))
+            .collect::<Vec<_>>(),
+        vec![(2, RecordMark::Trim { floor: 1 })]
+    );
+}
+
+/// A trim record cut short anywhere, header included, is an unfinished
+/// write and is repaired, under the strict policy too.
+#[test]
+fn a_torn_trim_record_is_repaired() {
+    let dir = tempdir().expect("dir");
+    let path = dir.path().join("a.log");
+    let (full, trim_at) = write_trim_segment(&path, TRIM_VERSION, 0);
+    for cut in (trim_at as usize + 1)..full.len() {
+        std::fs::write(&path, &full[..cut]).expect("write");
+        let outcome = scan_strict(&path).expect("repaired");
+        assert_eq!(outcome.record_count, 2, "cut at {cut}");
+        assert_eq!(outcome.valid_bytes, trim_at);
+        let tail = outcome.torn_tail.expect("torn tail");
+        assert_eq!(tail.position, trim_at);
+        assert!(
+            matches!(tail.cause, CorruptionKind::Truncated { .. }),
+            "cut at {cut}: {:?}",
+            tail.cause
+        );
+    }
+}
+
+/// A complete trim record whose floor or body rotted is committed data,
+/// not a torn write: fatal when a record follows it, and fatal at the tail
+/// unless the operator opted in to repairing a checksum tail.
+#[test]
+fn a_corrupt_trim_record_is_fatal() {
+    let dir = tempdir().expect("dir");
+    let path = dir.path().join("a.log");
+    for damaged in [
+        RECORD_HEADER_LEN + 7,                // the floor
+        RECORD_HEADER_LEN + TRIM_TAG_LEN + 1, // the headers
+    ] {
+        let (mut bytes, trim_at) = write_trim_segment(&path, TRIM_VERSION, 1);
+        bytes[(trim_at + damaged) as usize] ^= 0x01;
+        std::fs::write(&path, &bytes).expect("write");
+        let err = scan(&path).expect_err("interior");
+        let StorageError::Corruption(corruption) = err else {
+            panic!("expected corruption, got {err:?}");
+        };
+        assert!(matches!(
+            corruption.kind,
+            CorruptionKind::RecordChecksum { .. }
+        ));
+
+        let (mut bytes, trim_at) = write_trim_segment(&path, TRIM_VERSION, 0);
+        bytes[(trim_at + damaged) as usize] ^= 0x01;
+        std::fs::write(&path, &bytes).expect("write");
+        assert!(scan_strict(&path).is_err(), "a whole trim at the tail");
+    }
+}
+
+/// A segment older than v7 never held a trim. Its bits are the
+/// `RecordFlags` an older build reported, and stay fatal even at the tail.
+#[test]
+fn a_trim_in_an_older_segment_is_fatal() {
+    let dir = tempdir().expect("dir");
+    let path = dir.path().join("a.log");
+    for version in OLDEST_READABLE_VERSION..TRIM_VERSION {
+        write_trim_segment(&path, version, 0);
+        let err = scan(&path).expect_err("older segment");
+        let StorageError::Corruption(corruption) = err else {
+            panic!("expected corruption, got {err:?}");
+        };
+        assert!(
+            matches!(corruption.kind, CorruptionKind::RecordFlags { .. }),
+            "v{version}: {:?}",
+            corruption.kind
+        );
+    }
 }

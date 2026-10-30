@@ -3,12 +3,25 @@
 
 use std::fs::File;
 use std::path::Path;
+use std::sync::OnceLock;
 
+use crate::io::read_at;
 use crate::log::{LogRecord, Offset, SegmentId};
 use crate::segment::cursor::SegmentCursor;
-use crate::segment::format::{RECORD_HEADER_LEN, RecordHeader, decode_record};
+use crate::segment::format::{
+    RECORD_HEADER_LEN, RecordHeader, RecordKind, SEGMENT_HEADER_LEN, SegmentHeader, decode_record,
+};
 use crate::segment::index::SparseIndex;
-use crate::{Result, StorageError};
+use crate::{Corruption, Result, StorageError};
+
+/// Whether a read returns trim records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrimRecords {
+    /// Leave them out, as every reader of a stream's records does.
+    Skip,
+    /// Return them, for replication and for finding a log's floor.
+    Include,
+}
 
 /// Read-side handle on one segment.
 ///
@@ -19,6 +32,9 @@ pub struct SegmentReader {
     id: SegmentId,
     base_offset: Offset,
     file: File,
+    /// The header's version, read the first time a trim record is met, so a
+    /// segment that holds none never pays for it.
+    version: OnceLock<u16>,
 }
 
 impl SegmentReader {
@@ -27,6 +43,7 @@ impl SegmentReader {
             id,
             base_offset,
             file: File::open(path)?,
+            version: OnceLock::new(),
         })
     }
 
@@ -91,8 +108,16 @@ impl SegmentReader {
             })?;
             let total_len = record_header.encoded_len();
 
-            // Records before the requested start are skipped by arithmetic
-            // alone — their payloads are never even read.
+            // Records before the requested start, and trims the caller does
+            // not want, are skipped by arithmetic alone: their payloads are
+            // never even read.
+            if record_header.kind == RecordKind::Trim {
+                self.check_trim(&record_header, position, shard_label)?;
+                if budget.trims == TrimRecords::Skip {
+                    position += total_len;
+                    continue;
+                }
+            }
             if record_header.offset < start_offset {
                 position += total_len;
                 continue;
@@ -143,12 +168,40 @@ impl SegmentReader {
             let record_header = RecordHeader::decode(header_slice).map_err(|err| {
                 StorageError::Corruption(err.in_segment(shard_label, self.id).at_position(position))
             })?;
+            if record_header.kind == RecordKind::Trim {
+                self.check_trim(&record_header, position, shard_label)?;
+            }
             if record_header.offset >= offset {
                 return Ok(position);
             }
             position += record_header.encoded_len();
         }
         Ok(valid_bytes)
+    }
+
+    /// Refuse a trim record in a segment older than v7, which no build
+    /// wrote. Recovery scans only the active segment, so a sealed one can
+    /// reach here unchecked.
+    #[cold]
+    #[inline(never)]
+    fn check_trim(&self, header: &RecordHeader, position: u64, shard_label: &str) -> Result<()> {
+        let annotate = |err: Corruption, at: u64| {
+            StorageError::Corruption(err.in_segment(shard_label, self.id).at_position(at))
+        };
+        let version = match self.version.get() {
+            Some(version) => *version,
+            None => {
+                let mut buf = [0u8; SEGMENT_HEADER_LEN as usize];
+                let read = read_at(&self.file, &mut buf, 0)?;
+                let version = SegmentHeader::decode(&buf[..read])
+                    .map_err(|err| annotate(err, 0))?
+                    .version;
+                *self.version.get_or_init(|| version)
+            }
+        };
+        header
+            .check_version(version)
+            .map_err(|err| annotate(err, position))
     }
 }
 
@@ -161,6 +214,8 @@ impl SegmentReader {
 pub struct ReadBudget {
     pub max_bytes: usize,
     pub max_records: usize,
+    /// Whether trim records are returned. They cost nothing when skipped.
+    pub trims: TrimRecords,
     /// Records produced so far under this budget.
     produced: usize,
 }
@@ -170,8 +225,14 @@ impl ReadBudget {
         Self {
             max_bytes,
             max_records,
+            trims: TrimRecords::Skip,
             produced: 0,
         }
+    }
+
+    /// This budget, returning trim records as `trims` says.
+    pub fn with_trims(self, trims: TrimRecords) -> Self {
+        Self { trims, ..self }
     }
 
     pub fn unbounded() -> Self {

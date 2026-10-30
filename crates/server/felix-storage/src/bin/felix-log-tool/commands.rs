@@ -96,8 +96,9 @@ pub(crate) async fn verify(args: VerifyArgs) -> Result<(), Failure> {
     let mut mismatches = Vec::new();
     let mut generation_starts = Vec::new();
     while cursor < tail {
+        // With trims, so the offsets checked below have no gaps.
         let page = log
-            .read_range(ReadRange {
+            .read_range_with_trims(ReadRange {
                 start: cursor,
                 max_bytes: 1024 * 1024,
             })
@@ -113,6 +114,9 @@ pub(crate) async fn verify(args: VerifyArgs) -> Result<(), Failure> {
                 // A leader's marker, not a written record: shown for what it
                 // is and kept out of the payload check and the count.
                 generation_starts.push((record.offset, generation_of(&record.payload)));
+                continue;
+            }
+            if record.mark.is_trim() {
                 continue;
             }
             if let Some(payload_bytes) = args.payload_bytes

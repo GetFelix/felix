@@ -292,7 +292,13 @@ pub(crate) fn scan_segment_upto(
                 },
             ));
         }
-        let total_len = match RecordHeader::decode(header_slice) {
+        // A trim in a segment older than v7 is refused here, where an older
+        // build's decode refused its bits, so damage is judged the same way.
+        let total_len = match RecordHeader::decode(header_slice).and_then(|record_header| {
+            record_header
+                .check_version(state.header.version)
+                .map(|()| record_header)
+        }) {
             Ok(record_header) => record_header.encoded_len(),
             Err(err) => {
                 return state.finish_or_fail(&file, err, None, file_len, shard_label, segment_id);

@@ -43,7 +43,14 @@ pub const INDEX_MAGIC: u32 = 0x464C_5349;
 ///
 /// v6 lets a record carry its publisher (bit 27), again written only to hold
 /// one.
-pub const FORMAT_VERSION: u16 = 6;
+///
+/// v7 adds the trim record. The four kind bits were all taken, so its code is
+/// two of them at once (bits 29 and 28), which every older build refuses as
+/// `RecordFlags`. A segment is written at v7 only to hold one.
+pub const FORMAT_VERSION: u16 = 7;
+
+/// The first version whose segments may hold a trim record.
+pub const TRIM_VERSION: u16 = 7;
 
 /// The first version whose records may carry a publisher.
 pub const PUBLISHER_VERSION: u16 = 6;
@@ -69,6 +76,8 @@ pub const SEGMENT_HEADER_LEN: u64 = 32;
 pub const RECORD_HEADER_LEN: u64 = 28;
 /// Bytes a record opening a producer batch carries after its header.
 pub const PRODUCER_TAG_LEN: u64 = 20;
+/// Bytes a trim record carries after its header: the floor.
+pub const TRIM_TAG_LEN: u64 = 8;
 /// Bytes occupied by an index file header.
 pub const INDEX_HEADER_LEN: u64 = 24;
 /// Bytes occupied by a single sparse index entry.
@@ -139,6 +148,11 @@ impl SegmentHeader {
         self.version >= PUBLISHER_VERSION
     }
 
+    /// Whether a trim record may be written to this segment.
+    pub fn holds_trims(&self) -> bool {
+        self.version >= TRIM_VERSION
+    }
+
     pub fn encode(&self) -> [u8; SEGMENT_HEADER_LEN as usize] {
         let mut buf = [0u8; SEGMENT_HEADER_LEN as usize];
         buf[0..4].copy_from_slice(&SEGMENT_MAGIC.to_be_bytes());
@@ -200,13 +214,15 @@ impl SegmentHeader {
 /// 24   4  checksum           u32  crc32 over bytes 0..24, the tag, and the payload
 /// 28  20  producer tag            only when the record opens a producer batch:
 ///                                 producer_id u64, sequence u64, len u32
+/// 28   8  trim tag                only on a trim record: floor u64
 ///     n   body: the payload, then with bit 27 the publisher and its u8 length
 /// ```
 ///
 /// Bit 31 of `len_and_flags` says the record opens an idempotent producer's
 /// batch and the tag follows; bit 30 says it continues the batch the record
 /// before it belongs to. Bit 29 marks a generation-start record and
-/// bit 28 a commit record (see `RecordMark::Commit`). Bit 27 is not a kind:
+/// bit 28 a commit record (see `RecordMark::Commit`). Bits 29 and 28 together
+/// mark a trim record (see `RecordMark::Trim`). Bit 27 is not a kind:
 /// it says the body ends with the principal that published the record,
 /// followed by that principal's length in one byte. Bodies are capped at
 /// 2^26 bytes, so the length never reaches the flag bits. The length word is
@@ -224,22 +240,47 @@ pub struct RecordHeader {
     /// rotted length field.
     pub header_crc: u32,
     pub checksum: u32,
-    /// The record opens a producer batch; the tag follows the header.
-    pub opens_batch: bool,
-    /// The record continues the producer batch before it.
-    pub continues_batch: bool,
-    /// The record is a leader's generation-start record.
-    pub generation_start: bool,
-    /// The record is an atomic commit.
-    pub commit: bool,
+    /// The record's kind, from the kind bits.
+    pub kind: RecordKind,
     /// The body ends with the record's publisher.
     pub has_publisher: bool,
+}
+
+/// What a record's kind bits say it is. See [`RecordMark`] for what each
+/// kind means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordKind {
+    /// No kind bit: an ordinary record.
+    Plain,
+    /// Bit 31: opens a producer batch, and the 20-byte producer tag follows.
+    Opens,
+    /// Bit 30: continues the producer batch before it.
+    Continues,
+    /// Bit 29: a leader's generation-start record.
+    GenerationStart,
+    /// Bit 28: an atomic commit.
+    Commit,
+    /// Bits 29 and 28: a head trim, and the 8-byte floor follows.
+    Trim,
+}
+
+impl RecordKind {
+    /// Bytes between the record header and the body.
+    pub fn tag_len(self) -> u64 {
+        match self {
+            Self::Opens => PRODUCER_TAG_LEN,
+            Self::Trim => TRIM_TAG_LEN,
+            Self::Plain | Self::Continues | Self::GenerationStart | Self::Commit => 0,
+        }
+    }
 }
 
 const FLAG_OPENS_BATCH: u32 = 1 << 31;
 const FLAG_CONTINUES_BATCH: u32 = 1 << 30;
 const FLAG_GENERATION_START: u32 = 1 << 29;
 const FLAG_COMMIT: u32 = 1 << 28;
+/// The one two-bit kind. Only a v7 segment may hold it.
+const FLAG_TRIM: u32 = FLAG_GENERATION_START | FLAG_COMMIT;
 const KIND_MASK: u32 =
     FLAG_OPENS_BATCH | FLAG_CONTINUES_BATCH | FLAG_GENERATION_START | FLAG_COMMIT;
 const FLAG_PUBLISHER: u32 = 1 << 27;
@@ -255,6 +296,7 @@ pub fn body_len(payload_len: usize, publisher: Option<&[u8]>) -> usize {
 pub fn record_len(body_len: usize, mark: &RecordMark) -> u64 {
     let tag = match mark {
         RecordMark::Opens(_) => PRODUCER_TAG_LEN,
+        RecordMark::Trim { .. } => TRIM_TAG_LEN,
         RecordMark::None
         | RecordMark::Continues
         | RecordMark::GenerationStart
@@ -266,12 +308,7 @@ pub fn record_len(body_len: usize, mark: &RecordMark) -> u64 {
 impl RecordHeader {
     /// Total bytes this record occupies on disk, header included.
     pub fn encoded_len(&self) -> u64 {
-        let tag = if self.opens_batch {
-            PRODUCER_TAG_LEN
-        } else {
-            0
-        };
-        RECORD_HEADER_LEN + tag + u64::from(self.payload_len)
+        RECORD_HEADER_LEN + self.kind.tag_len() + u64::from(self.payload_len)
     }
 
     /// Where the payload starts, relative to the record.
@@ -296,13 +333,22 @@ impl RecordHeader {
             }));
         }
         let len_and_flags = read_u32(buf, 0);
-        let flags = len_and_flags & KIND_MASK;
-        // At most one bit: a record is one kind.
-        if flags.count_ones() > 1 {
-            return Err(Corruption::new(CorruptionKind::RecordFlags {
-                found: len_and_flags,
-            }));
-        }
+        // At most one bit: a record is one kind. The trim code is the one
+        // exception; whether its segment may hold it is the caller's check
+        // (see `Self::check_version`).
+        let kind = match len_and_flags & KIND_MASK {
+            0 => RecordKind::Plain,
+            FLAG_OPENS_BATCH => RecordKind::Opens,
+            FLAG_CONTINUES_BATCH => RecordKind::Continues,
+            FLAG_GENERATION_START => RecordKind::GenerationStart,
+            FLAG_COMMIT => RecordKind::Commit,
+            FLAG_TRIM => RecordKind::Trim,
+            _ => {
+                return Err(Corruption::new(CorruptionKind::RecordFlags {
+                    found: len_and_flags,
+                }));
+            }
+        };
         let payload_len = len_and_flags & !FLAG_MASK;
         if payload_len > MAX_PAYLOAD_BYTES {
             return Err(Corruption::new(CorruptionKind::RecordTooLarge {
@@ -316,12 +362,27 @@ impl RecordHeader {
             timestamp_micros: read_u64(buf, 12),
             header_crc,
             checksum: read_u32(buf, 24),
-            opens_batch: flags == FLAG_OPENS_BATCH,
-            continues_batch: flags == FLAG_CONTINUES_BATCH,
-            generation_start: flags == FLAG_GENERATION_START,
-            commit: flags == FLAG_COMMIT,
+            kind,
             has_publisher: len_and_flags & FLAG_PUBLISHER != 0,
         })
+    }
+
+    /// Refuse a record whose kind a segment at `version` cannot hold.
+    ///
+    /// Only the trim code is checked. Before v7 its bits were `RecordFlags`
+    /// in any segment, so an older segment holding them still reads that way.
+    pub fn check_version(&self, version: u16) -> DecodeResult<()> {
+        if self.kind == RecordKind::Trim && version < TRIM_VERSION {
+            let publisher = if self.has_publisher {
+                FLAG_PUBLISHER
+            } else {
+                0
+            };
+            return Err(Corruption::new(CorruptionKind::RecordFlags {
+                found: self.payload_len | FLAG_TRIM | publisher,
+            }));
+        }
+        Ok(())
     }
 }
 
@@ -347,6 +408,7 @@ pub fn encode_record(
         RecordMark::Continues => FLAG_CONTINUES_BATCH,
         RecordMark::GenerationStart => FLAG_GENERATION_START,
         RecordMark::Commit => FLAG_COMMIT,
+        RecordMark::Trim { .. } => FLAG_TRIM,
     };
     let flags = kind
         | if publisher.is_some() {
@@ -368,6 +430,10 @@ pub fn encode_record(
             tag[8..16].copy_from_slice(&batch.sequence.to_be_bytes());
             tag[16..20].copy_from_slice(&batch.len.to_be_bytes());
             &tag
+        }
+        RecordMark::Trim { floor } => {
+            tag[0..8].copy_from_slice(&floor.to_be_bytes());
+            &tag[..TRIM_TAG_LEN as usize]
         }
         RecordMark::None
         | RecordMark::Continues
@@ -442,20 +508,19 @@ pub fn decode_record(buf: &[u8]) -> DecodeResult<(DecodedRecord, u64)> {
     } else {
         (body, None)
     };
-    let mark = if header.opens_batch {
-        RecordMark::Opens(ProducerBatch {
+    let mark = match header.kind {
+        RecordKind::Plain => RecordMark::None,
+        RecordKind::Opens => RecordMark::Opens(ProducerBatch {
             producer_id: read_u64(tag, 0),
             sequence: read_u64(tag, 8),
             len: read_u32(tag, 16),
-        })
-    } else if header.continues_batch {
-        RecordMark::Continues
-    } else if header.generation_start {
-        RecordMark::GenerationStart
-    } else if header.commit {
-        RecordMark::Commit
-    } else {
-        RecordMark::None
+        }),
+        RecordKind::Continues => RecordMark::Continues,
+        RecordKind::GenerationStart => RecordMark::GenerationStart,
+        RecordKind::Commit => RecordMark::Commit,
+        RecordKind::Trim => RecordMark::Trim {
+            floor: read_u64(tag, 0),
+        },
     };
     Ok((
         DecodedRecord {

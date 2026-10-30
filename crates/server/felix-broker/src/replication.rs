@@ -302,6 +302,9 @@ pub fn mark_to_wire(mark: RecordMark) -> ProducerMark {
         RecordMark::Continues => ProducerMark::Continues,
         RecordMark::GenerationStart => ProducerMark::GenerationStart,
         RecordMark::Commit => ProducerMark::Commit,
+        // `read_range` leaves trim records out, so shipping never meets one
+        // until replication carries the mark (issue 1662).
+        RecordMark::Trim { .. } => unreachable!("a trim record cannot be shipped yet"),
     }
 }
 

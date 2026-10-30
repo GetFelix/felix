@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use super::segments::SegmentSet;
 use crate::log::{Offset, PayloadDigest, ProducerBatch, RecordMark};
 use crate::metrics_names;
-use crate::segment::ReadBudget;
+use crate::segment::{ReadBudget, TrimRecords};
 
 /// Batches remembered per producer. A re-send follows its original closely, so
 /// this covers a producer's in-flight pipeline rather than its history.
@@ -196,7 +196,10 @@ impl ProducerState {
                     self.open = Some(open);
                 }
             }
-            RecordMark::None | RecordMark::GenerationStart | RecordMark::Commit => self.open = None,
+            RecordMark::None
+            | RecordMark::GenerationStart
+            | RecordMark::Commit
+            | RecordMark::Trim { .. } => self.open = None,
         }
     }
 
@@ -462,7 +465,11 @@ pub(super) fn rebuild(
     };
     let mut next = from;
     while next < read_to {
-        let records = segments.read(next, ReadBudget::new(REBUILD_READ_BYTES, usize::MAX))?;
+        let records = segments.read(
+            next,
+            // A trim ends a batch, so the rebuild sees it.
+            ReadBudget::new(REBUILD_READ_BYTES, usize::MAX).with_trims(TrimRecords::Include),
+        )?;
         let Some(last) = records.last() else { break };
         let after = last.offset + 1;
         for record in records
@@ -491,7 +498,10 @@ pub(super) fn rebuild(
 /// no batch.
 pub(crate) fn marked_digest(mark: RecordMark, payload: &[u8]) -> u64 {
     match mark {
-        RecordMark::None | RecordMark::GenerationStart | RecordMark::Commit => 0,
+        RecordMark::None
+        | RecordMark::GenerationStart
+        | RecordMark::Commit
+        | RecordMark::Trim { .. } => 0,
         RecordMark::Opens(_) | RecordMark::Continues => crate::log::record_digest(payload),
     }
 }

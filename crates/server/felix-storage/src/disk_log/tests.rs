@@ -20,6 +20,7 @@ mod restore;
 mod retention;
 mod rollover;
 mod stalled_write;
+mod trim;
 mod truncation;
 
 use std::time::Duration;
