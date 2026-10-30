@@ -70,10 +70,12 @@ impl Broker {
     }
 }
 
-/// An address nothing listens on: the dial gets no answer at all.
-fn silent_addr() -> Result<SocketAddr> {
+/// An address that never answers. The socket stays bound while it is held, so
+/// no other test can take the port.
+fn silent_addr() -> Result<(std::net::UdpSocket, SocketAddr)> {
     let socket = std::net::UdpSocket::bind("127.0.0.1:0")?;
-    Ok(socket.local_addr()?)
+    let addr = socket.local_addr()?;
+    Ok((socket, addr))
 }
 
 #[tokio::test]
@@ -99,7 +101,8 @@ async fn a_refusal_mixed_with_an_unreachable_broker_stays_a_connection_error() -
     let refusing = Broker::start(false)?;
     let mut config = build_client_config(refusing.cert.clone())?;
     config.connect_timeout = Duration::from_millis(300);
-    let err = Client::connect_any(&[refusing.addr, silent_addr()?], "localhost", config)
+    let (_silent, silent) = silent_addr()?;
+    let err = Client::connect_any(&[refusing.addr, silent], "localhost", config)
         .await
         .err()
         .expect("neither broker admitted the client");
@@ -187,8 +190,9 @@ async fn a_silent_token_provider_fails_at_the_fetch_timeout() -> Result<()> {
         std::future::pending::<()>().await;
         Ok(String::new())
     })));
+    let (_silent, silent) = silent_addr()?;
     let started = tokio::time::Instant::now();
-    let err = Client::connect(silent_addr()?, "localhost", config)
+    let err = Client::connect(silent, "localhost", config)
         .await
         .err()
         .expect("the provider never answered");
@@ -214,8 +218,9 @@ async fn a_custom_provider_that_never_answers_fails_at_the_fetch_timeout() -> Re
     drop(server_config);
     let mut config = build_client_config(cert)?;
     config.token_provider = Some(Arc::new(Hung));
+    let (_silent, silent) = silent_addr()?;
     let started = tokio::time::Instant::now();
-    let err = Client::connect(silent_addr()?, "localhost", config)
+    let err = Client::connect(silent, "localhost", config)
         .await
         .err()
         .expect("the provider never answered");
@@ -253,4 +258,83 @@ fn only_auth_refusals_make_the_set_an_auth_error() {
         format!("{auth:#}").contains("no broker accepted the token"),
         "{auth:#}"
     );
+}
+
+/// A silent address ahead of a live broker costs the stagger, not its own
+/// connect timeout.
+#[tokio::test]
+async fn a_silent_address_first_does_not_hold_up_a_live_broker() -> Result<()> {
+    let broker = Broker::start(true)?;
+    let mut config = build_client_config(broker.cert.clone())?;
+    config.connect_timeout = Duration::from_secs(10);
+    let started = std::time::Instant::now();
+    let (_a, first) = silent_addr()?;
+    let (_b, second) = silent_addr()?;
+    let silent = [first, second, broker.addr];
+    let client = timeout(
+        Duration::from_secs(30),
+        Client::connect_any(&silent, "localhost", config),
+    )
+    .await??;
+    assert_eq!(client.dialled(), broker.addr);
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "connect took {:?}",
+        started.elapsed()
+    );
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_dial_that_loses_is_dropped_and_failures_report_in_address_order() {
+    use super::dial_staggered;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct Flag(Arc<AtomicBool>);
+    impl Drop for Flag {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    let addrs: Vec<SocketAddr> = (1..=3)
+        .map(|p| format!("127.0.0.1:{p}").parse().unwrap())
+        .collect();
+    let dropped = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&dropped);
+    let won = dial_staggered(
+        &addrs,
+        Duration::from_millis(100),
+        |_| false,
+        |addr| {
+            // Only the dial that never finishes holds the guard, so the flag
+            // is set only if that dial is dropped.
+            let guard = (addr.port() == 1).then(|| Flag(Arc::clone(&flag)));
+            async move {
+                let _guard = guard;
+                if addr.port() == 1 {
+                    std::future::pending::<()>().await;
+                }
+                Ok(addr.port())
+            }
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(won, 2);
+    assert!(dropped.load(Ordering::SeqCst));
+
+    let err = dial_staggered::<(), _>(
+        &addrs,
+        Duration::from_millis(100),
+        |_| false,
+        |addr| async move {
+            tokio::time::sleep(Duration::from_millis(u64::from(4 - addr.port() as u8) * 50)).await;
+            Err(anyhow::anyhow!("no"))
+        },
+    )
+    .await
+    .unwrap_err();
+    let text = format!("{err:#}");
+    let at = |p: u16| text.find(&format!("127.0.0.1:{p}:")).unwrap();
+    assert!(at(1) < at(2) && at(2) < at(3), "{text}");
 }

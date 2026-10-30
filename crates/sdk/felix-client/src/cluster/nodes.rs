@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 
 use crate::auth::TokenProvider;
-use crate::client::{Client, fetch_from, fetch_token, no_broker_answered};
+use crate::client::{Client, DIAL_STAGGER, dial_staggered, fetch_from, fetch_token};
 use crate::config::ClientConfig;
 use crate::error::is_token_failure;
 
@@ -328,16 +328,11 @@ impl Nodes {
                 "no broker addresses were given to connect to"
             ));
         }
-        let mut refusals = Vec::with_capacity(addrs.len());
-        for addr in addrs {
-            match self.connect_to(*addr).await {
-                Ok(client) => return Ok(client),
-                // The next address would ask the token source again.
-                Err(err) if is_token_failure(&err) => return Err(err),
-                Err(err) => refusals.push((*addr, err)),
-            }
-        }
-        Err(no_broker_answered(refusals))
+        // A bad token fails every address, and the next would ask the source again.
+        dial_staggered(addrs, DIAL_STAGGER, is_token_failure, |addr| {
+            self.connect_to(addr)
+        })
+        .await
     }
 
     /// Stop handing out `client`, so the next caller for its broker gets a
