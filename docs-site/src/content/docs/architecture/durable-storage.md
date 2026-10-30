@@ -300,7 +300,10 @@ deleted.
 ### Deleting a stream, and creating it again
 
 A new cluster finalizes `stream_incarnations` and `cache_incarnations` at its
-first broker registration; an upgraded one waits for the operator. Once the
+first broker registration; an upgraded one waits for the operator. Brokers
+without `FELIX_NODE_ID` never register, so a control plane serving only them
+never finalizes either, and creating a deleted name again is refused with
+`409`. Once the
 fleet has finalized `stream_incarnations`, a stream deleted and
 created again under the same name starts empty: offset 0, no records, no
 producer state, no group positions, no dead letters.
