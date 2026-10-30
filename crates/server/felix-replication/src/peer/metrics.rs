@@ -108,10 +108,11 @@ pub const OUTCOME_REBUILT: &str = "rebuilt";
 pub const OUTCOME_BELOW_COMMIT: &str = "below_commit";
 
 /// A crashed leader's copy refused a fence it would have taken but for a
-/// copy the failover's fence ids name beside the set of two, as after a
-/// move's staged successor (#1635). The shard stays closed until an
-/// operator runs `felixctl placement abandon`.
-pub const FENCE_REFUSED_STAGED_TOTAL: &str = "felix_broker_fence_refused_staged_successor_total";
+/// copy the failover's fence ids name beside the set of two: a staged
+/// successor (#1635), a set that shrank to two, or a dropped copy a report
+/// still names. The shard stays closed until an operator acts.
+pub const FENCE_REFUSED_IDS_BEYOND_TWO_TOTAL: &str =
+    "felix_broker_fence_refused_ids_beyond_two_total";
 
 pub fn record_connect_attempt(outcome: &'static str) {
     metrics::counter!(CONNECT_ATTEMPTS_TOTAL, "outcome" => outcome).increment(1);
@@ -166,6 +167,6 @@ pub fn record_replicated(outcome: &'static str) {
     metrics::counter!(REPLICATED_TOTAL, "outcome" => outcome).increment(1);
 }
 
-pub fn record_fence_refused_staged() {
-    metrics::counter!(FENCE_REFUSED_STAGED_TOTAL).increment(1);
+pub fn record_fence_refused_ids_beyond_two() {
+    metrics::counter!(FENCE_REFUSED_IDS_BEYOND_TWO_TOTAL).increment(1);
 }

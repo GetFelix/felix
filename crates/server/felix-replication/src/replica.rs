@@ -85,7 +85,8 @@ impl FailoverTwo {
     }
 
     /// The copies the fence ids name beyond the two, when they name both:
-    /// the shape a staged successor leaves (#1635).
+    /// a staged successor leaves that shape (#1635), and so does a set that
+    /// shrank to two or a dropped copy a report still names.
     fn beyond(&self) -> Vec<String> {
         if !self.routed.iter().all(|node| self.named.contains(node)) {
             return Vec::new();
@@ -1344,27 +1345,30 @@ impl ReplicaHandler {
             .unwrap_or_default();
         if !beyond.is_empty() {
             // Every check of the exception passed but the ids, which also
-            // name a copy outside the set, as a move's staged successor
-            // leaves them (#1635). No retry gets past that, so say how it ends.
-            let staged = beyond.join(", ");
+            // name a copy outside the set. The copy cannot tell a staged
+            // successor (#1635) from a shrunk set or a dropped copy a report
+            // still names, so it names the ids and the causes, not one.
+            let extra = beyond.join(", ");
             tracing::warn!(
                 stream = %key.stream,
                 shard = key.shard,
                 generation,
-                staged = %staged,
-                "refusing a fence: the failover's fence ids name {staged} beside the set of \
-                 two, as after a move's staged successor (#1635); the shard stays closed until \
-                 `felixctl placement abandon`",
+                extra = %extra,
+                "refusing a fence: the failover's fence ids name {extra} beside the set of \
+                 two, a staged successor, a set that shrank to two or a dropped copy a report \
+                 still names; no retry ends it, see the replication design's \
+                 \"A leader's own crash\" (#1635)",
             );
-            metrics::record_fence_refused_staged();
+            metrics::record_fence_refused_ids_beyond_two();
             return Some(refused(
                 correlation_id,
                 ErrorCode::Unavailable,
                 0,
                 format!(
                     "this broker led the shard before a crash, and the failover's fence ids \
-                     also name {staged} beside the set of two, as after a move's staged \
-                     successor; the shard stays closed until `felixctl placement abandon` (#1635)"
+                     also name {extra} beside the set of two: a staged successor, a set that \
+                     shrank to two or a dropped copy a report still names; see the replication \
+                     design's \"A leader's own crash\" (#1635)"
                 ),
             ));
         }

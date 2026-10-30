@@ -208,7 +208,7 @@ felix_broker_replication_drain_withheld_total # by log; a planned move waiting t
 felix_broker_replica_reports_per_request    # shards per control-plane report; 1 on a busy broker means batching found nothing
 felix_broker_promotions_opened_total       # every new leadership, by path: fenced (a majority took the new leader's generation) or lease
 felix_broker_promotion_truncated_total      # a promoted leader dropped its own records a replica's newer log superseded
-felix_broker_fence_refused_staged_successor_total # a crashed leader's copy refused a fence over a staged successor; needs abandon (#1635)
+felix_broker_fence_refused_ids_beyond_two_total # a crashed leader's copy refused a fence whose ids name a copy beside the set of two (#1635)
 felix_broker_lease_held
 felix_broker_lease_refusals_total           # writes and reads refused after a lease lapsed, by boundary
 felix_broker_credential_expires_in_seconds  # counts down; -1 when the token carries no exp

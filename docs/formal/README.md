@@ -1267,8 +1267,9 @@ per family:
 | `FelixShardShortCopySeatAnySet.cfg` | its twin, the exception without its set check | violate `AckedHeldByLeader` |
 | `FelixShardShortCopyStaged.cfg` | the refusal beside a staged destination, the ids' comparison dropped | pass the same invariants |
 
-Every walk runs with ballots and every change of leader fenced
-(`Ballots`, `FenceEveryChange`), as the broker ships, and all but the
+Every walk except the short-copy configurations (which set `Ballots` and
+`FenceEveryChange` to `FALSE`) runs with ballots and every change of leader
+fenced (`Ballots`, `FenceEveryChange`), as the broker ships, and all but the
 election walks without elections, which the broker does not hold yet. The
 exception is `FelixShardWalkMovesDestination.cfg`, whose violation is the
 destination opening without the fence. The follower-acked walks, moves and spares and
