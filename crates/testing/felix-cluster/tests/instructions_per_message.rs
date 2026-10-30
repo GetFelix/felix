@@ -35,10 +35,10 @@ const IN_FLIGHT: usize = 64;
 
 /// Messages discarded per cell before counting starts, so connection setup,
 /// lazy allocation and first-touch costs are not in the measurement.
-const WARMUP_MESSAGES: usize = 4_000;
+const WARMUP_MESSAGES: usize = 20_000;
 
 /// (cell name, publish batch size, measured messages).
-const CELLS: [(&str, usize, usize); 2] = [("b1", 1, 10_000), ("b64", 64, 40_000)];
+const CELLS: [(&str, usize, usize); 2] = [("b1", 1, 20_000), ("b64", 64, 80_000)];
 
 fn env_usize(name: &str, default: usize) -> usize {
     std::env::var(name)
@@ -185,7 +185,7 @@ fn median(values: &mut [f64]) -> f64 {
 #[ignore = "needs valgrind; run by the Instructions per message workflow"]
 async fn broker_instructions_per_message() {
     let out = std::env::var("FELIX_IPM_OUT").expect("set FELIX_IPM_OUT to the result file");
-    let reps = env_usize("FELIX_IPM_REPS", 3);
+    let reps = env_usize("FELIX_IPM_REPS", 5);
     let dir = PathBuf::from(
         std::env::var("FELIX_IPM_DIR")
             .expect("set FELIX_IPM_DIR to the callgrind output directory"),
