@@ -147,3 +147,11 @@ filler that restates what was just said.
   time, so PRs don't conflict on the changelog.
 - `task lint` and `task test` should pass locally before you open a PR. CI
   runs both plus `cargo-deny`.
+- The `Instructions per message` workflow counts the CPU instructions the
+  broker retires per acknowledged message (in-memory stream, 256 B, acked,
+  48 keys over 48 shards, batch 1 and 64) and fails when a cell is more than
+  3% over `scripts/perf/ipm-baseline.toml`. Only user-space instructions are
+  gated. If the extra cost is deliberate, run
+  `python3 scripts/perf/ipm_gate.py update <ipm-result.json>` (the result is
+  an artifact of the run, one per architecture) and commit the baseline with a
+  sentence on what the instructions buy. A toolchain bump updates it the same way.

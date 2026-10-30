@@ -1,0 +1,2 @@
+# Broker instructions per message, user space. Written by scripts/perf/ipm_gate.py update.
+tolerance_pct = 3.0
