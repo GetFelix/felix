@@ -2827,16 +2827,20 @@ it, the new holder makes its fenced write and then trims past it, and the
 old holder, refused as too old, resumes at the floor, finds no newer epoch,
 writes at the tail and trims after the new holder. So `TrimBefore` carries
 headers, which is where felixd puts its epoch, and `CursorTooOld` returns
-the headers of the trim that set the floor, kept in the `head` entry so they
-outlive the record. The stale holder sees the newer epoch in the refusal.
-Readers still skip trim records.
+the headers of the trim that set the floor whenever a read starts below
+where the log can serve. That record sits at or above the floor, so it is
+never deleted and the `head` entry can always be rebuilt from it. The stale
+holder sees the newer epoch in the refusal. Readers still skip trim records.
+Reads are served only by the leader under its lease, so a deposed leader
+that still takes a write or a trim never answers a read with a stale tail.
 
-The model holds felixd to three rules. It re-reads from its own cursor, never from `earliest`, so a
-trim past its cursor reaches it as `CursorTooOld`. It never takes the tail
+The model holds felixd to three rules. It re-reads from its own cursor,
+never from `earliest`, so a trim past its cursor reaches it as `CursorTooOld`. It never takes the tail
 from an `OffsetMismatch` refusal, only from what it reads or from its own
 acknowledged answers. And its streams run with retention off: retention can
 delete the new holder's fenced write with no trim involved, and the stale
-holder's `CursorTooOld` then carries no tag. A no-op trim, one at or below
+holder's `CursorTooOld` then carries no tag. A stream with retention on gets
+no protection from this against a stale holder. A no-op trim, one at or below
 the floor, checks the tail before it answers, since felixd takes its next
 tail from the answer.
 

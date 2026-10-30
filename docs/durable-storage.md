@@ -1565,8 +1565,9 @@ a while; the floor is what a reader sees, and the active segment is never
 deleted. A trim deletes less than it asks for, never more. Readers skip trim
 records, as they skip generation-start records.
 
-`CursorTooOld` below the floor carries the headers of the trim that set it,
-as an optional field that is absent by default, so a reader that predates
+`CursorTooOld` carries the headers of the trim that set the floor whenever
+the read starts below where the log can serve, whether that is the floor or
+a base that has passed it, as an optional field that is absent by default, so a reader that predates
 trims sees the same frame as before. That is how a writer fenced by the tail
 learns that a newer writer trimmed past it (see the replication design
 below).
@@ -1581,10 +1582,11 @@ the headers above.
 The floor is kept in a `head` file beside `epochs`, one `(record offset,
 floor, headers)` entry per trim, written before its record. At open, entries
 whose record is missing are dropped, and truncation drops entries at or above
-the cut. While the trim records are on disk the file is derived: a lost or
-corrupt file is rebuilt by scanning the log. The headers of a trim whose
-segment has been deleted cannot be rebuilt that way, so the entry that set
-the floor is the one part of the file that is not derived. Retention,
+the cut. The file is derived, like the indexes: a lost or corrupt file is
+rebuilt by scanning the log. That holds because the trim that set the floor
+sits at or above it and deletion stops below the floor, so its record is
+never deleted. Retention can delete it, which is one reason a stream that
+relies on trims to fence stale writers runs with retention off. Retention,
 compaction and recovery are unchanged, and a torn trim record is cut like any
 other torn record. The new kind needs a segment format version 7, written
 only once the fleet has finalized a `head_trim` feature, since an older

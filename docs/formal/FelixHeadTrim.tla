@@ -7,11 +7,13 @@
 (* The trim is a log record carrying the floor it asks for and the         *)
 (* caller's tag. It is appended only at the tail the caller names,         *)
 (* replicated like any record, and acknowledged once the commit mark       *)
-(* passes it. Each broker writes a head entry (record offset, floor, tag)  *)
-(* for every trim it stores; the entry outlives the record's deletion.     *)
-(* Its floor is the largest among entries at or below its commit offset,  *)
-(* and reads below it are refused with CursorTooOld, which carries the tag *)
-(* of the entry that set the floor. Readers skip trim records. A broker    *)
+(* passes it. Each broker keeps a head entry (record offset, floor, tag)   *)
+(* per trim record it holds, derived from the records. Its floor is the    *)
+(* largest among entries at or below its commit offset, and a read from    *)
+(* below where it can serve is refused with CursorTooOld, which carries    *)
+(* the tag of the entry that set the floor. Readers skip trim records. The *)
+(* floor-setting record sits at or above the floor, so deletion never      *)
+(* reaches it and the entry can always be rebuilt by a scan. A broker      *)
 (* deletes whole segments below min(floor, commit offset), never the       *)
 (* active one; `base` is where its oldest segment now starts, anywhere up  *)
 (* to that bound, since segment boundaries differ between replicas.        *)
@@ -35,6 +37,8 @@
 (*                          an acknowledged trim's floor.                  *)
 (* NothingLostAboveFloor -- the serving leader holds every acknowledged    *)
 (*                          write at or above that floor.                  *)
+(* FloorRecordKept       -- the serving leader's floor is the one its trim *)
+(*                          records set, deleted ones included.            *)
 (* NeverMoreThanAsked    -- no broker's floor is above what acknowledged   *)
 (*                          trims asked for.                               *)
 (* StaleTrimRefused      -- no committed write or trim from one holder     *)
@@ -43,16 +47,16 @@
 (* Each knob removes one rule, and TLC finds the trace that rule prevents: *)
 (*                                                                         *)
 (*   Local             -- the floor is the leader's own state, not a       *)
-(*                        record; a promoted follower never learns it.    *)
+(*                        record; a promoted follower never learns it.     *)
 (*   FloorFromBase     -- a broker's readable start is where its segments  *)
 (*                        happen to start, with no logical floor.          *)
 (*   ApplyOnStore      -- a broker applies a trim's floor when it stores   *)
-(*                        the record, before the record commits.          *)
+(*                        the record, before the record commits.           *)
 (*   DeleteAboveCommit -- deletion follows the floor of every stored trim, *)
-(*                        committed or not.                               *)
+(*                        committed or not.                                *)
 (*   Unconditional     -- a trim lands at whatever the tail is.            *)
 (*   Untagged          -- CursorTooOld carries no tag, as the design first *)
-(*                        had it; a holder resumes at the floor.          *)
+(*                        had it; a holder resumes at the floor.           *)
 (*   NoOpUnchecked     -- a no-op trim answers with the tail without       *)
 (*                        checking it.                                     *)
 (*   Retention         -- retention deletes past the floor, up to the      *)
@@ -92,7 +96,6 @@ VARIABLES
     leads,      \* whether a broker believes it leads at its generation
     commit,     \* each broker's commit offset: positions 1..commit are committed
     base,       \* each broker's physical base: the first position it still holds
-    head,       \* each broker's head entries, [o |-> offset, f |-> floor, h |-> tag]
     localFloor, \* each broker's floor when it is the leader's own state (Local only)
     lease,      \* the newest holder epoch
     expected,   \* each holder's idea of the tail (the number of records)
@@ -104,7 +107,7 @@ VARIABLES
     trims,      \* trims taken so far, no-ops included
     crashes     \* broker crashes so far
 
-vars == << log, gen, leads, commit, base, head, localFloor, lease, expected, fenced,
+vars == << log, gen, leads, commit, base, localFloor, lease, expected, fenced,
            retired, acked, ackedFloor, writes, trims, crashes >>
 
 Holders == {1, 2}
@@ -134,8 +137,12 @@ UpToDate(x, y) ==
 EntriesOf(l, lo, hi) ==
     { [o |-> i, f |-> l[i].f, h |-> l[i].h] : i \in { j \in lo..hi : l[j].k = "t" } }
 
-Committed(b) == { e \in head[b] : e.o <= commit[b] }
-Applied(b) == IF ApplyOnStore THEN head[b] ELSE Committed(b)
+\* The head entries a broker holds: one per trim record it still has. They
+\* are derived, rebuilt by a scan of the records.
+Head(b) == EntriesOf(log[b], base[b], Len(log[b]))
+
+Committed(b) == { e \in Head(b) : e.o <= commit[b] }
+Applied(b) == IF ApplyOnStore THEN Head(b) ELSE Committed(b)
 FloorOf(S) == MaxOf({1} \cup { e.f : e \in S })
 
 \* Reads below the floor are refused. Records below it may still be on disk.
@@ -154,7 +161,7 @@ ReadableStart(b) == IF FloorFromBase THEN base[b] ELSE Max(base[b], Floor(b))
 DeleteBound(b) ==
     Min(Len(log[b]),
         IF Retention THEN commit[b] + 1
-        ELSE IF DeleteAboveCommit THEN FloorOf(head[b])
+        ELSE IF DeleteAboveCommit THEN FloorOf(Head(b))
         ELSE Min(Floor(b), commit[b] + 1))
 
 \* The newest leader serves reads once its mark covers every record it
@@ -170,7 +177,6 @@ Init ==
     /\ \E l \in Brokers : leads = [b \in Brokers |-> b = l]
     /\ commit = [b \in Brokers |-> 0]
     /\ base = [b \in Brokers |-> 1]
-    /\ head = [b \in Brokers |-> {}]
     /\ localFloor = [b \in Brokers |-> 1]
     /\ lease = 1
     /\ expected = [h \in Holders |-> 0]
@@ -188,7 +194,7 @@ Active(h) == h <= lease /\ ~retired[h]
 TakeOver ==
     /\ lease = 1
     /\ lease' = 2
-    /\ UNCHANGED << log, gen, leads, commit, base, head, localFloor, expected, fenced,
+    /\ UNCHANGED << log, gen, leads, commit, base, localFloor, expected, fenced,
                     retired, acked, ackedFloor, writes, trims, crashes >>
 
 \* A holder writes at the tail it expects, as publish_if does, on any broker
@@ -200,7 +206,7 @@ HolderWrite(h, b) ==
     /\ Len(log[b]) = expected[h]
     /\ log' = [log EXCEPT ![b] = Append(@, Write(gen[b], h))]
     /\ writes' = writes + 1
-    /\ UNCHANGED << gen, leads, commit, base, head, localFloor, lease, expected, fenced,
+    /\ UNCHANGED << gen, leads, commit, base, localFloor, lease, expected, fenced,
                     retired, acked, ackedFloor, trims, crashes >>
 
 \* A holder trims before f, above the floor. The record lands at offset
@@ -219,9 +225,8 @@ Trim(h, b, f) ==
     /\ IF Local
           THEN /\ localFloor' = [localFloor EXCEPT ![b] = f]
                /\ ackedFloor' = Max(ackedFloor, f)
-               /\ UNCHANGED << log, head >>
+               /\ UNCHANGED log
           ELSE /\ log' = [log EXCEPT ![b] = Append(@, TrimRec(gen[b], h, f))]
-               /\ head' = [head EXCEPT ![b] = @ \cup EntriesOf(log'[b], Len(log'[b]), Len(log'[b]))]
                /\ UNCHANGED << localFloor, ackedFloor >>
     /\ UNCHANGED << gen, leads, commit, base, lease, expected, fenced, retired,
                     acked, writes, crashes >>
@@ -236,7 +241,7 @@ NoOpTrim(h, b) ==
     /\ NoOpUnchecked \/ Len(log[b]) = expected[h]
     /\ expected' = [expected EXCEPT ![h] = Len(log[b])]
     /\ trims' = trims + 1
-    /\ UNCHANGED << log, gen, leads, commit, base, head, localFloor, lease, fenced,
+    /\ UNCHANGED << log, gen, leads, commit, base, localFloor, lease, fenced,
                     retired, acked, ackedFloor, writes, crashes >>
 
 \* A broker that leads answers a holder's write or trim once its commit
@@ -249,7 +254,7 @@ Answer(h) ==
            /\ mine /= {}
            /\ expected' = [expected EXCEPT ![h] = MaxOf(mine)]
            /\ fenced' = [fenced EXCEPT ![h] = @ \/ \E i \in mine : log[b][i].k = "w"]
-           /\ UNCHANGED << log, gen, leads, commit, base, head, localFloor, lease,
+           /\ UNCHANGED << log, gen, leads, commit, base, localFloor, lease,
                            retired, acked, ackedFloor, writes, trims, crashes >>
 
 \* A holder reads the serving leader's committed records from its own
@@ -272,14 +277,13 @@ Refresh(h) ==
                       /\ UNCHANGED expected
                  ELSE /\ expected' = [expected EXCEPT ![h] = commit[s]]
                       /\ UNCHANGED retired
-    /\ UNCHANGED << log, gen, leads, commit, base, head, localFloor, lease, fenced,
+    /\ UNCHANGED << log, gen, leads, commit, base, localFloor, lease, fenced,
                     acked, ackedFloor, writes, trims, crashes >>
 
 \* A follower takes the next record it is missing from a broker that leads
 \* at a generation no older than its own, dropping any suffix that
-\* disagrees, and the head entries with it. One that needs a record the
-\* leader has deleted is rebuilt at the leader's base: records from there on,
-\* and their head entries.
+\* disagrees. One that needs a record the leader has deleted is rebuilt at
+\* the leader's base, with the records from there on.
 Replicate(s, f) ==
     /\ s /= f
     /\ leads[s]
@@ -293,10 +297,8 @@ Replicate(s, f) ==
           /\ IF k + 1 < base[s]
                 THEN /\ log' = [log EXCEPT ![f] = SubSeq(l, 1, base[s])]
                      /\ base' = [base EXCEPT ![f] = base[s]]
-                     /\ head' = [head EXCEPT ![f] = EntriesOf(l, base[s], base[s])]
                      /\ commit' = [commit EXCEPT ![f] = Max(@, Min(commit[s], base[s]))]
                 ELSE /\ log' = [log EXCEPT ![f] = SubSeq(l, 1, k + 1)]
-                     /\ head' = [head EXCEPT ![f] = { e \in @ : e.o <= k } \cup EntriesOf(l, k + 1, k + 1)]
                      /\ commit' = [commit EXCEPT ![f] = Max(@, Min(commit[s], k + 1))]
                      \* Only a twin deletes above the commit offset, which
                      \* truncation can then cut below.
@@ -320,25 +322,27 @@ AdvanceMark(b) ==
            /\ commit' = [commit EXCEPT ![b] = n]
            /\ acked' = acked \cup { [i |-> i, r |-> l[i]] : i \in { j \in new : l[j].k = "w" } }
            /\ ackedFloor' = MaxOf({ackedFloor} \cup { l[i].f : i \in { j \in new : l[j].k = "t" } })
-    /\ UNCHANGED << log, gen, leads, base, head, localFloor, lease, expected, fenced,
+    /\ UNCHANGED << log, gen, leads, base, localFloor, lease, expected, fenced,
                     retired, writes, trims, crashes >>
 
 \* A broker deletes whole segments below its bound, as far as its segment
-\* boundaries allow: any position up to the bound. Head entries stay.
+\* boundaries allow: any position up to the bound.
 Delete(b) ==
     /\ \E p \in (base[b] + 1)..DeleteBound(b) :
         base' = [base EXCEPT ![b] = p]
-    /\ UNCHANGED << log, gen, leads, commit, head, localFloor, lease, expected, fenced,
+    /\ UNCHANGED << log, gen, leads, commit, localFloor, lease, expected, fenced,
                     retired, acked, ackedFloor, writes, trims, crashes >>
 
 \* A broker restarts. It no longer leads, and its commit offset reads back
-\* behind, never ahead and never below what it deleted.
+\* behind, never ahead and never below what it deleted. An unflushed suffix
+\* it loses was counted by no quorum, so losing it is the same as never
+\* having received it, which the model reaches without a crash.
 Crash(b) ==
     /\ crashes < MaxCrashes
     /\ \E c \in (base[b] - 1)..commit[b] : commit' = [commit EXCEPT ![b] = c]
     /\ leads' = [leads EXCEPT ![b] = FALSE]
     /\ crashes' = crashes + 1
-    /\ UNCHANGED << log, gen, base, head, localFloor, lease, expected, fenced,
+    /\ UNCHANGED << log, gen, base, localFloor, lease, expected, fenced,
                     retired, acked, ackedFloor, writes, trims >>
 
 \* A broker a majority votes for takes the next generation and writes its
@@ -354,7 +358,7 @@ Promote(b) ==
            /\ gen' = [q \in Brokers |-> IF q \in Q THEN g ELSE gen[q]]
            /\ leads' = [q \in Brokers |-> IF q = b THEN TRUE ELSE IF q \in Q THEN FALSE ELSE leads[q]]
        /\ log' = [log EXCEPT ![b] = Append(@, StartRec(g))]
-       /\ UNCHANGED << commit, base, head, localFloor, lease, expected, fenced, retired,
+       /\ UNCHANGED << commit, base, localFloor, lease, expected, fenced, retired,
                        acked, ackedFloor, writes, trims, crashes >>
 
 Next ==
@@ -375,7 +379,6 @@ TypeOK ==
     /\ \A b \in Brokers :
         /\ commit[b] <= Len(log[b])
         /\ base[b] \in 1..(commit[b] + 1)
-        /\ \A e \in head[b] : e.o <= Len(log[b]) /\ log[b][e.o].k = "t"
     /\ lease \in Holders
     /\ ackedFloor \in Nat
 
@@ -388,6 +391,10 @@ NothingLostAboveFloor ==
             /\ base[b] <= a.i
             /\ a.i <= Len(log[b])
             /\ log[b][a.i] = a.r
+
+FloorRecordKept ==
+    \A b \in Brokers : ~Local /\ Serving(b) =>
+        Floor(b) = FloorOf(EntriesOf(log[b], 1, IF ApplyOnStore THEN Len(log[b]) ELSE commit[b]))
 
 NeverMoreThanAsked ==
     \A b \in Brokers : Floor(b) <= ackedFloor
