@@ -2,8 +2,8 @@ name: Instructions per message
 
 # Counts the CPU instructions the broker retires per acknowledged message and
 # fails when that is more than the tolerance above scripts/perf/ipm-baseline.toml.
-# Instruction counts barely move with runner noise, unlike throughput, so a 2-3%
-# per-message cost shows up on the PR that adds it. See CONTRIBUTING.md.
+# Instruction counts barely move with runner noise, unlike throughput, so a
+# per-message cost of a few percent shows up on the PR that adds it. See CONTRIBUTING.md.
 #
 # Not part of `CI ok`: whether it blocks merges is a repository setting.
 
