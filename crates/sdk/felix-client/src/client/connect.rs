@@ -1,9 +1,13 @@
 //! Building a [`Client`]: the connections, the streams on them, and where
 //! they go.
 
+use std::future::Future;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize};
+use std::task::Poll;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use felix_transport::{QuicClient, QuicConnection, TransportConfig};
@@ -69,6 +73,74 @@ pub(crate) fn no_broker_answered(refusals: Vec<(SocketAddr, anyhow::Error)>) -> 
     anyhow::anyhow!("no broker answered ({detail})")
 }
 
+/// How long a dial runs alone before the next address is dialled beside it.
+pub(crate) const DIAL_STAGGER: Duration = Duration::from_millis(250);
+
+/// Dial `addrs` in order, each starting `stagger` after the one before it or
+/// as soon as that one fails, and return the first success. The losers are
+/// dropped, so a dial that stores its client on success (a node slot) stores
+/// nothing for them. `fatal` ends the race at once with that error. When all
+/// fail, the refusals are reported in address order.
+pub(crate) async fn dial_staggered<T, Fut>(
+    addrs: &[SocketAddr],
+    stagger: Duration,
+    fatal: impl Fn(&anyhow::Error) -> bool,
+    dial: impl Fn(SocketAddr) -> Fut,
+) -> Result<T>
+where
+    Fut: Future<Output = Result<T>>,
+{
+    let mut inflight: Vec<(usize, Pin<Box<Fut>>)> = Vec::new();
+    let mut refusals: Vec<(usize, anyhow::Error)> = Vec::new();
+    let mut next = 0;
+    while next < addrs.len() || !inflight.is_empty() {
+        if next < addrs.len() && inflight.is_empty() {
+            inflight.push((next, Box::pin(dial(addrs[next]))));
+            next += 1;
+        }
+        tokio::select! {
+            (i, result) = first_done(&mut inflight), if !inflight.is_empty() => {
+                match result {
+                    Ok(value) => return Ok(value),
+                    Err(err) if fatal(&err) => return Err(err),
+                    Err(err) => refusals.push((i, err)),
+                }
+                if next < addrs.len() {
+                    inflight.push((next, Box::pin(dial(addrs[next]))));
+                    next += 1;
+                }
+            }
+            () = tokio::time::sleep(stagger), if next < addrs.len() => {
+                inflight.push((next, Box::pin(dial(addrs[next]))));
+                next += 1;
+            }
+        }
+    }
+    refusals.sort_by_key(|(i, _)| *i);
+    Err(no_broker_answered(
+        refusals
+            .into_iter()
+            .map(|(i, err)| (addrs[i], err))
+            .collect(),
+    ))
+}
+
+/// Wait for any in-flight dial to finish and take it out of the set.
+async fn first_done<T, Fut: Future<Output = Result<T>>>(
+    inflight: &mut Vec<(usize, Pin<Box<Fut>>)>,
+) -> (usize, Result<T>) {
+    std::future::poll_fn(|cx| {
+        for slot in 0..inflight.len() {
+            if let Poll::Ready(result) = inflight[slot].1.as_mut().poll(cx) {
+                let (i, _) = inflight.swap_remove(slot);
+                return Poll::Ready((i, result));
+            }
+        }
+        Poll::Pending
+    })
+    .await
+}
+
 impl Client {
     /// Connect to the broker at `addr` with default transport settings.
     ///
@@ -83,7 +155,7 @@ impl Client {
             .await
     }
 
-    /// Connect to whichever of `addrs` answers first, in order.
+    /// Connect to whichever of `addrs` answers first.
     ///
     /// A cluster has more than one broker and any of them will serve a publish —
     /// one that does not own the shard forwards it. So a client given a single
@@ -91,7 +163,10 @@ impl Client {
     /// the broker it was pointed at can be the one that just died, and every
     /// other broker is sitting there able to serve.
     ///
-    /// Tried in the order given, so a caller can express preference. The errors
+    /// Dialled in the order given, so a caller can express preference, but
+    /// each next address starts after `DIAL_STAGGER` (or as soon as the one
+    /// before it fails) instead of waiting out a silent one. The first to
+    /// connect wins and the rest are dropped. The errors
     /// are collected rather than discarded: "nothing answered" is the only
     /// outcome worth reporting, but *why* each endpoint refused is what an
     /// operator needs, and a bare "connection refused" from the last one in the
@@ -127,21 +202,20 @@ impl Client {
             ));
         }
         fetch_token(&client_config).await?;
-        let mut refusals = Vec::with_capacity(addrs.len());
-        for addr in addrs {
-            match Self::connect_with_transport(
-                *addr,
-                server_name,
-                client_config.clone(),
-                transport.clone(),
-            )
-            .await
-            {
-                Ok(client) => return Ok(client),
-                Err(err) => refusals.push((*addr, err)),
-            }
-        }
-        Err(no_broker_answered(refusals))
+        dial_staggered(
+            addrs,
+            DIAL_STAGGER,
+            |_| false,
+            |addr| {
+                Self::connect_with_transport(
+                    addr,
+                    server_name,
+                    client_config.clone(),
+                    transport.clone(),
+                )
+            },
+        )
+        .await
     }
 
     /// [`Client::connect`] with an explicit transport configuration.

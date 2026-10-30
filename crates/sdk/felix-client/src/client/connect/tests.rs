@@ -254,3 +254,78 @@ fn only_auth_refusals_make_the_set_an_auth_error() {
         "{auth:#}"
     );
 }
+
+/// A silent address ahead of a live broker costs the stagger, not its own
+/// connect timeout.
+#[tokio::test]
+async fn a_silent_address_first_does_not_hold_up_a_live_broker() -> Result<()> {
+    let broker = Broker::start(true)?;
+    let mut config = build_client_config(broker.cert.clone())?;
+    config.connect_timeout = Duration::from_secs(10);
+    let started = std::time::Instant::now();
+    let silent = [silent_addr()?, silent_addr()?, broker.addr];
+    let client = timeout(
+        Duration::from_secs(30),
+        Client::connect_any(&silent, "localhost", config),
+    )
+    .await??;
+    assert_eq!(client.dialled(), broker.addr);
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "connect took {:?}",
+        started.elapsed()
+    );
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_dial_that_loses_is_dropped_and_failures_report_in_address_order() {
+    use super::dial_staggered;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct Flag(Arc<AtomicBool>);
+    impl Drop for Flag {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    let addrs: Vec<SocketAddr> = (1..=3)
+        .map(|p| format!("127.0.0.1:{p}").parse().unwrap())
+        .collect();
+    let dropped = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&dropped);
+    let won = dial_staggered(
+        &addrs,
+        Duration::from_millis(100),
+        |_| false,
+        |addr| {
+            let guard = Flag(Arc::clone(&flag));
+            async move {
+                let _guard = guard;
+                if addr.port() == 1 {
+                    std::future::pending::<()>().await;
+                }
+                Ok(addr.port())
+            }
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(won, 2);
+    assert!(dropped.load(Ordering::SeqCst));
+
+    let err = dial_staggered::<(), _>(
+        &addrs,
+        Duration::from_millis(100),
+        |_| false,
+        |addr| async move {
+            tokio::time::sleep(Duration::from_millis(u64::from(4 - addr.port() as u8) * 50)).await;
+            Err(anyhow::anyhow!("no"))
+        },
+    )
+    .await
+    .unwrap_err();
+    let text = format!("{err:#}");
+    let at = |p: u16| text.find(&format!("127.0.0.1:{p}:")).unwrap();
+    assert!(at(1) < at(2) && at(2) < at(3), "{text}");
+}
