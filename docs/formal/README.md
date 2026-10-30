@@ -331,6 +331,18 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixAtomicCommit.cfg` | `FelixAtomicCommit.tla`: two atomic commits, each one record, applied whole by three views on every broker, across two promotions | pass `NoPartialCommit` and `CommitSurvives` (21.8K distinct states) |
 | `FelixAtomicCommitSplitRecords.cfg` | the same with each part written as its own record, the mark stopping only at a commit's end | violate `NoPartialCommit` |
 | `FelixAtomicCommitPartialApply.cfg` | the same with the views applying a record one part at a time | violate `NoPartialCommit` |
+| `FelixHeadTrim.cfg` | `FelixHeadTrim.tla`: a conditional head trim as a replicated record, two lease holders, two writes and three trims or no-ops across one promotion, the deposed leader still taking writes and trims, followers rebuilt at the leader's base | pass `NoReadBelowAckedTrim`, `NothingLostAboveFloor`, `FloorRecordKept`, `NeverMoreThanAsked` and `StaleTrimRefused` |
+| `FelixHeadTrimCrash.cfg` | the same with one broker crash, its commit offset read back behind, and two trims or no-ops | pass the same |
+| `FelixHeadTrimTwoPromotions.cfg` | the same across two promotions, with one trim or no-op | pass the same |
+| `FelixHeadTrimCrashTwoPromotions.cfg` | one write, one trim or no-op, a crash and two promotions | pass the same |
+| `FelixHeadTrimLocal.cfg` | the floor kept as the leader's own state, not a record | violate `NoReadBelowAckedTrim` |
+| `FelixHeadTrimFloorFromBase.cfg` | a broker's readable start taken from where its segments start | violate `NoReadBelowAckedTrim` |
+| `FelixHeadTrimApplyOnStore.cfg` | the floor applied when the record is stored, before it commits | violate `NothingLostAboveFloor` |
+| `FelixHeadTrimDeleteAboveCommit.cfg` | deletion following the floor of every stored trim, committed or not | violate `NothingLostAboveFloor` |
+| `FelixHeadTrimUnconditional.cfg` | the trim appended at whatever the tail is | violate `StaleTrimRefused` |
+| `FelixHeadTrimHiddenTrims.cfg` | `CursorTooOld` without the floor-setting trim's tag, as first designed | violate `StaleTrimRefused` |
+| `FelixHeadTrimNoOpUnchecked.cfg` | a no-op trim answered with the tail without checking it | violate `StaleTrimRefused` |
+| `FelixHeadTrimRetention.cfg` | retention deleting past the floor, up to the commit offset | violate `StaleTrimRefused` |
 | `FelixGroups.cfg` | `FelixGroups.tla`: two groups' dead-letter and cursor logs on three replicas, flushed separately, across a crash and two promotions; each cursor checked against the dead letters it needs before a shard is served | pass `NoSkip` (66.3M distinct states, 11 min on a CI runner) |
 | `FelixGroupsNoCheck.cfg` | the same with cursors served unchecked | violate `NoSkip` |
 | `FelixGroupsLengthOnly.cfg` | the same with the check comparing the dead-letter log's length only | violate `NoSkip` |
@@ -1166,6 +1178,69 @@ without the state, and once promoted it keeps that half and its mark covers
 it with its next commit. Applied a part at a time, it fails on one broker
 with no failover at all. Those two are why the record is one record and why
 the state view is updated under the ring's lock.
+
+### A trim is a record
+
+`FelixHeadTrim.tla` is a small model of its own for the conditional head
+trim designed in issue 1662 and described in
+[Conditional head trim](../replication-design.md#conditional-head-trim-designed-not-built).
+Nothing in it is built yet; every configuration says so in its evidence
+line. Leadership is the same plain Raft as `FelixAtomicCommit.tla`, with a
+generation-start record, so the question is only what a trim adds.
+
+A trim is a record carrying the floor it asks for and its holder's tag,
+appended only at the tail its holder expects. Each broker derives a head
+entry from each trim record it holds, applies the floor when its commit
+offset passes the entry, and deletes anywhere up to the lower of that floor and its
+commit offset, which stands in for segment boundaries that differ between
+replicas. A read from below where the serving leader can serve, the floor or
+a base past it, gets `CursorTooOld` with the tag of the trim that set the
+floor; readers skip trim records. Only the serving leader answers reads. Two lease holders write and trim, the
+second taking over from a first that is not told, and the second makes a
+fenced write before it trims. A holder learns the tail by reading from its
+own cursor and stops on a newer epoch, in a write or in the refusal's tag. A
+trim at or below the floor is a no-op that checks the tail and answers with
+it. A deposed leader keeps taking writes and trims until a newer generation
+reaches it, and a commit and its answer are separate steps. The passing
+run is split in four, since together they do not finish in an hour:
+`FelixHeadTrim.cfg` has three trims or no-ops and one promotion,
+`FelixHeadTrimCrash.cfg` adds a broker crash that reads its commit offset
+back behind, `FelixHeadTrimTwoPromotions.cfg` has a second promotion, and
+`FelixHeadTrimCrashTwoPromotions.cfg` has both with one write and one trim.
+
+A crash keeps the broker's log. A record it had not flushed was counted by
+no quorum, as replicas acknowledge and the leader counts itself only after a
+flush, so losing it leaves the same state as never having received it, which
+the model reaches without the crash. The head entries are derived from the
+records, so they go with them.
+
+`NoReadBelowAckedTrim` says the serving leader serves nothing below an
+acknowledged trim's floor, `NothingLostAboveFloor` that it holds every
+acknowledged write at or above it, `FloorRecordKept` that its floor is the
+one its trim records set, deleted ones included, so deletion never removes
+the record a scan needs, `NeverMoreThanAsked` that no broker's
+floor is above what acknowledged trims asked for, and `StaleTrimRefused`
+that no committed write or trim from one holder follows a committed write
+from a newer one.
+
+Each twin drops one rule and TLC finds the trace it prevents. Kept as the
+leader's own state, the floor is lost at the first promotion. Taken from
+where segments start, it lags the floor asked for. Applied when stored, it
+lets a leader delete acknowledged writes below a trim that a failover then
+cuts. Deletion that follows stored trims removes acknowledged writes for a
+trim nobody acknowledged. A trim that ignores the tail lands after the new
+holder's write. A no-op answered without the tail check hands the stale
+holder a tail past the new holder's write. Retention that deletes past the
+floor can delete the new holder's fenced write with no trim at all, which is
+why felixd's streams run with retention off.
+
+`FelixHeadTrimHiddenTrims.cfg` is a finding. The design first had readers
+skip trim records with nothing in `CursorTooOld` but where the log starts.
+TLC found a holder that took the lease and lost it before writing: the new
+holder made its fenced write and trimmed past it, and the old one, refused
+as too old, resumed at the floor, saw no newer epoch, wrote at the tail and
+trimmed after it. The design now returns the floor-setting trim's headers,
+where the holder's epoch is, in `CursorTooOld`, and the model passes.
 
 ### Group state: two logs per replica
 

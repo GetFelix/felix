@@ -2780,6 +2780,79 @@ promotion and the reclaim too.
 followers and loses the record. None models the fence: the configurations
 with a crash use the lease and the report.
 
+### Conditional head trim (designed, not built)
+
+Issue 1662 designs a client call that trims a stream's history below an
+offset, conditional on the tail the client expects. None of it is built yet.
+The storage side, the logical floor and what a reader sees are in
+[Conditional head trim](durable-storage.md#conditional-head-trim-designed-not-built)
+in `docs/durable-storage.md`; this section is how it survives replication.
+
+The trim is a record in the log, so it is ordered with the writes around it
+and the existing rules carry it across a failover. It replicates like any
+other record (`ProducerMark::Trim` on the internal transport, written only
+once the fleet has finalized `head_trim`, since an older follower refuses the
+mark). On a `Quorum` stream it is acknowledged once the quorum mark passes
+it, so every future leader holds it. The leader applies the floor when its
+read bound passes the record, before it answers; a follower applies it when
+its commit offset passes the record. A new leader serves only once its mark
+covers what it inherited, which its generation-start record committing does,
+so it has applied every acknowledged trim before its first read.
+
+A deposed leader's unacknowledged trim can be truncated like any record above
+the high-water mark, and its floor goes with it. No reader saw that floor,
+since nothing applied it before it committed. Deletion is capped at the
+floor of committed trims and at the commit offset, so a trim that is later
+cut never deleted anything. A follower that was behind, down or new receives
+the records below the floor and then the trim, and applies it at commit. One
+that needs a record the leader has already deleted starts again at the
+leader's base, which is at or below the floor, and the floor at or below the
+trim record, so it receives the trim too. `Leader` streams allow a trim with
+that mode's loss window: an acknowledged trim not yet shipped can be lost at
+a failover like any record (see [The `Leader` loss window,
+precisely](#the-leader-loss-window-precisely)).
+
+The tail is the only fencing token the broker has. A writer that holds a
+lease the broker cannot see, as felixd does, gets two things from the
+condition. Of a stale holder's trim and the new holder's write at the same
+tail, exactly one lands. And the new holder must make one fenced write when
+it takes over, before any trim, so the stale holder's expected tail is
+behind. A stale holder that is refused reads the log again from its own
+cursor to learn the tail, and a write from a newer epoch tells it to stop.
+
+That is not enough on its own. As first designed, readers skipped trim
+records and `CursorTooOld` said only where the log now starts, and the model
+found the hole: a holder that has taken the lease but not yet written loses
+it, the new holder makes its fenced write and then trims past it, and the
+old holder, refused as too old, resumes at the floor, finds no newer epoch,
+writes at the tail and trims after the new holder. So `TrimBefore` carries
+headers, which is where felixd puts its epoch, and `CursorTooOld` returns
+the headers of the trim that set the floor whenever a read starts below
+where the log can serve. That record sits at or above the floor, so it is
+never deleted and the `head` entry can always be rebuilt from it. The stale
+holder sees the newer epoch in the refusal. Readers still skip trim records.
+Reads are served only by the leader under its lease, so a deposed leader
+that still takes a write or a trim never answers a read with a stale tail.
+
+The model holds felixd to three rules. It re-reads from its own cursor,
+never from `earliest`, so a trim past its cursor reaches it as `CursorTooOld`. It never takes the tail
+from an `OffsetMismatch` refusal, only from what it reads or from its own
+acknowledged answers. And its streams run with retention off: retention can
+delete the new holder's fenced write with no trim involved, and the stale
+holder's `CursorTooOld` then carries no tag. A stream with retention on gets
+no protection from this against a stale holder. A no-op trim, one at or below
+the floor, checks the tail before it answers, since felixd takes its next
+tail from the answer.
+
+`docs/formal/FelixHeadTrim.tla` models this: three brokers, up to two promotions,
+a deposed leader that keeps taking writes, a broker crash, two lease
+holders, writes, trims and no-op trims at an expected tail, followers that
+start again at the leader's base, and deletion anywhere up to its bound. It checks
+`NoReadBelowAckedTrim`, `NothingLostAboveFloor`, `NeverMoreThanAsked` and
+`StaleTrimRefused`, and a configuration per rule shows TLC breaking an
+invariant without it; see [`docs/formal/README.md`](formal/README.md),
+"A trim is a record".
+
 ## Failure model
 
 | Situation | Behaviour |

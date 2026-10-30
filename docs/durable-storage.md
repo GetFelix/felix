@@ -1537,6 +1537,65 @@ waiting out the interval.
 > `a_power_loss_after_retention_leaves_no_gap`: every crash image built after a
 > sweep under `FsyncMode::None` recovers without a gap (Linux only).
 
+## Conditional head trim (designed, not built)
+
+Issue 1662 designs `trim_before(stream, before)`: a client deletes a durable
+stream's history below an offset, but only if the stream's tail is still the
+one it expects. Nothing in this section is implemented yet; the client call,
+the record kind and the `head` file below do not exist in the code.
+
+The trim is a log record (`RecordMark::Trim`) that carries the exact `before`
+the client asked for and the caller's headers. It is appended under the same
+lock and tail check as `publish_if` (see
+[A conditional append](#a-conditional-append)), so a trim from a writer whose
+expected tail is stale writes nothing and consumes no offset. `before` may be
+at most the offset the record lands at. A trim with `before` at or below the
+current floor writes nothing either, but the tail is checked first: a no-op
+from a stale writer is refused like any other trim.
+
+Each log keeps two numbers. The logical floor is the largest `before` among
+trims at or below its commit offset (on the leader, its read bound), and
+reads below it get `Trimmed`, which the broker turns into `CursorTooOld` as
+retention does. The physical base is where its oldest segment starts.
+Readers start at whichever is higher, so `earliest` resolves to the floor. A
+log deletes only whole sealed segments that end below both the floor and its
+commit offset, with the same oldest-first unlinks as retention. Segment
+boundaries differ between replicas, so the base can stay below the floor for
+a while; the floor is what a reader sees, and the active segment is never
+deleted. A trim deletes less than it asks for, never more. Readers skip trim
+records, as they skip generation-start records.
+
+`CursorTooOld` carries the headers of the trim that set the floor whenever
+the read starts below where the log can serve, whether that is the floor or
+a base that has passed it, as an optional field that is absent by default, so a reader that predates
+trims sees the same frame as before. That is how a writer fenced by the tail
+learns that a newer writer trimmed past it (see the replication design
+below).
+
+On the wire the call is a `TrimBefore` message with the stream, `before`,
+the expected tail and the caller's headers, behind a grant of its own so a
+reader cannot trim. The broker answers with the tail on success, a no-op
+included, and with `OffsetMismatch` when the expected tail is stale, as
+`publish_if` does. `CursorTooOld` gains an optional `trim_headers` field for
+the headers above.
+
+The floor is kept in a `head` file beside `epochs`, one `(record offset,
+floor, headers)` entry per trim, written before its record. At open, entries
+whose record is missing are dropped, and truncation drops entries at or above
+the cut. The file is derived, like the indexes: a lost or corrupt file is
+rebuilt by scanning the log. That holds because the trim that set the floor
+sits at or above it and deletion stops below the floor, so its record is
+never deleted. Retention can delete it, which is one reason a stream that
+relies on trims to fence stale writers runs with retention off. Retention,
+compaction and recovery are unchanged, and a torn trim record is cut like any
+other torn record. The new kind needs a segment format version 7, written
+only once the fleet has finalized a `head_trim` feature, since an older
+broker cannot read it.
+
+How it survives a failover, and the model that checks it, are in
+[Conditional head trim](replication-design.md#conditional-head-trim-designed-not-built)
+in `docs/replication-design.md`.
+
 ## Cache and counter compaction
 
 The cache (`LogCache`) and the counters (`CounterStore`) are projections of

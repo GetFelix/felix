@@ -79,6 +79,7 @@ tlc() {
     FelixShardReads*) module="FelixShardReads" ;;
     FelixShardSessions*) module="FelixShardSessions" ;;
     FelixAtomicCommit*) module="FelixAtomicCommit" ;;
+    FelixHeadTrim*) module="FelixHeadTrim" ;;
     FelixGroups*) module="FelixGroups" ;;
   esac
   local flags=(-deadlock -workers "${TLC_WORKERS:-auto}" -checkpoint 0 "$@"
@@ -204,6 +205,18 @@ expectations=(
   "FelixAtomicCommit pass"
   "FelixAtomicCommitSplitRecords violates NoPartialCommit"
   "FelixAtomicCommitPartialApply violates NoPartialCommit"
+  "FelixHeadTrim pass"
+  "FelixHeadTrimCrash pass"
+  "FelixHeadTrimTwoPromotions pass"
+  "FelixHeadTrimCrashTwoPromotions pass"
+  "FelixHeadTrimLocal violates NoReadBelowAckedTrim"
+  "FelixHeadTrimFloorFromBase violates NoReadBelowAckedTrim"
+  "FelixHeadTrimApplyOnStore violates NothingLostAboveFloor"
+  "FelixHeadTrimDeleteAboveCommit violates NothingLostAboveFloor"
+  "FelixHeadTrimUnconditional violates StaleTrimRefused"
+  "FelixHeadTrimHiddenTrims violates StaleTrimRefused"
+  "FelixHeadTrimNoOpUnchecked violates StaleTrimRefused"
+  "FelixHeadTrimRetention violates StaleTrimRefused"
   "FelixShardFencedAckTwoPromotionsStart pass"
   "FelixShardFencedAckStagedMoveDestination violates AckedHeldByLeader"
   "FelixShardFencedAckMoveShort pass"
@@ -316,6 +329,10 @@ weights=(
   "FelixGroupsSplitSources 17"
   "FelixShardFencedAck 12"
   "FelixGroups 12"
+  "FelixHeadTrim 17"
+  "FelixHeadTrimCrash 13"
+  "FelixHeadTrimTwoPromotions 2"
+  "FelixHeadTrimCrashTwoPromotions 3"
   "FelixShardFigure8CutOver 9"
   "FelixShard 7"
   "FelixShardWipeFull 5"
