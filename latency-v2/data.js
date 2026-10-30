@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793362945027,
+  "lastUpdate": 1793392484094,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -50556,6 +50556,72 @@ window.BENCHMARK_DATA = {
             "range": "72.97",
             "unit": "us",
             "extra": "trials: 5\nmedian: 398.00\nmean: 409.80\nstdev: 72.97\ncv: 17.81%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "88f79cab95dd59f0be59b1d3a55a2bc686ad6294",
+          "message": "spec(formal): model the conditional head trim, and its design docs (#1662) (#1663)\n\n* spec(formal): model a conditional head trim (#1662)\n\nFelixHeadTrim.tla models the trim designed in #1662 as a replicated record:\napplied at each broker's commit offset, deleted below min(floor, commit\noffset), appended only at the tail its holder expects. Six twins remove one\nrule each.\n\n* spec(formal): readers see trim records and their holder's epoch\n\nWith trims hidden from readers, TLC finds a holder that had the lease but had\nnot written yet writing and trimming after the new holder, which trimmed past\nits own fenced write. FelixHeadTrimHiddenTrims.cfg keeps that trace.\n\n* docs: design of the conditional head trim, and its model (#1662)\n\nDesigned, not built. replication-design.md and durable-storage.md describe\nthe trim record, the logical floor, deletion at commit and failover;\nformal/README.md lists the model's configurations. FelixHeadTrim takes about\nten minutes on a CI runner, so it is weighted for sharding.\n\n* spec(formal): never delete the active segment in FelixHeadTrim\n\nThe Local twin could delete its leader's whole log, and a follower starting\nagain at that base then took a record past the end. The design never deletes\nthe active segment; the model now keeps the last record too.\n\n* spec(formal): FelixHeadTrim with tagged CursorTooOld, no-op trims, crashes and deposed leaders\n\nFollows the decision on #1662: CursorTooOld carries the floor-setting trim's\ntag, held in the head entry; readers skip trim records. Adds no-op trims that\ncheck the tail, retention past the floor, a broker crash with its commit read\nback behind, deposed leaders that keep taking writes, and separate answer\nsteps. Twins for an unchecked no-op and for retention; StaleTrimRefused also\ncovers a stale write. Two probe configurations measure run time and go before\nreview.\n\n* spec(formal): sizing probes for the FelixHeadTrim pass configurations\n\n* spec(formal): split the FelixHeadTrim pass into three configurations\n\nChecked together, three trims, a crash and two promotions did not finish in\nan hour. FelixHeadTrim keeps three trims and one promotion (16 min),\nFelixHeadTrimCrash adds a crash (7 min), FelixHeadTrimTwoPromotions has a\nsecond promotion with one trim. Docs follow the decision on #1662: tagged\nCursorTooOld, readers skip trims, no-op trims check the tail, felixd\nre-reads from its own cursor, never adopts the tail from OffsetMismatch, and\nruns with retention off.\n\n* docs: TrimBefore carries headers and CursorTooOld the floor-setting trim's (#1662)\n\n* spec(formal): derive FelixHeadTrim head entries from the records\n\nThe floor-setting trim sits at or above the floor and deletion stops below\nit, so its record is never deleted and the head file stays derived.\nFloorRecordKept checks that. A crash's lost unflushed suffix is argued in\nthe README. Adds FelixHeadTrimCrashTwoPromotions, measured weights, and\ndocs: CursorTooOld carries the tag whenever a read starts below where the\nlog can serve, and only the leader under its lease serves reads.\n\n* spec(formal): rename Head, which Sequences already defines",
+          "timestamp": "2026-10-30T20:31:19Z",
+          "tree_id": "96eebcddded58c538b1c3cc0901f2e243db229e9",
+          "url": "https://github.com/GetFelix/felix/commit/88f79cab95dd59f0be59b1d3a55a2bc686ad6294"
+        },
+        "date": 1793392479275,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 66,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 66.00\nmean: 65.80\nstdev: 0.84\ncv: 1.27%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 98,
+            "range": "106.38",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 98.00\nmean: 147.40\nstdev: 106.38\ncv: 72.17%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 142,
+            "range": "223.54",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 142.00\nmean: 243.80\nstdev: 223.54\ncv: 91.69%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 83,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 83.00\nmean: 82.40\nstdev: 0.89\ncv: 1.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 193,
+            "range": "13.26",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 193.00\nmean: 188.40\nstdev: 13.26\ncv: 7.04%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 343,
+            "range": "851.36",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 343.00\nmean: 776.80\nstdev: 851.36\ncv: 109.60%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
