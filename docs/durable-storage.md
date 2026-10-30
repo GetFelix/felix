@@ -826,7 +826,9 @@ Once the fleet has finalized `stream_incarnations`, a stream deleted and
 created again under the same name is a new stream. A new cluster finalizes it
 at its first broker registration (see `docs/control-plane.md`, "Fleet
 features"); a cluster upgraded from an older release waits for the
-operator. It starts at offset 0 with
+operator. A control plane that no broker registers with (brokers without
+`FELIX_NODE_ID`) never finalizes it, so there the create is refused with `409`
+("Deleted names" in `docs/control-plane.md`). It starts at offset 0 with
 no records, no idempotent producer state, no consumer-group positions and no
 dead letters, on every broker, including one that was down for the delete.
 
@@ -918,7 +920,8 @@ stream, and a new leader's first writes could disagree with records its
 followers hold as committed, which halts them as diverged
 ([#1447](https://github.com/GetFelix/felix/issues/1447)). Finalizing first
 gives the new stream an incarnation and directories of its own. A new
-cluster finalizes both at its first broker registration.
+cluster finalizes both at its first broker registration; a control plane that
+no broker registers with never does.
 
 **A delete from before the finalize keeps the data.** A `Deleted` change with
 neither `deleted_through` nor an incarnation in its payload is of a stream

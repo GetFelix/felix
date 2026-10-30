@@ -1686,8 +1686,11 @@ Without an incarnation the new stream would open the deleted one's logs on
 every broker, where each replica holds whatever it had of them, and replicas
 could diverge (#1447). After the finalize the name is created again at an
 incarnation of its own. A new cluster finalizes both at its first broker
-registration, so only clusters upgraded from a release before incarnations
-see the refusal. Names are kept for good and travel with the state
+registration, so clusters upgraded from a release before incarnations see the
+refusal, and so does a control plane that no broker registers with: a broker
+without `FELIX_NODE_ID` serves its own shards and never registers, and a
+finalize with no broker serving is refused, so on such a stack a deleted name
+cannot be created again. Give the new stream another name. Names are kept for good and travel with the state
 (`deleted_stream_names` and `deleted_cache_names` in the Raft snapshot and
 `migrate export`). The store decides inside the write: the memory store under
 its locks; Raft in the applied command, from the entry's `names` flag, which
