@@ -33,9 +33,10 @@ const SHARDS: u32 = 48;
 const PAYLOAD_BYTES: usize = 256;
 const IN_FLIGHT: usize = 64;
 
-/// Messages discarded per cell before counting starts, so connection setup,
-/// lazy allocation and first-touch costs are not in the measurement.
-const WARMUP_MESSAGES: usize = 20_000;
+/// Warm-up is this many times a repetition's messages. The count keeps falling
+/// for the first few tens of thousands of messages (queues and buffers growing
+/// to their working size), and a short warm-up leaks that into the first reps.
+const WARMUP_FACTOR: usize = 4;
 
 /// (cell name, publish batch size, measured messages).
 const CELLS: [(&str, usize, usize); 2] = [("b1", 1, 20_000), ("b64", 64, 80_000)];
@@ -206,7 +207,7 @@ async fn broker_instructions_per_message() {
     let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value> {
         let mut cells = serde_json::Map::new();
         for (name, batch, total) in CELLS {
-            run_ingest(&cluster, batch, WARMUP_MESSAGES)?;
+            run_ingest(&cluster, batch, total * WARMUP_FACTOR)?;
             let mut user = Vec::new();
             for rep in 0..reps {
                 let (u, acked) =
