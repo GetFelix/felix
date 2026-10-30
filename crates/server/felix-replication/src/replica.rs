@@ -85,8 +85,8 @@ impl FailoverTwo {
     }
 
     /// The copies the fence ids name beyond the two, when they name both:
-    /// a staged successor leaves that shape (#1635), and so does a set that
-    /// shrank to two or a dropped copy a report still names.
+    /// with this control plane that is a staged or joining successor the
+    /// failover left out (#1635).
     fn beyond(&self) -> Vec<String> {
         if !self.routed.iter().all(|node| self.named.contains(node)) {
             return Vec::new();
@@ -1345,9 +1345,9 @@ impl ReplicaHandler {
             .unwrap_or_default();
         if !beyond.is_empty() {
             // Every check of the exception passed but the ids, which also
-            // name a copy outside the set. The copy cannot tell a staged
-            // successor (#1635) from a shrunk set or a dropped copy a report
-            // still names, so it names the ids and the causes, not one.
+            // name a copy outside the routed pair. Placement leaves an
+            // old-set copy out of the report only for a staged or joining
+            // successor (#1635).
             let extra = beyond.join(", ");
             tracing::warn!(
                 stream = %key.stream,
@@ -1355,8 +1355,8 @@ impl ReplicaHandler {
                 generation,
                 extra = %extra,
                 "refusing a fence: the failover's fence ids name {extra} beside the set of \
-                 two, a staged successor, a set that shrank to two or a dropped copy a report \
-                 still names; no retry ends it, see the replication design's \
+                 two; with this control plane that is a staged or joining successor the \
+                 failover left out; no retry ends it, see the replication design's \
                  \"A leader's own crash\" (#1635)",
             );
             metrics::record_fence_refused_ids_beyond_two();
@@ -1366,8 +1366,8 @@ impl ReplicaHandler {
                 0,
                 format!(
                     "this broker led the shard before a crash, and the failover's fence ids \
-                     also name {extra} beside the set of two: a staged successor, a set that \
-                     shrank to two or a dropped copy a report still names; see the replication \
+                     also name {extra} beside the set of two, which with this control plane is \
+                     a staged or joining successor the failover left out; see the replication \
                      design's \"A leader's own crash\" (#1635)"
                 ),
             ));

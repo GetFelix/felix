@@ -212,7 +212,7 @@ Replication from a shard's leader to its followers, and the `Quorum` publish pat
 | `felix_broker_publish_quorum_wait_seconds` | histogram | - | How long a `Quorum` publish waited for its majority, whatever the outcome. |
 | `felix_broker_promotions_opened_total` | counter | `path` | Shards opened for writes at a new leadership. `path` is `fenced` once a majority took the fence and `lease` when some replica did not offer it. |
 | `felix_broker_promotion_truncated_total` | counter | - | Times a promoted leader dropped records of its own that a replica's newer log had superseded. |
-| `felix_broker_fence_refused_ids_beyond_two_total` | counter | - | Fences a crashed leader's copy refused because the failover's fence ids also name a copy beside the set of two. The copy cannot tell the cause: a move's staged successor, a set that shrank to two, or a dropped copy a report still names. The shard stays closed; the [remedy for each](https://github.com/GetFelix/felix/blob/main/docs/replication-design.md#a-leaders-own-crash) is in the replication design ([#1635](https://github.com/GetFelix/felix/issues/1635)). |
+| `felix_broker_fence_refused_ids_beyond_two_total` | counter | - | Fences a crashed leader's copy refused because the failover's fence ids also name a copy beside the set of two. With this control plane that is a staged or joining successor the failover left out. The shard stays closed; the [remedy](https://github.com/GetFelix/felix/blob/main/docs/replication-design.md#a-leaders-own-crash) is in the replication design ([#1635](https://github.com/GetFelix/felix/issues/1635)). |
 
 ## Storage
 

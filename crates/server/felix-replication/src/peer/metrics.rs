@@ -108,9 +108,9 @@ pub const OUTCOME_REBUILT: &str = "rebuilt";
 pub const OUTCOME_BELOW_COMMIT: &str = "below_commit";
 
 /// A crashed leader's copy refused a fence it would have taken but for a
-/// copy the failover's fence ids name beside the set of two: a staged
-/// successor (#1635), a set that shrank to two, or a dropped copy a report
-/// still names. The shard stays closed until an operator acts.
+/// copy the failover's fence ids name beside the set of two. With this
+/// control plane that is a staged or joining successor the failover left
+/// out (#1635). The shard stays closed until an operator acts.
 pub const FENCE_REFUSED_IDS_BEYOND_TWO_TOTAL: &str =
     "felix_broker_fence_refused_ids_beyond_two_total";
 

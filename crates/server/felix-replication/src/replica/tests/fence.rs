@@ -953,8 +953,9 @@ async fn a_crashed_leader_of_two_copies_takes_the_fence() {
 /// **A set that shrank to two after acknowledging is refused (#1336).** The
 /// generation this broker led had three copies, so a record it lost may be
 /// on broker-c alone, which the set of two the routes show now leaves out.
-/// The copy cannot tell this from a staged successor, so the reason names
-/// broker-c and every cause rather than asserting one, and it is counted.
+/// The hand-built router stands in for the shape of a staged successor the
+/// failover left out (a current control plane never sends a shrunk set's
+/// dropped copy), so the refusal names broker-c and is counted.
 #[tokio::test]
 async fn a_crashed_leader_of_a_set_that_shrank_to_two_refuses_the_fence() {
     let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
@@ -973,7 +974,7 @@ async fn a_crashed_leader_of_a_set_that_shrank_to_two_refuses_the_fence() {
     assert_eq!(refused.code, ErrorCode::Unavailable);
     assert!(refused.detail.contains("broker-c"), "{}", refused.detail);
     assert!(
-        refused.detail.contains("set that shrank to two"),
+        refused.detail.contains("staged or joining successor"),
         "{}",
         refused.detail
     );
