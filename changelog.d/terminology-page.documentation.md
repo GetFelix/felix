@@ -1,2 +1,0 @@
-- A new [Terminology](https://docs.getfelix.dev/reference/terminology/) page explains the words used across the docs, code and tools, including the ones that mean different things in different places.
-- The semantics pages no longer say a stream's `retention` field is ignored. It applies, and the broker-wide `FELIX_DURABLE_RETENTION_*` settings fill any bound it leaves unset.

@@ -1056,6 +1056,47 @@ jobs:
         # Word splitting is wanted: the input is a list of names.
         run: scripts/check_tla.sh $TLA_CONFIGS
 
+  # FelixShardFencedCrashUnprobed no longer finishes exhaustively in a hosted
+  # runner's six hours (#1584), so it is walked here instead, with its twin,
+  # at the nightly walks' budget (tla-walk.yml). Sampling, not proof.
+  formal-walk:
+    needs: changes
+    if: needs.changes.outputs.formal == 'true' && github.event_name != 'workflow_dispatch'
+    name: TLA+ walk (unprobed crash)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Scratch disk for TLC
+        run: |
+          mkdir -p "$RUNNER_TEMP/tlc"
+          echo "TLC_SCRATCH_DIR=$RUNNER_TEMP/tlc" >> "$GITHUB_ENV"
+
+      - name: Walk
+        env:
+          TLA_SIM_MINUTES: "25"
+          TLA_DEPTH: "300"
+        run: scripts/check_tla.sh --simulate FelixShardFencedCrashUnprobed FelixShardFencedCrashCountsUnnamed
+
+      # TLC's whole output, with the seed and any trace.
+      - name: Upload the traces
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: tla-walk-unprobed-crash
+          path: target/tla/walk/
+          retention-days: 14
+
   # The decoders that parse input from outside the process, on a time budget.
   #
   # Separate from `test` because it needs nightly (libFuzzer links a runtime the
@@ -1132,7 +1173,7 @@ jobs:
   ci-ok:
     name: CI ok
     if: always()
-    needs: [changes, images, compose, test, cluster, checks, docs-evidence, docs-site, chart, python, typescript, dotnet, spec-pairing, formal, fuzz]
+    needs: [changes, images, compose, test, cluster, checks, docs-evidence, docs-site, chart, python, typescript, dotnet, spec-pairing, formal, formal-walk, fuzz]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

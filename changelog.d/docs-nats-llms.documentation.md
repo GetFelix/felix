@@ -1,1 +1,0 @@
-- Added a "Coming from NATS" page to the docs, publish `/llms.txt` and `/llms-full.txt` from the docs build, and end each Getting Started page with a "Where next" section.

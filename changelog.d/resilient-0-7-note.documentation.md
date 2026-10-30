@@ -1,1 +1,0 @@
-- The Building Resilient Clients guide marks the reconnect deadline, and the attempt count outside Rust, as new in 0.7, and says how to bound a call on 0.6.2.

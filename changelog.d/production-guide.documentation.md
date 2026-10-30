@@ -1,2 +1,0 @@
-- New "Running in Production" guide: sizing a broker's memory, disk, CPU and network from the settings that bound them, choosing fsync mode, consistency, replication factor and zones for a durability need, and a hardening checklist.
-- The observability page's p99 publish latency example no longer uses `_bucket`; Felix exports latencies as summaries, so it reads the `quantile` series.

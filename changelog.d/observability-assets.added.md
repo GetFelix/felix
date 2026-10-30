@@ -1,1 +1,0 @@
-- A Grafana dashboard and Prometheus alert rules ship in `deploy/observability/`. The Helm chart renders the rules as a `PrometheusRule` when `prometheusRule.enabled` is set (off by default). `task docs:evidence` fails when either references a metric the code does not register.
