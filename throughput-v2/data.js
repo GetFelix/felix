@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793321699640,
+  "lastUpdate": 1793327851979,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -39468,6 +39468,58 @@ window.BENCHMARK_DATA = {
             "range": "12459.62",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1206523.09\nmean: 1202968.84\nstdev: 12459.62\ncv: 1.04%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e1286dda4976ff38739da3aeb29a5c4837a09052",
+          "message": "chore: move main to 0.7.0-preview.2 (#1652)\n\nv0.7.0-preview.1 is tagged, so main's version names the next preview: the\nworkspace, the Python and TypeScript packages, the lockfiles and the Helm\nchart's appVersion are 0.7.0-preview.2. The install docs and compose.yaml keep\nnaming 0.7.0-preview.1, the latest release, until the next preview is tagged.\n\nSpec-Unaffected: version bump",
+          "timestamp": "2026-10-30T02:30:25Z",
+          "tree_id": "90482430eac32489fbe264c1c272caf872f70375",
+          "url": "https://github.com/GetFelix/felix/commit/e1286dda4976ff38739da3aeb29a5c4837a09052"
+        },
+        "date": 1793327851177,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 358945.43,
+            "range": "6875.84",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 358945.43\nmean: 356754.56\nstdev: 6875.84\ncv: 1.93%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 358945.43,
+            "range": "6875.84",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 358945.43\nmean: 356754.56\nstdev: 6875.84\ncv: 1.93%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81972.47,
+            "range": "329.77",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81972.47\nmean: 81926.44\nstdev: 329.77\ncv: 0.40%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 819724.75,
+            "range": "3297.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 819724.75\nmean: 819264.37\nstdev: 3297.64\ncv: 0.40%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
