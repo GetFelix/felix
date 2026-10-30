@@ -70,6 +70,9 @@ jobs:
       - name: Measure
         run: |
           mkdir -p "$RUNNER_TEMP/cg"
+          # Callgrind runs the broker tens of times slower than native, and the
+          # harness's start-up waits are sized for native speed.
+          export FELIX_TEST_TIMEOUT_SCALE=10
           FELIX_BROKER_WRAPPER="valgrind --tool=callgrind --callgrind-out-file=$RUNNER_TEMP/cg/cg.%p" \
             FELIX_IPM_DIR="$RUNNER_TEMP/cg" \
             FELIX_IPM_OUT="$RUNNER_TEMP/ipm-result.json" \
