@@ -1,5 +1,5 @@
 # Broker instructions per message: written by scripts/perf/ipm_gate.py update.
-tolerance_pct = 6.0
+tolerance_pct = 3.0
 
 [x86_64]
 commit = "4cfe55767005f79837eb59ebb3da5c5e9246eedf"
