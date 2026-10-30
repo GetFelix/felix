@@ -2,13 +2,13 @@
 tolerance_pct = 6.0
 
 [x86_64]
-commit = "e1978af47877f82e22ecba21195e954ddc137ca7"
+commit = "4cfe55767005f79837eb59ebb3da5c5e9246eedf"
 toolchain = "rustc 1.97.1 (8bab26f4f 2026-07-14)"
-b1 = 49013
-b64 = 5544
+b1 = 44947
+b64 = 4961
 
 [aarch64]
-commit = "e1978af47877f82e22ecba21195e954ddc137ca7"
+commit = "4cfe55767005f79837eb59ebb3da5c5e9246eedf"
 toolchain = "rustc 1.97.1 (8bab26f4f 2026-07-14)"
-b1 = 63299
-b64 = 6093
+b1 = 47406
+b64 = 4875
