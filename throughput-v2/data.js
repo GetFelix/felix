@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793331923235,
+  "lastUpdate": 1793335852650,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -39676,6 +39676,58 @@ window.BENCHMARK_DATA = {
             "range": "22180.85",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1253046.55\nmean: 1256928.39\nstdev: 22180.85\ncv: 1.76%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e53b02b51867d9545bb19a5624c110aa463e183d",
+          "message": "fix(client): dial broker addresses staggered so a silent one does not stall connect (#1656)\n\n* fix(client): dial broker addresses staggered so a silent one does not stall connect (#1232)\n\n* test(client): hold the guard on the pending dial only, keep silent sockets bound, reflow doc (#1232)",
+          "timestamp": "2026-10-30T04:46:37Z",
+          "tree_id": "f0614066e63a4e3b3597f90a682793a456491230",
+          "url": "https://github.com/GetFelix/felix/commit/e53b02b51867d9545bb19a5624c110aa463e183d"
+        },
+        "date": 1793335851842,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 484085.98,
+            "range": "27263.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 484085.98\nmean: 492640.29\nstdev: 27263.38\ncv: 5.53%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 484085.98,
+            "range": "27263.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 484085.98\nmean: 492640.29\nstdev: 27263.38\ncv: 5.53%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 112799.98,
+            "range": "987.40",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 112799.98\nmean: 113151.77\nstdev: 987.40\ncv: 0.87%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1127999.85,
+            "range": "9874.02",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1127999.85\nmean: 1131517.73\nstdev: 9874.02\ncv: 0.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
