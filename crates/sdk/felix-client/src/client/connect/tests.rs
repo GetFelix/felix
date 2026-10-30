@@ -70,10 +70,12 @@ impl Broker {
     }
 }
 
-/// An address nothing listens on: the dial gets no answer at all.
-fn silent_addr() -> Result<SocketAddr> {
+/// An address that never answers. The socket stays bound while it is held, so
+/// no other test can take the port.
+fn silent_addr() -> Result<(std::net::UdpSocket, SocketAddr)> {
     let socket = std::net::UdpSocket::bind("127.0.0.1:0")?;
-    Ok(socket.local_addr()?)
+    let addr = socket.local_addr()?;
+    Ok((socket, addr))
 }
 
 #[tokio::test]
@@ -99,7 +101,8 @@ async fn a_refusal_mixed_with_an_unreachable_broker_stays_a_connection_error() -
     let refusing = Broker::start(false)?;
     let mut config = build_client_config(refusing.cert.clone())?;
     config.connect_timeout = Duration::from_millis(300);
-    let err = Client::connect_any(&[refusing.addr, silent_addr()?], "localhost", config)
+    let (_silent, silent) = silent_addr()?;
+    let err = Client::connect_any(&[refusing.addr, silent], "localhost", config)
         .await
         .err()
         .expect("neither broker admitted the client");
@@ -187,8 +190,9 @@ async fn a_silent_token_provider_fails_at_the_fetch_timeout() -> Result<()> {
         std::future::pending::<()>().await;
         Ok(String::new())
     })));
+    let (_silent, silent) = silent_addr()?;
     let started = tokio::time::Instant::now();
-    let err = Client::connect(silent_addr()?, "localhost", config)
+    let err = Client::connect(silent, "localhost", config)
         .await
         .err()
         .expect("the provider never answered");
@@ -214,8 +218,9 @@ async fn a_custom_provider_that_never_answers_fails_at_the_fetch_timeout() -> Re
     drop(server_config);
     let mut config = build_client_config(cert)?;
     config.token_provider = Some(Arc::new(Hung));
+    let (_silent, silent) = silent_addr()?;
     let started = tokio::time::Instant::now();
-    let err = Client::connect(silent_addr()?, "localhost", config)
+    let err = Client::connect(silent, "localhost", config)
         .await
         .err()
         .expect("the provider never answered");
@@ -263,7 +268,9 @@ async fn a_silent_address_first_does_not_hold_up_a_live_broker() -> Result<()> {
     let mut config = build_client_config(broker.cert.clone())?;
     config.connect_timeout = Duration::from_secs(10);
     let started = std::time::Instant::now();
-    let silent = [silent_addr()?, silent_addr()?, broker.addr];
+    let (_a, first) = silent_addr()?;
+    let (_b, second) = silent_addr()?;
+    let silent = [first, second, broker.addr];
     let client = timeout(
         Duration::from_secs(30),
         Client::connect_any(&silent, "localhost", config),
@@ -299,7 +306,9 @@ async fn the_dial_that_loses_is_dropped_and_failures_report_in_address_order() {
         Duration::from_millis(100),
         |_| false,
         |addr| {
-            let guard = Flag(Arc::clone(&flag));
+            // Only the dial that never finishes holds the guard, so the flag
+            // is set only if that dial is dropped.
+            let guard = (addr.port() == 1).then(|| Flag(Arc::clone(&flag)));
             async move {
                 let _guard = guard;
                 if addr.port() == 1 {
