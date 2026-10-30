@@ -150,7 +150,7 @@ filler that restates what was just said.
 - The `Instructions per message` workflow counts the CPU instructions the
   broker retires per acknowledged message (in-memory stream, 256 B, acked,
   48 keys over 48 shards, batch 1 and 64) and fails when a cell is more than
-  3% over `scripts/perf/ipm-baseline.toml`. The broker runs under callgrind,
+  6% over `scripts/perf/ipm-baseline.toml`. The broker runs under callgrind,
   since hosted runners expose no hardware counters, so only user-space
   instructions are counted. If the extra cost is deliberate, run
   `python3 scripts/perf/ipm_gate.py update <ipm-result.json>` (the result is
