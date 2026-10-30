@@ -5,8 +5,8 @@
   ipm_gate.py update RESULT.json   rewrite the baseline's section for this architecture
 
 RESULT.json comes from crates/testing/felix-cluster/tests/instructions_per_message.rs.
-Only user-space instructions are gated: kernel counts move with the runner's
-kernel and are reported for information.
+The count is the instructions the broker executes in user space, as callgrind
+reports them; kernel time is not included.
 """
 import json
 import os
@@ -50,7 +50,7 @@ def check(result):
         summary(f"No baseline for {arch} in {BASELINE.name}. Proposed section:\n\n```toml\n{render(arch, result, 'unknown')}\n```")
         return 1
     section = base[arch]
-    rows = ["| cell | baseline | measured | change | spread | kernel (info) |", "|---|---|---|---|---|---|"]
+    rows = ["| cell | baseline | measured | change | spread |", "|---|---|---|---|---|"]
     failed, lower = [], []
     for name, cell in sorted(result["cells"].items()):
         want = section.get(name)
@@ -60,7 +60,7 @@ def check(result):
             continue
         change = (got - want) / want * 100.0
         rows.append(
-            f"| {name} | {want} | {got:.0f} | {change:+.2f}% | {cell['user_spread_pct']:.2f}% | {cell['kernel_per_message']:.0f} |"
+            f"| {name} | {want} | {got:.0f} | {change:+.2f}% | {cell['user_spread_pct']:.2f}% |"
         )
         if change > tol:
             failed.append(f"{name}: {got:.0f} instructions/message is {change:+.2f}% over the baseline {want} (tolerance {tol}%)")
