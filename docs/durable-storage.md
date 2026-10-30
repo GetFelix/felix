@@ -1571,6 +1571,13 @@ trims sees the same frame as before. That is how a writer fenced by the tail
 learns that a newer writer trimmed past it (see the replication design
 below).
 
+On the wire the call is a `TrimBefore` message with the stream, `before`,
+the expected tail and the caller's headers, behind a grant of its own so a
+reader cannot trim. The broker answers with the tail on success, a no-op
+included, and with `OffsetMismatch` when the expected tail is stale, as
+`publish_if` does. `CursorTooOld` gains an optional `trim_headers` field for
+the headers above.
+
 The floor is kept in a `head` file beside `epochs`, one `(record offset,
 floor, headers)` entry per trim, written before its record. At open, entries
 whose record is missing are dropped, and truncation drops entries at or above
