@@ -286,7 +286,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardFencedWipe.cfg` | the wipe on the fenced, follower-acked path the broker ships: `FelixShardSuspicion.cfg` with one write, one wipe, reports counted from answers with the floor, and storage identities; the promoted leader counts a fence answer only from the identity the report its promotion was decided on named (`FenceCounts`, #1335). Every crash in these configurations is the machine's, which may lose a suffix and rotates; a process crash keeps both and only adds states | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `NoTruncationBelowHwm` (state count and time to be measured in CI) |
 | `FelixShardFencedWipeCountsWiped.cfg` | the same counting every fence answer (`FenceChecksIds <- No`): the successor's fence counts the empty copy | violate `AckedHeldByLeader` |
 | `FelixShardFencedCrash.cfg` | the follower crash with a new identity (`RotateOnCrash`) on the same path, the passing case the report path cannot afford: the promoted leader's start record is a second record, so one write lets a crash keep part of a log | pass, the invariants of `FelixShardFencedWipe.cfg` (state count and time to be measured in CI) |
-| `FelixShardFencedCrashUnprobed.cfg` | `FelixShardFencedCrash.cfg` with the first leader not yet knowing either follower's identity (`UnprobedStart`), so a report can name none for one; placement names such a member with an empty identity, which nothing matches. Off later pull requests by weight | pass (state count and time to be measured in CI) |
+| `FelixShardFencedCrashUnprobed.cfg` | `FelixShardFencedCrash.cfg` with the first leader not yet knowing either follower's identity (`UnprobedStart`), so a report can name none for one; placement names such a member with an empty identity, which nothing matches. A walk per push, not a check: see below | pass, sampled (exhaustively, it did not finish in six hours on a hosted four-core runner, #1584) |
 | `FelixShardFencedCrashCountsUnnamed.cfg` | `FelixShardFencedCrash.cfg` also counting a replica the report named no identity for (`UnnamedCounts`): the leader reported before it asked one follower who it is, then shipped it a record and acknowledged it on the two of them; the follower crashes, and the successor's fence counts it. The code names such a member with an empty identity, which nothing matches | violate `AckedHeldByLeader` |
 | `FelixShardFencedCrashNamesByRegistration.cfg` | `FelixShardFencedCrash.cfg` with placement naming a replica the report left unnamed by its registered identity while it is at the report's incarnation (`NameByRegistration`), a rule considered and not taken: for a follower the leader had not asked yet that incarnation is stamped as the report arrives, which can follow a crash the report predates | violate `AckedHeldByLeader` |
 | `FelixShardFencedCrashNamesByInheritance.cfg` | `FelixShardFencedCrashUnprobed.cfg` with two promotions on suspicion, every promoted leader blind until it asks, process and machine crashes (`ProcessCrashes`, `KeepIdOnSameBoot`), and a report carrying the identity its leader's own promotion named each replica by, which placement names a replica the report names none for by (`NameByInheritance`, #1574). A nightly walk, not a check: see below | pass, sampled (exhaustively, 27.9M distinct states at depth 22 with 14.3M still queued when TLC's queue filled the runner's disk, 31 min in) |
@@ -1232,7 +1232,12 @@ bounds (time to 40, six writes, six moves) and TLC samples behaviours up to
 300 steps long instead, in its simulation mode. The inherited-name families
 keep their exhaustive bounds and sample them, since those are too big to
 check exhaustively. They run nightly, not per push
-(`.github/workflows/tla-walk.yml`).
+(`.github/workflows/tla-walk.yml`). The exception is
+`FelixShardFencedCrashUnprobed.cfg` and its twin
+`FelixShardFencedCrashCountsUnnamed.cfg`, walked per push at the same budget
+by the `formal-walk` job in `.github/workflows/ci.yml` whenever the `formal`
+job runs: it was an exhaustive check per push until it stopped finishing
+(#1584). The twin is also still checked exhaustively.
 
 A walk shows less than a check. It is sampling: a pass means the walks found
 nothing in their budget, not that nothing is there, and uniform random choice
@@ -1266,6 +1271,8 @@ per family:
 | `FelixShardShortCopySeat.cfg` | a crashed leader's refusal and its set-of-two exception after an RF 2 seat (see [A crashed leader's own refusal](#a-crashed-leaders-own-refusal)) | pass `AckedHeldByLeader`, `AckedAgree`, `NoTruncationBelowHwm` |
 | `FelixShardShortCopySeatAnySet.cfg` | its twin, the exception without its set check | violate `AckedHeldByLeader` |
 | `FelixShardShortCopyStaged.cfg` | the refusal beside a staged destination, the ids' comparison dropped | pass the same invariants |
+| `FelixShardFencedCrashUnprobed.cfg` | a follower crash with a new identity, the first leader not yet knowing either follower's identity (the table above). Per push | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `NoTruncationBelowHwm` |
+| `FelixShardFencedCrashCountsUnnamed.cfg` | its twin, counting a replica the report named no identity for. Per push | violate `AckedHeldByLeader` |
 
 Every walk runs with ballots and every change of leader fenced
 (`Ballots`, `FenceEveryChange`), as the broker ships, and all but the
