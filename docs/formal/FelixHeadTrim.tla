@@ -139,10 +139,10 @@ EntriesOf(l, lo, hi) ==
 
 \* The head entries a broker holds: one per trim record it still has. They
 \* are derived, rebuilt by a scan of the records.
-Head(b) == EntriesOf(log[b], base[b], Len(log[b]))
+HeadEntries(b) == EntriesOf(log[b], base[b], Len(log[b]))
 
-Committed(b) == { e \in Head(b) : e.o <= commit[b] }
-Applied(b) == IF ApplyOnStore THEN Head(b) ELSE Committed(b)
+Committed(b) == { e \in HeadEntries(b) : e.o <= commit[b] }
+Applied(b) == IF ApplyOnStore THEN HeadEntries(b) ELSE Committed(b)
 FloorOf(S) == MaxOf({1} \cup { e.f : e \in S })
 
 \* Reads below the floor are refused. Records below it may still be on disk.
@@ -161,7 +161,7 @@ ReadableStart(b) == IF FloorFromBase THEN base[b] ELSE Max(base[b], Floor(b))
 DeleteBound(b) ==
     Min(Len(log[b]),
         IF Retention THEN commit[b] + 1
-        ELSE IF DeleteAboveCommit THEN FloorOf(Head(b))
+        ELSE IF DeleteAboveCommit THEN FloorOf(HeadEntries(b))
         ELSE Min(Floor(b), commit[b] + 1))
 
 \* The newest leader serves reads once its mark covers every record it
