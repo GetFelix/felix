@@ -192,7 +192,7 @@ async fn broker_instructions_per_message() {
     );
     let cluster = Cluster::start(ClusterConfig {
         nodes: 1,
-        streams: vec![StreamSpec::new(STREAM, SHARDS)],
+        streams: vec![StreamSpec::new(STREAM, SHARDS).in_memory()],
         // A blank directory is how the broker is told to keep nothing on disk.
         broker_env: vec![("FELIX_DURABLE_STORAGE_DIR".into(), " ".into())],
         ..Default::default()
