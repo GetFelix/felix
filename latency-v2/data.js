@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793321697292,
+  "lastUpdate": 1793327848134,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -50094,6 +50094,72 @@ window.BENCHMARK_DATA = {
             "range": "105.50",
             "unit": "us",
             "extra": "trials: 5\nmedian: 363.00\nmean: 398.20\nstdev: 105.50\ncv: 26.49%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e1286dda4976ff38739da3aeb29a5c4837a09052",
+          "message": "chore: move main to 0.7.0-preview.2 (#1652)\n\nv0.7.0-preview.1 is tagged, so main's version names the next preview: the\nworkspace, the Python and TypeScript packages, the lockfiles and the Helm\nchart's appVersion are 0.7.0-preview.2. The install docs and compose.yaml keep\nnaming 0.7.0-preview.1, the latest release, until the next preview is tagged.\n\nSpec-Unaffected: version bump",
+          "timestamp": "2026-10-30T02:30:25Z",
+          "tree_id": "90482430eac32489fbe264c1c272caf872f70375",
+          "url": "https://github.com/GetFelix/felix/commit/e1286dda4976ff38739da3aeb29a5c4837a09052"
+        },
+        "date": 1793327841813,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 151,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 151.00\nmean: 150.80\nstdev: 0.45\ncv: 0.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 217,
+            "range": "2.68",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 217.00\nmean: 218.20\nstdev: 2.68\ncv: 1.23%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 268,
+            "range": "66.81",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 268.00\nmean: 297.00\nstdev: 66.81\ncv: 22.50%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 198,
+            "range": "10.76",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 198.00\nmean: 202.80\nstdev: 10.76\ncv: 5.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 388,
+            "range": "258.56",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 388.00\nmean: 507.80\nstdev: 258.56\ncv: 50.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 572,
+            "range": "1066.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 572.00\nmean: 1031.80\nstdev: 1066.52\ncv: 103.36%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
