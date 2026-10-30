@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793327851979,
+  "lastUpdate": 1793331287437,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -39520,6 +39520,58 @@ window.BENCHMARK_DATA = {
             "range": "3297.64",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 819724.75\nmean: 819264.37\nstdev: 3297.64\ncv: 0.40%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "cd78290140442e12de40d8391e8c719c2bb63da3",
+          "message": "spec(formal): model a voting staged copy beside the crashed leader's refusal (#1635) (#1644)\n\nFelixShardShortCopyStaged.cfg keeps the staged destination out of the\nquorum, but a leader that never saw it added (one restarted cleanly at the\ngeneration) counts it. FelixShardShortCopyStagedVotes.cfg turns\nLearnerVotes on with the code's fence ids and passes: the failover's ids\nstill name the staged copy, so the crashed leader refuses and the write it\nacknowledged on the staged copy survives. Its twin,\nFelixShardShortCopyStagedVotesSetOnly.cfg, takes #1635's proposed fix\n(FenceIdsSetOnly: ids without the staged copy) and must violate\nAckedHeldByLeader. Both are nightly walks.",
+          "timestamp": "2026-10-30T03:30:04Z",
+          "tree_id": "48065a9f4245cbd9e5e3db77ce90119e23d3abd5",
+          "url": "https://github.com/GetFelix/felix/commit/cd78290140442e12de40d8391e8c719c2bb63da3"
+        },
+        "date": 1793331286615,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 348298.72,
+            "range": "12437.98",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 348298.72\nmean: 351094.71\nstdev: 12437.98\ncv: 3.54%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 348298.72,
+            "range": "12437.98",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 348298.72\nmean: 351094.71\nstdev: 12437.98\ncv: 3.54%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81323.9,
+            "range": "5042.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81323.90\nmean: 79032.08\nstdev: 5042.26\ncv: 6.38%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 813238.96,
+            "range": "50422.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 813238.96\nmean: 790320.75\nstdev: 50422.59\ncv: 6.38%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
