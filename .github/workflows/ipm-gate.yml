@@ -75,8 +75,10 @@ jobs:
           # Callgrind runs the broker tens of times slower than native, and the
           # harness's start-up waits are sized for native speed.
           export FELIX_TEST_TIMEOUT_SCALE=10
-          FELIX_BROKER_WRAPPER="valgrind --tool=callgrind --callgrind-out-file=$RUNNER_TEMP/cg/cg.%p" \
+          FELIX_BROKER_WRAPPER="valgrind --tool=callgrind --fair-sched=yes --callgrind-out-file=$RUNNER_TEMP/cg/cg.%p" \
             FELIX_IPM_DIR="$RUNNER_TEMP/cg" \
+            FELIX_IPM_COMMIT="${{ github.event.pull_request.head.sha || github.sha }}" \
+            FELIX_IPM_TOOLCHAIN="$(rustc --version)" \
             FELIX_IPM_OUT="$RUNNER_TEMP/ipm-result.json" \
             cargo test --locked --release -p felix-cluster --test instructions_per_message \
             -- --ignored --nocapture

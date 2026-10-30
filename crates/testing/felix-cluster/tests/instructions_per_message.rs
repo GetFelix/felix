@@ -22,7 +22,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use felix_cluster::{Cluster, ClusterConfig, StreamSpec};
@@ -37,6 +37,9 @@ const IN_FLIGHT: usize = 64;
 /// for the first few tens of thousands of messages (queues and buffers growing
 /// to their working size), and a short warm-up leaks that into the first reps.
 const WARMUP_FACTOR: usize = 4;
+
+/// How long the idle broker is counted to find its per-second background cost.
+const IDLE_WINDOW: Duration = Duration::from_secs(10);
 
 /// (cell name, publish batch size, measured messages).
 const CELLS: [(&str, usize, usize); 2] = [("b1", 1, 20_000), ("b64", 64, 80_000)];
@@ -189,6 +192,11 @@ fn median(values: &mut [f64]) -> f64 {
 async fn broker_instructions_per_message() {
     let out = std::env::var("FELIX_IPM_OUT").expect("set FELIX_IPM_OUT to the result file");
     let reps = env_usize("FELIX_IPM_REPS", 5);
+    assert!(reps > 0, "FELIX_IPM_REPS must be at least 1");
+    let commit =
+        std::env::var("FELIX_IPM_COMMIT").expect("set FELIX_IPM_COMMIT to the measured commit");
+    let toolchain =
+        std::env::var("FELIX_IPM_TOOLCHAIN").expect("set FELIX_IPM_TOOLCHAIN to `rustc --version`");
     let dir = PathBuf::from(
         std::env::var("FELIX_IPM_DIR")
             .expect("set FELIX_IPM_DIR to the callgrind output directory"),
@@ -198,6 +206,10 @@ async fn broker_instructions_per_message() {
         streams: vec![StreamSpec::new(STREAM, SHARDS).in_memory()],
         // A blank directory is how the broker is told to keep nothing on disk.
         broker_env: vec![("FELIX_DURABLE_STORAGE_DIR".into(), " ".into())],
+        // The broker polls the control plane on this timer. Under callgrind
+        // the work it does scales with wall time, not messages, so a slow
+        // tick keeps it out of the per-message figure.
+        sync_interval_ms: 2000,
         ..Default::default()
     })
     .await
@@ -209,18 +221,37 @@ async fn broker_instructions_per_message() {
     let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value> {
         let mut cells = serde_json::Map::new();
         for (name, batch, total) in CELLS {
-            run_ingest(&cluster, batch, total * WARMUP_FACTOR, false)?;
-            let mut user = Vec::new();
+            let warm_total = total * WARMUP_FACTOR;
+            let warm = run_ingest(&cluster, batch, warm_total, false)?;
+            if (warm as usize) < warm_total * 99 / 100 {
+                bail!("cell {name}: warm-up acked {warm} of {warm_total}");
+            }
+            // What the idle broker spends per second (timers, polling), so it can
+            // be taken off each repetition in proportion to the time it ran.
+            let idle_start = Instant::now();
+            let (idle_ir, _) = count_instructions(&dir, pid, || {
+                std::thread::sleep(IDLE_WINDOW);
+                Ok(0)
+            })?;
+            let idle_rate = idle_ir as f64 / idle_start.elapsed().as_secs_f64().max(IDLE_WINDOW.as_secs_f64());
+            let (mut user, mut raw) = (Vec::new(), Vec::new());
             for rep in 0..reps {
+                let started = Instant::now();
                 let (u, acked) =
                     count_instructions(&dir, pid, || run_ingest(&cluster, batch, total, true))?;
-                if acked == 0 {
-                    bail!("cell {name} rep {rep}: nothing was acknowledged");
+                if acked != total as u64 {
+                    bail!("cell {name} rep {rep}: acked {acked} of {total}");
                 }
-                user.push(u as f64 / acked as f64);
+                let secs = started.elapsed().as_secs_f64();
+                let net = u as f64 - idle_rate * secs;
+                if net.is_nan() || net <= 0.0 {
+                    bail!("cell {name} rep {rep}: {u} instructions less idle {:.0} is not positive", idle_rate * secs);
+                }
+                raw.push(u as f64 / acked as f64);
+                user.push(net / acked as f64);
                 eprintln!(
-                    "ipm {name} rep {rep}: {:.1} instructions per message",
-                    user[rep]
+                    "ipm {name} rep {rep}: {:.1} instructions per message ({:.1} before taking off {:.0}/s idle over {secs:.1}s)",
+                    user[rep], raw[rep], idle_rate
                 );
             }
             let spread = |v: &[f64]| {
@@ -239,12 +270,17 @@ async fn broker_instructions_per_message() {
                     "user_per_message": user.iter().cloned().fold(f64::MAX, f64::min),
                     "user_median_per_message": median(&mut user.clone()),
                     "user_spread_pct": spread(&user),
+                    "raw_spread_pct": spread(&raw),
+                    "raw_min_per_message": raw.iter().cloned().fold(f64::MAX, f64::min),
+                    "idle_ir_per_second": idle_rate,
                     "user_reps": user,
                 }),
             );
         }
         Ok(serde_json::json!({
             "arch": std::env::consts::ARCH,
+            "commit": commit,
+            "toolchain": toolchain,
             "cells": cells,
         }))
     })
