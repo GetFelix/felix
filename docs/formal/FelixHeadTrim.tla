@@ -129,9 +129,11 @@ Floor(b) ==
 ReadableStart(b) == IF FloorFromBase THEN base[b] ELSE Max(base[b], Floor(b))
 
 \* Segments wholly below this may be deleted. Floor(b) is at most commit + 1
-\* when only committed trims count; the cap holds either way.
+\* when only committed trims count; the cap holds either way. The active
+\* segment is never deleted, so the last record stays.
 DeleteBound(b) ==
-    IF DeleteAboveCommit THEN StoredFloor(b) ELSE Min(Floor(b), commit[b] + 1)
+    Min(Len(log[b]),
+        IF DeleteAboveCommit THEN StoredFloor(b) ELSE Min(Floor(b), commit[b] + 1))
 
 \* The leader serves reads once its mark covers every record it inherited,
 \* which its generation-start record committing does.
@@ -231,7 +233,9 @@ Replicate(f) ==
                      /\ commit' = [commit EXCEPT ![f] = Max(@, Min(commit[leader], base[leader]))]
                 ELSE /\ log' = [log EXCEPT ![f] = SubSeq(l, 1, k + 1)]
                      /\ commit' = [commit EXCEPT ![f] = Max(@, Min(commit[leader], k + 1))]
-                     /\ UNCHANGED base
+                     \* Only a twin deletes above the commit offset, which
+                     \* truncation can then cut below.
+                     /\ base' = [base EXCEPT ![f] = Min(@, k + 1)]
           /\ gen' = [gen EXCEPT ![f] = gen[leader]]
     /\ UNCHANGED << leader, localFloor, lease, expected, fenced, retired, acked,
                     ackedFloor, writes, trims >>
