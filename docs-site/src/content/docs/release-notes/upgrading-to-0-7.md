@@ -41,7 +41,15 @@ soon after the first no longer leaves the shard closed (#1574).
 
 ## Clients
 
-Both changes below are additive. Existing code keeps working without edits.
+The Rust client is renamed (first change below). The Python, TypeScript, C and
+C# clients are unchanged, and the reconnect options are additive.
+
+- **Rust only, breaking:** `ClusterClient` is now `Client`, and the old
+  single-connection `Client` is now `Connection`, kept for tools that address
+  one broker. Applications should use `Client`. Rename in this order, or the
+  second rename undoes the first: `Client` to `Connection` first, then
+  `ClusterClient` to `Client`. Code that connected to one address with the old
+  `Client` should move to the new `Client` with that address as its only seed.
 
 - Every client binding takes four reconnect options: an attempt count, a
   deadline for one retried call, and the backoff and max backoff between
@@ -50,7 +58,7 @@ Both changes below are additive. Existing code keeps working without edits.
   `reconnect_deadline_ms`, `reconnect_backoff_ms` and
   `reconnect_max_backoff_ms`, after `token_release`. A program built against
   the older `felix.h` keeps the defaults, since zero means default for all.
-- Cache and consumer-group calls on `ClusterClient` now follow
+- Cache and consumer-group calls on `Client` now follow
   `ReconnectPolicy`, as publishes already did. The attempt limit, backoff and
   deadline bound the whole call, re-routes included. A write is sent again only
   after a refusal that says nothing was applied.

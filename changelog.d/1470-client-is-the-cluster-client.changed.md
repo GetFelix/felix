@@ -9,12 +9,15 @@
   only Rust callers change.
 
   Migrating:
-  - `ClusterClient` becomes `Client`. `Client::connect(&seeds, server_name, config)`
-    and `Client::connect_seeds` keep their arguments.
-  - The old `Client` becomes `Connection`: `Connection::connect(addr, server_name,
-    config)`. Most code that held one broker address should switch to `Client`
-    with that address as the only seed instead; a single broker needs nothing else.
-  - Rename in imports and signatures: `use felix_client::{Client, ClusterClient}`
-    becomes `use felix_client::{Client, Connection}` where both are needed.
-  - `ClusterSubscription`, `ClusterCacheWatch` and the other `Cluster*` types keep
-    their names.
+  - Rename in this order, or the second rename undoes the first: first `Client`
+    to `Connection`, then `ClusterClient` to `Client`.
+  - After both, `use felix_client::{Client, Connection}` brings in the
+    cluster-aware client (was `ClusterClient`) and the single-connection type
+    (was `Client`). `Client::connect(&seeds, server_name, config)` and
+    `Client::connect_seeds` keep their arguments.
+  - Code that held one broker address should move to `Client` with that address
+    as the only seed; a single broker needs nothing else. Use
+    `Connection::connect(addr, server_name, config)` only for tools that
+    address one named broker.
+  - `ClusterSubscription`, `ClusterCacheWatch` and the other `Cluster*` types
+    keep their names.

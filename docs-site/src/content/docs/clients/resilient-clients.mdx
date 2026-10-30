@@ -1708,8 +1708,8 @@ Three signals look alike from the outside and mean different things.
 | Signal | What happened | What the client does |
 | --- | --- | --- |
 | A jump in offsets, less `skipped_before` | The subscriber's queue overflowed and records were dropped. | Nothing. This is the only trace a broker without `subscription_lagged` leaves, so check for it. |
-| `subscription_lagged` | A durable stream's queue on the broker dropped records, and the broker ended the subscription after delivering what was queued. `resume_from` is the first dropped offset. | The cluster client and every binding resubscribe after the last event they delivered and replay the gap from the log. A bare Rust `Client` subscription ends with `SubscriptionLagged` and you resubscribe. |
-| `shard_moved` | A rebalance or a drain moved the shard. The old owner delivered everything it committed, then said where the shard went. | The cluster client and every binding follow the shard to its new owner. On a durable stream nothing is repeated or skipped. A bare Rust `Client` subscription ends and `shard_moved()` says where. |
+| `subscription_lagged` | A durable stream's queue on the broker dropped records, and the broker ended the subscription after delivering what was queued. `resume_from` is the first dropped offset. | The cluster client and every binding resubscribe after the last event they delivered and replay the gap from the log. A bare Rust `Connection` subscription ends with `SubscriptionLagged` and you resubscribe. |
+| `shard_moved` | A rebalance or a drain moved the shard. The old owner delivered everything it committed, then said where the shard went. | The cluster client and every binding follow the shard to its new owner. On a durable stream nothing is repeated or skipped. A bare Rust `Connection` subscription ends and `shard_moved()` says where. |
 
 Resume after the last event you received, not at `resume_from`: the broker can
 also drop a frame on its way out to a slow subscriber without reporting it,

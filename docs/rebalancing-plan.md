@@ -191,7 +191,7 @@ through a move and sees no refusal and no record lost or stored twice.
   and reopens on the new owner at `max(offset after the last change,
   resume_from)`; the cache log moves with the shard and keeps its offsets, so
   nothing is repeated or skipped. A sharded watch follows each shard the same
-  way. A `Client` watch still ends with the frame.
+  way. A `Connection` watch still ends with the frame.
 - **Sharded subscriptions** follow each shard and report
   `ShardEvent::ShardMoved`. The Python and TypeScript bindings wrap
   `Client`, so their subscriptions follow too, and they surface the move
@@ -510,7 +510,7 @@ fails without it with no address in the redirect.
 
 ## What is left
 
-- **A plain `Client` does not follow a group redirect.** It is one broker's
+- **A plain `Connection` does not follow a group redirect.** It is one broker's
   connections, so it returns `NotLeaderError` and leaves connecting to the
   owner to `Client`. This is by design and documented, not a gap to
   close.
