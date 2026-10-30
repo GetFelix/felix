@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793331284371,
+  "lastUpdate": 1793331525488,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -50226,6 +50226,72 @@ window.BENCHMARK_DATA = {
             "range": "45.03",
             "unit": "us",
             "extra": "trials: 5\nmedian: 515.00\nmean: 514.80\nstdev: 45.03\ncv: 8.75%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "292a4112bf507ebf39c5ca024b11fefa6e59a7b3",
+          "message": "feat(replication): say why a staged successor keeps an RF 2 shard closed (#1635) (#1649)\n\n* feat(replication): say why a staged successor keeps an RF 2 shard closed (#1635)\n\nWhen a crashed leader's copy refuses a fence it would take but for a copy\nthe failover's fence ids name beside the set of two, as after a move's\nstaged successor, it now logs a warning naming that copy, counts\nfelix_broker_fence_refused_staged_successor_total, and puts the successor\nand `felixctl placement abandon` in its refusal. The promoted leader keeps\nreplicas' refusal details in its pending fence reason, and\n`felixctl inspect shard` shows them after the count.\n\nThe refusal itself is unchanged: acknowledged_by_two reads the same set of\ntwo through failover_two and still wants the ids to name exactly it.\n\n* chore: mark the #1635 visibility change as spec-neutral\n\nSpec-Unaffected: logging, a counter and a status reason only; acknowledged_by_two decides exactly as before, and the refusal path (Unavailable) is unchanged.\n\n* fix(replication): name the extra fence ids and every cause, not a staged successor (#1635)\n\n* docs(replication): name only the staged or joining successor and the stop-then-abandon remedy (#1635)\n\n* test(replication): match the reworded staged successor reason (#1635)",
+          "timestamp": "2026-10-29T20:31:22-07:00",
+          "tree_id": "4ba4c20a9de08dd1529baacedbf5deabf107c100",
+          "url": "https://github.com/GetFelix/felix/commit/292a4112bf507ebf39c5ca024b11fefa6e59a7b3"
+        },
+        "date": 1793331519595,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 99,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 99.00\nmean: 98.80\nstdev: 0.84\ncv: 0.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 134,
+            "range": "37.31",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 134.00\nmean: 151.40\nstdev: 37.31\ncv: 24.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 205,
+            "range": "67.75",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 205.00\nmean: 217.20\nstdev: 67.75\ncv: 31.19%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 134,
+            "range": "10.70",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 134.00\nmean: 138.00\nstdev: 10.70\ncv: 7.75%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 260,
+            "range": "330.27",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 260.00\nmean: 408.20\nstdev: 330.27\ncv: 80.91%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 376,
+            "range": "998.82",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 376.00\nmean: 815.40\nstdev: 998.82\ncv: 122.49%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
