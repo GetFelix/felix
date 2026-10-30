@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793345258840,
+  "lastUpdate": 1793362947752,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -39780,6 +39780,58 @@ window.BENCHMARK_DATA = {
             "range": "6092.62",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 803541.13\nmean: 801907.41\nstdev: 6092.62\ncv: 0.76%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9554a50e206476ba30cf74d91b2049197c79739f",
+          "message": "ci: gate on broker instructions per message (#1407) (#1655)\n\n* ci: gate on broker instructions per message against a committed baseline (#1407)\n\n* ci: count instructions under callgrind, hosted runners have no PMU (#1407)\n\n* ci: scale the harness waits for a broker under callgrind (#1407)\n\n* test(cluster): in-memory streams for the instruction measurement (#1407)\n\n* test(cluster): longer warm-up and five repetitions for the instruction count (#1407)\n\n* test(cluster): warm up four times the repetition size (#1407)\n\n* ci: commit the instructions-per-message baseline (#1407)\n\n* ci: gate on the lowest repetition, baseline from it (#1407)\n\n* test(cluster): a warm-up run need only finish (#1407)\n\n* ci: set the instruction tolerance to 6% from the measured run-to-run spread (#1407)\n\n* ci: tidy the workflow header (#1407)\n\n* ci: harden the instruction gate; subtract idle cost; take commit and toolchain from the run (#1407)\n\n* ci: rebaseline instructions per message after subtracting idle cost (#1407)\n\n* ci: back to the issue's 3% tolerance; run-to-run spread is under 1% (#1407)\n\n* docs: document FELIX_BROKER_WRAPPER as a harness variable (#1407)\n\n* docs: register FELIX_BROKER_WRAPPER (#1407)",
+          "timestamp": "2026-10-30T12:15:43Z",
+          "tree_id": "fdb65927b1581c9bbf1d2190f37bd0db3265ccaf",
+          "url": "https://github.com/GetFelix/felix/commit/9554a50e206476ba30cf74d91b2049197c79739f"
+        },
+        "date": 1793362947056,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 469024.62,
+            "range": "22231.83",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 469024.62\nmean: 458774.57\nstdev: 22231.83\ncv: 4.85%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 469024.62,
+            "range": "22231.83",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 469024.62\nmean: 458774.57\nstdev: 22231.83\ncv: 4.85%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 105531.47,
+            "range": "972.20",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 105531.47\nmean: 105563.71\nstdev: 972.20\ncv: 0.92%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1055314.74,
+            "range": "9722.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1055314.74\nmean: 1055637.13\nstdev: 9722.00\ncv: 0.92%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
