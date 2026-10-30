@@ -1013,7 +1013,7 @@ async fn a_crashed_leader_beside_a_staged_successor_names_it_and_the_way_out() {
     assert_eq!(refused.code, ErrorCode::Unavailable);
     assert!(refused.detail.contains("broker-c"), "{}", refused.detail);
     assert!(
-        refused.detail.contains("staged successor"),
+        refused.detail.contains("staged or joining successor"),
         "{}",
         refused.detail
     );
