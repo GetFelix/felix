@@ -665,3 +665,31 @@ fn a_trim_is_record_flags_before_v7_and_other_kind_pairs_always_are() {
         );
     }
 }
+
+/// Before v7 a trim's bits are judged before the length, as an older build
+/// judged them: with an impossible length they are still `RecordFlags`,
+/// which recovery never repairs, and not `RecordTooLarge`, which it may.
+#[test]
+fn an_oversized_trim_before_v7_is_record_flags_not_too_large() {
+    let mut buf = Vec::new();
+    encode_record(&mut buf, 4, 1, b"", None, &RecordMark::Trim { floor: 2 });
+    let oversized = (MAX_PAYLOAD_BYTES + 1) | 0x3000_0000;
+    buf[0..4].copy_from_slice(&oversized.to_be_bytes());
+    let crc = crc32(&[&buf[0..20]]);
+    buf[20..24].copy_from_slice(&crc.to_be_bytes());
+    for version in OLDEST_READABLE_VERSION..TRIM_VERSION {
+        assert!(
+            matches!(
+                RecordHeader::decode_in(&buf, version).expect_err("older").kind,
+                CorruptionKind::RecordFlags { found } if found == oversized
+            ),
+            "v{version}"
+        );
+    }
+    assert!(matches!(
+        RecordHeader::decode_in(&buf, TRIM_VERSION)
+            .expect_err("v7")
+            .kind,
+        CorruptionKind::RecordTooLarge { .. }
+    ));
+}

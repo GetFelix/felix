@@ -316,7 +316,15 @@ impl RecordHeader {
         (self.encoded_len() - u64::from(self.payload_len)) as usize
     }
 
+    /// [`Self::decode_in`] for a segment at the newest version.
     pub fn decode(buf: &[u8]) -> DecodeResult<Self> {
+        Self::decode_in(buf, FORMAT_VERSION)
+    }
+
+    /// Decode a record header from a segment at `version`. A trim's bits in
+    /// a segment older than v7 are `RecordFlags`, judged before the length,
+    /// exactly as an older build judged them.
+    pub fn decode_in(buf: &[u8], version: u16) -> DecodeResult<Self> {
         if (buf.len() as u64) < RECORD_HEADER_LEN {
             return Err(truncated(RECORD_HEADER_LEN, buf.len() as u64));
         }
@@ -333,16 +341,15 @@ impl RecordHeader {
             }));
         }
         let len_and_flags = read_u32(buf, 0);
-        // At most one bit: a record is one kind. The trim code is the one
-        // exception; whether its segment may hold it is the caller's check
-        // (see `Self::check_version`).
+        // At most one bit: a record is one kind. The trim code, from v7, is
+        // the one exception.
         let kind = match len_and_flags & KIND_MASK {
             0 => RecordKind::Plain,
             FLAG_OPENS_BATCH => RecordKind::Opens,
             FLAG_CONTINUES_BATCH => RecordKind::Continues,
             FLAG_GENERATION_START => RecordKind::GenerationStart,
             FLAG_COMMIT => RecordKind::Commit,
-            FLAG_TRIM => RecordKind::Trim,
+            FLAG_TRIM if version >= TRIM_VERSION => RecordKind::Trim,
             _ => {
                 return Err(Corruption::new(CorruptionKind::RecordFlags {
                     found: len_and_flags,

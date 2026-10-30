@@ -244,7 +244,7 @@ async fn conflict_in(
     tail: u64,
 ) -> Result<Option<Divergence>> {
     let wanted: usize = overlapping.iter().map(|payload| payload.len() + 32).sum();
-    let stored = match log.read_log_from(first_offset, wanted.max(1)).await {
+    let stored = match log.read_replicated_from(first_offset, wanted.max(1)).await {
         Ok(stored) => stored,
         // Retention discarded the records this batch overlaps. There is nothing
         // left to compare against, and refusing on that basis would stall a
@@ -290,9 +290,26 @@ pub fn publishers_to_wire(records: &[felix_storage::log::LogRecord]) -> Vec<Opti
         .collect()
 }
 
-/// A record's mark as it travels between brokers.
-pub fn mark_to_wire(mark: RecordMark) -> ProducerMark {
-    match mark {
+/// A record whose mark the replication protocol cannot carry yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnshippableMark {
+    pub mark: RecordMark,
+}
+
+impl std::fmt::Display for UnshippableMark {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "replication cannot carry a {:?} record yet", self.mark)
+    }
+}
+
+impl std::error::Error for UnshippableMark {}
+
+/// A record's mark as it travels between brokers, or `Err` for a trim
+/// record, which the wire has no mark for until replication carries trims
+/// (issue 1662). Shipping one as unmarked would hand the follower a trim's
+/// headers as an event, so the batch is refused instead.
+pub fn mark_to_wire(mark: RecordMark) -> std::result::Result<ProducerMark, UnshippableMark> {
+    Ok(match mark {
         RecordMark::None => ProducerMark::None,
         RecordMark::Opens(batch) => ProducerMark::Opens {
             producer_id: batch.producer_id,
@@ -302,10 +319,8 @@ pub fn mark_to_wire(mark: RecordMark) -> ProducerMark {
         RecordMark::Continues => ProducerMark::Continues,
         RecordMark::GenerationStart => ProducerMark::GenerationStart,
         RecordMark::Commit => ProducerMark::Commit,
-        // `read_range` leaves trim records out, so shipping never meets one
-        // until replication carries the mark (issue 1662).
-        RecordMark::Trim { .. } => unreachable!("a trim record cannot be shipped yet"),
-    }
+        RecordMark::Trim { .. } => return Err(UnshippableMark { mark }),
+    })
 }
 
 /// A shipped mark as the log stores it.

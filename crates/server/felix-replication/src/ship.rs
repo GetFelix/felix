@@ -150,7 +150,10 @@ async fn ship_batch<R: PeerRequester>(
         }
     }
 
-    let mut records = match log.read_log_from(cursor.next_offset, max_batch_bytes).await {
+    let mut records = match log
+        .read_replicated_from(cursor.next_offset, max_batch_bytes)
+        .await
+    {
         Ok(records) => records,
         // The follower is asking for records this leader has already trimmed.
         // Shipping cannot bridge that: the records are not here to send, and
@@ -228,10 +231,29 @@ async fn ship_batch<R: PeerRequester>(
     // Marks go only when there are any: an unmarked batch is byte for byte
     // what a follower that predates them reads.
     let marks: Vec<ProducerMark> = if records.iter().any(|r| r.mark != RecordMark::None) {
-        records
+        match records
             .iter()
             .map(|record| felix_broker::replication::mark_to_wire(record.mark))
             .collect()
+        {
+            Ok(marks) => marks,
+            Err(err) => {
+                // A trim record before replication carries its mark. Sent
+                // without it, the follower would store the trim's headers as
+                // an event, so the follower is held here, loudly, instead.
+                tracing::error!(
+                    node_id = %cursor.node_id,
+                    stream = %shard.stream,
+                    shard = shard.shard,
+                    offset = cursor.next_offset,
+                    error = %err,
+                    "cannot ship this batch to the follower",
+                );
+                metrics::record_shipped(metrics::OUTCOME_READ_FAILED);
+                cursor.stalled = true;
+                return Progress::Retry;
+            }
+        }
     } else {
         Vec::new()
     };

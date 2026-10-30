@@ -1171,7 +1171,7 @@ impl ReplicaHandler {
             felix_broker::LogKind::GroupCursors => request.from_offset.max(log.base_offset()),
             _ => request.from_offset,
         };
-        let records = match log.read_log_from(from_offset, max_bytes).await {
+        let records = match log.read_replicated_from(from_offset, max_bytes).await {
             Ok(records) => records,
             Err(err) => {
                 return refused(correlation_id, ErrorCode::StorageFailed, 0, err.to_string());
@@ -1181,10 +1181,16 @@ impl ReplicaHandler {
             .iter()
             .any(|record| record.mark != felix_storage::log::RecordMark::None)
         {
-            records
+            match records
                 .iter()
                 .map(|record| replication::mark_to_wire(record.mark))
                 .collect()
+            {
+                Ok(marks) => marks,
+                Err(err) => {
+                    return refused(correlation_id, ErrorCode::StorageFailed, 0, err.to_string());
+                }
+            }
         } else {
             Vec::new()
         };

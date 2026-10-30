@@ -345,7 +345,10 @@ record; nothing applies its floor yet.
 Only a v7 segment may hold the record, and a segment is written at v7 only
 to hold one. Nothing writes one unless a caller appends a record marked as a
 trim, so until then no log leaves v6, and a log that never trims is written
-byte for byte as before.
+byte for byte as before. As with commit and generation-start records, the
+roll happens before the record is written, so a crash or a failed append in
+between leaves an empty v7 active segment. An older build then refuses the
+log even though it holds no trim.
 
 ## Index file
 

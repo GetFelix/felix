@@ -480,3 +480,12 @@ async fn a_batch_without_times_takes_this_brokers_clock() {
     let stored = stored_times(&log).await;
     assert!(stored[0] >= before, "{stored:?} predates {before}");
 }
+
+/// A trim record has no wire mark yet, so it is refused, never shipped as
+/// an ordinary record.
+#[test]
+fn a_trim_mark_is_refused_on_the_wire() {
+    let trim = RecordMark::Trim { floor: 3 };
+    assert_eq!(mark_to_wire(trim), Err(UnshippableMark { mark: trim }));
+    assert_eq!(mark_to_wire(RecordMark::Commit), Ok(ProducerMark::Commit));
+}

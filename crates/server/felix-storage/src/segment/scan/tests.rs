@@ -500,3 +500,28 @@ fn a_trim_in_an_older_segment_is_fatal() {
         );
     }
 }
+
+/// The scan judges a v6 tail holding a trim's bits and an impossible
+/// length as `RecordFlags`, fatal even with checksum-tail repair on, as a
+/// v6 build did.
+#[test]
+fn an_oversized_trim_at_an_older_tail_is_not_repaired() {
+    let dir = tempdir().expect("dir");
+    let path = dir.path().join("a.log");
+    let (mut bytes, trim_at) = write_trim_segment(&path, 6, 0);
+    let at = trim_at as usize;
+    let oversized = (crate::segment::format::MAX_PAYLOAD_BYTES + 1) | 0x3000_0000;
+    bytes[at..at + 4].copy_from_slice(&oversized.to_be_bytes());
+    let crc = crate::segment::format::crc32(&[&bytes[at..at + 20]]);
+    bytes[at + 20..at + 24].copy_from_slice(&crc.to_be_bytes());
+    std::fs::write(&path, &bytes).expect("write");
+    let err = scan(&path).expect_err("fatal");
+    let StorageError::Corruption(corruption) = err else {
+        panic!("expected corruption, got {err:?}");
+    };
+    assert!(
+        matches!(corruption.kind, CorruptionKind::RecordFlags { .. }),
+        "{:?}",
+        corruption.kind
+    );
+}
