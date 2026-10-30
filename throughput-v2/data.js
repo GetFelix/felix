@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793301415772,
+  "lastUpdate": 1793320049728,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -39364,6 +39364,58 @@ window.BENCHMARK_DATA = {
             "range": "64845.48",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 840419.92\nmean: 812919.31\nstdev: 64845.48\ncv: 7.98%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7f91b9c0bdc03c994151a683d8c6220201564d8c",
+          "message": "ci(formal): walk FelixShardFencedCrashUnprobed per push and stream TLC progress (#1584) (#1647)\n\nThe configuration no longer finishes exhaustively in a hosted runner's six\nhours, so main's push TLA job hit its 200-minute limit on every spec change.\nIt moves from the exhaustive set to the walks, registered there with its twin\nFelixShardFencedCrashCountsUnnamed, and a new formal-walk job in ci.yml walks\nboth whenever the formal job runs, at the nightly walks' budget.\n\ncheck_tla.sh now tees TLC's output to target/tla/log (target/tla/walk for\nwalks) and prints its progress lines as they come, so a run stopped at the\njob limit shows how far it got.\n\nSpec-Unaffected: CI scheduling and logging only; no spec or modelled code changes.",
+          "timestamp": "2026-10-30T00:20:33Z",
+          "tree_id": "a6146d2b90a19a10370c02d169d509d28e84b461",
+          "url": "https://github.com/GetFelix/felix/commit/7f91b9c0bdc03c994151a683d8c6220201564d8c"
+        },
+        "date": 1793320049239,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 350505.3,
+            "range": "15986.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 350505.30\nmean: 359040.44\nstdev: 15986.56\ncv: 4.45%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 350505.3,
+            "range": "15986.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 350505.30\nmean: 359040.44\nstdev: 15986.56\ncv: 4.45%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82889.88,
+            "range": "226.96",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82889.88\nmean: 82861.27\nstdev: 226.96\ncv: 0.27%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 828898.8,
+            "range": "2269.57",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 828898.80\nmean: 828612.73\nstdev: 2269.57\ncv: 0.27%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
