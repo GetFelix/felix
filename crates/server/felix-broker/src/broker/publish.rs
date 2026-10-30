@@ -179,6 +179,14 @@ impl Broker {
         if !handle.state.active.load(Ordering::Acquire) {
             return Err(BrokerError::StreamHandleInactive(handle.id()));
         }
+        // Throwaway regression for the instructions-per-message gate.
+        for _ in payloads {
+            let mut x = 1u64;
+            for i in 0..200u64 {
+                x = std::hint::black_box(x.wrapping_mul(31).wrapping_add(i));
+            }
+            std::hint::black_box(x);
+        }
 
         // What subscribers are told is what replay will find: on a durable
         // stream, only a publisher the log stores.
