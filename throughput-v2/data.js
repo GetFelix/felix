@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793331287437,
+  "lastUpdate": 1793331528260,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -39572,6 +39572,58 @@ window.BENCHMARK_DATA = {
             "range": "50422.59",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 813238.96\nmean: 790320.75\nstdev: 50422.59\ncv: 6.38%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "292a4112bf507ebf39c5ca024b11fefa6e59a7b3",
+          "message": "feat(replication): say why a staged successor keeps an RF 2 shard closed (#1635) (#1649)\n\n* feat(replication): say why a staged successor keeps an RF 2 shard closed (#1635)\n\nWhen a crashed leader's copy refuses a fence it would take but for a copy\nthe failover's fence ids name beside the set of two, as after a move's\nstaged successor, it now logs a warning naming that copy, counts\nfelix_broker_fence_refused_staged_successor_total, and puts the successor\nand `felixctl placement abandon` in its refusal. The promoted leader keeps\nreplicas' refusal details in its pending fence reason, and\n`felixctl inspect shard` shows them after the count.\n\nThe refusal itself is unchanged: acknowledged_by_two reads the same set of\ntwo through failover_two and still wants the ids to name exactly it.\n\n* chore: mark the #1635 visibility change as spec-neutral\n\nSpec-Unaffected: logging, a counter and a status reason only; acknowledged_by_two decides exactly as before, and the refusal path (Unavailable) is unchanged.\n\n* fix(replication): name the extra fence ids and every cause, not a staged successor (#1635)\n\n* docs(replication): name only the staged or joining successor and the stop-then-abandon remedy (#1635)\n\n* test(replication): match the reworded staged successor reason (#1635)",
+          "timestamp": "2026-10-29T20:31:22-07:00",
+          "tree_id": "4ba4c20a9de08dd1529baacedbf5deabf107c100",
+          "url": "https://github.com/GetFelix/felix/commit/292a4112bf507ebf39c5ca024b11fefa6e59a7b3"
+        },
+        "date": 1793331527442,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 510804.8,
+            "range": "15162.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 510804.80\nmean: 520394.80\nstdev: 15162.64\ncv: 2.91%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 510804.8,
+            "range": "15162.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 510804.80\nmean: 520394.80\nstdev: 15162.64\ncv: 2.91%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 124734.34,
+            "range": "831.01",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 124734.34\nmean: 124739.07\nstdev: 831.01\ncv: 0.67%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1247343.39,
+            "range": "8310.16",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1247343.39\nmean: 1247390.72\nstdev: 8310.16\ncv: 0.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
