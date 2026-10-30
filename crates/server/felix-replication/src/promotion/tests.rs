@@ -164,6 +164,8 @@ struct Replica {
     /// The identity its handshake gives on the group logs' fences, when it
     /// differs from `storage`.
     group_storage: Option<StorageId>,
+    /// Refuses every fence with this detail.
+    refuses: Option<&'static str>,
     _dir: TempDir,
 }
 
@@ -179,6 +181,7 @@ impl Replica {
             unreachable_logs: Vec::new(),
             storage: Some(storage_of(node_id)),
             group_storage: None,
+            refuses: None,
             _dir: dir,
         }
     }
@@ -287,6 +290,16 @@ impl PeerRequester for Replicas {
             .lock()
             .expect("lock")
             .push((node_id.to_string(), message.kind()));
+        if let (InternalMessage::Fence(fence), Some(detail)) = (&message, replica.refuses) {
+            return Ok(InternalMessage::ReplicateError(
+                felix_wire::internal::ReplicateError {
+                    correlation_id: fence.correlation_id,
+                    code: ErrorCode::Unavailable,
+                    expected_offset: 0,
+                    detail: detail.to_string(),
+                },
+            ));
+        }
         match message {
             InternalMessage::Fence(fence) => Ok(replica.handler.fence(None, fence).await),
             InternalMessage::ReplicateFetch(fetch) => Ok(replica.handler.fetch(None, fetch).await),
@@ -454,6 +467,26 @@ async fn without_a_majority_the_shard_stays_closed() {
     // Who is missing is what an operator inspecting the shard reads.
     assert!(took.is_empty(), "{took:?}");
     assert!(why.starts_with("0 of 2 replicas took the fence"), "{why}");
+}
+
+/// A replica's refusal reaches the shard's status, where an operator reads
+/// it: for #1635 it names the staged successor and `abandon`.
+#[tokio::test]
+async fn a_refusal_says_why_in_the_pending_fence() {
+    let mut replicas = Replicas::new();
+    replicas.get_mut("broker-b").reachable = false;
+    replicas.get_mut("broker-c").refuses = Some("names broker-d; see abandon");
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route(), true).await;
+
+    let Outcome::Pending { why, .. } = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert!(
+        why.ends_with("; broker-c refused: names broker-d; see abandon"),
+        "{why}"
+    );
 }
 
 /// **Once the followers decide acknowledgements, no shard opens on the

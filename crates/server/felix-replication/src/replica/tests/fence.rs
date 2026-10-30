@@ -953,8 +953,14 @@ async fn a_crashed_leader_of_two_copies_takes_the_fence() {
 /// **A set that shrank to two after acknowledging is refused (#1336).** The
 /// generation this broker led had three copies, so a record it lost may be
 /// on broker-c alone, which the set of two the routes show now leaves out.
+/// The hand-built router stands in for the shape of a staged successor the
+/// failover left out (a current control plane never sends a shrunk set's
+/// dropped copy), so the refusal names broker-c and is counted.
 #[tokio::test]
 async fn a_crashed_leader_of_a_set_that_shrank_to_two_refuses_the_fence() {
+    let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+    let handle = recorder.handle();
+    let _local = ::metrics::set_default_local_recorder(&recorder);
     let dir = tempfile::tempdir().expect("tempdir");
     led_with_its_start_record(dir.path()).await;
     let broker = broker_on(dir.path());
@@ -963,9 +969,82 @@ async fn a_crashed_leader_of_a_set_that_shrank_to_two_refuses_the_fence() {
         failover_router(&[LOCAL], 6, &["broker-a", LOCAL, "broker-c"]),
     )
     .with_unclean_start(unclean());
-    assert_eq!(
-        refusal(&handler.fence(SENDER, fence(6)).await).code,
-        ErrorCode::Unavailable
+    let answer = handler.fence(SENDER, fence(6)).await;
+    let refused = refusal(&answer);
+    assert_eq!(refused.code, ErrorCode::Unavailable);
+    assert!(refused.detail.contains("broker-c"), "{}", refused.detail);
+    assert!(
+        refused.detail.contains("staged or joining successor"),
+        "{}",
+        refused.detail
+    );
+    assert!(
+        handle.render().contains(&format!(
+            "{} 1",
+            crate::peer::metrics::FENCE_REFUSED_IDS_BEYOND_TWO_TOTAL
+        )),
+        "{}",
+        handle.render()
+    );
+}
+
+/// **A staged successor in the fence ids is named in the refusal (#1635).**
+/// The set of two is right but the ids also name broker-c, so the copy
+/// refuses, as it must: the leader may have counted broker-c. No retry ends
+/// that, so the refusal names broker-c and the possible causes, and it is counted.
+/// A refusal for another reason says neither.
+#[tokio::test]
+async fn a_crashed_leader_beside_a_staged_successor_names_it_and_the_way_out() {
+    let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+    let handle = recorder.handle();
+    let _local = ::metrics::set_default_local_recorder(&recorder);
+    let dir = tempfile::tempdir().expect("tempdir");
+    led_with_its_start_record(dir.path()).await;
+    let broker = broker_on(dir.path());
+    let handler = ReplicaHandler::new(
+        Arc::clone(&broker),
+        failover_router(&[LOCAL], 6, &["broker-a", LOCAL, "broker-c"]),
+    )
+    .with_unclean_start(unclean());
+
+    let answer = handler.fence(SENDER, fence(6)).await;
+
+    let refused = refusal(&answer);
+    assert_eq!(refused.code, ErrorCode::Unavailable);
+    assert!(refused.detail.contains("broker-c"), "{}", refused.detail);
+    assert!(
+        refused.detail.contains("staged or joining successor"),
+        "{}",
+        refused.detail
+    );
+    assert!(
+        handle.render().contains(&format!(
+            "{} 1",
+            crate::peer::metrics::FENCE_REFUSED_IDS_BEYOND_TWO_TOTAL
+        )),
+        "{}",
+        handle.render()
+    );
+
+    // Without the start record nothing says the losses are the two's: the
+    // plain refusal, not counted.
+    let dir = tempfile::tempdir().expect("tempdir");
+    led_before_a_crash(dir.path()).await;
+    let broker = broker_on(dir.path());
+    let handler = ReplicaHandler::new(
+        Arc::clone(&broker),
+        failover_router(&[LOCAL], 6, &["broker-a", LOCAL, "broker-c"]),
+    )
+    .with_unclean_start(unclean());
+    let answer = handler.fence(SENDER, fence(6)).await;
+    assert!(!refusal(&answer).detail.contains("abandon"), "{answer:?}");
+    assert!(
+        handle.render().contains(&format!(
+            "{} 1",
+            crate::peer::metrics::FENCE_REFUSED_IDS_BEYOND_TWO_TOTAL
+        )),
+        "{}",
+        handle.render()
     );
 }
 

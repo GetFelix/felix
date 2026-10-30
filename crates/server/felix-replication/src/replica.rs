@@ -69,6 +69,36 @@ struct Verified {
     through: u64,
 }
 
+/// A failover's set of two beside the copy a crashed leader kept: what
+/// [`ReplicaHandler::failover_two`] found.
+struct FailoverTwo {
+    /// The two the route shows, this broker and the fencing leader.
+    routed: std::collections::BTreeSet<String>,
+    /// The copies the failover's fence ids name.
+    named: Vec<String>,
+}
+
+impl FailoverTwo {
+    /// Whether the fence ids name exactly the two.
+    fn acknowledged(&self) -> bool {
+        self.named.iter().eq(self.routed.iter())
+    }
+
+    /// The copies the fence ids name beyond the two, when they name both:
+    /// with this control plane that is a staged or joining successor the
+    /// failover left out (#1635).
+    fn beyond(&self) -> Vec<String> {
+        if !self.routed.iter().all(|node| self.named.contains(node)) {
+            return Vec::new();
+        }
+        self.named
+            .iter()
+            .filter(|node| !self.routed.contains(*node))
+            .cloned()
+            .collect()
+    }
+}
+
 impl ReplicaHandler {
     pub fn new(broker: Arc<Broker>, router: Arc<ShardRouter>) -> Self {
         Self {
@@ -1307,6 +1337,41 @@ impl ReplicaHandler {
                 "could not record giving up the generation this broker led before its crash",
             );
         }
+        metrics::record_replicated(metrics::OUTCOME_REFUSED);
+        let beyond = self
+            .failover_two(key, log, sender)
+            .await
+            .map(|two| two.beyond())
+            .unwrap_or_default();
+        if !beyond.is_empty() {
+            // Every check of the exception passed but the ids, which also
+            // name a copy outside the routed pair. Placement leaves an
+            // old-set copy out of the report only for a staged or joining
+            // successor (#1635).
+            let extra = beyond.join(", ");
+            tracing::warn!(
+                stream = %key.stream,
+                shard = key.shard,
+                generation,
+                extra = %extra,
+                "refusing a fence: the failover's fence ids name {extra} beside the set of \
+                 two; with this control plane that is a staged or joining successor the \
+                 failover left out; no retry ends it, see the replication design's \
+                 \"A leader's own crash\" (#1635)",
+            );
+            metrics::record_fence_refused_ids_beyond_two();
+            return Some(refused(
+                correlation_id,
+                ErrorCode::Unavailable,
+                0,
+                format!(
+                    "this broker led the shard before a crash, and the failover's fence ids \
+                     also name {extra} beside the set of two, which with this control plane is \
+                     a staged or joining successor the failover left out; see the replication \
+                     design's \"A leader's own crash\" (#1635)"
+                ),
+            ));
+        }
         tracing::info!(
             stream = %key.stream,
             shard = key.shard,
@@ -1314,7 +1379,6 @@ impl ReplicaHandler {
             "refusing a fence: this copy is the one this broker led before a crash that \
              may have cost it acknowledged records",
         );
-        metrics::record_replicated(metrics::OUTCOME_REFUSED);
         Some(refused(
             correlation_id,
             ErrorCode::Unavailable,
@@ -1342,38 +1406,43 @@ impl ReplicaHandler {
         log: &felix_broker::StreamLog,
         sender: Option<&str>,
     ) -> bool {
-        let Some(sender) = sender else {
-            return false;
-        };
+        self.failover_two(key, log, sender)
+            .await
+            .is_some_and(|two| two.acknowledged())
+    }
+
+    /// The set of two of [`Self::acknowledged_by_two`], every check but the
+    /// fence ids' passed, and the copies those ids name.
+    async fn failover_two(
+        &self,
+        key: &felix_router::ShardKey,
+        log: &felix_broker::StreamLog,
+        sender: Option<&str>,
+    ) -> Option<FailoverTwo> {
+        let sender = sender?;
         let accepted = log.accepted_generation();
-        let Ok(log_end) = log.tail_offset().await else {
-            return false;
-        };
+        let log_end = log.tail_offset().await.ok()?;
         if last_generation(&log.generations(), log_end) != accepted {
-            return false;
+            return None;
         }
         let snapshot = self.router.snapshot();
-        let Some(route) = snapshot.get(key) else {
-            return false;
-        };
-        let Some(acknowledged) = route.fence_storage_ids.as_deref() else {
-            return false;
-        };
+        let route = snapshot.get(key)?;
+        let acknowledged = route.fence_storage_ids.as_deref()?;
         if accepted.checked_add(1) != Some(route.generation) {
-            return false;
+            return None;
         }
-        let routed: std::collections::BTreeSet<&str> = std::iter::once(&route.leader)
+        let routed: std::collections::BTreeSet<String> = std::iter::once(&route.leader)
             .chain(&route.replicas)
-            .map(|node| node.node_id.as_str())
+            .map(|node| node.node_id.clone())
             .collect();
         let local = self.router.local_node_id();
-        routed.len() == 2
-            && routed.contains(local)
-            && routed.contains(sender)
-            && acknowledged
-                .keys()
-                .map(String::as_str)
-                .eq(routed.iter().copied())
+        if routed.len() != 2 || !routed.contains(local) || !routed.contains(sender) {
+            return None;
+        }
+        Some(FailoverTwo {
+            routed,
+            named: acknowledged.keys().cloned().collect(),
+        })
     }
 
     /// Refuse a fence for a copy that holds no promise on disk unless the

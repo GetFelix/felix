@@ -277,6 +277,9 @@ async fn fence_log<R: PeerRequester>(
     // Answers from a copy the report did not name: they took the promise,
     // which still refuses the old leader, but count for nothing here.
     let mut other_copies = 0;
+    // Why the replicas that refused did, for the shard's status: a refusal
+    // that no retry gets past names its way out there.
+    let mut refusals: Vec<String> = Vec::new();
     let mut asks = futures::stream::FuturesUnordered::new();
     for replica in replicas {
         asks.push(ask_fence(
@@ -322,6 +325,9 @@ async fn fence_log<R: PeerRequester>(
                     answer = ?other.as_ref().map(InternalMessage::kind),
                     "a replica did not take the fence",
                 );
+                if let Ok(InternalMessage::ReplicateError(err)) = other {
+                    refusals.push(format!("{node_id} refused: {}", err.detail));
+                }
             }
         }
     }
@@ -337,6 +343,10 @@ async fn fence_log<R: PeerRequester>(
             why.push_str(&format!(
                 "; {other_copies} answered from another copy than the failover's report named"
             ));
+        }
+        for refusal in &refusals {
+            why.push_str("; ");
+            why.push_str(refusal);
         }
         return Err(Outcome::pending(why, took(&answered)));
     }

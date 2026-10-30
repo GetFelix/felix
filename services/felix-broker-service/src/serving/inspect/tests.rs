@@ -297,3 +297,35 @@ fn a_fence_stopped_by_a_newer_generation_says_why() {
         Some("0 of 2 replicas took the fence; broker-b has accepted a newer generation: 43")
     );
 }
+
+/// A replica's refusal that follows the attempt's count reaches the reason,
+/// as the staged successor of #1635 and `abandon` do.
+#[test]
+fn a_fence_refused_by_a_replica_says_why() {
+    let mut observed = leading(Phase::Fencing);
+    observed.status = Some(ShardStatus {
+        generation: 42,
+        tail: None,
+        followers: vec![],
+        fence: Some(FenceStatus {
+            took: vec![],
+            pending: vec!["broker-b".to_string(), "broker-c".to_string()],
+            attempts: 3,
+            retry_at: None,
+            why: Some(
+                "0 of 2 replicas took the fence on the Stream log, 1 needed with this broker; \
+                 broker-b refused: the fence ids also name broker-c; see `felixctl placement abandon`"
+                    .to_string(),
+            ),
+        }),
+        drain_pending: false,
+        behind: false,
+    });
+    assert_eq!(
+        build(observed).detail.as_deref(),
+        Some(
+            "0 of 2 replicas took the fence; broker-b refused: the fence ids also name broker-c; \
+             see `felixctl placement abandon`"
+        )
+    );
+}
