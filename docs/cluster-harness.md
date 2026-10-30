@@ -179,6 +179,8 @@ hang; CI sets `3` and the coverage job `5`. Raising the constants instead would
 have bought the same green at the cost of never noticing a hang on the machines
 that are fast enough to.
 
+`FELIX_BROKER_WRAPPER` is a space-separated command prefix the harness starts every broker under (for example `valgrind --tool=callgrind`). The wrapper must exec the broker, so the child's pid is the broker's.
+
 It does not apply to a wait that *is* the subject. `losing_quorum_fails_writes_loudly_not_silently`
 waits on a leader noticing it has not heard a quorum, and widening that would
 only make the test slower at noticing nothing; it is serialised instead.

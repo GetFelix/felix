@@ -1,0 +1,96 @@
+name: Instructions per message
+
+# Counts the CPU instructions the broker retires per acknowledged message and
+# fails when that is more than the tolerance above scripts/perf/ipm-baseline.toml.
+# Instruction counts barely move with runner noise, unlike throughput, so a
+# per-message cost of a few percent shows up on the PR that adds it. See CONTRIBUTING.md.
+#
+# Not part of `CI ok`: whether it blocks merges is a repository setting.
+
+on:
+  pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "docs-site/**"
+      - "**/*.md"
+  workflow_dispatch:
+
+concurrency:
+  group: ipm-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ipm:
+    name: Broker instructions per message (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.97.1"
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          cache-on-failure: true
+
+      # Hosted runners expose no hardware performance counters (perf stat
+      # reports instructions as unsupported), so the broker runs under callgrind.
+      - name: Install valgrind
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq valgrind
+          valgrind --version
+
+      # Release profile, as shipped: LTO and one codegen unit change the count.
+      - name: Build
+        run: |
+          cargo build --locked --release -p felix-broker-service --bin felix-broker
+          cargo build --locked --release -p felix-loadgen
+          cargo test --locked --release -p felix-cluster --test instructions_per_message --no-run
+
+      - name: Measure
+        run: |
+          mkdir -p "$RUNNER_TEMP/cg"
+          # Callgrind runs the broker tens of times slower than native, and the
+          # harness's start-up waits are sized for native speed.
+          export FELIX_TEST_TIMEOUT_SCALE=10
+          FELIX_BROKER_WRAPPER="valgrind --tool=callgrind --fair-sched=yes --callgrind-out-file=$RUNNER_TEMP/cg/cg.%p" \
+            FELIX_IPM_DIR="$RUNNER_TEMP/cg" \
+            FELIX_IPM_COMMIT="${{ github.event.pull_request.head.sha || github.sha }}" \
+            FELIX_IPM_TOOLCHAIN="$(rustc --version)" \
+            FELIX_IPM_OUT="$RUNNER_TEMP/ipm-result.json" \
+            cargo test --locked --release -p felix-cluster --test instructions_per_message \
+            -- --ignored --nocapture
+          cp "$RUNNER_TEMP/ipm-result.json" ipm-result.json
+
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ipm-result-${{ matrix.arch }}
+          path: ipm-result.json
+          if-no-files-found: warn
+
+      - name: Compare with the baseline
+        run: python3 scripts/perf/ipm_gate.py check ipm-result.json

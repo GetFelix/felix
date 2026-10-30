@@ -53,7 +53,7 @@ pub(crate) fn spawn_broker(
     // Its own certificate, issued to its node id by the cluster's CA, so the
     // peer transport runs authenticated the way a deployment does.
     let cert = pki::issue(root, &node_id)?;
-    let mut command = Command::new(binary);
+    let mut command = broker_command(binary);
     command
         .env("FELIX_NODE_ID", &node_id)
         .env("FELIX_INTERNAL_TLS_CERT", &cert.cert)
@@ -146,6 +146,22 @@ pub(crate) fn spawn_broker(
         data_dir,
         process: Some(process),
     })
+}
+
+/// The broker's command line. `FELIX_BROKER_WRAPPER`, a space-separated
+/// prefix, runs it under a tool such as valgrind; the wrapper must exec the
+/// broker so the child's pid is the one being watched.
+fn broker_command(binary: &PathBuf) -> Command {
+    let wrapper = std::env::var("FELIX_BROKER_WRAPPER").unwrap_or_default();
+    let mut words = wrapper.split_whitespace();
+    match words.next() {
+        Some(first) => {
+            let mut command = Command::new(first);
+            command.args(words).arg(binary);
+            command
+        }
+        None => Command::new(binary),
+    }
 }
 
 /// Locate the `felix-broker` binary built alongside this harness.

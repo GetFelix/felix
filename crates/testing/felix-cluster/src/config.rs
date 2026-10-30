@@ -92,9 +92,21 @@ pub struct StreamSpec {
     pub consistency: String,
     /// The region the stream's data belongs to. `None` places it anywhere.
     pub region: Option<String>,
+    /// Whether the stream is durable. On by default; off makes it in-memory,
+    /// for measurements that must not include the disk.
+    pub durable: bool,
 }
 
 impl StreamSpec {
+    /// The same stream, kept in memory only. The broker needs no storage
+    /// directory for it.
+    pub fn in_memory(self) -> Self {
+        Self {
+            durable: false,
+            ..self
+        }
+    }
+
     /// The same stream, homed in `region`.
     pub fn in_region(self, region: impl Into<String>) -> Self {
         Self {
@@ -112,6 +124,7 @@ impl StreamSpec {
             replication_factor: 1,
             consistency: "Leader".to_string(),
             region: None,
+            durable: true,
         }
     }
 
@@ -125,6 +138,7 @@ impl StreamSpec {
             replication_factor,
             consistency: "Quorum".to_string(),
             region: None,
+            durable: true,
         }
     }
 
@@ -136,6 +150,7 @@ impl StreamSpec {
             replication_factor,
             consistency: "Leader".to_string(),
             region: None,
+            durable: true,
         }
     }
 }
