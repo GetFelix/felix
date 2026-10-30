@@ -79,6 +79,7 @@ tlc() {
     FelixShardReads*) module="FelixShardReads" ;;
     FelixShardSessions*) module="FelixShardSessions" ;;
     FelixAtomicCommit*) module="FelixAtomicCommit" ;;
+    FelixHeadTrim*) module="FelixHeadTrim" ;;
     FelixGroups*) module="FelixGroups" ;;
   esac
   local flags=(-deadlock -workers "${TLC_WORKERS:-auto}" -checkpoint 0 "$@"
@@ -204,6 +205,13 @@ expectations=(
   "FelixAtomicCommit pass"
   "FelixAtomicCommitSplitRecords violates NoPartialCommit"
   "FelixAtomicCommitPartialApply violates NoPartialCommit"
+  "FelixHeadTrim pass"
+  "FelixHeadTrimLocal violates NoReadBelowAckedTrim"
+  "FelixHeadTrimFloorFromBase violates NoReadBelowAckedTrim"
+  "FelixHeadTrimApplyOnStore violates NeverMoreThanAsked"
+  "FelixHeadTrimDeleteAboveCommit violates NothingLostAboveFloor"
+  "FelixHeadTrimUnconditional violates StaleTrimRefused"
+  "FelixHeadTrimResumeAtEarliest violates StaleTrimRefused"
   "FelixShardFencedAckTwoPromotionsStart pass"
   "FelixShardFencedAckStagedMoveDestination violates AckedHeldByLeader"
   "FelixShardFencedAckMoveShort pass"
