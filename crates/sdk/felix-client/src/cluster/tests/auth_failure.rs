@@ -11,7 +11,7 @@ use tokio::sync::Notify;
 
 use super::connections::{default_config, policy};
 use super::stub_broker::StubBroker;
-use crate::cluster::ClusterClient;
+use crate::cluster::Client;
 use crate::test_support::build_server_config;
 use crate::{AuthError, AuthErrorKind, RefreshingToken};
 
@@ -72,21 +72,21 @@ fn provider(then: Then) -> Provider {
 async fn connected(
     provider: &Provider,
     script: impl Fn(u64) -> Message + Send + Sync + 'static,
-) -> Result<(StubBroker, ClusterClient)> {
+) -> Result<(StubBroker, Client)> {
     let (server_config, cert) = build_server_config()?;
     let broker = StubBroker::start_with(server_config, script)?;
     let mut config = default_config(cert)?;
     config.auth_token = None;
     config.token_provider = Some(provider.token.clone());
     let cluster =
-        ClusterClient::connect_with_policy(&[broker.addr], "localhost", config, policy()).await?;
+        Client::connect_with_policy(&[broker.addr], "localhost", config, policy()).await?;
     // Drop the connect's token so the next stream open must ask again.
     crate::TokenProvider::invalidate(provider.token.as_ref(), "first");
     provider.calls.store(1, Ordering::SeqCst);
     Ok((broker, cluster))
 }
 
-async fn open(cluster: &ClusterClient) -> Result<()> {
+async fn open(cluster: &Client) -> Result<()> {
     cluster
         .open_shard("t1", "default", "orders", 0, None)
         .await
@@ -178,13 +178,9 @@ async fn an_untyped_error_about_a_token_is_retried() -> Result<()> {
         retry: None,
         detail: None,
     })?;
-    let cluster = ClusterClient::connect_with_policy(
-        &[broker.addr],
-        "localhost",
-        default_config(cert)?,
-        policy(),
-    )
-    .await?;
+    let cluster =
+        Client::connect_with_policy(&[broker.addr], "localhost", default_config(cert)?, policy())
+            .await?;
 
     assert!(open(&cluster).await.is_err());
 

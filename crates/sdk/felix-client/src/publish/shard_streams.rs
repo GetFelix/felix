@@ -2,7 +2,7 @@
 //!
 //! Every publish has to name its shard for these to keep order: one shard
 //! split between its own stream and the hashed pool would be on two writers.
-//! A `ClusterClient` knows every shard; a plain `Client` learns a stream's
+//! A `Client` knows every shard; a plain `Connection` learns a stream's
 //! width before its first keyed publish to it (`widths`).
 //!
 //! The broker answers a pipelining stream's publishes in the order the stream

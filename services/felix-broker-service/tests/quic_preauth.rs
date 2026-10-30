@@ -15,7 +15,7 @@ use felix_broker::{Broker, StreamMetadata};
 use felix_broker_service::config::BrokerConfig;
 use felix_broker_service::serving::auth::demo::{DemoAuth, demo_auth_for_tenant};
 use felix_broker_service::serving::quic::{read_message_limited, serve, write_message};
-use felix_client::{Client, ClientConfig};
+use felix_client::{ClientConfig, Connection};
 use felix_storage::EphemeralCache;
 use felix_transport::{QuicClient, QuicConnection, QuicServer, TransportConfig};
 use felix_wire::{FrameHeader, Message};
@@ -215,7 +215,7 @@ async fn client_event_connections_survive_the_deadline() -> Result<()> {
     let mut config = ClientConfig::from_env_or_yaml(quinn_config(harness.cert.clone())?, None)?;
     config.auth_tenant_id = Some(harness.demo.tenant_id.clone());
     config.auth_token = Some(harness.demo.token.clone());
-    let client = Client::connect(harness.addr, "localhost", config).await?;
+    let client = Connection::connect(harness.addr, "localhost", config).await?;
 
     tokio::time::sleep(Duration::from_millis(900)).await;
     timeout(

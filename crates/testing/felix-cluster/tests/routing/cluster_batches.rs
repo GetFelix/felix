@@ -1,4 +1,4 @@
-//! Batches through a `ClusterClient` go to each shard's leader: from the first
+//! Batches through a `Client` go to each shard's leader: from the first
 //! one, with or without an ack, and across a leader change.
 //!
 //! Run with `cargo test -p felix-cluster --test routing cluster_batches::`.
@@ -44,7 +44,7 @@ fn records(round: usize, count: usize) -> Vec<(Bytes, Vec<u8>)> {
         .collect()
 }
 
-async fn connect_via_non_owner(cluster: &Cluster) -> felix_client::ClusterClient {
+async fn connect_via_non_owner(cluster: &Cluster) -> felix_client::Client {
     let (_owner, non_owner) = cluster
         .owner_and_non_owner(STREAM)
         .await
@@ -184,7 +184,7 @@ async fn the_first_batches_go_to_the_leaders_with_or_without_an_ack() {
 }
 
 /// Publish rounds of records until `rounds` are done, recording which records
-/// the broker accepted. `publish` is one of the two `ClusterClient` calls.
+/// the broker accepted. `publish` is one of the two `Client` calls.
 async fn publish_rounds<F, Fut>(rounds: usize, publish: F) -> (BTreeSet<String>, usize)
 where
     F: Fn(Vec<(Bytes, Vec<u8>)>) -> Fut,

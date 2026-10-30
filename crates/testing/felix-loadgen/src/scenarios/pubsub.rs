@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use felix_client::{ClusterClient, Publisher};
+use felix_client::{Client, Publisher};
 use felix_wire::AckMode;
 
 use super::connect::{client, cluster};
@@ -17,7 +17,7 @@ use crate::stats::{Percentiles, Samples, fmt_us, report};
 enum Route {
     /// To the shard's owner, as a client following the assignment does. The
     /// latency then does not depend on which broker leads the shard.
-    Owner(Box<ClusterClient>),
+    Owner(Box<Client>),
     /// Through the first broker, which relays to the owner when it is not.
     Entry(Publisher),
 }

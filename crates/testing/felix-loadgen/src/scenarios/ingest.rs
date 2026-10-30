@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result};
-use felix_client::{Client, ClusterClient, Publisher};
+use felix_client::{Client, Connection, Publisher};
 use felix_wire::AckMode;
 use felix_wire::routing::{ShardRouting, shard_for_routing};
 use tokio::task::JoinSet;
@@ -35,7 +35,7 @@ pub struct IngestOptions {
     /// bytes, so a `subscribe` run in another process can report delivery
     /// latency.
     pub stamp_send_time: bool,
-    /// Publish through one shared `ClusterClient` per generator, which sends
+    /// Publish through one shared `Client` per generator, which sends
     /// each shard's records straight to the shard's owner, instead of one
     /// plain connection per publisher whose batches a non-owner forwards.
     pub cluster: bool,
@@ -471,7 +471,7 @@ enum Sink {
     Single(Publisher),
     /// The generator's shared cluster client, which sends each shard's records
     /// to the shard's owner.
-    Cluster(Arc<ClusterClient>),
+    Cluster(Arc<Client>),
 }
 
 /// What an acknowledged or queued send came back with.
@@ -572,7 +572,7 @@ async fn connect_publisher(
         Duration::from_millis(200),
         |addr| async move {
             let config = crate::tls::client_config(tenant, token)?;
-            let client = Client::connect(addr, "localhost", config)
+            let client = Connection::connect(addr, "localhost", config)
                 .await
                 .with_context(|| format!("connect to {addr}"))?;
             client.publisher().await
@@ -634,7 +634,7 @@ impl Conn {
                     Duration::from_millis(200),
                     |addr| async move {
                         let config = crate::tls::client_config(&target.tenant, token)?;
-                        let client = Client::connect(addr, "localhost", config).await?;
+                        let client = Connection::connect(addr, "localhost", config).await?;
                         client.publisher().await
                     },
                 )
@@ -802,7 +802,12 @@ impl KeyPlan {
 
     /// Spread across the stream's shards when the shard count is known, else
     /// `k0..k{n}` on what is assumed to be one shard.
-    async fn learn(client: &Client, common: &Common, stream: &str, opts: &IngestOptions) -> Self {
+    async fn learn(
+        client: &Connection,
+        common: &Common,
+        stream: &str,
+        opts: &IngestOptions,
+    ) -> Self {
         let (names, count, routing) = key_names(client, common, stream, opts).await;
         let mut plan = Self {
             names,
@@ -822,7 +827,7 @@ impl KeyPlan {
 /// The routing key names an ingest run cycles through. Spread across the
 /// stream's shards when the shard count is known, else `k0..k{n}`.
 async fn key_names(
-    client: &Client,
+    client: &Connection,
     common: &Common,
     stream: &str,
     opts: &IngestOptions,

@@ -13,7 +13,7 @@ impl Cluster {
     /// Exposed for tests that care about the connection itself rather than
     /// what is published over it -- which listener the pools landed on, for
     /// instance.
-    pub async fn client_on(&self, node_id: &str) -> Result<felix_client::Client> {
+    pub async fn client_on(&self, node_id: &str) -> Result<felix_client::Connection> {
         let node = self
             .node(node_id)
             .ok_or_else(|| anyhow!("unknown node {node_id}"))?;
@@ -213,7 +213,7 @@ impl Cluster {
         &self,
         node_id: &str,
         stream: &str,
-    ) -> Result<(felix_client::Client, felix_client::Subscription)> {
+    ) -> Result<(felix_client::Connection, felix_client::Subscription)> {
         self.subscribe_on_with_token(node_id, stream, &self.client_token())
             .await
     }
@@ -224,7 +224,7 @@ impl Cluster {
         node_id: &str,
         stream: &str,
         token: &str,
-    ) -> Result<(felix_client::Client, felix_client::Subscription)> {
+    ) -> Result<(felix_client::Connection, felix_client::Subscription)> {
         let node = self
             .node(node_id)
             .ok_or_else(|| anyhow!("unknown node {node_id}"))?;
@@ -246,7 +246,7 @@ impl Cluster {
         &self,
         node_id: &str,
         stream: &str,
-    ) -> Result<(felix_client::Client, felix_client::Subscription)> {
+    ) -> Result<(felix_client::Connection, felix_client::Subscription)> {
         let node = self
             .node(node_id)
             .ok_or_else(|| anyhow!("unknown node {node_id}"))?;
@@ -270,7 +270,7 @@ impl Cluster {
         node_id: &str,
         stream: &str,
         shard: u32,
-    ) -> Result<(felix_client::Client, felix_client::Subscription)> {
+    ) -> Result<(felix_client::Connection, felix_client::Subscription)> {
         let node = self
             .node(node_id)
             .ok_or_else(|| anyhow!("unknown node {node_id}"))?;

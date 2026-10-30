@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use felix_client::Client;
+use felix_client::Connection;
 
 use super::Common;
 use super::connect::client;
@@ -18,7 +18,7 @@ pub(super) async fn round_trips<F, Fut>(
     op: Arc<F>,
 ) -> Result<(Percentiles, f64, u64)>
 where
-    F: Fn(Arc<Client>, u64) -> Fut + Send + Sync + 'static,
+    F: Fn(Arc<Connection>, u64) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = Result<()>> + Send,
 {
     let per_worker = (common.warmup + common.total).div_ceil(common.concurrency.max(1));

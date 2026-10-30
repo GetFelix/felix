@@ -257,7 +257,7 @@ async fn a_binary_ack_carries_its_code_to_the_caller() -> Result<()> {
 }
 
 /// A binary publisher learns why a shard refused it and how long to wait,
-/// which is what `ClusterClient` backs off on.
+/// which is what `Client` backs off on.
 #[tokio::test]
 async fn a_binary_ack_carries_its_detail_to_the_caller() -> Result<()> {
     let bytes = felix_wire::binary::encode_publish_ack_bytes_detailed(

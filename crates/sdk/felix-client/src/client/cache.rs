@@ -1,4 +1,4 @@
-//! Cache and counter requests through a [`Client`].
+//! Cache and counter requests through a [`Connection`].
 //!
 //! Each goes to one of the client's cache workers, round-robin; see
 //! `crate::cache` for how a worker carries it.
@@ -10,11 +10,11 @@ use bytes::Bytes;
 use felix_wire::Message;
 use tokio::sync::oneshot;
 
-use super::Client;
+use super::Connection;
 use crate::cache::{CacheConditionResult, CacheRequest, CacheWorker, VersionedValue};
 use felix_wire::CacheCondition;
 
-impl Client {
+impl Connection {
     /// Cache requests in flight on each cache connection, for metrics.
     ///
     /// Approximate: the count is raised after a request is queued and lowered

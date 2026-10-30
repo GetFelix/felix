@@ -5,9 +5,9 @@ use anyhow::Result;
 
 use std::sync::Arc;
 
-use super::{ClusterClient, Owner, ShardKey, StreamKey};
+use super::{Client, Owner, ShardKey, StreamKey};
 
-impl ClusterClient {
+impl Client {
     /// Which shard a routing key resolves to, using the same function the
     /// broker routes with (`felix_wire::routing::shard_for_routing`) and the
     /// stream's own mapping.

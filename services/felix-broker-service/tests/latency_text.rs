@@ -13,7 +13,7 @@ use felix_authz::{
 };
 use felix_broker::{Broker, StreamMetadata};
 use felix_broker_service::serving::auth::{BrokerAuth, ControlPlaneKeyStore};
-use felix_client::{Client, ClientConfig};
+use felix_client::{ClientConfig, Connection};
 use felix_storage::EphemeralCache;
 use felix_transport::{QuicServer, TransportConfig};
 use jsonwebtoken::Algorithm;
@@ -123,7 +123,7 @@ async fn text_publish_batch_large_payload_no_drop() -> Result<()> {
         Arc::clone(&auth.auth),
     ));
 
-    let client = Client::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
+    let client = Connection::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
     let mut sub = client.subscribe("t1", "default", "latency").await?;
     let publisher = client.publisher().await?;
 

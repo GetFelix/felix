@@ -77,7 +77,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
-use felix_client::{AckMode, ClientConfig, ClusterClient, quic_client_config, root_store_from_pem_file};
+use felix_client::{AckMode, ClientConfig, Client, quic_client_config, root_store_from_pem_file};
 
 // Must match FELIX_AUTH_TENANT.
 const TENANT: &str = "dev";
@@ -98,7 +98,7 @@ async fn bounded<T>(what: &str, limit: Duration, call: impl Future<Output = Resu
         .with_context(|| format!("{what} did not finish within {limit:?}"))?
 }
 
-async fn connect() -> Result<Arc<ClusterClient>> {
+async fn connect() -> Result<Arc<Client>> {
     let ca_file = std::env::var("FELIX_CA_FILE").context("set FELIX_CA_FILE")?;
     let roots = Arc::new(root_store_from_pem_file(&ca_file)?);
     // Reads FELIX_AUTH_TENANT and FELIX_AUTH_TOKEN.
@@ -106,19 +106,19 @@ async fn connect() -> Result<Arc<ClusterClient>> {
 
     let broker = std::env::var("FELIX_BROKERS").unwrap_or_else(|_| "127.0.0.1:5000".into());
     let seeds: Vec<SocketAddr> = vec![broker.parse().context("FELIX_BROKERS must be ip:port")?];
-    let connecting = ClusterClient::connect(&seeds, "localhost", config);
+    let connecting = Client::connect(&seeds, "localhost", config);
     let client = bounded("connecting", CALL_TIMEOUT, connecting).await?;
     Ok(Arc::new(client))
 }
 
-async fn set_status(client: &ClusterClient, id: &str, status: &str) -> Result<()> {
+async fn set_status(client: &Client, id: &str, status: &str) -> Result<()> {
     let value = Bytes::copy_from_slice(status.as_bytes());
     let key = format!("order:{id}");
     let put = client.cache_put(TENANT, NAMESPACE, CACHE, &key, value, Some(STATUS_TTL_MS));
     bounded("writing the status", CALL_TIMEOUT, put).await
 }
 
-async fn submit(client: &ClusterClient, count: u32) -> Result<()> {
+async fn submit(client: &Client, count: u32) -> Result<()> {
     for n in 1..=count {
         let id = format!("o-{n}");
         let order = serde_json::to_vec(&serde_json::json!({ "id": id, "qty": n }))?;
@@ -358,7 +358,7 @@ use anyhow::bail;
 const PRICE: u64 = 5;
 const MAX_QTY: u64 = 1_000_000;
 
-async fn fulfil(client: &ClusterClient, id: &str, total: u64) -> Result<()> {
+async fn fulfil(client: &Client, id: &str, total: u64) -> Result<()> {
     set_status(client, id, "processing").await?;
     tokio::time::sleep(Duration::from_secs(2)).await;
     set_status(client, id, &format!("done total={total}")).await
@@ -374,7 +374,7 @@ fn parse_order(payload: &[u8]) -> Option<(String, u64)> {
     Some((order.get("id")?.as_str()?.to_owned(), qty.checked_mul(PRICE)?))
 }
 
-async fn work(client: &ClusterClient) -> Result<()> {
+async fn work(client: &Client) -> Result<()> {
     loop {
         let poll = client.group_poll_wait(TENANT, NAMESPACE, STREAM, 0, GROUP, 1, POLL_WAIT);
         let records = bounded("poll", CALL_TIMEOUT + POLL_WAIT, poll).await?;
@@ -607,7 +607,7 @@ watch falls behind, the broker ends it and says where to watch again from.
 ```rust
 use felix_client::{CacheWatchFilter, CacheWatchItem};
 
-async fn dashboard(client: &Arc<ClusterClient>) -> Result<()> {
+async fn dashboard(client: &Arc<Client>) -> Result<()> {
     let start = client.watch_cache_retained(TENANT, NAMESPACE, CACHE, CacheWatchFilter::Prefix("order:".into()));
     let mut watch = bounded("starting the watch", CALL_TIMEOUT, start).await?;
     while let Some(item) = watch.recv().await {

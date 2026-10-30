@@ -7,7 +7,7 @@ use felix_wire::Message;
 
 use super::connections::{default_config, policy};
 use super::stub_broker::StubBroker;
-use crate::cluster::ClusterClient;
+use crate::cluster::Client;
 use crate::test_support::build_server_config;
 
 fn publish_ok(id: u64) -> Message {
@@ -26,7 +26,7 @@ async fn a_reconnect_for_a_client_already_replaced_does_nothing() -> Result<()> 
     let (server_config, cert) = build_server_config()?;
     let a = StubBroker::start_with(server_config.clone(), publish_ok)?;
     let b = StubBroker::start_with(server_config, publish_ok)?;
-    let cluster = ClusterClient::connect_with_policy(
+    let cluster = Client::connect_with_policy(
         &[a.addr, b.addr],
         "localhost",
         default_config(cert)?,

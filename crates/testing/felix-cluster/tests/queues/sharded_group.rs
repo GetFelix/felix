@@ -3,7 +3,7 @@
 //! A group is bound to one shard and served only by that shard's leader, so
 //! consuming a multi-shard stream through a group used to mean enumerating the
 //! shards, finding each owner, and routing every ack by hand (#610).
-//! `ClusterClient::group_sharded` does that by following each shard's
+//! `Client::group_sharded` does that by following each shard's
 //! `NotLeader`.
 //!
 //! Run with `cargo test -p felix-cluster --test queues sharded_group::`.
@@ -27,7 +27,7 @@ fn sharded() -> ClusterConfig {
     }
 }
 
-async fn cluster_client(cluster: &Cluster) -> Arc<felix_client::ClusterClient> {
+async fn cluster_client(cluster: &Cluster) -> Arc<felix_client::Client> {
     Arc::new(
         felix_cluster::client::connect_cluster(
             &cluster.broker_addrs(),

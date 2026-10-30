@@ -177,7 +177,7 @@ through a move and sees no refusal and no record lost or stored twice.
   fanned out just before the move can still arrive, putting `last + 1` past
   `resume_from`; records the queue dropped stay dropped. Nothing is repeated
   and nothing is skipped that would otherwise have been delivered.
-  `ClusterClient::subscribe` returns a `ClusterSubscription` that does this on
+  `Client::subscribe` returns a `ClusterSubscription` that does this on
   its own; an in-memory stream resumes at the new owner's tail.
 - **Where to go.** `node_id` and `addr` are the successor during a move, else
   the new leader. The frame goes out at the fence, before the cut-over, so the
@@ -186,15 +186,15 @@ through a move and sees no refusal and no record lost or stored twice.
   reconnect deadline (30 s without one) passes.
 - **Cache watches.** `resume_from` is the shard log's tail once the writes in
   flight have landed, and absent if they had not; the watcher then resumes
-  after the last change it saw. `ClusterClient::watch_cache` returns a
+  after the last change it saw. `Client::watch_cache` returns a
   `ClusterCacheWatch` that hands out `CacheWatchItem::ShardMoved` as a notice
   and reopens on the new owner at `max(offset after the last change,
   resume_from)`; the cache log moves with the shard and keeps its offsets, so
   nothing is repeated or skipped. A sharded watch follows each shard the same
-  way. A `Client` watch still ends with the frame.
+  way. A `Connection` watch still ends with the frame.
 - **Sharded subscriptions** follow each shard and report
   `ShardEvent::ShardMoved`. The Python and TypeScript bindings wrap
-  `ClusterClient`, so their subscriptions follow too, and they surface the move
+  `Client`, so their subscriptions follow too, and they surface the move
   as `ShardMoved` / `CacheWatchShardMoved` (Python) and `shardMoved` (Node).
 - **Two ways the last frames were lost** in the broker's subscriber writer,
   both fixed. Deliveries queued in the same batch as the subscriber's
@@ -437,7 +437,7 @@ indeterminate rather than re-sent, as before.
 Group operations are not forwarded; a poll's claims and the acks for them
 belong on the broker that leads the shard. So a group operation is held at
 the broker it reached and, once the move cuts over, answered with `NotLeader`
-naming the new owner, which `ClusterClient::group_sharded` follows. The
+naming the new owner, which `Client::group_sharded` follows. The
 new owner leads only after the drained report, and that waits for the group
 cursors and dead letters to be on it, so a held ack applies on top of the
 copied state and is never applied on the old leader as well: the fence
@@ -490,7 +490,7 @@ hands out offset 11, which B had finished.
 
 ### Following the group redirect
 
-Progress: done. `ClusterClient` now has the single-shard group calls
+Progress: done. `Client` now has the single-shard group calls
 (`group_poll`, `group_poll_wait`, `group_ack`, `group_nack`,
 `group_dead_letters`, `group_discard`, `group_redrive`), which follow
 `NotLeader` the way `group_sharded` did and remember each shard's leader;
@@ -510,9 +510,9 @@ fails without it with no address in the redirect.
 
 ## What is left
 
-- **A plain `Client` does not follow a group redirect.** It is one broker's
+- **A plain `Connection` does not follow a group redirect.** It is one broker's
   connections, so it returns `NotLeaderError` and leaves connecting to the
-  owner to `ClusterClient`. This is by design and documented, not a gap to
+  owner to `Client`. This is by design and documented, not a gap to
   close.
 - **A dead lease holder pauses the timed passes** until its lease expires,
   three reconcile intervals (15 s by default). Moves in flight carry on and

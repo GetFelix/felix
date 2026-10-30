@@ -44,7 +44,7 @@ const fn example(heading: &'static str, nth: usize, wrap: Wrap) -> Example {
     Example { heading, nth, wrap }
 }
 
-const CLUSTER: &str = "client: &Arc<ClusterClient>";
+const CLUSTER: &str = "client: &Arc<Client>";
 
 /// One entry per block on the page, in page order. A block without an entry,
 /// or an entry without a block, fails the test.
@@ -71,16 +71,8 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         "Acting for many users",
         1,
         Body {
-            params: "addr: SocketAddr, config: ClientConfig, alice_token: String, bob_token: String",
+            params: "seeds: Vec<SocketAddr>, config: ClientConfig, alice_token: String, bob_token: String",
             context: "async fn refresh_alice() -> Result<String> { unimplemented!() }",
-        },
-    ),
-    example(
-        "Acting for many users",
-        2,
-        Body {
-            params: "seeds: Vec<SocketAddr>, config: ClientConfig, alice_tokens: Arc<dyn TokenProvider>",
-            context: "",
         },
     ),
     example(
@@ -127,7 +119,7 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         "The routing key decides the shard",
         1,
         Body {
-            params: "cluster: &ClusterClient, payload: Vec<u8>, customer_id: String",
+            params: "cluster: &Client, payload: Vec<u8>, customer_id: String",
             context: "",
         },
     ),
@@ -135,7 +127,7 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         "Naming the shard",
         1,
         Body {
-            params: "cluster: &ClusterClient, tick: Vec<u8>",
+            params: "cluster: &Client, tick: Vec<u8>",
             context: "",
         },
     ),
@@ -143,7 +135,7 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         "At-least-once may duplicate",
         1,
         Body {
-            params: "cluster: &ClusterClient, payload: Vec<u8>",
+            params: "cluster: &Client, payload: Vec<u8>",
             context: "",
         },
     ),
@@ -156,10 +148,10 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         },
     ),
     example(
-        "Batches through a ClusterClient",
+        "Batches through a Client",
         1,
         Body {
-            params: "cluster: &ClusterClient, key: Bytes, payloads: Vec<Vec<u8>>, \
+            params: "cluster: &Client, key: Bytes, payloads: Vec<Vec<u8>>, \
                      records: Vec<(Bytes, Vec<u8>)>",
             context: "",
         },
@@ -168,7 +160,7 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         "Publisher API",
         1,
         Body {
-            params: "client: &Client",
+            params: "client: &Connection",
             context: "",
         },
     ),
@@ -184,7 +176,7 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         "Errors you can act on",
         1,
         Body {
-            params: "cluster: &ClusterClient, payload: Vec<u8>",
+            params: "cluster: &Client, payload: Vec<u8>",
             context: "",
         },
     ),
@@ -200,7 +192,7 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         "Idempotent producers",
         1,
         Body {
-            params: "cluster: ClusterClient, payload: Vec<u8>",
+            params: "cluster: Client, payload: Vec<u8>",
             context: "",
         },
     ),
@@ -225,7 +217,7 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         "Idempotent producers",
         4,
         Body {
-            params: "cluster: &Arc<ClusterClient>, mut producer: IdempotentProducer, payload: Vec<u8>",
+            params: "cluster: &Arc<Client>, mut producer: IdempotentProducer, payload: Vec<u8>",
             context: "",
         },
     ),
@@ -262,7 +254,7 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         "Sizing the broker's queue for a subscription",
         1,
         Body {
-            params: "addr: SocketAddr, mut config: ClientConfig",
+            params: "seeds: Vec<SocketAddr>, mut config: ClientConfig",
             context: "",
         },
     ),
@@ -270,7 +262,7 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         "When an event was written, and replaying from a time",
         1,
         Body {
-            params: "client: &Arc<ClusterClient>, since_micros: u64",
+            params: "client: &Arc<Client>, since_micros: u64",
             context: "",
         },
     ),
@@ -278,7 +270,7 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         "Reading a range and stopping",
         1,
         Body {
-            params: "client: &ClusterClient, start: u64, end: u64",
+            params: "client: &Client, start: u64, end: u64",
             context: "fn apply(_: u64, _: &Bytes) {}",
         },
     ),
@@ -294,7 +286,7 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         "A consumer that survives a restart",
         1,
         Body {
-            params: "cluster: &Arc<ClusterClient>, checkpoint: Checkpoint",
+            params: "cluster: &Arc<Client>, checkpoint: Checkpoint",
             context: "struct Checkpoint;\n\
                       impl Checkpoint {\n\
                       async fn load(&self) -> Result<Option<u64>> { Ok(None) }\n\
@@ -322,7 +314,7 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         "When a subscription falls behind",
         1,
         Body {
-            params: "client: &Client, mut subscription: Subscription",
+            params: "client: &Connection, mut subscription: Subscription",
             context: "fn handle(_: &Event) {}",
         },
     ),
@@ -356,7 +348,7 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         "Put and Get",
         1,
         Body {
-            params: "client: &ClusterClient, session_data: Bytes",
+            params: "client: &Client, session_data: Bytes",
             context: "#[derive(serde::Deserialize)] struct Session {}",
         },
     ),
@@ -364,7 +356,7 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         "Without TTL",
         1,
         Body {
-            params: "client: &ClusterClient, config_data: Bytes",
+            params: "client: &Client, config_data: Bytes",
             context: "",
         },
     ),
@@ -388,7 +380,7 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         "Watch",
         1,
         Body {
-            params: "client: &Client",
+            params: "client: &Connection",
             context: "fn apply_update(_: &str, _: &Bytes) {}\nfn remove(_: &str) {}",
         },
     ),
@@ -396,7 +388,7 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         "Retained Watch",
         1,
         Body {
-            params: "client: &Client",
+            params: "client: &Connection",
             context: "",
         },
     ),
@@ -412,7 +404,7 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         "Concurrent Cache Operations",
         1,
         Body {
-            params: "client: Arc<ClusterClient>",
+            params: "client: Arc<Client>",
             context: "fn process(_: Bytes) {}",
         },
     ),
@@ -420,7 +412,7 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         "Cache Namespacing",
         1,
         Body {
-            params: "client: &ClusterClient, data1: Bytes, data2: Bytes, data3: Bytes, ttl: Option<u64>",
+            params: "client: &Client, data1: Bytes, data2: Bytes, data3: Bytes, ttl: Option<u64>",
             context: "",
         },
     ),
@@ -461,7 +453,7 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         "Atomic commits",
         1,
         Body {
-            params: "cluster: &ClusterClient",
+            params: "cluster: &Client",
             context: "",
         },
     ),
@@ -469,7 +461,7 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         "Atomic commits",
         2,
         Body {
-            params: "cluster: &ClusterClient, ticks: Vec<Vec<u8>>",
+            params: "cluster: &Client, ticks: Vec<Vec<u8>>",
             context: "",
         },
     ),
@@ -477,7 +469,7 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         "Atomic commits",
         3,
         Body {
-            params: "cluster: &ClusterClient, district: u32, tick: Bytes, state: Bytes, next: u64",
+            params: "cluster: &Client, district: u32, tick: Bytes, state: Bytes, next: u64",
             context: "",
         },
     ),
@@ -535,7 +527,7 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         "Resource Cleanup",
         1,
         Body {
-            params: "client: &ClusterClient, subscription: ClusterSubscription",
+            params: "client: &Client, subscription: ClusterSubscription",
             context: "",
         },
     ),
@@ -574,7 +566,7 @@ const RESILIENT_EXAMPLES: &[Example] = &[
         "When a broker rejects the token",
         1,
         Body {
-            params: "client: &ClusterClient, payload: Vec<u8>",
+            params: "client: &Client, payload: Vec<u8>",
             context: "",
         },
     ),
@@ -582,7 +574,7 @@ const RESILIENT_EXAMPLES: &[Example] = &[
         "Errors and retry classes",
         1,
         Body {
-            params: "cluster: &ClusterClient, payload: Vec<u8>",
+            params: "cluster: &Client, payload: Vec<u8>",
             context: "",
         },
     ),
@@ -590,7 +582,7 @@ const RESILIENT_EXAMPLES: &[Example] = &[
         "Writes whose outcome is unknown",
         1,
         Body {
-            params: "cluster: &Arc<ClusterClient>, payload: Vec<u8>",
+            params: "cluster: &Arc<Client>, payload: Vec<u8>",
             context: "",
         },
     ),
@@ -598,7 +590,7 @@ const RESILIENT_EXAMPLES: &[Example] = &[
         "Conditional publish",
         1,
         Body {
-            params: "cluster: &ClusterClient, ticks: Vec<Vec<u8>>",
+            params: "cluster: &Client, ticks: Vec<Vec<u8>>",
             context: "",
         },
     ),
@@ -606,7 +598,7 @@ const RESILIENT_EXAMPLES: &[Example] = &[
         "Resume one shard",
         1,
         Body {
-            params: "cluster: &Arc<ClusterClient>, checkpoint: Checkpoint",
+            params: "cluster: &Arc<Client>, checkpoint: Checkpoint",
             context: "struct Checkpoint;\n\
                       impl Checkpoint {\n\
                       async fn load(&self) -> Result<Option<u64>> { Ok(None) }\n\
@@ -618,7 +610,7 @@ const RESILIENT_EXAMPLES: &[Example] = &[
         "Resume a sharded stream",
         1,
         Body {
-            params: "cluster: &Arc<ClusterClient>, checkpoint: Positions",
+            params: "cluster: &Arc<Client>, checkpoint: Positions",
             context: "struct Positions;\n\
                       impl Positions {\n\
                       async fn load(&self) -> Result<Option<ShardOffsets>> { Ok(None) }\n\
@@ -638,7 +630,7 @@ const RESILIENT_EXAMPLES: &[Example] = &[
         "Consumer groups under failure",
         1,
         Body {
-            params: "client: &ClusterClient, stop: &std::sync::atomic::AtomicBool",
+            params: "client: &Client, stop: &std::sync::atomic::AtomicBool",
             context: "async fn charge(_: &[u8], _: u32) -> Result<()> { Ok(()) }",
         },
     ),
@@ -646,7 +638,7 @@ const RESILIENT_EXAMPLES: &[Example] = &[
         "Shutting down cleanly",
         1,
         Body {
-            params: "client: &ClusterClient, subscription: ClusterSubscription, \
+            params: "client: &Client, subscription: ClusterSubscription, \
                      producer: IdempotentProducer",
             context: "",
         },

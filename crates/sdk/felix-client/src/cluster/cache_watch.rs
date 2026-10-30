@@ -1,4 +1,4 @@
-//! Cache watches through a [`ClusterClient`], following each shard to the
+//! Cache watches through a [`Client`], following each shard to the
 //! broker that owns it.
 
 use std::sync::Arc;
@@ -7,23 +7,23 @@ use anyhow::{Context, Result};
 
 use super::follow::{ClusterCacheWatch, WatchTarget};
 use super::sharded::{ShardOffsets, ShardedCacheWatch};
-use super::{ClusterClient, MAX_REDIRECTS};
+use super::{Client, MAX_REDIRECTS};
 use crate::cache::{CacheWatch, CacheWatchFilter};
-use crate::client::Client;
+use crate::client::Connection;
 
-impl ClusterClient {
+impl Client {
     /// Watch a cache key or prefix, following the cluster to whichever broker
     /// owns the shard.
     ///
     /// A cache's shards have owners the way a stream's do, and a key hashes to
     /// one of them — so a watch opened against an arbitrary broker is a watch
-    /// against a shard that broker may not own. [`Client::watch_cache`] reports
+    /// against a shard that broker may not own. [`Connection::watch_cache`] reports
     /// that as a `NotLeader` error and stops; this follows it, which is what
     /// makes a watch usable against a sharded cache in a cluster at all.
     ///
     /// A prefix watch on a multi-shard cache is refused: this names no shard,
     /// and one shard alone would miss every matching key on the others. Use
-    /// [`ClusterClient::watch_cache_sharded`] for that.
+    /// [`Client::watch_cache_sharded`] for that.
     ///
     /// The watch follows its shard when the shard later moves to another
     /// broker; see [`ClusterCacheWatch`].
@@ -43,7 +43,7 @@ impl ClusterClient {
         self.open_watch(target, from_offset, false).await
     }
 
-    /// Like [`ClusterClient::watch_cache`], but delivering each matching key's
+    /// Like [`Client::watch_cache`], but delivering each matching key's
     /// current value before live changes.
     pub async fn watch_cache_retained(
         self: &Arc<Self>,
@@ -86,7 +86,7 @@ impl ClusterClient {
         .await
     }
 
-    /// Like [`ClusterClient::watch_cache_sharded`], but delivering each
+    /// Like [`Client::watch_cache_sharded`], but delivering each
     /// matching key's current value, from every shard, before live changes.
     ///
     /// The shards finish their state phases at different times, so the merged
@@ -131,11 +131,11 @@ impl ClusterClient {
     /// anyone else.
     pub(crate) async fn watch_via(
         &self,
-        first: Arc<Client>,
+        first: Arc<Connection>,
         target: &WatchTarget,
         from_offset: Option<u64>,
         retained: bool,
-    ) -> Result<(Arc<Client>, CacheWatch)> {
+    ) -> Result<(Arc<Connection>, CacheWatch)> {
         let WatchTarget {
             tenant_id,
             namespace,
@@ -218,7 +218,7 @@ impl ClusterClient {
         namespace: &str,
         cache: &str,
     ) -> Result<u32> {
-        let ask = |client: Arc<Client>| async move {
+        let ask = |client: Arc<Connection>| async move {
             anyhow::ensure!(
                 client.supports_cache_shards(),
                 "this broker does not report cache shard counts, so the number of shards to \

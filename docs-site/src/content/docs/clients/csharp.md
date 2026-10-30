@@ -268,7 +268,7 @@ lists more has discovered the cluster.
 In every language the client is a cluster client; see
 [Choosing a Client](/clients/overview/#every-client-is-a-cluster-client).
 `FelixClientOptions.Addrs` is a list, and `ConnectAsync` passes it to the C ABI's
-`felix_client_connect_with`, which builds a `ClusterClient`:
+`felix_client_connect_with`, which builds a Rust `Client`:
 
 ```csharp
 await using var client = await FelixClient.ConnectAsync(new FelixClientOptions

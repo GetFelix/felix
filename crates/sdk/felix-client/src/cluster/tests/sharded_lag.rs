@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use felix_wire::{Message, StartPosition};
 
 use super::stub_broker::StubBroker;
-use crate::ClusterClient;
+use crate::Client;
 use crate::cluster::ReconnectPolicy;
 use crate::cluster::sharded::ShardEvent;
 use crate::test_support::build_client_config_with_overrides;
@@ -51,7 +51,7 @@ async fn a_lagged_shard_resumes_after_its_last_event() -> Result<()> {
         }
     });
     let cluster = Arc::new(
-        ClusterClient::connect_with_policy(
+        Client::connect_with_policy(
             &[stub.addr],
             "localhost",
             build_client_config_with_overrides(cert, 0)?,

@@ -4,7 +4,7 @@
 //! a four-shard stream used to open four subscriptions, discover each shard's
 //! owner, follow each redirect and merge the results itself (#297).
 //!
-//! `ClusterClient::subscribe_sharded` does that. These are the tests for what
+//! `Client::subscribe_sharded` does that. These are the tests for what
 //! it promises — and, as much, for what it refuses to promise.
 //!
 //! Run with `cargo test -p felix-cluster --test routing sharded_subscribe::`.
@@ -37,7 +37,7 @@ fn keys(count: usize) -> Vec<String> {
     (0..count).map(|i| format!("key-{i:03}")).collect()
 }
 
-async fn cluster_client(cluster: &Cluster) -> Arc<felix_client::ClusterClient> {
+async fn cluster_client(cluster: &Cluster) -> Arc<felix_client::Client> {
     Arc::new(
         felix_cluster::client::connect_cluster(
             &cluster.broker_addrs(),

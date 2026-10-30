@@ -1,4 +1,4 @@
-//! Cache and counter requests through a [`ClusterClient`], sent to the
+//! Cache and counter requests through a [`Client`], sent to the
 //! owner of the key's shard when the client knows it, and the other requests
 //! any broker answers.
 //!
@@ -15,14 +15,14 @@ use std::time::Instant;
 use anyhow::Result;
 use bytes::Bytes;
 
-use super::{Attempt, ClusterClient, Next, StreamKey, expired, next_step, wants_reconnect};
+use super::{Attempt, Client, Next, StreamKey, expired, next_step, wants_reconnect};
 use crate::cache::{CacheConditionResult, VersionedValue};
-use crate::client::Client;
+use crate::client::Connection;
 use felix_wire::CacheCondition;
 
-impl ClusterClient {
+impl Client {
     /// Store `value` under `key`, expiring after `ttl_ms` when one is given.
-    /// See [`Client::cache_put`].
+    /// See [`Connection::cache_put`].
     ///
     /// Goes to the owner of the key's shard when this client knows it, else
     /// through the broker in use, which forwards. Like [`Self::publish`], a
@@ -52,7 +52,7 @@ impl ClusterClient {
     }
 
     /// The value stored under `key`, or `None` when there is none. See
-    /// [`Client::cache_get`].
+    /// [`Connection::cache_get`].
     ///
     /// Routed like [`Self::cache_put`]. A read changes nothing, so one that
     /// fails is asked again under the [`super::ReconnectPolicy`]: through the
@@ -76,7 +76,7 @@ impl ClusterClient {
         .await
     }
 
-    /// Remove a key, reporting the value it held. See [`Client::cache_delete`].
+    /// Remove a key, reporting the value it held. See [`Connection::cache_delete`].
     ///
     /// Routed and retried like [`Self::cache_put`]: a delete that may have
     /// been applied is not sent again, since a second one would report
@@ -100,7 +100,7 @@ impl ClusterClient {
     }
 
     /// The value under `key` with its version. See
-    /// [`Client::cache_get_versioned`]. Routed and retried like
+    /// [`Connection::cache_get_versioned`]. Routed and retried like
     /// [`Self::cache_get`].
     pub async fn cache_get_versioned(
         &self,
@@ -125,7 +125,7 @@ impl ClusterClient {
     }
 
     /// Store `value` only if the key's entry meets `condition`. See
-    /// [`Client::cache_put_if`].
+    /// [`Connection::cache_put_if`].
     ///
     /// Routed and retried like [`Self::cache_put`]: never sent twice by this
     /// call, since a retry of a put that applied would be refused by the
@@ -153,7 +153,7 @@ impl ClusterClient {
     }
 
     /// Remove `key` only if its version is `version`. See
-    /// [`Client::cache_delete_if`]. Routed and retried like
+    /// [`Connection::cache_delete_if`]. Routed and retried like
     /// [`Self::cache_put_if`].
     pub async fn cache_delete_if(
         &self,
@@ -179,7 +179,7 @@ impl ClusterClient {
     }
 
     /// Add a signed delta to a counter, answering with the sum including it.
-    /// See [`Client::counter_add`].
+    /// See [`Connection::counter_add`].
     ///
     /// Routed and retried like [`Self::cache_put`], so an add is never sent
     /// twice by this call. A counter shares its cache's shards.
@@ -207,7 +207,7 @@ impl ClusterClient {
     }
 
     /// Read a counter's sum, or `None` when it has never been written. See
-    /// [`Client::counter_get`]. Routed and retried like [`Self::cache_get`].
+    /// [`Connection::counter_get`]. Routed and retried like [`Self::cache_get`].
     pub async fn counter_get(
         &self,
         tenant_id: &str,
@@ -238,7 +238,7 @@ impl ClusterClient {
         request: F,
     ) -> Result<T>
     where
-        F: Fn(Arc<Client>) -> Fut,
+        F: Fn(Arc<Connection>) -> Fut,
         Fut: Future<Output = Result<T>>,
     {
         let cache_key: StreamKey = (
@@ -264,7 +264,7 @@ impl ClusterClient {
         request: &F,
     ) -> Result<T>
     where
-        F: Fn(Arc<Client>) -> Fut,
+        F: Fn(Arc<Connection>) -> Fut,
         Fut: Future<Output = Result<T>>,
     {
         if let Some((shard, node_id, owner)) = self.cache_owner(cache_key, key).await {
@@ -296,7 +296,7 @@ impl ClusterClient {
         self.through_entry(request).await
     }
 
-    /// How many shards `stream` was placed with. See [`Client::stream_shards`].
+    /// How many shards `stream` was placed with. See [`Connection::stream_shards`].
     ///
     /// Asked of the broker in use, and again under the client's policy if
     /// that one is gone.
@@ -319,7 +319,7 @@ impl ClusterClient {
     /// goes to another one.
     async fn through_entry<T, F, Fut>(&self, request: F) -> Result<T>
     where
-        F: Fn(Arc<Client>) -> Fut,
+        F: Fn(Arc<Connection>) -> Fut,
         Fut: Future<Output = Result<T>>,
     {
         let client = self.client().await;
@@ -346,7 +346,7 @@ impl ClusterClient {
         &self,
         cache_key: &StreamKey,
         key: &str,
-    ) -> Option<(u32, String, Arc<Client>)> {
+    ) -> Option<(u32, String, Arc<Connection>)> {
         let known = self.cache_routes.read().await.get(cache_key).cloned();
         let owners = match known {
             Some(owners) => owners,

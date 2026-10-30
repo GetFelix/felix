@@ -18,7 +18,7 @@ use ed25519_dalek::SigningKey as Ed25519SigningKey;
 use felix_authz::{FelixTokenIssuer, Jwks, TenantId, TenantKeyCache, TenantKeyMaterial};
 use felix_broker::{Broker, CacheMetadata};
 use felix_broker_service::serving::{auth::BrokerAuth, quic};
-use felix_client::{Client, ClientConfig};
+use felix_client::{ClientConfig, Connection};
 use felix_storage::LogCache;
 use felix_storage::log::{FsyncMode, LogConfig};
 use felix_transport::{QuicServer, TransportConfig};
@@ -143,12 +143,12 @@ async fn start(root: &std::path::Path) -> Result<Running> {
 }
 
 impl Running {
-    async fn client(&self) -> Result<Client> {
+    async fn client(&self) -> Result<Connection> {
         self.client_as("t1").await
     }
 
     /// A client presenting the token minted under `token`.
-    async fn client_as(&self, token: &str) -> Result<Client> {
+    async fn client_as(&self, token: &str) -> Result<Connection> {
         let mut config = build_client_config(self.cert.clone())?;
         config.auth_tenant_id = Some("t1".to_string());
         config.auth_token = self.tokens.get(token).cloned();
@@ -156,7 +156,7 @@ impl Running {
         // broker acks a publish once it is queued, before the write, and a poll
         // that lands first misses it. Commit acks make the ack mean written.
         config.ack_on_commit = true;
-        let client = Client::connect(self.addr, "localhost", config).await?;
+        let client = Connection::connect(self.addr, "localhost", config).await?;
         anyhow::ensure!(
             client.supports_ack_on_commit(),
             "the broker did not take commit acks"

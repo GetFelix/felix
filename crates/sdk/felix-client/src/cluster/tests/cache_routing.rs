@@ -1,4 +1,4 @@
-//! Where a [`ClusterClient`]'s cache requests go, against stub brokers.
+//! Where a [`Client`]'s cache requests go, against stub brokers.
 
 use std::time::Duration;
 
@@ -6,7 +6,7 @@ use anyhow::Result;
 use felix_wire::{ErrorCode, ErrorDetail, Message, ShardOwner};
 
 use super::stub_broker::StubBroker;
-use crate::cluster::{ClusterClient, ReconnectPolicy};
+use crate::cluster::{Client, ReconnectPolicy};
 use crate::test_support::{build_client_config_with_overrides, build_server_config};
 
 fn fast_policy() -> ReconnectPolicy {
@@ -64,7 +64,7 @@ fn entry_and_owner_advertised(
 async fn an_owner_advertised_by_name_is_reached() -> Result<()> {
     let (entry, owner, cert) =
         entry_and_owner_advertised(success, |addr| format!("localhost:{}", addr.port()))?;
-    let cluster = ClusterClient::connect_with_policy(
+    let cluster = Client::connect_with_policy(
         &[entry.addr],
         "localhost",
         build_client_config_with_overrides(cert, 1)?,
@@ -87,7 +87,7 @@ async fn an_owner_advertised_by_name_is_reached() -> Result<()> {
 async fn an_owner_whose_name_does_not_resolve_is_skipped() -> Result<()> {
     let (entry, owner, cert) =
         entry_and_owner_advertised(success, |_| "felix-absent.invalid:5000".to_string())?;
-    let cluster = ClusterClient::connect_with_policy(
+    let cluster = Client::connect_with_policy(
         &[entry.addr],
         "localhost",
         build_client_config_with_overrides(cert, 1)?,
@@ -110,7 +110,7 @@ async fn an_owner_whose_name_does_not_resolve_is_skipped() -> Result<()> {
 #[serial_test::serial]
 async fn a_cache_request_goes_to_the_owner() -> Result<()> {
     let (entry, owner, cert) = entry_and_owner(success)?;
-    let cluster = ClusterClient::connect_with_policy(
+    let cluster = Client::connect_with_policy(
         &[entry.addr],
         "localhost",
         build_client_config_with_overrides(cert, 1)?,
@@ -146,7 +146,7 @@ async fn an_owner_that_lost_the_shard_sends_the_put_through_the_entry() -> Resul
             ..ErrorDetail::default()
         }),
     })?;
-    let cluster = ClusterClient::connect_with_policy(
+    let cluster = Client::connect_with_policy(
         &[entry.addr],
         "localhost",
         build_client_config_with_overrides(cert, 1)?,

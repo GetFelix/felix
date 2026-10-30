@@ -4,7 +4,7 @@
 //! callers should reach for: every method returns an awaitable driven by the
 //! caller's own event loop, and a subscription is an `async for`.
 //!
-//! It wraps exactly the same [`ClusterClient`] the synchronous surface does,
+//! It wraps exactly the same [`felix_client::Client`] the synchronous surface does,
 //! so reconnection, redirect-following and retry classification behave
 //! identically whichever one an application picks. The only difference is who
 //! waits: the sync surface blocks a thread with the GIL released, this one

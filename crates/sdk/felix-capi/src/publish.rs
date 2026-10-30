@@ -10,7 +10,7 @@ use std::ptr;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use felix_client::{AckMode, BatchReport, ClusterClient};
+use felix_client::{AckMode, BatchReport, Client};
 use tokio_util::sync::CancellationToken;
 
 use crate::boundary::{Failure, guard, required_str};
@@ -542,7 +542,7 @@ pub unsafe extern "C" fn felix_client_publish_records(
 
 /// The client and stream a publish goes to, owned so the task can hold them.
 struct Target {
-    inner: Arc<ClusterClient>,
+    inner: Arc<Client>,
     tenant_id: String,
     ns: String,
     stream: String,

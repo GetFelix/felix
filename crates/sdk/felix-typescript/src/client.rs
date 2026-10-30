@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use felix_client::{ClientConfig, ClusterClient};
+use felix_client::ClientConfig;
 use napi::JsFunction;
 use napi::JsObject;
 use napi::bindgen_prelude::*;
@@ -32,12 +32,12 @@ pub struct Client {
     /// `None` once closed. A plain `std::sync::Mutex` and not the async one:
     /// the lock is only ever held long enough to clone the `Arc`, so callers
     /// sharing a client never queue behind each other's in-flight calls.
-    inner: std::sync::Mutex<Option<Arc<ClusterClient>>>,
+    inner: std::sync::Mutex<Option<Arc<felix_client::Client>>>,
 }
 
 impl Client {
     /// The cluster client, or an error if this one has been closed.
-    fn cluster(&self) -> Result<Arc<ClusterClient>> {
+    fn cluster(&self) -> Result<Arc<felix_client::Client>> {
         self.inner
             .lock()
             .expect("the client lock is only ever held across a clone")
@@ -129,9 +129,10 @@ impl Client {
         let server_name = server_name.unwrap_or_else(|| "localhost".to_string());
         env.execute_tokio_future(
             async move {
-                let inner = ClusterClient::connect_seeds(&seeds, &server_name, config, policy)
-                    .await
-                    .map_err(classify)?;
+                let inner =
+                    felix_client::Client::connect_seeds(&seeds, &server_name, config, policy)
+                        .await
+                        .map_err(classify)?;
                 Ok(inner)
             },
             |_, inner| {

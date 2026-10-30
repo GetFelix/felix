@@ -341,7 +341,7 @@ async fn next_record(subscription: &mut felix_client::ClusterSubscription) -> fe
 
 /// **A subscription outlives the broker it was reading from.**
 ///
-/// The leader is killed under a `ClusterClient` subscription. The loss is not
+/// The leader is killed under a `Client` subscription. The loss is not
 /// a clean end: the subscription resubscribes on the promoted leader from the
 /// offset after the last one it delivered, so a record published while it was
 /// down arrives, and the one delivered before is not repeated.

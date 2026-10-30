@@ -1,5 +1,5 @@
 //! One client per broker, shared by everything a
-//! [`ClusterClient`](super::ClusterClient) sends there.
+//! [`Client`](super::Client) sends there.
 //!
 //! The entry broker, a shard's owner, the target of a redirect and an
 //! idempotent producer's leader are often the same broker. Sharing one client
@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 
 use crate::auth::TokenProvider;
-use crate::client::{Client, DIAL_STAGGER, dial_staggered, fetch_from, fetch_token};
+use crate::client::{Connection, DIAL_STAGGER, dial_staggered, fetch_from, fetch_token};
 use crate::config::ClientConfig;
 use crate::error::is_token_failure;
 
@@ -40,7 +40,7 @@ enum Source {
         config: Box<ClientConfig>,
         lookup: Arc<dyn Lookup>,
     },
-    /// [`Client::with_identity`] over the client `base` holds for the same
+    /// [`Connection::with_identity`] over the client `base` holds for the same
     /// broker.
     Identity {
         base: Arc<Nodes>,
@@ -234,7 +234,7 @@ impl Nodes {
     }
 
     /// Every client currently held, one per broker.
-    pub(super) async fn clients(&self) -> Vec<Arc<Client>> {
+    pub(super) async fn clients(&self) -> Vec<Arc<Connection>> {
         let mut clients = Vec::new();
         for (_, slot) in self.held() {
             if let Some(client) = slot.client.lock().await.as_ref() {
@@ -265,7 +265,7 @@ impl Nodes {
     /// holding the old one keeps it until their own work on it fails. An
     /// identity's client is replaced the same way, from the parent's client
     /// for that broker, which is itself rebuilt first if it has failed.
-    pub(super) async fn connect_to(&self, addr: SocketAddr) -> Result<Arc<Client>> {
+    pub(super) async fn connect_to(&self, addr: SocketAddr) -> Result<Arc<Connection>> {
         let slot = self.slot(addr);
         // Held across the connect, so concurrent callers for one broker share
         // a connect instead of each opening their own.
@@ -290,7 +290,7 @@ impl Nodes {
                     .get(&addr)
                     .cloned()
                     .unwrap_or_else(|| server_name.clone());
-                Client::connect_shared(addr, &server_name, ClientConfig::clone(config)).await?
+                Connection::connect_shared(addr, &server_name, ClientConfig::clone(config)).await?
             }
             Source::Identity {
                 base,
@@ -309,8 +309,8 @@ impl Nodes {
     }
 
     /// The client for whichever of `addrs` answers first, in order, with the
-    /// same contract as [`Client::connect_any`].
-    pub(super) async fn connect_any(&self, addrs: &[SocketAddr]) -> Result<Arc<Client>> {
+    /// same contract as [`Connection::connect_any`].
+    pub(super) async fn connect_any(&self, addrs: &[SocketAddr]) -> Result<Arc<Connection>> {
         if addrs.is_empty() {
             return Err(anyhow::anyhow!(
                 "no broker addresses were given to connect to"
@@ -322,7 +322,10 @@ impl Nodes {
 
     /// [`connect_any`](Self::connect_any) for a caller that has just run
     /// [`prefetch`](Self::prefetch).
-    pub(super) async fn connect_any_prefetched(&self, addrs: &[SocketAddr]) -> Result<Arc<Client>> {
+    pub(super) async fn connect_any_prefetched(
+        &self,
+        addrs: &[SocketAddr],
+    ) -> Result<Arc<Connection>> {
         if addrs.is_empty() {
             return Err(anyhow::anyhow!(
                 "no broker addresses were given to connect to"
@@ -337,7 +340,7 @@ impl Nodes {
 
     /// Stop handing out `client`, so the next caller for its broker gets a
     /// fresh one. A replacement someone else already made is left alone.
-    pub(super) async fn forget(&self, client: &Arc<Client>) {
+    pub(super) async fn forget(&self, client: &Arc<Connection>) {
         let slot = self.slot(client.dialled());
         let mut held = slot.client.lock().await;
         if held
@@ -371,5 +374,5 @@ impl Nodes {
 /// The client for one broker.
 #[derive(Default)]
 struct Slot {
-    client: tokio::sync::Mutex<Option<Arc<Client>>>,
+    client: tokio::sync::Mutex<Option<Arc<Connection>>>,
 }

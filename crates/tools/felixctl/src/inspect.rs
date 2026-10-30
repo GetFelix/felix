@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 
-use felix_client::{Client, InspectedAssignment, ShardInspection, ShardKind};
+use felix_client::{Connection, InspectedAssignment, ShardInspection, ShardKind};
 use serde_json::{Value, json};
 
 use crate::cli::{InspectCommand, InspectShardArgs};
@@ -180,7 +180,7 @@ fn unsupported(broker: &str) -> anyhow::Error {
     )
 }
 
-async fn ask(client: &Client, target: &Target, shard: u32) -> anyhow::Result<ShardInspection> {
+async fn ask(client: &Connection, target: &Target, shard: u32) -> anyhow::Result<ShardInspection> {
     client
         .inspect_shard(
             target.kind(),
@@ -201,7 +201,7 @@ struct Peers<'a> {
     settings: &'a Settings,
     /// Each broker's client address, as the cluster advertises it.
     addresses: BTreeMap<String, String>,
-    connected: BTreeMap<String, Client>,
+    connected: BTreeMap<String, Connection>,
 }
 
 impl Peers<'_> {
@@ -215,7 +215,7 @@ impl Peers<'_> {
     }
 
     /// A connection to `node` that can be inspected, opened on first use.
-    async fn client(&mut self, node: &str) -> anyhow::Result<&Client> {
+    async fn client(&mut self, node: &str) -> anyhow::Result<&Connection> {
         if !self.connected.contains_key(node) {
             let Some(addr) = self.addresses.get(node) else {
                 anyhow::bail!("{node} advertises no client address");
@@ -232,7 +232,7 @@ impl Peers<'_> {
             config.cache_conn_pool = 1;
             config.cache_streams_per_conn = 1;
             config.event_conn_pool = 1;
-            let client = Client::connect(addr, &server_name(self.settings), config).await?;
+            let client = Connection::connect(addr, &server_name(self.settings), config).await?;
             if !client.supports_inspect() {
                 return Err(unsupported(node));
             }

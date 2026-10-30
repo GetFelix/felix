@@ -25,7 +25,7 @@ use base64::Engine as _;
 use felix_broker::Broker;
 use felix_broker_service::cluster::catalog_sync as broker_catalog_sync;
 use felix_broker_service::serving::{auth::BrokerAuth, quic};
-use felix_client::{Client, ClientConfig};
+use felix_client::{ClientConfig, Connection};
 use felix_controlplane_service::api::bootstrap::BootstrapInitializeRequest;
 use felix_controlplane_service::api::types::{
     CacheCreateRequest, NamespaceCreateRequest, StreamCreateRequest,
@@ -162,8 +162,10 @@ async fn run_demo(report: &mut DemoReport) -> Result<()> {
     let broker_token =
         exchange_token(&http, &cp_base, TENANT_T1, &broker_id_token, CONTROLPLANE).await?;
     let admin_id_token = mint_id_token(&idp_base, ADMIN_SUB, &[])?;
-    let t1_admin = exchange_token(&http, &cp_base, TENANT_T1, &admin_id_token, CONTROLPLANE).await?;
-    let t2_admin = exchange_token(&http, &cp_base, TENANT_T2, &admin_id_token, CONTROLPLANE).await?;
+    let t1_admin =
+        exchange_token(&http, &cp_base, TENANT_T1, &admin_id_token, CONTROLPLANE).await?;
+    let t2_admin =
+        exchange_token(&http, &cp_base, TENANT_T2, &admin_id_token, CONTROLPLANE).await?;
     report.pass("STEP 5 broker and admin token exchange", "status=200");
 
     let (broker_addr, broker_cert, broker, broker_handles) =
@@ -566,7 +568,7 @@ async fn build_client(
     broker_cert: &CertificateDer<'static>,
     tenant_id: &str,
     token: &str,
-) -> Result<Client> {
+) -> Result<Connection> {
     let mut roots = RootCertStore::empty();
     roots.add(broker_cert.clone())?;
     let quinn = QuinnClientConfig::with_root_certificates(Arc::new(roots))?;
@@ -575,7 +577,7 @@ async fn build_client(
     config.auth_token = Some(token.to_string());
     match tokio::time::timeout(
         Duration::from_secs(3),
-        Client::connect(*broker_addr, "localhost", config),
+        Connection::connect(*broker_addr, "localhost", config),
     )
     .await
     {
@@ -843,7 +845,7 @@ fn mint_id_token(issuer: &str, subject: &str, groups: &[&str]) -> Result<String>
     Ok(token)
 }
 
-async fn publish_once(client: &Client, tenant_id: &str) -> Result<()> {
+async fn publish_once(client: &Connection, tenant_id: &str) -> Result<()> {
     let publisher = client.publisher().await?;
     publisher
         .publish(
@@ -857,12 +859,12 @@ async fn publish_once(client: &Client, tenant_id: &str) -> Result<()> {
     Ok(())
 }
 
-async fn subscribe_once(client: &Client, tenant_id: &str) -> Result<()> {
+async fn subscribe_once(client: &Connection, tenant_id: &str) -> Result<()> {
     let _sub = client.subscribe(tenant_id, NAMESPACE, STREAM).await?;
     Ok(())
 }
 
-async fn subscribe_and_receive(client: &Client, tenant_id: &str) -> Result<()> {
+async fn subscribe_and_receive(client: &Connection, tenant_id: &str) -> Result<()> {
     let mut sub = client.subscribe(tenant_id, NAMESPACE, STREAM).await?;
     let publisher = client.publisher().await?;
     publisher
@@ -884,7 +886,7 @@ async fn subscribe_and_receive(client: &Client, tenant_id: &str) -> Result<()> {
     }
 }
 
-async fn cache_roundtrip(client: &Client, tenant_id: &str) -> Result<()> {
+async fn cache_roundtrip(client: &Connection, tenant_id: &str) -> Result<()> {
     client
         .cache_put(
             tenant_id,

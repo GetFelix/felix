@@ -15,11 +15,11 @@ use anyhow::{Context, Result};
 
 use felix_wire::StartPosition;
 
-use super::{ClusterClient, MAX_REDIRECTS, ShardKey, expired};
-use crate::client::{Client, GroupInfo, GroupPosition};
+use super::{Client, MAX_REDIRECTS, ShardKey, expired};
+use crate::client::{Connection, GroupInfo, GroupPosition};
 
-impl ClusterClient {
-    /// [`Client::group_poll`], on whichever broker leads the shard.
+impl Client {
+    /// [`Connection::group_poll`], on whichever broker leads the shard.
     pub async fn group_poll(
         &self,
         tenant_id: &str,
@@ -41,7 +41,7 @@ impl ClusterClient {
         .await
     }
 
-    /// [`Client::group_poll_wait`], on whichever broker leads the shard.
+    /// [`Connection::group_poll_wait`], on whichever broker leads the shard.
     #[allow(clippy::too_many_arguments)]
     pub async fn group_poll_wait(
         &self,
@@ -72,7 +72,7 @@ impl ClusterClient {
         .await
     }
 
-    /// [`Client::group_poll_as`], on whichever broker leads the shard.
+    /// [`Connection::group_poll_as`], on whichever broker leads the shard.
     #[allow(clippy::too_many_arguments)]
     pub async fn group_poll_as(
         &self,
@@ -105,7 +105,7 @@ impl ClusterClient {
         .await
     }
 
-    /// [`Client::group_ack`], on whichever broker leads the shard.
+    /// [`Connection::group_ack`], on whichever broker leads the shard.
     pub async fn group_ack(
         &self,
         tenant_id: &str,
@@ -126,7 +126,7 @@ impl ClusterClient {
         .await
     }
 
-    /// [`Client::group_nack`], on whichever broker leads the shard.
+    /// [`Connection::group_nack`], on whichever broker leads the shard.
     pub async fn group_nack(
         &self,
         tenant_id: &str,
@@ -147,7 +147,7 @@ impl ClusterClient {
         .await
     }
 
-    /// [`Client::group_poll_with`], on whichever broker leads the shard.
+    /// [`Connection::group_poll_with`], on whichever broker leads the shard.
     #[allow(clippy::too_many_arguments)]
     pub async fn group_poll_with(
         &self,
@@ -178,7 +178,7 @@ impl ClusterClient {
         .await
     }
 
-    /// [`Client::group_nack_after`], on whichever broker leads the shard.
+    /// [`Connection::group_nack_after`], on whichever broker leads the shard.
     #[allow(clippy::too_many_arguments)]
     pub async fn group_nack_after(
         &self,
@@ -201,7 +201,7 @@ impl ClusterClient {
         .await
     }
 
-    /// [`Client::group_extend`], on whichever broker leads the shard.
+    /// [`Connection::group_extend`], on whichever broker leads the shard.
     #[allow(clippy::too_many_arguments)]
     pub async fn group_extend(
         &self,
@@ -224,7 +224,7 @@ impl ClusterClient {
         .await
     }
 
-    /// [`Client::group_dead_letter`], on whichever broker leads the shard.
+    /// [`Connection::group_dead_letter`], on whichever broker leads the shard.
     pub async fn group_dead_letter(
         &self,
         tenant_id: &str,
@@ -245,7 +245,7 @@ impl ClusterClient {
         .await
     }
 
-    /// [`Client::group_dead_letters`], on whichever broker leads the shard.
+    /// [`Connection::group_dead_letters`], on whichever broker leads the shard.
     pub async fn group_dead_letters(
         &self,
         tenant_id: &str,
@@ -265,7 +265,7 @@ impl ClusterClient {
         .await
     }
 
-    /// [`Client::group_discard`], on whichever broker leads the shard.
+    /// [`Connection::group_discard`], on whichever broker leads the shard.
     pub async fn group_discard(
         &self,
         tenant_id: &str,
@@ -286,7 +286,7 @@ impl ClusterClient {
         .await
     }
 
-    /// [`Client::group_redrive`], on whichever broker leads the shard.
+    /// [`Connection::group_redrive`], on whichever broker leads the shard.
     pub async fn group_redrive(
         &self,
         tenant_id: &str,
@@ -307,7 +307,7 @@ impl ClusterClient {
         .await
     }
 
-    /// [`Client::group_seek`], on whichever broker leads the shard.
+    /// [`Connection::group_seek`], on whichever broker leads the shard.
     pub async fn group_seek(
         &self,
         tenant_id: &str,
@@ -328,7 +328,7 @@ impl ClusterClient {
         .await
     }
 
-    /// [`Client::group_create`], on whichever broker leads the shard.
+    /// [`Connection::group_create`], on whichever broker leads the shard.
     pub async fn group_create(
         &self,
         tenant_id: &str,
@@ -349,7 +349,7 @@ impl ClusterClient {
         .await
     }
 
-    /// [`Client::group_describe`], on whichever broker leads the shard.
+    /// [`Connection::group_describe`], on whichever broker leads the shard.
     pub async fn group_describe(
         &self,
         tenant_id: &str,
@@ -369,7 +369,7 @@ impl ClusterClient {
         .await
     }
 
-    /// [`Client::group_delete`], on whichever broker leads the shard.
+    /// [`Connection::group_delete`], on whichever broker leads the shard.
     pub async fn group_delete(
         &self,
         tenant_id: &str,
@@ -389,7 +389,7 @@ impl ClusterClient {
         .await
     }
 
-    /// [`ClusterClient::group_seek`] on every shard of `stream`, in shard
+    /// [`Client::group_seek`] on every shard of `stream`, in shard
     /// order. Returns each shard's position, indexed by shard.
     ///
     /// One request per shard, not one cut across them: `Latest` is each
@@ -430,8 +430,8 @@ impl ClusterClient {
         Ok(positions)
     }
 
-    /// [`ClusterClient::group_create`] on every shard of `stream`, as
-    /// [`ClusterClient::group_seek_stream`] does. A shard where the group
+    /// [`Client::group_create`] on every shard of `stream`, as
+    /// [`Client::group_seek_stream`] does. A shard where the group
     /// already exists is left alone.
     pub async fn group_create_stream(
         self: &Arc<Self>,
@@ -466,7 +466,7 @@ impl ClusterClient {
         Ok(positions)
     }
 
-    /// [`ClusterClient::group_describe`] for every shard of `stream`, indexed
+    /// [`Client::group_describe`] for every shard of `stream`, indexed
     /// by shard.
     pub async fn group_describe_stream(
         self: &Arc<Self>,
@@ -500,7 +500,7 @@ impl ClusterClient {
         Ok(infos)
     }
 
-    /// [`ClusterClient::group_delete`] on every shard of `stream`. Returns
+    /// [`Client::group_delete`] on every shard of `stream`. Returns
     /// whether any shard had anything to delete. Safe to repeat after a
     /// failure partway.
     pub async fn group_delete_stream(
@@ -551,7 +551,7 @@ impl ClusterClient {
             anyhow::ensure!(
                 shards == 1,
                 "{stream} has {shards} shards, and offset {offset} names a record on only one; \
-                 seek each shard with ClusterClient::group_seek instead"
+                 seek each shard with Client::group_seek instead"
             );
         }
         Ok(shards)
@@ -590,7 +590,7 @@ impl ClusterClient {
     /// returned as it came.
     pub(crate) async fn on_group_shard<T, F, Fut>(&self, key: ShardKey, op: F) -> Result<T>
     where
-        F: Fn(Arc<Client>) -> Fut,
+        F: Fn(Arc<Connection>) -> Fut,
         Fut: Future<Output = Result<T>>,
     {
         self.on_group_shard_since(Instant::now(), false, key, op)
@@ -601,7 +601,7 @@ impl ClusterClient {
     /// sent again after a failure that says nothing about whether it applied.
     pub(crate) async fn on_group_read<T, F, Fut>(&self, key: ShardKey, op: F) -> Result<T>
     where
-        F: Fn(Arc<Client>) -> Fut,
+        F: Fn(Arc<Connection>) -> Fut,
         Fut: Future<Output = Result<T>>,
     {
         self.on_group_shard_since(Instant::now(), true, key, op)
@@ -618,7 +618,7 @@ impl ClusterClient {
         op: F,
     ) -> Result<T>
     where
-        F: Fn(Arc<Client>) -> Fut,
+        F: Fn(Arc<Connection>) -> Fut,
         Fut: Future<Output = Result<T>>,
     {
         self.paced_since(started, read, |deadline| {
@@ -641,7 +641,7 @@ impl ClusterClient {
         op: F,
     ) -> Result<T>
     where
-        F: Fn(Arc<Client>) -> Fut,
+        F: Fn(Arc<Connection>) -> Fut,
         Fut: Future<Output = Result<T>>,
     {
         let cached = self.group_routes.read().await.get(&key).cloned();

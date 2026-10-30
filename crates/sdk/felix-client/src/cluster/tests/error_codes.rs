@@ -1,4 +1,4 @@
-//! What a [`ClusterClient`] does with a broker's typed error, end to end
+//! What a [`Client`] does with a broker's typed error, end to end
 //! against stub brokers.
 
 use std::sync::Arc;
@@ -8,7 +8,7 @@ use anyhow::Result;
 use felix_wire::{AckMode, ErrorCode, ErrorDetail, Message, RetryClass};
 
 use super::stub_broker::StubBroker;
-use crate::cluster::{ClusterClient, Owner, ReconnectPolicy, ShardKey};
+use crate::cluster::{Client, Owner, ReconnectPolicy, ShardKey};
 use crate::test_support::{build_client_config_with_overrides, build_server_config};
 use crate::{BrokerError, ClientConfig};
 
@@ -46,8 +46,8 @@ fn error(code: ErrorCode, reason: Option<&str>) -> Message {
     }
 }
 
-async fn cluster(seed: &StubBroker, config: ClientConfig) -> Result<ClusterClient> {
-    ClusterClient::connect_with_policy(&[seed.addr], "localhost", config, fast_policy()).await
+async fn cluster(seed: &StubBroker, config: ClientConfig) -> Result<Client> {
+    Client::connect_with_policy(&[seed.addr], "localhost", config, fast_policy()).await
 }
 
 fn shard0() -> ShardKey {
@@ -333,7 +333,7 @@ async fn a_deadline_ends_retries_that_the_attempt_budget_would_allow() -> Result
         max_backoff: Duration::from_millis(100),
         deadline: Some(Duration::from_millis(600)),
     };
-    let cluster = ClusterClient::connect_with_policy(
+    let cluster = Client::connect_with_policy(
         &[entry.addr],
         "localhost",
         build_client_config_with_overrides(cert, 0)?,

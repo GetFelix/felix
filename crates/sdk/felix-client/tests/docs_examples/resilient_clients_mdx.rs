@@ -19,7 +19,7 @@ mod connecting_to_a_cluster_1 {
     use super::prelude::*;
 
     async fn example(config: ClientConfig) -> Result<()> {
-        use felix_client::{ClusterClient, ReconnectPolicy, Seed};
+        use felix_client::{Client, ReconnectPolicy, Seed};
 
         // Names are resolved again whenever no known broker answers.
         let seeds: Vec<Seed> = vec![
@@ -29,7 +29,7 @@ mod connecting_to_a_cluster_1 {
         ];
         // The connect gives up after `config.connect_timeout` per broker (10 s by default).
         let client = Arc::new(
-            ClusterClient::connect_seeds(&seeds, "felix.example.com", config, ReconnectPolicy::default())
+            Client::connect_seeds(&seeds, "felix.example.com", config, ReconnectPolicy::default())
                 .await
                 .context("connect to the Felix cluster")?,
         );
@@ -44,7 +44,7 @@ mod reconnection_1 {
     use super::prelude::*;
 
     async fn example(seeds: Vec<Seed>, config: ClientConfig) -> Result<()> {
-        use felix_client::{ClusterClient, ReconnectPolicy};
+        use felix_client::{Client, ReconnectPolicy};
 
         // `seeds` is the Vec<Seed> built in the previous section.
         let policy = ReconnectPolicy {
@@ -54,7 +54,7 @@ mod reconnection_1 {
             // The longest any one call may spend retrying.
             deadline: Some(Duration::from_secs(30)),
         };
-        let client = ClusterClient::connect_seeds(&seeds, "felix.example.com", config, policy).await?;
+        let client = Client::connect_seeds(&seeds, "felix.example.com", config, policy).await?;
         Ok(())
     }
 }
@@ -75,7 +75,7 @@ mod authentication_that_lasts_1 {
         });
         config.auth_tenant_id = Some("acme".into());
         config.token_provider = Some(Arc::new(tokens));
-        let client = ClusterClient::connect_seeds(&seeds, "felix.example.com", config, policy).await?;
+        let client = Client::connect_seeds(&seeds, "felix.example.com", config, policy).await?;
         Ok(())
     }
 }
@@ -85,7 +85,7 @@ mod when_a_broker_rejects_the_token_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
-    async fn example(client: &ClusterClient, payload: Vec<u8>) -> Result<()> {
+    async fn example(client: &Client, payload: Vec<u8>) -> Result<()> {
         use felix_client::{AckMode, AuthError, AuthErrorKind};
 
         if let Err(err) = client
@@ -111,7 +111,7 @@ mod errors_and_retry_classes_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
-    async fn example(cluster: &ClusterClient, payload: Vec<u8>) -> Result<()> {
+    async fn example(cluster: &Client, payload: Vec<u8>) -> Result<()> {
         use felix_client::{AckMode, BrokerError, RetryClass};
 
         enum Verdict {
@@ -168,7 +168,7 @@ mod writes_whose_outcome_is_unknown_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
-    async fn example(cluster: &Arc<ClusterClient>, payload: Vec<u8>) -> Result<()> {
+    async fn example(cluster: &Arc<Client>, payload: Vec<u8>) -> Result<()> {
         use felix_client::PublishRefused;
 
         let producer = cluster.idempotent_producer().await?;
@@ -201,7 +201,7 @@ mod conditional_publish_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
-    async fn example(cluster: &ClusterClient, ticks: Vec<Vec<u8>>) -> Result<()> {
+    async fn example(cluster: &Client, ticks: Vec<Vec<u8>>) -> Result<()> {
         use felix_client::ConditionalWrite;
 
         // The offset this writer expects to write next.
@@ -233,7 +233,7 @@ mod resume_one_shard_1 {
     }
     async fn handle(_: &Bytes) -> Result<()> { Ok(()) }
 
-    async fn example(cluster: &Arc<ClusterClient>, checkpoint: Checkpoint) -> Result<()> {
+    async fn example(cluster: &Arc<Client>, checkpoint: Checkpoint) -> Result<()> {
         use felix_client::{AuthError, BrokerError, CursorErrorReason, RetryClass};
         use felix_client::{StartPosition, SubscribeCursorError};
 
@@ -341,7 +341,7 @@ mod resume_a_sharded_stream_1 {
     }
     async fn handle(_: u32, _: &Event) -> Result<()> { Ok(()) }
 
-    async fn example(cluster: &Arc<ClusterClient>, checkpoint: Positions) -> Result<()> {
+    async fn example(cluster: &Arc<Client>, checkpoint: Positions) -> Result<()> {
         use felix_client::{ShardEvent, StartPosition};
 
         let mut stream = match checkpoint.load().await? {
@@ -386,7 +386,7 @@ mod slow_consumers_1 {
         config.broker_sub_queue_capacity = Some(4096);
         config.client_sub_queue_capacity = 8192;
         let client = Arc::new(
-            ClusterClient::connect_seeds(&seeds, "felix.example.com", config, ReconnectPolicy::default())
+            Client::connect_seeds(&seeds, "felix.example.com", config, ReconnectPolicy::default())
                 .await?,
         );
 
@@ -420,7 +420,7 @@ mod consumer_groups_under_failure_1 {
 
     async fn charge(_: &[u8], _: u32) -> Result<()> { Ok(()) }
 
-    async fn example(client: &ClusterClient, stop: &std::sync::atomic::AtomicBool) -> Result<()> {
+    async fn example(client: &Client, stop: &std::sync::atomic::AtomicBool) -> Result<()> {
         use felix_client::{BrokerError, ErrorCode, GroupMember};
 
         fn is_stale_claim(err: &anyhow::Error) -> bool {
@@ -482,7 +482,7 @@ mod shutting_down_cleanly_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
-    async fn example(client: &ClusterClient, subscription: ClusterSubscription, producer: IdempotentProducer) -> Result<()> {
+    async fn example(client: &Client, subscription: ClusterSubscription, producer: IdempotentProducer) -> Result<()> {
         // Stop reading. Dropping a subscription closes it on the broker.
         drop(subscription);
 

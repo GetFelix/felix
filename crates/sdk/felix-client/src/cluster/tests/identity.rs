@@ -1,4 +1,4 @@
-//! A [`ClusterClient`] acting as another principal reaches every broker over
+//! A [`Client`] acting as another principal reaches every broker over
 //! its parent's connections.
 
 use std::sync::Arc;
@@ -9,7 +9,7 @@ use felix_wire::Message;
 
 use super::connections::{default_config, policy};
 use super::stub_broker::StubBroker;
-use crate::cluster::ClusterClient;
+use crate::cluster::Client;
 use crate::test_support::build_server_config;
 
 fn subscribed() -> Message {
@@ -41,7 +41,7 @@ async fn an_identity_follows_a_moved_shard_over_the_parents_connection() -> Resu
         }]
     });
     let cluster =
-        ClusterClient::connect_with_policy(&[a.addr], "localhost", default_config(cert)?, policy())
+        Client::connect_with_policy(&[a.addr], "localhost", default_config(cert)?, policy())
             .await?;
     let alice = Arc::new(cluster.with_identity_token("t1", "alice").await?);
 
@@ -76,7 +76,7 @@ async fn an_identity_rebuilds_over_the_parents_new_connection() -> Result<()> {
     let a = StubBroker::start_with(server_config.clone(), |_| subscribed())?;
     let b = StubBroker::start_with(server_config, |_| subscribed())?;
     let cluster =
-        ClusterClient::connect_with_policy(&[a.addr], "localhost", default_config(cert)?, policy())
+        Client::connect_with_policy(&[a.addr], "localhost", default_config(cert)?, policy())
             .await?;
     let alice = cluster.with_identity_token("t1", "alice").await?;
     let before = alice.connect_to(b.addr).await?;
@@ -109,7 +109,7 @@ async fn identities_add_no_connections() -> Result<()> {
     let a = StubBroker::start_with(server_config.clone(), |_| subscribed())?;
     let b = StubBroker::start_with(server_config, |_| subscribed())?;
     let cluster =
-        ClusterClient::connect_with_policy(&[a.addr], "localhost", default_config(cert)?, policy())
+        Client::connect_with_policy(&[a.addr], "localhost", default_config(cert)?, policy())
             .await?;
     let alice = cluster.with_identity_token("t1", "alice").await?;
     let bob = alice.with_identity_token("t1", "bob").await?;

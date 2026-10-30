@@ -352,7 +352,7 @@ connection.
 
 ## 7. Client connection architecture
 
-`crates/sdk/felix-client/src/client/connect.rs::Client::connect_with_transport`
+`crates/sdk/felix-client/src/client/connect.rs::Connection::connect_with_transport`
 constructs three separate pools.
 
 ### 7.1 Publish pool
@@ -419,7 +419,7 @@ This is the central path to understand.
 ### 9.1 Application to `Publisher`
 
 The application obtains a handle using
-`felix_client::Client::publisher`, then calls:
+`felix_client::Connection::publisher`, then calls:
 
 - `Publisher::publish`; or
 - `Publisher::publish_batch`.
@@ -679,7 +679,7 @@ written, and while none is free the control loop stops reading, so the window
 bounds a stream's unanswered publishes and pushes back through QUIC flow
 control. Each stream has its own window so that one stuck behind a stalled
 shard cannot take the slots its connection's other streams need. The Rust
-`ClusterClient` puts each shard on a stream of its own, so for it the window
+`Client` puts each shard on a stream of its own, so for it the window
 and the request order are in effect per shard.
 
 Commit acknowledgement is not an exactly-once outcome protocol. The publish job
@@ -693,7 +693,7 @@ acknowledgement error as proof that the event was not published.
 
 ### 11.1 Client subscribe request
 
-`crates/sdk/felix-client/src/client/subscribe.rs::Client::subscribe`:
+`crates/sdk/felix-client/src/client/subscribe.rs::Connection::subscribe`:
 
 1. checks that the requested tenant matches the client's authenticated tenant;
 2. selects an event connection round-robin;
@@ -703,7 +703,7 @@ acknowledgement error as proof that the event was not published.
 6. reads `Message::Subscribed`; and
 7. registers the returned ID with the event router.
 
-The broker assigns the ID. This is essential because independent `Client`
+The broker assigns the ID. This is essential because independent `Connection`
 instances otherwise start local counters at the same values and can collide.
 
 ### 11.2 Broker subscription registration
@@ -1148,8 +1148,8 @@ Read in this order and follow each symbol with editor "go to definition":
    - `QuicClient`
    - `QuicConnection`
 3. `crates/sdk/felix-client/src/client/`
-   - `Client::connect_with_transport` (`connect.rs`)
-   - `Client::subscribe` (`subscribe.rs`)
+   - `Connection::connect_with_transport` (`connect.rs`)
+   - `Connection::subscribe` (`subscribe.rs`)
 4. `crates/sdk/felix-client/src/publish/`
    - `Publisher::select_worker` (`routing.rs`)
    - `Publisher::publish_batch_binary` (`publish.rs`)

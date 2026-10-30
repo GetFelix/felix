@@ -509,7 +509,7 @@ struct Acked {
     at: Instant,
 }
 
-/// Keyed publishers sharing one `ClusterClient` until told to stop, keeping
+/// Keyed publishers sharing one `Client` until told to stop, keeping
 /// what was acknowledged. A failed publish is never sent again.
 struct Publisher {
     keys: usize,
@@ -524,7 +524,7 @@ impl Publisher {
     /// publish is too slow to put much through a one-second window.
     const WORKERS: usize = 8;
 
-    fn start(client: felix_client::ClusterClient, cluster: &Cluster, keys: usize) -> Self {
+    fn start(client: felix_client::Client, cluster: &Cluster, keys: usize) -> Self {
         let client = Arc::new(client);
         let acknowledged: Arc<Mutex<Vec<Acked>>> = Arc::default();
         let refused = Arc::new(AtomicUsize::new(0));

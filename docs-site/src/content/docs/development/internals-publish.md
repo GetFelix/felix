@@ -38,8 +38,8 @@ pub async fn publish(
 ```
 
 1. **Worker selection.** Every publisher works out the shard of each
-   publish: 0 without a key, the caller's shard for a `ClusterClient`, and for
-   a keyed publish through a plain `Client` the shard the key maps to, from
+   publish: 0 without a key, the caller's shard for a `Client`, and for
+   a keyed publish through a plain `Connection` the shard the key maps to, from
    the stream's width asked of the broker (`publish/widths.rs`). Against a
    broker with `FEATURE_PUBLISH_WIDTH` the width also comes back as a framed
    `publish_width`, which the writer sends ahead of a keyed batch whenever it

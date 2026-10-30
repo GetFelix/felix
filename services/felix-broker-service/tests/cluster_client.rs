@@ -1,4 +1,4 @@
-//! `ClusterClient` against a real broker, for the calls that need one to
+//! `Client` against a real broker, for the calls that need one to
 //! mean anything: flushing unacknowledged publishes, keyed idempotent
 //! publishes, asking who owns a shard, and cache requests.
 //!
@@ -18,7 +18,7 @@ use felix_authz::{
 };
 use felix_broker::{Broker, CacheMetadata, StreamMetadata};
 use felix_broker_service::serving::auth::{BrokerAuth, ControlPlaneKeyStore};
-use felix_client::{AckMode, ClientConfig, ClusterClient, ShardKind, ShardOwner};
+use felix_client::{AckMode, Client, ClientConfig, ShardKind, ShardOwner};
 use felix_storage::EphemeralCache;
 use felix_transport::{QuicServer, TransportConfig};
 use jsonwebtoken::Algorithm;
@@ -32,7 +32,7 @@ const TEST_PRIVATE_KEY: [u8; 32] = [11u8; 32];
 
 /// A broker serving tenant `t1`, and a cluster client connected to it.
 struct Running {
-    cluster: Arc<ClusterClient>,
+    cluster: Arc<Client>,
     task: tokio::task::JoinHandle<Result<()>>,
 }
 
@@ -77,7 +77,7 @@ async fn start() -> Result<Running> {
     let mut config = ClientConfig::from_env_or_yaml(quinn, None)?;
     config.auth_tenant_id = Some("t1".to_string());
     config.auth_token = Some(token);
-    let cluster = Arc::new(ClusterClient::connect(&[addr], "localhost", config).await?);
+    let cluster = Arc::new(Client::connect(&[addr], "localhost", config).await?);
     Ok(Running { cluster, task })
 }
 

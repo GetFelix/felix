@@ -135,7 +135,7 @@ A few errors come from the client rather than the broker and have no code:
 
 ### Rust
 
-Calls return `anyhow::Result`. Recover a broker refusal with `err.downcast_ref::<BrokerError>()`, which carries `code`, `retry`, `detail` and `message`, and `reason()` for the detail reason. Branch on `retry`. `ClusterClient` acts on the class itself before an error reaches you: it returns `fatal` at once, never resends an `outcome_unknown` publish except through `publish_at_least_once` or an idempotent producer, and retries `retry`, `redirect` and `retry_after`. See [Errors you can act on](/clients/rust/#errors-you-can-act-on).
+Calls return `anyhow::Result`. Recover a broker refusal with `err.downcast_ref::<BrokerError>()`, which carries `code`, `retry`, `detail` and `message`, and `reason()` for the detail reason. Branch on `retry`. `Client` acts on the class itself before an error reaches you: it returns `fatal` at once, never resends an `outcome_unknown` publish except through `publish_at_least_once` or an idempotent producer, and retries `retry`, `redirect` and `retry_after`. See [Errors you can act on](/clients/rust/#errors-you-can-act-on).
 
 ### Python
 

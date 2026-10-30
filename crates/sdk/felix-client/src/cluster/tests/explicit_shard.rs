@@ -1,4 +1,4 @@
-//! Where a [`ClusterClient`] sends a write that names its shard, against stub
+//! Where a [`Client`] sends a write that names its shard, against stub
 //! brokers.
 
 use anyhow::Result;
@@ -7,7 +7,7 @@ use felix_wire::{AckMode, Message};
 use super::connections::{default_config, policy};
 use super::stub_broker::{STREAM_SHARDS, StubBroker};
 use crate::CommitOp;
-use crate::cluster::ClusterClient;
+use crate::cluster::Client;
 use crate::test_support::build_server_config;
 
 fn ok(request_id: u64) -> Message {
@@ -54,7 +54,7 @@ async fn a_named_shard_goes_to_its_owner() -> Result<()> {
     b.honour_named_shards();
     a.set_cache_owners(owners_of(&a, &b));
     let cluster =
-        ClusterClient::connect_with_policy(&[a.addr], "localhost", default_config(cert)?, policy())
+        Client::connect_with_policy(&[a.addr], "localhost", default_config(cert)?, policy())
             .await?;
 
     for shard in [3, 1, 2] {
@@ -94,13 +94,9 @@ async fn a_commit_to_a_named_shard_follows_the_leader() -> Result<()> {
     })?;
     entry.honour_named_shards();
     leader.honour_named_shards();
-    let cluster = ClusterClient::connect_with_policy(
-        &[entry.addr],
-        "localhost",
-        default_config(cert)?,
-        policy(),
-    )
-    .await?;
+    let cluster =
+        Client::connect_with_policy(&[entry.addr], "localhost", default_config(cert)?, policy())
+            .await?;
 
     let receipt = cluster
         .commit_on_shard(
@@ -127,7 +123,7 @@ async fn a_broker_without_the_feature_is_not_sent_a_named_shard() -> Result<()> 
     let (server_config, cert) = build_server_config()?;
     let a = StubBroker::start_with(server_config, ok)?;
     let cluster =
-        ClusterClient::connect_with_policy(&[a.addr], "localhost", default_config(cert)?, policy())
+        Client::connect_with_policy(&[a.addr], "localhost", default_config(cert)?, policy())
             .await?;
 
     let published = cluster

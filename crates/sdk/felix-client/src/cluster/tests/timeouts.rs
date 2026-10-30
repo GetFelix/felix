@@ -8,7 +8,7 @@ use felix_wire::{AckMode, Message};
 
 use super::connections::{default_config, policy};
 use super::stub_broker::StubBroker;
-use crate::cluster::ClusterClient;
+use crate::cluster::Client;
 use crate::test_support::build_server_config;
 
 /// Outer bound so a regression fails the test instead of hanging it.
@@ -29,9 +29,8 @@ async fn finish_errors_when_the_broker_never_acks() -> Result<()> {
     let broker = StubBroker::start_with(server_config, ok)?;
     let mut config = default_config(cert)?;
     config.finish_timeout = Duration::from_millis(300);
-    let cluster = Arc::new(
-        ClusterClient::connect_with_policy(&[broker.addr], "localhost", config, policy()).await?,
-    );
+    let cluster =
+        Arc::new(Client::connect_with_policy(&[broker.addr], "localhost", config, policy()).await?);
     broker.hold_acks();
     let publisher = cluster.client().await.publisher_handle();
     let publish = tokio::spawn(async move {
@@ -68,7 +67,7 @@ async fn connect_errors_when_the_broker_never_answers() -> Result<()> {
     let started = std::time::Instant::now();
     let connected = tokio::time::timeout(
         TEST_LIMIT,
-        ClusterClient::connect_with_policy(&[silent.local_addr()?], "localhost", config, policy()),
+        Client::connect_with_policy(&[silent.local_addr()?], "localhost", config, policy()),
     )
     .await
     .expect("connect hung");
@@ -93,8 +92,7 @@ async fn finish_waits_on_stalled_brokers_together() -> Result<()> {
     let mut config = default_config(cert)?;
     config.finish_timeout = Duration::from_millis(1500);
     let cluster = Arc::new(
-        ClusterClient::connect_with_policy(&[a.addr, b.addr], "localhost", config, policy())
-            .await?,
+        Client::connect_with_policy(&[a.addr, b.addr], "localhost", config, policy()).await?,
     );
     a.hold_acks();
     b.hold_acks();
@@ -133,7 +131,7 @@ async fn reading_the_client_does_not_wait_for_a_reconnect_dial() -> Result<()> {
     let mut config = default_config(cert)?;
     config.connect_timeout = Duration::from_secs(2);
     let cluster = Arc::new(
-        ClusterClient::connect_with_policy(
+        Client::connect_with_policy(
             &[live.addr, silent.local_addr()?],
             "localhost",
             config,
@@ -176,7 +174,7 @@ async fn reconnect_reaches_a_live_broker_behind_dead_addresses() -> Result<()> {
     seeds.extend(dead.iter().map(|s| s.local_addr().unwrap()));
     let mut config = default_config(cert)?;
     config.connect_timeout = Duration::from_secs(1);
-    let cluster = ClusterClient::connect_with_policy(&seeds, "localhost", config, policy()).await?;
+    let cluster = Client::connect_with_policy(&seeds, "localhost", config, policy()).await?;
     let failed = cluster.client().await;
     assert_eq!(failed.dialled(), live.addr);
 

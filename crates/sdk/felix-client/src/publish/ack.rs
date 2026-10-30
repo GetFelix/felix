@@ -189,7 +189,7 @@ pub(crate) async fn read_ack_message_with_timing(
         if let Some(owner) = &ack.forwarded_to {
             // The batch was written by another broker, and this one paid to
             // decrypt and re-encrypt it on the way -- roughly half the
-            // throughput per core (#536). Counted *and* returned: `ClusterClient`
+            // throughput per core (#536). Counted *and* returned: `Client`
             // routes the next publish for this shard straight to the owner, and
             // the counter is what says whether that is working -- a number a
             // client can answer about itself without a metrics recorder.

@@ -3,20 +3,20 @@
 use std::net::SocketAddr;
 
 use anyhow::{Context, Result};
-use felix_client::{Client, ClientConfig, ClusterClient};
+use felix_client::{Client, ClientConfig, Connection};
 
 use super::Common;
 
-pub(super) async fn cluster(common: &Common) -> Result<ClusterClient> {
+pub(super) async fn cluster(common: &Common) -> Result<Client> {
     let config = client_config(common)?;
-    ClusterClient::connect(&common.brokers, &common.server_name, config)
+    Client::connect(&common.brokers, &common.server_name, config)
         .await
         .context("connect a cluster client")
 }
 
-pub(super) async fn client(common: &Common, addr: SocketAddr) -> Result<Client> {
+pub(super) async fn client(common: &Common, addr: SocketAddr) -> Result<Connection> {
     let config = client_config(common)?;
-    Client::connect(addr, &common.server_name, config)
+    Connection::connect(addr, &common.server_name, config)
         .await
         .with_context(|| format!("connect to {addr}"))
 }

@@ -1,6 +1,6 @@
 //! Client half of a cache watch: the handle an application receives changes on.
 //!
-//! Establishment happens in [`crate::Client::watch_cache`]; this module owns
+//! Establishment happens in [`crate::Connection::watch_cache`]; this module owns
 //! the read pump that turns the watch's uni stream into typed items, and the
 //! types an application consumes.
 
@@ -94,7 +94,7 @@ impl CacheWatch {
     }
 
     /// How many retained values precede live delivery, when this watch asked
-    /// for retained delivery ([`crate::Client::watch_cache_retained`]).
+    /// for retained delivery ([`crate::Connection::watch_cache_retained`]).
     ///
     /// `Some(0)` is the defined "no retained value" answer: the key or prefix
     /// held nothing at join, which is not the same as a slow key. After this

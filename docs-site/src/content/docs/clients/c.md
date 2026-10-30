@@ -1015,7 +1015,7 @@ returned, and they do not wait for each other's answers.
 
 In every language the client is a cluster client; see
 [Choosing a Client](/clients/overview/#every-client-is-a-cluster-client).
-`felix_client_connect_with` builds a `ClusterClient` from `addrs`, which holds
+`felix_client_connect_with` builds a Rust `Client` from `addrs`, which holds
 one `host:port` or several separated by commas:
 
 ```c

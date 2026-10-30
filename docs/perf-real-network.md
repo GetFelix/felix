@@ -179,7 +179,7 @@ benchmarks page in the same shape with an environment column (`loopback` |
    loopback-bound: `latency-demo` runs an in-process broker, `soak` spawns its
    own child. The generator this suite needs is the measurement core of
    `latency-demo` pointed at remote addresses through `felix-client` /
-   `ClusterClient`: takes cluster endpoints, tenant/token (or the Entra
+   `Client`: takes cluster endpoints, tenant/token (or the Entra
    client-credential parameters and does the exchange itself), a scenario
    spec, emits the standard JSONL. Ships *in* the release tarball so the
    load-gen VM downloads the same artifact as the brokers.

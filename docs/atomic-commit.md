@@ -74,11 +74,11 @@ The same API in every client:
 - The conformance catalogue's `commit.*` scenarios hold all three to the same
   behaviour (`crates/testing/felix-conformance/scenarios.toml`).
 
-`Client::commit` talks to one broker and reports a shard led elsewhere as a
-`NotLeaderError`. `ClusterClient::commit` follows the redirect to the leader.
+`Connection::commit` talks to one broker and reports a shard led elsewhere as a
+`NotLeaderError`. `Client::commit` follows the redirect to the leader.
 A commit is never forwarded between brokers.
 
-`ClusterClient::commit`, `publish_if` and `state_get` also ask the entry broker
+`Client::commit`, `publish_if` and `state_get` also ask the entry broker
 again when a broker answers a coded `not_leader`. The broker checks that it
 leads the shard before applying anything, so nothing was written and the retry
 is safe. The retries use the cluster reconnect policy: up to 5 attempts, with
@@ -126,7 +126,7 @@ The check is the one `publish_if` makes, at the point the broker assigns the
 offset, so it is atomic with the write. It counts every record on the shard,
 plain publishes and a new leader's generation-start record included, which is
 what makes it a fence for a single writer. It does not compare one key's
-version; see below. `ClusterClient::commit_if` follows the leader the way
+version; see below. `Client::commit_if` follows the leader the way
 `commit` does. The broker must advertise `FEATURE_PUBLISH_CONDITIONAL`, and
 the client refuses to send the request otherwise. See
 [Conditional writes](semantics.md#conditional-writes).
@@ -166,7 +166,7 @@ match client
 
 A shard the stream does not have is refused with `invalid_request` and nothing
 is written. Everything else is the same as for a hashed shard: the leader takes
-the write, `ClusterClient` follows its redirect, and the fleet must have
+the write, `Client` follows its redirect, and the fleet must have
 finalized `atomic_commit`. The broker must advertise `FEATURE_EXPLICIT_SHARD`;
 the client refuses to send otherwise, because an older broker would ignore the
 shard and commit wherever the key hashes. Rust only for now. See

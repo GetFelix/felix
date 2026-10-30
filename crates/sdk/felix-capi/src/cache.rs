@@ -13,7 +13,7 @@ use std::ptr;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use felix_client::{CacheCondition, CacheConditionResult, ClusterClient, VersionedValue};
+use felix_client::{CacheCondition, CacheConditionResult, Client, VersionedValue};
 
 use crate::boundary::{Failure, guard, required_str};
 use crate::cancel::{FelixCancelToken, user_token};
@@ -223,7 +223,7 @@ impl Deliver for Counter {
 
 /// A cache named by a call, with the client it goes through.
 pub(crate) struct Names {
-    pub(crate) inner: Arc<ClusterClient>,
+    pub(crate) inner: Arc<Client>,
     pub(crate) tenant_id: String,
     pub(crate) ns: String,
     pub(crate) cache: String,

@@ -70,7 +70,7 @@ Native services use the Felix clients directly over QUIC. QUIC multiplexes
 independent streams over one connection without head-of-line blocking, and a
 lost packet stalls only the stream that carried it. Each subscription gets its
 own stream and flow-control window, TLS 1.3 is always on, and the Rust client can
-act for many users over one connection (`Client::with_identity`), with each
+act for many users over one connection (`Connection::with_identity`), with each
 user's token checked per request. Felix does not act on QUIC connection
 migration or use 0-RTT today, so a client that changes networks reconnects.
 
@@ -152,10 +152,10 @@ token narrowed to the scope it serves:
 
 ```rust
 use std::sync::Arc;
-use felix_client::{ClientConfig, ClusterClient};
+use felix_client::{ClientConfig, Client};
 
 let quinn = quinn::ClientConfig::with_platform_verifier();
-let client = Arc::new(ClusterClient::connect(&["127.0.0.1:5000".parse()?], "localhost",
+let client = Arc::new(Client::connect(&["127.0.0.1:5000".parse()?], "localhost",
     ClientConfig::optimized_defaults(quinn)).await?);
 let mut subscription = client.subscribe("acme", "default", "app.ops.lobby").await?;
 while let Some(event) = subscription.next_event().await? {

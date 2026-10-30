@@ -16,7 +16,7 @@ use felix_authz::{
 };
 use felix_broker::{Broker, StreamMetadata};
 use felix_broker_service::serving::auth::{BrokerAuth, ControlPlaneKeyStore};
-use felix_client::{BrokerError, Client, ClientConfig};
+use felix_client::{BrokerError, ClientConfig, Connection};
 use felix_storage::EphemeralCache;
 use felix_transport::{QuicServer, TransportConfig};
 use felix_wire::ErrorCode;
@@ -143,7 +143,7 @@ fn is_revoked(err: &anyhow::Error) -> bool {
 #[serial]
 async fn revoking_a_principal_ends_its_open_subscription() -> Result<()> {
     let fixture = start().await?;
-    let client = Client::connect(fixture.addr, "localhost", client_config(&fixture)?).await?;
+    let client = Connection::connect(fixture.addr, "localhost", client_config(&fixture)?).await?;
     let mut sub = client.subscribe("t1", "default", "orders").await?;
     let publisher = client.publisher().await?;
     publisher
@@ -179,7 +179,7 @@ async fn revoking_a_principal_ends_its_open_subscription() -> Result<()> {
 #[serial]
 async fn revoking_a_principal_ends_its_publish_stream_and_refuses_its_token() -> Result<()> {
     let fixture = start().await?;
-    let client = Client::connect(fixture.addr, "localhost", client_config(&fixture)?).await?;
+    let client = Connection::connect(fixture.addr, "localhost", client_config(&fixture)?).await?;
     let publisher = client.publisher().await?;
     publisher
         .publish_batch(

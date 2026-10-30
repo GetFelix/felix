@@ -67,7 +67,7 @@ impl Cluster {
         node_id: &str,
         cache: &str,
         key: &str,
-    ) -> Result<(felix_client::Client, felix_client::CacheWatch)> {
+    ) -> Result<(felix_client::Connection, felix_client::CacheWatch)> {
         let node = self
             .node(node_id)
             .ok_or_else(|| anyhow!("unknown node {node_id}"))?;

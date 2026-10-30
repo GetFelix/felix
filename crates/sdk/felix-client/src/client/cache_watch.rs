@@ -1,17 +1,17 @@
-//! Opening cache watches through a [`Client`].
+//! Opening cache watches through a [`Connection`].
 
 use anyhow::{Context, Result};
 use bytes::BytesMut;
 use felix_wire::Message;
 use tokio::sync::oneshot;
 
-use super::Client;
+use super::Connection;
 use crate::cache::{CacheWatch, CacheWatchFilter, filter_fields};
 use crate::connection::{EventRouterCommand, OpenedStream};
 use crate::frame_io::{read_message_with_limit, write_message};
 use crate::{NotLeaderError, SubscribeCursorError};
 
-impl Client {
+impl Connection {
     /// Watch a cache key or key prefix for changes.
     ///
     /// The watch delivers each applied write — a put with its value, a delete
@@ -28,7 +28,7 @@ impl Client {
     /// get does. A prefix watch reads shard 0 of a single-shard cache and is
     /// refused on a multi-shard one, since keys sharing a prefix hash apart and
     /// shard 0 alone would look complete while missing the rest: use
-    /// [`Client::watch_cache_shard`] once per shard.
+    /// [`Connection::watch_cache_shard`] once per shard.
     ///
     /// Fails without sending anything when the broker did not advertise
     /// [`felix_wire::FEATURE_CACHE_WATCH`]: an unrecognised message type is
@@ -74,7 +74,7 @@ impl Client {
             .await
     }
 
-    /// [`Client::watch_cache`] against an explicit shard of the cache.
+    /// [`Connection::watch_cache`] against an explicit shard of the cache.
     ///
     /// The shard applies to a prefix watch; a key watch resolves its own shard
     /// by hashing and ignores this.
@@ -99,7 +99,7 @@ impl Client {
         .await
     }
 
-    /// [`Client::watch_cache_retained`] against an explicit shard of the cache.
+    /// [`Connection::watch_cache_retained`] against an explicit shard of the cache.
     pub async fn watch_cache_shard_retained(
         &self,
         tenant_id: &str,

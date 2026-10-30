@@ -6,7 +6,7 @@ use felix_transport::{QuicServer, TransportConfig};
 use felix_wire::Message;
 use tokio::time::{Duration, timeout};
 
-use crate::Client;
+use crate::Connection;
 use crate::frame_io::{read_message, write_message};
 use crate::test_support::{
     build_client_config_with_overrides, build_server_config, set_client_env,
@@ -16,7 +16,7 @@ use crate::test_support::{
 /// the server to echo a requested id back. It sends `subscription_id: None` and
 /// adopts whatever globally-unique id the broker assigns.
 ///
-/// This matters for correctness, not just tidiness: the client's old per-`Client`
+/// This matters for correctness, not just tidiness: the client's old per-`Connection`
 /// counter started at 1 in every instance, so two independent clients against one
 /// broker both requested id 1, 2, ... The broker keys its subscription/lane
 /// bookkeeping on the requested id, and the client silently drops any event batch
@@ -103,7 +103,7 @@ async fn subscribe_requests_no_id_and_adopts_server_assigned_id() -> Result<()> 
         Ok::<(), anyhow::Error>(())
     });
 
-    let client = Client::connect_with_transport(
+    let client = Connection::connect_with_transport(
         addr,
         "localhost",
         build_client_config_with_overrides(cert, 1)?,
@@ -214,7 +214,7 @@ async fn subscription_stream_close_returns_none() -> Result<()> {
         Ok::<(), anyhow::Error>(())
     });
 
-    let client = Client::connect_with_transport(
+    let client = Connection::connect_with_transport(
         addr,
         "localhost",
         build_client_config_with_overrides(cert, 1)?,
@@ -313,7 +313,7 @@ async fn subscription_connection_loss_is_an_error_not_an_end() -> Result<()> {
         Ok::<(), anyhow::Error>(())
     });
 
-    let client = Client::connect_with_transport(
+    let client = Connection::connect_with_transport(
         addr,
         "localhost",
         build_client_config_with_overrides(cert, 1)?,
@@ -433,7 +433,7 @@ async fn subscription_empty_event_batch_returns_none() -> Result<()> {
         Ok::<(), anyhow::Error>(())
     });
 
-    let client = Client::connect_with_transport(
+    let client = Connection::connect_with_transport(
         addr,
         "localhost",
         build_client_config_with_overrides(cert, 1)?,

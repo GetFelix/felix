@@ -12,7 +12,7 @@ use ed25519_dalek::SigningKey as Ed25519SigningKey;
 use felix_authz::{FelixTokenIssuer, Jwks, TenantId, TenantKeyCache, TenantKeyMaterial};
 use felix_broker::{Broker, CacheMetadata, StreamMetadata};
 use felix_broker_service::serving::{auth::BrokerAuth, quic};
-use felix_client::{Client, ClientConfig, Publisher};
+use felix_client::{ClientConfig, Connection, Publisher};
 use felix_storage::EphemeralCache;
 use felix_transport::{QuicServer, TransportConfig};
 use felix_wire::AckMode;
@@ -385,11 +385,11 @@ async fn build_client_for_tenant(
     addr: std::net::SocketAddr,
     tenant: &str,
     tokens: &HashMap<String, String>,
-) -> Result<Client> {
+) -> Result<Connection> {
     let mut config = build_client_config(cert.clone())?;
     config.auth_tenant_id = Some(tenant.to_string());
     config.auth_token = tokens.get(tenant).cloned();
-    Client::connect(addr, "localhost", config).await
+    Connection::connect(addr, "localhost", config).await
 }
 
 async fn publish_event(publisher: &Publisher, stream: &str, event: &OrderEvent) -> Result<()> {
@@ -401,7 +401,7 @@ async fn publish_event(publisher: &Publisher, stream: &str, event: &OrderEvent) 
 }
 
 async fn spawn_orders_worker(
-    client: Arc<Client>,
+    client: Arc<Connection>,
     publisher: Publisher,
     expected: usize,
     done: Arc<AtomicUsize>,
@@ -433,7 +433,7 @@ async fn spawn_orders_worker(
 }
 
 async fn spawn_payments_worker(
-    client: Arc<Client>,
+    client: Arc<Connection>,
     publisher: Publisher,
     expected: usize,
     done: Arc<AtomicUsize>,
@@ -465,7 +465,7 @@ async fn spawn_payments_worker(
 }
 
 async fn spawn_shipments_worker(
-    client: Arc<Client>,
+    client: Arc<Connection>,
     expected: usize,
     done: Arc<AtomicUsize>,
 ) -> Result<JoinHandle<()>> {
@@ -492,7 +492,7 @@ async fn spawn_shipments_worker(
     }))
 }
 
-async fn update_order_index(client: &Client, order_ids: &[String]) -> Result<()> {
+async fn update_order_index(client: &Connection, order_ids: &[String]) -> Result<()> {
     let payload = serde_json::to_vec(order_ids)?;
     client
         .cache_put(
@@ -506,7 +506,7 @@ async fn update_order_index(client: &Client, order_ids: &[String]) -> Result<()>
         .await
 }
 
-async fn update_order_state(client: &Client, order_id: &str, stage: &Stage) -> Result<()> {
+async fn update_order_state(client: &Connection, order_id: &str, stage: &Stage) -> Result<()> {
     let state = OrderState {
         status: stage.to_string(),
         last_event_id: format!("{order_id}:{stage}"),
@@ -517,7 +517,7 @@ async fn update_order_state(client: &Client, order_id: &str, stage: &Stage) -> R
         .await
 }
 
-async fn read_order_state(client: &Client, order_id: &str) -> Result<OrderState> {
+async fn read_order_state(client: &Connection, order_id: &str) -> Result<OrderState> {
     let bytes = client
         .cache_get("t1", "default", ORDER_CACHE, order_id)
         .await?

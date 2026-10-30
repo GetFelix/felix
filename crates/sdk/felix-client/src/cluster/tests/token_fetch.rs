@@ -9,7 +9,7 @@ use felix_wire::binary::PublishOwner;
 
 use super::connections::{default_config, policy};
 use super::stub_broker::StubBroker;
-use crate::cluster::{ClusterClient, discovery};
+use crate::cluster::{Client, discovery};
 use crate::test_support::build_server_config;
 use crate::{TokenFuture, TokenProvider};
 
@@ -45,8 +45,7 @@ async fn a_slow_provider_does_not_hold_owner_learning() -> Result<()> {
     config.token_provider = Some(Arc::new(SlowOnce {
         slow: Arc::clone(&slow),
     }));
-    let cluster =
-        ClusterClient::connect_with_policy(&[a.addr], "localhost", config, policy()).await?;
+    let cluster = Client::connect_with_policy(&[a.addr], "localhost", config, policy()).await?;
     slow.store(true, Ordering::SeqCst);
     let key = (
         "t1".to_string(),

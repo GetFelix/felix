@@ -1,7 +1,7 @@
 //! How many shards each stream has, so a keyed publish can name its shard.
 //!
 //! Every keyed publish through a client gets its writer from the width the
-//! client keeps here, whoever made it: a plain publisher, a `ClusterClient`
+//! client keeps here, whoever made it: a plain publisher, a `Client`
 //! or an idempotent producer. A caller's own idea of the shard never picks
 //! the writer, so two callers that disagree about a width cannot put one key
 //! on two writers.
@@ -50,7 +50,7 @@ pub(crate) const REVALIDATE_AFTER: Duration = Duration::from_secs(5);
 pub(crate) const REVALIDATE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Asks the broker for a stream's width and mapping
-/// ([`crate::Client::stream_routing`]).
+/// ([`crate::Connection::stream_routing`]).
 pub(crate) type LearnWidth = Arc<
     dyn Fn(
             String,

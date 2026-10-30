@@ -15,7 +15,7 @@ back.
 Consumer groups work today, including acknowledgements, redelivery,
 dead letters, failover and a client that reads every shard. The status page
 marks them partial for one reason: a group is bound to one shard, and the
-broker serves one shard's group at a time. `ClusterClient::group_sharded`
+broker serves one shard's group at a time. `Client::group_sharded`
 merges shards on the client, and nothing assigns shards to consumers. The
 default visibility timeout and the attempt bound are broker settings, not
 per stream or per group. Groups need durable storage.

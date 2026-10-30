@@ -11,7 +11,7 @@ use crate::frame_io::{read_message, write_message};
 use crate::test_support::{
     build_client_config_with_overrides, build_server_config, set_client_env,
 };
-use crate::{Client, ClientConfig, SubscriptionLagged};
+use crate::{ClientConfig, Connection, SubscriptionLagged};
 
 /// What the stub broker writes on the event stream after its hello.
 enum Write {
@@ -24,7 +24,7 @@ enum Write {
 async fn stub_broker(
     writes: Vec<Write>,
     configure: impl FnOnce(&mut ClientConfig),
-) -> Result<(Client, tokio::task::JoinHandle<Result<()>>)> {
+) -> Result<(Connection, tokio::task::JoinHandle<Result<()>>)> {
     let (server_config, cert) = build_server_config()?;
     let server = QuicServer::bind(
         "127.0.0.1:0".parse()?,
@@ -46,7 +46,7 @@ async fn stub_broker(
     let mut config = build_client_config_with_overrides(cert, 1)?;
     configure(&mut config);
     let client =
-        Client::connect_with_transport(addr, "localhost", config, TransportConfig::default())
+        Connection::connect_with_transport(addr, "localhost", config, TransportConfig::default())
             .await?;
     Ok((client, server_task))
 }

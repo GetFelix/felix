@@ -13,7 +13,7 @@ use tokio::time::{Duration, timeout};
 
 use crate::frame_io::{read_message, write_message};
 use crate::test_support::{build_client_config, build_server_config};
-use crate::{Client, RefreshingToken};
+use crate::{Connection, RefreshingToken};
 
 /// Stub broker that accepts one token at a time. Switching the accepted token
 /// simulates the old one expiring.
@@ -148,7 +148,7 @@ async fn a_stream_opened_after_the_token_expires_uses_a_fresh_one() -> Result<()
 
     let client = timeout(
         Duration::from_secs(5),
-        Client::connect_with_transport(
+        Connection::connect_with_transport(
             server.addr,
             "localhost",
             config,
@@ -187,7 +187,7 @@ async fn a_fixed_token_that_is_refused_is_not_retried() -> Result<()> {
     let server = TokenCheckingServer::start("test-token")?;
     let client = timeout(
         Duration::from_secs(5),
-        Client::connect_with_transport(
+        Connection::connect_with_transport(
             server.addr,
             "localhost",
             build_client_config(server.cert.clone())?,
@@ -233,7 +233,7 @@ async fn refused_outcome(
     })));
     let client = timeout(
         Duration::from_secs(5),
-        Client::connect_with_transport(
+        Connection::connect_with_transport(
             server.addr,
             "localhost",
             config,

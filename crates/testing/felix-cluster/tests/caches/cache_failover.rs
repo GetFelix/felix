@@ -168,7 +168,7 @@ async fn retained_watch_until(
     key: &str,
     budget: Duration,
 ) -> Option<(
-    (felix_client::Client, felix_client::CacheWatch),
+    (felix_client::Connection, felix_client::CacheWatch),
     u64,
     Vec<u8>,
 )> {

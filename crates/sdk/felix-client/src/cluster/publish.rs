@@ -1,4 +1,4 @@
-//! Publishing through a [`ClusterClient`]: once, at least once, or
+//! Publishing through a [`Client`]: once, at least once, or
 //! idempotently. See the parent module for why the first two differ.
 
 use std::sync::Arc;
@@ -7,11 +7,11 @@ use std::time::Duration;
 use anyhow::Result;
 use felix_wire::AckMode;
 
-use super::{Attempt, ClusterClient, Next, Retrying, ShardKey, next_step, wants_reconnect};
-use crate::client::Client;
+use super::{Attempt, Client, Next, Retrying, ShardKey, next_step, wants_reconnect};
+use crate::client::Connection;
 use crate::publish::{AckOutcome, IdempotentProducer, Width};
 
-impl ClusterClient {
+impl Client {
     /// Publish, reconnecting if the broker in use has gone.
     ///
     /// **A record that may have landed is not sent again.** A failure is
@@ -395,7 +395,7 @@ impl ClusterClient {
 }
 
 async fn publish_once(
-    client: &Client,
+    client: &Connection,
     tenant_id: &str,
     namespace: &str,
     stream: &str,
@@ -411,7 +411,7 @@ async fn publish_once(
 /// One publish to `shard`, on that shard's own stream when the client has
 /// room for one.
 async fn publish_once_to(
-    client: &Client,
+    client: &Connection,
     shard: &ShardKey,
     payload: Vec<Vec<u8>>,
     routing: Routing,

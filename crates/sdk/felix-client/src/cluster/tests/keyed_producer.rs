@@ -9,8 +9,8 @@ use bytes::Bytes;
 use felix_wire::{ErrorCode, Message, RetryClass};
 
 use super::stub_broker::{STREAM_SHARDS, StubBroker};
-use crate::ClusterClient;
-use crate::client::Client;
+use crate::Client;
+use crate::client::Connection;
 use crate::test_support::build_client_config_with_overrides;
 
 fn ok(request_id: u64) -> Message {
@@ -38,7 +38,7 @@ fn keys_on_two_shards() -> (Bytes, Bytes) {
 #[serial_test::serial]
 async fn each_shard_has_its_own_sequence() -> Result<()> {
     let (broker, cert) = StubBroker::start(ok)?;
-    let client = Client::connect(
+    let client = Connection::connect(
         broker.addr,
         "localhost",
         build_client_config_with_overrides(cert, 1)?,
@@ -97,7 +97,7 @@ async fn a_batch_in_doubt_is_not_re_sent_under_another_key() -> Result<()> {
         }
     };
     let (broker, cert) = StubBroker::start(script)?;
-    let client = Client::connect(
+    let client = Connection::connect(
         broker.addr,
         "localhost",
         build_client_config_with_overrides(cert, 1)?,
@@ -134,14 +134,14 @@ async fn a_batch_in_doubt_is_not_re_sent_under_another_key() -> Result<()> {
     Ok(())
 }
 
-/// **Under a `ClusterClient`, a keyed batch goes out on its own shard's
+/// **Under a `Client`, a keyed batch goes out on its own shard's
 /// stream.** Each shard's sequences have one writer; sent on shard 0's
 /// stream, a keyed batch would wait behind a stalled shard 0.
 #[tokio::test]
 #[serial_test::serial]
 async fn a_cluster_keyed_batch_goes_out_on_its_shards_stream() -> Result<()> {
     let (broker, cert) = StubBroker::start(ok)?;
-    let cluster = ClusterClient::connect(
+    let cluster = Client::connect(
         &[broker.addr],
         "localhost",
         build_client_config_with_overrides(cert, 1)?,

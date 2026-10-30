@@ -29,7 +29,7 @@ use crate::timings;
 
 /// Events from one shard of one stream.
 ///
-/// Built by [`crate::Client::subscribe`] and its variants; read with
+/// Built by [`crate::Connection::subscribe`] and its variants; read with
 /// [`Subscription::next_event`].
 pub struct Subscription {
     event_rx: mpsc::Receiver<QueuedEvent>,
@@ -99,7 +99,7 @@ impl Subscription {
     ///
     /// Set before [`Self::next_event`] returns `None`, so check it then:
     /// `Some` means resubscribe where it says, `None` means the stream simply
-    /// closed. [`crate::ClusterClient::subscribe`] does this on its own.
+    /// closed. [`crate::Client::subscribe`] does this on its own.
     pub fn shard_moved(&self) -> Option<&ShardMoved> {
         match self.ended.get() {
             Some(Ended::Moved(moved)) => Some(moved),

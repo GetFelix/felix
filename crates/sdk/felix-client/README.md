@@ -14,7 +14,7 @@ felix-client = "0.4"
 ```
 
 ```rust
-use felix_client::{AckMode, ClientConfig, ClusterClient};
+use felix_client::{AckMode, ClientConfig, Client};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -23,7 +23,7 @@ let config = ClientConfig::optimized_defaults(quinn);
 // One broker is enough; the rest of a cluster is discovered.
 let seeds: Vec<SocketAddr> = vec!["127.0.0.1:5000".parse()?];
 
-let client = Arc::new(ClusterClient::connect(&seeds, "localhost", config).await?);
+let client = Arc::new(Client::connect(&seeds, "localhost", config).await?);
 
 client
     .publish("acme", "prod", "events", b"hello".to_vec(), AckMode::PerMessage)
@@ -35,21 +35,21 @@ while let Some(event) = events.next_event().await? {
 }
 ```
 
-Use `ClusterClient` whether you run one broker or a cluster: it sends each
+Use `Client` whether you run one broker or a cluster: it sends each
 record straight to its shard's leader and handles failover and reconnects.
-`Client` is the single-connection building block underneath it, for tools and
+`Connection` is the single-connection building block underneath it, for tools and
 special cases; in a cluster its publishes are forwarded to the shard's leader,
 which cost 1.3× to 4.4× throughput under load
 ([v0.6.0 performance](https://docs.getfelix.dev/features/v060-performance/)).
 
 ## What it handles for you
 
-- **Cluster membership.** `ClusterClient` takes several broker addresses,
+- **Cluster membership.** `Client` takes several broker addresses,
   asks whichever it reaches which others exist, and rebuilds its connection
   from the rest when one fails.
 - **Shard redirects.** A publish for a shard the broker does not own is
   forwarded and acknowledged by the owner; the ack says so and names the owner.
-- **Shard moves.** A `ClusterClient` subscription follows its shard when a
+- **Shard moves.** A `Client` subscription follows its shard when a
   rebalance moves it to another broker, resuming exactly where it left off on a
   durable stream.
 - **Retry classification.** A failure is typed by whether retrying it could

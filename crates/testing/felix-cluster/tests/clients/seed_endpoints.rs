@@ -95,7 +95,7 @@ async fn a_seed_list_survives_losing_the_leader() {
     // cluster recovers within a feed interval, and one publish call spans less
     // than that.
     //
-    // `ClusterClient` reconnects on a failed publish so the *next* call lands on
+    // `Client` reconnects on a failed publish so the *next* call lands on
     // a live broker, which is what makes this loop terminate quickly. It does
     // not retry the publish itself, and that is deliberate rather than missing:
     // a publish whose answer was lost may already be on the owner's disk, so

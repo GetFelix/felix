@@ -123,7 +123,7 @@ async fn a_named_shard_publish_is_forwarded_to_its_owner() {
     cluster.shutdown().await;
 }
 
-/// **A `ClusterClient` sends a named-shard publish straight to the owner**,
+/// **A `Client` sends a named-shard publish straight to the owner**,
 /// learned the way a keyed publish learns it, so the broker it entered
 /// through forwards nothing.
 #[serial]

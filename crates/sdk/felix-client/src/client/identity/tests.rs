@@ -5,7 +5,7 @@ use bytes::BytesMut;
 use felix_transport::{QuicServer, TransportConfig};
 use felix_wire::Message;
 
-use crate::Client;
+use crate::Connection;
 use crate::frame_io::{read_message_with_limit, write_message};
 use crate::test_support::{build_client_config, build_server_config};
 
@@ -124,7 +124,7 @@ async fn answer(
 #[tokio::test]
 async fn identities_share_the_parent_connections() -> Result<()> {
     let (broker, cert) = RecordingBroker::start()?;
-    let parent = Client::connect(broker.addr, "localhost", build_client_config(cert)?).await?;
+    let parent = Connection::connect(broker.addr, "localhost", build_client_config(cert)?).await?;
     let held = parent.connection_count();
 
     let alice = parent.with_identity_token("t1", "alice").await?;
@@ -160,7 +160,7 @@ async fn identities_share_the_parent_connections() -> Result<()> {
 #[tokio::test]
 async fn a_refused_identity_leaves_the_others_working() -> Result<()> {
     let (broker, cert) = RecordingBroker::start()?;
-    let parent = Client::connect(broker.addr, "localhost", build_client_config(cert)?).await?;
+    let parent = Connection::connect(broker.addr, "localhost", build_client_config(cert)?).await?;
     let alice = parent.with_identity_token("t1", "alice").await?;
     let held = parent.connection_count();
 
@@ -182,7 +182,7 @@ async fn a_refused_identity_leaves_the_others_working() -> Result<()> {
 #[tokio::test]
 async fn dropping_an_identity_leaves_the_connections() -> Result<()> {
     let (broker, cert) = RecordingBroker::start()?;
-    let parent = Client::connect(broker.addr, "localhost", build_client_config(cert)?).await?;
+    let parent = Connection::connect(broker.addr, "localhost", build_client_config(cert)?).await?;
     let held = parent.connection_count();
     drop(parent.with_identity_token("t1", "alice").await?);
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;

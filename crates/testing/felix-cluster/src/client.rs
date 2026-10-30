@@ -9,15 +9,15 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use felix_client::{Client, ClientConfig};
+use felix_client::{ClientConfig, Connection};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
 
 /// Connect to a broker's client-facing port as `tenant_id`.
-pub async fn connect(addr: SocketAddr, tenant_id: &str, token: &str) -> Result<Client> {
+pub async fn connect(addr: SocketAddr, tenant_id: &str, token: &str) -> Result<Connection> {
     let config = client_config(tenant_id, token)?;
-    Client::connect(addr, "localhost", config)
+    Connection::connect(addr, "localhost", config)
         .await
         .with_context(|| format!("connect to broker at {addr}"))
 }
@@ -29,12 +29,12 @@ pub async fn connect(addr: SocketAddr, tenant_id: &str, token: &str) -> Result<C
 /// because this harness installs `AcceptAnyBroker` and never validates a
 /// certificate — the name reaches the wire as SNI and is not checked against
 /// anything. A deployment that verified certificates would need a name per
-/// broker, or a certificate naming them all. `Client::connect_any` takes the
+/// broker, or a certificate naming them all. `Connection::connect_any` takes the
 /// name as a parameter for exactly that reason; the hardcoding is the harness's,
 /// not the client's.
-pub async fn connect_any(addrs: &[SocketAddr], tenant_id: &str, token: &str) -> Result<Client> {
+pub async fn connect_any(addrs: &[SocketAddr], tenant_id: &str, token: &str) -> Result<Connection> {
     let config = client_config(tenant_id, token)?;
-    Client::connect_any(addrs, "localhost", config)
+    Connection::connect_any(addrs, "localhost", config)
         .await
         .with_context(|| format!("connect to any of {addrs:?}"))
 }
@@ -44,7 +44,7 @@ pub async fn connect_cluster(
     addrs: &[SocketAddr],
     tenant_id: &str,
     token: &str,
-) -> Result<felix_client::ClusterClient> {
+) -> Result<felix_client::Client> {
     connect_cluster_with(addrs, tenant_id, token, |_| {}).await
 }
 
@@ -54,10 +54,10 @@ pub async fn connect_cluster_with(
     tenant_id: &str,
     token: &str,
     tune: impl FnOnce(&mut ClientConfig),
-) -> Result<felix_client::ClusterClient> {
+) -> Result<felix_client::Client> {
     let mut config = client_config(tenant_id, token)?;
     tune(&mut config);
-    felix_client::ClusterClient::connect(addrs, "localhost", config)
+    felix_client::Client::connect(addrs, "localhost", config)
         .await
         .with_context(|| format!("connect a cluster client to any of {addrs:?}"))
 }

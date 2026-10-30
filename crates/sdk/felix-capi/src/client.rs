@@ -7,7 +7,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use anyhow::Context;
-use felix_client::{ClientConfig, ClusterClient, ReconnectPolicy, Seed};
+use felix_client::{Client, ClientConfig, ReconnectPolicy, Seed};
 use tokio::runtime::{Handle, Runtime};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
@@ -106,7 +106,7 @@ impl Deliver for Box<FelixClient> {
 /// Tasks hold the client, not this, unless they create a handle; so the
 /// runtime stops when the last handle is freed, not when the last call ends.
 pub(crate) struct Shared {
-    client: OnceLock<Arc<ClusterClient>>,
+    client: OnceLock<Arc<Client>>,
     runtime: Option<Runtime>,
     tracker: TaskTracker,
     /// The parent of every handle's token.
@@ -132,7 +132,7 @@ impl Shared {
         self
     }
 
-    pub(crate) fn client(&self) -> &Arc<ClusterClient> {
+    pub(crate) fn client(&self) -> &Arc<Client> {
         self.client
             .get()
             .expect("a handle exists only once connected")
@@ -193,7 +193,7 @@ impl Drop for Shared {
 /// Stopping a runtime once its last handle is gone.
 struct Teardown {
     runtime: Option<Runtime>,
-    client: Option<Arc<ClusterClient>>,
+    client: Option<Arc<Client>>,
     cancel: CancellationToken,
     tracker: TaskTracker,
 }
@@ -504,7 +504,7 @@ pub unsafe extern "C" fn felix_client_connect_with(
         shared.spawn(done, move |done| async move {
             let connect = async {
                 resolve_names(&seeds).await?;
-                ClusterClient::connect_seeds(&seeds, &server_name, config, policy)
+                Client::connect_seeds(&seeds, &server_name, config, policy)
                     .await
                     .map_err(Failure::from)
             };

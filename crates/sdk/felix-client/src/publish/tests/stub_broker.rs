@@ -1,4 +1,4 @@
-//! Publishing through a whole `Client` against a stub broker that answers
+//! Publishing through a whole `Connection` against a stub broker that answers
 //! the way an old or refusing broker would.
 
 use anyhow::Result;
@@ -7,7 +7,7 @@ use felix_transport::{QuicServer, TransportConfig};
 use felix_wire::{AckMode, Message};
 use tokio::time::{Duration, timeout};
 
-use crate::Client;
+use crate::Connection;
 use crate::frame_io::{read_frame_into, read_message, write_message};
 use crate::test_support::{
     build_client_config_with_overrides, build_server_config, set_client_env_with_event_pool,
@@ -49,7 +49,7 @@ async fn publish_reports_server_error() -> Result<()> {
         Ok::<(), anyhow::Error>(())
     });
 
-    let client = Client::connect_with_transport(
+    let client = Connection::connect_with_transport(
         addr,
         "localhost",
         build_client_config_with_overrides(cert, 0)?,
@@ -131,7 +131,7 @@ async fn publish_batch_ack_succeeds() -> Result<()> {
         Ok::<(), anyhow::Error>(())
     });
 
-    let client = Client::connect_with_transport(
+    let client = Connection::connect_with_transport(
         addr,
         "localhost",
         build_client_config_with_overrides(cert, 0)?,
@@ -158,7 +158,7 @@ async fn publish_batch_ack_succeeds() -> Result<()> {
     Ok(())
 }
 
-/// **A plain `Client` keeps one writer per stream.** `HashStream` promises
+/// **A plain `Connection` keeps one writer per stream.** `HashStream` promises
 /// that a stream's publishes share one writer, so an unkeyed and a keyed
 /// publish to one stream, pipelined together, arrive on the same QUIC stream.
 #[tokio::test]
@@ -212,7 +212,7 @@ async fn a_plain_client_sends_unkeyed_and_keyed_publishes_on_one_stream() -> Res
         }
     });
 
-    let client = Client::connect_with_transport(
+    let client = Connection::connect_with_transport(
         addr,
         "localhost",
         build_client_config_with_overrides(cert, 0)?,

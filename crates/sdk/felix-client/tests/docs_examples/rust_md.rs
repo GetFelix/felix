@@ -21,7 +21,7 @@ mod basic_publish_subscribe_1 {
     use std::time::Duration;
 
     use anyhow::{Context, Result};
-    use felix_client::{AckMode, ClientConfig, ClusterClient, quic_client_config};
+    use felix_client::{AckMode, ClientConfig, Client, quic_client_config};
 
     #[tokio::main]
     async fn main() -> Result<()> {
@@ -31,7 +31,7 @@ mod basic_publish_subscribe_1 {
 
         // One broker is enough. The rest of a cluster is discovered from it.
         let seeds: Vec<SocketAddr> = vec!["127.0.0.1:5000".parse()?];
-        let client = Arc::new(ClusterClient::connect(&seeds, "localhost", config).await?);
+        let client = Arc::new(Client::connect(&seeds, "localhost", config).await?);
 
         // Subscribe before publishing: a subscription starts at the stream's tail.
         let mut subscription = client.subscribe("acme", "prod", "events").await?;
@@ -55,7 +55,7 @@ mod basic_cache_operations_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
-    async fn example(client: &Arc<ClusterClient>) -> Result<()> {
+    async fn example(client: &Arc<Client>) -> Result<()> {
         use bytes::Bytes;
 
         // Store a value that expires after 60 seconds (the TTL is in milliseconds).
@@ -154,7 +154,7 @@ mod clientconfig_1 {
     async fn example() -> Result<()> {
         use std::net::SocketAddr;
 
-        use felix_client::{ClientConfig, ClusterClient, PublishSharding, quic_client_config};
+        use felix_client::{ClientConfig, Client, PublishSharding, quic_client_config};
 
         let quinn = quic_client_config(None, false)?;
         let config = ClientConfig {
@@ -162,7 +162,7 @@ mod clientconfig_1 {
             event_conn_pool: 8,              // Connections for pub/sub
             cache_conn_pool: 8,              // Connections for cache
             publish_conn_pool: 4,            // Connections for publishing
-            // A ClusterClient shares one connection per broker instead, and
+            // A Client shares one connection per broker instead, and
             // grows it to at most this many when its streams are saturated.
             cluster_conn_pool: 8,
             cluster_streams_per_conn: 1024,
@@ -173,7 +173,7 @@ mod clientconfig_1 {
             
             // Publish sharding
             publish_sharding: PublishSharding::HashStream,
-            // ClusterClient only: streams of their own for up to this many shards
+            // Client only: streams of their own for up to this many shards
             // per broker (0 turns them off)
             publish_shard_streams: 4,
 
@@ -182,7 +182,7 @@ mod clientconfig_1 {
         };
 
         let seeds: Vec<SocketAddr> = vec!["127.0.0.1:5000".parse()?];
-        let client = ClusterClient::connect(&seeds, "localhost", config).await?;
+        let client = Client::connect(&seeds, "localhost", config).await?;
         Ok(())
     }
 }
@@ -194,19 +194,19 @@ mod acting_for_many_users_1 {
 
     async fn refresh_alice() -> Result<String> { unimplemented!() }
 
-    async fn example(addr: SocketAddr, config: ClientConfig, alice_token: String, bob_token: String) -> Result<()> {
+    async fn example(seeds: Vec<SocketAddr>, config: ClientConfig, alice_token: String, bob_token: String) -> Result<()> {
         use std::sync::Arc;
 
         use felix_client::{Client, RefreshingToken, TokenProvider};
 
-        let gateway = Client::connect(addr, "localhost", config).await?;
+        let gateway = Client::connect(&seeds, "broker.internal", config).await?;
 
         // Every stream alice's handle opens authenticates with alice's token, and the
         // broker checks each of her requests against her grants, not the gateway's.
         // `refresh_alice` is a token fetch like the one above, for her refresh token.
         let alice_tokens: Arc<dyn TokenProvider> =
             Arc::new(RefreshingToken::with_initial(alice_token, refresh_alice));
-        let alice = gateway.with_identity("acme", alice_tokens).await?;
+        let alice = Arc::new(gateway.with_identity("acme", alice_tokens).await?);
         let feed = alice.subscribe("acme", "app", "alice-feed").await?;
 
         // A fixed token, for a handle that will not outlive it.
@@ -215,21 +215,7 @@ mod acting_for_many_users_1 {
     }
 }
 
-/// rust.md line 353: "Acting for many users", block 2.
-mod acting_for_many_users_2 {
-    #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
-    use super::prelude::*;
-
-    async fn example(seeds: Vec<SocketAddr>, config: ClientConfig, alice_tokens: Arc<dyn TokenProvider>) -> Result<()> {
-        let gateway = ClusterClient::connect(&seeds, "broker.internal", config).await?;
-        // `subscribe` takes the handle as an `Arc`, like any `ClusterClient`.
-        let alice = Arc::new(gateway.with_identity("acme", alice_tokens).await?);
-        let feed = alice.subscribe("acme", "app", "alice-feed").await?;
-        Ok(())
-    }
-}
-
-/// rust.md line 371: "TLS and ALPN", block 1.
+/// rust.md line 363: "TLS and ALPN", block 1.
 mod tls_and_alpn_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -243,7 +229,7 @@ mod tls_and_alpn_1 {
     }
 }
 
-/// rust.md line 385: "TLS and ALPN", block 2.
+/// rust.md line 377: "TLS and ALPN", block 2.
 mod tls_and_alpn_2 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -260,7 +246,7 @@ mod tls_and_alpn_2 {
     }
 }
 
-/// rust.md line 404: "Configuration Tuning", block 1.
+/// rust.md line 396: "Configuration Tuning", block 1.
 mod configuration_tuning_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -278,7 +264,7 @@ mod configuration_tuning_1 {
     }
 }
 
-/// rust.md line 417: "Configuration Tuning", block 2.
+/// rust.md line 409: "Configuration Tuning", block 2.
 mod configuration_tuning_2 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -297,12 +283,12 @@ mod configuration_tuning_2 {
     }
 }
 
-/// rust.md line 433: "Single Message Publish", block 1.
+/// rust.md line 425: "Single Message Publish", block 1.
 mod single_message_publish_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
-    async fn example(client: &Arc<ClusterClient>) -> Result<()> {
+    async fn example(client: &Arc<Client>) -> Result<()> {
         use felix_client::AckMode;
 
         // Fire-and-forget: returns once queued. Call `client.finish()` before exiting.
@@ -319,12 +305,12 @@ mod single_message_publish_1 {
     }
 }
 
-/// rust.md line 474: "The routing key decides the shard", block 1.
+/// rust.md line 466: "The routing key decides the shard", block 1.
 mod the_routing_key_decides_the_shard_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
-    async fn example(cluster: &ClusterClient, payload: Vec<u8>, customer_id: String) -> Result<()> {
+    async fn example(cluster: &Client, payload: Vec<u8>, customer_id: String) -> Result<()> {
         use bytes::Bytes;
 
         cluster
@@ -341,12 +327,12 @@ mod the_routing_key_decides_the_shard_1 {
     }
 }
 
-/// rust.md line 503: "Naming the shard", block 1.
+/// rust.md line 495: "Naming the shard", block 1.
 mod naming_the_shard_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
-    async fn example(cluster: &ClusterClient, tick: Vec<u8>) -> Result<()> {
+    async fn example(cluster: &Client, tick: Vec<u8>) -> Result<()> {
         // District 2 of the city writes to shard 2, whatever its name hashes to.
         cluster
             .publish_batch_on_shard("acme", "city", "ticks", 2, vec![tick], AckMode::PerBatch)
@@ -355,12 +341,12 @@ mod naming_the_shard_1 {
     }
 }
 
-/// rust.md line 530: "At-least-once may duplicate", block 1.
+/// rust.md line 522: "At-least-once may duplicate", block 1.
 mod at_least_once_may_duplicate_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
-    async fn example(cluster: &ClusterClient, payload: Vec<u8>) -> Result<()> {
+    async fn example(cluster: &Client, payload: Vec<u8>) -> Result<()> {
         cluster
             .publish_at_least_once("acme", "prod", "orders", payload, AckMode::PerMessage)
             .await?;
@@ -368,12 +354,12 @@ mod at_least_once_may_duplicate_1 {
     }
 }
 
-/// rust.md line 549: "Batch Publishing", block 1.
+/// rust.md line 541: "Batch Publishing", block 1.
 mod batch_publishing_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
-    async fn example(client: &Arc<ClusterClient>) -> Result<()> {
+    async fn example(client: &Arc<Client>) -> Result<()> {
         let messages = vec![
             b"message 1".to_vec(),
             b"message 2".to_vec(),
@@ -387,12 +373,12 @@ mod batch_publishing_1 {
     }
 }
 
-/// rust.md line 567: "Batches through a ClusterClient", block 1.
-mod batches_through_a_clusterclient_1 {
+/// rust.md line 559: "Batches through a Client", block 1.
+mod batches_through_a_client_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
-    async fn example(cluster: &ClusterClient, key: Bytes, payloads: Vec<Vec<u8>>, records: Vec<(Bytes, Vec<u8>)>) -> Result<()> {
+    async fn example(cluster: &Client, key: Bytes, payloads: Vec<Vec<u8>>, records: Vec<(Bytes, Vec<u8>)>) -> Result<()> {
         // One key: the batch is one frame to that shard's leader.
         cluster
             .publish_batch_keyed("acme", "prod", "orders", key, payloads, AckMode::PerBatch)
@@ -412,12 +398,12 @@ mod batches_through_a_clusterclient_1 {
     }
 }
 
-/// rust.md line 625: "Publisher API", block 1.
+/// rust.md line 617: "Publisher API", block 1.
 mod publisher_api_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
-    async fn example(client: &Client) -> Result<()> {
+    async fn example(client: &Connection) -> Result<()> {
         use felix_client::AckMode;
 
         // Uses the pools and sharding from the client's `ClientConfig`.
@@ -436,7 +422,7 @@ mod publisher_api_1 {
     }
 }
 
-/// rust.md line 646: "Publisher Sharding", block 1.
+/// rust.md line 638: "Publisher Sharding", block 1.
 mod publisher_sharding_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -450,12 +436,12 @@ mod publisher_sharding_1 {
     }
 }
 
-/// rust.md line 733: "Errors you can act on", block 1.
+/// rust.md line 725: "Errors you can act on", block 1.
 mod errors_you_can_act_on_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
-    async fn example(cluster: &ClusterClient, payload: Vec<u8>) -> Result<()> {
+    async fn example(cluster: &Client, payload: Vec<u8>) -> Result<()> {
         use felix_client::{AckMode, BrokerError, RetryClass};
 
         let result = cluster
@@ -476,7 +462,7 @@ mod errors_you_can_act_on_1 {
     }
 }
 
-/// rust.md line 790: "Errors you can act on", block 2.
+/// rust.md line 782: "Errors you can act on", block 2.
 mod errors_you_can_act_on_2 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -495,12 +481,12 @@ mod errors_you_can_act_on_2 {
     }
 }
 
-/// rust.md line 817: "Idempotent producers", block 1.
+/// rust.md line 809: "Idempotent producers", block 1.
 mod idempotent_producers_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
-    async fn example(cluster: ClusterClient, payload: Vec<u8>) -> Result<()> {
+    async fn example(cluster: Client, payload: Vec<u8>) -> Result<()> {
         let cluster = Arc::new(cluster);
         let producer = cluster.idempotent_producer().await?;
 
@@ -512,7 +498,7 @@ mod idempotent_producers_1 {
     }
 }
 
-/// rust.md line 837: "Idempotent producers", block 2.
+/// rust.md line 829: "Idempotent producers", block 2.
 mod idempotent_producers_2 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -527,7 +513,7 @@ mod idempotent_producers_2 {
     }
 }
 
-/// rust.md line 849: "Idempotent producers", block 3.
+/// rust.md line 841: "Idempotent producers", block 3.
 mod idempotent_producers_3 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -542,12 +528,12 @@ mod idempotent_producers_3 {
     }
 }
 
-/// rust.md line 868: "Idempotent producers", block 4.
+/// rust.md line 860: "Idempotent producers", block 4.
 mod idempotent_producers_4 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
-    async fn example(cluster: &Arc<ClusterClient>, mut producer: IdempotentProducer, payload: Vec<u8>) -> Result<()> {
+    async fn example(cluster: &Arc<Client>, mut producer: IdempotentProducer, payload: Vec<u8>) -> Result<()> {
         use anyhow::bail;
         use felix_client::{PublishRefusalReason, PublishRefused};
 
@@ -575,14 +561,14 @@ mod idempotent_producers_4 {
     }
 }
 
-/// rust.md line 926: "Creating Subscriptions", block 1.
+/// rust.md line 918: "Creating Subscriptions", block 1.
 mod creating_subscriptions_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
     async fn process_event(_: Event) -> Result<()> { Ok(()) }
 
-    async fn example(client: &Arc<ClusterClient>) -> Result<()> {
+    async fn example(client: &Arc<Client>) -> Result<()> {
         let mut subscription = client.subscribe("acme", "prod", "events").await?;
 
         while let Some(event) = subscription.next_event().await? {
@@ -592,7 +578,7 @@ mod creating_subscriptions_1 {
     }
 }
 
-/// rust.md line 944: "Event Structure", block 1.
+/// rust.md line 936: "Event Structure", block 1.
 mod event_structure_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use bytes::Bytes;
@@ -623,7 +609,7 @@ mod event_structure_1 {
     }
 }
 
-/// rust.md line 975: "Who published an event", block 1.
+/// rust.md line 967: "Who published an event", block 1.
 mod who_published_an_event_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -633,7 +619,7 @@ mod who_published_an_event_1 {
     async fn example(seeds: Vec<SocketAddr>) -> Result<()> {
         let mut config = ClientConfig::from_env_or_yaml(quic_client_config(None, false)?, None)?;
         config.publishers = true;
-        let client = Arc::new(ClusterClient::connect(&seeds, "localhost", config).await?);
+        let client = Arc::new(Client::connect(&seeds, "localhost", config).await?);
         let mut inputs = client.subscribe("arena", "match-7", "inputs").await?;
         while let Some(event) = inputs.next_event().await? {
             let Some(player) = event.publisher.as_deref() else {
@@ -645,14 +631,14 @@ mod who_published_an_event_1 {
     }
 }
 
-/// rust.md line 1003: "Sizing the broker's queue for a subscription", block 1.
+/// rust.md line 995: "Sizing the broker's queue for a subscription", block 1.
 mod sizing_the_broker_s_queue_for_a_subscription_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
-    async fn example(addr: SocketAddr, mut config: ClientConfig) -> Result<()> {
+    async fn example(seeds: Vec<SocketAddr>, mut config: ClientConfig) -> Result<()> {
         config.broker_sub_queue_capacity = Some(4096);
-        let client = Client::connect(addr, "localhost", config).await?;
+        let client = Arc::new(Client::connect(&seeds, "localhost", config).await?);
         let subscription = client.subscribe("acme", "prod", "webhooks").await?;
         // `None` from a broker that predates the option: the stream's default applies.
         let granted = subscription.queue_capacity();
@@ -661,12 +647,12 @@ mod sizing_the_broker_s_queue_for_a_subscription_1 {
     }
 }
 
-/// rust.md line 1027: "When an event was written, and replaying from a time", block 1.
+/// rust.md line 1019: "When an event was written, and replaying from a time", block 1.
 mod when_an_event_was_written_and_replaying_from_a_time_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
-    async fn example(client: &Arc<ClusterClient>, since_micros: u64) -> Result<()> {
+    async fn example(client: &Arc<Client>, since_micros: u64) -> Result<()> {
         let start = client
             .offset_for_time("acme", "prod", "webhooks", 0, since_micros)
             .await?;
@@ -682,14 +668,14 @@ mod when_an_event_was_written_and_replaying_from_a_time_1 {
     }
 }
 
-/// rust.md line 1055: "Reading a range and stopping", block 1.
+/// rust.md line 1047: "Reading a range and stopping", block 1.
 mod reading_a_range_and_stopping_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
     fn apply(_: u64, _: &Bytes) {}
 
-    async fn example(client: &ClusterClient, start: u64, end: u64) -> Result<()> {
+    async fn example(client: &Client, start: u64, end: u64) -> Result<()> {
         let mut from = start;
         while from < end {
             let page = client
@@ -707,7 +693,7 @@ mod reading_a_range_and_stopping_1 {
     }
 }
 
-/// rust.md line 1086: "Offsets are how you notice a drop", block 1.
+/// rust.md line 1078: "Offsets are how you notice a drop", block 1.
 mod offsets_are_how_you_notice_a_drop_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -731,7 +717,7 @@ mod offsets_are_how_you_notice_a_drop_1 {
     }
 }
 
-/// rust.md line 1110: "A consumer that survives a restart", block 1.
+/// rust.md line 1102: "A consumer that survives a restart", block 1.
 mod a_consumer_that_survives_a_restart_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -743,7 +729,7 @@ mod a_consumer_that_survives_a_restart_1 {
     }
     async fn handle(_: &Bytes) -> Result<()> { Ok(()) }
 
-    async fn example(cluster: &Arc<ClusterClient>, checkpoint: Checkpoint) -> Result<()> {
+    async fn example(cluster: &Arc<Client>, checkpoint: Checkpoint) -> Result<()> {
         use felix_client::{StartPosition, SubscribeCursorError};
 
         let mut start = match checkpoint.load().await? {
@@ -793,12 +779,12 @@ mod a_consumer_that_survives_a_restart_1 {
     }
 }
 
-/// rust.md line 1167: "Where a subscription joined", block 1.
+/// rust.md line 1159: "Where a subscription joined", block 1.
 mod where_a_subscription_joined_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
-    async fn example(client: &Arc<ClusterClient>) -> Result<()> {
+    async fn example(client: &Arc<Client>) -> Result<()> {
         let subscription = client
             .subscribe_from("acme", "prod", "orders", Some(StartPosition::Offset(1_000)))
             .await?;
@@ -808,7 +794,7 @@ mod where_a_subscription_joined_1 {
     }
 }
 
-/// rust.md line 1200: "When a shard moves", block 1.
+/// rust.md line 1192: "When a shard moves", block 1.
 mod when_a_shard_moves_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -829,14 +815,14 @@ mod when_a_shard_moves_1 {
     }
 }
 
-/// rust.md line 1228: "When a subscription falls behind", block 1.
+/// rust.md line 1220: "When a subscription falls behind", block 1.
 mod when_a_subscription_falls_behind_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
     fn handle(_: &Event) {}
 
-    async fn example(client: &Client, mut subscription: Subscription) -> Result<()> {
+    async fn example(client: &Connection, mut subscription: Subscription) -> Result<()> {
         use felix_client::{StartPosition, SubscriptionLagged};
 
         let mut last = None;
@@ -861,7 +847,7 @@ mod when_a_subscription_falls_behind_1 {
     }
 }
 
-/// rust.md line 1260: "Multiple Subscriptions", block 1.
+/// rust.md line 1252: "Multiple Subscriptions", block 1.
 mod multiple_subscriptions_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -870,7 +856,7 @@ mod multiple_subscriptions_1 {
     async fn handle_inventory(_: Event) -> Result<()> { Ok(()) }
     async fn handle_log(_: Event) -> Result<()> { Ok(()) }
 
-    async fn example(client: &Arc<ClusterClient>) -> Result<()> {
+    async fn example(client: &Arc<Client>) -> Result<()> {
         let mut orders = client.subscribe("acme", "prod", "orders").await?;
         let mut inventory = client.subscribe("acme", "prod", "inventory").await?;
         let mut logs = client.subscribe("acme", "staging", "logs").await?;
@@ -897,7 +883,7 @@ mod multiple_subscriptions_1 {
     }
 }
 
-/// rust.md line 1293: "Async Event Processing", block 1.
+/// rust.md line 1285: "Async Event Processing", block 1.
 mod async_event_processing_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -927,14 +913,14 @@ mod async_event_processing_1 {
     }
 }
 
-/// rust.md line 1319: "Subscription Lifecycle", block 1.
+/// rust.md line 1311: "Subscription Lifecycle", block 1.
 mod subscription_lifecycle_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
     fn process(_: Event) {}
 
-    async fn example(client: &Arc<ClusterClient>) -> Result<()> {
+    async fn example(client: &Arc<Client>) -> Result<()> {
         let mut subscription = client.subscribe("acme", "prod", "events").await?;
 
         // Read up to 100 events, then stop.
@@ -951,14 +937,14 @@ mod subscription_lifecycle_1 {
     }
 }
 
-/// rust.md line 1338: "Put and Get", block 1.
+/// rust.md line 1330: "Put and Get", block 1.
 mod put_and_get_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
     #[derive(serde::Deserialize)] struct Session {}
 
-    async fn example(client: &ClusterClient, session_data: Bytes) -> Result<()> {
+    async fn example(client: &Client, session_data: Bytes) -> Result<()> {
         use anyhow::bail;
 
         // tenant, namespace, cache, key, value (`Bytes`), TTL in milliseconds
@@ -974,12 +960,12 @@ mod put_and_get_1 {
     }
 }
 
-/// rust.md line 1354: "Without TTL", block 1.
+/// rust.md line 1346: "Without TTL", block 1.
 mod without_ttl_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
-    async fn example(client: &ClusterClient, config_data: Bytes) -> Result<()> {
+    async fn example(client: &Client, config_data: Bytes) -> Result<()> {
         // Store permanently (until evicted or restart)
         client
             .cache_put("acme", "prod", "config", "app-settings", config_data, None)
@@ -988,14 +974,14 @@ mod without_ttl_1 {
     }
 }
 
-/// rust.md line 1363: "Delete", block 1.
+/// rust.md line 1355: "Delete", block 1.
 mod delete_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
     fn audit_log(_: &str, _: Bytes) {}
 
-    async fn example(client: &Arc<ClusterClient>) -> Result<()> {
+    async fn example(client: &Arc<Client>) -> Result<()> {
         // Answers with the value that was removed, or `None` if the key was not there,
         // so a caller can tell a delete that did something from one that did not.
         match client.cache_delete("acme", "prod", "sessions", "user-abc").await? {
@@ -1006,14 +992,14 @@ mod delete_1 {
     }
 }
 
-/// rust.md line 1378: "Conditional writes", block 1.
+/// rust.md line 1370: "Conditional writes", block 1.
 mod conditional_writes_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
     fn edit(value: &Bytes) -> Bytes { value.clone() }
 
-    async fn example(client: &Arc<ClusterClient>) -> Result<()> {
+    async fn example(client: &Arc<Client>) -> Result<()> {
         use felix_client::CacheCondition;
 
         // Read, change, and write back only if nobody wrote in between.
@@ -1037,7 +1023,7 @@ mod conditional_writes_1 {
     }
 }
 
-/// rust.md line 1413: "Watch", block 1.
+/// rust.md line 1405: "Watch", block 1.
 mod watch_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1045,7 +1031,7 @@ mod watch_1 {
     fn apply_update(_: &str, _: &Bytes) {}
     fn remove(_: &str) {}
 
-    async fn example(client: &Client) -> Result<()> {
+    async fn example(client: &Connection) -> Result<()> {
         use felix_client::{CacheWatchFilter, CacheWatchItem};
 
         let mut watch = client
@@ -1075,9 +1061,9 @@ mod watch_1 {
                     break;
                 }
                 CacheWatchItem::ShardMoved(moved) => {
-                    // The shard moved to another broker, which ended this `Client`
+                    // The shard moved to another broker, which ended this `Connection`
                     // watch. Re-watch there; without a `resume_from`, `checkpoint` is
-                    // right. A `ClusterClient` watch follows on its own instead.
+                    // right. A `Client` watch follows on its own instead.
                     checkpoint = moved.resume_from.unwrap_or(checkpoint);
                     break;
                 }
@@ -1087,12 +1073,12 @@ mod watch_1 {
     }
 }
 
-/// rust.md line 1480: "Retained Watch", block 1.
+/// rust.md line 1472: "Retained Watch", block 1.
 mod retained_watch_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
-    async fn example(client: &Client) -> Result<()> {
+    async fn example(client: &Connection) -> Result<()> {
         let watch = client
             .watch_cache_retained(
                 "acme",
@@ -1110,12 +1096,12 @@ mod retained_watch_1 {
     }
 }
 
-/// rust.md line 1508: "Counters", block 1.
+/// rust.md line 1500: "Counters", block 1.
 mod counters_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
-    async fn example(client: &Arc<ClusterClient>) -> Result<()> {
+    async fn example(client: &Arc<Client>) -> Result<()> {
         // Apply a delta and learn the sum including it, in one round trip.
         let after = client
             .counter_add("acme", "prod", "limits", "user:42:reqs", 1)
@@ -1129,14 +1115,14 @@ mod counters_1 {
     }
 }
 
-/// rust.md line 1529: "Concurrent Cache Operations", block 1.
+/// rust.md line 1521: "Concurrent Cache Operations", block 1.
 mod concurrent_cache_operations_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
     fn process(_: Bytes) {}
 
-    async fn example(client: Arc<ClusterClient>) -> Result<()> {
+    async fn example(client: Arc<Client>) -> Result<()> {
         use tokio::task::JoinSet;
 
         let mut lookups = JoinSet::new();
@@ -1159,12 +1145,12 @@ mod concurrent_cache_operations_1 {
     }
 }
 
-/// rust.md line 1554: "Cache Namespacing", block 1.
+/// rust.md line 1546: "Cache Namespacing", block 1.
 mod cache_namespacing_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
-    async fn example(client: &ClusterClient, data1: Bytes, data2: Bytes, data3: Bytes, ttl: Option<u64>) -> Result<()> {
+    async fn example(client: &Client, data1: Bytes, data2: Bytes, data3: Bytes, ttl: Option<u64>) -> Result<()> {
         // These are independent entries
         client
             .cache_put("acme", "prod", "sessions", "user-123", data1, ttl)
@@ -1179,14 +1165,14 @@ mod cache_namespacing_1 {
     }
 }
 
-/// rust.md line 1575: "Consumer Groups", block 1.
+/// rust.md line 1567: "Consumer Groups", block 1.
 mod consumer_groups_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
     async fn handle(_: &Bytes, _: u32) -> Result<()> { Ok(()) }
 
-    async fn example(client: &Arc<ClusterClient>) -> Result<()> {
+    async fn example(client: &Arc<Client>) -> Result<()> {
         loop {
             // Waits up to five seconds for work rather than spinning on empty polls.
             let records = client
@@ -1218,14 +1204,14 @@ mod consumer_groups_1 {
     }
 }
 
-/// rust.md line 1613: "Dead letters", block 1.
+/// rust.md line 1605: "Dead letters", block 1.
 mod dead_letters_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
     fn worth_retrying(_: u64) -> bool { true }
 
-    async fn example(client: &Arc<ClusterClient>) -> Result<()> {
+    async fn example(client: &Arc<Client>) -> Result<()> {
         let offsets = client
             .group_dead_letters("acme", "prod", "jobs", 0, "fulfilment")
             .await?;
@@ -1240,12 +1226,12 @@ mod dead_letters_1 {
     }
 }
 
-/// rust.md line 1634: "Creating, moving and deleting a group", block 1.
+/// rust.md line 1626: "Creating, moving and deleting a group", block 1.
 mod creating_moving_and_deleting_a_group_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
-    async fn example(client: &Arc<ClusterClient>) -> Result<()> {
+    async fn example(client: &Arc<Client>) -> Result<()> {
         use felix_client::StartPosition;
 
         // Left alone if the group already exists, so safe on every start.
@@ -1271,7 +1257,7 @@ mod creating_moving_and_deleting_a_group_1 {
     }
 }
 
-/// rust.md line 1669: "Creating, moving and deleting a group", block 2.
+/// rust.md line 1661: "Creating, moving and deleting a group", block 2.
 mod creating_moving_and_deleting_a_group_2 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1279,7 +1265,7 @@ mod creating_moving_and_deleting_a_group_2 {
     enum Job { Done, Running, Failed, Poison }
     fn check(_: &GroupRecord) -> Job { Job::Done }
 
-    async fn example(client: &Arc<ClusterClient>) -> Result<()> {
+    async fn example(client: &Arc<Client>) -> Result<()> {
         use std::time::Duration;
 
         use felix_client::GroupPollOptions;
@@ -1324,12 +1310,12 @@ mod creating_moving_and_deleting_a_group_2 {
     }
 }
 
-/// rust.md line 1741: "Atomic commits", block 1.
+/// rust.md line 1733: "Atomic commits", block 1.
 mod atomic_commits_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
-    async fn example(cluster: &ClusterClient) -> Result<()> {
+    async fn example(cluster: &Client) -> Result<()> {
         use felix_client::{CommitError, CommitOp};
 
         let receipt = cluster
@@ -1364,12 +1350,12 @@ mod atomic_commits_1 {
     }
 }
 
-/// rust.md line 1781: "Atomic commits", block 2.
+/// rust.md line 1773: "Atomic commits", block 2.
 mod atomic_commits_2 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
-    async fn example(cluster: &ClusterClient, ticks: Vec<Vec<u8>>) -> Result<()> {
+    async fn example(cluster: &Client, ticks: Vec<Vec<u8>>) -> Result<()> {
         use anyhow::bail;
         use felix_client::ConditionalWrite;
 
@@ -1390,12 +1376,12 @@ mod atomic_commits_2 {
     }
 }
 
-/// rust.md line 1810: "Atomic commits", block 3.
+/// rust.md line 1802: "Atomic commits", block 3.
 mod atomic_commits_3 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
-    async fn example(cluster: &ClusterClient, district: u32, tick: Bytes, state: Bytes, next: u64) -> Result<()> {
+    async fn example(cluster: &Client, district: u32, tick: Bytes, state: Bytes, next: u64) -> Result<()> {
         let ops = vec![
             CommitOp::publish("ticks", tick),
             CommitOp::put("ticks", "district", state),
@@ -1410,7 +1396,7 @@ mod atomic_commits_3 {
     }
 }
 
-/// rust.md line 1855: "Clusters", block 1.
+/// rust.md line 1847: "Clusters", block 1.
 mod clusters_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1421,7 +1407,7 @@ mod clusters_1 {
         use felix_client::{ShardEvent, StartPosition};
         use tracing::{info, warn};
 
-        let client = Arc::new(ClusterClient::connect(&seeds, "localhost", config).await?);
+        let client = Arc::new(Client::connect(&seeds, "localhost", config).await?);
 
         // Every shard of a multi-shard stream, merged into one channel.
         let mut subscription = client
@@ -1444,7 +1430,7 @@ mod clusters_1 {
     }
 }
 
-/// rust.md line 1928: "Connection Management", block 1.
+/// rust.md line 1920: "Connection Management", block 1.
 mod connection_management_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1452,34 +1438,34 @@ mod connection_management_1 {
     async fn example(seeds: Vec<SocketAddr>, config: ClientConfig) -> Result<()> {
         use std::time::Duration;
 
-        use felix_client::{ClusterClient, ReconnectPolicy};
+        use felix_client::{Client, ReconnectPolicy};
 
         let policy = ReconnectPolicy {
             attempts: 10,
             max_backoff: Duration::from_secs(5),
             ..ReconnectPolicy::default()
         };
-        let client = ClusterClient::connect_with_policy(&seeds, "localhost", config, policy).await?;
+        let client = Client::connect_with_policy(&seeds, "localhost", config, policy).await?;
         Ok(())
     }
 }
 
-/// rust.md line 1947: "Connection Management", block 2.
+/// rust.md line 1939: "Connection Management", block 2.
 mod connection_management_2 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
     async fn example(config: ClientConfig) -> Result<()> {
-        use felix_client::{ClusterClient, ReconnectPolicy, Seed};
+        use felix_client::{Client, ReconnectPolicy, Seed};
 
         let seeds: Vec<Seed> = vec!["felix.prod.svc.cluster.local:5000".parse()?];
         let client =
-            ClusterClient::connect_seeds(&seeds, "localhost", config, ReconnectPolicy::default()).await?;
+            Client::connect_seeds(&seeds, "localhost", config, ReconnectPolicy::default()).await?;
         Ok(())
     }
 }
 
-/// rust.md line 1971: "Reconnecting", block 1.
+/// rust.md line 1963: "Reconnecting", block 1.
 mod reconnecting_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1490,7 +1476,7 @@ mod reconnecting_1 {
             deadline: Some(Duration::from_secs(30)),
             ..ReconnectPolicy::default()
         };
-        let client = ClusterClient::connect_with_policy(&seeds, "localhost", config, policy).await?;
+        let client = Client::connect_with_policy(&seeds, "localhost", config, policy).await?;
 
         // Stops retrying once 30 s have passed, checked between attempts, and reports the last error.
         client
@@ -1500,7 +1486,7 @@ mod reconnecting_1 {
     }
 }
 
-/// rust.md line 1999: "Collecting Metrics", block 1.
+/// rust.md line 1991: "Collecting Metrics", block 1.
 mod collecting_metrics_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1521,7 +1507,7 @@ mod collecting_metrics_1 {
     }
 }
 
-/// rust.md line 2015: "Timing Measurements", block 1.
+/// rust.md line 2007: "Timing Measurements", block 1.
 mod timing_measurements_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1542,21 +1528,21 @@ mod timing_measurements_1 {
     }
 }
 
-/// rust.md line 2042: "Connection Pooling", block 1.
+/// rust.md line 2034: "Connection Pooling", block 1.
 mod connection_pooling_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use std::net::SocketAddr;
     use std::sync::Arc;
 
     use anyhow::Result;
-    use felix_client::{AckMode, ClientConfig, ClusterClient, quic_client_config};
+    use felix_client::{AckMode, ClientConfig, Client, quic_client_config};
     use tokio::task::JoinSet;
 
     #[tokio::main]
     async fn main() -> Result<()> {
         let config = ClientConfig::from_env_or_yaml(quic_client_config(None, false)?, None)?;
         let seeds: Vec<SocketAddr> = vec!["127.0.0.1:5000".parse()?];
-        let client = Arc::new(ClusterClient::connect(&seeds, "localhost", config).await?);
+        let client = Arc::new(Client::connect(&seeds, "localhost", config).await?);
 
         let mut workers = JoinSet::new();
         for worker in 0..4 {
@@ -1578,18 +1564,18 @@ mod connection_pooling_1 {
     }
 }
 
-/// rust.md line 2082: "Error Recovery", block 1.
+/// rust.md line 2074: "Error Recovery", block 1.
 mod error_recovery_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use std::time::Duration;
 
     use anyhow::Result;
-    use felix_client::{AckMode, BrokerError, ClusterClient, RetryClass};
+    use felix_client::{AckMode, BrokerError, Client, RetryClass};
 
     /// Publish to `stream`, resending only when the broker applied nothing, with
     /// a doubling pause between at most `attempts` tries.
     async fn publish_with_retry(
-        client: &ClusterClient,
+        client: &Client,
         stream: &str,
         payload: &[u8],
         attempts: u32,
@@ -1621,12 +1607,12 @@ mod error_recovery_1 {
     }
 }
 
-/// rust.md line 2129: "Resource Cleanup", block 1.
+/// rust.md line 2121: "Resource Cleanup", block 1.
 mod resource_cleanup_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
 
-    async fn example(client: &ClusterClient, subscription: ClusterSubscription) -> Result<()> {
+    async fn example(client: &Client, subscription: ClusterSubscription) -> Result<()> {
         // Closes the subscription on the broker.
         drop(subscription);
 
@@ -1637,11 +1623,11 @@ mod resource_cleanup_1 {
     }
 }
 
-/// rust.md line 2140: "Batching for Throughput", block 1.
+/// rust.md line 2132: "Batching for Throughput", block 1.
 mod batching_for_throughput_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use anyhow::Result;
-    use felix_client::{AckMode, ClusterClient};
+    use felix_client::{AckMode, Client};
     use tokio::sync::mpsc;
     use tokio::time::{Duration, interval};
 
@@ -1650,7 +1636,7 @@ mod batching_for_throughput_1 {
     /// Publish what arrives on `messages` in batches of up to `MAX_BATCH`,
     /// sending a partial batch every 10 ms, until every sender is gone.
     async fn batching_publisher(
-        client: &ClusterClient,
+        client: &Client,
         mut messages: mpsc::Receiver<Vec<u8>>,
     ) -> Result<()> {
         let mut batch = Vec::with_capacity(MAX_BATCH);
@@ -1681,7 +1667,7 @@ mod batching_for_throughput_1 {
     }
 }
 
-/// rust.md line 2189: "Integration Tests", block 1.
+/// rust.md line 2181: "Integration Tests", block 1.
 mod integration_tests_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use std::net::SocketAddr;
@@ -1689,14 +1675,14 @@ mod integration_tests_1 {
 
     use anyhow::Result;
     use bytes::Bytes;
-    use felix_client::{ClientConfig, ClusterClient, quic_client_config};
+    use felix_client::{ClientConfig, Client, quic_client_config};
 
     #[tokio::test]
     #[ignore = "needs a broker on 127.0.0.1:5000"]
     async fn cache_entry_expires() -> Result<()> {
         let config = ClientConfig::from_env_or_yaml(quic_client_config(None, false)?, None)?;
         let seeds: Vec<SocketAddr> = vec!["127.0.0.1:5000".parse()?];
-        let client = ClusterClient::connect(&seeds, "localhost", config).await?;
+        let client = Client::connect(&seeds, "localhost", config).await?;
 
         client
             .cache_put("test", "default", "cache", "key", Bytes::from_static(b"value"), Some(100))

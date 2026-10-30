@@ -15,7 +15,7 @@ use felix_broker::timings as broker_publish_timings;
 use felix_broker::{Broker, StreamMetadata};
 use felix_broker_service::observability::timings as broker_timings;
 use felix_client::timings as client_timings;
-use felix_client::{Client, ClientConfig, PublishSharding, Publisher, Subscription};
+use felix_client::{ClientConfig, Connection, PublishSharding, Publisher, Subscription};
 use felix_storage::EphemeralCache;
 use felix_transport::{QuicServer, TransportConfig};
 use felix_wire::AckMode;
@@ -875,10 +875,10 @@ async fn run_case(config: DemoConfig) -> Result<(DemoResult, Option<TimingSummar
     if let Some(sharding) = config.pub_sharding.as_deref().and_then(parse_sharding_mode) {
         client_config.publish_sharding = sharding;
     }
-    let client = Client::connect(addr, "localhost", client_config.clone()).await?;
+    let client = Connection::connect(addr, "localhost", client_config.clone()).await?;
     let mut sub_clients = Vec::with_capacity(config.sub_conns.max(1));
     for _ in 0..config.sub_conns.max(1) {
-        sub_clients.push(Client::connect(addr, "localhost", client_config.clone()).await?);
+        sub_clients.push(Connection::connect(addr, "localhost", client_config.clone()).await?);
     }
 
     let delivery_tracker = DeliveryTracker::new();
@@ -1159,7 +1159,7 @@ async fn run_compare_sub_delivery_shaping(mut base: DemoConfig) -> Result<()> {
 
 #[allow(clippy::too_many_arguments)]
 async fn setup_subscribers(
-    clients: &[Client],
+    clients: &[Connection],
     fanout: usize,
     total_events: usize,
     warmup: usize,
@@ -1476,7 +1476,7 @@ fn spawn_dedicated_primary_subscriber(
         let result = runtime.block_on(async move {
             let mut warmup_ready_tx = Some(warmup_ready_tx);
             let delivery_tx = delivery_tx;
-            let client = match Client::connect(addr, "localhost", client_config).await {
+            let client = match Connection::connect(addr, "localhost", client_config).await {
                 Ok(client) => client,
                 Err(err) => {
                     let _ =

@@ -104,10 +104,10 @@ impl std::error::Error for PublishRefused {}
 ///
 /// Typed rather than a formatted string because it is an instruction, not a
 /// failure: the subscription is available, just somewhere else, and a caller
-/// that can reach the named broker can simply go there. [`ClusterClient`] does
+/// that can reach the named broker can simply go there. [`Client`] does
 /// exactly that.
 ///
-/// [`ClusterClient`]: crate::ClusterClient
+/// [`Client`]: crate::Client
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub struct NotLeaderError {
     /// The broker that owns the shard.

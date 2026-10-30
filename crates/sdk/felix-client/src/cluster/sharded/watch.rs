@@ -14,7 +14,7 @@ use tokio::task::JoinHandle;
 
 use super::ShardOffsets;
 use crate::cache::{CacheChange, CacheWatchFilter, CacheWatchItem};
-use crate::cluster::ClusterClient;
+use crate::cluster::Client;
 use crate::cluster::follow::{ClusterCacheWatch, WatchProgress, WatchStep, WatchTarget};
 use crate::subscribe::ShardMoved;
 
@@ -27,7 +27,7 @@ use crate::subscribe::ShardMoved;
 ///
 /// **Resumption is a vector.** [`ShardedCacheWatch::resume_offsets`] is one
 /// offset per shard, never ahead of what has been handed out; pass it to
-/// [`ClusterClient::watch_cache_sharded`] to resume.
+/// [`Client::watch_cache_sharded`] to resume.
 ///
 /// **A shard that moves is followed.** Its watch reopens on the new owner
 /// where it left off, announced by [`ShardedCacheWatchItem::ShardMoved`]. A
@@ -174,7 +174,7 @@ enum ShardStep {
 /// the shards that could not be.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn watch_sharded(
-    cluster: &Arc<ClusterClient>,
+    cluster: &Arc<Client>,
     tenant_id: &str,
     namespace: &str,
     cache: &str,

@@ -272,7 +272,7 @@ yet say who holds them. Extensions and delays are the leader's memory, so a
 failover hands those records out from the group's durable position, sooner
 than asked. A consumer dead letter is durable and replicates with the shard.
 The broker caps visibility, extensions and delays at
-`FELIX_GROUP_MAX_VISIBILITY_MS`. The same calls are on `ClusterClient` and on
+`FELIX_GROUP_MAX_VISIBILITY_MS`. The same calls are on `Client` and on
 `ShardedGroup` (`extend`, `nack_after`, `dead_letter`).
 
 The client refuses a delay or a visibility to a broker without the feature bit,
@@ -318,7 +318,7 @@ the new position; an ack below the new position is a harmless duplicate.
 Dead letters are kept across a seek. The in-flight and owed counts are the
 leader's memory, so they start again from zero when the shard changes leader.
 
-These calls work on one shard. On `ClusterClient`, `group_create_stream`,
+These calls work on one shard. On `Client`, `group_create_stream`,
 `group_seek_stream`, `group_describe_stream` and `group_delete_stream` make one
 call per shard. `Latest` is then each shard's own tail at the moment its call
 lands, not one cut across the stream, and an offset is refused for a stream

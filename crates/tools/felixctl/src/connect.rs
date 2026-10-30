@@ -4,14 +4,14 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use felix_client::{ClientConfig, ClientIdentity, ClusterClient, ReconnectPolicy, Seed};
+use felix_client::{Client, ClientConfig, ClientIdentity, ReconnectPolicy, Seed};
 
 use crate::context::Settings;
 use crate::error::{Exit, MarkExit, fail};
 
 /// A connection to the cluster, and the tenant and namespace to use it in.
 pub(crate) struct Broker {
-    pub(crate) cluster: Arc<ClusterClient>,
+    pub(crate) cluster: Arc<Client>,
     pub(crate) tenant: String,
     pub(crate) namespace: String,
 }
@@ -23,7 +23,7 @@ impl Broker {
         let config = client_config(settings)?;
         let server_name = server_name(settings);
         let cluster =
-            ClusterClient::connect_seeds(&seeds, &server_name, config, ReconnectPolicy::default())
+            Client::connect_seeds(&seeds, &server_name, config, ReconnectPolicy::default())
                 .await
                 .mark(
                     Exit::Connection,

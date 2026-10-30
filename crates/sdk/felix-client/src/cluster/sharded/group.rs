@@ -17,15 +17,15 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-use crate::client::Client;
-use crate::cluster::ClusterClient;
+use crate::client::Connection;
+use crate::cluster::Client;
 
 /// A consumer group read across every shard of a stream.
 ///
-/// Built by [`ClusterClient::group_sharded`]. Each shard's group is served by
-/// that shard's leader, found the way [`ClusterClient::group_poll`] finds it.
+/// Built by [`Client::group_sharded`]. Each shard's group is served by
+/// that shard's leader, found the way [`Client::group_poll`] finds it.
 pub struct ShardedGroup {
-    cluster: Arc<ClusterClient>,
+    cluster: Arc<Client>,
     tenant_id: String,
     namespace: String,
     stream: String,
@@ -37,7 +37,7 @@ pub struct ShardedGroup {
 
 impl ShardedGroup {
     pub(crate) fn new(
-        cluster: Arc<ClusterClient>,
+        cluster: Arc<Client>,
         tenant_id: &str,
         namespace: &str,
         stream: &str,
@@ -128,7 +128,7 @@ impl ShardedGroup {
     }
 
     /// Hand a record back to be redelivered once `delay` has passed. See
-    /// [`Client::group_nack_after`].
+    /// [`Connection::group_nack_after`].
     pub async fn nack_after(&self, record: &ShardedGroupRecord, delay: Duration) -> Result<()> {
         let shard = self.shard_of(record)?;
         let record = &record.record;
@@ -149,7 +149,7 @@ impl ShardedGroup {
     }
 
     /// Keep the claim on a record standing for `extend` from now. See
-    /// [`Client::group_extend`].
+    /// [`Connection::group_extend`].
     pub async fn extend(&self, record: &ShardedGroupRecord, extend: Duration) -> Result<Duration> {
         let shard = self.shard_of(record)?;
         let record = &record.record;
@@ -170,7 +170,7 @@ impl ShardedGroup {
     }
 
     /// Give up on a record, listing it as a dead letter. See
-    /// [`Client::group_dead_letter`].
+    /// [`Connection::group_dead_letter`].
     pub async fn dead_letter(&self, record: &ShardedGroupRecord) -> Result<()> {
         let shard = self.shard_of(record)?;
         let offset = record.record.offset;
@@ -202,7 +202,7 @@ impl ShardedGroup {
     /// Run `op` against the broker that leads `shard`, following redirects.
     async fn on_shard<T, F, Fut>(&self, shard: u32, op: F) -> Result<T>
     where
-        F: Fn(Arc<Client>) -> Fut,
+        F: Fn(Arc<Connection>) -> Fut,
         Fut: Future<Output = Result<T>>,
     {
         let key = (

@@ -36,7 +36,7 @@ A publish is encoded once and every subscriber of the stream shares the encoded 
 
 Each subscription has its own bounded queue and its own QUIC stream with its own flow-control window. With the default `drop_new`, a phone on a bad connection loses its own records and nobody else waits. The policy is a broker setting, so a subscriber cannot choose `block` and stall every publisher by reading slowly.
 
-On a durable stream the subscriber can tell. Every event carries its log offset, and a queue overflow ends the subscription with `subscription_lagged` and the offset where the drop began. `ClusterClient` resubscribes there and replays the gap from the log. NATS core and Redis pub/sub close the connection and leave the page to refetch everything.
+On a durable stream the subscriber can tell. Every event carries its log offset, and a queue overflow ends the subscription with `subscription_lagged` and the offset where the drop began. `Client` resubscribes there and replays the gap from the log. NATS core and Redis pub/sub close the connection and leave the page to refetch everything.
 
 The push path reaches many readers of the same data without a per-reader fetch. A publish is encoded once and every subscriber shares that one encoded frame, and each subscriber has its own bounded queue, so adding readers does not add encoding work and a slow reader never blocks the publisher. Delivered throughput counts every copy handed to a subscriber, so it is the publish rate times the number of readers, and the publishers' own rate does not change as readers join.
 
@@ -65,7 +65,7 @@ on the shard just by reading slowly.
 
 On durable streams a drop is visible: every delivered event carries its log offset, so a jump in offsets is exactly a
 drop. A durable subscription whose queue overflows is ended with
-`subscription_lagged` and the offset where the drop began. `ClusterClient`
+`subscription_lagged` and the offset where the drop began. `Client`
 resubscribes there and replays the gap from the log, so a slow reader catches up
 instead of losing data. A non-durable stream has no offsets, so a drop there is
 counted in the broker's metrics and invisible to the subscriber. That is the
@@ -92,10 +92,10 @@ felixctl pub ticker '{"sym":"ACME","px":101.25}' --count 100
 Publishing from Rust, with no ack for the lossy feed and a batch for throughput:
 
 ```rust
-use felix_client::{AckMode, ClientConfig, ClusterClient};
+use felix_client::{AckMode, ClientConfig, Client};
 
 let quinn = quinn::ClientConfig::with_platform_verifier();
-let client = ClusterClient::connect(&["127.0.0.1:5000".parse()?], "localhost",
+let client = Client::connect(&["127.0.0.1:5000".parse()?], "localhost",
     ClientConfig::optimized_defaults(quinn)).await?;
 
 client
@@ -130,9 +130,9 @@ while let Some(event) = subscription.next_event().await? {
 }
 ```
 
-A `Client` subscription that falls behind returns a `SubscriptionLagged` error
+A `Connection` subscription that falls behind returns a `SubscriptionLagged` error
 from `next_event`, with a `resume_from` that says where the drop began. Resubscribe
-with `subscribe_from` after the last event you handled. A `ClusterClient`
+with `subscribe_from` after the last event you handled. A `Client`
 subscription does this itself, so a slow reader catches up from the log.
 
 In Python the same check is:

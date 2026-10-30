@@ -5,7 +5,7 @@
 use anyhow::{Result, anyhow, bail};
 use bytes::Bytes;
 use felix_broker_service::serving::quic;
-use felix_client::{Client, CommitError, CommitOp};
+use felix_client::{CommitError, CommitOp, Connection};
 use felix_wire::{Message, StateChange};
 use rustls::pki_types::CertificateDer;
 
@@ -228,7 +228,7 @@ pub(crate) async fn run_client_commit(
     auth: &AuthFixture,
 ) -> Result<()> {
     println!("Running client atomic commit checks...");
-    let client = Client::connect(addr, "localhost", build_client_config(cert, auth)?).await?;
+    let client = Connection::connect(addr, "localhost", build_client_config(cert, auth)?).await?;
     let tenant = auth.tenant_id.as_str();
 
     let receipt = client

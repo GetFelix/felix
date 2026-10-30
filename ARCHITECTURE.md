@@ -127,9 +127,9 @@ leads each shard.
 
 ### `felix-client` and the bindings
 
-`Client` in `client.rs` connects to one broker; its API is split by area under `client/`.
+`Connection` in `client.rs` connects to one broker; its API is split by area under `client/`.
 `publish/`, `subscribe/` and `cache/` are the machinery behind those calls, `connection/` the
-handshake and event routing, and `cluster/` is `ClusterClient`, which follows shard owners and
+handshake and event routing, and `cluster/` is `Client`, which follows shard owners and
 reconnects. `felix-python` and `felix-typescript` wrap this client rather than reimplement it.
 
 ### `felix-cluster` and friends

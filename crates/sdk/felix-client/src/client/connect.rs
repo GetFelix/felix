@@ -1,4 +1,4 @@
-//! Building a [`Client`]: the connections, the streams on them, and where
+//! Building a [`Connection`]: the connections, the streams on them, and where
 //! they go.
 
 use std::future::Future;
@@ -14,7 +14,7 @@ use felix_transport::{QuicClient, QuicConnection, TransportConfig};
 use tokio::sync::mpsc;
 use tracing::debug;
 
-use super::Client;
+use super::Connection;
 use super::discovery::ask_stream_routing;
 use crate::auth::{FETCH_TIMEOUT, TokenProvider};
 use crate::cache::{CacheWorker, run_cache_worker_with_limit};
@@ -141,7 +141,7 @@ async fn first_done<T, Fut: Future<Output = Result<T>>>(
     .await
 }
 
-impl Client {
+impl Connection {
     /// Connect to the broker at `addr` with default transport settings.
     ///
     /// Every pool is built before this returns. `client_config` must name a
@@ -174,7 +174,7 @@ impl Client {
     ///
     /// This picks a starting broker and nothing more: the client does not learn
     /// the rest of the cluster from it, and does not move if it later dies.
-    /// [`crate::ClusterClient`] does both.
+    /// [`crate::Client`] does both.
     pub async fn connect_any(
         addrs: &[SocketAddr],
         server_name: &str,
@@ -189,7 +189,7 @@ impl Client {
         .await
     }
 
-    /// [`Client::connect_any`] with an explicit transport configuration.
+    /// [`Connection::connect_any`] with an explicit transport configuration.
     pub async fn connect_any_with_transport(
         addrs: &[SocketAddr],
         server_name: &str,
@@ -218,7 +218,7 @@ impl Client {
         .await
     }
 
-    /// [`Client::connect`] with an explicit transport configuration.
+    /// [`Connection::connect`] with an explicit transport configuration.
     pub async fn connect_with_transport(
         addr: SocketAddr,
         server_name: &str,
@@ -230,7 +230,7 @@ impl Client {
 
     /// A client whose publish, cache and event streams all share one
     /// connection, with more opened only when it is saturated, up to
-    /// `cluster_conn_pool`. What a [`crate::ClusterClient`] holds per broker.
+    /// `cluster_conn_pool`. What a [`crate::Client`] holds per broker.
     pub(crate) async fn connect_shared(
         addr: SocketAddr,
         server_name: &str,
@@ -574,7 +574,7 @@ enum Layout {
 }
 
 /// The publish settings a client keeps after connect, for the workers it
-/// opens later: shard streams, and the workers of [`Client::with_identity`].
+/// opens later: shard streams, and the workers of [`Connection::with_identity`].
 #[derive(Clone, Copy)]
 pub(super) struct WorkerSettings {
     pub(super) publish_queue_depth: usize,
@@ -638,7 +638,7 @@ pub(super) fn stream_widths(
         let request_id = requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let tenant = tenant.clone();
         Box::pin(async move {
-            // The checks `Client::stream_routing` makes before asking.
+            // The checks `Connection::stream_routing` makes before asking.
             anyhow::ensure!(
                 felix_wire::supports_feature(server_features, felix_wire::FEATURE_STREAM_SHARDS),
                 "broker does not report stream shard counts"

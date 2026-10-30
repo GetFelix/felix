@@ -1,4 +1,4 @@
-//! A subscription through a `ClusterClient` follows its shard when the shard
+//! A subscription through a `Client` follows its shard when the shard
 //! moves, rather than ending.
 //!
 //! Run with `cargo test -p felix-cluster --test routing subscriptions_follow::`.

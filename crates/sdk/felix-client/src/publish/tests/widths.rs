@@ -179,7 +179,7 @@ async fn round_robin_does_not_ask_the_width() {
 }
 
 /// The writer comes from the width the client keeps, never from the shard a
-/// caller worked out. An idempotent producer or a `ClusterClient` that
+/// caller worked out. An idempotent producer or a `Client` that
 /// believes another width still shares the plain publishes' writer for a key.
 #[tokio::test]
 async fn a_callers_own_shard_never_picks_a_second_writer() {

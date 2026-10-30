@@ -1,11 +1,11 @@
-//! [`Client`]: one broker, reached over multiplexed QUIC connections.
+//! [`Connection`]: one broker, reached over multiplexed QUIC connections.
 //!
 //! Publish, cache and event traffic each run on their own streams. A client
-//! built with [`Client::connect`] gives each kind its own pool of connections,
+//! built with [`Connection::connect`] gives each kind its own pool of connections,
 //! so one workload cannot head-of-line block another and each can be tuned
-//! separately. One a [`crate::ClusterClient`] builds puts all of them on one
+//! separately. One a [`crate::Client`] builds puts all of them on one
 //! connection and adds more only when that one is saturated. The child
-//! modules split `Client`'s API by area; the struct and its fields live here.
+//! modules split `Connection`'s API by area; the struct and its fields live here.
 
 mod cache;
 mod cache_watch;
@@ -38,11 +38,16 @@ use crate::publish::{
     PublishAdmission, PublishSharding, PublishWorker, ShardStreams, StreamWidths,
 };
 
-/// A client of one broker, over multiplexed QUIC connections.
+/// A single connection to one broker, over multiplexed QUIC connections.
 ///
-/// Built with [`Client::connect`]. For a client that survives losing that
-/// broker, use [`crate::ClusterClient`].
-pub struct Client {
+/// This is the building block under [`crate::Client`] and is for tools that
+/// talk to one named broker (inspection, conformance, load generation).
+/// Applications should use [`crate::Client`]: a publish to a broker that does
+/// not lead the shard is forwarded, which costs throughput, and a broker
+/// failure ends this connection for good.
+///
+/// Built with [`Connection::connect`].
+pub struct Connection {
     /// The address this client was built for.
     dialled: SocketAddr,
     // Where each kind of stream is opened. Three separate sets for a client

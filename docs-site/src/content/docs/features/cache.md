@@ -272,7 +272,7 @@ while let Some(item) = watch.recv().await {
         CacheWatchItem::ShardMoved(moved) => {
             // The shard moved to another broker, which ended the watch.
             // Re-watch from `moved.resume_from`, or after the last offset seen.
-            // A `ClusterClient` watch does this itself and carries on.
+            // A `Client` watch does this itself and carries on.
             break;
         }
     }
@@ -646,7 +646,7 @@ async fn watch_cache(
 (key, optional value, offset, expiry) and, if the watch falls behind,
 `CacheWatchItem::Lagged { resume_from }` before ending, or
 `CacheWatchItem::ShardMoved` if its shard moved to another broker. The same
-method on `ClusterClient` returns a `ClusterCacheWatch`, which follows the
+method on `Client` returns a `ClusterCacheWatch`, which follows the
 shard to its new owner instead of ending.
 `resnapshot()` reports
 whether a resume began from current values because compaction collapsed the
@@ -849,7 +849,7 @@ cache_send_window: 268435456         # send window
 
 1. **No multi-key operations**: no transactions. A conditional write checks one key
 2. **Best-effort eviction** in the in-memory backend: no guaranteed LRU or LFU. The log-backed cache does not evict at all; it compacts.
-3. **A prefix watch reads one shard**: keys sharing a prefix hash to different shards, so `Client` needs one `watch_cache_shard` per shard. `ClusterClient::watch_cache_sharded` opens and merges them for you, as `subscribe_sharded` does for streams
+3. **A prefix watch reads one shard**: keys sharing a prefix hash to different shards, so `Connection` needs one `watch_cache_shard` per shard. `Client::watch_cache_sharded` opens and merges them for you, as `subscribe_sharded` does for streams
 
 ### Planned Features
 

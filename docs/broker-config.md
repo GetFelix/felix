@@ -225,7 +225,7 @@ one certificate:
 | `FELIX_TLS_CLIENT_CA` | Clients must present a certificate chaining to this bundle. Needs the two above. Read once. |
 | `FELIX_TLS_REQUIRE_CERT=true` | Refuse to start without `FELIX_TLS_CERT`. Set it in production. |
 | `FELIX_TLS_REQUIRE_ALPN=true` | Refuse QUIC clients that offer no ALPN. By default they are served; clients offering `felix/1` get it, and a client offering only other protocols is refused. The shipped clients offer `felix/1` only when configured to (see [ALPN](protocol.md#alpn)), so turn that on in every client first. |
-| `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT=true` | A client presenting a certificate must use a token whose `sub` the certificate was issued to: a URI SAN `felix:principal:<sub>` (exact match), or a DNS or IP SAN the `sub` matches. Control-plane tokens carry a 64-hex principal id, too long for a DNS label, so their certificates need the URI SAN. A token the control plane minted by delegation (`/token/delegate`) also passes when the certificate is issued to its actor (`act.sub`), by the same rules: that is how a gateway presents its users' tokens over its own connections (`Client::with_identity`). Each token is still checked against its own grants. Needs `FELIX_TLS_CLIENT_CA`. Applies to the QUIC listeners and to the Kafka listener over TLS, where SASL/PLAIN checks the token against the handshake's client certificate. |
+| `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT=true` | A client presenting a certificate must use a token whose `sub` the certificate was issued to: a URI SAN `felix:principal:<sub>` (exact match), or a DNS or IP SAN the `sub` matches. Control-plane tokens carry a 64-hex principal id, too long for a DNS label, so their certificates need the URI SAN. A token the control plane minted by delegation (`/token/delegate`) also passes when the certificate is issued to its actor (`act.sub`), by the same rules: that is how a gateway presents its users' tokens over its own connections (`Connection::with_identity`). Each token is still checked against its own grants. Needs `FELIX_TLS_CLIENT_CA`. Applies to the QUIC listeners and to the Kafka listener over TLS, where SASL/PLAIN checks the token against the handshake's client certificate. |
 | `FELIX_TLS_CERT_EXPORT` | Write the generated development certificate out for clients to trust. Refused together with `FELIX_TLS_CERT`. |
 
 Without `FELIX_TLS_CERT` the broker generates a self-signed certificate for
@@ -234,7 +234,7 @@ cannot tell which broker they reached. The certificate you configure must
 carry every name clients dial, typically the load-balanced Service name and
 each broker's `FELIX_CLIENT_ADVERTISE_ADDR` host (a wildcard over the headless
 Service covers the per-broker names in Kubernetes). Clients verify it with the
-issuing CA and that server name: `ClusterClient::connect(seeds, server_name, ..)`
+issuing CA and that server name: `Client::connect(seeds, server_name, ..)`
 in Rust, `ca_file=`/`server_name=` in Python and `caFile`/`serverName` in
 TypeScript.
 
@@ -295,7 +295,7 @@ FELIX_TENANT_PUBLISH_QUOTAS=acme:209715200:20000,batch:0:0
   on one connection. A plain client authenticates every stream as one identity, so for it this
   is the connection's share of `pub_inflight_bytes`, and one connection publishing large
   batches can't starve every other connection's admission. A client acting for many users over
-  one connection (`Client::with_identity`) gets this much per user, so one user's unanswered
+  one connection (`Connection::with_identity`) gets this much per user, so one user's unanswered
   publishes cannot take the whole connection. The users still share
   `pub_conn_total_inflight_bytes`: with the defaults, four users at this limit fill it and a
   fifth is refused or slowed. Must be smaller than `pub_inflight_bytes` to have any effect.

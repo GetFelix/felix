@@ -27,7 +27,7 @@ use felix_authz::{
 };
 use felix_broker::{Broker, StreamMetadata};
 use felix_broker_service::serving::auth::{BrokerAuth, ControlPlaneKeyStore};
-use felix_client::{Client, ClientConfig};
+use felix_client::{ClientConfig, Connection};
 use felix_storage::EphemeralCache;
 use felix_transport::{QuicServer, TransportConfig};
 use jsonwebtoken::Algorithm;
@@ -168,7 +168,7 @@ async fn publish_span_never_exits_on_another_thread() -> Result<()> {
         client_config.auth_tenant_id = Some("t1".to_string());
         client_config.auth_token = Some(token.clone());
         publishers.push(tokio::spawn(async move {
-            let client = Client::connect(addr, "localhost", client_config).await?;
+            let client = Connection::connect(addr, "localhost", client_config).await?;
             let publisher = client.publisher().await?;
             let payloads = vec![vec![7u8; 256]; 32];
             for _ in 0..200 {

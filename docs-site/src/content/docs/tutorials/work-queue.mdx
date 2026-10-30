@@ -63,7 +63,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use felix_client::{AckMode, ClientConfig, ClusterClient, quic_client_config, root_store_from_pem_file};
+use felix_client::{AckMode, ClientConfig, Client, quic_client_config, root_store_from_pem_file};
 
 // Must match FELIX_AUTH_TENANT.
 const TENANT: &str = "dev";
@@ -82,7 +82,7 @@ async fn bounded<T>(what: &str, limit: Duration, call: impl Future<Output = Resu
         .with_context(|| format!("{what} did not finish within {limit:?}"))?
 }
 
-async fn connect() -> Result<Arc<ClusterClient>> {
+async fn connect() -> Result<Arc<Client>> {
     let ca_file = std::env::var("FELIX_CA_FILE").context("set FELIX_CA_FILE")?;
     let roots = Arc::new(root_store_from_pem_file(&ca_file)?);
     // Reads FELIX_AUTH_TENANT and FELIX_AUTH_TOKEN.
@@ -90,12 +90,12 @@ async fn connect() -> Result<Arc<ClusterClient>> {
 
     let broker = std::env::var("FELIX_BROKERS").unwrap_or_else(|_| "127.0.0.1:5000".into());
     let seeds: Vec<SocketAddr> = vec![broker.parse().context("FELIX_BROKERS must be ip:port")?];
-    let connecting = ClusterClient::connect(&seeds, "localhost", config);
+    let connecting = Client::connect(&seeds, "localhost", config);
     let client = bounded("connecting", CALL_TIMEOUT, connecting).await?;
     Ok(Arc::new(client))
 }
 
-async fn produce(client: &ClusterClient) -> Result<()> {
+async fn produce(client: &Client) -> Result<()> {
     let jobs = ["job 1", "job 2", "job 3", "job 4", "job 5", "job 6", "poison"];
     for job in jobs {
         let publish = client.publish(TENANT, NAMESPACE, STREAM, job.as_bytes().to_vec(), AckMode::PerMessage);
@@ -302,7 +302,7 @@ async fn handle(job: &str) -> Result<()> {
     Ok(())
 }
 
-async fn work(client: &ClusterClient, name: &str) -> Result<()> {
+async fn work(client: &Client, name: &str) -> Result<()> {
     loop {
         let poll = client.group_poll_wait(TENANT, NAMESPACE, STREAM, 0, GROUP, 1, POLL_WAIT);
         let records = bounded("poll", CALL_TIMEOUT + POLL_WAIT, poll).await?;
@@ -455,7 +455,7 @@ token has.
 <TabItem label="Rust">
 
 ```rust
-async fn dead(client: &ClusterClient, redrive: bool) -> Result<()> {
+async fn dead(client: &Client, redrive: bool) -> Result<()> {
     let list = client.group_dead_letters(TENANT, NAMESPACE, STREAM, 0, GROUP);
     let offsets = bounded("listing dead letters", CALL_TIMEOUT, list).await?;
     if offsets.is_empty() {

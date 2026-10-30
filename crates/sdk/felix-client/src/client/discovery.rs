@@ -1,4 +1,4 @@
-//! What a broker can tell a [`Client`] about the cluster: its brokers, how
+//! What a broker can tell a [`Connection`] about the cluster: its brokers, how
 //! many shards a stream or cache has, and who owns each. Each question
 //! refuses to be asked of a broker that did not advertise it.
 
@@ -6,12 +6,12 @@ use anyhow::{Context, Result};
 use bytes::BytesMut;
 use felix_wire::Message;
 
-use super::Client;
+use super::Connection;
 use crate::config::ClientRuntimeConfig;
 use crate::connection::{Credentials, NodeConnections, OpenedStream};
 use crate::frame_io::{read_message_with_limit, write_message};
 
-/// [`Client::bounded`] with the limit given.
+/// [`Connection::bounded`] with the limit given.
 pub(crate) async fn bounded_by<T>(
     limit: std::time::Duration,
     what: &str,
@@ -22,7 +22,7 @@ pub(crate) async fn bounded_by<T>(
         .map_err(|_| anyhow::anyhow!("{what} timed out after {limit:?}"))?
 }
 
-impl Client {
+impl Connection {
     /// Runs one step of a request/response exchange with the broker, failing
     /// after `connect_timeout` so an unresponsive broker cannot hold the caller.
     pub(crate) async fn bounded<T>(
@@ -33,7 +33,7 @@ impl Client {
         bounded_by(self.runtime_config.connect_timeout, what, step).await
     }
 
-    /// True if this broker answers [`Client::topology`].
+    /// True if this broker answers [`Connection::topology`].
     pub fn supports_topology(&self) -> bool {
         felix_wire::supports_feature(self.server_features, felix_wire::FEATURE_TOPOLOGY)
     }
@@ -44,17 +44,17 @@ impl Client {
         felix_wire::supports_feature(self.server_features, felix_wire::FEATURE_ACK_ON_COMMIT)
     }
 
-    /// Whether this broker answers [`Client::stream_shards`].
+    /// Whether this broker answers [`Connection::stream_shards`].
     pub fn supports_stream_shards(&self) -> bool {
         felix_wire::supports_feature(self.server_features, felix_wire::FEATURE_STREAM_SHARDS)
     }
 
-    /// Whether this broker answers [`Client::cache_shards`].
+    /// Whether this broker answers [`Connection::cache_shards`].
     pub fn supports_cache_shards(&self) -> bool {
         felix_wire::supports_feature(self.server_features, felix_wire::FEATURE_CACHE_SHARDS)
     }
 
-    /// Whether this broker answers [`Client::shard_owners`].
+    /// Whether this broker answers [`Connection::shard_owners`].
     pub fn supports_shard_owners(&self) -> bool {
         felix_wire::supports_feature(self.server_features, felix_wire::FEATURE_SHARD_OWNERS)
     }
@@ -127,7 +127,7 @@ impl Client {
     /// same as one shard, and is why it is not silently rounded up.
     ///
     /// Fails rather than guessing when the broker predates the request, for the
-    /// same reason [`Client::topology`] does: sending it anyway is a protocol
+    /// same reason [`Connection::topology`] does: sending it anyway is a protocol
     /// error the broker's control loop treats as fatal.
     pub async fn stream_shards(
         &self,
@@ -139,7 +139,7 @@ impl Client {
         Ok(shards)
     }
 
-    /// [`Client::stream_shards`], with how the stream maps routing keys onto
+    /// [`Connection::stream_shards`], with how the stream maps routing keys onto
     /// its shards. A broker that does not say is describing a modulo stream,
     /// the only mapping that existed before it could.
     pub async fn stream_routing(

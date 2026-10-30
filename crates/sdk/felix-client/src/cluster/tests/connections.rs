@@ -1,4 +1,4 @@
-//! How many connections a [`ClusterClient`] holds to each broker, counted
+//! How many connections a [`Client`] holds to each broker, counted
 //! from the brokers' side.
 
 use std::sync::Arc;
@@ -10,7 +10,7 @@ use felix_wire::{AckMode, Message};
 
 use super::stub_broker::StubBroker;
 use crate::ClientConfig;
-use crate::cluster::{ClusterClient, ReconnectPolicy};
+use crate::cluster::{Client, ReconnectPolicy};
 use crate::test_support::{build_server_config, quinn_client_config};
 
 pub(super) fn policy() -> ReconnectPolicy {
@@ -76,7 +76,7 @@ async fn one_connection_per_broker_under_light_mixed_role_use() -> Result<()> {
     b_addr.set(b.addr).expect("b once");
 
     let cluster = Arc::new(
-        ClusterClient::connect_with_policy(&[a.addr], "localhost", default_config(cert)?, policy())
+        Client::connect_with_policy(&[a.addr], "localhost", default_config(cert)?, policy())
             .await?,
     );
 
@@ -150,9 +150,8 @@ async fn connections_grow_to_the_ceiling_under_concurrent_load() -> Result<()> {
     config.cache_streams_per_conn = 1;
     config.cluster_conn_pool = 3;
     config.cluster_streams_per_conn = 4;
-    let cluster = Arc::new(
-        ClusterClient::connect_with_policy(&[broker.addr], "localhost", config, policy()).await?,
-    );
+    let cluster =
+        Arc::new(Client::connect_with_policy(&[broker.addr], "localhost", config, policy()).await?);
     assert_eq!(broker.live_connections(), 1);
 
     let mut opening = tokio::task::JoinSet::new();
@@ -187,7 +186,7 @@ async fn a_dead_broker_connection_is_rebuilt_without_touching_another() -> Resul
         offset: None,
     })?;
     let cluster =
-        ClusterClient::connect_with_policy(&[a.addr], "localhost", default_config(cert)?, policy())
+        Client::connect_with_policy(&[a.addr], "localhost", default_config(cert)?, policy())
             .await?;
     let entry = cluster.client().await;
     let before = cluster.connect_to(b.addr).await?;

@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail, ensure};
-use felix_client::{Client, RefreshingToken};
+use felix_client::{Connection, RefreshingToken};
 use rustls::pki_types::CertificateDer;
 
 use super::fixture::{AuthFixture, build_client_config};
@@ -83,7 +83,7 @@ async fn connect(
     initial: String,
     calls: &Arc<AtomicUsize>,
     failing: &Arc<AtomicBool>,
-) -> Result<Client> {
+) -> Result<Connection> {
     let fresh = auth.token.clone();
     let (calls, failing) = (Arc::clone(calls), Arc::clone(failing));
     let mut config = build_client_config(cert.clone(), auth)?;
@@ -100,11 +100,11 @@ async fn connect(
             async move { result }
         },
     )));
-    Client::connect(addr, "localhost", config).await
+    Connection::connect(addr, "localhost", config).await
 }
 
 /// A stream that authenticates, opened and dropped.
-async fn open_stream(client: &Client) -> Result<()> {
+async fn open_stream(client: &Connection) -> Result<()> {
     match tokio::time::timeout(
         Duration::from_secs(15),
         client.subscribe("t1", "default", "conformance"),
