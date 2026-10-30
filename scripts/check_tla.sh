@@ -324,6 +324,7 @@ weights=(
   "FelixGroupsSplitSources 17"
   "FelixShardFencedAck 12"
   "FelixGroups 12"
+  "FelixHeadTrim 11"
   "FelixShardFigure8CutOver 9"
   "FelixShard 7"
   "FelixShardWipeFull 5"
