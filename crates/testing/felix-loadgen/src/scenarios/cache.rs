@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use felix_client::Client;
+use felix_client::Connection;
 
 use super::round_trips::round_trips;
 use super::{Common, scope};
@@ -18,7 +18,7 @@ pub(crate) async fn cache(common: &Common, cache: &str) -> Result<serde_json::Va
     let (put, put_tp, put_n) = round_trips(
         common,
         "cache put",
-        Arc::new(move |client: Arc<Client>, key: u64| {
+        Arc::new(move |client: Arc<Connection>, key: u64| {
             let (t, ns, c, v) = (t.clone(), ns.clone(), c.clone(), put_value.clone());
             async move {
                 client
@@ -32,7 +32,7 @@ pub(crate) async fn cache(common: &Common, cache: &str) -> Result<serde_json::Va
     let (get, get_tp, get_n) = round_trips(
         common,
         "cache get",
-        Arc::new(move |client: Arc<Client>, key: u64| {
+        Arc::new(move |client: Arc<Connection>, key: u64| {
             let (t, ns, c) = (t.clone(), ns.clone(), c.clone());
             async move {
                 client.cache_get(&t, &ns, &c, &format!("k{key}")).await?;
@@ -63,7 +63,7 @@ pub(crate) async fn counter(common: &Common, cache: &str) -> Result<serde_json::
     let (add, add_tp, add_n) = round_trips(
         common,
         "counter add",
-        Arc::new(move |client: Arc<Client>, key: u64| {
+        Arc::new(move |client: Arc<Connection>, key: u64| {
             let (t, ns, c) = (t.clone(), ns.clone(), c.clone());
             async move {
                 client
@@ -78,7 +78,7 @@ pub(crate) async fn counter(common: &Common, cache: &str) -> Result<serde_json::
     let (get, get_tp, get_n) = round_trips(
         common,
         "counter get",
-        Arc::new(move |client: Arc<Client>, key: u64| {
+        Arc::new(move |client: Arc<Connection>, key: u64| {
             let (t, ns, c) = (t.clone(), ns.clone(), c.clone());
             async move {
                 client

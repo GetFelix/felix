@@ -1,4 +1,4 @@
-//! The brokers a [`ClusterClient`](super::ClusterClient) was told about, and
+//! The brokers a [`Client`](super::Client) was told about, and
 //! how their addresses are found again.
 //!
 //! A name outlives the addresses it resolves to: a Kubernetes rollout keeps

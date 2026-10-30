@@ -42,8 +42,8 @@ use tokio::task::JoinHandle;
 
 use super::routing::{StreamKey as RoutingStreamKey, StreamKeyRef as RoutingStreamKeyRef};
 use super::{StreamWidths, Width};
-use crate::client::Client;
-use crate::cluster::{Attempt, ClusterClient, Next, Retrying};
+use crate::client::Connection;
+use crate::cluster::{Attempt, Client, Next, Retrying};
 use crate::{PublishRefusalReason, PublishRefused};
 
 /// Publishes that can wait for the driver before a caller waits to submit.
@@ -72,11 +72,11 @@ pub struct IdempotentProducer {
 }
 
 impl IdempotentProducer {
-    pub(crate) fn for_client(client: Arc<Client>, producer_id: u64) -> Self {
+    pub(crate) fn for_client(client: Arc<Connection>, producer_id: u64) -> Self {
         Self::start(Source::Single(client), producer_id)
     }
 
-    pub(crate) fn for_cluster(cluster: Arc<ClusterClient>, producer_id: u64) -> Self {
+    pub(crate) fn for_cluster(cluster: Arc<Client>, producer_id: u64) -> Self {
         Self::start(Source::Cluster(cluster), producer_id)
     }
 
@@ -442,7 +442,7 @@ struct Driver {
     producer_id: u64,
     /// The broker a refusal named as the leader of a shard, kept so the next
     /// batch goes straight there rather than being refused again.
-    leaders: Mutex<HashMap<ShardKey, Arc<Client>>>,
+    leaders: Mutex<HashMap<ShardKey, Arc<Connection>>>,
     /// Each keyed stream's width and mapping. Asked again on the client's
     /// cadence against a broker that checks declared widths, and dropped on
     /// `stale_width` or `not_found`. Set when the driver starts.
@@ -822,7 +822,7 @@ impl Driver {
     /// following one not-leader refusal to the broker it names.
     async fn send_via(
         &self,
-        client: &Client,
+        client: &Connection,
         key: &ShardKey,
         routing_key: Option<&Bytes>,
         batches: &[Vec<Vec<u8>>],
@@ -865,13 +865,13 @@ impl Driver {
             Ok(addr) => addr,
             Err(err) => return (acked, Err(err)),
         };
-        let leader: Arc<Client> = match &self.source {
+        let leader: Arc<Connection> = match &self.source {
             Source::Single(_) => {
                 return (
                     acked,
                     Err(err.context(format!(
                         "{node_id} at {addr} leads the shard; connect a client there, or use a \
-                         ClusterClient, which follows the refusal itself"
+                         Client, which follows the refusal itself"
                     ))),
                 );
             }
@@ -895,7 +895,7 @@ impl Driver {
 
     async fn publish_on(
         &self,
-        client: &Client,
+        client: &Connection,
         key: &ShardKey,
         routing_key: Option<&Bytes>,
         batches: &[Vec<Vec<u8>>],
@@ -1111,8 +1111,8 @@ fn starts_alike(a: &[Vec<Vec<u8>>], b: &[Vec<Vec<u8>>]) -> bool {
 /// is using, with the shard's leader remembered once a refusal names it.
 #[derive(Clone)]
 enum Source {
-    Single(Arc<Client>),
-    Cluster(Arc<ClusterClient>),
+    Single(Arc<Connection>),
+    Cluster(Arc<Client>),
 }
 
 /// Where a producer stands on one stream.

@@ -1,19 +1,19 @@
 //! A client that outlives the broker it is talking to.
 //!
-//! [`Client`] holds connections built when it was created, so a broker going
-//! away takes that client with it. A cluster survives losing a broker; until
-//! now an application could not, and had to notice the failure and rebuild
-//! everything itself.
+//! A [`Connection`] holds connections built when it was created, so a broker
+//! going away takes it with it. A cluster survives losing a broker, and
+//! [`Client`] lets an application do the same instead of noticing the failure
+//! and rebuilding everything itself.
 //!
-//! This holds one [`Client`] per broker it reaches (`nodes`), shared by every
+//! It holds one [`Connection`] per broker it reaches (`nodes`), shared by every
 //! role that broker plays -- entry, shard owner, redirect target, producer
-//! leader -- and replaces a broker's client when it stops working. The one in
+//! leader -- and replaces a broker's connection when it stops working. The one in
 //! use for requests that go anywhere is rebuilt from the same seed list it
 //! was created with.
 //!
 //! # Connections
 //!
-//! A broker's client starts with one QUIC connection and multiplexes every
+//! A broker's connection starts with one QUIC connection and multiplexes every
 //! stream onto it: publish and cache workers, subscriptions, watches and
 //! one-off requests. It opens another only when those are saturated, up to
 //! [`ClientConfig::cluster_conn_pool`](crate::ClientConfig::cluster_conn_pool).
@@ -22,13 +22,13 @@
 //!
 //! The two are separated on purpose, and the names say which is which.
 //!
-//! [`ClusterClient::publish`] reconnects and reports the failed record to the
+//! [`Client::publish`] reconnects and reports the failed record to the
 //! caller. Nothing that may have landed is sent twice, so nothing can arrive
 //! twice — but the record that was in flight when the broker died is the
 //! caller's problem. The one re-send is of a record a cached shard owner said
 //! it did not apply.
 //!
-//! [`ClusterClient::publish_at_least_once`] reconnects *and sends the record
+//! [`Client::publish_at_least_once`] reconnects *and sends the record
 //! again*. A publish that failed after the broker had already written it will
 //! then exist twice, and the broker cannot tell the difference: only the
 //! application holds the identity that would make deduplication possible. The
@@ -87,7 +87,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use tokio::sync::RwLock;
 
-use crate::client::Client;
+use crate::client::Connection;
 use crate::config::ClientConfig;
 use crate::publish::{LearnWidth, StreamWidths};
 
@@ -98,14 +98,18 @@ use crate::publish::{LearnWidth, StreamWidths};
 /// settled" into an error the caller sees rather than a loop it does not.
 const MAX_REDIRECTS: usize = 3;
 
-/// A client that reconnects to another broker when the one it is using fails.
+/// The Rust client. It reconnects to another broker when the one it is using
+/// fails, and sends each request to the broker that owns the shard.
+///
+/// Applications should use this. A [`Connection`] is a single connection to
+/// one broker that forwards what it does not own; see its docs.
 ///
 /// See `docs/multi-node-client.md` for what to configure and what this does on
 /// its own. The short version:
 ///
 /// ```rust,no_run
 /// use std::time::Duration;
-/// use felix_client::{AckMode, ClientConfig, ClusterClient, ReconnectPolicy};
+/// use felix_client::{AckMode, ClientConfig, Client, ReconnectPolicy};
 ///
 /// # async fn example(quinn: quinn::ClientConfig) -> anyhow::Result<()> {
 /// let mut config = ClientConfig::from_env_or_yaml(quinn, None)?;
@@ -118,7 +122,7 @@ const MAX_REDIRECTS: usize = 3;
 /// // when no broker the client knows answers, so prefer one to an IP.
 /// let seeds = ["felix.prod.svc.cluster.local:5000".parse()?];
 ///
-/// let client = ClusterClient::connect_seeds(
+/// let client = Client::connect_seeds(
 ///     &seeds,
 ///     "broker.internal",
 ///     config,
@@ -143,7 +147,7 @@ const MAX_REDIRECTS: usize = 3;
 /// # Ok(())
 /// # }
 /// ```
-pub struct ClusterClient {
+pub struct Client {
     /// What the application configured. Never removed from `endpoints`: the
     /// cluster's account of itself can be wrong, and these are the addresses
     /// someone chose deliberately. Shared with every identity derived from
@@ -156,7 +160,7 @@ pub struct ClusterClient {
     /// reconnect must exclude the publishes that would otherwise keep using the
     /// client being replaced.
     /// Shared with `widths`, which asks whichever client is in use.
-    client: Arc<RwLock<Arc<Client>>>,
+    client: Arc<RwLock<Arc<Connection>>>,
     /// Held across a reconnect's dial, so one failure builds one replacement
     /// without holding `client` while it does.
     reconnecting: tokio::sync::Mutex<()>,
@@ -190,7 +194,7 @@ pub struct ClusterClient {
     /// following `NotLeader`. Apart from `owners` because it is learned from a
     /// different answer, and a group redirect carries no fresher generation
     /// to arbitrate between the two.
-    group_routes: RwLock<HashMap<ShardKey, Arc<Client>>>,
+    group_routes: RwLock<HashMap<ShardKey, Arc<Connection>>>,
     /// Each cache's shard owners, asked once and dropped when a request to
     /// one fails. Apart from `owners` because a cache and a stream may share
     /// a name, and its entries carry no generation to compare.
@@ -200,7 +204,7 @@ pub struct ClusterClient {
     nodes: Arc<nodes::Nodes>,
 }
 
-impl ClusterClient {
+impl Client {
     /// Connect to whichever seed answers, and remember the rest.
     pub async fn connect(
         seeds: &[SocketAddr],
@@ -210,7 +214,7 @@ impl ClusterClient {
         Self::connect_with_policy(seeds, server_name, config, ReconnectPolicy::default()).await
     }
 
-    /// [`ClusterClient::connect`] with an explicit reconnection policy.
+    /// [`Client::connect`] with an explicit reconnection policy.
     pub async fn connect_with_policy(
         seeds: &[SocketAddr],
         server_name: &str,
@@ -245,7 +249,7 @@ impl ClusterClient {
         .await
     }
 
-    /// [`ClusterClient::connect_seeds`] resolving names through `lookup`.
+    /// [`Client::connect_seeds`] resolving names through `lookup`.
     pub(crate) async fn connect_resolving(
         seeds_given: &[Seed],
         server_name: &str,
@@ -300,7 +304,7 @@ impl ClusterClient {
     /// Subscriptions are the reason this is exposed: one is bound to the
     /// connection it was created on, so a reconnect cannot carry it across, and
     /// resuming it is the caller's to do with the offsets it has been given.
-    pub async fn client(&self) -> Arc<Client> {
+    pub async fn client(&self) -> Arc<Connection> {
         Arc::clone(&*self.client.read().await)
     }
 
@@ -348,7 +352,7 @@ impl ClusterClient {
 
     /// The client for one broker, shared with every other role that broker
     /// plays for this cluster client.
-    pub(crate) async fn connect_to(&self, addr: SocketAddr) -> Result<Arc<Client>> {
+    pub(crate) async fn connect_to(&self, addr: SocketAddr) -> Result<Arc<Connection>> {
         self.nodes.connect_to(addr).await
     }
 
@@ -384,7 +388,7 @@ impl ClusterClient {
     /// keep reading it, and fail on the dead client, rather than queueing
     /// behind the dial. Every address is tried, each bounded by
     /// `connect_timeout`, so the walk is bounded by their count.
-    pub(crate) async fn reconnect(&self, failed: &Arc<Client>) -> Result<()> {
+    pub(crate) async fn reconnect(&self, failed: &Arc<Connection>) -> Result<()> {
         let _turn = self.reconnecting.lock().await;
         if !Arc::ptr_eq(&*self.client.read().await, failed) {
             return Ok(());
@@ -484,7 +488,7 @@ struct Owner {
     /// mid-rebalance would otherwise take turns replacing each other.
     generation: u64,
     addr: SocketAddr,
-    client: tokio::sync::OnceCell<Arc<Client>>,
+    client: tokio::sync::OnceCell<Arc<Connection>>,
     /// The stream's width when this was learned; `None` for an owner learned
     /// from an unkeyed publish before the stream's width was known.
     width: Option<(u32, felix_wire::routing::ShardRouting)>,
@@ -492,7 +496,7 @@ struct Owner {
 
 impl Owner {
     /// A client connected to this owner, connecting if none is yet.
-    async fn connect(&self, nodes: &nodes::Nodes) -> Result<Arc<Client>> {
+    async fn connect(&self, nodes: &nodes::Nodes) -> Result<Arc<Connection>> {
         self.client
             .get_or_try_init(|| async {
                 // The fetch is inside the timer: this runs on the publish
@@ -519,7 +523,7 @@ mod tests;
 /// re-asking needs only `stream_shards`, and each declaration is sent only
 /// to a stream that negotiated it, and used for routing only by a client
 /// whose broker checks it.
-fn cluster_widths(client: &Arc<RwLock<Arc<Client>>>) -> Arc<StreamWidths> {
+fn cluster_widths(client: &Arc<RwLock<Arc<Connection>>>) -> Arc<StreamWidths> {
     let learn: LearnWidth = {
         let client = Arc::clone(client);
         Arc::new(move |tenant_id, namespace, stream| {

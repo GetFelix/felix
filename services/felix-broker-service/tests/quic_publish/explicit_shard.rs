@@ -19,13 +19,13 @@ async fn payloads_on(fixture: &TwoShards, shard: u32) -> Result<Vec<String>> {
         .collect())
 }
 
-/// **A named shard is where the record lands.** Through a `Client`, a
-/// `ClusterClient` and a conditional publish, each to the shard named.
+/// **A named shard is where the record lands.** Through a `Connection`, a
+/// `Client` and a conditional publish, each to the shard named.
 #[tokio::test]
 #[serial]
 async fn a_publish_to_a_named_shard_lands_there() -> Result<()> {
     let fixture = TwoShards::start().await?;
-    let client = Client::connect(fixture.addr, "localhost", fixture.client_config()?).await?;
+    let client = Connection::connect(fixture.addr, "localhost", fixture.client_config()?).await?;
     let publisher = client.publisher().await?;
     let first = publisher
         .publish_batch_on_shard(
@@ -60,12 +60,9 @@ async fn a_publish_to_a_named_shard_lands_there() -> Result<()> {
         .await?;
     assert_eq!(stale, felix_client::ConditionalWrite::Refused { tail: 3 });
 
-    let cluster = felix_client::ClusterClient::connect(
-        &[fixture.addr],
-        "localhost",
-        fixture.client_config()?,
-    )
-    .await?;
+    let cluster =
+        felix_client::Client::connect(&[fixture.addr], "localhost", fixture.client_config()?)
+            .await?;
     cluster
         .publish_on_shard(
             TENANT,
@@ -92,7 +89,7 @@ async fn a_publish_to_a_named_shard_lands_there() -> Result<()> {
 #[serial]
 async fn a_shard_out_of_range_is_refused() -> Result<()> {
     let fixture = TwoShards::start().await?;
-    let client = Client::connect(fixture.addr, "localhost", fixture.client_config()?).await?;
+    let client = Connection::connect(fixture.addr, "localhost", fixture.client_config()?).await?;
     let publisher = client.publisher().await?;
     let invalid = |err: anyhow::Error| {
         err.downcast_ref::<felix_client::BrokerError>()

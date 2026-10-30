@@ -524,7 +524,7 @@ version 7.
 
 Each client stream authenticates when it opens, and clients open streams long
 after connecting: subscriptions, cache watches, group requests, and
-`ClusterClient` reconnects. A fixed `ClientConfig::auth_token` stops working for
+`Client` reconnects. A fixed `ClientConfig::auth_token` stops working for
 those once it expires, so long-running clients should set
 `ClientConfig::token_provider` instead. The client asks it for a token every
 time a stream authenticates.
@@ -557,14 +557,14 @@ expired or been revoked.
 ### Many users over one client
 
 A gateway that acts for many users, each with their own Felix token, does not
-need a client per user. `ClusterClient::with_identity(tenant_id, token_provider)`
+need a client per user. `Client::with_identity(tenant_id, token_provider)`
 returns a client that shares the parent's connections and authenticates every
 stream it opens with the user's token. `with_identity_token` takes a fixed
-token instead. The single-connection `Client` has the same two calls;
-applications should use `ClusterClient`.
+token instead. The single-connection `Connection` has the same two calls;
+applications should use `Client`.
 
 ```rust,ignore
-let gateway = ClusterClient::connect(&seeds, "broker", gateway_config).await?;
+let gateway = Client::connect(&seeds, "broker", gateway_config).await?;
 let alice = gateway.with_identity("t1", alice_tokens).await?;
 // Checked against alice's grants, not the gateway's.
 alice.cache_get("t1", "app", "sessions", "alice:profile").await?;
@@ -602,7 +602,7 @@ How an identity behaves:
   `FELIX_MAX_SUBSCRIPTIONS_PER_CONN_TOTAL` (four users' worth), and the users
   share that ceiling: four users at their limits use all of it, and a fifth is
   refused or slowed. A gateway that can have more users than that at full load
-  should raise the ceilings or spread its users over more than one `Client`.
+  should raise the ceilings or spread its users over more than one `Connection`.
   A user's share is dropped once they have no stream, subscription or publish
   in flight on the connection.
 - The connections' QUIC flow-control windows are shared. A subscription the
@@ -612,8 +612,8 @@ How an identity behaves:
   presented with every user's token, and a user's own token is refused there.
   The gateway exchanges each user's token for a delegated one first; see
   [Delegated tokens](#delegated-tokens).
-- `ClusterClient::with_identity` and `with_identity_token` do the same across
-  a cluster. The result is a `ClusterClient` with its own routing state that
+- `Client::with_identity` and `with_identity_token` do the same across
+  a cluster. The result is a `Client` with its own routing state that
   reaches each broker over the parent's connection to it, so it follows moved
   shards, redirects and failovers without a connection per user. When the
   parent's connection to a broker is rebuilt, the identity's streams there are

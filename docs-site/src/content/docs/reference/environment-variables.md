@@ -169,7 +169,7 @@ certificate to be issued to its token's subject (`sub`).
 - A token minted by delegation (`/token/delegate`) names its actor in `act`,
   and also binds a certificate issued to the actor, by the same rules. That is
   how a gateway presents its users' tokens over its own connections
-  (`Client::with_identity`); each token is still checked against its own
+  (`Connection::with_identity`); each token is still checked against its own
   grants.
 - Needs `FELIX_TLS_CLIENT_CA`. Set without it, startup fails.
 - Applies to the QUIC client listeners, and to the Kafka listener when it
@@ -955,7 +955,7 @@ export FELIX_CACHE_WATCH_MAX_BYTES_TOTAL="268435456"
 
 ### `FELIX_CLUSTER_CONN_POOL`
 
-**Description**: The most QUIC connections a `ClusterClient` opens to one broker. It starts with one, shared by every kind of traffic and every role the broker plays, and opens more only when those are saturated.
+**Description**: The most QUIC connections a `Client` opens to one broker. It starts with one, shared by every kind of traffic and every role the broker plays, and opens more only when those are saturated.
 
 **Type**: Positive integer (count)
 
@@ -968,7 +968,7 @@ export FELIX_CLUSTER_CONN_POOL="8"
 
 ### `FELIX_CLUSTER_STREAMS_PER_CONN`
 
-**Description**: Streams one of a `ClusterClient`'s connections carries before another is opened beside it. The broker's QUIC stream credit is the other trigger, whichever comes first.
+**Description**: Streams one of a `Client`'s connections carries before another is opened beside it. The broker's QUIC stream credit is the other trigger, whichever comes first.
 
 **Type**: Positive integer (count)
 
@@ -1545,7 +1545,7 @@ export FELIX_CONNECT_TIMEOUT_MS="5000"
 
 ### `FELIX_FINISH_TIMEOUT_MS`
 
-**Description**: Longest `Publisher::finish` and `ClusterClient::finish` wait for queued publishes to be written and acknowledged and for the broker to close its side of each stream (client). On expiry the streams are aborted and the call returns an error, so a stalled commit does not hang the caller.
+**Description**: Longest `Publisher::finish` and `Client::finish` wait for queued publishes to be written and acknowledged and for the broker to close its side of each stream (client). On expiry the streams are aborted and the call returns an error, so a stalled commit does not hang the caller.
 
 **Type**: Positive integer (milliseconds)
 
@@ -2312,7 +2312,7 @@ absent. They are listed in that script rather than here.
 | `FELIX_CLIENT_CONFIG` | unset | Path to a client config file. |
 | `FELIX_AUTH_TENANT`, `FELIX_AUTH_TOKEN`, `FELIX_TOKEN` | unset | Credentials a client presents. `FELIX_TOKEN` is also the token `felix-controlplane admin` sends, unless `--token` is given. |
 | `FELIX_KEEPALIVE_MS` | `2000` | QUIC keep-alive interval. Keep it well under the idle timeout, on both client and broker, or quiet connections are dropped. |
-| `FELIX_MAX_IDLE_TIMEOUT_MS` | `6000` | QUIC idle timeout before a connection is dropped. Also how long a broker that died without closing (killed, unplugged) takes to be noticed, and so how long a publish in flight to it waits before a `ClusterClient` retries elsewhere. |
+| `FELIX_MAX_IDLE_TIMEOUT_MS` | `6000` | QUIC idle timeout before a connection is dropped. Also how long a broker that died without closing (killed, unplugged) takes to be noticed, and so how long a publish in flight to it waits before a `Client` retries elsewhere. |
 | `FELIX_EVENT_ROUTER_MAX_PENDING` | `16384` | Events buffered by the client's router before it applies backpressure. |
 | `FELIX_SUB_DEDICATED_THREAD`, `FELIX_SUB_DEDICATED_QUEUE_CAPACITY` | unset | Give a subscription its own thread and queue. |
 | `FELIX_SUB_DELIVERY_SHAPING`, `FELIX_SUB_EGRESS_CONNS` | unset | Delivery shaping and egress fan-out on the broker. |

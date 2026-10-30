@@ -59,7 +59,7 @@ for cert in rustls::pki_types::CertificateDer::pem_file_iter("ca.pem")? {
     roots.add(cert?)?;
 }
 let quinn = quinn::ClientConfig::with_root_certificates(Arc::new(roots))?;
-let client = ClusterClient::connect(&seeds, "broker.example.com", ClientConfig::optimized_defaults(quinn)).await?;
+let client = Client::connect(&seeds, "broker.example.com", ClientConfig::optimized_defaults(quinn)).await?;
 ```
 
 The Python, TypeScript, C and C# clients take the same two choices: the platform
@@ -477,7 +477,7 @@ sequenceDiagram
 
 A token is bound to a QUIC stream, not a connection: each stream sends its own
 `Auth` and every request on it is checked against that token. So one client can
-carry several users. The Rust client's `Client::with_identity` opens streams
+carry several users. The Rust client's `Connection::with_identity` opens streams
 under another user's token over the same connections, and the broker still
 checks each user's requests against that user's grants alone. Each user also
 gets their own share of the connection's limits: the subscription cap

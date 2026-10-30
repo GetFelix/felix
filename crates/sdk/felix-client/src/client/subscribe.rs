@@ -1,4 +1,4 @@
-//! Subscribing through a [`Client`]: one shard of one stream per subscription.
+//! Subscribing through a [`Connection`]: one shard of one stream per subscription.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -8,13 +8,13 @@ use bytes::BytesMut;
 use felix_wire::{Message, StartPosition};
 use tokio::sync::oneshot;
 
-use super::Client;
+use super::Connection;
 use crate::connection::{EventRouterCommand, OpenedStream};
 use crate::frame_io::{read_message_with_limit, write_message};
 use crate::subscribe::{Subscription, SubscriptionPipelineConfig};
 use crate::{NotLeaderError, SubscribeCursorError};
 
-impl Client {
+impl Connection {
     /// Subscribe from the live tail, delivering only what is published from now.
     pub async fn subscribe(
         &self,
@@ -28,7 +28,7 @@ impl Client {
 
     /// Subscribe from a chosen position, resuming a durable stream.
     ///
-    /// `start: None` is exactly [`Client::subscribe`]. Pass
+    /// `start: None` is exactly [`Connection::subscribe`]. Pass
     /// `Some(StartPosition::Offset(n))` to resume at the first record not yet
     /// seen -- an application that checkpoints the offset of the last event it
     /// handled resumes at that offset plus one.
@@ -55,7 +55,7 @@ impl Client {
     /// #297, which is about doing that for the caller.
     ///
     /// Shard 0 is every record of a single-shard stream, which is what
-    /// [`Client::subscribe`] asks for.
+    /// [`Connection::subscribe`] asks for.
     pub async fn subscribe_shard(
         &self,
         tenant_id: &str,
@@ -280,7 +280,7 @@ impl Client {
         }
     }
 
-    /// Whether the broker answers [`Client::offset_for_time`].
+    /// Whether the broker answers [`Connection::offset_for_time`].
     pub fn supports_offset_for_time(&self) -> bool {
         felix_wire::supports_feature(self.server_features, felix_wire::FEATURE_RECORD_TIMESTAMPS)
     }
@@ -351,13 +351,13 @@ impl Client {
         }
     }
 
-    /// Whether the broker answers [`Client::read`].
+    /// Whether the broker answers [`Connection::read`].
     pub fn supports_read(&self) -> bool {
         felix_wire::supports_feature(self.server_features, felix_wire::FEATURE_STREAM_READ)
     }
 }
 
-/// One page from [`Client::read`].
+/// One page from [`Connection::read`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamPage {
     /// Committed records, in offset order.

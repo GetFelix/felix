@@ -10,10 +10,10 @@ happens when one dies, and which failures it retries.
 Every guarantee named here is defined in [`semantics.md`](semantics.md), which
 is the contract; this page is how to reach it from an application.
 
-## Use `ClusterClient`, not `Client`
+## Use `Client`, not `Connection`
 
-`Client` holds connection pools to **one** broker. It is the single-connection
-building block underneath `ClusterClient`, for tools and special cases, and the
+`Connection` holds connection pools to **one** broker. It is the single-connection
+building block underneath `Client`, for tools and special cases, and the
 wrong thing for an application on a cluster: the broker it was given is exactly
 the one that may fail over, and when it does, that client stops working while
 every other broker sits there able to serve. Its publishes to shards that
@@ -21,16 +21,16 @@ broker does not lead are forwarded, which in the v0.6.0 three-node run cost
 2.4× in-memory and 4.4× durable throughput against sending straight to the
 owner ([v0.6.0 performance](https://docs.getfelix.dev/features/v060-performance/)).
 
-Use `ClusterClient` on a single broker too. With one seed and no cluster behind
+Use `Client` on a single broker too. With one seed and no cluster behind
 it, discovery finds nothing to add and that broker owns every shard. The
 broker needs no cluster mode, and the client asks nothing of the control plane.
 
-`ClusterClient` holds a `Client` for each broker it reaches and rebuilds the
+`Client` holds a `Connection` for each broker it reaches and rebuilds the
 one in use from the other endpoints when it fails.
 
 ```rust,no_run
 use std::time::Duration;
-use felix_client::{ClientConfig, ClusterClient, ReconnectPolicy};
+use felix_client::{ClientConfig, Client, ReconnectPolicy};
 use felix_client::AckMode;
 
 # async fn example(quinn: quinn::ClientConfig) -> anyhow::Result<()> {
@@ -43,7 +43,7 @@ config.auth_token = Some(std::env::var("FELIX_TOKEN")?);
 // A name, or every broker you know of. One is enough; see "Discovery" below.
 let seeds = ["felix.prod.svc.cluster.local:5000".parse()?];
 
-let client = ClusterClient::connect_seeds(
+let client = Client::connect_seeds(
     &seeds,
     "broker.internal",
     config,
@@ -65,13 +65,13 @@ client
 ```
 
 A seed is a `Seed`: an address, or a `host:port` name, which `"...".parse()`
-tells apart. `ClusterClient::connect` and `connect_with_policy` take plain
+tells apart. `Client::connect` and `connect_with_policy` take plain
 `SocketAddr`s and the default policy, which is the same thing without the
 `deadline`. Prefer names: see "When every broker moves" below.
 
 ## Connections
 
-A `ClusterClient` holds **one** connection to each broker it talks to, and
+A `Client` holds **one** connection to each broker it talks to, and
 every stream to that broker is multiplexed on it: publish and cache workers,
 subscriptions, cache watches, group requests and discovery. It does not matter
 how many roles the broker plays. The entry broker, a shard owner learned from a
@@ -83,7 +83,7 @@ A second connection opens only when the first is saturated: when it carries
 (`MAX_STREAMS`) runs out before that. The count grows that way up to
 `cluster_conn_pool` (default 8) and stops. At the ceiling, a new stream waits
 for credit on whichever connection frees one first, which is what QUIC would do
-on a single connection. `ClusterClient::connections_per_node` reports the
+on a single connection. `Client::connections_per_node` reports the
 current count per broker.
 
 A connection that dies fails only the streams on it. The next stream that needs
@@ -91,7 +91,7 @@ the room opens a replacement. If the dead connection carried the broker's
 publish and cache workers, the broker's client is rebuilt the next time any
 role asks for that broker. Other brokers' clients are not touched.
 
-`Client::connect` is different: it opens `publish_conn_pool`, `cache_conn_pool`
+`Connection::connect` is different: it opens `publish_conn_pool`, `cache_conn_pool`
 and `event_conn_pool` connections up front, one pool per kind of traffic, each
 with its own transport tuning. A cluster client's shared connection takes the
 largest of those windows instead. See `docs/client-config.md`.
@@ -117,7 +117,7 @@ them to what it will try.
   against the name rather than the seeds' server name. A name that does not
   resolve is logged and left out.
 
-`ClusterClient::endpoints()` returns everywhere the client would try, seeds
+`Client::endpoints()` returns everywhere the client would try, seeds
 included. `refresh_topology()` asks again on demand; you do not normally need
 it, because reconnecting already does.
 
@@ -215,12 +215,12 @@ cache watches itself, after delivering everything it committed, and its last
 frame on each says where the shard went and where to resume (`shard_moved`, see
 `docs/protocol.md`, "Shard moves").
 
-**A `ClusterClient` subscription follows the shard.** `ClusterClient::subscribe`,
+**A `Client` subscription follows the shard.** `Client::subscribe`,
 `subscribe_from` and `subscribe_shard` return a `ClusterSubscription`, and its `next_event`
 resubscribes on the new owner by itself, so a move looks like a short pause:
 
 ```rust,no_run
-# async fn example(cluster: std::sync::Arc<felix_client::ClusterClient>) -> anyhow::Result<()> {
+# async fn example(cluster: std::sync::Arc<felix_client::Client>) -> anyhow::Result<()> {
 let mut subscription = cluster.subscribe("t1", "default", "orders").await?;
 while let Some(event) = subscription.next_event().await? {
     // Carries on across a move. `subscription.moves()` counts them.
@@ -246,7 +246,7 @@ while let Some(event) = subscription.next_event().await? {
 `subscribe_sharded` does the same per shard and reports it as
 `ShardEvent::ShardMoved`.
 
-**A `ClusterClient` cache watch follows too.** `watch_cache` and
+**A `Client` cache watch follows too.** `watch_cache` and
 `watch_cache_retained` return a `ClusterCacheWatch`. Its `recv` hands out
 `CacheWatchItem::ShardMoved` as a notice and then reopens the watch on the new
 owner from the larger of the old owner's `resume_from` and the offset after the
@@ -263,7 +263,7 @@ sharded cache watch follows each shard the same way and reports
 `ShardedCacheWatchItem::ShardMoved`, or `ShardClosed` with the `error` if that
 shard could not be followed.
 
-**With `Client`, you resume.** The subscription ends: `next_event` returns
+**With `Connection`, you resume.** The subscription ends: `next_event` returns
 `None` with `Subscription::shard_moved()` set to the `ShardMoved` it received.
 Resubscribe at the larger of `resume_from` and your last offset plus one. A
 cache watch delivers `CacheWatchItem::ShardMoved` last; re-watch from its
@@ -276,10 +276,10 @@ A subscription reads **one shard**. A stream's shards can have different owners
 and a subscription is bound to one connection, so reading a four-shard stream
 means four subscriptions, each following its own redirect.
 
-`ClusterClient::subscribe_sharded` does that for you:
+`Client::subscribe_sharded` does that for you:
 
 ```rust
-let client = Arc::new(ClusterClient::connect(&seeds, "localhost", config).await?);
+let client = Arc::new(Client::connect(&seeds, "localhost", config).await?);
 let mut subscription = client
     .subscribe_sharded("t1", "default", "orders", Some(StartPosition::Earliest))
     .await?;
@@ -347,12 +347,12 @@ shards and the call fails rather than reading shard 0 and calling it the stream.
 ## A prefix watch across every shard of a cache
 
 Keys sharing a prefix hash to different shards, and a cache watch reads one.
-`ClusterClient::watch_cache_sharded` opens one prefix watch per shard, follows
+`Client::watch_cache_sharded` opens one prefix watch per shard, follows
 each shard's redirect to its owner, and merges them:
 
 ```rust,no_run
 # use felix_client::ShardedCacheWatchItem;
-# async fn example(cluster: std::sync::Arc<felix_client::ClusterClient>) -> anyhow::Result<()> {
+# async fn example(cluster: std::sync::Arc<felix_client::Client>) -> anyhow::Result<()> {
 let mut watch = cluster
     .watch_cache_sharded_retained("t1", "default", "sessions", "user:")
     .await?;
@@ -393,11 +393,11 @@ It needs a broker advertising `FEATURE_CACHE_SHARDS` to learn the shard count.
 ## A consumer group across every shard
 
 A group is bound to one shard, and only that shard's leader can serve it: the
-group's cursor and its claims live there. `ClusterClient::group_sharded` keeps
+group's cursor and its claims live there. `Client::group_sharded` keeps
 one group per shard and follows each shard's redirect to its leader:
 
 ```rust,no_run
-# async fn example(cluster: std::sync::Arc<felix_client::ClusterClient>) -> anyhow::Result<()> {
+# async fn example(cluster: std::sync::Arc<felix_client::Client>) -> anyhow::Result<()> {
 let group = cluster.group_sharded("t1", "default", "jobs", "workers").await?;
 loop {
     for claimed in group.poll(32).await? {
@@ -423,8 +423,8 @@ a redirect, which is any broker from this release on.
 ## Redirects
 
 A subscribe or a consumer-group request sent to a broker that does not own the
-shard is answered with a redirect naming the one that does. `ClusterClient::subscribe`
-and the single-shard group calls (`ClusterClient::group_poll`, `group_poll_wait`,
+shard is answered with a redirect naming the one that does. `Client::subscribe`
+and the single-shard group calls (`Client::group_poll`, `group_poll_wait`,
 `group_ack`, `group_nack`, `group_dead_letters`, `group_discard`,
 `group_redrive`, `group_seek`, `group_create`, `group_describe`,
 `group_delete`, `group_poll_with`, `group_extend`, `group_nack_after`,
@@ -435,10 +435,10 @@ each shard and go straight there next time, until a call against it fails. This
 is what keeps a consumer working after its shard moves: once the move cuts
 over, the old leader answers group requests with a redirect to the new one.
 
-If you use `Client` directly, the redirect surfaces as a typed
+If you use `Connection` directly, the redirect surfaces as a typed
 `NotLeaderError` carrying the owner's node id and address. It is an
-instruction, not a failure. `Client` is one broker's connections and does not
-follow it; connecting to the owner is `ClusterClient`'s job.
+instruction, not a failure. `Connection` is one broker's connections and does not
+follow it; connecting to the owner is `Client`'s job.
 
 A **publish** to the wrong broker is *forwarded* rather than redirected, so it
 needs nothing from you.
@@ -463,7 +463,7 @@ it (see "Error codes" in `docs/protocol.md`):
 | Class | Codes (usually) | `publish_at_least_once`, idempotent producer | `publish` |
 | --- | --- | --- | --- |
 | `fatal` | `unauthenticated`, `forbidden`, `invalid_request`, `limit_exceeded`, `stale_claim` (the broker sends `retry`; the client treats it as `fatal`) | Returned at once, marked "not retried" | Returned |
-| `retry`, `redirect` | `shard_unavailable`, `draining`, `not_leader`, `stale_width` (never reroutes; the client and the `ClusterClient` drop the stream's width, so the retry asks for it again) | From a cached owner or leader: forget it and go again at once through the entry broker. From the entry broker: back off and retry | From a cached owner: forget it and send once through the entry broker. Otherwise returned |
+| `retry`, `redirect` | `shard_unavailable`, `draining`, `not_leader`, `stale_width` (never reroutes; the client and the `Client` drop the stream's width, so the retry asks for it again) | From a cached owner or leader: forget it and go again at once through the entry broker. From the entry broker: back off and retry | From a cached owner: forget it and send once through the entry broker. Otherwise returned |
 | `retry_after` | `overloaded`, `not_found` | Back off, at least `retry_after_ms` when the broker gave one. `not_found` only for 5 s from the first one | Returned |
 | `outcome_unknown` | `quorum_timeout`, `leadership_lost`, `unacknowledged`, `internal`, `storage` | Sent again: that is what at-least-once means, and the idempotent producer's sequence makes it safe | **Returned, never sent again** |
 
@@ -531,7 +531,7 @@ and `semantics.md` describe.
 | `BrokerError` with `quorum_timeout` (`outcome_unknown`) | `Quorum` could not reach a majority in time | Unknown, not failed. Resend only if duplicates are acceptable, or use an idempotent producer |
 | `BrokerError` with `shard_unavailable` | The shard is between owners, or its owner is not ready | Retried for you; a cached owner is dropped at once |
 | `no eligible leader` / owner unavailable | No replica holds the log, so the shard is unavailable rather than served empty | Wait for the broker to return; only an operator can abandon the log |
-| `shard is owned by …` (`NotLeaderError`) | You used `Client`, not `ClusterClient` | Follow it, or use `ClusterClient::subscribe` |
+| `shard is owned by …` (`NotLeaderError`) | You used `Connection`, not `Client` | Follow it, or use `Client::subscribe` |
 | `gave up after … attempts` | Every endpoint failed | The cluster is unreachable, not merely rebalancing |
 
 ## Trying it on three brokers

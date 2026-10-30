@@ -103,7 +103,7 @@ async fn commit_acked_publishes_report_consecutive_offsets() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let (_broker, addr, cert, auth, _config) =
         serve_orders(dir.path(), FsyncMode::None, commit_acked).await?;
-    let client = Client::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
+    let client = Connection::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
     let publisher = client.publisher().await?;
 
     let mut offsets = Vec::new();
@@ -209,7 +209,7 @@ async fn a_re_sent_idempotent_batch_reports_the_original_offset() -> Result<()> 
     let (broker, addr, cert, auth, _config) =
         serve_orders(dir.path(), FsyncMode::None, commit_acked).await?;
     let client =
-        Arc::new(Client::connect(addr, "localhost", build_client_config(cert, &auth)?).await?);
+        Arc::new(Connection::connect(addr, "localhost", build_client_config(cert, &auth)?).await?);
     let producer_id = client.idempotent_producer().await?.producer_id();
     let publisher = client.publisher().await?;
     let batch = || vec![b"a".to_vec(), b"b".to_vec()];
@@ -263,7 +263,7 @@ async fn a_client_can_ask_for_commit_acks_on_its_own_connection() -> Result<()> 
 
     let mut asking = build_client_config(cert.clone(), &auth)?;
     asking.ack_on_commit = true;
-    let client = Client::connect(addr, "localhost", asking).await?;
+    let client = Connection::connect(addr, "localhost", asking).await?;
     assert!(client.supports_ack_on_commit());
     let publisher = client.publisher().await?;
     let first = publisher
@@ -287,7 +287,7 @@ async fn a_client_can_ask_for_commit_acks_on_its_own_connection() -> Result<()> 
         .await?;
     assert_eq!(second, Some(first + 1));
 
-    let plain = Client::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
+    let plain = Connection::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
     let offset = plain
         .publisher()
         .await?

@@ -1,4 +1,4 @@
-//! Cache watches through a `ClusterClient`, one shard or all of them, follow
+//! Cache watches through a `Client`, one shard or all of them, follow
 //! their shard when it moves rather than ending.
 //!
 //! Run with `cargo test -p felix-cluster --test routing watches_follow::`.

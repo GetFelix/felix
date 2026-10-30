@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::Result;
-use felix_client::Client;
+use felix_client::Connection;
 use felix_wire::AckMode;
 
 use crate::fixture::{AuthFixture, BrokerHarness, NAMESPACE, STREAM, TENANT, client_config};
@@ -34,7 +34,7 @@ pub(crate) async fn spawn_publishers(
         let stats = Arc::clone(&stats);
         let stop = Arc::clone(&stop);
         handles.push(tokio::spawn(async move {
-            let client = match Client::connect(addr, "localhost", config).await {
+            let client = match Connection::connect(addr, "localhost", config).await {
                 Ok(client) => client,
                 Err(_) => {
                     stats.connect_errors.fetch_add(1, Ordering::Relaxed);
@@ -86,7 +86,7 @@ pub(crate) async fn spawn_subscribers(
         let stats = Arc::clone(&stats);
         let stop = Arc::clone(&stop);
         handles.push(tokio::spawn(async move {
-            let client = match Client::connect(addr, "localhost", config).await {
+            let client = match Connection::connect(addr, "localhost", config).await {
                 Ok(client) => client,
                 Err(_) => {
                     stats.connect_errors.fetch_add(1, Ordering::Relaxed);
@@ -132,7 +132,7 @@ pub(crate) async fn run_connection_churn(
     let payload = vec![0x5Au8; payload_bytes];
     for _ in 0..cycles {
         let config = client_config(&harness.cert, auth)?;
-        let client = match Client::connect(harness.addr, "localhost", config).await {
+        let client = match Connection::connect(harness.addr, "localhost", config).await {
             Ok(client) => client,
             Err(_) => {
                 stats.connect_errors.fetch_add(1, Ordering::Relaxed);

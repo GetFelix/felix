@@ -551,7 +551,7 @@ cache_watch_max_bytes_total: 0
 
 #### `max_subscriptions_per_conn`
 
-**Description**: Max concurrent subscriptions and cache watches one identity (tenant and token subject) may hold on a QUIC connection. `subscriber_queue_capacity` bounds the size of one subscription's buffer; this bounds how many subscriptions there are. A plain client authenticates every stream as one identity, so for it this is the connection's cap. A client acting for many users over one connection (`Client::with_identity`) gets this many per user, so one user at the cap cannot take every slot. The users still share `max_subscriptions_per_conn_total`: with the defaults, four users at their cap fill it and a fifth is refused.
+**Description**: Max concurrent subscriptions and cache watches one identity (tenant and token subject) may hold on a QUIC connection. `subscriber_queue_capacity` bounds the size of one subscription's buffer; this bounds how many subscriptions there are. A plain client authenticates every stream as one identity, so for it this is the connection's cap. A client acting for many users over one connection (`Connection::with_identity`) gets this many per user, so one user at the cap cannot take every slot. The users still share `max_subscriptions_per_conn_total`: with the defaults, four users at their cap fill it and a fifth is refused.
 
 **Type**: `usize` (count)
 
@@ -858,7 +858,7 @@ pub_inflight_bytes: 67108864
 
 ### `pub_conn_inflight_bytes`
 
-**Description**: In-flight publish bytes one identity (tenant and token subject) may hold on one connection. `pub_inflight_bytes` is intentionally process-wide (see its description above), which on its own means nothing stops one connection from occupying the entire shared budget. This closes that gap: it is checked first on every publish admission, then `pub_conn_total_inflight_bytes`, then the shared budget. A plain client authenticates every stream as one identity, so for it this is the connection's budget. A client acting for many users over one connection (`Client::with_identity`) gets this much per user, so one user's unanswered publishes cannot take the whole connection. The users still share `pub_conn_total_inflight_bytes`: with the defaults, four users at this limit fill it and a fifth is refused or slowed.
+**Description**: In-flight publish bytes one identity (tenant and token subject) may hold on one connection. `pub_inflight_bytes` is intentionally process-wide (see its description above), which on its own means nothing stops one connection from occupying the entire shared budget. This closes that gap: it is checked first on every publish admission, then `pub_conn_total_inflight_bytes`, then the shared budget. A plain client authenticates every stream as one identity, so for it this is the connection's budget. A client acting for many users over one connection (`Connection::with_identity`) gets this much per user, so one user's unanswered publishes cannot take the whole connection. The users still share `pub_conn_total_inflight_bytes`: with the defaults, four users at this limit fill it and a fifth is refused or slowed.
 
 **Type**: `usize` (bytes)
 
@@ -1090,7 +1090,7 @@ While this reference covers broker configuration, clients also have tunable para
 
 **Default**: `8`, `1024`
 
-**Description**: A `ClusterClient` holds one connection per broker and multiplexes every stream on it. The first is the most connections it will open to one broker, and the second is how many streams a connection carries before another opens. The connection pool sizes here apply to a `Client` built with `Client::connect`.
+**Description**: A `Client` holds one connection per broker and multiplexes every stream on it. The first is the most connections it will open to one broker, and the second is how many streams a connection carries before another opens. The connection pool sizes here apply to a `Connection` built with `Connection::connect`.
 
 ### Cache Connection Pool
 

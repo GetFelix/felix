@@ -45,7 +45,7 @@ certificate carries, and TLS is always on.
 <TabItem label="Rust">
 
 ```rust
-use felix_client::{ClusterClient, ReconnectPolicy, Seed};
+use felix_client::{Client, ReconnectPolicy, Seed};
 
 // Names are resolved again whenever no known broker answers.
 let seeds: Vec<Seed> = vec![
@@ -55,7 +55,7 @@ let seeds: Vec<Seed> = vec![
 ];
 // The connect gives up after `config.connect_timeout` per broker (10 s by default).
 let client = Arc::new(
-    ClusterClient::connect_seeds(&seeds, "felix.example.com", config, ReconnectPolicy::default())
+    Client::connect_seeds(&seeds, "felix.example.com", config, ReconnectPolicy::default())
         .await
         .context("connect to the Felix cluster")?,
 );
@@ -208,7 +208,7 @@ do. See [Upgrading to 0.7](/release-notes/upgrading-to-0-7/).
 <TabItem label="Rust">
 
 ```rust
-use felix_client::{ClusterClient, ReconnectPolicy};
+use felix_client::{Client, ReconnectPolicy};
 
 // `seeds` is the Vec<Seed> built in the previous section.
 let policy = ReconnectPolicy {
@@ -218,7 +218,7 @@ let policy = ReconnectPolicy {
     // The longest any one call may spend retrying.
     deadline: Some(Duration::from_secs(30)),
 };
-let client = ClusterClient::connect_seeds(&seeds, "felix.example.com", config, policy).await?;
+let client = Client::connect_seeds(&seeds, "felix.example.com", config, policy).await?;
 ```
 
 </TabItem>
@@ -341,7 +341,7 @@ let tokens = RefreshingToken::new(|| async {
 });
 config.auth_tenant_id = Some("acme".into());
 config.token_provider = Some(Arc::new(tokens));
-let client = ClusterClient::connect_seeds(&seeds, "felix.example.com", config, policy).await?;
+let client = Client::connect_seeds(&seeds, "felix.example.com", config, policy).await?;
 ```
 
 </TabItem>
@@ -1757,7 +1757,7 @@ defaults and do not expose these settings.
 config.broker_sub_queue_capacity = Some(4096);
 config.client_sub_queue_capacity = 8192;
 let client = Arc::new(
-    ClusterClient::connect_seeds(&seeds, "felix.example.com", config, ReconnectPolicy::default())
+    Client::connect_seeds(&seeds, "felix.example.com", config, ReconnectPolicy::default())
         .await?,
 );
 

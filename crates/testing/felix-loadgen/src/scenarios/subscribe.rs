@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, bail};
-use felix_client::{ClusterClient, ClusterSubscription, Event, ShardEvent, ShardedSubscription};
+use felix_client::{Client, ClusterSubscription, Event, ShardEvent, ShardedSubscription};
 use tokio::task::JoinSet;
 
 use super::connect::{client, cluster};
@@ -123,7 +123,7 @@ pub(crate) async fn subscribe(
     // the same --start-at sends is already behind every subscription.
     let mut feeds = Vec::with_capacity(subscribers);
     for index in 0..subscribers {
-        let cluster: &Arc<ClusterClient> = &cluster_clients[index % clients];
+        let cluster: &Arc<Client> = &cluster_clients[index % clients];
         let feed = if shards > 1 {
             Feed::All(
                 cluster

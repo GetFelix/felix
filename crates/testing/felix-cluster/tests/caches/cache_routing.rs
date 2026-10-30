@@ -242,7 +242,7 @@ async fn a_prefix_watch_on_a_multi_shard_cache_must_name_its_shard() {
         .expect("a prefix watch naming its shard, on that shard's owner, is served");
 }
 
-async fn cluster_client(cluster: &Cluster) -> Arc<felix_client::ClusterClient> {
+async fn cluster_client(cluster: &Cluster) -> Arc<felix_client::Client> {
     Arc::new(
         felix_cluster::client::connect_cluster(
             &cluster.broker_addrs(),

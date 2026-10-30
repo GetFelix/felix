@@ -8,7 +8,7 @@
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use felix_broker::{Broker, StreamMetadata, SubQueuePolicy};
-use felix_client::{Client, ClientConfig, ClientSubQueuePolicy};
+use felix_client::{ClientConfig, ClientSubQueuePolicy, Connection};
 use felix_storage::EphemeralCache;
 use felix_transport::{QuicServer, TransportConfig};
 use felix_wire::AckMode;
@@ -441,7 +441,7 @@ where
         let ready_tx = ready_tx.clone();
         let keys = config.keys;
         tasks.push(tokio::spawn(async move {
-            let client = match Client::connect(addr, "localhost", client_cfg).await {
+            let client = match Connection::connect(addr, "localhost", client_cfg).await {
                 Ok(client) => client,
                 Err(err) => {
                     let _ = ready_tx
@@ -517,7 +517,7 @@ where
         let rate = config.rate;
         let keys = config.keys;
         tokio::spawn(async move {
-            let client = match Client::connect(addr, "localhost", client_cfg).await {
+            let client = match Connection::connect(addr, "localhost", client_cfg).await {
                 Ok(client) => client,
                 Err(err) => {
                     eprintln!("publisher connect failed: {err}");

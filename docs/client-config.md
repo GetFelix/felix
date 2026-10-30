@@ -10,23 +10,23 @@ The performance-critical defaults are already on; no tuning is required.
 
 **Running against a cluster** (seed brokers, discovery, failover, retries and
 redirects) is [Running a client against a cluster](multi-node-client.md). None
-of it is configured here: it is chosen by using `ClusterClient` rather than
-`Client`, and by the `ReconnectPolicy` handed to it.
+of it is configured here: it is chosen by using `Client` rather than
+`Connection`, and by the `ReconnectPolicy` handed to it.
 
 ## Which client to use
 
-Applications should use `ClusterClient`, on a single broker as well as a
+Applications should use `Client`, on a single broker as well as a
 cluster. It sends each record straight to the broker that leads its shard
 and handles failover and reconnects. A single broker needs no cluster mode for
 it, and the client asks nothing of the control plane: discovery finds nothing
-to add and that broker owns every shard. `Client` is the single-connection building block underneath it,
+to add and that broker owns every shard. `Connection` is the single-connection building block underneath it,
 for tools and special cases.
 
-In a cluster, a publish sent through `Client` to a broker that does not lead
+In a cluster, a publish sent through `Connection` to a broker that does not lead
 the shard is forwarded, and the hop is expensive. In the v0.6.0 three-node,
 three-replica run, compared with sending straight to the owner:
 
-| Workload (256 B records, batches of 64) | Owner-direct (`ClusterClient`) | Forwarded (`Client`) |
+| Workload (256 B records, batches of 64) | Owner-direct (`Client`) | Forwarded (`Connection`) |
 | --- | --- | --- |
 | In-memory | 2,034 MB/s | 864 MB/s (2.4× lower, broker CPU up 34%) |
 | Durable, `Quorum` acks | 475 MB/s | 107 MB/s (4.4× lower) |
@@ -101,7 +101,7 @@ let cfg = ClientConfig::from_env_or_yaml(quinn, Some("client.yml"))?;
     close each stream. On expiry the streams are aborted and it errors.
     Publishes still waiting for an ack then fail and are unconfirmed: they may
     or may not have been committed, so resend them (at least once). Buffered
-    `AckMode::None` data is lost. `ClusterClient::finish` finishes brokers
+    `AckMode::None` data is lost. `Client::finish` finishes brokers
     together, so the total is about one timeout. Default: 60 s.
 - `publish_shard_streams` (env: `FELIX_PUB_SHARD_STREAMS`)
   - Most publish streams a client opens per broker for one shard each,
@@ -114,8 +114,8 @@ let cfg = ClientConfig::from_env_or_yaml(quinn, Some("client.yml"))?;
     broker holds up only itself, and one stream's shards spread over the
     client's connections and listeners. Opened on the shard's first publish,
     on the least-loaded connection, and kept. Shards past the cap use the
-    pool. Only with `hash_stream`. A plain `Client` learns a stream's width
-    from the broker on its first keyed publish to it; a `ClusterClient`
+    pool. Only with `hash_stream`. A plain `Connection` learns a stream's width
+    from the broker on its first keyed publish to it; a `Client`
     already knows it. Against a broker with `FEATURE_PUBLISH_WIDTH` the
     width is declared ahead of keyed batches and checked by the broker, and
     asked again every 5 s, so a stream created again at another width is
@@ -161,7 +161,7 @@ All window values are raw bytes.
 
 ### Cluster Client Connections
 
-A `ClusterClient` holds one connection per broker and multiplexes every kind of
+A `Client` holds one connection per broker and multiplexes every kind of
 stream on it, so the `*_conn_pool` sizes above do not decide how many
 connections it opens. They still decide how many publish and cache *streams*
 it runs: `publish_conn_pool * publish_streams_per_conn` publish writers and

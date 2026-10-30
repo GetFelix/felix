@@ -14,7 +14,7 @@ use ed25519_dalek::SigningKey as Ed25519SigningKey;
 use felix_authz::{FelixTokenIssuer, Jwks, TenantId, TenantKeyCache, TenantKeyMaterial};
 use felix_broker::{Broker, CacheMetadata};
 use felix_broker_service::serving::{auth::BrokerAuth, quic};
-use felix_client::{Client, ClientConfig};
+use felix_client::{ClientConfig, Connection};
 use felix_storage::log::{FsyncMode, LogConfig};
 use felix_storage::{CounterStore, LogCache};
 use felix_transport::{QuicServer, TransportConfig};
@@ -95,11 +95,11 @@ async fn start_broker(broker: Arc<Broker>) -> Result<Running> {
 }
 
 impl Running {
-    async fn client(&self) -> Result<Client> {
+    async fn client(&self) -> Result<Connection> {
         let mut config = build_client_config(self.cert.clone())?;
         config.auth_tenant_id = Some("t1".to_string());
         config.auth_token = self.tokens.get("t1").cloned();
-        Client::connect(self.addr, "localhost", config).await
+        Connection::connect(self.addr, "localhost", config).await
     }
 
     async fn stop(self) {

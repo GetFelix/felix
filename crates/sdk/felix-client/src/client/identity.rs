@@ -7,7 +7,7 @@ use anyhow::Result;
 use felix_transport::QuicConnection;
 use tracing::debug;
 
-use super::Client;
+use super::Connection;
 use super::connect::{
     WorkerSettings, note_connection, open_cache_worker, shard_streams, spawn_publish_worker,
     stream_widths,
@@ -15,13 +15,13 @@ use super::connect::{
 use crate::auth::{StaticToken, TokenProvider};
 use crate::publish::PublishAdmission;
 
-impl Client {
+impl Connection {
     /// A client that acts as another principal over this client's connections.
     ///
     /// Every stream the returned client opens authenticates with `tenant_id`
     /// and a token from `tokens`, and the broker checks each of its requests
     /// against that token's grants and nothing else. It opens no connections
-    /// of its own: a gateway serving many users holds one [`Client`] and one
+    /// of its own: a gateway serving many users holds one [`Connection`] and one
     /// of these per user, and its connection count does not grow with them.
     ///
     /// It opens one publish stream and one cache stream before returning, so
@@ -44,7 +44,7 @@ impl Client {
         &self,
         tenant_id: impl Into<String>,
         tokens: Arc<dyn TokenProvider>,
-    ) -> Result<Client> {
+    ) -> Result<Connection> {
         let auth_tenant_id = tenant_id.into();
         let credentials = Arc::new(
             self.credentials
@@ -86,7 +86,7 @@ impl Client {
             &cache_request_counter,
             self.runtime_config,
         );
-        Ok(Client {
+        Ok(Connection {
             dialled: self.dialled,
             publish_node: Arc::clone(&self.publish_node),
             cache_node: Arc::clone(&self.cache_node),
@@ -112,13 +112,13 @@ impl Client {
         })
     }
 
-    /// [`Client::with_identity`] with a fixed token, for one that will not
+    /// [`Connection::with_identity`] with a fixed token, for one that will not
     /// outlive the returned client.
     pub async fn with_identity_token(
         &self,
         tenant_id: impl Into<String>,
         token: impl Into<String>,
-    ) -> Result<Client> {
+    ) -> Result<Connection> {
         self.with_identity(tenant_id, Arc::new(StaticToken(token.into())))
             .await
     }

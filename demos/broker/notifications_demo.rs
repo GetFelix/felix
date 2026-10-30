@@ -16,7 +16,7 @@ use ed25519_dalek::SigningKey as Ed25519SigningKey;
 use felix_authz::{FelixTokenIssuer, Jwks, TenantId, TenantKeyCache, TenantKeyMaterial};
 use felix_broker::{Broker, CacheMetadata, StreamMetadata};
 use felix_broker_service::serving::{auth::BrokerAuth, quic};
-use felix_client::{Client, ClientConfig, Publisher, Subscription};
+use felix_client::{ClientConfig, Connection, Publisher, Subscription};
 use felix_storage::EphemeralCache;
 use felix_transport::{QuicServer, TransportConfig};
 use felix_wire::AckMode;
@@ -285,11 +285,11 @@ async fn build_client_for_tenant(
     addr: std::net::SocketAddr,
     tenant: &str,
     tokens: &HashMap<String, String>,
-) -> Result<Client> {
+) -> Result<Connection> {
     let mut config = build_client_config(cert.clone())?;
     config.auth_tenant_id = Some(tenant.to_string());
     config.auth_token = tokens.get(tenant).cloned();
-    Client::connect(addr, "localhost", config).await
+    Connection::connect(addr, "localhost", config).await
 }
 
 async fn publish_alert(publisher: &Publisher, tenant: &str, message: &str) -> Result<()> {
@@ -306,7 +306,7 @@ async fn publish_alert(publisher: &Publisher, tenant: &str, message: &str) -> Re
 }
 
 async fn update_alert_cache(
-    client: &Client,
+    client: &Connection,
     tenant: &str,
     cache: &mut VecDeque<String>,
     message: &str,
@@ -370,7 +370,7 @@ async fn join_with_timeout(name: &str, handle: JoinHandle<()>) {
         });
 }
 
-async fn print_cache_snapshot(client: &Client, tenant: &str) -> Result<()> {
+async fn print_cache_snapshot(client: &Connection, tenant: &str) -> Result<()> {
     let snapshot = client
         .cache_get(tenant, "default", LAST_ALERTS_CACHE, "alerts")
         .await?;

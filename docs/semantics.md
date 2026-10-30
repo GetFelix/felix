@@ -301,10 +301,10 @@ what a client sees.
   past `FELIX_SHARD_MOVE_HOLD_MS` or `FELIX_SHARD_MOVE_HOLD_MAX`. Cache and
   counter operations are held and forwarded the same way. Consumer-group
   operations are held and then redirected to the new owner, which
-  `ClusterClient`'s group calls (and the Python, TypeScript, C and C# clients') follow.
+  `Client`'s group calls (and the Python, TypeScript, C and C# clients') follow.
 - **Subscriptions follow.** The old leader ends each after the writes in
   flight have fanned out, and sends `shard_moved` with the offset to resume
-  from. A `ClusterClient` subscription resumes on the new owner at
+  from. A `Client` subscription resumes on the new owner at
   `max(last delivered + 1, resume_from)`, so on a durable stream nothing is
   repeated or skipped; an in-memory stream resumes at the tail. A cache watch
   gets the same frame and is reopened by the caller.
@@ -439,7 +439,7 @@ throughput rather than correctness.
   multi-shard stream means one subscription per shard. Offsets are per shard,
   so resuming a multi-shard consumer means carrying one offset per shard.
 
-  `ClusterClient::subscribe_sharded` opens one per shard and merges them,
+  `Client::subscribe_sharded` opens one per shard and merges them,
   following each shard's own redirect. It promises **per-shard ordering and
   nothing more**: merging cannot restore an order that never existed. An
   unreachable shard refuses the whole subscription rather than covering three
@@ -473,7 +473,7 @@ A client is told which brokers exist and is redirected to the right one, but the
 retry policy is still the application's. `docs/multi-node-client.md` is the
 how-to; this is the contract.
 
-- `ClusterClient` takes several broker addresses and rebuilds its connection
+- `Client` takes several broker addresses and rebuilds its connection
   from the rest when the one in use fails.
 - It asks a broker which other brokers exist and **adds** them to what it will
   try. The configured seeds are never removed, so a wrong or stale answer cannot

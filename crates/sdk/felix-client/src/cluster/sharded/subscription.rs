@@ -19,8 +19,8 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use super::ShardOffsets;
-use crate::client::Client;
-use crate::cluster::{ClusterClient, resume_position};
+use crate::client::Connection;
+use crate::cluster::{Client, resume_position};
 use crate::subscribe::{Event, ShardMoved, Subscription};
 
 /// How much to wait between attempts to re-establish one shard.
@@ -36,7 +36,7 @@ const RECONNECT_BACKOFF: Duration = Duration::from_millis(250);
 /// one channel.
 ///
 /// **Resumption is a vector.** [`ShardedSubscription::positions`] hands back one
-/// offset per shard; pass it to [`ClusterClient::subscribe_sharded`] to resume.
+/// offset per shard; pass it to [`Client::subscribe_sharded`] to resume.
 ///
 /// Dropping this stops every shard's task and closes their connections.
 pub struct ShardedSubscription {
@@ -158,7 +158,7 @@ impl std::fmt::Debug for ShardEvent {
 /// covered three shards of four would be the worst of the available answers,
 /// because nothing downstream could tell.
 pub(crate) async fn subscribe_sharded(
-    cluster: &Arc<ClusterClient>,
+    cluster: &Arc<Client>,
     tenant_id: &str,
     namespace: &str,
     stream: &str,
@@ -190,7 +190,7 @@ pub(crate) async fn subscribe_sharded(
         }));
     }
 
-    let mut opened: Vec<(u32, Arc<Client>, Subscription)> = Vec::with_capacity(shards as usize);
+    let mut opened: Vec<(u32, Arc<Connection>, Subscription)> = Vec::with_capacity(shards as usize);
     let mut failures: Vec<String> = Vec::new();
     for task in opening {
         match task.await {
@@ -259,12 +259,12 @@ fn shard_start(
 /// the other three.
 #[allow(clippy::too_many_arguments)]
 async fn forward_shard(
-    cluster: Arc<ClusterClient>,
+    cluster: Arc<Client>,
     tenant_id: String,
     namespace: String,
     stream: String,
     shard: u32,
-    client: Arc<Client>,
+    client: Arc<Connection>,
     subscription: Subscription,
     tx: mpsc::Sender<ShardEvent>,
     stop: Arc<AtomicBool>,

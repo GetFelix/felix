@@ -1456,7 +1456,7 @@ with `FLAG_BINARY_PUBLISH_ACKED`, and every `publish_idempotent`):
   broker stops reading that stream's publishes until one of its answers is
   written. Each stream has its own window, so a stream whose publishes wait
   on a stalled shard holds only its own slots, and the connection's other
-  streams keep publishing. The Rust `ClusterClient` puts each shard on a
+  streams keep publishing. The Rust `Client` puts each shard on a
   stream of its own (see below), which makes that true per shard. A broker says so by advertising
   `FEATURE_STREAM_PUBLISH_WINDOW` with the grant. A broker that predates that
   bit counts the window across the whole connection, and a client must share
@@ -1496,14 +1496,14 @@ unanswered publish on it as failed.
 **One stream per shard.** Request order and the window are both per stream,
 so shards that share a stream share a fate: a shard stuck on a quorum wait
 holds back answers the others have committed, then fills the window and stops
-the stream. The Rust `ClusterClient` therefore sends each publish on a stream
+the stream. The Rust `Client` therefore sends each publish on a stream
 that carries only its shard, opened on the shard's first publish on the same
 connection. It can, because it computes the shard of every publish to pick
 the owner: keyed, unkeyed (shard 0) and idempotent alike. Which shard stream
 a keyed publish rides is worked out from the width the client connection
 keeps for the stream, asked for (`StreamShards`) on its first keyed publish
 to it, never from a caller's own idea of the shard, so every path through
-one client (plain publishes, a `ClusterClient`, an idempotent producer) puts
+one client (plain publishes, a `Client`, an idempotent producer) puts
 a key on one writer. The width is kept until a publish is refused with
 `not_found`, since only a deleted stream can come back with another width;
 if it cannot be learned, every keyed publish to that stream goes on shard 0's
@@ -2113,7 +2113,7 @@ A forwarded write that the owner refused because its epoch was fenced reaches
 the client as `shard_unavailable` with reason `not_ready`, not `fenced`: the
 broker-to-broker answer does not say which. The class, `retry`, is the same.
 
-How the Rust `ClusterClient` acts on each class, including what it does with a
+How the Rust `Client` acts on each class, including what it does with a
 peer that sends no code, is in `docs/multi-node-client.md` under "Retries".
 
 ## Not-leader redirects
@@ -2149,11 +2149,11 @@ did not gets the `error` it always did, naming the owner in prose.
 
 A client following a redirect MUST bound its hops. A cluster mid-rebalance can
 name an owner that names another, and two brokers that disagree would otherwise
-bounce a client between them indefinitely. The Rust `ClusterClient` caps this at
+bounce a client between them indefinitely. The Rust `Client` caps this at
 three hops and refuses to visit the same broker twice within one attempt. It
 follows redirects for subscribes, cache watches and every group request; the
 Python, TypeScript, C and C# clients' group calls go through it. The single-broker Rust
-`Client` returns the redirect as `NotLeaderError` and does not follow it.
+`Connection` returns the redirect as `NotLeaderError` and does not follow it.
 
 **Publish is forwarded, not redirected.** The two paths made opposite
 choices deliberately: `docs/subscribe-routing.md` records the measurements
@@ -2201,17 +2201,17 @@ past `resume_from`; and records its queue dropped stay dropped, exactly as they
 would have without the move. Resumed that way, nothing is repeated and nothing
 is skipped that the subscriber would otherwise have received.
 
-The Rust `ClusterClient` does this on its own: a subscription from
-`ClusterClient::subscribe` and a cache watch from `ClusterClient::watch_cache`
+The Rust `Client` does this on its own: a subscription from
+`Client::subscribe` and a cache watch from `Client::watch_cache`
 follow their shard, and sharded subscriptions and watches report
 `ShardEvent::ShardMoved` and `ShardedCacheWatchItem::ShardMoved` and resume the
 shard. A cache watch resumes at `max(offset after the last change it
-delivered, resume_from)`. `Client` surfaces the frame as
+delivered, resume_from)`. `Connection` surfaces the frame as
 `Subscription::shard_moved` and `CacheWatchItem::ShardMoved` and leaves the
 resume to the caller.
 
 Deleting a stream ends its subscriptions with `stream_deleted` instead (see
-[StreamDeleted](#streamdeleted-server---client)). `Client` reports it as
+[StreamDeleted](#streamdeleted-server---client)). `Connection` reports it as
 `Subscription::stream_deleted`, `ClusterSubscription::stream_deleted` returns
 the same, and a sharded subscription reports `ShardEvent::StreamDeleted` for
 each shard and does not try to resubscribe it.

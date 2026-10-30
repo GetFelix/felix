@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
-use felix_client::{BrokerError, ClusterClient, IdempotentProducer, NotLeaderError, RetryClass};
+use felix_client::{BrokerError, Client, IdempotentProducer, NotLeaderError, RetryClass};
 use felix_wire::AckMode;
 
 use super::campaign::Campaign;
@@ -73,7 +73,7 @@ const RECENT_WINDOW: u64 = 256;
 /// How a client publishes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ClientKind {
-    /// `ClusterClient::publish`: never re-sent once it may have landed.
+    /// `Client::publish`: never re-sent once it may have landed.
     Plain,
     /// An idempotent producer, re-sent under the same sequence.
     Idempotent,
@@ -158,7 +158,7 @@ impl Workload {
 
     /// Run one client until [`Self::stop`].
     pub(super) async fn run_client(self: Arc<Self>, process: usize, kind: ClientKind, rng: Rng) {
-        let mut client = Client {
+        let mut client = Connection {
             workload: &self,
             process,
             kind,
@@ -350,7 +350,7 @@ impl Workload {
         list: &str,
         start: felix_client::StartPosition,
         deadline: tokio::time::Instant,
-    ) -> Result<(felix_client::Client, felix_client::Subscription)> {
+    ) -> Result<(felix_client::Connection, felix_client::Subscription)> {
         let client = tokio::time::timeout_at(
             deadline,
             client::connect(addr, &self.tenant_id, &self.token),
@@ -433,14 +433,14 @@ impl Recorder {
 }
 
 /// One client's loop.
-struct Client<'w> {
+struct Connection<'w> {
     workload: &'w Workload,
     process: usize,
     kind: ClientKind,
     rng: Rng,
 }
 
-impl Client<'_> {
+impl Connection<'_> {
     async fn run(&mut self) {
         let w = self.workload;
         while !w.stopped() {
@@ -459,7 +459,7 @@ impl Client<'_> {
     }
 
     /// Run operations over one connection until it looks dead or the run ends.
-    async fn run_connected(&mut self, cluster: &Arc<ClusterClient>, connected_to: &[SocketAddr]) {
+    async fn run_connected(&mut self, cluster: &Arc<Client>, connected_to: &[SocketAddr]) {
         let w = self.workload;
         let mut producer: Option<IdempotentProducer> = None;
         let mut failures = 0;
@@ -505,7 +505,7 @@ impl Client<'_> {
         let _ = tokio::time::timeout(SETTLE_SENDS_TIMEOUT, cluster.finish()).await;
     }
 
-    async fn append_plain(&mut self, cluster: &ClusterClient) -> bool {
+    async fn append_plain(&mut self, cluster: &Client) -> bool {
         let w = self.workload;
         let list = self.rng.pick(&w.lists).clone();
         let value = w.next_value.fetch_add(1, Ordering::Relaxed);
@@ -532,7 +532,7 @@ impl Client<'_> {
 
     async fn append_idempotent(
         &mut self,
-        cluster: &Arc<ClusterClient>,
+        cluster: &Arc<Client>,
         producer: &mut Option<IdempotentProducer>,
     ) -> bool {
         let w = self.workload;
@@ -670,7 +670,7 @@ impl Client<'_> {
     /// record. Recorded as an append too, so the list rules check its event.
     /// Never re-sent: a commit has no producer sequence to make a re-send
     /// safe.
-    async fn commit(&mut self, cluster: &ClusterClient) -> bool {
+    async fn commit(&mut self, cluster: &Client) -> bool {
         let w = self.workload;
         let list = self.rng.pick(&w.lists).clone();
         let value = w.next_value.fetch_add(1, Ordering::Relaxed);
@@ -705,7 +705,7 @@ impl Client<'_> {
 
     /// Read a list to its tail, then its state, then the list again from the
     /// state's version, and record all three for the partial-commit check.
-    async fn commit_read(&mut self, cluster: &ClusterClient) -> bool {
+    async fn commit_read(&mut self, cluster: &Client) -> bool {
         let w = self.workload;
         let list = self.rng.pick(&w.lists).clone();
         let addrs = w.addrs();

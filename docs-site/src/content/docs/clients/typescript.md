@@ -192,7 +192,7 @@ An option the client does not know, or an extra positional argument, throws a
 
 One reachable address is enough. The client discovers the rest of the cluster
 and will use brokers it was never told about. It is built on the Rust
-`ClusterClient`, so it works the same against a single broker.
+`Client`, so it works the same against a single broker.
 [Connecting to a cluster](#connecting-to-a-cluster) says what it does with
 several.
 
@@ -1239,10 +1239,10 @@ left out, and why:
   in flight holds the handle, so these need their own shared state. A
   follow-up is planned; a move still shows up as a `ShardMoved` item on a
   sharded subscription. A cache watch does expose `moves`, `reconnects`, `error` and `resume_from`.
-- **The single-connection `Client` and `Publisher` layer** (`topology`,
+- **The single-connection `Connection` and `Publisher` layer** (`topology`,
   `stream_routing`, `shard_owners`, `inspect_shard`, `supports_*`,
   `publish_batch_binary*`, `connect_with_transport`). The binding wraps
-  `ClusterClient`, which owns those connections and runs the feature checks
+  `Client`, which owns those connections and runs the feature checks
   itself.
 - **`hand_off_*` and `Handed` on the idempotent producer.** They hand back raw
   futures; `publish_batches` is the iterator-shaped equivalent.

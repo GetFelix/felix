@@ -10,10 +10,10 @@ use felix_wire::{ErrorCode, Message};
 use super::connections::{default_config, policy};
 use super::stub_broker::StubBroker;
 use crate::CommitOp;
-use crate::cluster::ClusterClient;
+use crate::cluster::Client;
 
 /// A stub that answers `code` to its first request and serves the rest.
-async fn refuses_once(code: ErrorCode) -> Result<(StubBroker, ClusterClient)> {
+async fn refuses_once(code: ErrorCode) -> Result<(StubBroker, Client)> {
     let calls = Arc::new(AtomicUsize::new(0));
     let (broker, cert) = StubBroker::start(move |_| {
         if calls.fetch_add(1, Ordering::SeqCst) == 0 {
@@ -30,13 +30,9 @@ async fn refuses_once(code: ErrorCode) -> Result<(StubBroker, ClusterClient)> {
             }
         }
     })?;
-    let cluster = ClusterClient::connect_with_policy(
-        &[broker.addr],
-        "localhost",
-        default_config(cert)?,
-        policy(),
-    )
-    .await?;
+    let cluster =
+        Client::connect_with_policy(&[broker.addr], "localhost", default_config(cert)?, policy())
+            .await?;
     Ok((broker, cluster))
 }
 

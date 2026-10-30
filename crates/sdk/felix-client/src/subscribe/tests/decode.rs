@@ -4,7 +4,7 @@ use felix_transport::{QuicServer, TransportConfig};
 use felix_wire::{FrameHeader, Message};
 use tokio::time::{Duration, timeout};
 
-use crate::Client;
+use crate::Connection;
 use crate::frame_io::{read_message, write_message};
 use crate::test_support::{
     build_client_config_with_overrides, build_server_config, set_client_env,
@@ -94,7 +94,7 @@ async fn subscription_binary_batch_mismatched_id_errors() -> Result<()> {
         Ok::<(), anyhow::Error>(())
     });
 
-    let client = Client::connect_with_transport(
+    let client = Connection::connect_with_transport(
         addr,
         "localhost",
         build_client_config_with_overrides(cert, 1)?,
@@ -198,7 +198,7 @@ async fn subscription_decode_error_on_invalid_frame() -> Result<()> {
         Ok::<(), anyhow::Error>(())
     });
 
-    let client = Client::connect_with_transport(
+    let client = Connection::connect_with_transport(
         addr,
         "localhost",
         build_client_config_with_overrides(cert, 1)?,
@@ -323,7 +323,7 @@ async fn subscription_legacy_event_paths_and_unexpected_message_error() -> Resul
         Ok::<(), anyhow::Error>(())
     });
 
-    let client = Client::connect_with_transport(
+    let client = Connection::connect_with_transport(
         addr,
         "localhost",
         build_client_config_with_overrides(cert, 1)?,
@@ -445,7 +445,7 @@ async fn subscription_binary_batch_decode_error_on_invalid_payload() -> Result<(
         Ok::<(), anyhow::Error>(())
     });
 
-    let client = Client::connect_with_transport(
+    let client = Connection::connect_with_transport(
         addr,
         "localhost",
         build_client_config_with_overrides(cert, 1)?,
@@ -553,7 +553,7 @@ async fn subscription_binary_batch_success_records_decode_timing() -> Result<()>
         Ok::<(), anyhow::Error>(())
     });
 
-    let client = Client::connect_with_transport(
+    let client = Connection::connect_with_transport(
         addr,
         "localhost",
         build_client_config_with_overrides(cert, 1)?,
@@ -687,7 +687,7 @@ async fn ended_by(last: Message) -> Result<crate::Subscription> {
         Ok::<(), anyhow::Error>(())
     });
 
-    let client = Client::connect_with_transport(
+    let client = Connection::connect_with_transport(
         addr,
         "localhost",
         build_client_config_with_overrides(cert, 1)?,
@@ -789,7 +789,7 @@ async fn a_skip_count_reaches_the_first_event_of_its_batch() -> Result<()> {
         Ok::<(), anyhow::Error>(())
     });
 
-    let client = Client::connect_with_transport(
+    let client = Connection::connect_with_transport(
         addr,
         "localhost",
         build_client_config_with_overrides(cert, 1)?,

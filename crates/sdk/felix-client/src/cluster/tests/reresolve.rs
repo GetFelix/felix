@@ -18,7 +18,7 @@ use super::connections::{default_config, policy};
 use super::stub_broker::StubBroker;
 use crate::cluster::nodes::Nodes;
 use crate::cluster::seeds::{Dns, LOOKUP_TIMEOUT, Lookup, RESOLVE_AGAIN_AFTER, Seeds};
-use crate::cluster::{ClusterClient, Seed};
+use crate::cluster::{Client, Seed};
 use crate::test_support::build_server_config;
 
 const NAME: &str = "brokers.test:5000";
@@ -86,7 +86,7 @@ fn publish_ok(id: u64) -> Message {
     }
 }
 
-async fn publish(cluster: &ClusterClient, payload: &[u8]) -> Result<Option<u64>> {
+async fn publish(cluster: &Client, payload: &[u8]) -> Result<Option<u64>> {
     cluster
         .publish_at_least_once(
             "t1",
@@ -109,7 +109,7 @@ async fn a_name_is_resolved_again_when_every_broker_has_moved() -> Result<()> {
     let dns = Arc::new(FakeDns::default());
     dns.point(NAME, vec![old.addr]);
 
-    let cluster = ClusterClient::connect_resolving(
+    let cluster = Client::connect_resolving(
         &[NAME.parse()?],
         "localhost",
         default_config(cert)?,
@@ -144,7 +144,7 @@ async fn reconnects_against_a_dead_cluster_share_a_lookup() -> Result<()> {
     let old = StubBroker::start_with(server_config, publish_ok)?;
     let dns = Arc::new(FakeDns::default());
     dns.point(NAME, vec![old.addr]);
-    let cluster = ClusterClient::connect_resolving(
+    let cluster = Client::connect_resolving(
         &[NAME.parse()?],
         "localhost",
         default_config(cert)?,
@@ -269,7 +269,7 @@ async fn a_hanging_lookup_neither_holds_the_client_nor_hides_other_names() -> Re
     dns.point(NAME, vec![old.addr]);
     dns.point(HANGS, vec![old.addr]);
     let cluster = Arc::new(
-        ClusterClient::connect_resolving(
+        Client::connect_resolving(
             &[HANGS.parse()?, NAME.parse()?],
             "localhost",
             default_config(cert)?,
@@ -448,7 +448,7 @@ async fn a_failed_token_fetch_ends_the_reconnect_without_a_second_fetch() -> Res
         fetches: Arc::clone(&fetches),
         failing: Arc::clone(&failing),
     }));
-    let cluster = ClusterClient::connect_resolving(
+    let cluster = Client::connect_resolving(
         &[NAME.parse()?],
         "localhost",
         config,

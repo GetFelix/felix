@@ -74,7 +74,7 @@ been attempted too many times.
 producer takes an id from the broker and numbers its batches, and a batch
 re-sent after a lost acknowledgement lands once: the shard's leader answers a
 sequence it already holds rather than appending it again. That closes the
-ambiguous-outcome gap on the publish side (`ClusterClient::idempotent_producer`,
+ambiguous-outcome gap on the publish side (`Client::idempotent_producer`,
 negotiated as `FEATURE_IDEMPOTENT_PRODUCER`). On a durable stream the
 sequences are stored in the log with the records and replicated with them, so a
 re-send is answered the same way after a failover, a planned move or a restart;
@@ -751,13 +751,13 @@ and clients see less of it than of one:
   (2 s) refuses one, as `shard_unavailable` with reason `moving`, unwritten.
 - **Cache and counter operations are held and forwarded** the same way.
   Consumer-group operations are held and then redirected to the new owner,
-  which `ClusterClient`'s group calls (and the Python, TypeScript, C and C# clients')
+  which `Client`'s group calls (and the Python, TypeScript, C and C# clients')
   follow.
 - **Subscriptions follow.** The old leader delivers what it committed, then
-  ends each subscription with `shard_moved`. A `ClusterClient` subscription
+  ends each subscription with `shard_moved`. A `Client` subscription
   resumes on the new owner with nothing repeated or skipped. A cache watch
-  gets the same frame: a `ClusterClient` watch follows the shard, and a
-  `Client` watch must be reopened by the caller.
+  gets the same frame: a `Client` watch follows the shard, and a
+  `Connection` watch must be reopened by the caller.
 - **Nothing acknowledged is lost.** Group positions, dead letters, counters
   and idempotent producers' sequences move with the shard.
 

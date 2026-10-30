@@ -11,7 +11,7 @@ use felix_broker_service::observability::timings as broker_timings;
 use felix_broker_service::serving::auth::{BrokerAuth, demo::demo_auth_for_tenant};
 use felix_broker_service::serving::quic;
 use felix_client::timings as client_timings;
-use felix_client::{Client, ClientConfig};
+use felix_client::{ClientConfig, Connection};
 use felix_storage::EphemeralCache;
 use felix_transport::{QuicServer, TransportConfig};
 use futures::StreamExt;
@@ -59,7 +59,7 @@ async fn run_demo(mut bench: BenchConfig) -> Result<()> {
 
     println!("Step 2/4: connecting QUIC client.");
     let client_config = apply_demo_auth(build_client_config(cert)?, auth_override);
-    let client = Client::connect(addr, "localhost", client_config).await?;
+    let client = Connection::connect(addr, "localhost", client_config).await?;
 
     println!("Step 3/4: running cache benchmarks.");
     if config.disable_timings {
@@ -288,7 +288,7 @@ fn percentile_ns_to_us(values: &mut [u64], percentile: f64) -> f64 {
 }
 
 async fn run_payload_suite(
-    client: &Client,
+    client: &Connection,
     payload_size: usize,
     bench: &BenchConfig,
 ) -> Result<()> {
@@ -341,7 +341,7 @@ async fn run_payload_suite(
 }
 
 async fn prepopulate_hits(
-    client: &Client,
+    client: &Connection,
     payload_size: usize,
     count: usize,
     ttl_ms: Option<u64>,
@@ -356,7 +356,7 @@ async fn prepopulate_hits(
     Ok(())
 }
 
-async fn validate_hit_payload(client: &Client, payload_size: usize) -> Result<()> {
+async fn validate_hit_payload(client: &Connection, payload_size: usize) -> Result<()> {
     let key = format!("hit-{payload_size}-0");
     let value = client
         .cache_get("t1", "default", "primary", &key)
@@ -398,7 +398,7 @@ fn make_payload(payload_size: usize, key_index: usize, op_index: usize) -> Bytes
 }
 
 async fn bench_puts(
-    client: &Client,
+    client: &Connection,
     payload_size: usize,
     bench: &BenchConfig,
     ttl_ms: Option<u64>,
@@ -464,7 +464,7 @@ async fn bench_puts(
 }
 
 async fn bench_get_hits(
-    client: &Client,
+    client: &Connection,
     payload_size: usize,
     bench: &BenchConfig,
 ) -> Result<BenchStats> {
@@ -522,7 +522,7 @@ async fn bench_get_hits(
 }
 
 async fn bench_get_misses(
-    client: &Client,
+    client: &Connection,
     payload_size: usize,
     bench: &BenchConfig,
 ) -> Result<BenchStats> {
@@ -713,7 +713,7 @@ fn print_stats(label: &str, stats: &BenchStats) {
     );
 }
 
-async fn run_ttl_check(client: &Client) -> Result<()> {
+async fn run_ttl_check(client: &Connection) -> Result<()> {
     client
         .cache_put(
             "t1",

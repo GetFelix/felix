@@ -47,7 +47,7 @@ use writer::PublishRequest;
 
 /// Publishes to one broker over the client's pool of publish streams.
 ///
-/// Cheap to clone; clones share the pool. Built by [`crate::Client::publisher`].
+/// Cheap to clone; clones share the pool. Built by [`crate::Connection::publisher`].
 #[derive(Clone)]
 pub struct Publisher {
     pub(crate) inner: Arc<PublisherInner>,
@@ -762,8 +762,8 @@ impl Publisher {
     /// forwarded the batch rather than owning it.
     ///
     /// Internal because the owner is only useful to something that can act on
-    /// it -- `ClusterClient`, which holds connections to more than one broker.
-    /// A `Client` speaks to one and has nowhere else to send the next batch.
+    /// it -- `Client`, which holds connections to more than one broker.
+    /// A `Connection` speaks to one and has nowhere else to send the next batch.
     pub(crate) async fn publish_reporting_owner(
         &self,
         tenant_id: &str,
@@ -801,7 +801,7 @@ impl Publisher {
 
     /// [`Publisher::publish_batch_keyed`], reporting the shard's owner when
     /// this broker forwarded the batch rather than owning it. `shard` is the
-    /// one the key resolves to under `width`, the `ClusterClient`'s, which the
+    /// one the key resolves to under `width`, the `Client`'s, which the
     /// batch is routed and declared by (see [`Self::route_by`]). The records
     /// all resolve to `shard`; the batch goes as one frame on that shard's own
     /// stream (or the pool, past the per-shard stream cap).
@@ -843,7 +843,7 @@ impl Publisher {
         .await
     }
 
-    /// [`Self::publish_batch_on_shard`] for a `ClusterClient`, which already
+    /// [`Self::publish_batch_on_shard`] for a `Client`, which already
     /// picked the broker by `shard`.
     pub(crate) async fn publish_on_shard_reporting_owner(
         &self,
@@ -1026,7 +1026,7 @@ pub(crate) const IDEMPOTENT_PIPELINE_MAX: usize = 64;
 pub(crate) struct Acked {
     /// The shard's owner, when the broker that answered forwarded the batch.
     ///
-    /// It travels back so `ClusterClient` can send the next batch for this
+    /// It travels back so `Client` can send the next batch for this
     /// shard straight there. A forward is correct but costs a decrypt, a
     /// re-encrypt and a decrypt, roughly half the throughput per core (#536).
     pub(crate) forwarded_to: Option<felix_wire::binary::PublishOwner>,

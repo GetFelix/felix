@@ -1,6 +1,6 @@
-//! Several principals over one client's connections (`Client::with_identity`).
+//! Several principals over one client's connections (`Connection::with_identity`).
 //!
-//! A gateway holds one `Client` and acts for each of its users through a
+//! A gateway holds one `Connection` and acts for each of its users through a
 //! handle that shares the connections. What has to hold is that the broker
 //! still checks every request against the token of the user it is for: one
 //! user's grants never cover another's publish, subscribe, cache or group
@@ -24,7 +24,7 @@ use felix_authz::{
 };
 use felix_broker::{Broker, CacheMetadata, StreamMetadata};
 use felix_broker_service::serving::{auth::BrokerAuth, quic};
-use felix_client::{Client, ClientConfig, Subscription, TokenFuture, TokenProvider};
+use felix_client::{ClientConfig, Connection, Subscription, TokenFuture, TokenProvider};
 use felix_storage::LogCache;
 use felix_storage::log::{FsyncMode, LogConfig};
 use felix_transport::{QuicServer, TransportConfig};
@@ -183,11 +183,11 @@ impl Running {
 
     /// The gateway's own client, on a connection-only token: no permissions,
     /// as the control plane mints for a gateway that delegates.
-    async fn gateway(&self) -> Result<Client> {
+    async fn gateway(&self) -> Result<Connection> {
         self.gateway_with(|_| {}).await
     }
 
-    async fn gateway_with(&self, tune: impl FnOnce(&mut ClientConfig)) -> Result<Client> {
+    async fn gateway_with(&self, tune: impl FnOnce(&mut ClientConfig)) -> Result<Connection> {
         let mut roots = RootCertStore::empty();
         roots.add(self.cert.clone())?;
         let mut config = ClientConfig::from_env_or_yaml(
@@ -203,10 +203,10 @@ impl Running {
         // A poll right after an acked publish must see it.
         config.ack_on_commit = true;
         tune(&mut config);
-        Client::connect(self.addr, "localhost", config).await
+        Connection::connect(self.addr, "localhost", config).await
     }
 
-    async fn user(&self, gateway: &Client, user: &str) -> Result<Client> {
+    async fn user(&self, gateway: &Connection, user: &str) -> Result<Connection> {
         gateway.with_identity_token(TENANT, self.token(user)?).await
     }
 }
@@ -257,7 +257,7 @@ impl TokenProvider for UserTokens {
     }
 }
 
-async fn publish(client: &Client, stream: &str, payload: &str) -> Result<()> {
+async fn publish(client: &Connection, stream: &str, payload: &str) -> Result<()> {
     client
         .publisher()
         .await?
@@ -564,7 +564,8 @@ const CEILING_REFUSAL: &str = "across identities";
 /// slots run out, and her later publishes stay queued with their bytes held.
 /// Publishes are acknowledged on enqueue (`FELIX_ACK_ON_COMMIT=0`), so each
 /// refusal is the admission check answering, immediately.
-async fn alice_at_her_byte_budget() -> Result<(Running, Client, Client, Client, Subscription)> {
+async fn alice_at_her_byte_budget()
+-> Result<(Running, Connection, Connection, Connection, Subscription)> {
     let mut config = felix_broker_service::config::BrokerConfig::from_env()?;
     config.pub_conn_inflight_bytes = IDENTITY_BUDGET;
     config.pub_conn_total_inflight_bytes = Some(CONN_CEILING);
@@ -616,7 +617,7 @@ async fn alice_at_her_byte_budget() -> Result<(Running, Client, Client, Client, 
     Ok((running, gateway, alice, bob, stalled))
 }
 
-async fn publish_bytes(client: &Client, stream: &str, len: usize) -> Result<()> {
+async fn publish_bytes(client: &Connection, stream: &str, len: usize) -> Result<()> {
     client
         .publisher()
         .await?

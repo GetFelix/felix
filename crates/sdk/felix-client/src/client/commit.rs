@@ -1,5 +1,5 @@
 //! Atomic commits, conditional publishes and state reads through a
-//! [`Client`].
+//! [`Connection`].
 
 use std::sync::atomic::Ordering;
 
@@ -7,10 +7,10 @@ use anyhow::Result;
 use bytes::Bytes;
 use felix_wire::{Message, PublishRefusalReason};
 
-use super::Client;
+use super::Connection;
 use crate::commit::{CommitError, CommitOp, CommitReceipt, StateValue, prepare};
 
-impl Client {
+impl Connection {
     /// Commit `ops` on the shard `entity_key` routes to, as one record.
     ///
     /// Every reader sees all of it or none of it: the event at the commit's
@@ -19,7 +19,7 @@ impl Client {
     /// [`CommitError`] before anything is sent.
     ///
     /// Bound to this broker: a shard led elsewhere is refused with a
-    /// [`crate::NotLeaderError`], which a [`crate::ClusterClient`] follows.
+    /// [`crate::NotLeaderError`], which a [`crate::Client`] follows.
     pub async fn commit(
         &self,
         tenant_id: &str,
@@ -176,7 +176,7 @@ impl Client {
     /// `expected_offset` to learn whether it landed.
     ///
     /// Bound to this broker: a shard led elsewhere is refused with a
-    /// [`crate::NotLeaderError`], which a [`crate::ClusterClient`] follows.
+    /// [`crate::NotLeaderError`], which a [`crate::Client`] follows.
     /// Fails without sending anything when the broker did not advertise
     /// [`felix_wire::FEATURE_PUBLISH_CONDITIONAL`].
     pub async fn publish_if(

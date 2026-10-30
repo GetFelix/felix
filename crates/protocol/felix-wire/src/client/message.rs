@@ -496,7 +496,7 @@ pub enum Message {
         /// A subscription reads **one** shard. A stream's shards can have
         /// different owners, and a subscription is bound to one connection to
         /// one broker, so reading a whole multi-shard stream means one
-        /// subscription per shard. `ClusterClient::subscribe_sharded` opens one
+        /// subscription per shard. `Client::subscribe_sharded` opens one
         /// per shard and merges them.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         shard: Option<u32>,

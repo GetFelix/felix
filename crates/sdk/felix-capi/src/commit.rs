@@ -12,7 +12,7 @@ use std::ptr;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use felix_client::{ClusterClient, CommitError, CommitOp, ConditionalWrite, StateValue};
+use felix_client::{Client, CommitError, CommitOp, ConditionalWrite, StateValue};
 
 use crate::boundary::{Failure, guard, required_str};
 use crate::cancel::{FelixCancelToken, user_token};
@@ -205,7 +205,7 @@ impl Deliver for State {
 
 /// The tenant and namespace of a call, with the client it goes through.
 struct Scope {
-    inner: Arc<ClusterClient>,
+    inner: Arc<Client>,
     tenant_id: String,
     ns: String,
 }

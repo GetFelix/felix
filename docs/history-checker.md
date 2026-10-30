@@ -249,7 +249,7 @@ with proxied links when it may pick a link fault, and with
 pick a disk fault, so a failed fsync can fail an acknowledgement rather than
 happen behind one.
 
-- **Plain clients** use `ClusterClient::publish`, which never re-sends a publish
+- **Plain clients** use `Client::publish`, which never re-sends a publish
   that may have landed. Only these clients ever record a definite failure, so
   they are what exercise rule 6.
 - **Idempotent clients** re-send the same batch under the same sequence, up to
@@ -386,7 +386,7 @@ Reads stop at the tail they were given, so they cannot tell a record that
 was never delivered from one that was not there yet. Rules 9 to 11 need a
 reader that stays. Once the bases are set, the campaign starts one subscriber
 per list (`history/subscriber.rs`), subscribed with
-`ClusterClient::subscribe_from` at the list's base, and leaves it running
+`Client::subscribe_from` at the list's base, and leaves it running
 until the end. Every event it is delivered is recorded with its offset and
 `skipped_before`.
 

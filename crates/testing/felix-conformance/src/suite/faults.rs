@@ -2,9 +2,9 @@
 //! through a [`link::Interposer`] in front of the in-process broker.
 //!
 //! Each scenario runs twice for a subscribe step: once through
-//! `ClusterClient`, which should resume, and once through a plain `Client`,
+//! `Client`, which should resume, and once through a plain `Connection`,
 //! which has nowhere to resume to and must report the loss. A publish step runs
-//! through `ClusterClient` only, since a plain `Client` cannot reconnect and
+//! through `Client` only, since a plain `Connection` cannot reconnect and
 //! "publishes again afterwards" is part of the bar; it runs a second time with
 //! an idempotent producer pipelining its batches, which must land every record
 //! exactly once. They all run at once, each on a stream and an interposer of
@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use felix_broker::{Broker, CacheMetadata, StreamMetadata};
-use felix_client::{Client, ClientConfig, ClusterClient, ClusterSubscription, Event, Subscription};
+use felix_client::{Client, ClientConfig, ClusterSubscription, Connection, Event, Subscription};
 use felix_conformance::kit::{self, FaultScenario, Phase};
 use felix_conformance::link::{Interposer, LinkFault};
 use felix_wire::{AckMode, StartPosition};
@@ -40,7 +40,7 @@ const SETTLE: Duration = Duration::from_secs(45);
 enum Via {
     Cluster,
     Plain,
-    /// An idempotent producer on `ClusterClient`, with a window of batches in
+    /// An idempotent producer on `Client`, with a window of batches in
     /// flight when the fault lands.
     Pipelined,
 }
@@ -122,7 +122,7 @@ async fn run_case(
     config: ClientConfig,
 ) -> Result<&'static str> {
     let link = Interposer::start(broker_addr).await?;
-    let direct = Client::connect(broker_addr, "localhost", config.clone()).await?;
+    let direct = Connection::connect(broker_addr, "localhost", config.clone()).await?;
     match case.step.during {
         Phase::Publish if matches!(via, Via::Pipelined) => {
             pipelined_case(case, &link, &direct, stream, config).await
@@ -145,7 +145,7 @@ async fn cache_case(
 ) -> Result<&'static str> {
     let step = &case.step;
     let hold = Duration::from_millis(step.hold_ms);
-    let cluster = ClusterClient::connect(&[link.addr()], "localhost", config).await?;
+    let cluster = Client::connect(&[link.addr()], "localhost", config).await?;
     let counter = format!("{}-count", case.id);
     let mut acked = Vec::new();
     let (mut added, mut errors) = (0i64, 0);
@@ -217,13 +217,13 @@ async fn cache_case(
 async fn publish_case(
     case: &FaultScenario,
     link: &Interposer,
-    direct: &Client,
+    direct: &Connection,
     stream: &str,
     config: ClientConfig,
 ) -> Result<&'static str> {
     let step = &case.step;
     let hold = Duration::from_millis(step.hold_ms);
-    let cluster = ClusterClient::connect(&[link.addr()], "localhost", config).await?;
+    let cluster = Client::connect(&[link.addr()], "localhost", config).await?;
     let mut acked = Vec::new();
     let mut errors = 0;
     let mut healed_at = None;
@@ -313,13 +313,13 @@ async fn publish_case(
 async fn pipelined_case(
     case: &FaultScenario,
     link: &Interposer,
-    direct: &Client,
+    direct: &Connection,
     stream: &str,
     config: ClientConfig,
 ) -> Result<&'static str> {
     let step = &case.step;
     let hold = Duration::from_millis(step.hold_ms);
-    let cluster = Arc::new(ClusterClient::connect(&[link.addr()], "localhost", config).await?);
+    let cluster = Arc::new(Client::connect(&[link.addr()], "localhost", config).await?);
     let producer = cluster.idempotent_producer().await?;
     let mut published = Vec::new();
     let mut errors = 0;
@@ -398,7 +398,7 @@ async fn subscribe_case(
     case: &FaultScenario,
     via: Via,
     link: &Interposer,
-    direct: &Client,
+    direct: &Connection,
     stream: &str,
     config: ClientConfig,
 ) -> Result<&'static str> {
@@ -407,13 +407,12 @@ async fn subscribe_case(
     // Held for the whole case: dropping a client closes its connections.
     let (_cluster, _plain, mut reader) = match via {
         Via::Cluster => {
-            let cluster =
-                Arc::new(ClusterClient::connect(&[link.addr()], "localhost", config).await?);
+            let cluster = Arc::new(Client::connect(&[link.addr()], "localhost", config).await?);
             let subscription = cluster.subscribe(TENANT, NAMESPACE, stream).await?;
             (Some(cluster), None, Reader::Cluster(subscription))
         }
         Via::Plain | Via::Pipelined => {
-            let client = Client::connect(link.addr(), "localhost", config).await?;
+            let client = Connection::connect(link.addr(), "localhost", config).await?;
             let subscription = client.subscribe(TENANT, NAMESPACE, stream).await?;
             (None, Some(client), Reader::Plain(subscription))
         }

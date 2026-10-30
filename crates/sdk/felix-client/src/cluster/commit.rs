@@ -9,13 +9,13 @@ use anyhow::Result;
 use felix_wire::ErrorCode;
 
 use super::retry::Pace;
-use super::{ClusterClient, ShardKey};
+use super::{Client, ShardKey};
 use crate::BrokerError;
 use crate::ConditionalWrite;
-use crate::client::Client;
+use crate::client::Connection;
 use crate::commit::{CommitOp, CommitReceipt, StateValue, prepare};
 
-impl ClusterClient {
+impl Client {
     /// [`Self::follow_shard`], run again after a backoff when a broker
     /// answers a coded `not_leader`, as a plain publish is.
     ///
@@ -26,7 +26,7 @@ impl ClusterClient {
     /// returned as it came. Bounded by the policy's attempts and deadline.
     async fn on_write_shard<T, F, Fut>(&self, key: ShardKey, op: F) -> Result<T>
     where
-        F: Fn(Arc<Client>) -> Fut,
+        F: Fn(Arc<Connection>) -> Fut,
         Fut: Future<Output = Result<T>>,
     {
         let mut pace = Pace::new(&self.policy);
@@ -46,7 +46,7 @@ impl ClusterClient {
         }
     }
 
-    /// [`crate::Client::commit`], on whichever broker leads the shard
+    /// [`crate::Connection::commit`], on whichever broker leads the shard
     /// `entity_key` routes to. A commit is never forwarded between brokers;
     /// this follows the leader's redirect instead.
     pub async fn commit(
@@ -73,7 +73,7 @@ impl ClusterClient {
         .await
     }
 
-    /// [`crate::Client::commit_if`], on whichever broker leads the shard
+    /// [`crate::Connection::commit_if`], on whichever broker leads the shard
     /// `entity_key` routes to.
     pub async fn commit_if(
         &self,
@@ -104,7 +104,7 @@ impl ClusterClient {
         .await
     }
 
-    /// [`crate::Client::publish_if`], on whichever broker leads the shard
+    /// [`crate::Connection::publish_if`], on whichever broker leads the shard
     /// `key` routes to. Never forwarded between brokers; this follows the
     /// leader's redirect instead.
     pub async fn publish_if(
@@ -145,7 +145,7 @@ impl ClusterClient {
         .await
     }
 
-    /// [`crate::Client::state_get`], on whichever broker leads the shard.
+    /// [`crate::Connection::state_get`], on whichever broker leads the shard.
     pub async fn state_get(
         &self,
         tenant_id: &str,
@@ -180,7 +180,7 @@ impl ClusterClient {
         .await
     }
 
-    /// [`crate::Client::commit_on_shard`], on whichever broker leads `shard`.
+    /// [`crate::Connection::commit_on_shard`], on whichever broker leads `shard`.
     /// The named shard picks the leader, as the entity key's shard does for
     /// [`Self::commit`].
     pub async fn commit_on_shard(
@@ -206,7 +206,7 @@ impl ClusterClient {
         .await
     }
 
-    /// [`crate::Client::commit_if_on_shard`], on whichever broker leads
+    /// [`crate::Connection::commit_if_on_shard`], on whichever broker leads
     /// `shard`.
     pub async fn commit_if_on_shard(
         &self,
@@ -239,7 +239,7 @@ impl ClusterClient {
         .await
     }
 
-    /// [`crate::Client::publish_if_on_shard`], on whichever broker leads
+    /// [`crate::Connection::publish_if_on_shard`], on whichever broker leads
     /// `shard`.
     pub async fn publish_if_on_shard(
         &self,
@@ -276,7 +276,7 @@ impl ClusterClient {
         .await
     }
 
-    /// [`crate::Client::state_get_on_shard`], on whichever broker leads
+    /// [`crate::Connection::state_get_on_shard`], on whichever broker leads
     /// `shard`.
     pub async fn state_get_on_shard(
         &self,

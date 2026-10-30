@@ -9,8 +9,8 @@ use bytes::Bytes;
 use felix_wire::{AckMode, Message};
 
 use super::stub_broker::{STREAM_SHARDS, StubBroker};
-use crate::ClusterClient;
-use crate::client::Client;
+use crate::Client;
+use crate::client::Connection;
 use crate::test_support::build_client_config_with_overrides;
 
 fn ok(request_id: u64) -> Message {
@@ -31,7 +31,7 @@ fn moving_key(new_width: u32) -> Bytes {
         .expect("a key that moves")
 }
 
-/// **A `ClusterClient` drops its width on `stale_width`.** It picks the
+/// **A `Client` drops its width on `stale_width`.** It picks the
 /// broker by the shard, so a width it kept would send keys that now share a
 /// shard through two brokers, and so two writers.
 #[tokio::test]
@@ -39,7 +39,7 @@ fn moving_key(new_width: u32) -> Bytes {
 async fn a_cluster_client_drops_a_stale_width() -> Result<()> {
     let (broker, cert) = StubBroker::start(ok)?;
     broker.check_widths();
-    let cluster = ClusterClient::connect(
+    let cluster = Client::connect(
         &[broker.addr],
         "localhost",
         build_client_config_with_overrides(cert, 1)?,
@@ -85,7 +85,7 @@ async fn a_producer_drops_a_stale_width_and_numbers_afresh() -> Result<()> {
     let (broker, cert) = StubBroker::start(ok)?;
     broker.check_widths();
     let cluster = Arc::new(
-        ClusterClient::connect(
+        Client::connect(
             &[broker.addr],
             "localhost",
             build_client_config_with_overrides(cert, 1)?,
@@ -128,7 +128,7 @@ async fn a_producer_drops_a_stale_width_and_numbers_afresh() -> Result<()> {
 async fn re_asks_share_one_stream() -> Result<()> {
     let (broker, cert) = StubBroker::start(ok)?;
     broker.check_widths();
-    let client = Client::connect(
+    let client = Connection::connect(
         broker.addr,
         "localhost",
         build_client_config_with_overrides(cert, 1)?,
@@ -154,7 +154,7 @@ async fn re_asks_share_one_stream() -> Result<()> {
 async fn a_stale_cluster_width_is_refused_not_taken() -> Result<()> {
     let (broker, cert) = StubBroker::start(ok)?;
     broker.check_widths();
-    let cluster = ClusterClient::connect(
+    let cluster = Client::connect(
         &[broker.addr],
         "localhost",
         build_client_config_with_overrides(cert, 1)?,
@@ -218,7 +218,7 @@ async fn a_flapping_width_never_reuses_a_producer_sequence() -> Result<()> {
     let (broker, cert) = StubBroker::start(ok)?;
     broker.check_widths();
     let cluster = Arc::new(
-        ClusterClient::connect(
+        Client::connect(
             &[broker.addr],
             "localhost",
             build_client_config_with_overrides(cert, 1)?,
@@ -262,7 +262,7 @@ async fn a_thousand_re_asks_overlap() -> Result<()> {
     let (broker, cert) = StubBroker::start(ok)?;
     broker.check_widths();
     broker.delay_widths(20);
-    let client = Client::connect(
+    let client = Connection::connect(
         broker.addr,
         "localhost",
         build_client_config_with_overrides(cert, 1)?,
@@ -299,7 +299,7 @@ async fn a_thousand_re_asks_overlap() -> Result<()> {
 #[serial_test::serial]
 async fn a_cluster_client_re_asks_even_against_an_older_broker() -> Result<()> {
     let (broker, cert) = StubBroker::start(ok)?;
-    let cluster = ClusterClient::connect(
+    let cluster = Client::connect(
         &[broker.addr],
         "localhost",
         build_client_config_with_overrides(cert, 1)?,
@@ -343,7 +343,7 @@ async fn an_owner_from_another_width_is_replaced() -> Result<()> {
     let (server_config, cert) = crate::test_support::build_server_config()?;
     let entry = StubBroker::start_with(server_config.clone(), ok)?;
     let owner = StubBroker::start_with(server_config, ok)?;
-    let cluster = ClusterClient::connect(
+    let cluster = Client::connect(
         &[entry.addr],
         "localhost",
         build_client_config_with_overrides(cert, 1)?,
@@ -404,7 +404,7 @@ async fn an_owner_from_another_width_is_replaced() -> Result<()> {
 }
 
 async fn owner_width(
-    cluster: &ClusterClient,
+    cluster: &Client,
     shard: &crate::cluster::ShardKey,
 ) -> Option<(u32, felix_wire::routing::ShardRouting)> {
     cluster
@@ -441,7 +441,7 @@ async fn a_batch_in_doubt_keeps_its_width_and_id_through_a_flap() -> Result<()> 
     let (broker, cert) = StubBroker::start(script)?;
     broker.check_widths();
     let client = Arc::new(
-        Client::connect(
+        Connection::connect(
             broker.addr,
             "localhost",
             build_client_config_with_overrides(cert, 1)?,
@@ -505,7 +505,7 @@ async fn abandoning_a_batch_in_doubt_lets_the_stream_go_on() -> Result<()> {
     let (broker, cert) = StubBroker::start(script)?;
     broker.check_widths();
     let client = Arc::new(
-        Client::connect(
+        Connection::connect(
             broker.addr,
             "localhost",
             build_client_config_with_overrides(cert, 1)?,

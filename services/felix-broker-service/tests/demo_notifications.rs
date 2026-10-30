@@ -9,7 +9,7 @@ use ed25519_dalek::SigningKey as Ed25519SigningKey;
 use felix_authz::{FelixTokenIssuer, Jwks, TenantId, TenantKeyCache, TenantKeyMaterial};
 use felix_broker::{Broker, CacheMetadata, StreamMetadata};
 use felix_broker_service::serving::{auth::BrokerAuth, quic};
-use felix_client::{Client, ClientConfig};
+use felix_client::{ClientConfig, Connection};
 use felix_storage::EphemeralCache;
 use felix_transport::{QuicServer, TransportConfig};
 use felix_wire::AckMode;
@@ -198,9 +198,9 @@ async fn build_client_for_tenant(
     addr: std::net::SocketAddr,
     tenant: &str,
     tokens: &HashMap<String, String>,
-) -> Result<Client> {
+) -> Result<Connection> {
     let mut config = build_client_config(cert.clone())?;
     config.auth_tenant_id = Some(tenant.to_string());
     config.auth_token = tokens.get(tenant).cloned();
-    Client::connect(addr, "localhost", config).await
+    Connection::connect(addr, "localhost", config).await
 }

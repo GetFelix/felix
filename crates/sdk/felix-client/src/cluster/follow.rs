@@ -20,8 +20,8 @@ use felix_wire::StartPosition;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
-use super::{Attempt, ClusterClient, Next, next_step, wants_reconnect};
-use crate::client::Client;
+use super::{Attempt, Client, Next, next_step, wants_reconnect};
+use crate::client::Connection;
 use crate::subscribe::{Event, ShardMoved, Subscription};
 use crate::{SubscriptionLagged, SubscriptionLost};
 
@@ -53,13 +53,13 @@ const FOLLOW_DEADLINE: Duration = Duration::from_secs(30);
 /// meanwhile without saying so, so the [`crate::SubscriptionLost`] error is
 /// returned instead.
 pub struct ClusterSubscription {
-    cluster: Arc<ClusterClient>,
+    cluster: Arc<Client>,
     tenant_id: String,
     namespace: String,
     stream: String,
     shard: u32,
     /// Held because dropping it closes the connection the events arrive on.
-    client: Arc<Client>,
+    client: Arc<Connection>,
     subscription: Subscription,
     /// The highest offset handed out, so a move resumes after it.
     last_offset: Option<u64>,
@@ -73,12 +73,12 @@ pub struct ClusterSubscription {
 
 impl ClusterSubscription {
     pub(crate) fn new(
-        cluster: Arc<ClusterClient>,
+        cluster: Arc<Client>,
         tenant_id: &str,
         namespace: &str,
         stream: &str,
         shard: u32,
-        client: Arc<Client>,
+        client: Arc<Connection>,
         subscription: Subscription,
     ) -> Self {
         Self {
@@ -99,7 +99,7 @@ impl ClusterSubscription {
 
     /// The client connected to the broker currently serving this
     /// subscription. It changes when the shard moves.
-    pub fn client(&self) -> &Arc<Client> {
+    pub fn client(&self) -> &Arc<Connection> {
         &self.client
     }
 
@@ -112,6 +112,11 @@ impl ClusterSubscription {
     /// [`Subscription::live_offset`] of the current subscription.
     pub fn live_offset(&self) -> Option<u64> {
         self.subscription.live_offset()
+    }
+
+    /// [`Subscription::queue_capacity`] of the current subscription.
+    pub fn queue_capacity(&self) -> Option<u32> {
+        self.subscription.queue_capacity()
     }
 
     /// How many times this subscription has followed its shard to a new owner.
@@ -257,13 +262,13 @@ enum Resubscribe {
 /// before it lands.
 struct Pending {
     reason: Resubscribe,
-    task: JoinHandle<Result<(Arc<Client>, Subscription)>>,
+    task: JoinHandle<Result<(Arc<Connection>, Subscription)>>,
 }
 
 impl Pending {
     fn spawn<F>(reason: Resubscribe, resubscribe: F) -> Self
     where
-        F: Future<Output = Result<(Arc<Client>, Subscription)>> + Send + 'static,
+        F: Future<Output = Result<(Arc<Connection>, Subscription)>> + Send + 'static,
     {
         Self {
             reason,
@@ -278,19 +283,19 @@ impl Drop for Pending {
     }
 }
 
-impl ClusterClient {
+impl Client {
     /// Resubscribe to a shard from `start` on whichever broker owns it now,
     /// reconnecting first when the client in use is `lost_client`, the one
     /// whose connection was lost.
     async fn resume_after_loss(
         &self,
-        lost_client: &Arc<Client>,
+        lost_client: &Arc<Connection>,
         tenant_id: &str,
         namespace: &str,
         stream: &str,
         shard: u32,
         start: StartPosition,
-    ) -> Result<(Arc<Client>, Subscription)> {
+    ) -> Result<(Arc<Connection>, Subscription)> {
         self.reopen_after_loss(lost_client, || {
             self.subscribe_shard_following_redirects(
                 tenant_id,
@@ -310,7 +315,7 @@ impl ClusterClient {
     /// was lost, retrying under the client's policy until a broker takes it.
     pub(crate) async fn reopen_after_loss<T, F, Fut>(
         &self,
-        lost_client: &Arc<Client>,
+        lost_client: &Arc<Connection>,
         open: F,
     ) -> Result<T>
     where
@@ -354,7 +359,7 @@ impl ClusterClient {
         shard: u32,
         moved: &ShardMoved,
         last_offset: Option<u64>,
-    ) -> Result<(Arc<Client>, Subscription)> {
+    ) -> Result<(Arc<Connection>, Subscription)> {
         let start = resume_position(last_offset, moved.resume_from);
         self.on_new_owner(moved, |first| {
             self.subscribe_shard_via(first, tenant_id, namespace, stream, shard, Some(start))
@@ -372,7 +377,7 @@ impl ClusterClient {
     /// policy's deadline.
     pub(crate) async fn on_new_owner<T, F, Fut>(&self, moved: &ShardMoved, open: F) -> Result<T>
     where
-        F: Fn(Arc<Client>) -> Fut,
+        F: Fn(Arc<Connection>) -> Fut,
         Fut: Future<Output = Result<T>>,
     {
         let deadline = Instant::now() + self.policy.budget(FOLLOW_DEADLINE);
@@ -380,7 +385,7 @@ impl ClusterClient {
             Some(addr) => self.resolve(addr).await,
             None => None,
         };
-        let mut hinted: Option<Arc<Client>> = None;
+        let mut hinted: Option<Arc<Connection>> = None;
         let mut attempt = 0usize;
         loop {
             let (first, via_entry) = match (&hinted, hint) {

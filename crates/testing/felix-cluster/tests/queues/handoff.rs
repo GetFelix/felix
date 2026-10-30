@@ -215,7 +215,7 @@ struct Tally {
     refused: Vec<String>,
 }
 
-async fn connect(cluster: &Cluster, via: &str) -> felix_client::Client {
+async fn connect(cluster: &Cluster, via: &str) -> felix_client::Connection {
     let node = cluster.node(via).expect("node");
     felix_cluster::client::connect(
         node.client_addr,

@@ -1,4 +1,4 @@
-//! Subscribing through a [`ClusterClient`], following each shard to the
+//! Subscribing through a [`Client`], following each shard to the
 //! broker that owns it.
 
 use std::sync::Arc;
@@ -8,10 +8,10 @@ use anyhow::{Context, Result};
 
 use super::follow::ClusterSubscription;
 use super::sharded::{ShardOffsets, ShardedGroup, ShardedSubscription};
-use super::{Attempt, ClusterClient, MAX_REDIRECTS, Next, Retrying};
-use crate::client::Client;
+use super::{Attempt, Client, MAX_REDIRECTS, Next, Retrying};
+use crate::client::Connection;
 
-impl ClusterClient {
+impl Client {
     /// Subscribe, following the cluster to whichever broker owns the shard,
     /// and following the shard again whenever it moves.
     ///
@@ -33,7 +33,7 @@ impl ClusterClient {
             .await
     }
 
-    /// Like [`ClusterClient::subscribe`], but starting where the caller says.
+    /// Like [`Client::subscribe`], but starting where the caller says.
     ///
     /// `None` is the tail, identical to `subscribe`. An offset is the first
     /// record the caller has *not* seen, so a client resuming after a
@@ -49,7 +49,7 @@ impl ClusterClient {
             .await
     }
 
-    /// Like [`ClusterClient::subscribe_from`], for one chosen shard of a
+    /// Like [`Client::subscribe_from`], for one chosen shard of a
     /// stream rather than shard 0.
     ///
     /// The subscription follows that shard to its owner and again whenever
@@ -168,7 +168,7 @@ impl ClusterClient {
         stream: &str,
         shard: u32,
         start: Option<felix_wire::StartPosition>,
-    ) -> Result<(Arc<Client>, crate::Subscription)> {
+    ) -> Result<(Arc<Connection>, crate::Subscription)> {
         let started = Instant::now();
         let mut retrying = Retrying::default();
         let attempts = self.policy.attempts.max(1);
@@ -212,7 +212,7 @@ impl ClusterClient {
         stream: &str,
         shard: u32,
         start: Option<felix_wire::StartPosition>,
-    ) -> Result<(Arc<Client>, crate::Subscription)> {
+    ) -> Result<(Arc<Connection>, crate::Subscription)> {
         let entry = self.client().await;
         self.subscribe_shard_via(entry, tenant_id, namespace, stream, shard, start)
             .await
@@ -222,13 +222,13 @@ impl ClusterClient {
     /// anyone else.
     pub(crate) async fn subscribe_shard_via(
         &self,
-        first: Arc<Client>,
+        first: Arc<Connection>,
         tenant_id: &str,
         namespace: &str,
         stream: &str,
         shard: u32,
         start: Option<felix_wire::StartPosition>,
-    ) -> Result<(Arc<Client>, crate::Subscription)> {
+    ) -> Result<(Arc<Connection>, crate::Subscription)> {
         let mut client = first;
         // Every broker this attempt has already asked. A cluster mid-rebalance
         // can name an owner that names another, and two brokers that disagree
@@ -340,7 +340,7 @@ impl ClusterClient {
     /// Ask the broker in hand how many shards a stream has, once.
     async fn stream_shards_once(
         &self,
-        client: &Client,
+        client: &Connection,
         tenant_id: &str,
         namespace: &str,
         stream: &str,
@@ -356,7 +356,7 @@ impl ClusterClient {
             .with_context(|| format!("ask how many shards {stream} has"))
     }
 
-    /// [`Client::read`], on whichever broker leads the shard.
+    /// [`Connection::read`], on whichever broker leads the shard.
     #[allow(clippy::too_many_arguments)]
     pub async fn read(
         &self,

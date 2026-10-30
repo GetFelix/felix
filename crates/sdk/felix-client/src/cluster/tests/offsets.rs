@@ -9,8 +9,8 @@ use felix_wire::{AckMode, ErrorCode, Message, RetryClass};
 
 use super::connections::{default_config, policy};
 use super::stub_broker::StubBroker;
-use crate::Client;
-use crate::cluster::ClusterClient;
+use crate::Connection;
+use crate::cluster::Client;
 
 fn ok_at(offset: Option<u64>) -> impl Fn(u64) -> Message + Send + Sync + 'static {
     move |request_id| Message::PublishOk { request_id, offset }
@@ -19,7 +19,7 @@ fn ok_at(offset: Option<u64>) -> impl Fn(u64) -> Message + Send + Sync + 'static
 #[tokio::test]
 async fn a_publisher_returns_the_offset_its_ack_carried() -> Result<()> {
     let (broker, cert) = StubBroker::start(ok_at(Some(41)))?;
-    let client = Client::connect(broker.addr, "localhost", default_config(cert)?).await?;
+    let client = Connection::connect(broker.addr, "localhost", default_config(cert)?).await?;
     let publisher = client.publisher().await?;
     let one = publisher
         .publish(
@@ -63,13 +63,9 @@ async fn a_publisher_returns_the_offset_its_ack_carried() -> Result<()> {
 #[tokio::test]
 async fn an_ack_without_an_offset_returns_none() -> Result<()> {
     let (broker, cert) = StubBroker::start(ok_at(None))?;
-    let cluster = ClusterClient::connect_with_policy(
-        &[broker.addr],
-        "localhost",
-        default_config(cert)?,
-        policy(),
-    )
-    .await?;
+    let cluster =
+        Client::connect_with_policy(&[broker.addr], "localhost", default_config(cert)?, policy())
+            .await?;
     let offset = cluster
         .publish(
             "t1",
@@ -86,13 +82,9 @@ async fn an_ack_without_an_offset_returns_none() -> Result<()> {
 #[tokio::test]
 async fn a_cluster_client_returns_the_offset_its_ack_carried() -> Result<()> {
     let (broker, cert) = StubBroker::start(ok_at(Some(7)))?;
-    let cluster = ClusterClient::connect_with_policy(
-        &[broker.addr],
-        "localhost",
-        default_config(cert)?,
-        policy(),
-    )
-    .await?;
+    let cluster =
+        Client::connect_with_policy(&[broker.addr], "localhost", default_config(cert)?, policy())
+            .await?;
     let once = cluster
         .publish(
             "t1",
@@ -147,13 +139,9 @@ async fn an_idempotent_producer_returns_the_offset_of_the_ack_that_settled_it() 
         }
     };
     let (broker, cert) = StubBroker::start(script)?;
-    let cluster = ClusterClient::connect_with_policy(
-        &[broker.addr],
-        "localhost",
-        default_config(cert)?,
-        policy(),
-    )
-    .await?;
+    let cluster =
+        Client::connect_with_policy(&[broker.addr], "localhost", default_config(cert)?, policy())
+            .await?;
     let cluster = Arc::new(cluster);
     let producer = cluster.idempotent_producer().await?;
     let first = producer
@@ -180,13 +168,9 @@ async fn offset_for_time_follows_a_redirect_to_the_leader() -> Result<()> {
         addr: Some(leader_addr.to_string()),
         generation: 1,
     })?;
-    let cluster = ClusterClient::connect_with_policy(
-        &[entry.addr],
-        "localhost",
-        default_config(cert)?,
-        policy(),
-    )
-    .await?;
+    let cluster =
+        Client::connect_with_policy(&[entry.addr], "localhost", default_config(cert)?, policy())
+            .await?;
     let offset = cluster
         .offset_for_time("t1", "default", "orders", 0, 1_000)
         .await?;

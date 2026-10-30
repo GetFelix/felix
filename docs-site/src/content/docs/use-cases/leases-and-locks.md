@@ -169,13 +169,13 @@ A worker that campaigns for a lease, renews it, and notices when it lapses:
 
 ```rust
 use bytes::Bytes;
-use felix_client::{CacheCondition, CacheWatchFilter, CacheWatchItem, ClusterClient};
+use felix_client::{CacheCondition, CacheWatchFilter, CacheWatchItem, Client};
 use std::sync::Arc;
 use std::time::Duration;
 
 const TTL_MS: u64 = 30_000;
 
-async fn campaign(client: &Arc<ClusterClient>, me: Bytes) -> anyhow::Result<()> {
+async fn campaign(client: &Arc<Client>, me: Bytes) -> anyhow::Result<()> {
     loop {
         let taken = client
             .cache_put_if("acme", "prod", "leases", "reconcile", me.clone(),

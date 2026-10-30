@@ -54,15 +54,14 @@ async fn run_demo() -> Result<()> {
 
     println!("Step 2/6: connecting QUIC client.");
     let client_config = apply_demo_auth(build_client_config(cert)?, auth_override);
-    let client = Client::connect(addr, "localhost", client_config).await?;
+    let client = Arc::new(Client::connect(&[addr], "localhost", client_config).await?);
 
     println!("Step 3/6: opening a subscription stream.");
     let mut subscription = client.subscribe("t1", "default", "demo-topic").await?;
     println!("Subscribe response: Subscribed");
 
     println!("Step 4/6: publishing two messages on the same stream.");
-    let publisher = client.publisher().await?;
-    publisher
+    client
         .publish(
             "t1",
             "default",
@@ -71,7 +70,7 @@ async fn run_demo() -> Result<()> {
             AckMode::PerMessage,
         )
         .await?;
-    publisher
+    client
         .publish(
             "t1",
             "default",

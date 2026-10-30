@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use felix_client::{ClientConfig, ClusterClient};
+use felix_client::ClientConfig;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
@@ -33,7 +33,7 @@ use crate::types::{CacheWatchFilter, GroupRecord, OwnedGroupRecord};
 /// loop to do it would be the wrong shape.
 #[pyclass(module = "felix", name = "AsyncClient")]
 pub struct AsyncClient {
-    inner: Arc<ClusterClient>,
+    inner: Arc<felix_client::Client>,
 }
 
 #[pymethods]
@@ -100,7 +100,7 @@ impl AsyncClient {
         let server_name = server_name.to_string();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let inner = ClusterClient::connect_seeds(&seeds, &server_name, config, policy)
+            let inner = felix_client::Client::connect_seeds(&seeds, &server_name, config, policy)
                 .await
                 .map_err(to_py_err)?;
             Ok(AsyncClient {

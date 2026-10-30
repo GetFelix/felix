@@ -5,7 +5,7 @@ use felix_wire::Message;
 use tokio::time::{Duration, timeout};
 use tracing::debug;
 
-use crate::Client;
+use crate::Connection;
 use crate::frame_io::{read_message, write_message};
 use crate::test_support::{
     build_client_config_with_overrides, build_server_config, set_client_env_with_event_pool,
@@ -96,7 +96,7 @@ async fn cache_worker_exits_on_stream_error() -> Result<()> {
         Result::<()>::Ok(())
     });
 
-    let client = Client::connect_with_transport(
+    let client = Connection::connect_with_transport(
         addr,
         "localhost",
         build_client_config_with_overrides(cert, 0)?,
@@ -207,7 +207,7 @@ async fn cache_worker_keeps_its_stream_after_a_refusal() -> Result<()> {
     config.cache_conn_pool = 1;
     config.cache_streams_per_conn = 1;
     let client =
-        Client::connect_with_transport(addr, "localhost", config, TransportConfig::default())
+        Connection::connect_with_transport(addr, "localhost", config, TransportConfig::default())
             .await?;
 
     let err = client

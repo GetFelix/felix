@@ -330,7 +330,7 @@ async fn publish_sharding_preserves_stream_order() -> Result<()> {
 
     let mut client_config = build_client_config(cert, &auth)?;
     client_config.client_sub_queue_policy = felix_client::ClientSubQueuePolicy::Block;
-    let client = felix_client::Client::connect_with_transport(
+    let client = felix_client::Connection::connect_with_transport(
         addr,
         "localhost",
         client_config,

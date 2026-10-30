@@ -2,7 +2,7 @@
 //!
 //! An owner learned from a forwarded ack never reaches a publish that asks for
 //! no ack, and costs every shard's first batch a hop. So the cluster is asked
-//! (`Client::shard_owners`) the first time a stream is published to, and a
+//! (`Connection::shard_owners`) the first time a stream is published to, and a
 //! snapshot of the answer is kept per stream.
 //!
 //! - **The first publish waits, and so do the ones racing it**, up to
@@ -28,7 +28,7 @@ use tokio::sync::{OnceCell, RwLock};
 
 use super::nodes::Nodes;
 use super::{Owner, ShardKey, StreamKey};
-use crate::client::Client;
+use crate::client::Connection;
 use crate::publish::StreamWidths;
 
 /// How long the shard-owner question may take.
@@ -139,7 +139,7 @@ impl StreamState {
 /// What discovery needs from the client, cloneable into a refresh task.
 #[derive(Clone)]
 pub(super) struct Discovery {
-    client: Arc<RwLock<Arc<Client>>>,
+    client: Arc<RwLock<Arc<Connection>>>,
     widths: Arc<StreamWidths>,
     nodes: Arc<Nodes>,
     owners: Arc<RwLock<HashMap<ShardKey, Arc<Owner>>>>,
@@ -148,7 +148,7 @@ pub(super) struct Discovery {
 
 impl Discovery {
     pub(super) fn new(
-        client: &Arc<RwLock<Arc<Client>>>,
+        client: &Arc<RwLock<Arc<Connection>>>,
         widths: &Arc<StreamWidths>,
         nodes: &Arc<Nodes>,
         owners: &Arc<RwLock<HashMap<ShardKey, Arc<Owner>>>>,

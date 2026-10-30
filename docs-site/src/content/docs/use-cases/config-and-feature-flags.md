@@ -117,10 +117,10 @@ watch is reopened from the offset it names:
 ```rust
 use std::{collections::HashMap, sync::{Arc, RwLock}};
 use bytes::Bytes;
-use felix_client::{CacheWatchFilter, CacheWatchItem, ClusterClient};
+use felix_client::{CacheWatchFilter, CacheWatchItem, Client};
 
 async fn follow_flags(
-    client: Arc<ClusterClient>,
+    client: Arc<Client>,
     flags: Arc<RwLock<HashMap<String, Bytes>>>,
 ) -> anyhow::Result<()> {
     let filter = || CacheWatchFilter::Prefix("flag/".into());
@@ -142,7 +142,7 @@ async fn follow_flags(
                     .watch_cache("acme", "prod", "config", filter(), Some(resume_from))
                     .await?;
             }
-            // A ClusterClient watch follows the shard to its new owner itself.
+            // A Client watch follows the shard to its new owner itself.
             Some(CacheWatchItem::ShardMoved(_)) => {}
             None => anyhow::bail!("watch ended"),
         }
@@ -162,7 +162,7 @@ writes back only if the version still matches:
 use felix_client::CacheCondition;
 
 async fn edit_routes(
-    client: &ClusterClient,
+    client: &Client,
     edit: impl Fn(Option<&[u8]>) -> Bytes,
 ) -> anyhow::Result<()> {
     loop {
@@ -277,8 +277,8 @@ that must land atomically in several keys belongs in one value, or in a system
 with transactions. They exist in the Rust client only so far.
 
 A prefix watch across the shards of a multi-shard cache is a Rust call
-(`ClusterClient::watch_cache_sharded`). In Python and TypeScript, and with
-`ClusterClient::watch_cache`, it takes one watch per shard, and a prefix watch
+(`Client::watch_cache_sharded`). In Python and TypeScript, and with
+`Client::watch_cache`, it takes one watch per shard, and a prefix watch
 that names no shard on a multi-shard cache is refused. A one-shard cache avoids
 the question for config.
 

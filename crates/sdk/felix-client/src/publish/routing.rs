@@ -42,7 +42,7 @@ pub enum PublishSharding {
     /// one writer, its own while the client has room for one, so a shard's
     /// publishes stay in order, a stalled shard holds up no other, and one
     /// stream's shards can use several connections. A plain
-    /// [`crate::Client`] asks the broker for a stream's width before its
+    /// [`crate::Connection`] asks the broker for a stream's width before its
     /// first keyed publish to it.
     HashStream,
 }
@@ -228,7 +228,7 @@ impl Publisher {
     /// with that width.
     ///
     /// The caller's `shard` is used only by a publisher with no widths. Every
-    /// other path publishing through this client, a `ClusterClient` or an
+    /// other path publishing through this client, a `Client` or an
     /// idempotent producer included, gets its writer from the same kept
     /// width, so one key never has two writers however each caller worked
     /// its shard out. `None` sends a keyed publish to the pool.

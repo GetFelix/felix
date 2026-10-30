@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use felix_client::{
-    CacheCondition, CacheWatchFilter, CacheWatchItem, ClusterClient, ShardedCacheWatchItem,
+    CacheCondition, CacheWatchFilter, CacheWatchItem, Client, ShardedCacheWatchItem,
 };
 use felix_cluster::{CacheSpec, Cluster, ClusterConfig};
 use serial_test::serial;
@@ -27,7 +27,7 @@ fn replicated_cache() -> ClusterConfig {
 
 /// The cluster, the shard's owner, and a cluster client seeded only with a
 /// broker that does not own it, after `before` is written and replicated.
-async fn start_with_value(before: &[u8]) -> (Cluster, String, Arc<ClusterClient>) {
+async fn start_with_value(before: &[u8]) -> (Cluster, String, Arc<Client>) {
     let cluster = Cluster::start(replicated_cache())
         .await
         .expect("start cluster");

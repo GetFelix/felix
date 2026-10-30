@@ -6,15 +6,15 @@ use std::sync::Arc;
 use anyhow::Result;
 use tokio::sync::RwLock;
 
-use super::ClusterClient;
+use super::Client;
 use super::nodes::Nodes;
 use crate::auth::{StaticToken, TokenProvider};
 
-impl ClusterClient {
+impl Client {
     /// A cluster client that acts as another principal over this one's
     /// connections, and follows shards and failovers as this one does.
     ///
-    /// It is [`Client::with_identity`](crate::Client::with_identity) for
+    /// It is [`Connection::with_identity`](crate::Connection::with_identity) for
     /// every broker this client reaches: each stream it opens authenticates
     /// with `tenant_id` and a token from `tokens`, and the broker checks each
     /// request against that token's grants alone. When it needs a broker,
@@ -30,7 +30,7 @@ impl ClusterClient {
     /// refused token fails here. Dropping it closes its streams and leaves the
     /// connections, and every other identity on them, alone.
     ///
-    /// The limits are those of `Client::with_identity`: per-identity publish
+    /// The limits are those of `Connection::with_identity`: per-identity publish
     /// admission on the client, and on each broker a per-identity
     /// subscription cap and publish byte budget under a ceiling the identities
     /// on a connection share. A refused publish or cache request ends the
@@ -40,7 +40,7 @@ impl ClusterClient {
         &self,
         tenant_id: impl Into<String>,
         tokens: Arc<dyn TokenProvider>,
-    ) -> Result<ClusterClient> {
+    ) -> Result<Client> {
         let nodes = Arc::new(Nodes::for_identity(&self.nodes, tenant_id.into(), tokens));
         let mut endpoints = self.endpoints().await;
         // The broker in use first, so an identity starts where its parent is.
@@ -50,7 +50,7 @@ impl ClusterClient {
         let holder = Arc::new(RwLock::new(client));
         let owners = Arc::new(RwLock::new(HashMap::new()));
         let widths = super::cluster_widths(&holder);
-        Ok(ClusterClient {
+        Ok(Client {
             discovery: super::discovery::Discovery::new(&holder, &widths, &nodes, &owners),
             seeds: Arc::clone(&self.seeds),
             endpoints: RwLock::new(self.endpoints().await),
@@ -65,13 +65,13 @@ impl ClusterClient {
         })
     }
 
-    /// [`ClusterClient::with_identity`] with a fixed token, for one that will
+    /// [`Client::with_identity`] with a fixed token, for one that will
     /// not outlive the returned client.
     pub async fn with_identity_token(
         &self,
         tenant_id: impl Into<String>,
         token: impl Into<String>,
-    ) -> Result<ClusterClient> {
+    ) -> Result<Client> {
         self.with_identity(tenant_id, Arc::new(StaticToken(token.into())))
             .await
     }

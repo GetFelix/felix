@@ -42,7 +42,7 @@ use base64::Engine as _;
 use felix_broker::Broker;
 use felix_broker_service::cluster::catalog_sync as broker_catalog_sync;
 use felix_broker_service::serving::{auth::BrokerAuth, quic};
-use felix_client::{Client, ClientConfig};
+use felix_client::{ClientConfig, Connection};
 use felix_controlplane_service::api::bootstrap::BootstrapInitializeRequest;
 use felix_controlplane_service::api::types::{
     CacheCreateRequest, NamespaceCreateRequest, StreamCreateRequest,
@@ -420,7 +420,7 @@ async fn build_client(
     broker_addr: &SocketAddr,
     broker_cert: &CertificateDer<'static>,
     token: &str,
-) -> Result<Client> {
+) -> Result<Connection> {
     let mut roots = RootCertStore::empty();
     roots.add(broker_cert.clone())?;
     let quinn = QuinnClientConfig::with_root_certificates(Arc::new(roots))?;
@@ -429,7 +429,7 @@ async fn build_client(
     config.auth_token = Some(token.to_string());
     match tokio::time::timeout(
         Duration::from_secs(3),
-        Client::connect(*broker_addr, "localhost", config),
+        Connection::connect(*broker_addr, "localhost", config),
     )
     .await
     {
@@ -701,7 +701,7 @@ async fn add_rbac_grouping(
     Ok(response.status())
 }
 
-async fn publish_once(client: &Client) -> Result<()> {
+async fn publish_once(client: &Connection) -> Result<()> {
     let publisher = client.publisher().await?;
     publisher
         .publish(
@@ -715,12 +715,12 @@ async fn publish_once(client: &Client) -> Result<()> {
     Ok(())
 }
 
-async fn subscribe_once(client: &Client) -> Result<()> {
+async fn subscribe_once(client: &Connection) -> Result<()> {
     let _sub = client.subscribe(TENANT_ID, NAMESPACE, STREAM).await?;
     Ok(())
 }
 
-async fn subscribe_and_receive(client: &Client) -> Result<()> {
+async fn subscribe_and_receive(client: &Connection) -> Result<()> {
     let mut sub = client.subscribe(TENANT_ID, NAMESPACE, STREAM).await?;
     let publisher = client.publisher().await?;
     publisher
@@ -742,7 +742,7 @@ async fn subscribe_and_receive(client: &Client) -> Result<()> {
     }
 }
 
-async fn cache_roundtrip(client: &Client) -> Result<()> {
+async fn cache_roundtrip(client: &Connection) -> Result<()> {
     client
         .cache_put(
             TENANT_ID,

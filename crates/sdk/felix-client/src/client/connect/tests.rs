@@ -12,7 +12,7 @@ use tokio::time::{Duration, timeout};
 
 use crate::frame_io::{read_message, write_message};
 use crate::test_support::{build_client_config, build_server_config};
-use crate::{Client, FETCH_TIMEOUT, RefreshingToken};
+use crate::{Connection, FETCH_TIMEOUT, RefreshingToken};
 
 /// A broker that refuses every token, or admits every one.
 struct Broker {
@@ -85,7 +85,7 @@ async fn a_token_every_broker_refuses_is_an_auth_error() -> Result<()> {
     let b = Broker::start_with(false, identity)?;
     let mut config = build_client_config(a.cert.clone())?;
     config.connect_timeout = Duration::from_secs(5);
-    let err = Client::connect_any(&[a.addr, b.addr], "localhost", config)
+    let err = Connection::connect_any(&[a.addr, b.addr], "localhost", config)
         .await
         .err()
         .expect("every broker refused");
@@ -102,7 +102,7 @@ async fn a_refusal_mixed_with_an_unreachable_broker_stays_a_connection_error() -
     let mut config = build_client_config(refusing.cert.clone())?;
     config.connect_timeout = Duration::from_millis(300);
     let (_silent, silent) = silent_addr()?;
-    let err = Client::connect_any(&[refusing.addr, silent], "localhost", config)
+    let err = Connection::connect_any(&[refusing.addr, silent], "localhost", config)
         .await
         .err()
         .expect("neither broker admitted the client");
@@ -129,7 +129,7 @@ async fn a_slow_token_provider_is_not_cut_off_by_the_connect_timeout() -> Result
     })));
     timeout(
         Duration::from_secs(30),
-        Client::connect(broker.addr, "localhost", config),
+        Connection::connect(broker.addr, "localhost", config),
     )
     .await??;
     Ok(())
@@ -192,7 +192,7 @@ async fn a_silent_token_provider_fails_at_the_fetch_timeout() -> Result<()> {
     })));
     let (_silent, silent) = silent_addr()?;
     let started = tokio::time::Instant::now();
-    let err = Client::connect(silent, "localhost", config)
+    let err = Connection::connect(silent, "localhost", config)
         .await
         .err()
         .expect("the provider never answered");
@@ -220,7 +220,7 @@ async fn a_custom_provider_that_never_answers_fails_at_the_fetch_timeout() -> Re
     config.token_provider = Some(Arc::new(Hung));
     let (_silent, silent) = silent_addr()?;
     let started = tokio::time::Instant::now();
-    let err = Client::connect(silent, "localhost", config)
+    let err = Connection::connect(silent, "localhost", config)
         .await
         .err()
         .expect("the provider never answered");
@@ -273,7 +273,7 @@ async fn a_silent_address_first_does_not_hold_up_a_live_broker() -> Result<()> {
     let silent = [first, second, broker.addr];
     let client = timeout(
         Duration::from_secs(30),
-        Client::connect_any(&silent, "localhost", config),
+        Connection::connect_any(&silent, "localhost", config),
     )
     .await??;
     assert_eq!(client.dialled(), broker.addr);

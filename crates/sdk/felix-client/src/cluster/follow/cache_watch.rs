@@ -10,11 +10,11 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 
 use crate::cache::{CacheWatch, CacheWatchFilter, CacheWatchItem};
-use crate::client::Client;
-use crate::cluster::ClusterClient;
+use crate::client::Connection;
+use crate::cluster::Client;
 use crate::subscribe::ShardMoved;
 
-/// A cache watch through a [`ClusterClient`] that follows its shard when it
+/// A cache watch through a [`Client`] that follows its shard when it
 /// moves.
 ///
 /// When the shard's owner hands it to another broker, the watch yields
@@ -42,10 +42,10 @@ use crate::subscribe::ShardMoved;
 ///
 /// Dropping this ends the watch.
 pub struct ClusterCacheWatch {
-    cluster: Arc<ClusterClient>,
+    cluster: Arc<Client>,
     target: WatchTarget,
     /// Held so the connection the changes arrive on stays open.
-    client: Arc<Client>,
+    client: Arc<Connection>,
     watch: CacheWatch,
     progress: WatchProgress,
     /// Set by a `ShardMoved` and cleared once the new owner is watched, so a
@@ -65,10 +65,10 @@ pub struct ClusterCacheWatch {
 
 impl ClusterCacheWatch {
     pub(crate) fn new(
-        cluster: Arc<ClusterClient>,
+        cluster: Arc<Client>,
         target: WatchTarget,
         from_offset: Option<u64>,
-        client: Arc<Client>,
+        client: Arc<Connection>,
         watch: CacheWatch,
     ) -> Self {
         Self {
@@ -218,7 +218,7 @@ impl ClusterCacheWatch {
 
     /// The client connected to the broker currently serving this watch. It
     /// changes when the shard moves.
-    pub fn client(&self) -> &Arc<Client> {
+    pub fn client(&self) -> &Arc<Connection> {
         &self.client
     }
 

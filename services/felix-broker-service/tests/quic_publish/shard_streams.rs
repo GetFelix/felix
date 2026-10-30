@@ -175,12 +175,8 @@ impl TwoShards {
 async fn a_stalled_shard_does_not_hold_up_another_shard_of_the_stream() -> Result<()> {
     let fixture = TwoShards::start().await?;
     let cluster = Arc::new(
-        felix_client::ClusterClient::connect(
-            &[fixture.addr],
-            "localhost",
-            fixture.client_config()?,
-        )
-        .await?,
+        felix_client::Client::connect(&[fixture.addr], "localhost", fixture.client_config()?)
+            .await?,
     );
     let (shards, routing) = cluster
         .client()
@@ -226,7 +222,7 @@ async fn a_stalled_shard_does_not_hold_up_another_shard_of_the_stream() -> Resul
     Ok(())
 }
 
-/// **A plain `Client` puts one stream's shards on separate streams too.** It
+/// **A plain `Connection` puts one stream's shards on separate streams too.** It
 /// learns the stream's width on the first keyed publish, so a hot stream's
 /// shards spread over its connections instead of sharing one stream. A
 /// stalled shard holding up the other is what sharing one would look like.
@@ -234,7 +230,7 @@ async fn a_stalled_shard_does_not_hold_up_another_shard_of_the_stream() -> Resul
 #[serial]
 async fn a_plain_clients_keyed_publishes_go_on_their_shards_own_streams() -> Result<()> {
     let fixture = TwoShards::start().await?;
-    let client = Client::connect(fixture.addr, "localhost", fixture.client_config()?).await?;
+    let client = Connection::connect(fixture.addr, "localhost", fixture.client_config()?).await?;
     let publisher = Arc::new(client.publisher().await?);
     let (stalled_key, healthy_key) = (fixture.key_for(1, 0), fixture.key_for(0, 0));
     let publish = |key: bytes::Bytes| {
@@ -284,7 +280,7 @@ async fn a_plain_clients_keyed_publishes_go_on_their_shards_own_streams() -> Res
 async fn spreading_a_stream_keeps_each_shards_records_in_publish_order() -> Result<()> {
     const RECORDS: usize = 400;
     let fixture = TwoShards::start().await?;
-    let client = Client::connect(fixture.addr, "localhost", fixture.client_config()?).await?;
+    let client = Connection::connect(fixture.addr, "localhost", fixture.client_config()?).await?;
     let publisher = client.publisher().await?;
     // Several keys per shard, so keys sharing a shard interleave too.
     let keys: Vec<(u32, bytes::Bytes)> = (0..4)

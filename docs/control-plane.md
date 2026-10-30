@@ -1802,7 +1802,7 @@ assignment with its stream's `routing` (omitted for `modulo`, always omitted
 for a cache), so a broker takes a stream's width and mapping from the same
 records and can never pair one with the other's stale value. The broker's
 routing table resolves every keyed publish with it, and `stream_shards_view`
-passes it on to clients, which is how `ClusterClient` keys its owner cache.
+passes it on to clients, which is how `Client` keys its owner cache.
 
 #### Referential integrity
 

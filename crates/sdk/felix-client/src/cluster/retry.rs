@@ -1,4 +1,4 @@
-//! How a [`super::ClusterClient`] paces its retries, and what it does after
+//! How a [`super::Client`] paces its retries, and what it does after
 //! each kind of failure.
 
 use std::time::{Duration, Instant};
@@ -146,7 +146,7 @@ impl<'a> Pace<'a> {
     }
 }
 
-impl super::ClusterClient {
+impl super::Client {
     /// Run `attempt` again under the client's [`ReconnectPolicy`] while it
     /// fails in a way worth another try.
     ///

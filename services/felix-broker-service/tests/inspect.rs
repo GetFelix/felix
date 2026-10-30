@@ -18,7 +18,7 @@ use felix_authz::{
 };
 use felix_broker::{Broker, StreamMetadata};
 use felix_broker_service::serving::auth::{BrokerAuth, ControlPlaneKeyStore};
-use felix_client::{Client, ClientConfig, ShardKind};
+use felix_client::{ClientConfig, Connection, ShardKind};
 use felix_storage::EphemeralCache;
 use felix_transport::{QuicServer, TransportConfig};
 use jsonwebtoken::Algorithm;
@@ -42,11 +42,11 @@ impl Drop for Running {
 }
 
 impl Running {
-    async fn client(&self, perms: &[&str]) -> Result<Client> {
+    async fn client(&self, perms: &[&str]) -> Result<Connection> {
         self.client_as("p:operator", perms).await
     }
 
-    async fn client_as(&self, subject: &str, perms: &[&str]) -> Result<Client> {
+    async fn client_as(&self, subject: &str, perms: &[&str]) -> Result<Connection> {
         let token = self.issuer.mint(
             &TenantId::new("ops"),
             subject,
@@ -58,7 +58,7 @@ impl Running {
         let mut config = ClientConfig::from_env_or_yaml(quinn, None)?;
         config.auth_tenant_id = Some("ops".to_string());
         config.auth_token = Some(token);
-        Client::connect(self.addr, "localhost", config).await
+        Connection::connect(self.addr, "localhost", config).await
     }
 }
 

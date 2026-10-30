@@ -302,7 +302,7 @@ because a subscriber that could pick `Block` could stall every publisher on the
 shard just by reading slowly, and anyone allowed to subscribe could do it. A
 reader that must not miss records uses a durable stream: when its queue drops,
 the subscription ends with `subscription_lagged` and the offset to resume from,
-and `ClusterClient` resubscribes there and replays the gap from the log. A
+and `Client` resubscribes there and replays the gap from the log. A
 larger queue only makes that rarer.
 
 :::caution[At-Most-Once Semantics]
@@ -371,7 +371,7 @@ ordering rules that make the cursor safe.
 A subscription has no end. Replay from an offset runs on into live delivery
 until the client unsubscribes. To read a fixed slice of a durable stream, such
 as one match's events or a page of history in a UI, use a range read
-(`stream_read` on the wire, `Client::read` in Rust). It returns one page of
+(`stream_read` on the wire, `Connection::read` in Rust). It returns one page of
 committed records from a start offset, stopping before an end offset, with the
 offset to read the next page from. Nothing is registered with the stream's
 fanout, so the broker does no live work for it. A page is capped in records and

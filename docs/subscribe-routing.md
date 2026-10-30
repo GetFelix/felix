@@ -11,7 +11,7 @@ verdict if this is ever revisited.
 
 Implemented (#118). A broker answers `NotLeader` for a shard it does not own,
 carrying the owner's node id, its client-facing address, and the generation;
-`ClusterClient::subscribe` follows it, capped at three hops and refusing to
+`Client::subscribe` follows it, capped at three hops and refusing to
 revisit a broker within one attempt. A client that did not offer
 `FEATURE_REDIRECT` gets an ordinary error instead, because a message it cannot
 decode would cost it the connection.

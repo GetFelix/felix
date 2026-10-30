@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use felix_client::{ClientConfig, ClusterClient};
+use felix_client::ClientConfig;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -38,7 +38,7 @@ use crate::types::{CacheWatchFilter, GroupRecord, OwnedGroupRecord};
 /// reimplementation.
 #[pyclass(module = "felix")]
 pub struct Client {
-    inner: Arc<ClusterClient>,
+    inner: Arc<felix_client::Client>,
 }
 
 #[pymethods]
@@ -130,7 +130,7 @@ impl Client {
 
         let server_name = server_name.to_string();
         let inner = block_on(py, async move {
-            ClusterClient::connect_seeds(&seeds, &server_name, config, policy)
+            felix_client::Client::connect_seeds(&seeds, &server_name, config, policy)
                 .await
                 .map_err(to_py_err)
         })?;

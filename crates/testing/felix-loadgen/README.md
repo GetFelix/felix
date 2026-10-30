@@ -36,7 +36,7 @@ felix-loadgen --brokers 10.0.0.4:5000,10.0.0.5:5000 \
 
 By default each `ingest` publisher holds a plain connection to one broker, so
 on a cluster most batches reach a broker that does not lead the shard and are
-forwarded. `--cluster` makes the generator share one `ClusterClient`, which
+forwarded. `--cluster` makes the generator share one `Client`, which
 sends each shard's records straight to its leader (`publish_keyed` at
 `--batch 1`, `publish_batch_keyed` above it), fire-and-forget or acked:
 

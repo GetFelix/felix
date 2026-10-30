@@ -2,8 +2,8 @@
 
 use bytes::Bytes;
 
-/// The answer to [`crate::Client::cache_put_if`] or
-/// [`crate::Client::cache_delete_if`].
+/// The answer to [`crate::Connection::cache_put_if`] or
+/// [`crate::Connection::cache_delete_if`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CacheConditionResult {
     /// The condition held and the write was made.

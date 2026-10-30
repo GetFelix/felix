@@ -29,7 +29,7 @@ use felix_authz::{
 };
 use felix_broker::{Broker, StreamMetadata};
 use felix_broker_service::serving::auth::{BrokerAuth, ControlPlaneKeyStore};
-use felix_client::{Client, ClientConfig};
+use felix_client::{ClientConfig, Connection};
 use felix_storage::EphemeralCache;
 use felix_transport::{QuicServer, TransportConfig};
 use felix_wire::{FrameHeader, Message};
@@ -163,7 +163,7 @@ async fn quic_subscribe_unauthorized_and_stream_missing() -> Result<()> {
     ));
 
     let client =
-        Client::connect(addr, "localhost", build_client_config(cert.clone(), &auth)?).await?;
+        Connection::connect(addr, "localhost", build_client_config(cert.clone(), &auth)?).await?;
     let err = match client.subscribe("t1", "default", "orders").await {
         Ok(_) => anyhow::bail!("expected unauthorized subscribe"),
         Err(err) => err,
@@ -178,7 +178,7 @@ async fn quic_subscribe_unauthorized_and_stream_missing() -> Result<()> {
     );
 
     let auth = auth_fixture("t1", vec!["stream.subscribe:stream:t1/*/*".to_string()]);
-    let client = Client::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
+    let client = Connection::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
     let err = match client.subscribe("t1", "default", "missing").await {
         Ok(_) => anyhow::bail!("expected missing stream"),
         Err(err) => err,
@@ -228,7 +228,7 @@ async fn quic_subscribe_batch_receive_and_cancel() -> Result<()> {
         Arc::clone(&auth.auth),
     ));
 
-    let client = Client::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
+    let client = Connection::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
     let mut sub = client.subscribe("t1", "default", "orders").await?;
     let publisher = client.publisher().await?;
 
@@ -296,7 +296,7 @@ async fn quic_subscribe_fanout_and_drop_cleanup() -> Result<()> {
         Arc::clone(&auth.auth),
     ));
 
-    let client = Client::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
+    let client = Connection::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
     let mut sub_a = client.subscribe("t1", "default", "orders").await?;
     let mut sub_b = client.subscribe("t1", "default", "orders").await?;
     let publisher = client.publisher().await?;
@@ -490,7 +490,7 @@ async fn quic_subscribe_resumes_from_a_checkpointed_offset() -> Result<()> {
 
     const TOTAL: usize = 40;
     let client =
-        Client::connect(addr, "localhost", build_client_config(cert.clone(), &auth)?).await?;
+        Connection::connect(addr, "localhost", build_client_config(cert.clone(), &auth)?).await?;
     let publisher = client.publisher().await?;
 
     // Phase 1: subscribe live, take the first few, then "crash".
@@ -541,7 +541,7 @@ async fn quic_subscribe_resumes_from_a_checkpointed_offset() -> Result<()> {
     }
 
     // Phase 3: reconnect and resume from the offset after the last one handled.
-    let client2 = Client::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
+    let client2 = Connection::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
     let mut resumed = client2
         .subscribe_from(
             "t1",
@@ -684,7 +684,7 @@ async fn quic_subscribe_rejects_a_cursor_past_the_tail() -> Result<()> {
         Arc::clone(&auth.auth),
     ));
 
-    let client = Client::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
+    let client = Connection::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
     let err = client
         .subscribe_from(
             "t1",
@@ -766,7 +766,7 @@ async fn quic_subscribe_replays_a_long_history_without_loss() -> Result<()> {
     // reader, so most of it comes off disk and none of it fits in a buffer.
     const TOTAL: usize = 5_000;
     let client =
-        Client::connect(addr, "localhost", build_client_config(cert.clone(), &auth)?).await?;
+        Connection::connect(addr, "localhost", build_client_config(cert.clone(), &auth)?).await?;
     let publisher = client.publisher().await?;
     for chunk in 0..TOTAL / 250 {
         let payloads = (chunk * 250..(chunk + 1) * 250)
@@ -783,7 +783,7 @@ async fn quic_subscribe_replays_a_long_history_without_loss() -> Result<()> {
             .await?;
     }
 
-    let reader = Client::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
+    let reader = Connection::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
     let mut sub = reader
         .subscribe_from(
             "t1",
@@ -881,8 +881,8 @@ async fn quic_subscribe_reports_the_publisher_to_a_client_that_asked() -> Result
 
     let mut asking = build_client_config(cert.clone(), &auth)?;
     asking.publishers = true;
-    let asking = Client::connect(addr, "localhost", asking).await?;
-    let plain = Client::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
+    let asking = Connection::connect(addr, "localhost", asking).await?;
+    let plain = Connection::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
     let mut told = asking.subscribe("t1", "default", "inputs").await?;
     let mut untold = plain.subscribe("t1", "default", "inputs").await?;
 
@@ -996,8 +996,8 @@ async fn quic_subscribe_reports_record_times_to_a_client_that_asked() -> Result<
 
     let mut asking = build_client_config(cert.clone(), &auth)?;
     asking.timestamps = true;
-    let asking = Client::connect(addr, "localhost", asking).await?;
-    let plain = Client::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
+    let asking = Connection::connect(addr, "localhost", asking).await?;
+    let plain = Connection::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
     assert!(plain.supports_offset_for_time());
     let mut told = asking.subscribe("t1", "default", "inputs").await?;
     let mut untold = plain.subscribe("t1", "default", "inputs").await?;
@@ -1108,7 +1108,7 @@ async fn quic_subscribe_grants_a_clamped_queue_capacity() -> Result<()> {
         async move {
             let mut client_config = build_client_config(cert, auth)?;
             client_config.broker_sub_queue_capacity = capacity;
-            let client = Client::connect(addr, "localhost", client_config).await?;
+            let client = Connection::connect(addr, "localhost", client_config).await?;
             let sub = client.subscribe("t1", "default", "orders").await?;
             Result::<_>::Ok((client, sub))
         }
@@ -1202,7 +1202,7 @@ async fn quic_stream_read_pages_a_range_without_subscribing() -> Result<()> {
     ));
 
     let client =
-        Client::connect(addr, "localhost", build_client_config(cert.clone(), &auth)?).await?;
+        Connection::connect(addr, "localhost", build_client_config(cert.clone(), &auth)?).await?;
     assert!(client.supports_read());
     let publisher = client.publisher().await?;
     for i in 0..10 {
@@ -1274,7 +1274,7 @@ async fn quic_stream_read_pages_a_range_without_subscribing() -> Result<()> {
         vec!["stream.publish:stream:t1/*/*".to_string()],
     ] {
         let narrow = auth_fixture("t1", perms);
-        let narrow = Client::connect(
+        let narrow = Connection::connect(
             addr,
             "localhost",
             build_client_config(cert.clone(), &narrow)?,

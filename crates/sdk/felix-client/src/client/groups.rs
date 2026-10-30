@@ -1,12 +1,12 @@
-//! Consumer groups and their dead letters, through a [`Client`].
+//! Consumer groups and their dead letters, through a [`Connection`].
 //!
 //! Every request here is a single exchange on a stream of its own; see
-//! [`Client::group_round_trip`].
+//! [`Connection::group_round_trip`].
 //!
 //! Only the shard's leader serves its groups. Any other broker, including the
 //! old leader once a shard move cuts over, answers with [`NotLeaderError`],
-//! which these calls return rather than follow: a `Client` is one broker's
-//! connections. The same calls on [`crate::ClusterClient`] follow it.
+//! which these calls return rather than follow: a `Connection` is one broker's
+//! connections. The same calls on [`crate::Client`] follow it.
 
 use std::sync::atomic::Ordering;
 
@@ -14,13 +14,13 @@ use anyhow::{Context, Result};
 use bytes::BytesMut;
 use felix_wire::{Message, StartPosition};
 
-use super::Client;
+use super::Connection;
 use crate::NotLeaderError;
 use crate::connection::OpenedStream;
 use crate::frame_io::{read_message_with_limit, write_message};
 
 /// A member of a consumer group that names itself when it polls. See
-/// [`Client::group_poll_as`].
+/// [`Connection::group_poll_as`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GroupMember {
     /// Stable across restarts of the same member, and unique within the group
@@ -33,11 +33,11 @@ pub struct GroupMember {
     pub reclaim: bool,
 }
 
-/// How a poll takes records. See [`Client::group_poll_with`].
+/// How a poll takes records. See [`Connection::group_poll_with`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GroupPollOptions {
     /// The member polling, or `None` for one that does not name itself. See
-    /// [`Client::group_poll_as`].
+    /// [`Connection::group_poll_as`].
     pub member: Option<GroupMember>,
     /// How long the broker may wait for work. It caps the wait.
     pub wait: std::time::Duration,
@@ -48,18 +48,18 @@ pub struct GroupPollOptions {
     pub visibility: Option<std::time::Duration>,
 }
 
-/// Where [`Client::group_seek`] or [`Client::group_create`] left a group on
+/// Where [`Connection::group_seek`] or [`Connection::group_create`] left a group on
 /// one shard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GroupPosition {
     /// The offset the group resumes from.
     pub offset: u64,
-    /// False when [`Client::group_create`] found the group already there and
+    /// False when [`Connection::group_create`] found the group already there and
     /// left it alone.
     pub moved: bool,
 }
 
-/// Where a group stands on one shard. See [`Client::group_describe`].
+/// Where a group stands on one shard. See [`Connection::group_describe`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GroupInfo {
     /// Everything below this is finished. `None` for a group with no cursor
@@ -84,12 +84,12 @@ impl GroupInfo {
     }
 }
 
-impl Client {
+impl Connection {
     /// Take up to `max_records` for a consumer group on one shard.
     ///
     /// An empty answer means nothing was available, not an error. Each record
-    /// carries the offset to pass back to [`Client::group_ack`] or
-    /// [`Client::group_nack`]; a record neither finished nor handed back is
+    /// carries the offset to pass back to [`Connection::group_ack`] or
+    /// [`Connection::group_nack`]; a record neither finished nor handed back is
     /// redelivered once the broker's visibility timeout lapses.
     ///
     /// A record can be polled once it is written. A publish acknowledged on
@@ -122,7 +122,7 @@ impl Client {
         .await
     }
 
-    /// [`Client::group_poll`], but the broker may hold the request open for up
+    /// [`Connection::group_poll`], but the broker may hold the request open for up
     /// to `wait` waiting for work.
     ///
     /// An empty answer still means nothing was available — the wait bounds how
@@ -155,7 +155,7 @@ impl Client {
         .await
     }
 
-    /// [`Client::group_poll_wait`] as a named member of the group, or as
+    /// [`Connection::group_poll_wait`] as a named member of the group, or as
     /// none when `member` is `None`.
     ///
     /// The broker records the records it hands out as `member`'s, scoped to
@@ -269,7 +269,7 @@ impl Client {
     /// rather than after the visibility timeout.
     ///
     /// Names the delivery by `record.attempts`, as
-    /// [`Client::group_nack_after`] does, so a nack that arrives after the
+    /// [`Connection::group_nack_after`] does, so a nack that arrives after the
     /// claim lapsed is refused with `stale_claim` rather than taking the
     /// record from whoever holds it now. A broker without
     /// `FEATURE_GROUP_CLAIM_CONTROL` hands back whatever claim stands.
@@ -301,7 +301,7 @@ impl Client {
     /// The broker caps the delay (`FELIX_GROUP_MAX_VISIBILITY_MS`), and the
     /// delay is the leader's memory: a failover redelivers the record sooner.
     ///
-    /// Names the delivery by `record.attempts`, as [`Client::group_extend`]
+    /// Names the delivery by `record.attempts`, as [`Connection::group_extend`]
     /// does, so it is refused with `stale_claim` once the claim has lapsed or
     /// the record has been handed out again, rather than taking the record
     /// from whoever holds it now. A broker without
@@ -341,7 +341,7 @@ impl Client {
 
     /// Give up on one record: list it as a dead letter of the group and
     /// finish it, as the group does once a record runs out of attempts.
-    /// [`Client::group_redrive`] puts it back.
+    /// [`Connection::group_redrive`] puts it back.
     ///
     /// Refused for a record already finished, which is not listed.
     pub async fn group_dead_letter(
@@ -413,8 +413,8 @@ impl Client {
         }
     }
 
-    /// Whether the broker serves [`Client::group_extend`],
-    /// [`Client::group_nack_after`], [`Client::group_dead_letter`] and
+    /// Whether the broker serves [`Connection::group_extend`],
+    /// [`Connection::group_nack_after`], [`Connection::group_dead_letter`] and
     /// [`GroupPollOptions::visibility`].
     pub fn supports_group_claim_control(&self) -> bool {
         felix_wire::supports_feature(
@@ -605,9 +605,9 @@ impl Client {
         }
     }
 
-    /// Whether the broker serves [`Client::group_seek`],
-    /// [`Client::group_create`], [`Client::group_describe`] and
-    /// [`Client::group_delete`].
+    /// Whether the broker serves [`Connection::group_seek`],
+    /// [`Connection::group_create`], [`Connection::group_describe`] and
+    /// [`Connection::group_delete`].
     pub fn supports_group_admin(&self) -> bool {
         felix_wire::supports_feature(self.server_features, felix_wire::FEATURE_GROUP_ADMIN)
     }

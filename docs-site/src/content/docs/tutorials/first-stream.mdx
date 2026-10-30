@@ -65,7 +65,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use felix_client::{ClientConfig, ClusterClient, quic_client_config, root_store_from_pem_file};
+use felix_client::{ClientConfig, Client, quic_client_config, root_store_from_pem_file};
 
 // Must match FELIX_AUTH_TENANT.
 const TENANT: &str = "dev";
@@ -81,7 +81,7 @@ async fn bounded<T>(what: &str, limit: Duration, call: impl Future<Output = Resu
         .with_context(|| format!("{what} did not finish within {limit:?}"))?
 }
 
-async fn connect() -> Result<Arc<ClusterClient>> {
+async fn connect() -> Result<Arc<Client>> {
     let ca_file = std::env::var("FELIX_CA_FILE").context("set FELIX_CA_FILE")?;
     let roots = Arc::new(root_store_from_pem_file(&ca_file)?);
     // Reads FELIX_AUTH_TENANT and FELIX_AUTH_TOKEN.
@@ -89,7 +89,7 @@ async fn connect() -> Result<Arc<ClusterClient>> {
 
     let broker = std::env::var("FELIX_BROKERS").unwrap_or_else(|_| "127.0.0.1:5000".into());
     let seeds: Vec<SocketAddr> = vec![broker.parse().context("FELIX_BROKERS must be ip:port")?];
-    let connecting = ClusterClient::connect(&seeds, "localhost", config);
+    let connecting = Client::connect(&seeds, "localhost", config);
     let client = bounded("connecting", CALL_TIMEOUT, connecting).await?;
     Ok(Arc::new(client))
 }
@@ -236,7 +236,7 @@ written at.
 ```rust
 use felix_client::AckMode;
 
-async fn publish_three(client: &ClusterClient) -> Result<()> {
+async fn publish_three(client: &Client) -> Result<()> {
     for i in 1..=3 {
         let payload = format!("event {i}").into_bytes();
         let publish = client.publish(TENANT, NAMESPACE, STREAM, payload, AckMode::PerMessage);
@@ -334,7 +334,7 @@ async fn save_checkpoint(path: &Path, offset: u64) -> Result<()> {
     tokio::fs::rename(&tmp, path).await.context("replace the checkpoint")
 }
 
-async fn read_new(client: &Arc<ClusterClient>, checkpoint: &Path) -> Result<()> {
+async fn read_new(client: &Arc<Client>, checkpoint: &Path) -> Result<()> {
     let start = match load_checkpoint(checkpoint).await? {
         Some(offset) => StartPosition::Offset(offset + 1),
         None => StartPosition::Earliest,

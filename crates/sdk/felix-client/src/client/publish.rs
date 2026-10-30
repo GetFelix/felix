@@ -1,14 +1,14 @@
-//! Publishing through a [`Client`], and the producer ids idempotent publishes need.
+//! Publishing through a [`Connection`], and the producer ids idempotent publishes need.
 
 use std::sync::Arc;
 
 use anyhow::Result;
 use felix_wire::Message;
 
-use super::Client;
+use super::Connection;
 use crate::publish::{IdempotentProducer, Publisher, PublisherInner};
 
-impl Client {
+impl Connection {
     /// A publisher over this client's publish streams.
     ///
     /// Cheap to make: every publisher from one client shares its streams and
@@ -78,7 +78,7 @@ impl Client {
     /// many times they are sent. See [`crate::IdempotentProducer`].
     ///
     /// Bound to this one broker: a batch for a shard led elsewhere is refused
-    /// with the leader's address, which a [`crate::ClusterClient`]'s producer
+    /// with the leader's address, which a [`crate::Client`]'s producer
     /// follows and this one reports.
     ///
     /// The producer keeps a handle on this client, so it can be stored or

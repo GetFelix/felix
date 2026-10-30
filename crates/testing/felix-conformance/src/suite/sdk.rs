@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use bytes::Bytes;
-use felix_client::Client;
+use felix_client::Connection;
 use felix_wire::AckMode;
 use rustls::pki_types::CertificateDer;
 
@@ -17,7 +17,7 @@ pub(crate) async fn run_client_pubsub(
     auth: &AuthFixture,
 ) -> Result<()> {
     println!("Running client pub/sub checks...");
-    let client = Client::connect(addr, "localhost", build_client_config(cert, auth)?).await?;
+    let client = Connection::connect(addr, "localhost", build_client_config(cert, auth)?).await?;
     let mut subscription = client.subscribe("t1", "default", "conformance").await?;
     let publisher = client.publisher().await?;
     publisher
@@ -44,7 +44,7 @@ pub(crate) async fn run_client_cache(
     auth: &AuthFixture,
 ) -> Result<()> {
     println!("Running client cache checks...");
-    let client = Client::connect(addr, "localhost", build_client_config(cert, auth)?).await?;
+    let client = Connection::connect(addr, "localhost", build_client_config(cert, auth)?).await?;
     client
         .cache_put(
             "t1",

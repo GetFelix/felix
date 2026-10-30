@@ -1,4 +1,4 @@
-//! Batched publishing through a [`ClusterClient`]: each shard's records go
+//! Batched publishing through a [`Client`]: each shard's records go
 //! as one ordered batch straight to that shard's owner.
 //!
 //! A keyed batch is routed by its shard, so a batch spanning several keys is
@@ -37,7 +37,7 @@ use bytes::Bytes;
 use felix_wire::AckMode;
 
 use super::publish::Routing;
-use super::{Attempt, ClusterClient, Next, Retrying, ShardKey};
+use super::{Attempt, Client, Next, Retrying, ShardKey};
 
 /// How one shard's piece of a batch fared.
 #[derive(Debug)]
@@ -48,7 +48,7 @@ pub struct ShardPublish {
     /// piece. Ascending, and the order they were sent in.
     pub records: Vec<usize>,
     /// The log offset of the piece's first record when the broker reported
-    /// one (see [`ClusterClient::publish`]), or why the piece was not
+    /// one (see [`Client::publish`]), or why the piece was not
     /// acknowledged. A piece is all or nothing.
     pub outcome: Result<Option<u64>>,
 }
@@ -58,7 +58,7 @@ pub struct ShardPublish {
 #[derive(Debug, Default)]
 pub struct BatchReport {
     /// One entry per shard, ascending by shard. After
-    /// [`ClusterClient::publish_records_at_least_once`] re-splits records under
+    /// [`Client::publish_records_at_least_once`] re-splits records under
     /// a new width, one shard number can appear twice: once for the piece that
     /// was accepted earlier and once for a later one.
     pub shards: Vec<ShardPublish>,
@@ -76,7 +76,7 @@ impl BatchReport {
     }
 
     /// Positions of the records in failed pieces, ascending. With
-    /// [`ClusterClient::publish_records`] a failed record may still have
+    /// [`Client::publish_records`] a failed record may still have
     /// landed; see its documentation.
     pub fn failed_records(&self) -> Vec<usize> {
         let mut failed: Vec<usize> = self
@@ -107,7 +107,7 @@ impl BatchReport {
     }
 }
 
-impl ClusterClient {
+impl Client {
     /// Publish an unkeyed batch. Every record resolves to shard 0, as with
     /// [`Self::publish`], so the batch goes to that shard's owner as one
     /// frame and keeps its order.

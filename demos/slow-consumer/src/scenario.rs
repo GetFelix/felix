@@ -7,7 +7,7 @@
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use felix_broker::{Broker, StreamMetadata, SubQueuePolicy};
-use felix_client::{Client, ClientConfig, ClientSubQueuePolicy};
+use felix_client::{ClientConfig, ClientSubQueuePolicy, Connection};
 use felix_storage::EphemeralCache;
 use felix_transport::{QuicServer, TransportConfig};
 use felix_wire::AckMode;
@@ -461,7 +461,7 @@ where
         let stat = Arc::clone(stat);
         let stop = Arc::clone(&stop);
         tasks.push(tokio::spawn(async move {
-            let client = match Client::connect(addr, "localhost", client_cfg).await {
+            let client = match Connection::connect(addr, "localhost", client_cfg).await {
                 Ok(client) => client,
                 Err(err) => {
                     eprintln!("subscriber connect failed: {err}");
@@ -518,7 +518,7 @@ where
         let payload_bytes = config.payload_bytes;
         let target_rate = config.target_rate;
         tokio::spawn(async move {
-            let client = match Client::connect(addr, "localhost", client_cfg).await {
+            let client = match Connection::connect(addr, "localhost", client_cfg).await {
                 Ok(client) => client,
                 Err(err) => {
                     eprintln!("publisher connect failed: {err}");

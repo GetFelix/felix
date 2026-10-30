@@ -29,7 +29,7 @@ use felix_authz::{
 };
 use felix_broker::{Broker, StreamMetadata};
 use felix_broker_service::serving::auth::{BrokerAuth, ControlPlaneKeyStore};
-use felix_client::{Client, ClientConfig};
+use felix_client::{ClientConfig, Connection};
 use felix_storage::EphemeralCache;
 use felix_transport::{QuicClient, QuicServer, TransportConfig};
 use felix_wire::{AckMode, FLAG_BINARY_PUBLISH_BATCH, FrameHeader, Message};
@@ -160,7 +160,7 @@ async fn quic_publish_unauthorized_and_stream_missing() -> Result<()> {
     ));
 
     let client =
-        Client::connect(addr, "localhost", build_client_config(cert.clone(), &auth)?).await?;
+        Connection::connect(addr, "localhost", build_client_config(cert.clone(), &auth)?).await?;
     let publisher = client.publisher().await?;
     let err = publisher
         .publish(
@@ -182,7 +182,7 @@ async fn quic_publish_unauthorized_and_stream_missing() -> Result<()> {
     );
 
     let auth = auth_fixture("t1", vec!["stream.publish:stream:t1/*/*".to_string()]);
-    let client = Client::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
+    let client = Connection::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
     let publisher = client.publisher().await?;
     let err = publisher
         .publish(
@@ -230,7 +230,7 @@ async fn quic_publish_ack_and_batch_success() -> Result<()> {
         Arc::clone(&auth.auth),
     ));
 
-    let client = Client::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
+    let client = Connection::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
     let publisher = client.publisher().await?;
     // Use AckMode::None here to avoid coupling this test to control-stream ack timing;
     // ack paths are covered by commit-ack and explicit error tests.
@@ -288,7 +288,7 @@ async fn quic_publish_commit_ack_ok() -> Result<()> {
         Arc::clone(&auth.auth),
     ));
 
-    let client = Client::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
+    let client = Connection::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
     let publisher = client.publisher().await?;
     publisher
         .publish(
@@ -336,7 +336,7 @@ async fn quic_publish_larger_than_the_inflight_budget() -> Result<()> {
         Arc::clone(&auth.auth),
     ));
 
-    let client = Client::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
+    let client = Connection::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
     let payload = vec![7u8; 6 * 1024 * 1024];
     client
         .publisher()
@@ -562,7 +562,7 @@ async fn quic_publish_binary_batch_success() -> Result<()> {
         Arc::clone(&auth.auth),
     ));
 
-    let client = Client::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
+    let client = Connection::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
     let publisher = client.publisher().await?;
     // Binary batch publish exercises the FLAG_BINARY_PUBLISH_BATCH fast path.
     publisher
@@ -615,7 +615,7 @@ async fn quic_publish_binary_acked_success() -> Result<()> {
             ));
 
             let client =
-                Client::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
+                Connection::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
             let publisher = client.publisher().await?;
             // The other half of the negotiation contract: against a broker that
             // does advertise, the client must actually take the binary path
@@ -688,7 +688,7 @@ async fn quic_publish_binary_acked_unknown_stream_returns_error() -> Result<()> 
         Arc::clone(&auth.auth),
     ));
 
-    let client = Client::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
+    let client = Connection::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
     let publisher = client.publisher().await?;
     let err = publisher
         .publish_batch(
@@ -934,7 +934,7 @@ async fn idempotent_producer_does_not_reuse_a_sequence_in_doubt() -> Result<()> 
     ));
 
     let client =
-        Arc::new(Client::connect(addr, "localhost", build_client_config(cert, &auth)?).await?);
+        Arc::new(Connection::connect(addr, "localhost", build_client_config(cert, &auth)?).await?);
     let producer = client.idempotent_producer().await?;
 
     // As far as the producer can tell, the first batch failed...
@@ -1090,7 +1090,7 @@ async fn a_reused_sequence_is_refused_to_the_rust_client() -> Result<()> {
     let (broker, addr, cert, auth, _config, server_task) = serve_durable_orders(dir.path()).await?;
 
     let client =
-        Arc::new(Client::connect(addr, "localhost", build_client_config(cert, &auth)?).await?);
+        Arc::new(Connection::connect(addr, "localhost", build_client_config(cert, &auth)?).await?);
     let producer_id = client.idempotent_producer().await?.producer_id();
     let publisher = client.publisher().await?;
     let send = |payload: &'static [u8]| {

@@ -16,9 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use felix_client::{
-    ClusterClient, GroupInfo, GroupMember, GroupPollOptions, GroupPosition, GroupRecord,
-};
+use felix_client::{Client, GroupInfo, GroupMember, GroupPollOptions, GroupPosition, GroupRecord};
 use tokio_util::sync::CancellationToken;
 
 use crate::boundary::{Failure, guard, optional_str, required_str};
@@ -923,7 +921,7 @@ pub unsafe extern "C" fn felix_client_stream_shards(
 
 /// The client and group a call goes to, owned so the task can hold them.
 struct Target {
-    inner: Arc<ClusterClient>,
+    inner: Arc<Client>,
     tenant_id: String,
     ns: String,
     stream: String,

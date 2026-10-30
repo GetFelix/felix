@@ -1,14 +1,16 @@
 //! The Rust client: how an application publishes, subscribes, and reads a
 //! cache.
 //!
-//! **Start at [`Client`].** It connects to one broker over QUIC and is the
-//! root of everything else: [`Client::publisher`] for a [`Publisher`],
-//! [`Client::subscribe`] for a [`Subscription`], and the cache and counter
+//! **Start at [`Client`].** It takes one or more broker addresses, routes each
+//! request to the broker that owns the shard, and rebuilds its connections
+//! when a broker fails: [`Client::publish`] and
+//! [`Client::publish_batch`] to publish, [`Client::subscribe`] for a subscription, and the cache and counter
 //! calls directly on it. Beyond that:
 //!
-//! - [`ClusterClient`] takes several broker addresses and rebuilds its
-//!   connection from the rest when one fails, so an application outlives the
-//!   broker it happened to reach.
+//! - [`Connection`] is one connection to one broker. It is the building block
+//!   under [`Client`], for tools that address a single named broker. It does
+//!   not reconnect, and a publish to a broker that does not lead the shard is
+//!   forwarded at a throughput cost.
 //! - [`ShardedSubscription`] follows every shard of a stream at once and
 //!   reports per-shard offsets, since one number cannot describe where a
 //!   sharded consumer got to.
@@ -31,14 +33,14 @@
 //!
 //! # Where things live
 //!
-//! - `client`: [`Client`] itself, one file per area of its API.
+//! - `client`: [`Connection`] itself, one file per area of its API.
 //! - `connection`: where pooled connections go, stream authentication, and
 //!   the router that hands server-opened event streams to subscriptions.
 //! - `publish`: [`Publisher`], its writer tasks, admission, acks, and
 //!   [`IdempotentProducer`].
 //! - `subscribe`: [`Subscription`] and the pipeline that feeds it.
 //! - `cache`: the cache workers and [`CacheWatch`].
-//! - `cluster`: [`ClusterClient`] and the sharded views built on it.
+//! - `cluster`: [`Client`] and the sharded views built on it.
 //! - `config`: [`ClientConfig`], its defaults, and the env and YAML overrides.
 //! - `tls`: [`quic_client_config`], the QUIC TLS setup, whether it offers
 //!   the `felix/1` ALPN, and a client certificate ([`ClientIdentity`]).
@@ -73,12 +75,12 @@ pub use cache::{
     CacheChange, CacheConditionResult, CacheWatch, CacheWatchFilter, CacheWatchItem, VersionedValue,
 };
 pub use client::{
-    Client, ConditionalWrite, GroupInfo, GroupMember, GroupPollOptions, GroupPosition, StreamPage,
-    SubscriptionsPage,
+    ConditionalWrite, Connection, GroupInfo, GroupMember, GroupPollOptions, GroupPosition,
+    StreamPage, SubscriptionsPage,
 };
 pub use cluster::{
-    BatchReport, ClusterCacheWatch, ClusterClient, ClusterSubscription, ReconnectPolicy, Seed,
-    ShardEvent, ShardOffsets, ShardPublish, ShardedCacheWatch, ShardedCacheWatchItem, ShardedGroup,
+    BatchReport, Client, ClusterCacheWatch, ClusterSubscription, ReconnectPolicy, Seed, ShardEvent,
+    ShardOffsets, ShardPublish, ShardedCacheWatch, ShardedCacheWatchItem, ShardedGroup,
     ShardedGroupRecord, ShardedSubscription,
 };
 pub use commit::{CommitError, CommitOp, CommitReceipt, StateValue};

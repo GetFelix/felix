@@ -215,8 +215,11 @@ async fn a_moved_shard_ends_its_readers_on_the_old_leader() {
 /// Every reader for a shard in `moved` must end; each is removed once it has.
 async fn check_ended(
     moved: &[String],
-    subscriptions: &mut HashMap<String, (u32, (felix_client::Client, felix_client::Subscription))>,
-    watches: &mut HashMap<String, (felix_client::Client, felix_client::CacheWatch)>,
+    subscriptions: &mut HashMap<
+        String,
+        (u32, (felix_client::Connection, felix_client::Subscription)),
+    >,
+    watches: &mut HashMap<String, (felix_client::Connection, felix_client::CacheWatch)>,
     sent: &HashMap<u32, Vec<Vec<u8>>>,
     failures: &mut Vec<String>,
 ) {

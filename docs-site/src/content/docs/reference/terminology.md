@@ -215,7 +215,7 @@ request to the leader over the peer link and relays the answer. A client can
 also be told to go to the leader itself, with `not_leader`. Kafka requests are
 never forwarded.
 
-### ClusterClient
+### Client
 
 The client that knows several brokers, follows redirects, shard moves and
 failovers, and reconnects under a `ReconnectPolicy`. Every language binding is

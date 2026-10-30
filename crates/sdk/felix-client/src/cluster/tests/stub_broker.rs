@@ -5,7 +5,7 @@
 //! `FEATURE_IDEMPOTENT_PRODUCER`, `FEATURE_STREAM_SHARDS` (every stream has
 //! [`STREAM_SHARDS`]), `FEATURE_ATOMIC_COMMIT`, `FEATURE_CONSUMER_GROUP` and `FEATURE_SHARD_OWNERS`
 //! (answered from [`StubBroker::set_cache_owners`]), so a
-//! [`ClusterClient`](crate::ClusterClient) skips discovery and sends its
+//! [`Client`](crate::Client) skips discovery and sends its
 //! publishes as acked binary batches, answered here with coded binary acks.
 //! A subscribe the script answers with `Subscribed` gets an event stream,
 //! held open for the life of the connection unless

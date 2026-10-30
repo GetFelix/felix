@@ -7,7 +7,7 @@ use felix_transport::{QuicServer, TransportConfig};
 use felix_wire::{AckMode, Message};
 use tokio::time::{Duration, timeout};
 
-use super::Client;
+use super::Connection;
 use crate::frame_io::{read_frame_into, read_message, write_message};
 use crate::test_support::{
     build_client_config_with_overrides, build_server_config, set_client_env,
@@ -219,7 +219,7 @@ async fn quic_publish_subscribe_cache_success() -> Result<()> {
         Ok::<(), anyhow::Error>(())
     });
 
-    let client = Client::connect_with_transport(
+    let client = Connection::connect_with_transport(
         addr,
         "localhost",
         build_client_config_with_overrides(cert, 1)?,

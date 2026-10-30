@@ -6,11 +6,11 @@ use anyhow::{Context, Result};
 use bytes::BytesMut;
 use felix_wire::{InspectedSubscription, Message, SubscriptionCursor, SubscriptionFilter};
 
-use super::Client;
+use super::Connection;
 use crate::connection::OpenedStream;
 use crate::frame_io::{read_message_with_limit, write_message};
 
-/// One page of [`Client::list_subscriptions`].
+/// One page of [`Connection::list_subscriptions`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubscriptionsPage {
     /// The broker that answered. Empty on a broker that is not in a cluster.
@@ -20,9 +20,9 @@ pub struct SubscriptionsPage {
     pub next_cursor: Option<SubscriptionCursor>,
 }
 
-impl Client {
-    /// Whether this broker answers [`Client::inspect_shard`] and
-    /// [`Client::list_subscriptions`].
+impl Connection {
+    /// Whether this broker answers [`Connection::inspect_shard`] and
+    /// [`Connection::list_subscriptions`].
     pub fn supports_inspect(&self) -> bool {
         felix_wire::supports_feature(self.server_features_hi, felix_wire::FEATURE_INSPECT)
     }
@@ -33,7 +33,7 @@ impl Client {
     ///
     /// Needs `node.view:cluster:*`, and may name any tenant. Errors when the
     /// broker did not advertise [`felix_wire::FEATURE_INSPECT`]; check
-    /// [`Client::supports_inspect`] first to tell that apart.
+    /// [`Connection::supports_inspect`] first to tell that apart.
     pub async fn inspect_shard(
         &self,
         kind: crate::ShardKind,

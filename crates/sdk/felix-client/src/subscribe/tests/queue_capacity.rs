@@ -6,7 +6,7 @@ use felix_transport::{QuicServer, TransportConfig};
 use felix_wire::Message;
 use tokio::sync::mpsc;
 
-use crate::Client;
+use crate::Connection;
 use crate::frame_io::{read_message, write_message};
 use crate::test_support::{
     build_client_config_with_overrides, build_server_config, set_client_env,
@@ -72,7 +72,7 @@ async fn subscribe_against(
     let mut config = build_client_config_with_overrides(cert, 1)?;
     config.broker_sub_queue_capacity = asked;
     let client =
-        Client::connect_with_transport(addr, "localhost", config, TransportConfig::default())
+        Connection::connect_with_transport(addr, "localhost", config, TransportConfig::default())
             .await?;
     let subscription = client.subscribe("t1", "default", "updates").await?;
     let sent = seen_rx.recv().await.expect("the broker saw the subscribe");

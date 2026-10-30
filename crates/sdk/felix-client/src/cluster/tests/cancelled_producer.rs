@@ -9,8 +9,8 @@ use anyhow::Result;
 use felix_wire::{ErrorCode, Message, RetryClass};
 
 use super::stub_broker::StubBroker;
-use crate::ClusterClient;
-use crate::client::Client;
+use crate::Client;
+use crate::client::Connection;
 use crate::test_support::build_client_config_with_overrides;
 
 fn ok(request_id: u64) -> Message {
@@ -45,7 +45,7 @@ async fn drop_once_received(
 async fn a_dropped_publish_leaves_the_producer_usable() -> Result<()> {
     let (broker, cert) = StubBroker::start(ok)?;
     let client = Arc::new(
-        Client::connect(
+        Connection::connect(
             broker.addr,
             "localhost",
             build_client_config_with_overrides(cert, 1)?,
@@ -74,13 +74,13 @@ async fn a_dropped_publish_leaves_the_producer_usable() -> Result<()> {
     Ok(())
 }
 
-/// The same through a `ClusterClient`, whose producer owns the client too.
+/// The same through a `Client`, whose producer owns the client too.
 #[tokio::test]
 #[serial_test::serial]
 async fn a_dropped_cluster_publish_leaves_the_producer_usable() -> Result<()> {
     let (broker, cert) = StubBroker::start(ok)?;
     let cluster = Arc::new(
-        ClusterClient::connect(
+        Client::connect(
             &[broker.addr],
             "localhost",
             build_client_config_with_overrides(cert, 1)?,
@@ -145,7 +145,7 @@ async fn an_abandoned_batch_in_doubt_is_re_sent_before_the_next() -> Result<()> 
     };
     let (broker, cert) = StubBroker::start(script)?;
     let client = Arc::new(
-        Client::connect(
+        Connection::connect(
             broker.addr,
             "localhost",
             build_client_config_with_overrides(cert, 1)?,
@@ -181,7 +181,7 @@ async fn an_abandoned_batch_in_doubt_is_re_sent_before_the_next() -> Result<()> 
 async fn a_closed_producer_finishes_what_it_was_handed() -> Result<()> {
     let (broker, cert) = StubBroker::start(ok)?;
     let client = Arc::new(
-        Client::connect(
+        Connection::connect(
             broker.addr,
             "localhost",
             build_client_config_with_overrides(cert, 1)?,
@@ -219,7 +219,7 @@ async fn a_closed_producer_finishes_what_it_was_handed() -> Result<()> {
 async fn a_producer_closed_within_a_timeout_sends_nothing_after_it() -> Result<()> {
     let (broker, cert) = StubBroker::start(ok)?;
     let client = Arc::new(
-        Client::connect(
+        Connection::connect(
             broker.addr,
             "localhost",
             build_client_config_with_overrides(cert, 1)?,

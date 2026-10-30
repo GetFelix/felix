@@ -36,7 +36,7 @@ For optimal performance, clients should maintain connection pools:
 
 ```rust
 // Rust client example
-use felix_client::{ClientConfig, ClusterClient};
+use felix_client::{ClientConfig, Client};
 use std::net::SocketAddr;
 
 let quinn = quinn::ClientConfig::with_platform_verifier();
@@ -47,7 +47,7 @@ let config = ClientConfig {
 };
 
 let seeds: Vec<SocketAddr> = vec!["127.0.0.1:5000".parse()?];
-let client = ClusterClient::connect(&seeds, "localhost", config).await?;
+let client = Client::connect(&seeds, "localhost", config).await?;
 ```
 
 Connection setup costs a TLS handshake, so the client keeps long-lived
@@ -134,13 +134,13 @@ once the publish is committed, or with the reason it was refused:
 **Example usage**:
 
 ```rust
-use felix_client::{AckMode, ClientConfig, ClusterClient};
+use felix_client::{AckMode, ClientConfig, Client};
 use std::net::SocketAddr;
 
 let quinn = quinn::ClientConfig::with_platform_verifier();
 let config = ClientConfig::optimized_defaults(quinn);
 let seeds: Vec<SocketAddr> = vec!["127.0.0.1:5000".parse()?];
-let client = ClusterClient::connect(&seeds, "localhost", config).await?;
+let client = Client::connect(&seeds, "localhost", config).await?;
 
 // Fire-and-forget publish
 client
@@ -229,7 +229,7 @@ For maximum throughput, use binary encoding.
 ```
 
 **Example** (Rust client handles encoding automatically; `Publisher` is the
-single-connection `Client`'s API, and applications should use `ClusterClient`,
+single-connection `Connection`'s API, and applications should use `Client`,
 whose `publish_batch` sends this frame):
 
 ```rust
@@ -1054,9 +1054,9 @@ cache.
 Which broker owns each shard of a stream or cache (`kind` is `stream` or
 `cache`). Gated by `FEATURE_SHARD_OWNERS`. A shard nobody can serve right now
 has no `node_id` and says why in `unavailable`. A broker not in a cluster
-answers one shard with no `node_id`. `Client::shard_owners` asks it.
+answers one shard with no `node_id`. `Connection::shard_owners` asks it.
 
-`ClusterClient::subscribe_sharded` does all of this for you: it asks, opens one
+`Client::subscribe_sharded` does all of this for you: it asks, opens one
 subscription per shard, and follows each shard's own redirect.
 
 ## Other Messages
@@ -1225,10 +1225,10 @@ say nothing was applied. `outcome_unknown` may have landed, so re-sending it is
 safe only through an idempotent producer.
 
 ```rust
-use felix_client::{AckMode, BrokerError, ClusterClient, RetryClass};
+use felix_client::{AckMode, BrokerError, Client, RetryClass};
 use std::time::Duration;
 
-async fn publish_with_retry(client: &ClusterClient, data: &[u8], retries: u32) -> anyhow::Result<()> {
+async fn publish_with_retry(client: &Client, data: &[u8], retries: u32) -> anyhow::Result<()> {
     for attempt in 0..retries {
         let err = match client
             .publish("acme", "prod", "events", data.to_vec(), AckMode::PerMessage)

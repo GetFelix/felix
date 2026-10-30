@@ -12,7 +12,7 @@ use felix_wire::{AckMode, ErrorCode, Message};
 
 use super::connections::{default_config, policy};
 use super::stub_broker::{STREAM_SHARDS, StubBroker};
-use crate::cluster::ClusterClient;
+use crate::cluster::Client;
 use crate::test_support::build_server_config;
 
 fn ok(request_id: u64) -> Message {
@@ -57,7 +57,7 @@ fn payloads(batch: &(Option<Bytes>, Vec<Bytes>)) -> Vec<String> {
         .collect()
 }
 
-async fn own(cluster: &ClusterClient, shard: u32, owner: &StubBroker, node: &str) {
+async fn own(cluster: &Client, shard: u32, owner: &StubBroker, node: &str) {
     cluster
         .remember_owner(
             ("t1".into(), "default".into(), "orders".into(), shard),
@@ -75,12 +75,12 @@ async fn own(cluster: &ClusterClient, shard: u32, owner: &StubBroker, node: &str
 async fn pair(
     a_script: impl Fn(u64) -> Message + Send + Sync + 'static,
     b_script: impl Fn(u64) -> Message + Send + Sync + 'static,
-) -> Result<(ClusterClient, StubBroker, StubBroker)> {
+) -> Result<(Client, StubBroker, StubBroker)> {
     let (server_config, cert) = build_server_config()?;
     let a = StubBroker::start_with(server_config.clone(), a_script)?;
     let b = StubBroker::start_with(server_config, b_script)?;
     let cluster =
-        ClusterClient::connect_with_policy(&[a.addr], "localhost", default_config(cert)?, policy())
+        Client::connect_with_policy(&[a.addr], "localhost", default_config(cert)?, policy())
             .await?;
     Ok((cluster, a, b))
 }

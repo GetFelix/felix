@@ -9,7 +9,7 @@ use felix_wire::{ErrorCode, Message};
 
 use super::stub_broker::StubBroker;
 use crate::BrokerError;
-use crate::cluster::{ClusterClient, ReconnectPolicy};
+use crate::cluster::{Client, ReconnectPolicy};
 use crate::test_support::build_client_config_with_overrides;
 
 fn refusal(code: ErrorCode) -> Message {
@@ -21,12 +21,9 @@ fn refusal(code: ErrorCode) -> Message {
     }
 }
 
-async fn refused_by(
-    code: ErrorCode,
-    policy: ReconnectPolicy,
-) -> Result<(StubBroker, ClusterClient)> {
+async fn refused_by(code: ErrorCode, policy: ReconnectPolicy) -> Result<(StubBroker, Client)> {
     let (broker, cert) = StubBroker::start(move |_| refusal(code.clone()))?;
-    let cluster = ClusterClient::connect_with_policy(
+    let cluster = Client::connect_with_policy(
         &[broker.addr],
         "localhost",
         build_client_config_with_overrides(cert, 0)?,
@@ -161,7 +158,7 @@ async fn a_stream_wide_group_call_shares_one_deadline() -> Result<()> {
         std::thread::sleep(Duration::from_millis(250));
         Message::Ok
     })?;
-    let cluster = ClusterClient::connect_with_policy(
+    let cluster = Client::connect_with_policy(
         &[broker.addr],
         "localhost",
         build_client_config_with_overrides(cert, 0)?,
@@ -206,7 +203,7 @@ async fn a_cache_reroute_stops_at_the_deadline() -> Result<()> {
         deadline: Some(Duration::from_millis(1)),
         ..limited(1)
     };
-    let cluster = ClusterClient::connect_with_policy(
+    let cluster = Client::connect_with_policy(
         &[entry.addr],
         "localhost",
         build_client_config_with_overrides(cert, 0)?,
@@ -242,7 +239,7 @@ async fn a_group_redirect_stops_at_the_deadline() -> Result<()> {
         deadline: Some(Duration::from_millis(10)),
         ..limited(1)
     };
-    let cluster = ClusterClient::connect_with_policy(
+    let cluster = Client::connect_with_policy(
         &[entry.addr],
         "localhost",
         build_client_config_with_overrides(cert, 0)?,

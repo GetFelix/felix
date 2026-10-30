@@ -24,7 +24,7 @@ use crate::auth::{StaticToken, TokenProvider};
 use crate::publish::PublishSharding;
 use yaml::ClientConfigOverride;
 
-/// Everything a [`crate::Client`] is built from.
+/// Everything a [`crate::Connection`] is built from.
 ///
 /// Build one with [`ClientConfig::optimized_defaults`] or
 /// [`ClientConfig::from_env_or_yaml`] and adjust fields from there.
@@ -45,11 +45,11 @@ pub struct ClientConfig {
     pub publish_inflight_bytes: usize,
     /// How publishes are spread across the publish streams.
     pub publish_sharding: PublishSharding,
-    /// Most publish streams a [`crate::ClusterClient`] opens per broker for one
+    /// Most publish streams a [`crate::Client`] opens per broker for one
     /// shard each, beside the pool. Each of its publishes goes on its shard's
     /// own stream, so a shard stalled on the broker holds up only itself.
     /// Shards past this share the pool. `0` puts every publish on the pool. A
-    /// plain [`crate::Client`] does not use these: it does not know a stream's
+    /// plain [`crate::Connection`] does not use these: it does not know a stream's
     /// width, so it keeps each stream on one pooled writer.
     pub publish_shard_streams: usize,
     /// The tenant every stream authenticates as. Required to connect.
@@ -66,12 +66,12 @@ pub struct ClientConfig {
     pub cache_streams_per_conn: usize,
     /// Connections that carry subscriptions and cache watches.
     pub event_conn_pool: usize,
-    /// Most connections a [`crate::ClusterClient`] opens to one broker.
+    /// Most connections a [`crate::Client`] opens to one broker.
     ///
     /// It starts with one, shared by every kind of traffic and every role
     /// that broker plays, and opens another only when the streams on the
     /// existing ones are saturated. The `*_conn_pool` sizes above apply to a
-    /// [`crate::Client`] built with [`crate::Client::connect`].
+    /// [`crate::Connection`] built with [`crate::Connection::connect`].
     pub cluster_conn_pool: usize,
     /// Streams one of those connections carries before another is opened
     /// beside it. The broker's stream credit (QUIC `MAX_STREAMS`) is the other
@@ -112,7 +112,7 @@ pub struct ClientConfig {
     /// Ask every broker to answer acknowledged publishes after the write,
     /// with the offset, as `FELIX_ACK_ON_COMMIT=true` does broker-wide. Slower
     /// per publish. A broker that predates it ignores it, and
-    /// [`crate::Client::supports_ack_on_commit`] says whether a broker
+    /// [`crate::Connection::supports_ack_on_commit`] says whether a broker
     /// honours it.
     pub ack_on_commit: bool,
     /// Ask brokers to say who published each event: [`crate::Event::publisher`]
@@ -123,7 +123,7 @@ pub struct ClientConfig {
     /// Ask brokers for each record's append time:
     /// [`crate::Event::timestamp_micros`] and the `timestamp_micros` of a
     /// consumer-group record. Off by default, since it adds eight bytes to
-    /// every event. [`crate::Client::offset_for_time`] works either way.
+    /// every event. [`crate::Connection::offset_for_time`] works either way.
     pub timestamps: bool,
     /// Longest a connect to one broker may take, handshake and stream setup
     /// included, before it fails with an error. The first token fetch is not part of it
