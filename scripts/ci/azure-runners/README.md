@@ -69,7 +69,7 @@ eastus2: runners there would leave the perf cells no room.
 
 `cloud-init.yaml`: build-essential, clang, lld, cmake, libssl-dev, Java 21,
 Docker, Node 20, Python 3 with PyYAML, `gh`, `postgresql-client`, rustup with
-1.97.1 (clippy, rustfmt, llvm-tools) and nightly, `cargo-llvm-cov`, and the
+1.99.1 (clippy, rustfmt, llvm-tools) and nightly, `cargo-llvm-cov`, and the
 Actions runner under `/home/runner/actions-runner`. The runner updates itself.
 Bump `RUST_TOOLCHAIN` there when `rust-toolchain.toml` moves; the workflows'
 `dtolnay/rust-toolchain` step installs a missing toolchain anyway, so a stale

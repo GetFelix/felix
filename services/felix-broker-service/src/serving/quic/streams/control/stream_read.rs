@@ -81,6 +81,7 @@ pub(super) async fn stream_read(
     Ok(Step::Next)
 }
 
+#[allow(clippy::result_large_err)] // the Err is the reply frame to send
 async fn read(
     cx: &Ctx<'_>,
     peer_features: u32,

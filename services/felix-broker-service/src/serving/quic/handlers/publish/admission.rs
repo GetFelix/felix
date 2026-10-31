@@ -210,14 +210,14 @@ impl Drop for IdentityLimits {
 
 fn reserve(count: &AtomicUsize, max: usize) -> bool {
     count
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
             (count < max).then_some(count + 1)
         })
         .is_ok()
 }
 
 fn release(count: &AtomicUsize) {
-    let _ = count.fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+    let _ = count.try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
         Some(count.saturating_sub(1))
     });
 }
