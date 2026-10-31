@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793484302715,
+  "lastUpdate": 1793485266891,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -40508,6 +40508,58 @@ window.BENCHMARK_DATA = {
             "range": "6628.49",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1235280.77\nmean: 1238717.20\nstdev: 6628.49\ncv: 0.54%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "288ce6cc679bc21b9f176ab7ace0b8e3dc011537",
+          "message": "build(deps): bump library/postgres (#1711)\n\nBumps library/postgres from 15-alpine to 18-alpine.\n\n---\nupdated-dependencies:\n- dependency-name: library/postgres\n  dependency-version: 18-alpine\n  dependency-type: direct:production\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-10-31T15:16:46-07:00",
+          "tree_id": "27fd8be3ed65f61400f3cc04773408e0b6a4f20f",
+          "url": "https://github.com/GetFelix/felix/commit/288ce6cc679bc21b9f176ab7ace0b8e3dc011537"
+        },
+        "date": 1793485266106,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 361313.45,
+            "range": "10322.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 361313.45\nmean: 359500.21\nstdev: 10322.56\ncv: 2.87%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 361313.45,
+            "range": "10322.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 361313.45\nmean: 359500.21\nstdev: 10322.56\ncv: 2.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81838.71,
+            "range": "716.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81838.71\nmean: 81838.30\nstdev: 716.54\ncv: 0.88%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 818387.09,
+            "range": "7165.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 818387.09\nmean: 818383.01\nstdev: 7165.38\ncv: 0.88%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
