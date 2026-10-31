@@ -789,6 +789,19 @@ an `Incarnated` envelope when a batch has both, never inside, and never around
 anything but a records kind. A batch with no set generation is sent as it
 always was.
 
+Both envelopes together add 36 bytes, so the body inside them is limited to
+`MAX_INNER_BODY_BYTES` (`MAX_BODY_BYTES` less 36): a batch built under its
+budget never becomes `FrameTooLarge` once it is wrapped. Neither envelope
+copies the body on encode or decode.
+
+A replica answers an `ElectionFence` or a `SetStamped` batch whose set
+generation is older than the one it keeps with `ReplicateError` code
+`StaleSet` (12), with the newer generation in `expected_offset`. It refuses an
+`ElectionFence` whose set does not list it as a voter with `Unauthorized`, and
+a candidate's fence while it still hears its leader with `Unavailable`. It
+writes the set to disk before it answers. A leader treats `StaleSet` as
+`FencedEpoch`: it has been deposed.
+
 `PreVote` (kind 43) asks a replica whether it would vote for the sender,
 before the sender raises its generation. It carries the shard (with
 `shard.generation` the generation the sender would stand at), the log, the

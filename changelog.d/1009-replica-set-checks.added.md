@@ -1,0 +1,1 @@
+Replicas keep the replica set they answer at, refuse a fence or batch on an older set (`StaleSet`), refuse a candidate while they still hear their leader, and a leader that answers a newer fence stops counting. Dormant: only between brokers run with the test switch `FELIX_INTERNAL_ELECTION` (#1009). Internal frames that wrap a batch no longer copy its body.
