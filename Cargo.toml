@@ -145,7 +145,7 @@ object_store = { version = "0.14", default-features = false, features = ["fs"] }
 opentelemetry = "0.33.0"
 opentelemetry-otlp = { version = "0.33.0", default-features = false, features = ["grpc-tonic", "trace", "internal-logs"] }
 opentelemetry_sdk = { version = "0.33.0", features = ["rt-tokio"] }
-parking_lot = "0.12"
+parking_lot = "0.13"
 quinn = { version = "0.11", default-features = false, features = ["bloom", "log", "platform-verifier", "runtime-tokio", "rustls-aws-lc-rs"] }
 quinn-proto = { version = "0.11", default-features = false, features = ["bloom", "log", "rustls-aws-lc-rs"] }
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
