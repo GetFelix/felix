@@ -130,6 +130,50 @@ public sealed partial class FelixClient
     }
 
     /// <summary>
+    /// Hides the records of <paramref name="shard"/> below <paramref name="before"/>, only if the shard's next offset
+    /// is exactly <paramref name="expectedOffset"/>. Afterwards a read below the floor fails with <see cref="FelixStatus.Cursor"/>.
+    /// The trim is a record of its own and lands at <paramref name="expectedOffset"/>, so <paramref name="before"/> can be at most that.
+    /// </summary>
+    /// <param name="before">The first offset to keep.</param>
+    /// <param name="expectedOffset">The shard's next offset. A stale one is <see cref="ConditionalTrim.Trimmed"/> false with the tail, not an exception.</param>
+    /// <param name="headers">Kept with the trim and handed back to a reader refused below its floor. Null for none.</param>
+    /// <remarks>
+    /// Needs the <c>stream.trim</c> permission (<see cref="FelixStatus.Auth"/> without it) and a durable stream without
+    /// atomic commits. A broker that does not support head trims fails with <see cref="FelixStatus.Unsupported"/>, sending
+    /// nothing; one whose fleet has not finalized them fails with <see cref="FelixStatus.Error"/>. A trim cancelled after it may
+    /// have been sent, or one the broker stopped waiting for, fails with <see cref="FelixStatus.OutcomeUnknown"/>:
+    /// it may have landed, and sending it again then answers with the current tail.
+    /// </remarks>
+    public unsafe Task<ConditionalTrim> TrimBeforeAsync(
+        string tenant,
+        string ns,
+        string stream,
+        uint shard,
+        long before,
+        long expectedOffset,
+        ReadOnlyMemory<byte>? headers = null,
+        CancellationToken cancellationToken = default)
+    {
+        Arg.Text(tenant);
+        Arg.Text(ns);
+        Arg.Text(stream);
+        var from = Offset(before);
+        var expected = Offset(expectedOffset);
+        return Call<ConditionalTrim>(cancellationToken, (client, cancel, userData) =>
+        {
+            byte empty = 0;
+            fixed (byte* headerBytes = (headers ?? default).Span)
+            {
+                // Null means none; a present but empty header needs a pointer that is not null.
+                var headerPointer = headers is null ? null : headers.Value.IsEmpty ? &empty : headerBytes;
+                return NativeMethods.felix_client_trim_before(
+                    client, tenant, ns, stream, shard, from, expected, headerPointer, headers is null ? 0 : (nuint)headers.Value.Length,
+                    cancel, &Callbacks.OnTrim, userData);
+            }
+        });
+    }
+
+    /// <summary>
     /// Reads the state under <paramref name="key"/>, as written by commits. A key that was never written,
     /// or was deleted, has a null <see cref="StateValue.Value"/>; that is an answer, not an error.
     /// </summary>

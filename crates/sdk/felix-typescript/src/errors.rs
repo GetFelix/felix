@@ -26,7 +26,7 @@
 
 use felix_client::{
     AckLost, AuthError, BrokerError, CommitError, NotLeaderError, PublishRefusalReason,
-    PublishRefused, SubscribeCursorError, SubscriptionLost,
+    PublishRefused, SubscribeCursorError, SubscriptionLost, TrimError,
 };
 use felix_wire::RetryClass;
 use napi::{Error, Status};
@@ -59,6 +59,8 @@ pub(crate) const KIND_INVALID: &str = "FELIX_INVALID";
 pub(crate) const KIND_COMMIT: &str = "FELIX_COMMIT";
 pub(crate) const KIND_NOT_ON_OWNING_SHARD: &str = "FELIX_NOT_ON_OWNING_SHARD";
 pub(crate) const KIND_EVENT_COUNT: &str = "FELIX_EVENT_COUNT";
+/// A head trim was refused before it was sent: the broker does not support them.
+pub(crate) const KIND_TRIM: &str = "FELIX_TRIM";
 /// The broker would not append an idempotent publish, and said why.
 pub(crate) const KIND_PUBLISH_REFUSED: &str = "FELIX_PUBLISH_REFUSED";
 
@@ -101,6 +103,9 @@ pub(crate) fn encode(err: &anyhow::Error) -> String {
             }
             _ => format!("{KIND_COMMIT}{KIND_SEPARATOR}{text}"),
         };
+    }
+    if err.chain().any(|e| e.is::<TrimError>()) {
+        return format!("{KIND_TRIM}{KIND_SEPARATOR}{text}");
     }
     if let Some(refused) = err.chain().find_map(|e| e.downcast_ref::<PublishRefused>()) {
         return format!(

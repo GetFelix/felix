@@ -38,6 +38,7 @@ mod sharded;
 mod status;
 mod subscription;
 mod token;
+mod trim;
 
 pub use cache::{
     FELIX_IF_ABSENT, FELIX_IF_VERSION, FelixCacheCondition, FelixConditionCallback,
@@ -123,3 +124,4 @@ pub use token::{
     FelixTokenFetch, FelixTokenRelease, FelixTokenReply, felix_token_reply_err,
     felix_token_reply_ok,
 };
+pub use trim::{FelixTrimCallback, FelixTrimOutcome, felix_client_trim_before};

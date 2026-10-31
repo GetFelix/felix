@@ -41,7 +41,7 @@ shard and `felix_client_subscribe_sharded` for all of them),
 `felix_client_offset_for_time`, the group calls (`felix_client_group_*` and
 `felix_client_stream_shards`), and the cache calls (`felix_client_cache_*`,
 `felix_client_counter_*`, `felix_client_watch_cache*` and `felix_cache_watch_*`), the commit calls (`felix_client_commit*`,
-`felix_client_publish_if*` and `felix_client_state_get*`), and the producer calls
+`felix_client_publish_if*` and `felix_client_state_get*`), `felix_client_trim_before`, and the producer calls
 (`felix_client_idempotent_producer` and `felix_producer_*`). Each takes a callback, a `void *user_data`
 passed back to it untouched, and an optional `FelixCancelToken`.
 
@@ -329,6 +329,12 @@ publish, enqueue or put. Everything is copied before the call returns.
 - Commits are writes: `FELIX_STATUS_OUTCOME_UNKNOWN` on a late cancel, and not
   sent again. `FELIX_STATUS_UNSUPPORTED` means the broker does not advertise
   commits; nothing was sent.
+- `felix_client_trim_before` hides a durable shard's records below `before`, only if
+  the shard's next offset is `expected_offset`. It fills a borrowed
+  `FelixTrimOutcome`; a stale tail is an answer (`trimmed` false, the shard's
+  `tail`). `FELIX_STATUS_UNSUPPORTED` means the broker does not advertise head
+  trims and nothing was sent; `FELIX_STATUS_OUTCOME_UNKNOWN` means a timed-out or
+  late-cancelled trim may have landed.
 
 For a C# binding, build the `FelixCommitOp` array in pinned memory for the call
 only, since the library copies it, and copy the state's value inside the

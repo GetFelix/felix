@@ -2,7 +2,7 @@
 //!
 //! A real broker advertises `FEATURE_ATOMIC_COMMIT` whether or not its fleet
 //! has finalized the feature, so no real broker lets a client prove it holds
-//! back `commit`, `state_get` and shard-named publishes from a broker that did
+//! back `commit`, `state_get`, `trim_before` and shard-named publishes from a broker that did
 //! not advertise them. This one does, and counts the ones it was sent so a
 //! suite can check none arrived.
 
@@ -22,7 +22,7 @@ pub(crate) struct BareBroker {
     pub(crate) addr: SocketAddr,
     /// Certificate to add to the trust bundle, PEM.
     pub(crate) cert_pem: String,
-    /// Commits, state reads and named-shard publishes received.
+    /// Commits, state reads, head trims and named-shard publishes received.
     pub(crate) requests: Arc<AtomicUsize>,
     task: tokio::task::JoinHandle<()>,
 }
@@ -109,6 +109,7 @@ async fn serve_stream(
             }
             Message::Commit { .. }
             | Message::StateGet { .. }
+            | Message::TrimBefore { .. }
             | Message::PublishBatch { shard: Some(_), .. } => {
                 requests.fetch_add(1, Ordering::SeqCst);
             }

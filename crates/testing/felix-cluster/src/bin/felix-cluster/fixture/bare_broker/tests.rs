@@ -53,13 +53,28 @@ async fn a_client_sends_no_commit_to_a_broker_that_advertised_none() {
         "state_get gave {state:?}"
     );
 
+    let trim = tokio::time::timeout(
+        Duration::from_secs(5),
+        client.trim_before("t1", "default", "s", 0, 1, 1, None),
+    )
+    .await
+    .expect("a trim must be refused at the call, not left waiting")
+    .expect_err("trim_before must be refused");
+    assert!(
+        matches!(
+            trim.downcast_ref::<felix_client::TrimError>(),
+            Some(felix_client::TrimError::Unsupported)
+        ),
+        "trim_before gave {trim:?}"
+    );
+
     assert_eq!(bare.requests.load(Ordering::SeqCst), 0);
 }
 
-/// The stub counts a raw commit and state read, so the zero asserted above
+/// The stub counts a raw commit, state read and trim, so the zero asserted above
 /// means something.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_stub_counts_commit_and_state_get_frames() {
+async fn the_stub_counts_commit_state_get_and_trim_frames() {
     let bare = BareBroker::start().expect("start the bare broker");
     let mut roots = rustls::RootCertStore::empty();
     roots
@@ -104,7 +119,17 @@ async fn the_stub_counts_commit_and_state_get_frames() {
         request_id: 2,
         shard: None,
     };
-    for (message, expected) in [(commit, 1), (state_get, 2)] {
+    let trim = Message::TrimBefore {
+        tenant_id: "t1".into(),
+        namespace: "default".into(),
+        stream: "s".into(),
+        shard: 0,
+        before: 1,
+        expected_offset: 1,
+        headers: None,
+        request_id: 3,
+    };
+    for (message, expected) in [(commit, 1), (state_get, 2), (trim, 3)] {
         let frame = message.encode().expect("encode");
         send.write_all(&frame.encode()).await.expect("send");
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);

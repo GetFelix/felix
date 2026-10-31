@@ -46,6 +46,9 @@ class EventCountError(CommitError):
 
     count: int
 
+class TrimError(FelixError):
+    """A head trim was refused before it was sent: the broker does not support them."""
+
 class PublishRefusedError(FelixError):
     """The broker would not append an idempotent publish. Nothing was written."""
 
@@ -109,6 +112,16 @@ class ConditionalWrite:
     """Where the write landed; None when refused."""
     tail: int | None
     """The shard's next offset when refused; None when written."""
+
+class ConditionalTrim:
+    trimmed: bool
+    """True when the trim is durable; False when the tail was stale."""
+    offset: int | None
+    """Where the trim record landed; None when refused, or when nothing was written."""
+    oldest: int | None
+    """The oldest offset reads of the shard start at now; None when refused."""
+    tail: int | None
+    """The shard's next offset when refused; None when trimmed."""
 
 class GroupPosition:
     offset: int
@@ -619,6 +632,17 @@ class Client:
         payloads: list[bytes],
         expected_offset: int,
     ) -> ConditionalWrite: ...
+    def trim_before(
+        self,
+        tenant_id: str,
+        namespace: str,
+        stream: str,
+        shard: int,
+        before: int,
+        expected_offset: int,
+        *,
+        headers: bytes | None = None,
+    ) -> ConditionalTrim: ...
     def counter_add(
         self, tenant_id: str, namespace: str, cache: str, key: str, delta: int
     ) -> int: ...
@@ -958,6 +982,17 @@ class AsyncClient:
         payloads: list[bytes],
         expected_offset: int,
     ) -> ConditionalWrite: ...
+    async def trim_before(
+        self,
+        tenant_id: str,
+        namespace: str,
+        stream: str,
+        shard: int,
+        before: int,
+        expected_offset: int,
+        *,
+        headers: bytes | None = None,
+    ) -> ConditionalTrim: ...
     async def counter_add(
         self, tenant_id: str, namespace: str, cache: str, key: str, delta: int
     ) -> int: ...

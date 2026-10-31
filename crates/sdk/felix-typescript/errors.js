@@ -136,6 +136,12 @@ class EventCountError extends CommitError {
 }
 
 /**
+ * A head trim was refused before it was sent: the broker does not support
+ * them. Retrying will not help.
+ */
+class TrimError extends FelixError {}
+
+/**
  * The broker would not append an idempotent publish, and said why. Nothing was
  * written, and the producer is finished on that stream. `reason` is one of
  * `sequence_gap`, `unknown_producer`, `sequence_expired`, `sequence_reused`,
@@ -166,6 +172,7 @@ const CLASSES = new Map([
   ["FELIX_COMMIT", CommitError],
   ["FELIX_NOT_ON_OWNING_SHARD", NotOnOwningShardError],
   ["FELIX_EVENT_COUNT", EventCountError],
+  ["FELIX_TRIM", TrimError],
   ["FELIX_PUBLISH_REFUSED", PublishRefusedError],
   ["FELIX_ERROR", FelixError],
 ]);
@@ -206,5 +213,6 @@ module.exports = {
   NotOnOwningShardError,
   EventCountError,
   PublishRefusedError,
+  TrimError,
   typed,
 };

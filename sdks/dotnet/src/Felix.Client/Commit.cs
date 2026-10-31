@@ -70,6 +70,13 @@ public sealed class CommitOp
 /// <param name="Offset">Where the write landed when written; otherwise the shard's next offset (its tail), and nothing was written.</param>
 public readonly record struct ConditionalWrite(bool Written, long Offset);
 
+/// <summary>The answer to <see cref="FelixClient.TrimBeforeAsync"/>. A stale tail is an answer, not an error.</summary>
+/// <param name="Trimmed">Whether the trim is durable; reads of the shard below <paramref name="Oldest"/> are refused. False when the tail was stale and nothing was written.</param>
+/// <param name="Offset">Where the trim record landed. Null when refused, and when the floor already stood at or past the requested offset so nothing was written.</param>
+/// <param name="Oldest">The oldest offset reads of the shard start at now; null when refused.</param>
+/// <param name="Tail">The shard's next offset when refused; null when trimmed.</param>
+public readonly record struct ConditionalTrim(bool Trimmed, long? Offset, long? Oldest, long? Tail);
+
 /// <summary>A key in a stream shard's state, copied out of the native read.</summary>
 /// <param name="Value">The value; null when the key was never written or was deleted, which is not the same as an empty value.</param>
 /// <param name="Version">The offset of the commit that wrote the value.</param>

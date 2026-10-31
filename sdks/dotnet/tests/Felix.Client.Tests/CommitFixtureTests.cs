@@ -282,6 +282,91 @@ public class CommitFixtureTests
         await CheckConditional("publish_if_on_shard", expected => client.PublishIfAsync(f.Tenant, f.Namespace, f.Stream, payloads, expected, shard: shard));
     }
 
+    /// <summary>The trim stream's next offset, learned from a stale trim's refusal.</summary>
+    private static async Task<long> TrimTail(FelixClient client, Fixture f)
+    {
+        var refused = await client.TrimBeforeAsync(f.Tenant, f.Namespace, f.TrimStream!, 0, 0, long.MaxValue);
+        Assert.False(refused.Trimmed);
+        return refused.Tail!.Value;
+    }
+
+    [TrimFixtureFact]
+    [Scenario("head_trim.lands_at_the_expected_offset", "head_trim.refused_with_the_tail")]
+    public async Task ATrimAtTheTailLandsThereAndAStaleOneIsRefusedWithTheTail()
+    {
+        var f = Fixture.Load();
+        await using var client = await f.ConnectAsync(f.TrimmerToken);
+        var tail = await TrimTail(client, f);
+        ReadOnlyMemory<byte>[] payloads = [Bytes("t-1"), Bytes("t-2"), Bytes("t-3")];
+        var written = await client.PublishIfAsync(f.Tenant, f.Namespace, f.TrimStream!, payloads, tail, shard: 0);
+        Assert.True(written.Written);
+        tail += 3;
+
+        var trimmed = await client.TrimBeforeAsync(f.Tenant, f.Namespace, f.TrimStream!, 0, tail - 1, tail, Bytes("who"));
+        Assert.Equal(new ConditionalTrim(true, tail, tail - 1, null), trimmed);
+
+        // The trim took the offset the first one expected.
+        var again = await client.TrimBeforeAsync(f.Tenant, f.Namespace, f.TrimStream!, 0, tail - 1, tail, Bytes("who"));
+        Assert.Equal(new ConditionalTrim(false, null, null, tail + 1), again);
+
+        // At or below the floor nothing is written, but the tail must still match.
+        var noop = await client.TrimBeforeAsync(f.Tenant, f.Namespace, f.TrimStream!, 0, tail - 2, tail + 1);
+        Assert.Equal(new ConditionalTrim(true, null, tail - 1, null), noop);
+
+        var cursor = await Assert.ThrowsAsync<FelixException>(async () =>
+        {
+            await using var below = await client.SubscribeAsync(
+                f.Tenant, f.Namespace, f.TrimStream!, 0, StartPosition.FromOffset((ulong)(tail - 2)));
+            await below.ReadAsync(Wait);
+        });
+        Assert.Equal(FelixStatus.Cursor, cursor.Status);
+    }
+
+    [TrimFixtureFact]
+    public async Task ATrimPastItsOwnRecordIsAPlainError()
+    {
+        var f = Fixture.Load();
+        await using var client = await f.ConnectAsync(f.TrimmerToken);
+        var tail = await TrimTail(client, f);
+        var error = await Assert.ThrowsAsync<FelixException>(() =>
+            client.TrimBeforeAsync(f.Tenant, f.Namespace, f.TrimStream!, 0, tail + 5, tail));
+        Assert.Equal(FelixStatus.Error, error.Status);
+        Assert.False(error.OutcomeUnknown);
+    }
+
+    [TrimFixtureFact]
+    [Scenario("head_trim.requires_permission")]
+    public async Task ATrimWithoutTheGrantIsAnAuthorizationFailure()
+    {
+        var f = Fixture.Load();
+        await using var client = await f.ConnectAsync();
+        var error = await Assert.ThrowsAsync<FelixException>(() =>
+            client.TrimBeforeAsync(f.Tenant, f.Namespace, f.TrimStream!, 0, 0, long.MaxValue));
+        Assert.Equal(FelixStatus.Auth, error.Status);
+    }
+
+    /// <summary>
+    /// A client sends a trim only to a broker that advertised head trims. Against a stub that advertised
+    /// nothing it fails at the call with <see cref="FelixStatus.Unsupported"/>, and the stub's counter
+    /// shows nothing reached it.
+    /// </summary>
+    [NoCommitFixtureFact]
+    [Scenario("head_trim.negotiated")]
+    public async Task ATrimIsRefusedByABrokerThatAdvertisedNoHeadTrims()
+    {
+        var f = FaultFixture.Load();
+        await using (var client = await f.ConnectAsync(f.NoCommitAddrs))
+        {
+            var error = await Assert.ThrowsAsync<FelixException>(() =>
+                client.TrimBeforeAsync(f.Tenant, f.Namespace, f.Stream, 0, 0, 0));
+            Assert.Equal(FelixStatus.Unsupported, error.Status);
+        }
+
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+        var sent = await http.GetStringAsync(f.ControlUrl + "/no-commit/requests");
+        Assert.Equal(0, int.Parse(sent.Trim(), System.Globalization.CultureInfo.InvariantCulture));
+    }
+
     [FixtureFact]
     [Scenario("commit.exactly_one_event")]
     public async Task ACommitWithNoEventOrTwoIsRefusedBeforeItIsSent()

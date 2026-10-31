@@ -34,6 +34,7 @@ import registerFaults from "./scenarios/faults.mjs";
 import registerCommit from "./scenarios/commit.mjs";
 import registerProducer from "./scenarios/producer.mjs";
 import registerToken from "./scenarios/token.mjs";
+import registerTrim from "./scenarios/trim.mjs";
 
 // Filled in by `before`, read by the tests at run time. The tests cannot close
 // over a fixture that does not exist yet, so they close over this instead.
@@ -75,6 +76,7 @@ describe("connection faults", () => registerFaults(ctx));
 describe("atomic commits", () => registerCommit(ctx));
 describe("idempotent producers and named shards", () => registerProducer(ctx));
 describe("token provider", () => registerToken(ctx));
+describe("head trims", () => registerTrim(ctx));
 
 // Semantics this binding does not wrap. Recorded rather than left out, because
 // `verify` distinguishes "not claimed" from "claimed and broken", and a reason

@@ -973,6 +973,68 @@ commit is not sent again. `FELIX_STATUS_UNSUPPORTED` means the broker does not
 advertise commits and nothing was sent. The semantics are in
 [Atomic Commits](/features/atomic-commits/).
 
+### Trimming a shard's head
+
+`felix_client_trim_before` hides the records of one shard of a durable stream below an offset, for a
+single writer that owns the shard's history, such as a state machine that has snapshotted. It is
+conditional like `felix_client_publish_if_on_shard`: it writes only if the shard's next offset is
+`expected_offset`, and the trim is a record of its own that lands there, so `before` can be at most
+`expected_offset`. `headers`, null for none, are kept with the trim.
+
+```c
+struct trim_result {
+    FelixStatus status;
+    uint64_t next;  /* the writer's next offset, updated when a trim lands */
+};
+
+static void on_trim(void *user_data, FelixStatus status, const char *message,
+                    const FelixTrimOutcome *outcome) {
+    struct trim_result *result = user_data;
+    result->status = status;
+    if (status != FELIX_STATUS_OK) {
+        fprintf(stderr, "trim failed (%d): %s\n", (int)status, message ? message : "");
+    } else if (!outcome->trimmed) {
+        fprintf(stderr, "another writer has the shard; its next offset is %" PRIu64 "\n",
+                outcome->tail);
+    } else {
+        printf("reads now start at %" PRIu64 "\n", outcome->oldest);
+        /* A trim that landed took an offset, so the next write expects the one after it. */
+        if (outcome->has_offset) {
+            result->next = outcome->offset + 1;
+        }
+    }
+}
+
+static FelixStatus trim_history(const FelixClient *client, uint64_t floor,
+                                struct trim_result *result) {
+    static const char headers[] = "writer-7";
+    FelixStatus status = felix_client_trim_before(
+        client, "acme", "games", "match-7", 0, floor, result->next,
+        (const uint8_t *)headers, strlen(headers), NULL, on_trim, result);
+    if (status != FELIX_STATUS_OK) {
+        fprintf(stderr, "trim refused: %s\n", felix_last_error_message());
+    }
+    return status;
+}
+```
+
+The callback gets a borrowed `FelixTrimOutcome`, valid only while it runs, and null unless the status is
+`FELIX_STATUS_OK`. `trimmed` false is a stale tail: an answer, not an error, with the shard's next
+offset in `tail`, and nothing written. When `trimmed` is true, `oldest` is the offset reads start at
+now, and `has_offset` says whether the trim wrote a record at `offset`. It is false when the floor
+already stood at or past `before`.
+
+| Status | Meaning | Retry |
+| --- | --- | --- |
+| `FELIX_STATUS_UNSUPPORTED` | the broker did not advertise head trims; nothing was sent | never |
+| `FELIX_STATUS_AUTH` | the token lacks `stream.trim` | never |
+| `FELIX_STATUS_ERROR` | the fleet has not finalized head trims, the stream holds atomic commits, `before` is past `expected_offset`, or the stream is not durable; the message names which | not until fixed |
+| `FELIX_STATUS_OUTCOME_UNKNOWN` | the broker stopped waiting for the trim to commit, or the call was cancelled after it was sent | outcome unknown |
+
+Do not send a timed-out trim again as it is. If it landed, the same call is refused with a tail one past
+the trim, which looks like a lost race. Read the shard's earliest offset, or read below the floor you
+asked for, to tell the two apart. A read below the floor completes with `FELIX_STATUS_CURSOR`.
+
 ## Idempotent producers
 
 `felix_client_idempotent_producer` asks the broker for a producer id and hands

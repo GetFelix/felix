@@ -100,6 +100,17 @@ internal unsafe struct NativeCommitOp
     public nuint DataLen;
 }
 
+/// <summary><c>FelixTrimOutcome</c>, borrowed for the length of a callback.</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct NativeTrimOutcome
+{
+    public byte Trimmed;
+    public byte HasOffset;
+    public ulong Offset;
+    public ulong Oldest;
+    public ulong Tail;
+}
+
 /// <summary><c>FelixStateValue</c>, borrowed for the length of a callback.</summary>
 [StructLayout(LayoutKind.Sequential)]
 internal unsafe struct NativeStateValue
@@ -712,6 +723,21 @@ internal static unsafe partial class NativeMethods
         ulong expectedOffset,
         nint cancel,
         delegate* unmanaged[Cdecl]<nint, int, byte*, byte, ulong, void> callback,
+        nint userData);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial int felix_client_trim_before(
+        nint client,
+        string tenantId,
+        string ns,
+        string stream,
+        uint shard,
+        ulong before,
+        ulong expectedOffset,
+        byte* headers,
+        nuint headersLen,
+        nint cancel,
+        delegate* unmanaged[Cdecl]<nint, int, byte*, NativeTrimOutcome*, void> callback,
         nint userData);
 
     [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]

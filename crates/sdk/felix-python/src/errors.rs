@@ -13,6 +13,7 @@
 use felix_client::{
     AckLost, AuthError as ClientAuthError, BrokerError, CommitError as ClientCommitError,
     NotLeaderError, PublishRefusalReason, PublishRefused, SubscribeCursorError, SubscriptionLost,
+    TrimError as ClientTrimError,
 };
 use felix_wire::RetryClass;
 use pyo3::create_exception;
@@ -88,6 +89,12 @@ create_exception!(
 );
 create_exception!(
     _felix,
+    TrimError,
+    FelixError,
+    "A head trim was refused before it was sent: the broker does not support them. Retrying will not help."
+);
+create_exception!(
+    _felix,
     PublishRefusedError,
     FelixError,
     "The broker would not append an idempotent publish, and said why. Nothing was written. Carries `reason` and, for some reasons, `expected`, `tail`, `node_id` and `addr`. It ends the producer on that stream."
@@ -108,6 +115,7 @@ pub(crate) enum Kind {
     NotOnOwningShard,
     EventCount,
     PublishRefused,
+    Trim,
 }
 
 /// An error from the Rust client, decided but not yet a Python object.
@@ -149,6 +157,10 @@ pub(crate) fn classify(err: &anyhow::Error) -> Classified {
             ClientCommitError::EventCount(_) => Kind::EventCount,
             _ => Kind::Commit,
         };
+        return out;
+    }
+    if err.chain().any(|e| e.is::<ClientTrimError>()) {
+        out.kind = Kind::Trim;
         return out;
     }
     if let Some(refused) = err.chain().find_map(|e| e.downcast_ref::<PublishRefused>()) {
@@ -247,6 +259,7 @@ pub(crate) fn to_py_err(err: anyhow::Error) -> PyErr {
         Kind::NotOnOwningShard => NotOnOwningShardError::new_err(text),
         Kind::EventCount => EventCountError::new_err(text),
         Kind::PublishRefused => PublishRefusedError::new_err(text),
+        Kind::Trim => TrimError::new_err(text),
     };
     if let Some(refused) = &classified.refusal {
         Python::attach(|py| {
@@ -292,6 +305,7 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     )?;
     module.add("EventCountError", py.get_type::<EventCountError>())?;
     module.add("PublishRefusedError", py.get_type::<PublishRefusedError>())?;
+    module.add("TrimError", py.get_type::<TrimError>())?;
     // Class-level defaults, so an error without a code still answers `None`.
     let base = py.get_type::<FelixError>();
     for name in ["code", "retry", "detail"] {

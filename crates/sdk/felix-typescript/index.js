@@ -221,6 +221,7 @@ module.exports = {
   NotOnOwningShardError: errors.NotOnOwningShardError,
   EventCountError: errors.EventCountError,
   PublishRefusedError: errors.PublishRefusedError,
+  TrimError: errors.TrimError,
   CommitOp,
   CacheCondition,
   /** The unwrapped addon, for anyone who wants it. Errors are untyped there. */

@@ -85,6 +85,11 @@ with that offset as its version. A commit naming a second stream raises
 `EventCountError`, before anything is sent. See
 [atomic commits](../../../docs/atomic-commit.md) for what atomic covers.
 
+`trim_before(tenant_id, namespace, stream, shard, before, expected_offset,
+headers=None)` hides a durable shard's oldest records, only if the shard's next
+offset is `expected_offset`, and returns a `ConditionalTrim`. A broker without
+head trims raises `TrimError`.
+
 The [clients page](../../../docs-site/src/content/docs/api/clients.md) has the
 worked examples.
 

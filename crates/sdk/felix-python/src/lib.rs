@@ -80,6 +80,7 @@ fn _felix(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<conditional::CacheConditionResult>()?;
     module.add_class::<conditional::VersionedValue>()?;
     module.add_class::<conditional::ConditionalWrite>()?;
+    module.add_class::<conditional::ConditionalTrim>()?;
     module.add_class::<group_admin::GroupPosition>()?;
     module.add_class::<group_admin::GroupInfo>()?;
     module.add_class::<sharded_cache_watch::ShardedCacheChange>()?;

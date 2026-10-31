@@ -60,6 +60,9 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
     // One shard, so its owner is one broker the link interposer can sit in
     // front of.
     const LINK_STREAM: &str = "conformance-link";
+    // Head trims are refused on a stream that has commits, so the suites trim
+    // one nothing else writes to.
+    const TRIM_STREAM: &str = "conformance-trim";
 
     eprintln!("starting a {node_count}-node cluster for a client conformance suite...");
     let cluster = Cluster::start(ClusterConfig {
@@ -78,6 +81,7 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
             StreamSpec::replicated(MOVABLE_STREAM, 1, node_count as u32),
             StreamSpec::quorum(QUORUM_STREAM, 1, node_count as u32),
             StreamSpec::replicated(LINK_STREAM, 1, node_count as u32),
+            StreamSpec::quorum(TRIM_STREAM, 1, node_count as u32),
         ],
         caches: vec![
             CacheSpec::replicated(CACHE, 4, node_count as u32),
@@ -87,12 +91,12 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
         ..Default::default()
     })
     .await?;
-    // Commits are refused until the fleet finalizes the feature, and a record
+    // Commits and trims are refused until the fleet finalizes the feature, and a record
     // carries its publisher only once it finalizes the opt-in
     // `publisher_principal`, as in any real cluster.
     cluster
         .finalize_fleet_features(
-            &["atomic_commit", "publisher_principal"],
+            &["atomic_commit", "publisher_principal", "head_trim"],
             Duration::from_secs(30),
         )
         .await?;
@@ -163,6 +167,8 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
         link_addr: Some(link.addr().to_string()),
         link_stream: Some(LINK_STREAM.to_string()),
         group_operator_token: Some(cluster.group_operator_token()),
+        trimmer_token: Some(cluster.trimmer_token()),
+        trim_stream: Some(TRIM_STREAM.to_string()),
         records_publishers: true,
         no_commit_addrs: vec![bare.addr.to_string()],
         faults: felix_conformance::kit::catalogue()?.fault_scenarios(),

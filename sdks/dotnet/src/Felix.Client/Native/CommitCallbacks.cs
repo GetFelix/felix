@@ -15,6 +15,13 @@ internal static unsafe partial class Callbacks
         Complete(userData, status, message, () => new ConditionalWrite(written != 0, unchecked((long)offset)));
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    internal static void OnTrim(nint userData, int status, byte* message, NativeTrimOutcome* outcome)
+    {
+        var at = (nint)outcome;
+        Complete<ConditionalTrim>(userData, status, message, () => CopyTrim((NativeTrimOutcome*)at));
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     internal static void OnState(nint userData, int status, byte* message, NativeStateValue* state)
     {
         var at = (nint)state;
@@ -58,6 +65,15 @@ internal static unsafe partial class Callbacks
             CallState<FelixProducerHandle>.TryFail(state, e);
         }
     }
+
+    private static ConditionalTrim CopyTrim(NativeTrimOutcome* outcome) =>
+        outcome->Trimmed != 0
+            ? new ConditionalTrim(
+                true,
+                outcome->HasOffset != 0 ? unchecked((long)outcome->Offset) : null,
+                unchecked((long)outcome->Oldest),
+                null)
+            : new ConditionalTrim(false, null, null, unchecked((long)outcome->Tail));
 
     private static StateValue CopyState(NativeStateValue* state) =>
         new(
