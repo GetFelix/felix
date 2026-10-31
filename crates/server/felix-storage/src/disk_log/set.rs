@@ -14,10 +14,17 @@
 //! the open instead of reading as no set: a replica that forgot its set would
 //! count the wrong majority.
 //!
-//! Nothing reads or writes it yet; the replica's set checks do.
+//! The set is written after the ballot when both change, so a set newer than
+//! the accepted generation at open is a write that order rules out; the open
+//! raises the generation to it rather than trust the older one.
+//!
+//! `DiskLog::accept_set` and the open's reading of the file live here.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
+use super::{DiskLog, SetCheck};
 use crate::io::sync_dir;
 use crate::{Result, StorageError, StorageId};
 
@@ -42,29 +49,33 @@ const FILE_NAME: &str = "replica-set";
 /// Prefix of the temporaries `store` writes: `replica-set.tmp.<pid>.<n>`.
 const TEMPORARY_PREFIX: &str = "replica-set.tmp";
 
+/// The accepted generation and the leader it was accepted from, as the open
+/// reads them from the ballot.
+type Accepted = (u64, Option<Arc<str>>);
+
 /// A replica in a set: its node id and the storage identity the fence counts
 /// it under, when placement named one.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct Member {
-    pub(super) node: String,
-    pub(super) storage: Option<StorageId>,
+pub struct Member {
+    pub node: String,
+    pub storage: Option<StorageId>,
     /// Listed but not counted: re-admitted and not yet caught up.
-    pub(super) learner: bool,
+    pub learner: bool,
 }
 
 /// One assignment's replicas.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct Membership {
-    pub(super) generation: u64,
-    pub(super) members: Vec<Member>,
+pub struct Membership {
+    pub generation: u64,
+    pub members: Vec<Member>,
 }
 
 /// The set a replica answers at, and the one it is leaving while a change is
 /// pending. Cleared by writing a set without it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct ReplicaSet {
-    pub(super) current: Membership,
-    pub(super) leaving: Option<Membership>,
+pub struct ReplicaSet {
+    pub current: Membership,
+    pub leaving: Option<Membership>,
 }
 
 impl ReplicaSet {
@@ -130,6 +141,85 @@ impl ReplicaSet {
         }
         Ok(())
     }
+}
+
+impl DiskLog {
+    /// The generation of the replica set this log counts, or zero if it has
+    /// never kept one. Lock-free, for the replication hot path.
+    pub fn set_generation(&self) -> u64 {
+        self.inner.set_generation.load(Ordering::Acquire)
+    }
+
+    /// The replica set this log counts, if it has kept one.
+    pub fn replica_set(&self) -> Option<ReplicaSet> {
+        self.inner.replica_set.read().clone()
+    }
+
+    /// Count `set` from here on if it is newer than the set already kept,
+    /// persisting it first.
+    ///
+    /// Returns once a raised set is on disk, so a caller that answers at it
+    /// afterwards has made a promise that survives a restart. A caller that
+    /// also accepts a generation persists the ballot first: the open treats a
+    /// set ahead of the ballot as a write that order rules out.
+    pub async fn accept_set(&self, set: ReplicaSet) -> Result<SetCheck> {
+        if let Some(found) = check_set(self.set_generation(), set.current.generation) {
+            return Ok(found);
+        }
+        let inner = Arc::clone(&self.inner);
+        tokio::task::spawn_blocking(move || {
+            // The ballot's writer lock: it serializes writes per shard, so
+            // the file only ever moves forward in generation.
+            let _persisted = inner.replica_persisted.lock();
+            let known = inner.set_generation.load(Ordering::Acquire);
+            if let Some(found) = check_set(known, set.current.generation) {
+                return Ok(found);
+            }
+            store(&inner.dir, &set)?;
+            let generation = set.current.generation;
+            *inner.replica_set.write() = Some(set);
+            inner.set_generation.store(generation, Ordering::Release);
+            Ok(SetCheck::Raised)
+        })
+        .await
+        .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
+    }
+}
+
+/// What a set at `generation` is against the one kept at `known`, or `None`
+/// when it is newer and needs a write. Zero is no set, so a set at generation
+/// zero is never kept.
+fn check_set(known: u64, generation: u64) -> Option<SetCheck> {
+    match generation.cmp(&known) {
+        std::cmp::Ordering::Less => Some(SetCheck::Stale { known }),
+        std::cmp::Ordering::Equal => Some(SetCheck::Current),
+        std::cmp::Ordering::Greater => None,
+    }
+}
+
+/// The set a shard opens with, and the accepted generation once the set is
+/// taken into account: a set newer than the ballot was written out of order,
+/// and taking its generation only refuses more.
+pub(super) fn reconcile(
+    dir: &Path,
+    label: &str,
+    accepted: Accepted,
+) -> Result<(Option<ReplicaSet>, Accepted)> {
+    discard_leftovers(dir)?;
+    let set = load(dir)?;
+    let accepted = match &set {
+        Some(set) if set.current.generation > accepted.0 => {
+            tracing::warn!(
+                shard = %label,
+                set_generation = set.current.generation,
+                accepted_generation = accepted.0,
+                "the replica set is newer than the accepted generation; raising it with no leader named"
+            );
+            (set.current.generation, None)
+        }
+        _ => accepted,
+    };
+    Ok((set, accepted))
 }
 
 impl Membership {
