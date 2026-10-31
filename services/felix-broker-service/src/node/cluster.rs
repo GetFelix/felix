@@ -198,7 +198,10 @@ fn replica_handler(
     unclean: Option<Arc<replication::unclean::UncleanStart>>,
     confirmed: Option<crate::shards::ControlPlaneRoutes>,
 ) -> replication::ReplicaHandler {
-    let handler = replication::ReplicaHandler::new(Arc::clone(broker), Arc::clone(router));
+    // A replica refuses a candidate for as long as it would take to suspect
+    // its leader, so the two windows agree.
+    let handler = replication::ReplicaHandler::new(Arc::clone(broker), Arc::clone(router))
+        .with_stickiness(replication::suspicion::SuspicionConfig::from_env().suspect_after);
     let handler = match unclean {
         Some(unclean) => handler.with_unclean_start(unclean),
         None => handler,
