@@ -895,6 +895,7 @@ Typed, because they need different responses:
 | `LogConflict` | a replication batch disagrees with stored bytes | do not retry; the logs have diverged |
 | `FencedEpoch` | the sender named an epoch older than the responder's | do not retry; it is no longer the leader |
 | `UnsupportedKind` | the responder predates the kind that was sent | do not retry with that kind; a forwarder falls back to the legacy forward kind once |
+| `StaleSet` | the responder counts a newer replica set than the sender's fence or batch named; its generation is in `expected_offset`. Sent only to a peer that offered `ELECTION` | do not retry; stop leading or standing at that set |
 
 `ReplicateBootstrap` is kind 10, `ReplicateRebuild` kind 24,
 `ReplicateMarkedRecords` kind 25, `ReplicateCommittedRecords` kind 26,
