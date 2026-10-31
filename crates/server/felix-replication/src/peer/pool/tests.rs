@@ -110,6 +110,7 @@ fn a_counter_fence_needs_the_cache_fence() {
             correlation_id: 0,
             shard: shard.clone(),
             log,
+            election: None,
         })
     };
     let fetch = |log| {
@@ -176,6 +177,7 @@ fn a_batch_holding_a_trim_needs_head_trim() {
             commit_offset: None,
             generations: None,
             times: None,
+            set_generation: None,
         })
     };
     assert_eq!(
@@ -194,5 +196,76 @@ fn a_batch_holding_a_trim_needs_head_trim() {
             .capabilities()
             .contains(PeerCapabilities::HEAD_TRIM),
         "this build offers it"
+    );
+}
+
+/// **The election messages go only to a peer that offers `ELECTION`**, on top
+/// of whatever the request already needs.
+#[test]
+fn election_messages_need_election() {
+    use felix_wire::internal::{
+        Fence, FenceElection, PreVote, ReplicaSetView, ReplicateRecords, ShardRef,
+    };
+
+    let shard = ShardRef {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "sessions".to_string(),
+        shard: 0,
+        generation: 5,
+        incarnation: None,
+    };
+    let candidate = InternalMessage::Fence(Fence {
+        correlation_id: 0,
+        shard: shard.clone(),
+        log: ReplicaLog::Counters,
+        election: Some(FenceElection {
+            candidate: true,
+            set: ReplicaSetView {
+                generation: 1,
+                members: Vec::new(),
+            },
+            leaving: None,
+        }),
+    });
+    assert_eq!(
+        required_capability(&candidate),
+        Some(
+            PeerCapabilities::FENCE
+                .union(PeerCapabilities::CACHE_FENCE)
+                .union(PeerCapabilities::ELECTION)
+        )
+    );
+    let pre_vote = InternalMessage::PreVote(PreVote {
+        correlation_id: 0,
+        shard: shard.clone(),
+        log: ReplicaLog::Stream,
+        last_generation: 0,
+        log_end: 0,
+        set_generation: 0,
+    });
+    assert_eq!(
+        required_capability(&pre_vote),
+        Some(PeerCapabilities::ELECTION)
+    );
+    let batch = |set_generation| {
+        InternalMessage::ReplicateRecords(ReplicateRecords {
+            correlation_id: 0,
+            shard: shard.clone(),
+            first_offset: 0,
+            checksum: 0,
+            payloads: Vec::new(),
+            marks: Vec::new(),
+            publishers: Vec::new(),
+            commit_offset: None,
+            generations: None,
+            times: None,
+            set_generation,
+        })
+    };
+    assert_eq!(required_capability(&batch(None)), None);
+    assert_eq!(
+        required_capability(&batch(Some(3))),
+        Some(PeerCapabilities::ELECTION)
     );
 }

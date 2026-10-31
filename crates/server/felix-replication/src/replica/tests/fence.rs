@@ -10,6 +10,7 @@ fn fence(generation: u64) -> Fence {
         correlation_id: 9,
         shard: batch(generation, 0, &[]).shard,
         log: ReplicaLog::Stream,
+        election: None,
     }
 }
 

@@ -142,6 +142,7 @@ fn every_body_begins_with_its_correlation_id() {
             correlation_id: id,
             shard: shard.clone(),
             log: ReplicaLog::Stream,
+            election: None,
         }),
         InternalMessage::Ping(Ping { correlation_id: id }),
         InternalMessage::Pong(Pong { correlation_id: id }),
@@ -171,6 +172,7 @@ fn every_body_begins_with_its_correlation_id() {
             commit_offset: None,
             generations: None,
             publishers: Vec::new(),
+            set_generation: None,
         }),
         InternalMessage::ReplicateOk(ReplicateOk {
             correlation_id: id,

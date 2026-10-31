@@ -162,6 +162,7 @@ async fn without_consumer_groups_the_group_fence_answers_empty() {
         correlation_id: 9,
         shard: batch(generation, 0, &[]).shard,
         log,
+        election: None,
     };
     let stream = handler.fence(SENDER, fence(5, ReplicaLog::Stream)).await;
     assert!(matches!(stream, InternalMessage::FenceOk(_)), "{stream:?}");

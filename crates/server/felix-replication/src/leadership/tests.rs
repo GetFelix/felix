@@ -131,6 +131,7 @@ impl Replica {
                     correlation_id: 1,
                     shard: shard_at(generation),
                     log: ReplicaLog::Stream,
+                    election: None,
                 },
             )
             .await;
@@ -366,6 +367,7 @@ async fn a_replica_whose_counters_took_a_newer_leader_refuses_the_round() {
                 correlation_id: 1,
                 shard: shard_at(LEADING),
                 log: ReplicaLog::Cache,
+                election: None,
             },
         )
         .await;

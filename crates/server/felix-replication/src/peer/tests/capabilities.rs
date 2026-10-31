@@ -20,6 +20,7 @@ fn fence() -> InternalMessage {
         correlation_id: 0,
         shard: shard(),
         log: ReplicaLog::Stream,
+        election: None,
     })
 }
 

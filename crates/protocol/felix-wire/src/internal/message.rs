@@ -2,9 +2,9 @@
 
 use super::{
     Fence, FenceOk, ForwardCacheError, ForwardCacheOk, ForwardCacheOp, ForwardPublish,
-    ForwardPublishError, ForwardPublishOk, Hello, HelloOk, Kind, NotLeader, Ping, Pong,
-    ReplicateBootstrap, ReplicateError, ReplicateFetch, ReplicateOk, ReplicateRebuild,
-    ReplicateRecords,
+    ForwardPublishError, ForwardPublishOk, Hello, HelloOk, Kind, NotLeader, PeerCapabilities, Ping,
+    Pong, PreVote, PreVoteAnswer, ReplicateBootstrap, ReplicateError, ReplicateFetch, ReplicateOk,
+    ReplicateRebuild, ReplicateRecords,
 };
 
 /// A decoded internal message.
@@ -62,6 +62,8 @@ pub enum InternalMessage {
     ReplicateFetch(ReplicateFetch),
     Ping(Ping),
     Pong(Pong),
+    PreVote(PreVote),
+    PreVoteAnswer(PreVoteAnswer),
 }
 
 /// The record kinds, whichever log they are for, send as
@@ -120,6 +122,7 @@ impl InternalMessage {
             Self::ReplicateCounterBootstrap(_) => Kind::ReplicateCounterBootstrap,
             Self::ReplicateRebuild(_) => Kind::ReplicateRebuild,
             Self::ReplicateMarkedRecords(m) => records_kind(m, Kind::ReplicateMarkedRecords),
+            Self::Fence(m) if m.election.is_some() => Kind::ElectionFence,
             Self::Fence(_) => Kind::Fence,
             Self::FenceOk(_) => Kind::FenceOk,
             Self::ReplicateFetch(m) if m.labelled && m.timed => Kind::ReplicateTimedFetch,
@@ -127,6 +130,44 @@ impl InternalMessage {
             Self::ReplicateFetch(_) => Kind::ReplicateFetch,
             Self::Ping(_) => Kind::Ping,
             Self::Pong(_) => Kind::Pong,
+            Self::PreVote(_) => Kind::PreVote,
+            Self::PreVoteAnswer(_) => Kind::PreVoteAnswer,
+        }
+    }
+
+    /// The capability a peer must have offered to be sent this message, if
+    /// any. The pool refuses to send one the peer did not offer.
+    pub fn required_capability(&self) -> Option<PeerCapabilities> {
+        match self {
+            Self::Fence(m) if m.election.is_some() => Some(PeerCapabilities::ELECTION),
+            Self::PreVote(_) | Self::PreVoteAnswer(_) => Some(PeerCapabilities::ELECTION),
+            _ if self.set_generation().is_some() => Some(PeerCapabilities::ELECTION),
+            _ => None,
+        }
+    }
+
+    /// The generation of the set a records batch was stamped with.
+    pub(super) fn set_generation(&self) -> Option<u64> {
+        match self {
+            Self::ReplicateRecords(m)
+            | Self::ReplicateCacheRecords(m)
+            | Self::ReplicateGroupRecords(m)
+            | Self::ReplicateDeadLetterRecords(m)
+            | Self::ReplicateCounterRecords(m)
+            | Self::ReplicateMarkedRecords(m) => m.set_generation,
+            _ => None,
+        }
+    }
+
+    pub(super) fn set_generation_mut(&mut self) -> Option<&mut Option<u64>> {
+        match self {
+            Self::ReplicateRecords(m)
+            | Self::ReplicateCacheRecords(m)
+            | Self::ReplicateGroupRecords(m)
+            | Self::ReplicateDeadLetterRecords(m)
+            | Self::ReplicateCounterRecords(m)
+            | Self::ReplicateMarkedRecords(m) => Some(&mut m.set_generation),
+            _ => None,
         }
     }
 
@@ -154,6 +195,7 @@ impl InternalMessage {
             | Self::ReplicateCounterBootstrap(m) => Some(&m.shard),
             Self::ReplicateRebuild(m) => Some(&m.shard),
             Self::Fence(m) => Some(&m.shard),
+            Self::PreVote(m) => Some(&m.shard),
             Self::ReplicateFetch(m) => Some(&m.shard),
             _ => None,
         }
@@ -176,6 +218,7 @@ impl InternalMessage {
             | Self::ReplicateCounterBootstrap(m) => Some(&mut m.shard),
             Self::ReplicateRebuild(m) => Some(&mut m.shard),
             Self::Fence(m) => Some(&mut m.shard),
+            Self::PreVote(m) => Some(&mut m.shard),
             Self::ReplicateFetch(m) => Some(&mut m.shard),
             _ => None,
         }
@@ -211,6 +254,8 @@ impl InternalMessage {
             Self::ReplicateFetch(m) => m.correlation_id,
             Self::Ping(m) => m.correlation_id,
             Self::Pong(m) => m.correlation_id,
+            Self::PreVote(m) => m.correlation_id,
+            Self::PreVoteAnswer(m) => m.correlation_id,
         }
     }
 }

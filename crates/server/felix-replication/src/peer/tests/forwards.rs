@@ -19,6 +19,7 @@ fn replicate() -> InternalMessage {
         commit_offset: None,
         generations: None,
         publishers: Vec::new(),
+        set_generation: None,
     })
 }
 

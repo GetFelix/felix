@@ -101,6 +101,7 @@ pub async fn probe<R: PeerRequester>(
                 correlation_id: 0,
                 shard: shard.clone(),
                 log: crate::ship::replica_log(kind),
+                election: None,
             });
             let (answer, identity) = requester
                 .request_identified(&follower.node_id, follower.advertise_addr, request)

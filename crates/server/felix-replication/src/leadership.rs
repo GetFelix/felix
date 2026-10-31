@@ -257,6 +257,7 @@ impl<R: PeerRequester + Send + Sync> Inner<R> {
                         correlation_id: 0,
                         shard: shard.clone(),
                         log,
+                        election: None,
                     }),
                 )
             })
