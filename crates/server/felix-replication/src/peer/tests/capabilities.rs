@@ -634,3 +634,73 @@ async fn a_ping_is_answered_and_an_older_broker_is_not_pinged() {
     pool.shutdown().await;
     old.stop();
 }
+
+/// **A broker that never offered `ELECTION` refuses what needs it**, as a
+/// build that predates the kinds would, instead of reading a candidate fence
+/// as a plain one or dropping a batch's set stamp.
+#[tokio::test]
+async fn a_broker_without_election_refuses_the_election_kinds() {
+    use felix_wire::internal::{FenceElection, PreVote, ReplicaSetView, ReplicateRecords};
+
+    let (listener, _noted) = listener_noting(true).await;
+    let candidate = InternalMessage::Fence(Fence {
+        correlation_id: 1,
+        shard: shard(),
+        log: ReplicaLog::Stream,
+        election: Some(FenceElection {
+            candidate: true,
+            set: ReplicaSetView {
+                generation: 1,
+                members: Vec::new(),
+            },
+            leaving: None,
+        }),
+    });
+    let stamped = InternalMessage::ReplicateRecords(ReplicateRecords {
+        correlation_id: 2,
+        shard: shard(),
+        first_offset: 0,
+        checksum: 0,
+        payloads: Vec::new(),
+        marks: Vec::new(),
+        publishers: Vec::new(),
+        commit_offset: None,
+        generations: None,
+        times: None,
+        set_generation: Some(3),
+    });
+    let pre_vote = InternalMessage::PreVote(PreVote {
+        correlation_id: 3,
+        shard: shard(),
+        log: ReplicaLog::Stream,
+        last_generation: 0,
+        log_end: 0,
+        set_generation: 0,
+    });
+
+    let client = QuicClient::bind(
+        "127.0.0.1:0".parse().expect("addr"),
+        crate::peer::tls::client_config(None).expect("client config"),
+        TransportConfig::default(),
+    )
+    .expect("bind");
+    let connection = client
+        .connect(listener.addr, crate::peer::tls::INTERNAL_SERVER_NAME)
+        .await
+        .expect("connect");
+    let (mut send, mut recv) = connection.open_bi().await.expect("open");
+    for request in [candidate, stamped, pre_vote] {
+        let id = request.correlation_id();
+        write_frame(&mut send, &request).await.expect("write");
+        let Incoming::Message(InternalMessage::ForwardPublishError(refusal)) =
+            read_frame(&mut recv).await.expect("read")
+        else {
+            panic!("expected {request:?} to be refused");
+        };
+        assert_eq!(refusal.code, ErrorCode::UnsupportedKind);
+        assert_eq!(refusal.correlation_id, id);
+    }
+
+    connection.close(0u32.into(), b"done");
+    listener.stop().await;
+}

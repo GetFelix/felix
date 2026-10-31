@@ -134,6 +134,42 @@ fn more() -> Vec<InternalMessage> {
             capabilities: Some(all_capabilities),
             identity: Some([7; 16]),
             incarnation: Some(9),
+        }), // Kinds 34 and 35, the conditional cache write and its answer.
+        InternalMessage::ForwardCacheOp(ForwardCacheOp {
+            correlation_id: 42,
+            shard: shard(),
+            op: CacheOpKind::Put,
+            key: "session:abc".to_string(),
+            value: Bytes::from_static(b"payload"),
+            ttl_ms: 30_000,
+            credential: String::new(),
+            condition: Some(ForwardCacheCondition::Absent),
+        }),
+        InternalMessage::ForwardCacheOp(ForwardCacheOp {
+            correlation_id: 42,
+            shard: shard(),
+            op: CacheOpKind::Put,
+            key: "session:abc".to_string(),
+            value: Bytes::from_static(b"payload"),
+            ttl_ms: 30_000,
+            credential: "eyJ.token.sig".to_string(),
+            condition: Some(ForwardCacheCondition::Version(4)),
+        }),
+        InternalMessage::ForwardCacheOk(ForwardCacheOk {
+            correlation_id: 42,
+            value: Some(Bytes::from_static(b"payload")),
+            outcome: Some(ForwardCacheOutcome {
+                applied: true,
+                version: Some(5),
+            }),
+        }),
+        InternalMessage::ForwardCacheOk(ForwardCacheOk {
+            correlation_id: 42,
+            value: None,
+            outcome: Some(ForwardCacheOutcome {
+                applied: false,
+                version: None,
+            }),
         }),
     ]
 }
@@ -224,4 +260,8 @@ const VECTORS: &[&str] = &[
     "464c58490001001800000033000000000000002a000000027431000000026e73000000066f7264657273000000030000000000000007040000000000001388",
     "464c58490001001b0000001c000000000000002a0000000862726f6b65722d610000000000007dff",
     "464c58490001001c00000035000000000000002a0000000862726f6b65722d620000000000007dff07070707070707070707070707070707010000000000000009",
+    "464c58490001002200000052000000000000002a000000027431000000026e73000000066f7264657273000000030000000000000007010000000b73657373696f6e3a6162630000000000007530000000077061796c6f61640000000001",
+    "464c58490001002200000067000000000000002a000000027431000000026e73000000066f7264657273000000030000000000000007010000000b73657373696f6e3a6162630000000000007530000000077061796c6f61640000000d65794a2e746f6b656e2e736967020000000000000004",
+    "464c5849000100230000001e000000000000002a0101000000000000000501000000077061796c6f6164",
+    "464c5849000100230000000b000000000000002a000000",
 ];

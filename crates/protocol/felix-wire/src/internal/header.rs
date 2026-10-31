@@ -168,7 +168,8 @@ pub enum Kind {
     /// [`PeerCapabilities::FORWARD_INCARNATION`]: super::PeerCapabilities::FORWARD_INCARNATION
     Incarnated = 40,
     /// `Fence` followed by the election fields: whether the sender is a
-    /// candidate, the set's generation, the set and the set being left. Sent
+    /// candidate, the set (which carries its generation) and the set being
+    /// left. Sent
     /// only to a peer that offered [`PeerCapabilities::ELECTION`]; without
     /// the fields a fence travels as kind 29, byte for byte as before.
     ///

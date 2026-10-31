@@ -807,7 +807,7 @@ boolean where one is expected, is refused rather than read.
 
 A leader names the stream incarnation its log belongs to, when it is not 0,
 on every replication request for a stream shard: records of any log kind,
-bootstrap, rebuild, `Fence` and `ReplicateFetch`. The request travels inside
+bootstrap, rebuild, `Fence`, `PreVote` and `ReplicateFetch`. The request travels inside
 an `Incarnated` frame (kind 40):
 
 | Field | Type |
@@ -901,7 +901,8 @@ Typed, because they need different responses:
 `HelloCapable` 27, `HelloCapableOk` 28, `Fence` 29, `FenceOk` 30,
 `ReplicateFetch` 31, `ReplicateLabelledRecords` 32,
 `ReplicateLabelledFetch` 33, `ReplicateTimedRecords` 36,
-`ReplicateTimedFetch` 37 and `Incarnated` 40. A peer
+`ReplicateTimedFetch` 37, `Incarnated` 40, `ElectionFence` 41,
+`SetStamped` 42, `PreVote` 43 and `PreVoteAnswer` 44. A peer
 that predates any of them rejects the
 kind rather than misreading the body, which is why
 each is a new kind rather than a field on `ReplicateRecords`: this protocol
