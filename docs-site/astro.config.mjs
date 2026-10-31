@@ -38,10 +38,7 @@ export default defineConfig({
       title: 'Felix',
       ...(isNext && {
         head: [{ tag: 'meta', attrs: { name: 'robots', content: 'noindex' } }],
-        banner: {
-          content:
-            'You\'re reading the docs for the next release. For the current stable release, see the <a href="/">main docs</a>.',
-        },
+        routeMiddleware: './src/next-banner.ts',
       }),
       description: 'A QUIC-based clustered log serving stream, cache and queue semantics, built for high-fanout delivery, predictable tail latency and strict slow-consumer isolation.',
       // The header renders the logo at ~32px. The full logo — ringed badge, whole
