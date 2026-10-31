@@ -326,7 +326,7 @@ pub(super) fn take_marks(
             2 => ProducerMark::Continues,
             3 => ProducerMark::GenerationStart,
             4 => ProducerMark::Commit,
-            5 => {
+            55 => {
                 if body.remaining() < 8 {
                     return Err(Error::Incomplete);
                 }

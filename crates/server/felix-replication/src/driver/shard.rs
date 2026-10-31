@@ -2258,7 +2258,9 @@ pub(super) async fn publish_mark(
     // log's own commit offset. Raised first, so the mark never lets a reader
     // in below a trim it covers, as a promoted leader's inherited one.
     let note_committed = || {
-        let _ = (held_log, offset);
+        if let Some(log) = held_log {
+            log.note_commit_offset(offset);
+        }
     };
     if by_followers {
         note_committed();
