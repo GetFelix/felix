@@ -243,6 +243,17 @@ pub struct BrokerError {
 }
 
 impl BrokerError {
+    /// A refusal built by hand, for a caller that maps or tests broker errors.
+    pub fn new(code: ErrorCode, retry: RetryClass, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            retry,
+            detail: None,
+            message: message.into(),
+            context: "request refused",
+        }
+    }
+
     /// Why a `shard_unavailable` shard cannot be served, when the broker said.
     pub fn reason(&self) -> Option<&str> {
         self.detail.as_ref()?.reason.as_deref()

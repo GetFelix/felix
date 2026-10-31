@@ -24,6 +24,8 @@ pub(crate) enum Exit {
     Server = 4,
     /// The key, resource or context does not exist.
     NotFound = 5,
+    /// A write may have been applied: the broker stopped waiting for it.
+    Unknown = 6,
 }
 
 impl Exit {

@@ -474,9 +474,10 @@ reader refused below the new floor.
 
 It prints where the trim record landed and where reads start now. A stale
 `--expected-offset` writes nothing, prints the shard's real next offset and
-stops with status 4. If a trim times out it may still have been written, and
-the same command again is then refused the same way, so read the shard's
-earliest offset before deciding. A fleet that has not finalized head trims
+stops with status 4, as do `forbidden` and a broker that cannot trim. If a
+trim times out it may still have been written: that is status 6, not 4. The
+same command again is then refused with the tail, so read the shard's earliest
+offset before deciding. A fleet that has not finalized head trims
 refuses with `feature_not_enabled`, and a stream that holds atomic commits
 with `stream_has_commits`.
 
@@ -655,6 +656,7 @@ error goes to stderr as `{"error": "...", "exit": N}`.
 | 3 | No broker or control plane could be reached |
 | 4 | A broker or the control plane refused the request |
 | 5 | The key, resource or context does not exist |
+| 6 | A write may have been applied: the broker stopped waiting for it |
 
 ## Help, completions and man pages
 

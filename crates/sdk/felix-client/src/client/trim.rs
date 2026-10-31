@@ -27,7 +27,7 @@ impl Connection {
     /// finalized head trims, and is not worth retrying until it has.
     /// `unacknowledged` (`trim_timed_out`) is ambiguous: the trim may have
     /// been written, and the same call again is then answered `Refused` with
-    /// the tail one past it. Read the shard's earliest offset to tell the two
+    /// the current tail, one past the trim if nothing else was written since. Read the shard's earliest offset to tell the two
     /// apart.
     ///
     /// Bound to this broker: a shard led elsewhere is refused with a

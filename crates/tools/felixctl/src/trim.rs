@@ -25,7 +25,8 @@ pub(crate) async fn run(
             args.expected_offset,
             args.headers.as_deref().map(str::as_bytes),
         )
-        .await?;
+        .await
+        .map_err(unknown_if_ambiguous)?;
     match outcome {
         ConditionalTrim::Trimmed { offset, oldest } => out.done(
             &trimmed_line(&args.stream, args.shard, offset, oldest),
@@ -37,6 +38,19 @@ pub(crate) async fn run(
             }),
         ),
         ConditionalTrim::Refused { tail } => Err(fail(Exit::Server, refused_line(args, tail))),
+    }
+}
+
+/// A trim the broker stopped waiting for may have landed, which a script must
+/// tell apart from a clean refusal.
+fn unknown_if_ambiguous(err: anyhow::Error) -> anyhow::Error {
+    let ambiguous = err
+        .downcast_ref::<felix_client::BrokerError>()
+        .is_some_and(|broker| broker.retry == felix_client::RetryClass::OutcomeUnknown);
+    if ambiguous {
+        fail(Exit::Unknown, format!("{err:#}"))
+    } else {
+        err
     }
 }
 

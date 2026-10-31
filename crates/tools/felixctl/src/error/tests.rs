@@ -52,9 +52,10 @@ fn statuses_are_stable() {
             Exit::Usage,
             Exit::Connection,
             Exit::Server,
-            Exit::NotFound
+            Exit::NotFound,
+            Exit::Unknown
         ]
         .map(Exit::code),
-        [1, 2, 3, 4, 5]
+        [1, 2, 3, 4, 5, 6]
     );
 }

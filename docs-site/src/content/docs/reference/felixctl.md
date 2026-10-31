@@ -83,6 +83,7 @@ Scripts can branch on the exit status. Each value means one thing.
 | 3 | No broker or control plane could be reached. |
 | 4 | A broker or the control plane refused the request. |
 | 5 | The key, resource or context does not exist. |
+| 6 | A write may have been applied: the broker stopped waiting for it. |
 
 With `--json`, errors go to stderr as a JSON object holding `error` and `exit`.
 
@@ -1176,7 +1177,7 @@ felixctl stream set orders --consistency quorum
 
 Hide the records of one shard of a durable stream below an offset, only if the shard's next offset is exactly --expected-offset. The trim is a record of its own and lands at that offset, so --before can be at most that. Reads below the new floor are refused as too old.
 
-A stale --expected-offset is refused with the shard's next offset and exit status 4, and nothing is written. A trim that times out may still have been written, and the same command again is then refused the same way; read the shard's earliest offset to tell. Needs a token allowed stream.trim, and a broker fleet that has finalized head trims.
+A stale --expected-offset is refused with the shard's next offset and exit status 4, and nothing is written. A trim that times out may still have been written and exits with status 6; the same command again is then refused with the tail, so read the shard's earliest offset to tell. Needs a token allowed stream.trim, and a broker fleet that has finalized head trims.
 
 ```text
 felixctl stream trim [OPTIONS] --shard <N> --before <OFFSET> --expected-offset <OFFSET> <STREAM>

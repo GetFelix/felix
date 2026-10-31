@@ -76,25 +76,39 @@ async fn writer_trim(
     expected_offset: u64,
     headers: Option<&[u8]>,
 ) -> ConditionalTrim {
-    let writer = felix_cluster::client::connect_cluster(
-        &cluster.live_broker_addrs(),
-        &cluster.tenant_id,
-        &cluster.trimmer_token(),
-    )
-    .await
-    .expect("a cluster client that may trim");
-    writer
-        .trim_before(
-            &cluster.tenant_id,
-            &cluster.namespace,
-            STREAM,
-            0,
-            before,
-            expected_offset,
-            headers,
-        )
-        .await
-        .expect("trim")
+    // Seeded with the shard's current owner only: a surviving follower may
+    // still route to a dead leader, and a fresh client has no earlier route to
+    // retry from. Bounded, since the owner may not have opened the shard yet.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let owner = cluster.owner(STREAM).await.expect("owner");
+        let addr = cluster.node(&owner).expect("owner node").client_addr;
+        let attempt = async {
+            let writer = felix_cluster::client::connect_cluster(
+                &[addr],
+                &cluster.tenant_id,
+                &cluster.trimmer_token(),
+            )
+            .await?;
+            writer
+                .trim_before(
+                    &cluster.tenant_id,
+                    &cluster.namespace,
+                    STREAM,
+                    0,
+                    before,
+                    expected_offset,
+                    headers,
+                )
+                .await
+        }
+        .await;
+        match attempt {
+            Ok(outcome) => return outcome,
+            Err(err) if std::time::Instant::now() >= deadline => panic!("trim: {err:#}"),
+            Err(_) => tokio::time::sleep(Duration::from_millis(250)).await,
+        }
+    }
 }
 
 async fn replicated_to_all(cluster: &Cluster, leader: &str, shipped_before: f64) {

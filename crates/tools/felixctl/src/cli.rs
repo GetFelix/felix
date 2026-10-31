@@ -1063,8 +1063,8 @@ pub(crate) enum StreamCommand {
                       old.\n\n\
                       A stale --expected-offset is refused with the shard's next offset and \
                       exit status 4, and nothing is written. A trim that times out may \
-                      still have been written, and the same command again is then refused \
-                      the same way; read the shard's earliest offset to tell. Needs a \
+                      still have been written and exits with status 6; the same command \
+                      again is then refused with the tail, so read the shard's earliest offset to tell. Needs a \
                       token allowed stream.trim, and a broker fleet that has finalized \
                       head trims.",
         after_long_help = "Examples:

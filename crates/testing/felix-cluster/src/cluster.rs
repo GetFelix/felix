@@ -145,16 +145,6 @@ impl Cluster {
         self.nodes.iter().map(|node| node.client_addr).collect()
     }
 
-    /// The client address of every broker the harness has not stopped or
-    /// killed, for a seed list after a fault.
-    pub fn live_broker_addrs(&self) -> Vec<SocketAddr> {
-        self.nodes
-            .iter()
-            .filter(|node| node.is_running())
-            .map(|node| node.client_addr)
-            .collect()
-    }
-
     /// Stop everything. Called by `Drop` too, so an aborted test leaves nothing
     /// behind — this exists for the case where a caller wants to wait for it.
     pub async fn shutdown(mut self) {

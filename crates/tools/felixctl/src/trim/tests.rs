@@ -2,6 +2,7 @@ use clap::Parser;
 
 use super::*;
 use crate::cli::{Cli, Command, StreamCommand};
+use crate::error::exit_for;
 
 fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
     Cli::try_parse_from(
@@ -54,6 +55,28 @@ fn the_outcome_says_where_the_trim_landed_or_that_it_was_a_no_op() {
     assert_eq!(
         trimmed_line("orders", 2, None, 400),
         "nothing to trim on orders shard 2: reads already start at 400"
+    );
+}
+
+#[test]
+fn a_trim_the_broker_stopped_waiting_for_has_its_own_status() {
+    let timed_out = felix_client::BrokerError::new(
+        felix_client::ErrorCode::Unacknowledged,
+        felix_client::RetryClass::OutcomeUnknown,
+        "timed out",
+    );
+    assert_eq!(
+        exit_for(&unknown_if_ambiguous(timed_out.into())),
+        Exit::Unknown
+    );
+    let refused = felix_client::BrokerError::new(
+        felix_client::ErrorCode::Forbidden,
+        felix_client::RetryClass::Fatal,
+        "no",
+    );
+    assert_eq!(
+        exit_for(&unknown_if_ambiguous(refused.into())),
+        Exit::Server
     );
 }
 

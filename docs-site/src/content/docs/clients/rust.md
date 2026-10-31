@@ -1883,7 +1883,8 @@ Do not send a timed-out trim again as it is. If it landed, the same call is
 refused with a tail one past the trim, which looks like a lost race. Read the
 shard's earliest offset, or read below the floor you asked for, to tell the two
 apart. `Client` follows the leader and asks again only after a coded
-`not_leader`.
+`not_leader`. A `shard_unavailable` or `not_found` from the entry broker comes
+back without a backoff; nothing was written, so it is safe to call again.
 
 A read below the floor fails with `SubscribeCursorError` (`TooOld`), whose
 `available` is the new floor and whose `trim_headers` are the bytes passed as
