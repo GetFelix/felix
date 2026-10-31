@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793469595772,
+  "lastUpdate": 1793476662348,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -51216,6 +51216,72 @@ window.BENCHMARK_DATA = {
             "range": "507.87",
             "unit": "us",
             "extra": "trials: 5\nmedian: 391.00\nmean: 622.60\nstdev: 507.87\ncv: 81.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "025b133e59d8ed46791187d9ff45065438e651be",
+          "message": "feat(storage): replica-set file beside ballot (#1009 S1) (#1703)\n\n* feat(storage): replica-set file beside ballot (#1009)\n\nA replica keeps the replicas it counts in its own file: the assignment's\ngeneration, the members (node id and the storage id the fence counts them\nunder) and, while a change is pending, the set being left. Written as\nballot is (temp file, fsync, rename, directory fsync); a missing file is no\nset, a file that does not decode fails the open.\n\nNothing reads or writes it yet.\n\nSpec-Unaffected: storage file only; nothing reads it yet\n\n* fix(storage): replica-set review fixes (#1009)\n\nSerialize writers, reject duplicate members and a leaving set that is not\nolder, add a per-member learner flag, make encode fail for what decode\nrefuses, tighten the tests, and note the ballot/set write-order for S3.\n\nSpec-Unaffected: storage file only; nothing reads it yet\n\n* style(storage): parenthesize member flags\n\nSpec-Unaffected: storage file only; nothing reads it yet\n\n* fix(storage): replica-set writes take no shared lock (#1009)\n\nEach write gets its own temporary, so writers on different shards never\nwait on each other and none shares a file. Same-shard ordering is the\ncaller's. The open can sweep leftover temporaries.\n\nSpec-Unaffected: storage file only; nothing reads it yet",
+          "timestamp": "2026-10-31T19:50:41Z",
+          "tree_id": "0dc0bb555c656c8626d8b5a2ab8cd87f30ab0658",
+          "url": "https://github.com/GetFelix/felix/commit/025b133e59d8ed46791187d9ff45065438e651be"
+        },
+        "date": 1793476655543,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 150,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 150.00\nmean: 149.80\nstdev: 1.30\ncv: 0.87%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 214,
+            "range": "1.87",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 214.00\nmean: 214.00\nstdev: 1.87\ncv: 0.87%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 254,
+            "range": "76.76",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 254.00\nmean: 284.40\nstdev: 76.76\ncv: 26.99%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 198,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 198.00\nmean: 198.00\nstdev: 0.71\ncv: 0.36%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 383,
+            "range": "14.98",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 383.00\nmean: 388.00\nstdev: 14.98\ncv: 3.86%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 540,
+            "range": "274.91",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 540.00\nmean: 653.40\nstdev: 274.91\ncv: 42.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
