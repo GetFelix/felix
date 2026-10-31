@@ -950,6 +950,28 @@ async fn a_crashed_leader_of_two_copies_takes_the_fence() {
     taken(&handler.fence(SENDER, fence(6)).await);
 }
 
+/// **A later fence is not the set of two's (#1638).** This broker led
+/// generation 5 and its view still shows 6 as `{broker-a, broker-d}`, but the
+/// fence is for 8, from a leader of a set of three that view predates:
+/// refused. A fence from another sender at 6 is refused too.
+#[tokio::test]
+async fn a_crashed_leader_refuses_a_fence_past_the_set_of_two() {
+    for (sender, generation) in [(SENDER, 8), (Some(LOCAL), 6)] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        led_with_its_start_record(dir.path()).await;
+        let broker = broker_on(dir.path());
+        let handler = ReplicaHandler::new(
+            Arc::clone(&broker),
+            failover_router(&[LOCAL], 6, &["broker-a", LOCAL]),
+        )
+        .with_unclean_start(unclean());
+        assert_eq!(
+            refusal(&handler.fence(sender, fence(generation)).await).code,
+            ErrorCode::Unavailable
+        );
+    }
+}
+
 /// **A set that shrank to two after acknowledging is refused (#1336).** The
 /// generation this broker led had three copies, so a record it lost may be
 /// on broker-c alone, which the set of two the routes show now leaves out.

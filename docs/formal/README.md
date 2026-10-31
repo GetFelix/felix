@@ -1067,12 +1067,6 @@ the old set and the new one as #1633 names them, from the last report the
 control plane took, which a set change does not clear). Configurations that
 leave it off are unchanged: every variable it adds stays at its initial value.
 
-The model is narrower than the code here. The code reads the generation and
-the set from the crashed leader's own routing view, checks the sender is in
-that set, and ties neither to the fence's generation or to the sender leading
-it. The model keys on the fencer's own generation and set. No unsafe trace is
-known from the gap, but the exception is only argued for the narrower rule.
-
 Identities are left out of these configurations (`StorageIds = FALSE`), so
 every fence answer counts as from the copy the ids name. In the code a
 rotated copy named by its old identity is never counted at all, and the
