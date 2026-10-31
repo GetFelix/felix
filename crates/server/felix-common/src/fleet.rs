@@ -166,6 +166,15 @@ pub const JOINT_FENCE: FleetFeature = FleetFeature::new("joint_fence");
 /// `docs/replication-design.md` ("Electing without the control plane").
 pub const REPLICA_ELECTION: FleetFeature = FleetFeature::new("replica_election");
 
+/// Not a feature: how a broker reports that it offers the `ELECTION` peer
+/// capability, which the control plane cannot see on the peer wire. It rides
+/// in the reported set so registration needs no new field. Kept out of
+/// [`IMPLEMENTED`] and added to a broker's report in the change that makes it
+/// offer `ELECTION`, so every build reports it false until then. The control
+/// plane finalizes [`JOINT_FENCE`] and [`REPLICA_ELECTION`] only when every
+/// serving broker reports it.
+pub const PEER_ELECTION: FleetFeature = FleetFeature::new("peer_election");
+
 /// The most features one gate tracks. A report longer than this is cut, which
 /// only ever leaves features off.
 pub const MAX_FEATURES: usize = 64;
