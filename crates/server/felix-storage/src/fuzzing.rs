@@ -19,8 +19,9 @@ pub fn counter_record(bytes: &[u8]) {
 }
 
 /// Decode `bytes` as each small per-shard state file: the durable mark, the
-/// replica state, the generation history and the producer snapshot. Also as
-/// the data directory's storage id and run state, the files outside a shard.
+/// replica state, the replica set, the generation history and the producer
+/// snapshot. Also as the data directory's storage id and run state, the files
+/// outside a shard.
 pub fn sidecar_state(bytes: &[u8]) {
     crate::disk_log::fuzzing::sidecars(bytes);
     storage_id(bytes);

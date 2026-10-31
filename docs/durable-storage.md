@@ -1357,6 +1357,15 @@ shard's assignment as the control plane's Raft leader confirms it before it
 takes any leader ([#1332](https://github.com/GetFelix/felix/issues/1332)).
 See `docs/replication-design.md`, "A directory that lost its ballots".
 
+The shard directory also has room for a `replica-set` file: the replicas a
+copy counts for its assignment, and the set it is leaving while a change is
+pending. It is written durably before a copy answers at a set, so a restart
+cannot make the copy forget which majority it was asked to count, and it is
+the one place the old set survives. It is the storage half of replicas
+electing a leader without the control plane; see `docs/replication-design.md`,
+"Electing without the control plane", and `docs/storage-format.md`,
+"`replica-set`". Nothing reads it yet.
+
 Leaders learn each follower's id in the peer handshake and start its copy
 over when it changes, and a follower counts toward the mark only once it has
 answered that pass under the id its position was learned under. Placement

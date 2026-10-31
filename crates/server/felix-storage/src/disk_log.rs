@@ -14,6 +14,7 @@
 //! * `replica_state` — the highest generation accepted, and the commit offset.
 //! * `ballot`    — which leader that generation was accepted from, and
 //!   accepting one.
+//! * `set`       — the replicas this one counts, and the set it is leaving.
 //! * `producers` — each idempotent producer's place, derived from the records.
 //! * `append`    — the append path, and the rollover it may have to start.
 //! * `flush`     — making the active segment durable.
@@ -60,6 +61,9 @@ pub(crate) mod replica_state;
 mod retention;
 mod sealed;
 mod segments;
+// Nothing reads the replica-set file yet; the replica's set checks will.
+#[allow(dead_code)]
+mod set;
 mod sync;
 
 pub use producers::ProducerSequence;

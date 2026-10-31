@@ -64,6 +64,7 @@ a segment, should be rejected on its first four bytes rather than misparsed.
     epochs                                   ← where each generation began
     replica                                  ← accepted generation and commit offset, once replicated
     ballot                                   ← the leader that generation was accepted from
+    replica-set                              ← the replicas this one counts, and the set it is leaving
     durable.mark                             ← how far the active segment was synced
     producers                                ← producer snapshot, when any producer wrote here
     head                                     ← trim records' head entries, once the log holds a v7 segment
@@ -700,6 +701,52 @@ a crash that may have cost it records it acknowledged writes it over its own
 ballot, so no leader is accepted at that generation, this broker included,
 and only a newer one replaces it (`DiskLog::give_up_generation`; see
 `docs/replication-design.md`, "A leader's own crash").
+
+## `replica-set`: the replicas this one counts
+
+Beside `ballot`, once a broker that keeps replica sets has recorded the set of
+an assignment: the assignment's generation, its members, and while a change of
+set is pending the set being left.
+
+```text
+ 0   4  magic        u32  "FLRS"
+ 4   2  version      u16  1
+ 6   2  flags        u16  bit 0: a set being left follows; other bits must be 0
+ 8   .  set          the current set
+ .   .  leaving      the set being left, only when flags bit 0 is set
+ .   4  crc          u32  crc32 over everything before it
+```
+
+Each set is:
+
+```text
+ 0   8  generation   u64  the assignment's generation
+ 8   2  count        u16  at most 64
+10   .  members      count entries, each:
+                       2  node_len   u16  at most 1024
+                       n  node       utf-8 node id
+                       1  has_storage u8  0 or 1
+                      16  storage    the storage id the fence counts the member
+                                     under, only when has_storage is 1
+```
+
+Written the same way as `ballot`: a temporary file next to it (`replica-set.tmp`),
+fsynced, renamed into place, then the directory fsynced. A crash leaves the old
+set or the new one, and a leftover temporary is never read; the next write
+replaces it. The write returns only after all of that, so a replica that
+answers at a set afterwards has made a promise that survives a restart. The
+pending set is cleared by writing a set without it.
+
+A missing file means no set was ever recorded: a shard from a build that
+predates it, or a new one. A file that is present and does not decode, whether
+by checksum, a bad flag or count, a truncation, or bytes after the last
+member, fails the open, as `ballot` does: it cannot be rebuilt from the log,
+and reading it as no set would let the replica count the wrong majority. A
+separate file so that a build that predates it ignores it and still opens the
+shard.
+
+Nothing reads or writes it yet. The replica's set checks will, as described in
+`docs/replication-design.md`, "Electing without the control plane".
 
 ## `offload.manifest`: segments with a copy in the object store
 
