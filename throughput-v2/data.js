@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793463687437,
+  "lastUpdate": 1793466429333,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -40248,6 +40248,58 @@ window.BENCHMARK_DATA = {
             "range": "40519.23",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1690509.75\nmean: 1702715.37\nstdev: 40519.23\ncv: 2.38%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c234074e13f54d6e8592f84e4543699d06bf3a04",
+          "message": "fix(replication): tie the set-of-two exception to the fence's generation and leader (#1638) (#1681)\n\n* fix(replication): tie the set-of-two exception to the fence's generation and leader (#1638)\n\nacknowledged_by_two now takes the fence's generation and requires it to\nequal the routed generation, and requires the sender to lead the route.\nA stale view of the failover no longer admits a later fence.\n\nSpec-Unaffected: the code now matches AckedByTwo in FelixShard.tla; the\nREADME note about the model being narrower is removed.\n\n* test(replication): cover the leader check; docs name the generation and leader conditions (#1638)",
+          "timestamp": "2026-10-31T17:02:25Z",
+          "tree_id": "f77aac0c2f210fc10d30bbe5cfc8c41e69b43944",
+          "url": "https://github.com/GetFelix/felix/commit/c234074e13f54d6e8592f84e4543699d06bf3a04"
+        },
+        "date": 1793466428642,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 362516.77,
+            "range": "12584.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 362516.77\nmean: 365124.71\nstdev: 12584.58\ncv: 3.45%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 362516.77,
+            "range": "12584.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 362516.77\nmean: 365124.71\nstdev: 12584.58\ncv: 3.45%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82448.07,
+            "range": "2635.74",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82448.07\nmean: 81328.40\nstdev: 2635.74\ncv: 3.24%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 824480.66,
+            "range": "26357.37",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 824480.66\nmean: 813283.95\nstdev: 26357.37\ncv: 3.24%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
