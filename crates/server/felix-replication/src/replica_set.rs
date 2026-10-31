@@ -10,33 +10,29 @@ use felix_storage::disk_log::{Member, Membership, ReplicaSet};
 use felix_wire::internal::{ReplicaSetView, SetMember};
 
 /// The route's set at its generation, as a fence carries it.
+///
+/// Every set built from a route lists the same members: an equal-generation
+/// set never replaces the stored one, so the leader's and a replica's must
+/// agree. The staged `successor` is a learner, which an election refuses as a
+/// voter; that only costs liveness while a move is staged.
 pub(crate) fn view(route: &Route) -> ReplicaSetView {
     ReplicaSetView {
         generation: route.generation,
-        members: members(route, None)
-            .map(|(node, storage)| SetMember {
+        members: members(route)
+            .map(|(node, storage, learner)| SetMember {
                 node_id: node.to_string(),
                 storage_id: storage,
-                learner: false,
+                learner,
             })
             .collect(),
     }
 }
 
-/// The route's set at its generation, as a log keeps it, without `leaving_out`:
-/// a staged copy still copying is not part of the set it is joining.
-pub(crate) fn kept(route: &Route, leaving_out: Option<&str>) -> ReplicaSet {
+/// The route's set at its generation, as a log keeps it. The second argument
+/// is unused: the set no longer depends on who is copying.
+pub(crate) fn kept(route: &Route, _copying: Option<&str>) -> ReplicaSet {
     ReplicaSet {
-        current: Membership {
-            generation: route.generation,
-            members: members(route, leaving_out)
-                .map(|(node, storage)| Member {
-                    node: node.to_string(),
-                    storage: storage.map(StorageId::from_bytes),
-                    learner: false,
-                })
-                .collect(),
-        },
+        current: membership(&view(route)),
         leaving: None,
     }
 }
@@ -57,10 +53,7 @@ pub(crate) fn membership(view: &ReplicaSetView) -> Membership {
     }
 }
 
-fn members<'a>(
-    route: &'a Route,
-    leaving_out: Option<&'a str>,
-) -> impl Iterator<Item = (&'a str, Option<[u8; 16]>)> + 'a {
+fn members(route: &Route) -> impl Iterator<Item = (&str, Option<[u8; 16]>, bool)> + '_ {
     let storage = |node: &str| {
         route
             .fence_storage_ids
@@ -71,8 +64,10 @@ fn members<'a>(
     std::iter::once(&route.leader)
         .chain(&route.replicas)
         .map(|node| node.node_id.as_str())
-        .filter(move |node| Some(*node) != leaving_out)
-        .map(move |node| (node, storage(node)))
+        .map(move |node| {
+            let learner = route.successor.as_deref() == Some(node) && node != route.leader.node_id;
+            (node, storage(node), learner)
+        })
 }
 
 /// A storage id as a route names it, 32 hex digits, or `None` for an empty

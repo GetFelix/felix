@@ -134,6 +134,12 @@ async fn a_leader_that_answers_a_newer_fence_stops_counting() {
 #[tokio::test]
 async fn a_stamped_batch_reaches_only_a_follower_that_offered_election() {
     let (broker, _dir) = quorum_leader(3, 4).await;
+    // The leader's open records its own ballot; the fixture skips the open.
+    stream_log(&broker)
+        .await
+        .accept_generation(4, Some(LOCAL))
+        .await
+        .expect("own ballot");
     let followers = Followers::new(true, &["broker-b"]);
     pass(&followers, &broker, &follower_ack_marks()).await;
     assert_eq!(

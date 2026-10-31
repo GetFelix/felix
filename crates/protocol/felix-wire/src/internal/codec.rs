@@ -9,7 +9,7 @@ use super::{
     AckMode, CacheOpKind, ErrorCode, Fence, FenceElection, FenceOk, ForwardCacheCondition,
     ForwardCacheError, ForwardCacheOk, ForwardCacheOp, ForwardCacheOutcome, ForwardPublish,
     ForwardPublishError, ForwardPublishOk, Hello, HelloOk, InternalHeader, InternalMessage, Kind,
-    MAX_BATCH_PAYLOADS, MAX_CREDENTIAL_BYTES, MAX_ENVELOPE_BYTES, MAX_IDENT_BYTES,
+    MAX_BATCH_PAYLOADS, MAX_BODY_BYTES, MAX_CREDENTIAL_BYTES, MAX_ENVELOPE_BYTES, MAX_IDENT_BYTES,
     MAX_INNER_BODY_BYTES, MAX_SET_MEMBERS, MAX_SET_NODE_BYTES, NotLeader, PeerCapabilities, Ping,
     Pong, PreVote, PreVoteAnswer, PreVoteRefusal, ReplicaLog, ReplicaSetView, ReplicateBootstrap,
     ReplicateError, ReplicateFetch, ReplicateOk, ReplicateRebuild, ReplicateRecords, SetMember,
@@ -358,12 +358,12 @@ impl InternalMessage {
             }
         }
 
+        let incarnation = self.incarnated_shard().and_then(|shard| shard.incarnation);
         let inner_len = body.len() - PREFIX;
-        if inner_len > MAX_INNER_BODY_BYTES as usize {
+        if inner_len > body_limit(incarnation.is_some() || set_generation.is_some()) {
             return Err(Error::FrameTooLarge);
         }
 
-        let incarnation = self.incarnated_shard().and_then(|shard| shard.incarnation);
         let mut start = PREFIX;
         let mut kind = self.kind();
         if let Some(incarnation) = incarnation {
@@ -1129,4 +1129,14 @@ fn expect_empty(buf: &Bytes) -> Result<()> {
         return Err(Error::Incomplete);
     }
     Ok(())
+}
+
+/// Largest body to encode. Only a message that gets an envelope gives up the
+/// envelope margin; a plain one keeps the full frame limit.
+pub(super) fn body_limit(enveloped: bool) -> usize {
+    if enveloped {
+        MAX_INNER_BODY_BYTES as usize
+    } else {
+        MAX_BODY_BYTES as usize
+    }
 }

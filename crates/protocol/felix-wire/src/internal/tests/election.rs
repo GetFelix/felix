@@ -663,6 +663,33 @@ fn a_wrapped_batch_at_the_inner_limit_fits_under_the_frame_limit() {
 }
 
 #[test]
+fn a_plain_batch_keeps_the_full_frame_limit() {
+    let plain = |len: usize| {
+        let InternalMessage::ReplicateRecords(mut records) = wrapped_batch(len) else {
+            unreachable!()
+        };
+        records.set_generation = None;
+        records.shard.incarnation = None;
+        InternalMessage::ReplicateRecords(records)
+    };
+    let overhead = plain(0).encode().expect("encode").len() - InternalHeader::LEN;
+    let at_limit = MAX_BODY_BYTES as usize - overhead;
+    assert!(at_limit > MAX_INNER_BODY_BYTES as usize - overhead);
+
+    let encoded = plain(at_limit)
+        .encode()
+        .expect("a plain batch at the limit");
+    assert_eq!(
+        InternalHeader::decode(&encoded).expect("header").length,
+        MAX_BODY_BYTES
+    );
+    assert!(matches!(
+        plain(at_limit + 1).encode(),
+        Err(Error::FrameTooLarge)
+    ));
+}
+
+#[test]
 fn unwrapping_an_envelope_copies_no_payload() {
     let incarnated = {
         let InternalMessage::ReplicateRecords(mut records) = wrapped_batch(4096) else {

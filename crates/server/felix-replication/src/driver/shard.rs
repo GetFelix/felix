@@ -453,11 +453,12 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     // The leader keeps its own set before shipping at it, so a fence or
     // batch from an older set is refused here too once this broker follows.
     let electing = requester.offers_election();
+    // The ballot at this generation is on disk from the open; keeping the set
+    // before it would put the set ahead of the ballot, so skip the pass.
     if electing
         && log.set_generation() < route.generation
-        && let Err(err) = log
-            .accept_set(crate::replica_set::kept(route, learner.as_deref()))
-            .await
+        && log.accepted_generation() >= route.generation
+        && let Err(err) = log.accept_set(crate::replica_set::kept(route, None)).await
     {
         tracing::warn!(
             stream = %key.stream,
@@ -472,6 +473,8 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     // here may not be in the new leader's log. So it counts nothing more.
     // Only once every follower offered `ELECTION`; until then the control
     // plane alone replaces leaders, and the ack path is as it was.
+    // A follower with no recorded capabilities counts as not offering it, so
+    // election stays dormant until every follower has negotiated `ELECTION`.
     let election_active = electing
         && route
             .replicas
@@ -595,6 +598,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 &followers,
                 learner.as_deref(),
                 by_followers,
+                election_active,
             )
             .await
         }
@@ -649,7 +653,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     // would only repeat the question.
     let quiesced_now = route.draining && fence.quiesced(mark_key);
     let counter_tail = match &counter_log {
-        Some(log) if acks_at_quorum && leading => log.tail_offset().await.ok(),
+        Some(log) if acks_at_quorum && leading && !stepped_down() => log.tail_offset().await.ok(),
         _ => None,
     };
     let would_raise = |node: &str,
@@ -1568,9 +1572,19 @@ async fn counter_level(
     followers: &[FollowerCursor],
     learner: Option<&str>,
     by_followers: bool,
+    election_active: bool,
 ) -> Option<CounterLevel> {
     let tail = log.tail_offset().await.ok()?;
-    let majority = if by_followers {
+    // Rule 5, as for the shard's own mark: a newer ballot or set means the
+    // counter mark may not advance past what is already published.
+    let stepped_down = election_active
+        && [cache_log, log].iter().any(|held| {
+            held.accepted_generation() > route.generation
+                || held.set_generation() > route.generation
+        });
+    let majority = if stepped_down {
+        0
+    } else if by_followers {
         // Read after the tail. A newer leader fences the cache log before the
         // counter log, and once either has answered it, what this broker
         // writes next is in no fence answer.
@@ -1604,7 +1618,7 @@ async fn counter_level(
     // start, all of them. Acknowledging by the followers, the promoted leader
     // fences a majority and takes the furthest counter log instead.
     let inherited = start.map_or(tail, |start| start.min(tail));
-    let floor = if by_followers {
+    let floor = if by_followers || stepped_down {
         acknowledged
     } else {
         acknowledged.max(inherited)

@@ -47,14 +47,26 @@ fn a_routes_set_names_the_leader_and_its_replicas() {
 }
 
 #[test]
-fn a_staged_copy_is_left_out_of_the_kept_set() {
-    let kept = kept(&route(), Some("c"));
-    let nodes: Vec<_> = kept
-        .current
+fn a_staged_successor_is_a_learner_in_every_set() {
+    let mut staged = route();
+    staged.successor = Some("c".to_string());
+    let view = view(&staged);
+    let learners: Vec<_> = view
         .members
         .iter()
-        .map(|member| member.node.as_str())
+        .map(|member| (member.node_id.as_str(), member.learner))
         .collect();
-    assert_eq!(nodes, vec!["a", "b"]);
-    assert_eq!(membership(&view(&route())).members.len(), 3);
+    assert_eq!(learners, vec![("a", false), ("b", false), ("c", true)]);
+    assert_eq!(kept(&staged, None).current, membership(&view));
+}
+
+#[test]
+fn the_leaders_and_a_followers_sets_for_one_route_are_equal() {
+    let mut staged = route();
+    staged.successor = Some("c".to_string());
+    // The leader keeps `kept(route, ..)`, a replica learns from the view.
+    let leaders = kept(&staged, Some("c"));
+    let followers = membership(&view(&staged));
+    assert_eq!(leaders.current, followers);
+    assert_eq!(leaders.current.members.len(), 3);
 }

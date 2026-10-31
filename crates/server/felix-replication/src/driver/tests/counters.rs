@@ -614,3 +614,71 @@ async fn a_counter_write_on_this_shard_cuts_a_waiting_pass_short() {
     );
     driver.stop().await;
 }
+
+/// Acknowledges every batch and offers `ELECTION` for all its followers.
+struct Electing;
+
+impl PeerRequester for Electing {
+    async fn request(
+        &self,
+        _node_id: &str,
+        _addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        let (InternalMessage::ReplicateRecords(batch)
+        | InternalMessage::ReplicateCacheRecords(batch)
+        | InternalMessage::ReplicateCounterRecords(batch)) = message
+        else {
+            panic!("unexpected {:?}", message.kind());
+        };
+        Ok(InternalMessage::ReplicateOk(ReplicateOk {
+            correlation_id: 0,
+            durable_offset: batch.first_offset + batch.payloads.len() as u64,
+        }))
+    }
+
+    fn recorded_capabilities(
+        &self,
+        _node_id: &str,
+    ) -> Option<felix_wire::internal::PeerCapabilities> {
+        Some(felix_wire::internal::PeerCapabilities::ELECTION)
+    }
+
+    fn offers_election(&self) -> bool {
+        true
+    }
+}
+
+/// **A cache leader that answered a newer fence raises no counter mark.**
+/// A candidate may have been elected on that answer, so what the followers
+/// confirm of the counters afterwards is not acknowledged. Without the newer
+/// fence the same writes are acknowledged, so the mark is not simply stuck.
+#[tokio::test(start_paused = true)]
+async fn a_cache_leader_that_answered_a_newer_fence_raises_no_counter_mark() {
+    let watched = watch_key(&cache_key());
+    for (fenced, raised) in [(false, true), (true, false)] {
+        let (broker, router, _dir) = quorum_cache().await;
+        let marks = by_followers(&broker).await;
+        if fenced {
+            broker
+                .shard_log(felix_broker::LogKind::Cache, TENANT, NAMESPACE, STREAM, 0)
+                .await
+                .expect("log")
+                .accept_generation(GENERATION + 1, Some("broker-c"))
+                .await
+                .expect("answer a newer fence");
+        }
+        let (driver, marks) = driver(Electing, &broker, &router, marks);
+
+        let tails = write(&broker, 0).await;
+        let reached = tokio::time::timeout(PROMPT, async {
+            while marks.counters().offset(&watched, GENERATION) < Some(tails.1) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .is_ok();
+        assert_eq!(reached, raised, "newer fence answered: {fenced}");
+        driver.stop().await;
+    }
+}
