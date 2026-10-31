@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793458613928,
+  "lastUpdate": 1793463687437,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -40196,6 +40196,58 @@ window.BENCHMARK_DATA = {
             "range": "4920.56",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 813642.37\nmean: 814615.54\nstdev: 4920.56\ncv: 0.60%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "de96ca26533c522778c1c0cd0fe95607c609617e",
+          "message": "feat(client): conditional head trim in the Rust client and felixctl (#1662, step 7) (#1680)\n\n* feat(client): conditional head trim in the Rust client and felixctl (#1662)\n\nClient::trim_before and Connection::trim_before send trim_before to the\nshard's leader and return ConditionalTrim (Trimmed or a stale-tail\nRefused). Other refusals are typed BrokerErrors; a broker without\nFEATURE_HEAD_TRIM is refused locally with TrimError::Unsupported.\nSubscribeCursorError carries trim_headers. felixctl gains stream trim.\nA cluster test checks the floor and the records above it across a\nfailover. Docs, status row and changelog fragment included.\n\nSpec-Unaffected: client-side wire use only; FelixHeadTrim.tla models the broker's conditional append, which this does not change.\n\n* fix(client): review fixes for the head trim client (#1662)\n\nfelixctl gives a trim the broker stopped waiting for its own exit status 6.\nThe failover test seeds each trim with the current owner and retries for\n30 s. Docs corrected.\n\nSpec-Unaffected: client and test changes only.",
+          "timestamp": "2026-10-31T16:18:06Z",
+          "tree_id": "91abdeeae593f1679b5e5587acdf1315ae8a912f",
+          "url": "https://github.com/GetFelix/felix/commit/de96ca26533c522778c1c0cd0fe95607c609617e"
+        },
+        "date": 1793463686823,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 746859.37,
+            "range": "65472.65",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 746859.37\nmean: 730043.06\nstdev: 65472.65\ncv: 8.97%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 746859.37,
+            "range": "65472.65",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 746859.37\nmean: 730043.06\nstdev: 65472.65\ncv: 8.97%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 169050.97,
+            "range": "4051.92",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 169050.97\nmean: 170271.54\nstdev: 4051.92\ncv: 2.38%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1690509.75,
+            "range": "40519.23",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1690509.75\nmean: 1702715.37\nstdev: 40519.23\ncv: 2.38%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
