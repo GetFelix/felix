@@ -524,7 +524,8 @@ was down for the delete.
 
 Once finalized, a durable stream accepts head trims: a trim record that hides
 the stream's history below an offset. Until then a broker in a cluster refuses
-every trim with `head_trim_not_enabled` and writes nothing.
+every trim and writes nothing. Over QUIC the client gets a generic `invalid`
+error; over Kafka, an unknown-server-error response.
 
 - **It is the one-way step.** A trim record is storage format v7, which an
   older broker refuses to open. Take a backup first.
@@ -535,6 +536,11 @@ every trim with `head_trim_not_enabled` and writes nothing.
   the trim, counted as `trim_unsupported` in
   `felix_broker_replication_shipped_total`.
 - **A single broker** allows trims from the start: it has no followers.
+  A data directory that trimmed as a single broker joins a cluster only once
+  that cluster has finalized `head_trim`. A log that has trimmed holds
+  records an older follower or leader cannot read, and a promoted older
+  leader's fetch of it fails to decode, which stalls that shard's failover.
+  Broker startup does not check for this.
 - **What clients see.** Nothing until something trims. Reads below a trim's
   floor are then refused as too old.
 

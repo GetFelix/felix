@@ -323,8 +323,11 @@ async fn ship_batch<R: PeerRequester>(
         Err(PeerError::Unsupported { .. }) if holds_trim => {
             // The follower never said it reads trim records, so it is held
             // here rather than sent one it would refuse. Logged at most once
-            // a minute: the next pass meets the same trim.
-            if TRIM_REFUSALS_LOGGED.due() {
+            // a minute per follower and shard: the next pass meets the same trim.
+            if TRIM_REFUSALS_LOGGED.due(&format!(
+                "{}/{}/{}/{}/{}",
+                cursor.node_id, shard.tenant_id, shard.namespace, shard.stream, shard.shard
+            )) {
                 tracing::error!(
                     node_id = %cursor.node_id,
                     stream = %shard.stream,
@@ -540,39 +543,47 @@ fn request_holds_trim(request: &InternalMessage) -> bool {
     matches!(request, InternalMessage::ReplicateMarkedRecords(batch) if batch.holds_trim())
 }
 
-/// When the refusal to ship a trim was last logged, for the whole process.
+/// When the refusal to ship a trim was last logged, per follower and shard.
 static TRIM_REFUSALS_LOGGED: LogLimit = LogLimit::new(std::time::Duration::from_secs(60));
 
-/// Lets a log line through at most once per `every`.
+/// Most keys a [`LogLimit`] remembers.
+const LOG_LIMIT_KEYS: usize = 1024;
+
+/// Lets a log line through at most once per `every` for each key, so one held
+/// follower does not hide another. Remembers at most `LOG_LIMIT_KEYS` keys.
 pub(crate) struct LogLimit {
     every: std::time::Duration,
-    /// Milliseconds since `START`, plus one, when a line last went; zero for
-    /// never.
-    last: std::sync::atomic::AtomicU64,
+    last: std::sync::Mutex<Option<std::collections::HashMap<String, std::time::Instant>>>,
 }
-
-static START: std::sync::LazyLock<std::time::Instant> =
-    std::sync::LazyLock::new(std::time::Instant::now);
 
 impl LogLimit {
     pub(crate) const fn new(every: std::time::Duration) -> Self {
         Self {
             every,
-            last: std::sync::atomic::AtomicU64::new(0),
+            last: std::sync::Mutex::new(None),
         }
     }
 
-    /// Whether a line may go now. Only one caller of several racing wins.
-    pub(crate) fn due(&self) -> bool {
-        use std::sync::atomic::Ordering;
-        let now = START.elapsed().as_millis() as u64 + 1;
-        let last = self.last.load(Ordering::Acquire);
-        if last != 0 && now.saturating_sub(last) < self.every.as_millis() as u64 {
+    /// Whether a line for `key` may go now. The key is built only when this
+    /// is called, which the refusal path does once per pass.
+    pub(crate) fn due(&self, key: &str) -> bool {
+        let now = std::time::Instant::now();
+        let mut guard = self.last.lock().unwrap_or_else(|e| e.into_inner());
+        let seen = guard.get_or_insert_with(Default::default);
+        if let Some(at) = seen.get(key)
+            && now.duration_since(*at) < self.every
+        {
             return false;
         }
-        self.last
-            .compare_exchange(last, now, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
+        if seen.len() >= LOG_LIMIT_KEYS {
+            seen.retain(|_, at| now.duration_since(*at) < self.every);
+            if seen.len() >= LOG_LIMIT_KEYS {
+                // Too many held at once to track; log rather than hide one.
+                return true;
+            }
+        }
+        seen.insert(key.to_string(), now);
+        true
     }
 }
 

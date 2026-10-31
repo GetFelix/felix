@@ -445,12 +445,15 @@ async fn a_follower_without_head_trim_is_held_at_the_trim() {
     );
 }
 
-/// **The refusal's log line goes at most once a minute**, since every pass
-/// meets the same trim.
+/// **The refusal's log line goes at most once a minute for each follower
+/// and shard**, since every pass meets the same trim, and one held follower
+/// does not hide another.
 #[test]
-fn the_trim_refusal_log_is_rate_limited() {
+fn the_trim_refusal_log_is_rate_limited_per_key() {
     let limit = LogLimit::new(std::time::Duration::from_secs(60));
-    assert!(limit.due());
-    assert!(!limit.due());
-    assert!(LogLimit::new(std::time::Duration::ZERO).due());
+    assert!(limit.due("b/s0"));
+    assert!(!limit.due("b/s0"));
+    assert!(limit.due("c/s0"));
+    assert!(limit.due("b/s1"));
+    assert!(LogLimit::new(std::time::Duration::ZERO).due("b/s0"));
 }
