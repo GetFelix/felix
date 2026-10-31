@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793466429333,
+  "lastUpdate": 1793469598129,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -40300,6 +40300,58 @@ window.BENCHMARK_DATA = {
             "range": "26357.37",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 824480.66\nmean: 813283.95\nstdev: 26357.37\ncv: 3.24%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "755f1b0e972553c7af6ec2b8b849b563757116ff",
+          "message": "feat(bindings): conditional head trim in the C ABI, C#, Python and TypeScript (#1662, step 8) (#1683)\n\n* feat(bindings): conditional head trim in the C ABI, C#, Python and TypeScript (#1662, step 8)\n\nfelix_client_trim_before, FelixClient.TrimBeforeAsync, Python's trim_before\n(sync and async) and TypeScript's trimBefore wrap Client::trim_before. A\nstale tail is an answer in every binding, a broker without FEATURE_HEAD_TRIM\nis refused locally, and a timed-out trim is outcome unknown. client-fixture\ngains a trimmer token and a trim stream, finalizes head_trim, and four\nhead_trim.* conformance scenarios cover the bindings.\n\nSpec-Unaffected: client bindings only; FelixHeadTrim.tla models the broker's conditional append, which this does not change.\n\n* docs: list the trim error kind in the env checks and the error table (#1662)\n\nSpec-Unaffected: docs and check scripts only.\n\n* fix(client): a non-stale publish refusal to a trim is a broker error; review fixes (#1662)\n\nSpec-Unaffected: client-side error mapping and test/doc fixes only.",
+          "timestamp": "2026-10-31T17:56:24Z",
+          "tree_id": "6b4f7af4e8cc03d428127d5febf8a8786e550166",
+          "url": "https://github.com/GetFelix/felix/commit/755f1b0e972553c7af6ec2b8b849b563757116ff"
+        },
+        "date": 1793469597519,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 636156.08,
+            "range": "68371.35",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 636156.08\nmean: 665956.95\nstdev: 68371.35\ncv: 10.27%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 636156.08,
+            "range": "68371.35",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 636156.08\nmean: 665956.95\nstdev: 68371.35\ncv: 10.27%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 156112.56,
+            "range": "2570.08",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 156112.56\nmean: 156469.31\nstdev: 2570.08\ncv: 1.64%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1561125.57,
+            "range": "25700.83",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1561125.57\nmean: 1564693.04\nstdev: 25700.83\ncv: 1.64%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
