@@ -251,7 +251,7 @@ pub(crate) async fn mint_for_principal(
             audience,
         ),
         audience,
-        head_trim_finalized(state).await?,
+        head_trim_finalized(state).await,
     );
 
     // A token with no permissions usually masks a misconfiguration, so it is
@@ -417,9 +417,23 @@ pub(crate) fn for_fleet(mut perms: Vec<String>, audience: &str, head_trim: bool)
 }
 
 /// Whether the fleet has finalized `head_trim`, so a broker token may name
-/// `stream.trim`.
-pub(crate) async fn head_trim_finalized(state: &AppState) -> Result<bool, ApiError> {
-    crate::api::streams::fleet_finalized(state, felix_common::fleet::HEAD_TRIM).await
+/// `stream.trim`. A fleet-feature read that fails answers no: only
+/// `stream.trim` is left off, and the rest of the token is still minted.
+pub(crate) async fn head_trim_finalized(state: &AppState) -> bool {
+    finalized_or_closed(
+        crate::api::streams::fleet_finalized(state, felix_common::fleet::HEAD_TRIM).await,
+    )
+}
+
+/// The read's answer, or `false` with a warning when it failed.
+fn finalized_or_closed(read: Result<bool, ApiError>) -> bool {
+    read.unwrap_or_else(|err| {
+        tracing::warn!(
+            error = ?err,
+            "could not read the fleet features; minting without `stream.trim`"
+        );
+        false
+    })
 }
 
 /// Whether `narrowing` asks for a connection-only broker token, one with no

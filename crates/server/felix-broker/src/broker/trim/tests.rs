@@ -671,9 +671,9 @@ async fn a_restart_with_trims_at_the_tail_refills_the_ring() {
     assert_eq!(run, Some((12, 2)));
 }
 
-/// **The data directory is marked before the first trim is written.** A
+/// **The data directory is marked before the first trim is written here.** A
 /// refused trim leaves no mark, and a trim whose mark cannot be written
-/// writes nothing, so a directory without the mark holds no trim.
+/// writes nothing. A follower's trims are marked in `felix-replication`.
 #[tokio::test]
 async fn the_first_trim_marks_the_directory_before_it_writes() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -696,4 +696,26 @@ async fn the_first_trim_marks_the_directory_before_it_writes() {
     std::fs::remove_dir(&blocker).expect("unblock");
     trim(&broker, 2, 4).await.expect("trim");
     assert!(felix_storage::run_state::head_trimmed(dir.path()).expect("read"));
+}
+
+/// **Trims racing for the first marker write all succeed.** The marker goes
+/// through one temporary file, so unserialized writers would remove each
+/// other's file and fail.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn racing_first_marker_writes_all_succeed() {
+    for _ in 0..20 {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (broker, _) = broker(dir.path(), ConsistencyLevel::Leader).await;
+        let broker = std::sync::Arc::new(broker);
+        let writers: Vec<_> = (0..8)
+            .map(|_| {
+                let broker = std::sync::Arc::clone(&broker);
+                tokio::spawn(async move { broker.mark_head_trimmed().await })
+            })
+            .collect();
+        for writer in writers {
+            writer.await.expect("join").expect("a racing marker write");
+        }
+        assert!(felix_storage::run_state::head_trimmed(dir.path()).expect("read"));
+    }
 }

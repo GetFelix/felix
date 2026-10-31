@@ -146,8 +146,10 @@ pub(crate) async fn publish_at(
 ///
 /// Not forwarded and not queued, like a conditional publish. The trim
 /// waits for its own commit (on a `Quorum` stream, the committed mark) before
-/// it answers, so there is no separate quorum wait here. The fence guard is
-/// held for that wait, which is bounded by the trim's own timeout.
+/// it answers, so there is no separate quorum wait here. The fence guard
+/// covers only the checks and the record taking its place in the log; the
+/// waits run after it drops, as `leader_write` does for the quorum wait, so a
+/// drain is not held up by a quorum that has stalled.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn trim_at(
     broker: &Broker,
@@ -167,17 +169,24 @@ pub(crate) async fn trim_at(
         .resolve_stream_handle(&key.tenant_id, &key.namespace, &key.stream, key.shard)
         .await
         .map_err(|err| ClientError::from_broker(&err, err.to_string()))?;
-    let _guard: Option<FenceGuard> = fence::enter_or_keep(
+    let guard: Option<FenceGuard> = fence::enter_or_keep(
         &mut fenced,
         publish_ctx.ingress.as_deref(),
         Some(&key),
         generation,
     )
     .map_err(ClientError::from)?;
-    broker
-        .trim_before_at(&handle, before, expected_offset, headers)
+    // The record is in the log before the guard drops, and its floor applies
+    // only at commit, so the 30 s waits need not hold up a shard drain.
+    let step = broker
+        .claim_trim(&handle, before, expected_offset, headers)
         .await
         // The broker's own text: the handler puts the context in front.
+        .map_err(|err| NotWritten::from_broker(&err, &err.to_string()))?;
+    drop(guard);
+    broker
+        .finish_trim(&handle, step)
+        .await
         .map_err(|err| NotWritten::from_broker(&err, &err.to_string()))
 }
 
@@ -347,3 +356,6 @@ fn state_op(change: StateChange) -> StateOp {
         StateChange::Delete { key } => StateOp::Delete { key },
     }
 }
+
+#[cfg(test)]
+mod tests;

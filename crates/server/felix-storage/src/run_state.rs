@@ -16,9 +16,10 @@
 //! carries an older one than the control plane holds, which a crash cannot
 //! show, so [`begin`] rotates the id for that too.
 //!
-//! `<durable root>/head-trimmed` says a log here has taken a head trim, which
-//! an older broker cannot read. It is written before the first trim and never
-//! removed, so a broker can refuse to join a fleet that has not finalized
+//! `<durable root>/head-trimmed` says a log here may hold a head trim, which
+//! an older broker cannot read. The broker writes it before it stores its
+//! first trim record, whether it leads the shard or replicates it, and never
+//! removes it, so a broker can refuse to join a fleet that has not finalized
 //! `head_trim` without opening every log. See [`record_head_trimmed`].
 
 mod boot;

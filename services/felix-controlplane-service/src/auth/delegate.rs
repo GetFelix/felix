@@ -206,7 +206,7 @@ pub async fn delegate_token(
             BROKER_AUDIENCE,
         ),
         BROKER_AUDIENCE,
-        head_trim_finalized(&state).await?,
+        head_trim_finalized(&state).await,
     );
     if perms.is_empty() {
         return Err(refused(Refusal::Forbidden, "no permissions"));

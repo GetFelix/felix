@@ -75,6 +75,21 @@ impl Broker {
         expected: u64,
         headers: Bytes,
     ) -> Result<TrimOutcome> {
+        let step = self.claim_trim(handle, before, expected, headers).await?;
+        self.finish_trim(handle, step).await
+    }
+
+    /// The first half of [`Self::trim_before_at`]: the checks, and the
+    /// trim record taking its place in the log. Everything after is a wait
+    /// for the commit and the ring ([`Self::finish_trim`]), which a caller
+    /// holding a shard write fence can do after releasing it.
+    pub async fn claim_trim(
+        &self,
+        handle: &StreamHandle,
+        before: u64,
+        expected: u64,
+        headers: Bytes,
+    ) -> Result<TrimStep> {
         let Some(log) = &handle.state.durable else {
             return Err(BrokerError::TrimNeedsDurableStream);
         };
@@ -99,15 +114,7 @@ impl Broker {
             return Err(BrokerError::OffsetMismatch { expected, tail });
         }
         if before <= floor {
-            // Answered only once what it stands on is committed, as a write
-            // would be: past the mark, the floor and the tail can still be
-            // lost at a failover.
-            await_committed(handle, expected, self.trim_wait).await?;
-
-            return Ok(TrimOutcome {
-                offset: None,
-                oldest: log.readable_base(),
-            });
+            return Ok(TrimStep(Step::NoOp { expected }));
         }
         refuse_commit_stream(handle, log, expected).await?;
         self.mark_head_trimmed().await?;
@@ -122,7 +129,40 @@ impl Broker {
             .expect("a trim claims or is refused");
         let (trim_applied, applied) = tokio::sync::oneshot::channel();
         let outcome = self.complete_claimed(claimed, Some(trim_applied)).await?;
-        let offset = outcome.offsets.map(|(first, _)| first);
+        Ok(TrimStep(Step::Written {
+            before,
+            expected,
+            offset: outcome.offsets.map(|(first, _)| first),
+            applied,
+        }))
+    }
+
+    /// The second half of [`Self::trim_before_at`]: wait for the trim to be
+    /// committed and reach the ring, then answer. Safe to run without the
+    /// shard's write fence: the record is already in the log, and its floor
+    /// applies only at commit, as with any write.
+    pub async fn finish_trim(&self, handle: &StreamHandle, step: TrimStep) -> Result<TrimOutcome> {
+        let Some(log) = &handle.state.durable else {
+            return Err(BrokerError::TrimNeedsDurableStream);
+        };
+        let (before, expected, offset, applied) = match step.0 {
+            Step::NoOp { expected } => {
+                // Answered only once what it stands on is committed, as a
+                // write would be: past the mark, the floor and the tail can
+                // still be lost at a failover.
+                await_committed(handle, expected, self.trim_wait).await?;
+                return Ok(TrimOutcome {
+                    offset: None,
+                    oldest: log.readable_base(),
+                });
+            }
+            Step::Written {
+                before,
+                expected,
+                offset,
+                applied,
+            } => (before, expected, offset, applied),
+        };
         // A held trim is answered before its floor reaches the ring, and a
         // reader resuming from the ring in between would be served below it.
         let stood_at = offset.unwrap_or(expected);
@@ -148,6 +188,21 @@ impl Broker {
             oldest: log.readable_base().max(before),
         })
     }
+}
+
+/// A trim that has taken its place in the log and is waiting to be answered.
+/// See [`Broker::claim_trim`].
+pub struct TrimStep(Step);
+
+enum Step {
+    /// The floor already stood at or past `before`; nothing was written.
+    NoOp { expected: u64 },
+    Written {
+        before: u64,
+        expected: u64,
+        offset: Option<u64>,
+        applied: tokio::sync::oneshot::Receiver<()>,
+    },
 }
 
 /// Wait until a `Quorum` stream's committed mark reaches `end`. Other streams
