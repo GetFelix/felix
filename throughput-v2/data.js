@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793431863602,
+  "lastUpdate": 1793440892759,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -40092,6 +40092,58 @@ window.BENCHMARK_DATA = {
             "range": "47805.66",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1001915.39\nmean: 979413.83\nstdev: 47805.66\ncv: 4.88%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "86d9a3acf39aa36fc28857f39cdeaadd82d17c6a",
+          "message": "feat(replication): ship head trims, gated on head_trim, failing closed (#1662) (#1674)\n\n* feat(replication): ship head trims, gate them on head_trim, fail closed (#1662)\n\nStep 5 of the conditional head trim. A trim record travels with mark byte 5\nand its floor, so mark_to_wire no longer fails. A follower stores it at the\nleader's offset; on a Quorum stream its log is held at the commit offset\nbefore the first apply, so the floor applies only once the leader's commit\noffset passes the record.\n\nTrims fail closed. Broker::allow_head_trims_when replaces\nset_replication_enabled, and until startup calls it every trim is refused\nwith HeadTrimNotEnabled. A broker without FELIX_NODE_ID allows them; a\ncluster member allows them while its fleet has finalized the new head_trim\nfeature, which a new cluster finalizes at its first registration.\n\nA new peer capability, HEAD_TRIM, is required by the pool for any batch\nholding a trim, so a follower that cannot read one is held below it. Ship\ncounts that as trim_unsupported and logs it at most once a minute.\n\nA promoted leader's mark opened reads before the driver raised the log's\ncommit offset, and a trim's floor applies only below that offset, so a\nreader could be served below a trim the old leader acknowledged. The driver\nnow raises the offset in memory before it publishes the mark.\n\nSpec-Unaffected: FelixHeadTrim.tla already models trims replicated as records, the follower floor at its commit offset, and a new leader serving only once its commit covers what it inherited; this change makes the code match (the mark and the floor move together, as AdvanceMark does). The per-peer HEAD_TRIM check refuses to send and adds no state the model tracks.\n\n* fix(replication): test a trim taken through promotion, per-shard refusal log limit, document the lone-broker rule (#1662)",
+          "timestamp": "2026-10-31T02:56:27-07:00",
+          "tree_id": "11be74ede755c63514cd2d976eafa94b9a75ac39",
+          "url": "https://github.com/GetFelix/felix/commit/86d9a3acf39aa36fc28857f39cdeaadd82d17c6a"
+        },
+        "date": 1793440891999,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 343514.41,
+            "range": "12357.69",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 343514.41\nmean: 348598.09\nstdev: 12357.69\ncv: 3.54%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 343514.41,
+            "range": "12357.69",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 343514.41\nmean: 348598.09\nstdev: 12357.69\ncv: 3.54%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80260.2,
+            "range": "1498.01",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80260.20\nmean: 80317.42\nstdev: 1498.01\ncv: 1.87%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 802601.99,
+            "range": "14980.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 802601.99\nmean: 803174.14\nstdev: 14980.12\ncv: 1.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
