@@ -6,5 +6,5 @@
 matplotlib>=3.11.2
 # Optional: enables parquet output alongside CSV in normalize_and_aggregate.py.
 # Silently skipped if not installed.
-pandas>=3.0.6
-pyarrow>=25.0.1
+pandas>=3.1.0
+pyarrow>=26.0.0
