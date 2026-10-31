@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793415787674,
+  "lastUpdate": 1793431860891,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -50820,6 +50820,72 @@ window.BENCHMARK_DATA = {
             "range": "601.28",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1115.00\nmean: 1225.60\nstdev: 601.28\ncv: 49.06%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5ef522f5822d95a38c1b0f0839e0627f98af8b29",
+          "message": "feat(broker): conditional head trim in process, every reader on the readable base (#1662) (#1672)\n\n* feat(broker): conditional head trim in process, every reader on the readable base (#1662)\n\nStep 4 of the conditional head trim. Broker::trim_before_at appends a trim\nrecord as a conditional publish is appended: offsets and the commit order\nunder the append lock, only at the expected tail, then durability, then the\nreplay ring in its turn. The tail is checked before the no-op shortcut, a\nfloor past the record's own offset is refused, and so is a stream holding\natomic commits (a one-time scan below the expected tail, then cached). A\nQuorum trim is held from the ring until the mark passes it.\n\nThe ring drops its entries below the floor when the trim reaches it, and the\nnext publish reports the trim's offset as skipped. Every reader starts at\nStreamLog::readable_base; base_offset is renamed physical_base, which only\nreplication keeps. CursorTooOld carries the setting trim's headers. Group\ncursors below the floor move to it on the next poll, and a trim record is\nsettled as a skip. Kafka fetch, ListOffsets earliest and log_start_offset use\nthe readable base, and a trailing trim gets an empty batch. read_from,\nhydration, cache_watch and the other pagers carry on from ReadPage.next.\n\nSpec-Unaffected: the broker follows FelixHeadTrim.tla as written (conditional append at the expected tail, tail checked before the no-op, ReadableStart for readers); no protocol or model state changes.\n\n* fix(broker): answer a trim once the ring has it, and refuse it on replicated shards (#1662)\n\nA trim held for the committed mark was answered before its floor reached\nthe ring, so a resume in between was served below it. The call now waits\nfor the ring, and moves a held log's commit offset past the record so the\nlog's floor applies too. Every durable resume checks the readable base\nafter it registers, so the ring is never the only check.\n\nThe commit scan forgets how far it read when the log is truncated, and a\ncommit arriving by replication is noted. A no-op trim on a Quorum stream\nwaits for the mark to reach the expected tail. Until replication ships trim\nrecords, a shard with followers refuses a trim with TrimNotReplicatedYet.\n\nSpec-Unaffected: the broker now matches FelixHeadTrim.tla's NoReadBelowAckedTrim (a trim is acknowledged only after every reader observes its floor); no model state or protocol changes.\n\n* fix(broker): refuse head trims on any broker with replication, bound their waits (#1662)\n\nTrims are refused for the whole process when replication is configured, not by the shard's live route, which fails open at startup and while a shard moves. The mark and ring waits end in TrimTimedOut. A replicated commit is noted before the tail advances.\n\nSpec-Unaffected: the trim record is not replicated or modelled yet; this only refuses it earlier.",
+          "timestamp": "2026-10-31T07:23:50Z",
+          "tree_id": "9f4c53194df0354c0570a9dee3d7a417ffadbd9f",
+          "url": "https://github.com/GetFelix/felix/commit/5ef522f5822d95a38c1b0f0839e0627f98af8b29"
+        },
+        "date": 1793431853833,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 115,
+            "range": "8.58",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 115.00\nmean: 110.20\nstdev: 8.58\ncv: 7.79%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 172,
+            "range": "63.06",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 172.00\nmean: 193.60\nstdev: 63.06\ncv: 32.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 212,
+            "range": "74.61",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 212.00\nmean: 233.20\nstdev: 74.61\ncv: 31.99%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 124,
+            "range": "1.67",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 124.00\nmean: 123.60\nstdev: 1.67\ncv: 1.35%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 268,
+            "range": "17.54",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 268.00\nmean: 269.20\nstdev: 17.54\ncv: 6.52%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 389,
+            "range": "640.59",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 389.00\nmean: 716.80\nstdev: 640.59\ncv: 89.37%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
