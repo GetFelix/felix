@@ -139,8 +139,8 @@ impl Membership {
         for member in &self.members {
             out.extend_from_slice(&(member.node.len() as u16).to_be_bytes());
             out.extend_from_slice(member.node.as_bytes());
-            let flags = u8::from(member.storage.is_some()) * MEMBER_STORAGE
-                | u8::from(member.learner) * MEMBER_LEARNER;
+            let flags = (u8::from(member.storage.is_some()) * MEMBER_STORAGE)
+                | (u8::from(member.learner) * MEMBER_LEARNER);
             out.push(flags);
             if let Some(id) = &member.storage {
                 out.extend_from_slice(&id.to_bytes());
