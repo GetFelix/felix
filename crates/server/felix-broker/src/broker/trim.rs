@@ -24,6 +24,10 @@ use crate::stream::ReadBound;
 /// Bytes read per page while looking for atomic commits before a trim.
 const COMMIT_SCAN_PAGE_BYTES: usize = 1 << 20;
 
+/// How long a trim waits for the committed mark or the replay ring before it
+/// answers [`BrokerError::TrimTimedOut`].
+pub(crate) const TRIM_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// What a head trim did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TrimOutcome {
@@ -53,9 +57,10 @@ impl Broker {
     /// `Quorum` stream that waits for the committed mark to pass the record,
     /// and a no-op answer waits for the mark to reach `expected`.
     ///
-    /// Refused on a shard with followers
+    /// Refused on a broker with replication enabled
     /// ([`BrokerError::TrimNotReplicatedYet`]) until replication ships trim
-    /// records.
+    /// records. The waits for the committed mark and the ring are bounded by
+    /// [`BrokerError::TrimTimedOut`].
     ///
     /// A trim whose caller stopped waiting may still have landed, and a
     /// retry with the same `expected` is then refused as an offset mismatch.
@@ -74,8 +79,10 @@ impl Broker {
             return Err(BrokerError::TrimNeedsDurableStream);
         };
         // Replication cannot ship a trim record until the wire carries one,
-        // and a follower would stop at it. Lifted with the trim's wire mark.
-        if handle.state.held.replicated() {
+        // and a follower would stop at it. A process-start fact rather than
+        // the shard's live route, which is empty during startup and moves, so
+        // a follower added mid-trim cannot slip past it.
+        if self.replication_enabled() {
             return Err(BrokerError::TrimNotReplicatedYet);
         }
         if before > expected {
@@ -96,7 +103,7 @@ impl Broker {
             // Answered only once what it stands on is committed, as a write
             // would be: past the mark, the floor and the tail can still be
             // lost at a failover.
-            await_committed(handle, expected).await?;
+            await_committed(handle, expected, self.trim_wait).await?;
 
             return Ok(TrimOutcome {
                 offset: None,
@@ -118,9 +125,16 @@ impl Broker {
         let offset = outcome.offsets.map(|(first, _)| first);
         // A held trim is answered before its floor reaches the ring, and a
         // reader resuming from the ring in between would be served below it.
-        applied.await.map_err(|_| BrokerError::PublishSuperseded {
-            first_offset: offset.unwrap_or(expected),
-        })?;
+        let stood_at = offset.unwrap_or(expected);
+        match tokio::time::timeout(self.trim_wait, applied).await {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => {
+                return Err(BrokerError::PublishSuperseded {
+                    first_offset: stood_at,
+                });
+            }
+            Err(_) => return Err(BrokerError::TrimTimedOut { offset: stood_at }),
+        }
         // The ring has it, so the mark has passed it. A log held at its commit
         // offset applies the floor only below that offset, which replication
         // may not have moved yet, and on a broker without it never does.
@@ -138,11 +152,12 @@ impl Broker {
 
 /// Wait until a `Quorum` stream's committed mark reaches `end`. Other streams
 /// do not wait.
-async fn await_committed(handle: &StreamHandle, end: u64) -> Result<()> {
+async fn await_committed(handle: &StreamHandle, end: u64, wait: std::time::Duration) -> Result<()> {
     let state = &handle.state;
     if state.consistency() != ConsistencyLevel::Quorum {
         return Ok(());
     }
+    let deadline = tokio::time::Instant::now() + wait;
     loop {
         let appended = Arc::clone(&state.appended);
         let moved = appended.notified();
@@ -157,6 +172,9 @@ async fn await_committed(handle: &StreamHandle, end: u64) -> Result<()> {
             }
             bound if bound.covers(end) => return Ok(()),
             _ => {}
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(BrokerError::TrimTimedOut { offset: end });
         }
         let _ = tokio::time::timeout(COMMIT_RECHECK, moved).await;
     }

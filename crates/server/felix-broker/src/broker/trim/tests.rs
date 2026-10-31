@@ -2,7 +2,6 @@
 //! publish, and no reader is served below its floor once it is answered.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -19,15 +18,11 @@ use crate::{
 };
 
 #[derive(Debug)]
-struct Bound(Mutex<ReadBound>, AtomicBool);
+struct Bound(Mutex<ReadBound>);
 
 impl ReadBounds for Bound {
     fn stream_bound(&self, _: &str, _: &str, _: &str, _: u32) -> ReadBound {
         *self.0.lock()
-    }
-
-    fn replicated(&self, _: &str, _: &str, _: &str, _: u32) -> bool {
-        self.1.load(Ordering::Acquire)
     }
 }
 
@@ -39,10 +34,7 @@ async fn broker(dir: &std::path::Path, consistency: ConsistencyLevel) -> (Broker
     };
     let broker = Broker::new(EphemeralCache::new().into())
         .with_durable_storage(DurableStorage::open(dir, config).expect("storage"));
-    let bound = Arc::new(Bound(
-        Mutex::new(ReadBound::Unbounded),
-        AtomicBool::new(false),
-    ));
+    let bound = Arc::new(Bound(Mutex::new(ReadBound::Unbounded)));
     broker.set_read_bounds(Arc::clone(&bound) as Arc<dyn ReadBounds>);
     broker.register_tenant("t1").await.expect("tenant");
     broker
@@ -537,15 +529,17 @@ async fn a_quorum_no_op_trim_waits_for_the_mark() {
     );
 }
 
-/// **A shard with followers is not trimmed yet**, whatever its consistency:
-/// replication cannot ship the record, so a follower would stop at it.
+/// **A broker with replication enabled does not trim yet**, whatever the
+/// shard's consistency or route: replication cannot ship the record, and the
+/// route is empty during startup and moves, so only the process-start fact
+/// can be trusted.
 #[tokio::test]
-async fn a_replicated_shard_refuses_a_trim() {
+async fn a_broker_with_replication_refuses_a_trim() {
     for consistency in [ConsistencyLevel::Leader, ConsistencyLevel::Quorum] {
         let dir = tempfile::tempdir().expect("tempdir");
-        let (broker, bound) = broker(dir.path(), consistency).await;
+        let (broker, _) = broker(dir.path(), consistency).await;
         publish(&broker, 4).await;
-        bound.1.store(true, Ordering::Release);
+        broker.set_replication_enabled();
         assert!(
             matches!(
                 trim(&broker, 2, 4).await,
@@ -555,6 +549,24 @@ async fn a_replicated_shard_refuses_a_trim() {
         );
         assert_eq!(tail(&broker).await, 4, "nothing written");
     }
+}
+
+/// **A commit-mark wait that never ends times out** with the typed error.
+#[tokio::test]
+async fn a_no_op_trim_times_out_waiting_for_the_mark() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (broker, bound) = broker(dir.path(), ConsistencyLevel::Quorum).await;
+    publish(&broker, 10).await;
+    trim(&broker, 5, 10).await.expect("trim");
+    *bound.0.lock() = ReadBound::Committed(5);
+    let broker = broker.with_trim_wait(Duration::from_millis(300));
+    let result = tokio::time::timeout(Duration::from_secs(5), trim(&broker, 3, 11))
+        .await
+        .expect("bounded");
+    assert!(
+        matches!(result, Err(BrokerError::TrimTimedOut { offset: 11 })),
+        "{result:?}"
+    );
 }
 
 /// **A truncation forgets how far the log was found free of commits.** A

@@ -273,6 +273,8 @@ impl ClientError {
             E::StorageFull(_) => Self::overloaded(message),
             // Written to a log that was then reset: it may or may not survive.
             E::PublishSuperseded { .. } => Self::new(ErrorCode::Unacknowledged, message),
+            // The trim may still land, so the caller cannot assume it did not.
+            E::TrimTimedOut { .. } => Self::new(ErrorCode::Unacknowledged, message),
             // Nothing was read; the shard is served again here once a mark or
             // a lease comes back, or by its new owner.
             E::NotReadable { reason, .. } | E::StateNotReadable(reason) => {

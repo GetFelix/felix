@@ -8,5 +8,6 @@
   `StreamLog::base_offset` is now `physical_base`, beside `readable_base`.
   A trim is answered only once the ring has it, and a no-op on a `Quorum`
   stream waits for the committed mark. Until replication ships trim
-  records, a shard with followers refuses a trim with `TrimNotReplicatedYet`.
+  records, a broker with replication enabled refuses every trim with
+  `TrimNotReplicatedYet`, and a trim's waits end in `TrimTimedOut`.
   Nothing on the wire writes a trim yet.

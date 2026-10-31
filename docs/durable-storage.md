@@ -1679,11 +1679,16 @@ turn. A refusal is `OffsetMismatch` with the tail, and writes nothing.
   past the record, so the log's floor applies by the time the trim is
   answered. On a `Leader` stream an acknowledged trim can be lost at a
   failover like any record there.
-- **Not on a shard with followers, for now.** Replication cannot ship a trim
-  record until the wire carries its mark, and a follower would stop at it.
-  Until then a trim on a shard with followers, `Leader` or `Quorum`, is
-  refused with `TrimNotReplicatedYet` and writes nothing. The refusal goes
-  when replication ships trims.
+- **Not on a broker with replication, for now.** Replication cannot ship a
+  trim record until the wire carries its mark, and a follower would stop at
+  it. Until then a broker with replication enabled refuses every trim, on
+  any shard and at either consistency, with `TrimNotReplicatedYet`, and
+  writes nothing. The gate is a fact of the process, not of the shard's
+  route, which is empty at startup and changes as followers are added. The
+  refusal goes when replication ships trims.
+- **The waits are bounded.** The committed mark and the ring are waited on
+  for 30 seconds; after that the trim answers `TrimTimedOut`, and may still
+  land.
 - **A trim whose caller stopped waiting may have landed.** A retry with the
   same `expected` is then refused as `OffsetMismatch`.
 
@@ -1716,7 +1721,8 @@ only trims neither ends the read nor spins.
 > `a_quorum_trim_is_answered_once_the_ring_has_it`,
 > `a_resume_below_the_floor_is_refused_before_the_ring_drops`,
 > `a_quorum_no_op_trim_waits_for_the_mark`,
-> `a_replicated_shard_refuses_a_trim`,
+> `a_broker_with_replication_refuses_a_trim`,
+> `a_no_op_trim_times_out_waiting_for_the_mark`,
 > `a_commit_replicated_below_an_old_scan_refuses_a_trim`,
 > `a_restart_with_trims_at_the_tail_refills_the_ring`,
 > `a_group_below_a_trim_resumes_at_its_floor`,

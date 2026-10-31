@@ -842,6 +842,29 @@ impl ReplicaHandler {
                         },
                     );
                 }
+                // Before the tail advances: a trim scanning in between must
+                // not see the new tail without the commit being noted.
+                if log_kind == felix_broker::LogKind::Stream
+                    && batch
+                        .marks
+                        .iter()
+                        .any(|mark| matches!(mark, felix_wire::internal::ProducerMark::Commit))
+                    && let Err(err) = self
+                        .broker
+                        .note_replicated_commit(
+                            &key.tenant_id,
+                            &key.namespace,
+                            &key.stream,
+                            key.shard,
+                        )
+                        .await
+                {
+                    tracing::warn!(
+                        stream = %key.stream,
+                        error = %err,
+                        "stored a replicated commit but could not note it for head trims",
+                    );
+                }
                 // The records went straight to the log, so the stream's own view
                 // of its tail has to be told. Without this the first publish
                 // this broker accepts once promoted waits on commit turns that
@@ -866,27 +889,6 @@ impl ReplicaHandler {
                         stream = %key.stream,
                         error = %err,
                         "stored a replicated batch but could not advance the stream's tail",
-                    );
-                }
-                if log_kind == felix_broker::LogKind::Stream
-                    && batch
-                        .marks
-                        .iter()
-                        .any(|mark| matches!(mark, felix_wire::internal::ProducerMark::Commit))
-                    && let Err(err) = self
-                        .broker
-                        .note_replicated_commit(
-                            &key.tenant_id,
-                            &key.namespace,
-                            &key.stream,
-                            key.shard,
-                        )
-                        .await
-                {
-                    tracing::warn!(
-                        stream = %key.stream,
-                        error = %err,
-                        "stored a replicated commit but could not note it for head trims",
                     );
                 }
                 metrics::record_replicated(metrics::OUTCOME_OK);

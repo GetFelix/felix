@@ -1148,16 +1148,6 @@ impl felix_broker::ReadBounds for CommittedReads {
         };
         committed_bound(&key, &self.marks, &*self.ingress)
     }
-
-    fn replicated(&self, tenant_id: &str, namespace: &str, stream: &str, shard: u32) -> bool {
-        self.ingress.replicated(&crate::ShardKey {
-            tenant_id: tenant_id.to_string(),
-            namespace: namespace.to_string(),
-            stream: stream.to_string(),
-            shard,
-            kind: crate::ShardKind::Stream,
-        })
-    }
 }
 
 /// Wait until every offset below `end` of a `Quorum` shard is committed, for

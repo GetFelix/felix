@@ -156,11 +156,15 @@ pub enum BrokerError {
     /// in the records a trim would remove. Nothing was written.
     #[error("a stream holding atomic commits cannot be trimmed")]
     TrimOnCommitStream,
-    /// A head trim on a shard with followers. Replication cannot ship a trim
-    /// record yet, so one would stall the shard's followers. Nothing was
-    /// written.
-    #[error("a shard with followers cannot be trimmed yet")]
+    /// A head trim on a broker with replication enabled. Replication cannot
+    /// ship a trim record yet, so one would stall or diverge the shard's
+    /// followers. Nothing was written.
+    #[error("a head trim is not available on a broker with replication yet")]
     TrimNotReplicatedYet,
+    /// A head trim waited too long for the committed mark or the replay ring.
+    /// A trim already claimed may still land; re-read the tail before retrying.
+    #[error("the head trim at offset {offset} was not acknowledged in time")]
+    TrimTimedOut { offset: u64 },
     /// The shard's state view could not be rebuilt because commits kept
     /// landing while it read. Retry.
     #[error("the shard's state is being rebuilt; retry")]
