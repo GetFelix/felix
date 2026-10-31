@@ -47,6 +47,7 @@ async fn a_commit_is_never_written_into_a_v4_segment() {
         })
         .await
         .expect("read")
+        .records
         .iter()
         .map(|record| record.mark)
         .collect();

@@ -251,7 +251,9 @@ fn resume_active(dir: &Path, label: &str, config: &LogConfig, resume: Resume) ->
     Ok(Recovered {
         sealed: sealed
             .into_iter()
-            .map(|planned| SealedEntry::new(planned.descriptor, planned.holds_marks))
+            .map(|planned| {
+                SealedEntry::new(planned.descriptor, planned.holds_marks, planned.holds_trims)
+            })
             .collect(),
         active,
         truncated_bytes,

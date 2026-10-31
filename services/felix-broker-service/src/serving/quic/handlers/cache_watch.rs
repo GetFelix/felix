@@ -558,7 +558,8 @@ async fn write_replayed_changes(
                 start: at,
                 max_bytes: HISTORY_PAGE_BYTES,
             })
-            .await?;
+            .await?
+            .records;
         if records.is_empty() {
             break;
         }

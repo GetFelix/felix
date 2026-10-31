@@ -2783,10 +2783,11 @@ with a crash use the lease and the report.
 ### Conditional head trim (designed, not built)
 
 Issue 1662 designs a client call that trims a stream's history below an
-offset, conditional on the tail the client expects. None of it is built yet.
-The storage side, the logical floor and what a reader sees are in
-[Conditional head trim](durable-storage.md#conditional-head-trim-designed-not-built)
-in `docs/durable-storage.md`; this section is how it survives replication.
+offset, conditional on the tail the client expects. Only the storage side is
+built: the logical floor, deletion below it and what a reader sees, in
+[Conditional head trim](durable-storage.md#conditional-head-trim) in
+`docs/durable-storage.md`. Nothing below is built yet; this section is how it
+survives replication.
 
 The trim is a record in the log, so it is ordered with the writes around it
 and the existing rules carry it across a failover. It replicates like any

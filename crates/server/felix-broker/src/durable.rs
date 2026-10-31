@@ -542,6 +542,7 @@ impl StreamLog {
         self.log
             .read_range(ReadRange { start, max_bytes })
             .await
+            .map(|page| page.records)
             .map_err(read_error)
     }
 
@@ -851,9 +852,9 @@ pub fn append_time_now() -> u64 {
 
 fn read_error(err: felix_storage::StorageError) -> BrokerError {
     match err {
-        felix_storage::StorageError::Trimmed { requested, oldest } => {
-            BrokerError::CursorTooOld { oldest, requested }
-        }
+        felix_storage::StorageError::Trimmed {
+            requested, oldest, ..
+        } => BrokerError::CursorTooOld { oldest, requested },
         other => BrokerError::from(other),
     }
 }

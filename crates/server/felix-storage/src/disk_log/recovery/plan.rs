@@ -109,6 +109,7 @@ pub(crate) struct Resume {
 pub(crate) struct PlannedSealed {
     pub(crate) descriptor: SegmentDescriptor,
     pub(crate) holds_marks: bool,
+    pub(crate) holds_trims: bool,
 }
 
 /// Plan the recovery of the shard in `dir`. Reads only.
@@ -683,6 +684,7 @@ impl<'a> View<'a> {
                     size_bytes: file_len,
                 },
                 holds_marks: header.holds_marks(),
+                holds_trims: header.holds_trims(),
             },
             next_offset: outcome.next_offset,
             rebuilt_index,

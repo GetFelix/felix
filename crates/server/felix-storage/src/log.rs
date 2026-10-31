@@ -22,12 +22,17 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// An ordered, append-only sequence of records addressed by offset.
 pub trait AppendOnlyLog: Send + Sync {
     fn append(&self, records: &[AppendRecord]) -> BoxFuture<'_, Result<AppendResult>>;
-    /// Records from `range.start` on, leaving out trim records. The offsets
-    /// they hold are gaps in what this returns.
-    fn read_range(&self, range: ReadRange) -> BoxFuture<'_, Result<Vec<LogRecord>>>;
+    /// Records from `range.start` on, leaving out trim records, and where the
+    /// next read continues. The offsets trim records hold are gaps in what
+    /// this returns, so a page can be empty below the tail; carry on from
+    /// [`ReadPage::next`], never from the last record. A log with a head
+    /// floor refuses a start below it with
+    /// [`crate::StorageError::Trimmed`].
+    fn read_range(&self, range: ReadRange) -> BoxFuture<'_, Result<ReadPage>>;
     /// [`Self::read_range`] with trim records included, for the paths that
     /// must see every record: replication, and finding the trim that set a
-    /// log's floor.
+    /// log's floor. Ignores the head floor: a follower is sent the records
+    /// below it too, and applies the floor itself.
     fn read_range_with_trims(&self, range: ReadRange) -> BoxFuture<'_, Result<Vec<LogRecord>>>;
     fn tail_offset(&self) -> BoxFuture<'_, Result<Offset>>;
     fn truncate(&self, offset: Offset) -> BoxFuture<'_, Result<()>>;
@@ -99,9 +104,12 @@ pub enum RecordMark {
     /// commit mark take all of it or none. The payload layout is the
     /// broker's; see `docs/atomic-commit.md`.
     Commit,
-    /// A head trim, asking that reads below `floor` be refused. Storage
-    /// only stores and returns it; nothing applies the floor yet. The payload is the trimming caller's headers, in the
-    /// broker's layout. [`AppendOnlyLog::read_range`] skips the record;
+    /// A head trim, asking that reads below `floor` be refused. Once the
+    /// record is durable and, on a log held at its commit offset, committed,
+    /// [`crate::DiskLog`] applies the floor and deletes the sealed segments
+    /// below it in the background. Storage does not check that `floor` is
+    /// at or below the record's own offset; the caller must. The payload is
+    /// the trimming caller's headers, in the broker's layout. [`AppendOnlyLog::read_range`] skips the record;
     /// [`AppendOnlyLog::read_range_with_trims`] returns it. Needs a v7
     /// segment, so a log moves onto v7 only when it writes one. See
     /// `docs/storage-format.md`, "Trim records".
@@ -210,6 +218,16 @@ pub struct AppendResult {
 pub struct ReadRange {
     pub start: Offset,
     pub max_bytes: usize,
+}
+
+/// What [`AppendOnlyLog::read_range`] returns.
+#[derive(Debug, Clone, Default)]
+pub struct ReadPage {
+    pub records: Vec<LogRecord>,
+    /// Where the next read starts: one past the last record returned, or,
+    /// for an empty page, the tail the read ran to, past any trim records it
+    /// skipped. Never below the read's start.
+    pub next: Offset,
 }
 
 /// A record read back from the log.

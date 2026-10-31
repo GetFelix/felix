@@ -113,7 +113,8 @@ async fn a_live_copy_restored_to_the_point_keeps_every_ack_before_it_and_nothing
                 max_bytes: usize::MAX,
             })
             .await
-            .expect("read the restored copy");
+            .expect("read the restored copy")
+            .records;
         assert!(records.iter().all(|r| r.offset < entry.logs.records));
         restored.extend(
             records

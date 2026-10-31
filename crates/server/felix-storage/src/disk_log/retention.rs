@@ -142,63 +142,109 @@ impl LogInner {
         }
         let inner = Arc::clone(&self);
         let retained = tokio::task::spawn_blocking(move || -> Result<RetentionOutcome> {
-            let mut outcome = RetentionOutcome::default();
             let bounds = *inner.retention_bounds.lock();
-            if !bounds.is_set() {
+            let mut outcome = if bounds.is_set() {
+                inner.retain(bounds)?
+            } else {
                 if let Some(offloader) = &inner.offloader {
                     offloader.note_held(&inner.label, 0, 0);
                 }
-                outcome.base_offset = inner.segments.read().base_offset();
-                return Ok(outcome);
-            }
-            // Held until the unlinks are done: see `LogInner::manifest`.
-            let manifest = inner.manifest.lock();
-            let plan = inner.segments.read().retention_plan();
-            let mut chosen =
-                plan.choose(bounds, inner.retention_floor(), now_micros(), &inner.label)?;
-            if let Some(offloader) = &inner.offloader {
-                let (segments, bytes) = inner.keep_offloaded_prefix(&manifest, &mut chosen);
-                offloader.note_held(&inner.label, segments, bytes);
-            }
-            let removed = {
-                let mut segments = inner.segments.write();
-                let removed = segments.remove_head(&chosen)?;
-                if !removed.is_empty() {
-                    inner.producers.lock().prune(segments.base_offset());
-                }
-                outcome.base_offset = segments.base_offset();
-                removed
+                RetentionOutcome::default()
             };
-            // Out of the list first, so nothing new can reach these files; a
-            // crash before the unlinks leaves them as a longer log, which the
-            // next pass trims again. Oldest first, each unlink synced before
-            // the next: otherwise a power loss can keep a newer unlink and undo
-            // an older one, and recovery refuses the gap that leaves.
-            for descriptor in &removed {
-                remove_segment_files(&inner.dir, descriptor.id)?;
-                crate::io::sync_dir(&inner.dir).map_err(StorageError::Io)?;
-                outcome.segments_deleted += 1;
-                outcome.bytes_reclaimed += descriptor.size_bytes;
-                #[cfg(test)]
-                if let Some(offloader) = &inner.offloader {
-                    offloader
-                        .faults
-                        .stop(super::offload::test_hooks::Stop::Unlinked)?;
-                }
+            let below_floor = inner.delete_below_floor()?;
+            outcome.segments_deleted += below_floor.len();
+            outcome.bytes_reclaimed += below_floor
+                .iter()
+                .map(|descriptor| descriptor.size_bytes)
+                .sum::<u64>();
+            outcome.base_offset = inner.segments.read().base_offset();
+            if outcome.segments_deleted > 0 {
+                metrics::gauge!(metrics_names::RETENTION_BASE_OFFSET)
+                    .set(outcome.base_offset as f64);
             }
-            drop(manifest);
-            if !removed.is_empty() {
-                metrics::counter!(metrics_names::RETENTION_SEGMENTS_DELETED_TOTAL)
-                    .increment(outcome.segments_deleted as u64);
-                metrics::counter!(metrics_names::RETENTION_BYTES_RECLAIMED_TOTAL)
-                    .increment(outcome.bytes_reclaimed);
-            }
-            metrics::gauge!(metrics_names::RETENTION_BASE_OFFSET).set(outcome.base_offset as f64);
             Ok(outcome)
         })
         .await
         .map_err(|err| StorageError::Io(std::io::Error::other(err)))??;
         offloaded.map(|_| retained)
+    }
+
+    /// Delete what the retention bounds say to, on a blocking thread.
+    fn retain(&self, bounds: crate::log::Retention) -> Result<RetentionOutcome> {
+        let mut outcome = RetentionOutcome::default();
+        // Held until the unlinks are done: see `LogInner::manifest`.
+        let manifest = self.manifest.lock();
+        let plan = self.segments.read().retention_plan();
+        let mut chosen = plan.choose(bounds, self.retention_floor(), now_micros(), &self.label)?;
+        if let Some(offloader) = &self.offloader {
+            let (segments, bytes) = self.keep_offloaded_prefix(&manifest, &mut chosen);
+            offloader.note_held(&self.label, segments, bytes);
+        }
+        let removed = {
+            let mut segments = self.segments.write();
+            let removed = segments.remove_head(&chosen)?;
+            if !removed.is_empty() {
+                self.note_head_removed(segments.base_offset());
+            }
+            outcome.base_offset = segments.base_offset();
+            removed
+        };
+        // Out of the list first, so nothing new can reach these files; a
+        // crash before the unlinks leaves them as a longer log, which the
+        // next pass trims again. Oldest first, each unlink synced before
+        // the next: otherwise a power loss can keep a newer unlink and undo
+        // an older one, and recovery refuses the gap that leaves.
+        for descriptor in &removed {
+            remove_segment_files(&self.dir, descriptor.id)?;
+            crate::io::sync_dir(&self.dir).map_err(StorageError::Io)?;
+            outcome.segments_deleted += 1;
+            outcome.bytes_reclaimed += descriptor.size_bytes;
+            #[cfg(test)]
+            if let Some(offloader) = &self.offloader {
+                offloader
+                    .faults
+                    .stop(super::offload::test_hooks::Stop::Unlinked)?;
+            }
+        }
+        drop(manifest);
+        if !removed.is_empty() {
+            metrics::counter!(metrics_names::RETENTION_SEGMENTS_DELETED_TOTAL)
+                .increment(outcome.segments_deleted as u64);
+            metrics::counter!(metrics_names::RETENTION_BYTES_RECLAIMED_TOTAL)
+                .increment(outcome.bytes_reclaimed);
+        }
+        metrics::gauge!(metrics_names::RETENTION_BASE_OFFSET).set(outcome.base_offset as f64);
+        Ok(outcome)
+    }
+
+    /// Delete the sealed head segments wholly below the head floor, on a
+    /// blocking thread.
+    ///
+    /// Never past the trim record that set the floor, so the floor can
+    /// always be read back from the log. On a log held at its commit offset,
+    /// never past the commit offset on disk either, so a restart never reads
+    /// back a commit offset below the base. The floor itself only counts
+    /// trims below the apply bound, so a trim a crash or a truncation could
+    /// still take away deletes nothing.
+    pub(super) fn delete_below_floor(&self) -> Result<Vec<crate::log::SegmentDescriptor>> {
+        if self.head_floor() == 0 {
+            return Ok(Vec::new());
+        }
+        // Before the floor is read: a truncation, which can lower it, takes
+        // this lock first.
+        let manifest = self.manifest.lock();
+        let bound = {
+            let mut head = self.head.lock();
+            self.apply_head(&mut head);
+            head.delete_bound()
+        };
+        let Some(mut before) = bound else {
+            return Ok(Vec::new());
+        };
+        if self.hold_at_commit.load(Ordering::Acquire) {
+            before = before.min(self.commit_persisted.load(Ordering::Acquire));
+        }
+        self.delete_head_before(&manifest, before)
     }
 
     /// The offset no retention pass or head trim may reach, if one is held:
@@ -255,36 +301,58 @@ impl LogInner {
         let inner = Arc::clone(&self);
         tokio::task::spawn_blocking(move || {
             let manifest = inner.manifest.lock();
-            let before = inner
-                .retention_floor()
-                .map_or(before, |floor| floor.min(before));
-            let removed = {
-                let mut segments = inner.segments.write();
-                let active = segments.active().id();
-                let offload = inner.offloader.is_some();
-                let chosen: Vec<_> = segments
-                    .descriptors()
-                    .into_iter()
-                    .take_while(|descriptor| {
-                        descriptor.id != active
-                            && descriptor.last_offset < before
-                            && (!offload || manifest.records(descriptor))
-                    })
-                    .map(|descriptor| descriptor.id)
-                    .collect();
-                let removed = segments.remove_head(&chosen)?;
-                if !removed.is_empty() {
-                    inner.producers.lock().prune(segments.base_offset());
-                }
-                removed
-            };
-            for descriptor in &removed {
-                remove_segment_files(&inner.dir, descriptor.id)?;
-                crate::io::sync_dir(&inner.dir).map_err(StorageError::Io)?;
-            }
-            Ok(removed)
+            inner.delete_head_before(&manifest, before)
         })
         .await
         .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
+    }
+
+    /// [`Self::trim_head_before`], on the calling thread, holding the
+    /// manifest lock.
+    fn delete_head_before(
+        &self,
+        manifest: &super::offload::Manifest,
+        before: crate::log::Offset,
+    ) -> Result<Vec<crate::log::SegmentDescriptor>> {
+        let before = self
+            .retention_floor()
+            .map_or(before, |floor| floor.min(before));
+        let removed = {
+            let mut segments = self.segments.write();
+            let active = segments.active().id();
+            let offload = self.offloader.is_some();
+            let chosen: Vec<_> = segments
+                .descriptors()
+                .into_iter()
+                .take_while(|descriptor| {
+                    descriptor.id != active
+                        && descriptor.last_offset < before
+                        && (!offload || manifest.records(descriptor))
+                })
+                .map(|descriptor| descriptor.id)
+                .collect();
+            let removed = segments.remove_head(&chosen)?;
+            if !removed.is_empty() {
+                self.note_head_removed(segments.base_offset());
+            }
+            removed
+        };
+        for descriptor in &removed {
+            #[cfg(all(test, target_os = "linux"))]
+            super::segments::stop_point(&self.dir)?;
+            remove_segment_files(&self.dir, descriptor.id)?;
+            crate::io::sync_dir(&self.dir).map_err(StorageError::Io)?;
+        }
+        Ok(removed)
+    }
+
+    /// Forget the producer batches and trim records below `base`, once the
+    /// segments holding them are out of the list. Called holding the
+    /// `segments` write lock.
+    fn note_head_removed(&self, base: crate::log::Offset) {
+        self.producers.lock().prune(base);
+        let mut head = self.head.lock();
+        head.prune_below(base);
+        self.publish_head(&head);
     }
 }

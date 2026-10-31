@@ -194,7 +194,8 @@ async fn record_checksum(log: &DiskLog, offset: u64) -> Result<Option<u32>> {
             start: offset,
             max_bytes: SCAN_CHUNK_BYTES,
         })
-        .await?;
+        .await?
+        .records;
     Ok(records
         .first()
         .filter(|record| record.offset == offset)

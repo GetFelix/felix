@@ -41,6 +41,7 @@ async fn the_first_published_record_rolls_the_log_and_survives_a_restart() {
         })
         .await
         .expect("read")
+        .records
         .into_iter()
         .map(|record| (record.payload, record.publisher, record.mark))
         .collect();

@@ -21,6 +21,9 @@ pub enum TrimRecords {
     Skip,
     /// Return them, for replication and for finding a log's floor.
     Include,
+    /// Return only them, for rebuilding a log's head floor at open. Every
+    /// other record is skipped by its header.
+    Only,
 }
 
 /// Read-side handle on one segment.
@@ -117,6 +120,9 @@ impl SegmentReader {
                     position += total_len;
                     continue;
                 }
+            } else if budget.trims == TrimRecords::Only {
+                position += total_len;
+                continue;
             }
             if record_header.offset < start_offset {
                 position += total_len;

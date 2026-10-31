@@ -18,12 +18,17 @@ pub enum StorageError {
     /// time, never on the append path.
     InvalidConfig(&'static str),
     InvalidRange,
-    /// The requested offset was discarded by retention or truncation. Distinct
-    /// from an empty range, which is a valid answer for a reader that has caught
-    /// up with the tail.
+    /// The requested offset was discarded by retention or truncation, or is
+    /// below the log's head floor. Distinct from an empty range, which is a
+    /// valid answer for a reader that has caught up with the tail.
     Trimmed {
         requested: u64,
+        /// Where reads may start: the higher of the oldest segment's base and
+        /// the head floor.
         oldest: u64,
+        /// The headers of the trim record that set the head floor, when the
+        /// log has one.
+        trim_headers: Option<bytes::Bytes>,
     },
     NotFound,
     /// On-disk bytes did not decode. Carries the specific invariant that was
@@ -74,7 +79,9 @@ impl fmt::Display for StorageError {
             StorageError::Unsupported(feature) => write!(f, "unsupported: {feature}"),
             StorageError::InvalidConfig(detail) => write!(f, "invalid configuration: {detail}"),
             StorageError::InvalidRange => write!(f, "invalid range"),
-            StorageError::Trimmed { requested, oldest } => write!(
+            StorageError::Trimmed {
+                requested, oldest, ..
+            } => write!(
                 f,
                 "offset {requested} is no longer available; the log starts at {oldest}"
             ),

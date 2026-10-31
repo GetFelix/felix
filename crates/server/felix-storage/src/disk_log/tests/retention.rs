@@ -99,7 +99,11 @@ async fn retention_makes_a_below_base_read_report_trimmed() {
         .await
         .expect_err("offset 0 is gone");
     match err {
-        StorageError::Trimmed { requested, oldest } => {
+        StorageError::Trimmed {
+            requested,
+            oldest,
+            trim_headers: None,
+        } => {
             assert_eq!(requested, 0);
             assert_eq!(oldest, base);
         }

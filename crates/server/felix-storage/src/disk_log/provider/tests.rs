@@ -208,7 +208,8 @@ async fn a_fresh_root_keeps_its_acknowledged_record_through_a_power_loss() {
                 max_bytes: 1024,
             })
             .await
-            .expect("read");
+            .expect("read")
+            .records;
         assert_eq!(read.len(), 1, "seed {seed} lost the acknowledged record");
         recovered.shutdown().await.expect("shutdown");
     }

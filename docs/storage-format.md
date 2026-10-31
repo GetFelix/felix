@@ -66,6 +66,7 @@ a segment, should be rejected on its first four bytes rather than misparsed.
     ballot                                   ← the leader that generation was accepted from
     durable.mark                             ← how far the active segment was synced
     producers                                ← producer snapshot, when any producer wrote here
+    head                                     ← trim records' head entries, once the log holds a v7 segment
     offload.manifest                         ← segments copied to the object store, once offload has run
     keys.idx                                 ← a cache shard's key index, once compaction has run
   acme_default_orders_0-0d3aed4b998d2798-0006411a0ccf2e40/
@@ -339,8 +340,11 @@ it is the last record and `repair_checksum_tail` is set.
 A normal read (`read_range`) leaves trim records out, so their offsets are
 gaps in what it returns, and a read that starts at one gets the next record
 after it. `read_range_with_trims` returns them, for replication and for
-finding the trim that set a log's floor. Storage only stores and returns the
-record; nothing applies its floor yet.
+finding the trim that set a log's floor. Once the record is durable, and on
+a log held at its commit offset committed, its floor applies: a normal read
+below it is `Trimmed`, and the sealed segments below it are deleted (see
+`docs/durable-storage.md`, "Conditional head trim"). The `head` file below
+spares an open from reading the sealed segments for them.
 
 Only a v7 segment may hold the record, and a segment is written at v7 only
 to hold one. Nothing writes one unless a caller appends a record marked as a
@@ -793,6 +797,38 @@ its batches is in the log; retention that removes the last of them forgets it,
 on every replica alike. Each producer keeps its last 64 batches, and past 4096
 producers the one whose newest batch is oldest is forgotten.
 
+
+## `head`: the trim records' head entries
+
+One entry per trim record the log holds, which is everything needed to derive
+the head floor: the floor is the largest among the entries below the apply
+bound. Written at each roll once the log holds a v7 segment, as of the new
+segment's base offset, after the retired segment is sealed.
+
+```text
+ 0   4  magic        u32  "FLHD"
+ 4   2  version      u16  1
+ 6   8  as_of        u64  the entries cover every trim record below this offset
+14   4  entries      u32
+18   …  entries × { offset u64, floor u64, headers_len u32, headers }
+ …   4  crc          u32  crc32 over everything before it
+```
+
+Entries are in ascending offset order. `headers` is the trim record's
+payload.
+
+It is derived and never trusted. An open uses it only when the checksum
+holds, `as_of` is at or below the tail, and every entry at or above the
+oldest retained offset matches the trim record the log holds there; entries
+below that offset were deleted with their segments and are dropped. The trim
+records after `as_of` are read from the log, from v7 segments only and header
+by header, and those in the active segment come from recovery's scan. A
+missing, short, stale or damaged file is rebuilt by reading every v7 segment
+that way, and the open saves a fresh one. A truncation or reset removes it,
+durably, before anything is written past the cut.
+
+Like the producer snapshot it is written through a temporary and a rename but
+not flushed: one lost to a crash costs a longer open.
 
 ## `keys.idx`: a cache's key index
 

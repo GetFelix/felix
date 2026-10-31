@@ -37,14 +37,18 @@ pub(crate) struct SealedEntry {
     /// A v3 segment, which may hold producer marks. A v2 one cannot, so a
     /// rebuild of producer state never has to read it.
     pub(crate) holds_marks: bool,
+    /// A v7 segment, which may hold trim records. An older one cannot, so a
+    /// rebuild of the head floor never has to read it.
+    pub(crate) holds_trims: bool,
     key: u64,
 }
 
 impl SealedEntry {
-    pub(crate) fn new(descriptor: SegmentDescriptor, holds_marks: bool) -> Self {
+    pub(crate) fn new(descriptor: SegmentDescriptor, holds_marks: bool, holds_trims: bool) -> Self {
         Self {
             descriptor,
             holds_marks,
+            holds_trims,
             key: NEXT_KEY.fetch_add(1, Ordering::Relaxed),
         }
     }
