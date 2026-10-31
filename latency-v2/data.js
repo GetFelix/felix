@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793485262441,
+  "lastUpdate": 1793485471751,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -51480,6 +51480,72 @@ window.BENCHMARK_DATA = {
             "range": "608.74",
             "unit": "us",
             "extra": "trials: 5\nmedian: 568.00\nmean: 830.40\nstdev: 608.74\ncv: 73.31%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5cc583b1121dce56e1014037241817e76f4a9fb8",
+          "message": "build(deps): bump the python-tooling group across 1 directory with 2 updates (#1714)\n\nUpdates the requirements on [pandas](https://github.com/pandas-dev/pandas) and [pyarrow](https://github.com/apache/arrow) to permit the latest version.\n\nUpdates `pandas` to 3.1.0\n- [Release notes](https://github.com/pandas-dev/pandas/releases)\n- [Commits](https://github.com/pandas-dev/pandas/compare/v3.0.6...v3.1.0)\n\nUpdates `pyarrow` to 26.0.0\n- [Release notes](https://github.com/apache/arrow/releases)\n- [Commits](https://github.com/apache/arrow/compare/apache-arrow-25.0.1...apache-arrow-26.0.0)\n\n---\nupdated-dependencies:\n- dependency-name: pandas\n  dependency-version: 3.1.0\n  dependency-type: direct:production\n  dependency-group: python-tooling\n- dependency-name: pyarrow\n  dependency-version: 26.0.0\n  dependency-type: direct:production\n  dependency-group: python-tooling\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-10-31T15:17:27-07:00",
+          "tree_id": "92843f35198c38650d308597729b0847fb3a0cea",
+          "url": "https://github.com/GetFelix/felix/commit/5cc583b1121dce56e1014037241817e76f4a9fb8"
+        },
+        "date": 1793485467088,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 63,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 63.00\nmean: 62.80\nstdev: 0.84\ncv: 1.33%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 86,
+            "range": "2.39",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 86.00\nmean: 85.80\nstdev: 2.39\ncv: 2.78%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 118,
+            "range": "8.53",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 118.00\nmean: 115.40\nstdev: 8.53\ncv: 7.39%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 80,
+            "range": "1.34",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 80.00\nmean: 79.40\nstdev: 1.34\ncv: 1.69%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 176,
+            "range": "9.69",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 176.00\nmean: 179.40\nstdev: 9.69\ncv: 5.40%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 268,
+            "range": "224.72",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 268.00\nmean: 392.60\nstdev: 224.72\ncv: 57.24%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
