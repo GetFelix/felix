@@ -106,7 +106,7 @@ fn a_crash_before_the_rename_still_reads_the_old_set() {
     store(dir.path(), &settled(7)).expect("store");
     // What a crash between the temporary's write and the rename leaves: the
     // new set whole, or half of it.
-    let temporary = path_in(dir.path()).with_extension("tmp");
+    let temporary = dir.path().join("replica-set.tmp.1.0");
     let next = changing(8).encode().unwrap();
     std::fs::write(&temporary, &next).expect("whole");
     assert_eq!(load(dir.path()).expect("load"), Some(settled(7)));
@@ -118,17 +118,21 @@ fn a_crash_before_the_rename_still_reads_the_old_set() {
         &next[..next.len() / 2]
     );
 
-    // The next write replaces the leftover with a different set, and the
-    // leftover's contents do not leak into it.
+    // The next write is a different set, and the leftover's contents do not
+    // leak into it.
     store(dir.path(), &settled(9)).expect("store");
     assert_eq!(load(dir.path()).expect("load"), Some(settled(9)));
-    assert!(!temporary.exists(), "the rename consumed the temporary");
+    // The write used a temporary of its own; the open sweeps the old one.
+    assert!(temporary.exists());
+    discard_leftovers(dir.path()).expect("sweep");
+    assert!(!temporary.exists());
+    assert_eq!(load(dir.path()).expect("load"), Some(settled(9)));
 }
 
 #[test]
 fn a_crash_before_the_first_rename_reads_as_no_set() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let temporary = path_in(dir.path()).with_extension("tmp");
+    let temporary = dir.path().join("replica-set.tmp.1.0");
     std::fs::write(&temporary, settled(1).encode().unwrap()).expect("write");
     assert_eq!(load(dir.path()).expect("load"), None);
     assert!(temporary.exists());
@@ -318,20 +322,58 @@ fn a_learner_round_trips_and_is_distinct_from_a_voter() {
 }
 
 #[test]
-fn concurrent_stores_leave_one_whole_set() {
+fn concurrent_stores_to_one_shard_leave_one_whole_set() {
     let dir = tempfile::tempdir().expect("tempdir");
     let sets = [settled(7), changing(8)];
     std::thread::scope(|scope| {
-        for round in 0..50 {
+        for _ in 0..50 {
             for set in &sets {
                 scope.spawn(|| store(dir.path(), set).expect("store"));
-            }
-            if round % 10 == 0 {
-                let seen = load(dir.path()).expect("load");
-                assert!(seen.is_none() || sets.contains(seen.as_ref().unwrap()));
             }
         }
     });
     let found = load(dir.path()).expect("load").expect("set");
     assert!(sets.contains(&found));
+    assert_eq!(leftovers(dir.path()), 0, "every temporary was renamed");
+}
+
+#[test]
+fn stores_to_different_shards_are_independent() {
+    let dirs: Vec<_> = (0..8)
+        .map(|_| tempfile::tempdir().expect("tempdir"))
+        .collect();
+    std::thread::scope(|scope| {
+        for (i, dir) in dirs.iter().enumerate() {
+            scope.spawn(move || store(dir.path(), &settled(i as u64 + 1)).expect("store"));
+        }
+    });
+    for (i, dir) in dirs.iter().enumerate() {
+        assert_eq!(load(dir.path()).expect("load"), Some(settled(i as u64 + 1)));
+    }
+}
+
+fn leftovers(dir: &Path) -> usize {
+    std::fs::read_dir(dir)
+        .expect("list")
+        .flatten()
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with(TEMPORARY_PREFIX)
+        })
+        .count()
+}
+
+#[test]
+fn leftover_temporaries_are_swept_and_the_set_is_kept() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    store(dir.path(), &settled(7)).expect("store");
+    std::fs::write(dir.path().join("replica-set.tmp.1.0"), b"junk").expect("write");
+    std::fs::write(dir.path().join("replica-set.tmp.2.5"), b"").expect("write");
+    std::fs::write(dir.path().join("ballot"), b"other").expect("write");
+    assert_eq!(load(dir.path()).expect("load"), Some(settled(7)));
+    discard_leftovers(dir.path()).expect("sweep");
+    assert_eq!(leftovers(dir.path()), 0);
+    assert!(dir.path().join("ballot").exists());
+    assert_eq!(load(dir.path()).expect("load"), Some(settled(7)));
 }

@@ -736,12 +736,14 @@ caught up, so it does not vote and no majority includes it.
 
 A set is refused, on write and on read, when it lists a node id twice or a
 storage id twice, or when the set being left is not older than the current one.
-Writers are serialized, so two concurrent writes leave one of the two sets.
+Each write has a temporary of its own (`replica-set.tmp.<pid>.<n>`), so
+concurrent writes never share a file; two to one shard leave whichever renames
+last, and the caller orders them. The open removes leftover temporaries.
+Writing is blocking and meant for `spawn_blocking`.
 
-Written the same way as `ballot`: a temporary file next to it (`replica-set.tmp`),
+Written the same way as `ballot`: a temporary file next to it,
 fsynced, renamed into place, then the directory fsynced. A crash leaves the old
-set or the new one, and a leftover temporary is never read; the next write
-replaces it. The write returns only after all of that, so a replica that
+set or the new one, and a leftover temporary is never read. The write returns only after all of that, so a replica that
 answers at a set afterwards has made a promise that survives a restart. The
 pending set is cleared by writing a set without it.
 

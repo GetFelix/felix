@@ -36,9 +36,11 @@ const MEMBER_LEARNER: u8 = 2;
 pub(super) const MAX_MEMBERS: usize = 64;
 /// Node ids are short; this only bounds what a damaged length can claim.
 pub(super) const MAX_NODE_LEN: usize = 1024;
-/// Serializes `store`, so two writers cannot interleave on the temporary file.
-static WRITING: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+/// Makes each write's temporary file its own.
+static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 const FILE_NAME: &str = "replica-set";
+/// Prefix of the temporaries `store` writes: `replica-set.tmp.<pid>.<n>`.
+const TEMPORARY_PREFIX: &str = "replica-set.tmp";
 
 /// A replica in a set: its node id and the storage identity the fence counts
 /// it under, when placement named one.
@@ -236,14 +238,20 @@ pub(super) fn load(dir: &Path) -> Result<Option<ReplicaSet>> {
 /// Write a shard's replica set durably, as `ballot::store` writes a ballot: a
 /// crash leaves the old set or the new one. A caller that answers at the set
 /// afterwards has made a promise that survives a restart.
+///
+/// Blocking, with several fsyncs: call it from `spawn_blocking`. It takes no
+/// lock, so writers on different shards never wait on each other, and each
+/// write has a temporary of its own. Two stores to the same shard are not
+/// ordered here (the later rename wins), so the caller must serialize them per
+/// shard and persist in generation order, as `ballot`'s caller does under
+/// `replica_persisted`.
 pub(super) fn store(dir: &Path, set: &ReplicaSet) -> Result<()> {
     use std::io::Write;
 
     let bytes = set.encode()?;
-    // One writer at a time: both would share the temporary.
-    let _writing = WRITING.lock();
     let path = path_in(dir);
-    let temporary = path.with_extension("tmp");
+    let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temporary = dir.join(format!("{TEMPORARY_PREFIX}.{}.{n}", std::process::id()));
     {
         let mut file = std::fs::File::create(&temporary).map_err(StorageError::Io)?;
         file.write_all(&bytes).map_err(StorageError::Io)?;
@@ -251,6 +259,23 @@ pub(super) fn store(dir: &Path, set: &ReplicaSet) -> Result<()> {
     }
     std::fs::rename(&temporary, &path).map_err(StorageError::Io)?;
     sync_dir(dir).map_err(StorageError::Io)?;
+    Ok(())
+}
+
+/// Remove temporaries a crashed `store` left. For the open, before any writer
+/// runs: a sweep during a write would delete that write's temporary. `load`
+/// ignores them either way.
+pub(super) fn discard_leftovers(dir: &Path) -> Result<()> {
+    for entry in std::fs::read_dir(dir).map_err(StorageError::Io)? {
+        let entry = entry.map_err(StorageError::Io)?;
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(TEMPORARY_PREFIX)
+        {
+            std::fs::remove_file(entry.path()).map_err(StorageError::Io)?;
+        }
+    }
     Ok(())
 }
 
