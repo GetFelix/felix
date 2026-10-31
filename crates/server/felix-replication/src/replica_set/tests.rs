@@ -57,15 +57,15 @@ fn a_staged_successor_is_a_learner_in_every_set() {
         .map(|member| (member.node_id.as_str(), member.learner))
         .collect();
     assert_eq!(learners, vec![("a", false), ("b", false), ("c", true)]);
-    assert_eq!(kept(&staged, None).current, membership(&view));
+    assert_eq!(kept(&staged).current, membership(&view));
 }
 
 #[test]
 fn the_leaders_and_a_followers_sets_for_one_route_are_equal() {
     let mut staged = route();
     staged.successor = Some("c".to_string());
-    // The leader keeps `kept(route, ..)`, a replica learns from the view.
-    let leaders = kept(&staged, Some("c"));
+    // The leader keeps `kept(route)`, a replica learns from the view.
+    let leaders = kept(&staged);
     let followers = membership(&view(&staged));
     assert_eq!(leaders.current, followers);
     assert_eq!(leaders.current.members.len(), 3);

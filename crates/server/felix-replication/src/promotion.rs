@@ -774,7 +774,7 @@ async fn keep_own_set(
             ));
         }
     }
-    match log.accept_set(crate::replica_set::kept(route, None)).await {
+    match log.accept_set(crate::replica_set::kept(route)).await {
         Ok(felix_storage::disk_log::SetCheck::Stale { known }) => Err(Outcome::pending(
             format!("this broker counts the set of generation {known}, newer than this one"),
             Vec::new(),

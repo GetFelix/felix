@@ -28,9 +28,8 @@ pub(crate) fn view(route: &Route) -> ReplicaSetView {
     }
 }
 
-/// The route's set at its generation, as a log keeps it. The second argument
-/// is unused: the set no longer depends on who is copying.
-pub(crate) fn kept(route: &Route, _copying: Option<&str>) -> ReplicaSet {
+/// The route's set at its generation, as a log keeps it.
+pub(crate) fn kept(route: &Route) -> ReplicaSet {
     ReplicaSet {
         current: membership(&view(route)),
         leaving: None,

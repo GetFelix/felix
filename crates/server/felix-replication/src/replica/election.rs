@@ -119,13 +119,7 @@ impl ReplicaHandler {
                 ),
             ));
         };
-        keep(
-            correlation_id,
-            key,
-            log,
-            crate::replica_set::kept(route, None),
-        )
-        .await
+        keep(correlation_id, key, log, crate::replica_set::kept(route)).await
     }
 
     /// Note that this replica heard its leader for `key`, for the stickiness
