@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793485471751,
+  "lastUpdate": 1793486761057,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -51546,6 +51546,72 @@ window.BENCHMARK_DATA = {
             "range": "224.72",
             "unit": "us",
             "extra": "trials: 5\nmedian: 268.00\nmean: 392.60\nstdev: 224.72\ncv: 57.24%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b883da405cc5ba13921348519177e90ec37b2f76",
+          "message": "build(deps): bump the cargo-minor-and-patch group with 2 updates (#1715)\n\nBumps the cargo-minor-and-patch group with 2 updates: [uuid](https://github.com/uuid-rs/uuid) and [crc32fast](https://github.com/srijs/rust-crc32fast).\n\n\nUpdates `uuid` from 1.28.0 to 1.29.0\n- [Release notes](https://github.com/uuid-rs/uuid/releases)\n- [Commits](https://github.com/uuid-rs/uuid/compare/v1.28.0...v1.29.0)\n\nUpdates `crc32fast` from 1.5.2 to 1.5.3\n- [Commits](https://github.com/srijs/rust-crc32fast/compare/v1.5.2...v1.5.3)\n\n---\nupdated-dependencies:\n- dependency-name: uuid\n  dependency-version: 1.29.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: cargo-minor-and-patch\n- dependency-name: crc32fast\n  dependency-version: 1.5.3\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: cargo-minor-and-patch\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-10-31T15:38:04-07:00",
+          "tree_id": "67cadb9d3dab60706c8460d1c8c885375ba79022",
+          "url": "https://github.com/GetFelix/felix/commit/b883da405cc5ba13921348519177e90ec37b2f76"
+        },
+        "date": 1793486755106,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 139,
+            "range": "7.50",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 139.00\nmean: 142.60\nstdev: 7.50\ncv: 5.26%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 198,
+            "range": "282.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 198.00\nmean: 324.40\nstdev: 282.64\ncv: 87.13%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 238,
+            "range": "445.74",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 238.00\nmean: 436.80\nstdev: 445.74\ncv: 102.05%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 190,
+            "range": "6.69",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 190.00\nmean: 193.20\nstdev: 6.69\ncv: 3.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 368,
+            "range": "128.80",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 368.00\nmean: 433.40\nstdev: 128.80\ncv: 29.72%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 491,
+            "range": "645.68",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 491.00\nmean: 916.20\nstdev: 645.68\ncv: 70.47%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
