@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793405170297,
+  "lastUpdate": 1793413877975,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -39936,6 +39936,58 @@ window.BENCHMARK_DATA = {
             "range": "11502.95",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1180475.60\nmean: 1174837.93\nstdev: 11502.95\ncv: 0.98%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f6e17aa6582bdecb885107f08ba4b8eca44c0f2d",
+          "message": "docs: versioned docs site (stable at /, main at /next/) (#1668)\n\n* docs: serve the newest stable release at the root and main under /next/\n\n* docs: prefix the base onto links in the built HTML (Astro 7 has no rehype plugins by default)\n\n* docs: add the base-link prefixing integration\n\n* docs: show the next-release banner through route middleware\n\n* docs: keep the banner link on the stable root\n\n* docs: ship the benchmark dashboards under /next/ too\n\n* ci: dispatch the Pages workflow from the release instead of the release event\n\n* Redeploy the docs only when every publish job succeeded\n\nSpec-Unaffected: release workflow only.",
+          "timestamp": "2026-10-31T02:27:21Z",
+          "tree_id": "e72adc97cb56336febc77d2a0faa8bcf8dc28667",
+          "url": "https://github.com/GetFelix/felix/commit/f6e17aa6582bdecb885107f08ba4b8eca44c0f2d"
+        },
+        "date": 1793413877160,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 504312.64,
+            "range": "41938.09",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 504312.64\nmean: 519946.55\nstdev: 41938.09\ncv: 8.07%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 504312.64,
+            "range": "41938.09",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 504312.64\nmean: 519946.55\nstdev: 41938.09\ncv: 8.07%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 125913.71,
+            "range": "472.40",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 125913.71\nmean: 125857.07\nstdev: 472.40\ncv: 0.38%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1259137.11,
+            "range": "4723.98",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1259137.11\nmean: 1258570.74\nstdev: 4723.98\ncv: 0.38%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
