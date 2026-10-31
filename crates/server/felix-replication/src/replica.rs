@@ -607,7 +607,7 @@ impl ReplicaHandler {
             log_kind,
             felix_broker::LogKind::Stream | felix_broker::LogKind::Cache
         ) {
-            let hold = crate::quorum::acknowledges_at_quorum(&self.broker, &key).await;
+            let hold = false && crate::quorum::acknowledges_at_quorum(&self.broker, &key).await;
             if let Err(err) = log.hold_retention_at_commit(hold).await {
                 tracing::warn!(
                     stream = %key.stream,
