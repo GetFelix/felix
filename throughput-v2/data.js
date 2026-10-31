@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793469598129,
+  "lastUpdate": 1793476666140,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -40352,6 +40352,58 @@ window.BENCHMARK_DATA = {
             "range": "25700.83",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1561125.57\nmean: 1564693.04\nstdev: 25700.83\ncv: 1.64%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "025b133e59d8ed46791187d9ff45065438e651be",
+          "message": "feat(storage): replica-set file beside ballot (#1009 S1) (#1703)\n\n* feat(storage): replica-set file beside ballot (#1009)\n\nA replica keeps the replicas it counts in its own file: the assignment's\ngeneration, the members (node id and the storage id the fence counts them\nunder) and, while a change is pending, the set being left. Written as\nballot is (temp file, fsync, rename, directory fsync); a missing file is no\nset, a file that does not decode fails the open.\n\nNothing reads or writes it yet.\n\nSpec-Unaffected: storage file only; nothing reads it yet\n\n* fix(storage): replica-set review fixes (#1009)\n\nSerialize writers, reject duplicate members and a leaving set that is not\nolder, add a per-member learner flag, make encode fail for what decode\nrefuses, tighten the tests, and note the ballot/set write-order for S3.\n\nSpec-Unaffected: storage file only; nothing reads it yet\n\n* style(storage): parenthesize member flags\n\nSpec-Unaffected: storage file only; nothing reads it yet\n\n* fix(storage): replica-set writes take no shared lock (#1009)\n\nEach write gets its own temporary, so writers on different shards never\nwait on each other and none shares a file. Same-shard ordering is the\ncaller's. The open can sweep leftover temporaries.\n\nSpec-Unaffected: storage file only; nothing reads it yet",
+          "timestamp": "2026-10-31T19:50:41Z",
+          "tree_id": "0dc0bb555c656c8626d8b5a2ab8cd87f30ab0658",
+          "url": "https://github.com/GetFelix/felix/commit/025b133e59d8ed46791187d9ff45065438e651be"
+        },
+        "date": 1793476665345,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 360887.9,
+            "range": "13325.27",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 360887.90\nmean: 359425.07\nstdev: 13325.27\ncv: 3.71%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 360887.9,
+            "range": "13325.27",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 360887.90\nmean: 359425.07\nstdev: 13325.27\ncv: 3.71%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82803.98,
+            "range": "226.83",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82803.98\nmean: 82806.80\nstdev: 226.83\ncv: 0.27%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 828039.84,
+            "range": "2268.37",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 828039.84\nmean: 828067.99\nstdev: 2268.37\ncv: 0.27%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
