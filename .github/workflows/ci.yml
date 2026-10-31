@@ -80,7 +80,7 @@ jobs:
         uses: ./.github/actions/code-changed
         with:
           ignore: '.*'
-          keep: '^docs/|^docs-site/|\.md$|^scripts/check_|^scripts/test_check_|^crates/sdk/felix-typescript/(index\.d\.ts|tsconfig\.json|test/)'
+          keep: '^docs/|^docs-site/|\.md$|^\.github/workflows/pages\.yml$|^scripts/(build-docs-versions\.sh|latest-stable-tag\.sh|check-docs-links\.mjs)$|^scripts/check_|^scripts/test_check_|^crates/sdk/felix-typescript/(index\.d\.ts|tsconfig\.json|test/)'
 
   # `checks` runs docs:evidence on a code change; this is the same check for a
   # change that is docs alone, which `checks` skips. A cited test or a table
@@ -137,7 +137,7 @@ jobs:
     if: needs.changes.outputs.docs == 'true' && github.event_name != 'workflow_dispatch'
     name: Docs site build
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -152,11 +152,19 @@ jobs:
           cache: 'npm'
           cache-dependency-path: 'docs-site/package-lock.json'
 
-      - name: Install dependencies
-        run: npm ci --prefix docs-site
+      # The same two builds pages.yml deploys: the newest stable tag at the
+      # root, this checkout under /next/. Then every internal link must stay
+      # inside its own tree.
+      - name: Build documentation (stable at /, this checkout at /next/)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(scripts/latest-stable-tag.sh)
+          echo "Stable release: $tag"
+          scripts/build-docs-versions.sh "$tag" site
 
-      - name: Build documentation
-        run: npm run build --prefix docs-site
+      - name: Check links in both trees
+        run: node scripts/check-docs-links.mjs site
 
       # Every ts block on the TypeScript page, checked against index.d.ts. It
       # needs no addon build, so it runs here, where a page edit lands.
