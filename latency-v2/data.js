@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793392484094,
+  "lastUpdate": 1793405167061,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -50622,6 +50622,72 @@ window.BENCHMARK_DATA = {
             "range": "851.36",
             "unit": "us",
             "extra": "trials: 5\nmedian: 343.00\nmean: 776.80\nstdev: 851.36\ncv: 109.60%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "452d79f7c1893b878b19f41348c75408f1a4cb95",
+          "message": "feat(storage): a trim record kind in segment format v7 (#1662) (#1664)\n\n* feat(storage): a trim record kind in segment format v7 (#1662)\n\nStep 2 of the conditional head trim. A trim record carries a floor in an\n8-byte tag and the caller's headers as its body. Its kind is bits 29 and 28\ntogether, the first two-bit kind, so it needs segment format v7, and a log\nmoves onto v7 only when a caller appends one. Nothing writes one yet.\n\nBefore v7 that bit pair was RecordFlags in every segment. The scan and the\nreader still report it that way in an older segment, so v1 to v6 read\nexactly as before. A torn trim is repaired like any torn record and a\ncorrupt one is fatal.\n\nread_range leaves trim records out and read_range_with_trims returns them.\nThe choice rides on ReadBudget. Recovery's producer rebuild and retention's\ntimestamps include them.\n\nThe header's kind is now one RecordKind instead of five bools, which makes\nthe per-record decode cheaper than before.\n\n* fix(replication): ship trim records in place or refuse them (#1662)\n\nread_log_from skips trim records, and a follower places a batch's records\nat consecutive offsets, so one trim would have shifted every later record\none offset low under valid checksums. Shipping, the follower's fetch and\nthe divergence check now read with read_replicated_from, which keeps trims.\nmark_to_wire returns an error for a trim instead of panicking, so a batch\nholding one stalls shipping (and the fetch answers StorageFailed) until\nreplication carries the mark.\n\nThe scan decodes record headers knowing the segment's version again, so a\npre-v7 header with the trim bits and an impossible length is still the\nfatal RecordFlags rather than a repairable RecordTooLarge.\n\nSpec-Unaffected: no protocol change. Shipping refuses a record kind nothing writes yet, rather than sending it.\n\n* Keep append_time_now's doc on it\n\nSpec-Unaffected: moves a doc comment only.",
+          "timestamp": "2026-10-31T00:01:57Z",
+          "tree_id": "b2cc58a9bfca2c9b8af428bc8ea45beb6c8dcb6f",
+          "url": "https://github.com/GetFelix/felix/commit/452d79f7c1893b878b19f41348c75408f1a4cb95"
+        },
+        "date": 1793405161212,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 108,
+            "range": "10.48",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 108.00\nmean: 102.60\nstdev: 10.48\ncv: 10.21%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 163,
+            "range": "41.85",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 163.00\nmean: 180.40\nstdev: 41.85\ncv: 23.20%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 197,
+            "range": "65.95",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 197.00\nmean: 233.00\nstdev: 65.95\ncv: 28.31%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 107,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 107.00\nmean: 106.60\nstdev: 0.55\ncv: 0.51%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 222,
+            "range": "1.95",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 222.00\nmean: 222.60\nstdev: 1.95\ncv: 0.88%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 318,
+            "range": "21.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 318.00\nmean: 326.80\nstdev: 21.30\ncv: 6.52%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
