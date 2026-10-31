@@ -29,10 +29,15 @@ const VERSION: u16 = 1;
 pub(super) const HEADER_LEN: usize = 8;
 /// The flags bit for a set being left.
 const FLAG_LEAVING: u16 = 1;
+/// Member flags: a storage id follows; the member does not vote.
+const MEMBER_STORAGE: u8 = 1;
+const MEMBER_LEARNER: u8 = 2;
 /// Only bounds what a damaged count can claim.
 pub(super) const MAX_MEMBERS: usize = 64;
 /// Node ids are short; this only bounds what a damaged length can claim.
 pub(super) const MAX_NODE_LEN: usize = 1024;
+/// Serializes `store`, so two writers cannot interleave on the temporary file.
+static WRITING: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 const FILE_NAME: &str = "replica-set";
 
 /// A replica in a set: its node id and the storage identity the fence counts
@@ -41,6 +46,8 @@ const FILE_NAME: &str = "replica-set";
 pub(super) struct Member {
     pub(super) node: String,
     pub(super) storage: Option<StorageId>,
+    /// Listed but not counted: re-admitted and not yet caught up.
+    pub(super) learner: bool,
 }
 
 /// One assignment's replicas.
@@ -59,7 +66,9 @@ pub(super) struct ReplicaSet {
 }
 
 impl ReplicaSet {
-    pub(super) fn encode(&self) -> Vec<u8> {
+    /// Fails for a set `decode` would refuse, so the file never holds one.
+    pub(super) fn encode(&self) -> Result<Vec<u8>> {
+        self.check()?;
         let flags = if self.leaving.is_some() {
             FLAG_LEAVING
         } else {
@@ -75,7 +84,7 @@ impl ReplicaSet {
         }
         let crc = crate::segment::format::crc32(&[&out]);
         out.extend_from_slice(&crc.to_be_bytes());
-        out
+        Ok(out)
     }
 
     pub(super) fn decode(bytes: &[u8]) -> Option<Self> {
@@ -100,25 +109,41 @@ impl ReplicaSet {
             None
         };
         // Slack would let two byte strings mean one set.
-        rest.is_empty().then_some(Self { current, leaving })
+        let set = Self { current, leaving };
+        (rest.is_empty() && set.check().is_ok()).then_some(set)
+    }
+
+    /// What both `encode` and `decode` insist on: sizes within the file's
+    /// limits, no member listed twice, and a set being left that is older than
+    /// the one replacing it.
+    fn check(&self) -> Result<()> {
+        self.current.check()?;
+        if let Some(leaving) = &self.leaving {
+            leaving.check()?;
+            if leaving.generation >= self.current.generation {
+                return Err(invalid(
+                    "a set being left must be older than the current one",
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
 impl Membership {
     /// generation(8) + count(2), then per member: node length(2), the node id,
-    /// has_storage(1) and, when set, the storage id(16).
+    /// flags(1) and, when bit 0 is set, the storage id(16).
     fn encode_into(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.generation.to_be_bytes());
         out.extend_from_slice(&(self.members.len() as u16).to_be_bytes());
         for member in &self.members {
             out.extend_from_slice(&(member.node.len() as u16).to_be_bytes());
             out.extend_from_slice(member.node.as_bytes());
-            match &member.storage {
-                Some(id) => {
-                    out.push(1);
-                    out.extend_from_slice(&id.to_bytes());
-                }
-                None => out.push(0),
+            let flags = u8::from(member.storage.is_some()) * MEMBER_STORAGE
+                | u8::from(member.learner) * MEMBER_LEARNER;
+            out.push(flags);
+            if let Some(id) = &member.storage {
+                out.extend_from_slice(&id.to_bytes());
             }
         }
     }
@@ -136,12 +161,20 @@ impl Membership {
                 return None;
             }
             let node = String::from_utf8(take(rest, len)?.to_vec()).ok()?;
-            let storage = match take(rest, 1)?[0] {
-                0 => None,
-                1 => Some(StorageId::from_bytes(take(rest, 16)?.try_into().ok()?)),
-                _ => return None,
+            let flags = take(rest, 1)?[0];
+            if flags & !(MEMBER_STORAGE | MEMBER_LEARNER) != 0 {
+                return None;
+            }
+            let storage = if flags & MEMBER_STORAGE != 0 {
+                Some(StorageId::from_bytes(take(rest, 16)?.try_into().ok()?))
+            } else {
+                None
             };
-            members.push(Member { node, storage });
+            members.push(Member {
+                node,
+                storage,
+                learner: flags & MEMBER_LEARNER != 0,
+            });
         }
         Some(Self {
             generation,
@@ -152,13 +185,27 @@ impl Membership {
     fn check(&self) -> Result<()> {
         let too_long = self.members.iter().any(|m| m.node.len() > MAX_NODE_LEN);
         if self.members.len() > MAX_MEMBERS || too_long {
-            return Err(StorageError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "a replica set past the size the file allows",
-            )));
+            return Err(invalid("a replica set past the size the file allows"));
+        }
+        // Counting a member twice would count a majority that isn't one.
+        let mut nodes = std::collections::HashSet::new();
+        let mut storage = std::collections::HashSet::new();
+        for member in &self.members {
+            if !nodes.insert(member.node.as_str()) {
+                return Err(invalid("a node listed twice in a replica set"));
+            }
+            if let Some(id) = member.storage
+                && !storage.insert(id)
+            {
+                return Err(invalid("a storage id listed twice in a replica set"));
+            }
         }
         Ok(())
     }
+}
+
+fn invalid(what: &str) -> StorageError {
+    StorageError::Io(std::io::Error::new(std::io::ErrorKind::InvalidInput, what))
 }
 
 fn take<'a>(rest: &mut &'a [u8], n: usize) -> Option<&'a [u8]> {
@@ -192,15 +239,14 @@ pub(super) fn load(dir: &Path) -> Result<Option<ReplicaSet>> {
 pub(super) fn store(dir: &Path, set: &ReplicaSet) -> Result<()> {
     use std::io::Write;
 
-    set.current.check()?;
-    if let Some(leaving) = &set.leaving {
-        leaving.check()?;
-    }
+    let bytes = set.encode()?;
+    // One writer at a time: both would share the temporary.
+    let _writing = WRITING.lock();
     let path = path_in(dir);
     let temporary = path.with_extension("tmp");
     {
         let mut file = std::fs::File::create(&temporary).map_err(StorageError::Io)?;
-        file.write_all(&set.encode()).map_err(StorageError::Io)?;
+        file.write_all(&bytes).map_err(StorageError::Io)?;
         crate::io::sync_all(&file).map_err(StorageError::Io)?;
     }
     std::fs::rename(&temporary, &path).map_err(StorageError::Io)?;

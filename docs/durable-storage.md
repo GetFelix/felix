@@ -1366,6 +1366,11 @@ electing a leader without the control plane; see `docs/replication-design.md`,
 "Electing without the control plane", and `docs/storage-format.md`,
 "`replica-set`". Nothing reads it yet.
 
+`ballot` and `replica-set` are separate renames, so a crash can leave one
+ahead of the other. The code that starts reading them must fix the order it
+writes them in and compare their generations when it loads, as the open does
+for `ballot` and `replica`.
+
 Leaders learn each follower's id in the peer handshake and start its copy
 over when it changes, and a follower counts toward the mark only once it has
 answered that pass under the id its position was learned under. Placement

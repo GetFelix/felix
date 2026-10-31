@@ -725,10 +725,18 @@ Each set is:
 10   .  members      count entries, each:
                        2  node_len   u16  at most 1024
                        n  node       utf-8 node id
-                       1  has_storage u8  0 or 1
+                       1  flags     u8   bit 0: a storage id follows;
+                                     bit 1: learner; other bits must be 0
                       16  storage    the storage id the fence counts the member
-                                     under, only when has_storage is 1
+                                     under, only when flags bit 0 is set
 ```
+
+A learner is listed but not counted: it is re-admitted to the set and not yet
+caught up, so it does not vote and no majority includes it.
+
+A set is refused, on write and on read, when it lists a node id twice or a
+storage id twice, or when the set being left is not older than the current one.
+Writers are serialized, so two concurrent writes leave one of the two sets.
 
 Written the same way as `ballot`: a temporary file next to it (`replica-set.tmp`),
 fsynced, renamed into place, then the directory fsynced. A crash leaves the old
@@ -739,7 +747,7 @@ pending set is cleared by writing a set without it.
 
 A missing file means no set was ever recorded: a shard from a build that
 predates it, or a new one. A file that is present and does not decode, whether
-by checksum, a bad flag or count, a truncation, or bytes after the last
+by checksum, a bad flag or count, a duplicate member, a truncation, or bytes after the last
 member, fails the open, as `ballot` does: it cannot be rebuilt from the log,
 and reading it as no set would let the replica count the wrong majority. A
 separate file so that a build that predates it ignores it and still opens the

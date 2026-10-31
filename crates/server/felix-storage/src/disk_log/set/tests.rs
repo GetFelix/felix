@@ -8,7 +8,26 @@ fn member(node: &str, storage: Option<u8>) -> Member {
     Member {
         node: node.to_string(),
         storage: storage.map(|byte| StorageId::from_bytes([byte; 16])),
+        learner: false,
     }
+}
+
+/// The file's bytes for a set `encode` would refuse, checksummed.
+fn raw(set: &ReplicaSet) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&MAGIC.to_be_bytes());
+    out.extend_from_slice(&VERSION.to_be_bytes());
+    let flags = if set.leaving.is_some() {
+        FLAG_LEAVING
+    } else {
+        0
+    };
+    out.extend_from_slice(&flags.to_be_bytes());
+    set.current.encode_into(&mut out);
+    if let Some(leaving) = &set.leaving {
+        leaving.encode_into(&mut out);
+    }
+    sealed(out)
 }
 
 fn settled(generation: u64) -> ReplicaSet {
@@ -72,7 +91,7 @@ fn an_empty_set_round_trips() {
         },
         leaving: None,
     };
-    assert_eq!(ReplicaSet::decode(&set.encode()), Some(set));
+    assert_eq!(ReplicaSet::decode(&set.encode().unwrap()), Some(set));
 }
 
 #[test]
@@ -88,23 +107,32 @@ fn a_crash_before_the_rename_still_reads_the_old_set() {
     // What a crash between the temporary's write and the rename leaves: the
     // new set whole, or half of it.
     let temporary = path_in(dir.path()).with_extension("tmp");
-    let next = changing(8).encode();
+    let next = changing(8).encode().unwrap();
     std::fs::write(&temporary, &next).expect("whole");
     assert_eq!(load(dir.path()).expect("load"), Some(settled(7)));
     std::fs::write(&temporary, &next[..next.len() / 2]).expect("half");
     assert_eq!(load(dir.path()).expect("load"), Some(settled(7)));
+    // Reading neither used nor removed it.
+    assert_eq!(
+        std::fs::read(&temporary).expect("kept"),
+        &next[..next.len() / 2]
+    );
 
-    // The next write replaces the leftover.
-    store(dir.path(), &changing(8)).expect("store");
-    assert_eq!(load(dir.path()).expect("load"), Some(changing(8)));
+    // The next write replaces the leftover with a different set, and the
+    // leftover's contents do not leak into it.
+    store(dir.path(), &settled(9)).expect("store");
+    assert_eq!(load(dir.path()).expect("load"), Some(settled(9)));
+    assert!(!temporary.exists(), "the rename consumed the temporary");
 }
 
 #[test]
 fn a_crash_before_the_first_rename_reads_as_no_set() {
     let dir = tempfile::tempdir().expect("tempdir");
     let temporary = path_in(dir.path()).with_extension("tmp");
-    std::fs::write(&temporary, settled(1).encode()).expect("write");
+    std::fs::write(&temporary, settled(1).encode().unwrap()).expect("write");
     assert_eq!(load(dir.path()).expect("load"), None);
+    assert!(temporary.exists());
+    assert!(!path_in(dir.path()).exists(), "load created no file");
 }
 
 #[test]
@@ -135,7 +163,7 @@ fn sealed(mut body: Vec<u8>) -> Vec<u8> {
 
 #[test]
 fn a_checksummed_but_malformed_body_does_not_decode() {
-    let good = settled(3).encode();
+    let good = settled(3).encode().unwrap();
     let body = good[..good.len() - 4].to_vec();
 
     let mut slack = body.clone();
@@ -151,10 +179,6 @@ fn a_checksummed_but_malformed_body_does_not_decode() {
     missing[6..8].copy_from_slice(&FLAG_LEAVING.to_be_bytes());
     assert_eq!(ReplicaSet::decode(&sealed(missing)), None);
 
-    let mut count = body.clone();
-    count[HEADER_LEN + 8..HEADER_LEN + 10].copy_from_slice(&(MAX_MEMBERS as u16 + 1).to_be_bytes());
-    assert_eq!(ReplicaSet::decode(&sealed(count)), None);
-
     // A storage flag that is neither 0 nor 1.
     let mut flag = ReplicaSet {
         current: Membership {
@@ -163,9 +187,10 @@ fn a_checksummed_but_malformed_body_does_not_decode() {
         },
         leaving: None,
     }
-    .encode();
+    .encode()
+    .unwrap();
     let at = flag.len() - 5;
-    flag[at] = 2;
+    flag[at] = 4;
     flag.truncate(flag.len() - 4);
     assert_eq!(ReplicaSet::decode(&sealed(flag)), None);
 }
@@ -214,4 +239,99 @@ fn a_stored_set_survives_a_power_loss_once_store_returns() {
             );
         }
     }
+}
+
+fn one(members: Vec<Member>) -> ReplicaSet {
+    ReplicaSet {
+        current: Membership {
+            generation: 5,
+            members,
+        },
+        leaving: None,
+    }
+}
+
+#[test]
+fn the_member_limit_is_enforced_on_a_full_body() {
+    let full = |n: usize| one((0..n).map(|i| member(&format!("n{i}"), None)).collect());
+    assert_eq!(
+        ReplicaSet::decode(&raw(&full(MAX_MEMBERS))),
+        Some(full(MAX_MEMBERS))
+    );
+    assert_eq!(ReplicaSet::decode(&raw(&full(MAX_MEMBERS + 1))), None);
+}
+
+#[test]
+fn the_node_id_limit_is_enforced_on_a_full_body() {
+    let long = |n: usize| one(vec![member(&"n".repeat(n), None)]);
+    assert_eq!(
+        ReplicaSet::decode(&raw(&long(MAX_NODE_LEN))),
+        Some(long(MAX_NODE_LEN))
+    );
+    assert_eq!(ReplicaSet::decode(&raw(&long(MAX_NODE_LEN + 1))), None);
+}
+
+#[test]
+fn a_member_listed_twice_does_not_decode_or_encode() {
+    for set in [
+        one(vec![member("a", Some(1)), member("a", Some(2))]),
+        one(vec![member("a", Some(1)), member("b", Some(1))]),
+    ] {
+        assert_eq!(ReplicaSet::decode(&raw(&set)), None);
+        assert!(set.encode().is_err());
+    }
+    // Two members with no storage id are not the same member.
+    let set = one(vec![member("a", None), member("b", None)]);
+    assert_eq!(ReplicaSet::decode(&set.encode().unwrap()), Some(set));
+    // A set being left is checked too.
+    let mut set = changing(8);
+    set.leaving
+        .as_mut()
+        .unwrap()
+        .members
+        .push(member("a", None));
+    assert_eq!(ReplicaSet::decode(&raw(&set)), None);
+}
+
+#[test]
+fn a_set_being_left_must_be_older() {
+    for left in [8, 9] {
+        let mut set = changing(8);
+        set.leaving.as_mut().unwrap().generation = left;
+        assert_eq!(ReplicaSet::decode(&raw(&set)), None, "{left}");
+        assert!(set.encode().is_err());
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert!(store(dir.path(), &set).is_err());
+        assert_eq!(load(dir.path()).expect("load"), None);
+    }
+}
+
+#[test]
+fn a_learner_round_trips_and_is_distinct_from_a_voter() {
+    let mut set = settled(4);
+    set.current.members[2].learner = true;
+    set.current.members[0].storage = None;
+    set.current.members[0].learner = true;
+    let found = ReplicaSet::decode(&set.encode().unwrap()).expect("decodes");
+    assert_eq!(found, set);
+    assert_ne!(found, settled(4));
+}
+
+#[test]
+fn concurrent_stores_leave_one_whole_set() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let sets = [settled(7), changing(8)];
+    std::thread::scope(|scope| {
+        for round in 0..50 {
+            for set in &sets {
+                scope.spawn(|| store(dir.path(), set).expect("store"));
+            }
+            if round % 10 == 0 {
+                let seen = load(dir.path()).expect("load");
+                assert!(seen.is_none() || sets.contains(seen.as_ref().unwrap()));
+            }
+        }
+    });
+    let found = load(dir.path()).expect("load").expect("set");
+    assert!(sets.contains(&found));
 }

@@ -44,7 +44,8 @@ pub(crate) fn sidecars(data: &[u8]) {
     // The replica set's CRC closes the file too.
     for bytes in [data.to_vec(), with_crc(data, ballot_crc, 0..ballot_crc)] {
         if let Some(set) = ReplicaSet::decode(&bytes) {
-            assert_eq!(ReplicaSet::decode(&set.encode()), Some(set));
+            let again = set.encode().expect("a decoded set encodes");
+            assert_eq!(ReplicaSet::decode(&again), Some(set));
         }
     }
 
