@@ -275,7 +275,7 @@ async fn a_recreate_between_the_check_and_the_open_is_refused() {
         .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
         .await
         .expect("the new stream's log");
-    assert_eq!(log.base_offset(), 0, "placed at the old stream's base");
+    assert_eq!(log.physical_base(), 0, "placed at the old stream's base");
     assert_eq!(
         log.tail_offset().await.expect("tail"),
         0,

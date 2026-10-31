@@ -3,8 +3,10 @@
 //!
 //! Offsets are not translated: a Felix shard's offsets start at zero, which is
 //! Kafka's model already. They are contiguous in the log but not in what a
-//! consumer sees, since a generation-start record holds an offset and is never
-//! returned; Kafka allows that gap, as it does for its own control records.
+//! consumer sees, since a generation-start or trim record holds an offset and
+//! is never returned; Kafka allows that gap, as it does for its own control
+//! records. A trim record never reaches a consumer, so its headers are never
+//! read as a record, let alone a tombstone.
 //! Timestamps are the broker's append time in milliseconds. Felix records have
 //! no key and no headers.
 
@@ -17,36 +19,38 @@ use kafka_protocol::records::{
     RecordBatchEncoder, RecordEncodeOptions, TimestampType,
 };
 
-/// Encode a page read straight from the log: its client records as one
-/// batch, then an empty batch over any generation-start records it ends with.
+/// Encode a page read straight from the log, from `start` up to `end`: its
+/// client records as one batch, then an empty batch over the offsets after
+/// the last of them, which hold generation-start or trim records.
 ///
 /// A gap before or between client records needs nothing, since each record
 /// carries its own offset delta. A trailing run does: a consumer would keep
-/// fetching from it and get nothing back, sitting one behind the high
-/// watermark until someone publishes. An empty batch is how Kafka's own
-/// compacted logs move a consumer past offsets that hold nothing.
-pub(crate) fn encode_page(records: &[LogRecord]) -> anyhow::Result<(Bytes, usize)> {
+/// fetching from it and get nothing back, sitting behind the high watermark
+/// until someone publishes. An empty batch is how Kafka's own compacted logs
+/// move a consumer past offsets that hold nothing.
+pub(crate) fn encode_page(
+    records: &[LogRecord],
+    start: u64,
+    end: u64,
+) -> anyhow::Result<(Bytes, usize)> {
     let visible: Vec<LogRecord> = records
         .iter()
         .filter(|record| !record.mark.is_generation_start())
         .cloned()
         .collect();
-    let trailing = records
-        .iter()
-        .rev()
-        .take_while(|record| record.mark.is_generation_start())
-        .count();
     let mut out = BytesMut::from(encode_batch(&visible)?.as_ref());
-    if trailing > 0 {
-        let run = &records[records.len() - trailing..];
-        encode_empty_batch(
-            &mut out,
-            run[0].offset,
-            run[trailing - 1].offset,
-            timestamp_ms(&run[0]),
-        );
+    let run_start = visible.last().map_or(start, |record| record.offset + 1);
+    if end > run_start {
+        // A trim record is not in the page, so the run may have no record of
+        // its own to take a time from.
+        let timestamp = records.last().map_or_else(now_ms, timestamp_ms);
+        encode_empty_batch(&mut out, run_start, end - 1, timestamp);
     }
     Ok((out.freeze(), visible.len()))
+}
+
+fn now_ms() -> i64 {
+    (felix_broker::append_time_now() / 1_000) as i64
 }
 
 /// A v2 record batch holding no records that covers `first..=last`.

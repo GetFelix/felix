@@ -55,12 +55,9 @@ impl Broker {
                 stream: stream.to_string(),
             });
         };
-        let oldest = log.base_offset();
+        let oldest = log.readable_base();
         if from < oldest {
-            return Err(BrokerError::CursorTooOld {
-                oldest,
-                requested: from,
-            });
+            return Err(log.too_old(oldest, from));
         }
         // Settled, so an append already under way is either counted in the
         // tail or not yet written; its bytes are never half-read past it.
@@ -86,7 +83,7 @@ impl Broker {
         }
         let mut records = log.read_from(from, max_bytes).await?;
         // Every offset in `[from, read_to)` was either returned or held a
-        // generation-start record, which no client is given.
+        // generation-start or trim record, which no client is given.
         let read_to = records.last().map_or(stop, |record| record.offset + 1);
         records.retain(|record| record.offset < stop);
         let next_offset = if records.len() > max_records {

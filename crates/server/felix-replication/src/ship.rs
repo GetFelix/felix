@@ -164,7 +164,9 @@ async fn ship_batch<R: PeerRequester>(
         // succeed, keeps the follower out of every quorum, and says plainly
         // that the shard needs its history transferred -- which is #114's
         // subject and is not implemented.
-        Err(felix_broker::BrokerError::CursorTooOld { oldest, requested }) => {
+        Err(felix_broker::BrokerError::CursorTooOld {
+            oldest, requested, ..
+        }) => {
             // The records between the follower's position and this leader's
             // oldest are gone from both. Shipping cannot bridge that, so the
             // follower is offered the one fact it cannot work out for itself:
@@ -448,7 +450,7 @@ fn base_above_commit(log: &StreamLog, shard: &ShardRef, commit_offset: Option<u6
         return false;
     };
     let committed = mark.max(log.commit_offset());
-    let base = log.base_offset();
+    let base = log.physical_base();
     if base <= committed {
         return false;
     }

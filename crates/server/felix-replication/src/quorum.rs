@@ -1451,7 +1451,12 @@ pub async fn generation_start(log: &felix_broker::StreamLog, generation: u64) ->
         .rev()
         .find(|epoch| epoch.generation == generation)?
         .start_offset;
-    let first = log.read_log_from(start, 1).await.ok()?.into_iter().next()?;
+    let first = log
+        .read_replicated_from(start, 1)
+        .await
+        .ok()?
+        .into_iter()
+        .next()?;
     starts_generation(&first, start, generation).then_some(start)
 }
 

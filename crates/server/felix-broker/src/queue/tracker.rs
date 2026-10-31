@@ -286,6 +286,36 @@ impl GroupTracker {
         (self.committed != before).then_some(self.committed)
     }
 
+    /// Settle everything below `base`, where the log now starts, without
+    /// delivering it: retention or a head trim removed it. Returns how many
+    /// offsets the cursor moved over, or `None` if it was already there.
+    ///
+    /// A claim below `base` is void; its ack later is a duplicate.
+    pub(crate) fn skip_below(&mut self, base: u64) -> Option<u64> {
+        if self.committed >= base {
+            return None;
+        }
+        let from = self.committed;
+        let below: Vec<u64> = self.in_flight.range(..base).map(|(&o, _)| o).collect();
+        for offset in below {
+            self.take_in_flight(offset);
+        }
+        self.redeliver = self.redeliver.split_off(&base);
+        self.attempts = self.attempts.split_off(&base);
+        self.acked_ahead = self.acked_ahead.split_off(&base);
+        let start = self.skipped.remove(&from).unwrap_or(from);
+        self.skipped.retain(|&end, _| end > base);
+        self.skipped.insert(base, start);
+        self.committed = base;
+        while self.acked_ahead.remove(&self.committed) {
+            self.committed += 1;
+        }
+        let committed = self.committed;
+        self.skipped.retain(|&end, _| end >= committed);
+        self.high_water = self.high_water.max(committed);
+        Some(base - from)
+    }
+
     /// Note that `offset` was settled without being delivered, before
     /// settling it.
     pub(crate) fn skip(&mut self, offset: u64) {

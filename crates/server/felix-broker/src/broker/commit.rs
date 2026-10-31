@@ -121,19 +121,19 @@ impl Broker {
                 _ => return Err(BrokerError::StateNotReadable(crate::NotReadable::Settling)),
             }
             let mut view = StateView::default();
-            let mut next = log.base_offset();
+            let mut next = log.readable_base();
             while next < end {
-                let records = log.read_log_from(next, REBUILD_PAGE_BYTES).await?;
-                let Some(last) = records.last().map(|record| record.offset) else {
-                    break;
-                };
-                for record in records.into_iter().filter(|r| r.offset < end) {
+                let page = log.read_log_from(next, REBUILD_PAGE_BYTES).await?;
+                for record in page.records.into_iter().filter(|r| r.offset < end) {
                     if record.mark.is_commit() {
                         let commit = CommitRecord::decode(&record.payload)?;
                         view.apply(record.offset, &commit.ops);
                     }
                 }
-                next = last + 1;
+                if page.next <= next {
+                    break;
+                }
+                next = page.next;
             }
             handle.state.install_state_view(view, end);
         }

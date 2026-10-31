@@ -1350,7 +1350,7 @@ async fn publish_and_trim(broker: &Broker, storage: &DurableStorage, stream: &st
         .expect("stream log");
     let deleted = log.enforce_retention_now().await.expect("retention");
     assert!(deleted > 0, "expected retention to delete a segment");
-    log.base_offset()
+    log.readable_base()
 }
 
 #[tokio::test]
@@ -1376,7 +1376,9 @@ async fn resuming_below_the_retained_range_reports_cursor_too_old() {
         .await
         .expect_err("offset 0 has been trimmed");
     match err {
-        BrokerError::CursorTooOld { oldest, requested } => {
+        BrokerError::CursorTooOld {
+            oldest, requested, ..
+        } => {
             assert_eq!(requested, 0);
             assert_eq!(oldest, base);
         }
@@ -1436,7 +1438,9 @@ async fn a_trimmed_read_reports_cursor_too_old_rather_than_a_storage_error() {
         .await
         .expect_err("reading trimmed offsets must fail");
     match err {
-        BrokerError::CursorTooOld { oldest, requested } => {
+        BrokerError::CursorTooOld {
+            oldest, requested, ..
+        } => {
             assert_eq!(requested, 0);
             assert_eq!(oldest, base);
         }

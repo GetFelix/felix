@@ -97,6 +97,14 @@ impl CommitHold {
         )
     }
 
+    /// The stream and shard this hold is bound to, for naming them in an
+    /// error.
+    pub(crate) fn shard(&self) -> Option<(&str, u32)> {
+        self.source
+            .get()
+            .map(|source| (source.stream.as_str(), source.shard))
+    }
+
     /// The replay ring's capacity, which a released batch is appended under.
     pub(crate) fn log_capacity(&self) -> Option<usize> {
         self.source.get().map(|source| source.log_capacity)
@@ -218,6 +226,11 @@ pub(crate) struct HeldBatch {
     pub(crate) first_offset: u64,
     /// A commit's state updates, applied when the event is released.
     pub(crate) commit: Option<std::sync::Arc<[crate::commit::StateOp]>>,
+    /// The floor of a trim record, which is the batch's one record and is
+    /// applied to the ring rather than appended to it.
+    pub(crate) trim: Option<u64>,
+    /// Told once the trim's floor reaches the ring.
+    pub(crate) trim_applied: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 impl HeldBatch {

@@ -33,7 +33,7 @@ pub(super) async fn trimmed_leader() -> (StreamLog, u64, TempDir) {
             .expect("append");
     }
     log.enforce_retention_now().await.expect("retention");
-    let base = log.base_offset();
+    let base = log.physical_base();
     assert!(
         base > 0,
         "retention did not trim, so the case is not set up"

@@ -133,6 +133,17 @@ impl Ring {
         self.release(freed);
     }
 
+    /// Drop every entry below `seq`, for a head trim's floor.
+    pub(crate) fn drop_below(&mut self, seq: u64) {
+        let mut freed = 0;
+        while self.entries.front().is_some_and(|entry| entry.seq < seq) {
+            if let Some(entry) = self.entries.pop_front() {
+                freed += entry.payload.len();
+            }
+        }
+        self.release(freed);
+    }
+
     pub(crate) fn clear(&mut self) {
         self.entries.clear();
         self.release(self.held.bytes());

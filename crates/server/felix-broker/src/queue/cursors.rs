@@ -364,15 +364,16 @@ impl ConsumerGroups {
     ) -> Result<HashMap<String, Vec<Stored>>> {
         let log = StreamLog::from_log(self.shard_log(tenant_id, namespace, stream, shard).await?);
         let tail = log.tail_offset().await?;
-        let mut next = log.base_offset();
+        let mut next = log.readable_base();
         let mut history: HashMap<String, Vec<Stored>> = HashMap::new();
         while next < tail {
-            let records = log.read_log_from(next, 1 << 20).await?;
-            let Some(last) = records.last() else {
+            let page = log.read_log_from(next, 1 << 20).await?;
+            if page.next <= next {
                 break;
-            };
-            next = last.offset + 1;
-            for record in records
+            }
+            next = page.next;
+            for record in page
+                .records
                 .iter()
                 .filter(|record| record.mark == felix_storage::log::RecordMark::None)
             {

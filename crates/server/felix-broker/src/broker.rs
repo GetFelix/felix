@@ -19,6 +19,7 @@ mod registry;
 mod shard_logs;
 mod shards;
 mod subscribe;
+mod trim;
 
 pub use backup::CommittedOffsets;
 pub use commit::StateRead;
@@ -32,6 +33,7 @@ pub use read::ReadPage;
 pub use shard_logs::LogKind;
 pub use shards::StreamHandle;
 pub use subscribe::{Cursor, HistoryRange, JoinOffsets, ResumedSubscription, RingRecord};
+pub use trim::TrimOutcome;
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
@@ -155,6 +157,11 @@ pub struct Broker {
     /// How far readers of a `Quorum` stream may see, once the cluster side
     /// says. Shared with every stream state, which asks it per shard.
     read_bounds: Arc<std::sync::OnceLock<Arc<dyn crate::stream::ReadBounds>>>,
+    /// How long a head trim waits on the mark or the ring.
+    pub(crate) trim_wait: std::time::Duration,
+    /// Replication is configured on this process. Set once at startup, before
+    /// the broker serves, and never cleared.
+    replication_enabled: std::sync::atomic::AtomicBool,
     /// Seeds producer ids; randomly keyed at construction.
     producer_ids: ahash::RandomState,
     producer_id_counter: std::sync::atomic::AtomicU64,
@@ -220,6 +227,8 @@ impl Broker {
             cache_watches,
             appended: Arc::new(tokio::sync::Notify::new()),
             read_bounds: Arc::default(),
+            replication_enabled: std::sync::atomic::AtomicBool::new(false),
+            trim_wait: crate::broker::trim::TRIM_WAIT,
             producer_ids: ahash::RandomState::new(),
             producer_id_counter: std::sync::atomic::AtomicU64::new(0),
             record_publishers: std::sync::OnceLock::new(),
@@ -369,6 +378,25 @@ impl Broker {
     /// a broker with no replicas.
     pub fn set_read_bounds(&self, bounds: Arc<dyn crate::stream::ReadBounds>) {
         let _ = self.read_bounds.set(bounds);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_trim_wait(mut self, wait: std::time::Duration) -> Self {
+        self.trim_wait = wait;
+        self
+    }
+
+    /// Record that replication is configured on this process. Called once at
+    /// startup, before the broker serves. Head trims are refused from then on,
+    /// whatever the route of the shard, until replication ships them.
+    pub fn set_replication_enabled(&self) {
+        self.replication_enabled
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    pub(crate) fn replication_enabled(&self) -> bool {
+        self.replication_enabled
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Tie a new stream state to the broker's read bounds.

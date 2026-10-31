@@ -8,6 +8,7 @@ async fn broker_error_display() {
     let err = BrokerError::CursorTooOld {
         oldest: 10,
         requested: 5,
+        trim_headers: None,
     };
     assert!(err.to_string().contains("10"));
     assert!(err.to_string().contains("5"));

@@ -2045,7 +2045,7 @@ async fn start_generation(
         .rev()
         .find(|epoch| epoch.generation == generation)
         .map(|epoch| epoch.start_offset);
-    if tail == log.base_offset() || begins != Some(tail) {
+    if tail == log.physical_base() || begins != Some(tail) {
         return Ok(());
     }
     write_generation_start(broker, log, key, generation).await

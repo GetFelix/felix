@@ -70,7 +70,7 @@ async fn offset_for(
 ) -> Result<(i64, i64), ResponseError> {
     let log = &readable.log;
     let storage = |err: felix_broker::BrokerError| crate::errors::from_broker(&err);
-    let base = log.base_offset();
+    let base = log.readable_base();
     // The high watermark, not the log end: an offset past the commit point is
     // not one a consumer may start from.
     let tail = readable.high_watermark(log.tail_offset().await.map_err(storage)?);
@@ -101,7 +101,7 @@ async fn offset_for(
 }
 
 /// The last client record below `tail`, stepping back over any
-/// generation-start records at the end of the log.
+/// generation-start and trim records at the end of the log.
 async fn last_record_before(
     log: &StreamLog,
     base: u64,
@@ -110,9 +110,15 @@ async fn last_record_before(
     let mut at = tail;
     while at > base {
         at -= 1;
-        let records = log.read_log_from(at, 1).await?;
+        // Every record, so a trim record is seen at its offset rather than
+        // read past. `at` is at or above the readable base.
+        let records = log.read_replicated_from(at, 1).await?;
         match records.first() {
-            Some(record) if record.offset == at && !record.mark.is_generation_start() => {
+            Some(record)
+                if record.offset == at
+                    && !record.mark.is_generation_start()
+                    && !record.mark.is_trim() =>
+            {
                 return Ok(Some((crate::records::timestamp_ms(record), record.offset)));
             }
             Some(record) if record.offset == at => {}

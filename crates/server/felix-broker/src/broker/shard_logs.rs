@@ -332,6 +332,26 @@ impl Broker {
         Ok(())
     }
 
+    /// Tell a stream that an atomic commit reached its log by replication,
+    /// so a head trim is refused without reading the log for it.
+    pub async fn note_replicated_commit(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+    ) -> Result<()> {
+        let handle = self
+            .resolve_stream_handle(tenant_id, namespace, stream, shard)
+            .await?;
+        handle
+            .state
+            .commits
+            .seen
+            .store(true, std::sync::atomic::Ordering::Release);
+        Ok(())
+    }
+
     /// Append a generation-start record for `generation` to a durable
     /// stream's log and move the stream past it. Returns its offset.
     ///

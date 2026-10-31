@@ -351,7 +351,7 @@ mod bootstrap {
             .expect("storage")
             .open_stream(TENANT, NAMESPACE, STREAM, 0)
             .expect("open");
-        assert_eq!(log.base_offset(), BASE);
+        assert_eq!(log.physical_base(), BASE);
     }
 
     /// **An empty log already open still takes the offer.** A new copy is
@@ -927,7 +927,7 @@ mod rebuild {
             .expect("storage")
             .open_stream(TENANT, NAMESPACE, STREAM, 0)
             .expect("open");
-        assert_eq!(log.base_offset(), 500);
+        assert_eq!(log.physical_base(), 500);
         assert_eq!(
             log.tail_offset().await.expect("tail"),
             500,
@@ -1626,7 +1626,7 @@ mod retention {
             .await
             .expect("log");
         log.enforce_retention_now().await.expect("retention");
-        log.base_offset()
+        log.physical_base()
     }
 
     #[tokio::test]

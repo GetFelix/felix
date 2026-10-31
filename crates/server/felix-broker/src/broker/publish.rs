@@ -193,6 +193,7 @@ impl Broker {
             publisher: publisher.cloned(),
             timestamp_micros: None,
             commit: None,
+            trim: None,
             durable: None,
             sample,
         };
@@ -223,6 +224,10 @@ impl Broker {
                 Some(publisher) => vec![Some(publisher.clone()); payloads.len()],
                 None => Vec::new(),
             };
+            // Lets a trim refuse a commit stream without reading its log.
+            if matches!(append, Append::Commit { .. }) {
+                handle.state.commits.seen.store(true, Ordering::Release);
+            }
             let (pending, turn) = match append {
                 Append::Plain => {
                     durable
@@ -273,6 +278,19 @@ impl Broker {
                     )
                     .await?
                     .map_err(|tail| BrokerError::OffsetMismatch { expected, tail })?,
+                Append::Trim { before, expected } => {
+                    claimed.trim = Some(before);
+                    durable
+                        .begin_trim_if(
+                            expected,
+                            before,
+                            payloads[0].clone(),
+                            timestamp_micros,
+                            order,
+                        )
+                        .await?
+                        .map_err(|tail| BrokerError::OffsetMismatch { expected, tail })?
+                }
                 Append::Continuing {
                     producer_id,
                     sequence,
@@ -311,9 +329,21 @@ impl Broker {
     /// offsets are claimed its records exist, so the ring append and fanout
     /// finish on a detached task. See `publish/completion.rs`.
     pub async fn complete_publish(&self, claimed: ClaimedPublish) -> Result<PublishOutcome> {
+        self.complete_claimed(claimed, None).await
+    }
+
+    /// [`Self::complete_publish`], telling `trim_applied` once a trim's floor
+    /// reaches the ring, which on a `Quorum` stream is after the answer. It is
+    /// dropped untold if a reset superseded the trim first.
+    pub(super) async fn complete_claimed(
+        &self,
+        claimed: ClaimedPublish,
+        trim_applied: Option<tokio::sync::oneshot::Sender<()>>,
+    ) -> Result<PublishOutcome> {
         let send_start = t_now_if(claimed.sample);
         let outcome = completion::Finisher::new(completion::Completion::new(
             claimed,
+            trim_applied,
             self.log_capacity,
             Arc::clone(&self.appended),
         ))
@@ -576,6 +606,12 @@ pub(super) enum Append<'a> {
         producer_id: u64,
         sequence: u64,
     },
+    /// A trim record asking that reads below `before` be refused, its one
+    /// payload the caller's headers, only at `expected`.
+    Trim {
+        before: u64,
+        expected: u64,
+    },
 }
 
 impl Append<'_> {
@@ -584,6 +620,7 @@ impl Append<'_> {
         match self {
             Self::At(expected) => Some(*expected),
             Self::Commit { expected, .. } => *expected,
+            Self::Trim { expected, .. } => Some(*expected),
             Self::Plain | Self::Marked(_) | Self::Continuing { .. } => None,
         }
     }
@@ -640,6 +677,9 @@ pub struct ClaimedPublish {
     timestamp_micros: Option<u64>,
     /// A commit's state updates; `payloads` is then its one event.
     commit: Option<Arc<[crate::commit::StateOp]>>,
+    /// A trim record's floor; `payloads` is then its headers, which no
+    /// reader is given.
+    trim: Option<u64>,
     durable: Option<ClaimedDurable>,
     sample: bool,
 }

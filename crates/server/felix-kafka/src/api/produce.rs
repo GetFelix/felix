@@ -211,7 +211,7 @@ async fn write(
     }
     Ok(Written {
         base_offset: written.map(|(first, _)| first),
-        log_start_offset: handle.log().map_or(0, |log| log.base_offset()),
+        log_start_offset: handle.log().map_or(0, |log| log.readable_base()),
     })
 }
 

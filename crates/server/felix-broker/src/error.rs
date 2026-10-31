@@ -5,8 +5,16 @@
 pub enum BrokerError {
     #[error("topic capacity too large")]
     CapacityTooLarge,
+    /// A read below where the shard's history now starts: retention removed
+    /// it, or a head trim set a floor above it. `trim_headers` are the
+    /// headers of the trim that set the floor, when one did, so a writer
+    /// fenced by a newer trim can tell who trimmed past it.
     #[error("cursor too old (oldest {oldest}, requested {requested})")]
-    CursorTooOld { oldest: u64, requested: u64 },
+    CursorTooOld {
+        oldest: u64,
+        requested: u64,
+        trim_headers: Option<bytes::Bytes>,
+    },
     /// A resume asked to start past the end of the stream.
     ///
     /// Distinct from `CursorTooOld` because the remedy is the opposite: the
@@ -137,6 +145,26 @@ pub enum BrokerError {
     /// An expected offset needs offsets, and a stream with no log has none.
     #[error("an expected offset needs a durable stream")]
     ExpectedOffsetNeedsDurableStream,
+    /// A head trim asked for a floor past the offset its own record would
+    /// take, which would hide records written after it. Nothing was written.
+    #[error("cannot trim below {before}: the trim record would land at {offset}")]
+    TrimPastTail { before: u64, offset: u64 },
+    /// A head trim on a stream with no log. Nothing was written.
+    #[error("a head trim needs a durable stream")]
+    TrimNeedsDurableStream,
+    /// A head trim on a stream that holds atomic commits, whose state lives
+    /// in the records a trim would remove. Nothing was written.
+    #[error("a stream holding atomic commits cannot be trimmed")]
+    TrimOnCommitStream,
+    /// A head trim on a broker with replication enabled. Replication cannot
+    /// ship a trim record yet, so one would stall or diverge the shard's
+    /// followers. Nothing was written.
+    #[error("a head trim is not available on a broker with replication yet")]
+    TrimNotReplicatedYet,
+    /// A head trim waited too long for the committed mark or the replay ring.
+    /// A trim already claimed may still land; re-read the tail before retrying.
+    #[error("the head trim at offset {offset} was not acknowledged in time")]
+    TrimTimedOut { offset: u64 },
     /// The shard's state view could not be rebuilt because commits kept
     /// landing while it read. Retry.
     #[error("the shard's state is being rebuilt; retry")]

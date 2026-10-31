@@ -44,6 +44,10 @@ pub(super) struct Completion {
     publisher: Option<Bytes>,
     timestamp_micros: Option<u64>,
     commit: Option<Arc<[StateOp]>>,
+    /// A trim record's floor. Its one record is applied to the ring in its
+    /// turn instead of appended and fanned out.
+    trim: Option<u64>,
+    trim_applied: Option<tokio::sync::oneshot::Sender<()>>,
     /// Holds the commit turn until the batch is fanned out.
     durable: Option<ClaimedDurable>,
     sample: bool,
@@ -76,6 +80,7 @@ struct Delivery {
 impl Completion {
     pub(super) fn new(
         claimed: ClaimedPublish,
+        trim_applied: Option<tokio::sync::oneshot::Sender<()>>,
         log_capacity: usize,
         replication: Arc<tokio::sync::Notify>,
     ) -> Self {
@@ -85,6 +90,7 @@ impl Completion {
             publisher,
             timestamp_micros,
             commit,
+            trim,
             durable,
             sample,
         } = claimed;
@@ -94,6 +100,8 @@ impl Completion {
             publisher,
             timestamp_micros,
             commit,
+            trim,
+            trim_applied,
             durable,
             sample,
             log_capacity,
@@ -112,6 +120,8 @@ impl Completion {
             publisher: batch.publisher,
             timestamp_micros: batch.timestamp_micros,
             commit: batch.commit,
+            trim: batch.trim,
+            trim_applied: batch.trim_applied,
             durable: None,
             sample: false,
             log_capacity,
@@ -134,6 +144,9 @@ impl Completion {
             self.commit().await?;
             if let Some(held) = self.hold()? {
                 return Ok(held);
+            }
+            if let Some(floor) = self.trim {
+                return self.apply_trim(floor);
             }
             self.append()?;
         }
@@ -169,6 +182,8 @@ impl Completion {
             timestamp_micros: self.timestamp_micros,
             first_offset,
             commit: self.commit.take(),
+            trim: self.trim,
+            trim_applied: self.trim_applied.take(),
         };
         let start = state.held.push(batch);
         drop(ring);
@@ -179,6 +194,28 @@ impl Completion {
             subscribers: 0,
             offsets: Some((first_offset, end - 1)),
         }))
+    }
+
+    /// Apply a trim record's floor to the ring in the record's turn. Nothing
+    /// is fanned out: no reader is given a trim record.
+    fn apply_trim(&mut self, floor: u64) -> Result<PublishOutcome> {
+        let first_offset = self
+            .durable
+            .as_ref()
+            .map(|claimed| claimed.pending.first_offset())
+            .or(self.released_at)
+            .expect("a trim is written to a log");
+        let turn = self.durable.as_ref().map(|claimed| &claimed.turn);
+        if !self.handle.state.apply_trim(first_offset, floor, turn) {
+            return Err(BrokerError::PublishSuperseded { first_offset });
+        }
+        if let Some(applied) = self.trim_applied.take() {
+            let _ = applied.send(());
+        }
+        Ok(PublishOutcome {
+            subscribers: 0,
+            offsets: Some((first_offset, first_offset)),
+        })
     }
 
     /// Fan the batch out and settle what the fanout found.
@@ -487,6 +524,10 @@ async fn release(handle: StreamHandle) {
         };
         for batch in ready {
             let mut completion = Completion::released(handle.clone(), batch, log_capacity);
+            if let Some(floor) = completion.trim {
+                let _ = completion.apply_trim(floor);
+                continue;
+            }
             // A released batch holds no turn, so the append cannot be refused.
             if completion.append().is_ok() {
                 let _ = completion.deliver().await;

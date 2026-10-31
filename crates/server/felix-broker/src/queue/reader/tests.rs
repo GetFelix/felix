@@ -972,3 +972,48 @@ async fn a_group_hands_out_each_records_publisher() {
 
 mod admin;
 mod claim_control;
+
+/// Write a trim record at `expected` with floor `before`, as the broker does.
+async fn trim(log: &StreamLog, before: u64, expected: u64) {
+    let order = Arc::new(felix_storage::CommitSequencer::new(expected));
+    let (pending, _turn) = log
+        .begin_trim_if(expected, before, Bytes::from_static(b"h"), 0, &order)
+        .await
+        .expect("trim")
+        .expect("at the tail");
+    log.commit(&pending).await.expect("commit");
+}
+
+/// **A cursor below a head trim's floor moves to it on the next poll**, claims
+/// below it included, and a trim record past the cursor is passed over
+/// rather than stalling the group.
+#[tokio::test]
+async fn a_group_below_a_trim_resumes_at_its_floor() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fx = open(dir.path());
+    let key = key();
+    publish(&fx.log, &["a", "b", "c", "d", "e", "f"]).await;
+    let first = fx
+        .reader
+        .poll(&key, &fx.log, 2, Instant::now())
+        .await
+        .expect("poll");
+    assert_eq!(payloads(&first), ["a", "b"]);
+
+    trim(&fx.log, 4, 6).await;
+    publish(&fx.log, &["h", "i"]).await;
+    let claimed = fx
+        .reader
+        .poll(&key, &fx.log, 10, Instant::now())
+        .await
+        .expect("poll");
+    assert_eq!(payloads(&claimed), ["e", "f", "h", "i"]);
+    assert_eq!(claimed[2].offset, 7);
+    assert_eq!(claimed[2].skipped_before, 1, "the trim record is a skip");
+    assert_eq!(fx.reader.trimmed_skipped(), 4);
+
+    for claimed in &claimed {
+        fx.reader.ack(&key, claimed.offset).await.expect("ack");
+    }
+    assert_eq!(fx.reader.committed(&key).await.expect("committed"), Some(9));
+}

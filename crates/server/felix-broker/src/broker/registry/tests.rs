@@ -246,7 +246,7 @@ async fn fill_and_sweep(broker: &Broker, stream: &str) -> u64 {
         .await
         .expect("log");
     log.enforce_retention_now().await.expect("sweep");
-    log.base_offset()
+    log.readable_base()
 }
 
 /// **A stream's retention bounds its own log**, the others keep the broker's

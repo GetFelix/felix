@@ -177,7 +177,7 @@ async fn read_partition(
     answer: PartitionData,
 ) -> PartitionData {
     let log = &readable.log;
-    let base = log.base_offset();
+    let base = log.readable_base();
     let tail = match log.tail_offset().await {
         Ok(tail) => tail,
         Err(err) => return answer.with_error_code(crate::errors::from_broker(&err).code()),
@@ -199,19 +199,22 @@ async fn read_partition(
     if offset >= high_watermark || budget == 0 {
         return answer;
     }
-    // The raw log, generation-start records included: `encode_page` needs to
-    // see a trailing run of them to move the consumer past it.
-    let mut records = match log.read_log_from(offset, budget).await {
-        Ok(records) => records,
+    // The raw log, generation-start records included, and where it ended
+    // past any trim records: `encode_page` moves the consumer past a
+    // trailing run of either.
+    let page = match log.read_log_from(offset, budget).await {
+        Ok(page) => page,
         Err(err) => return answer.with_error_code(crate::errors::from_broker(&err).code()),
     };
+    let end = page.next.min(high_watermark);
+    let mut records = page.records;
     records.retain(|record| record.offset < high_watermark);
     // A commit record is fetched as its event.
     let records: Vec<_> = records
         .into_iter()
         .map(felix_broker::client_record)
         .collect();
-    match crate::records::encode_page(&records) {
+    match crate::records::encode_page(&records, offset, end) {
         Ok((batch, visible)) => {
             pass.bytes += batch.len();
             pass.records += visible as u64;

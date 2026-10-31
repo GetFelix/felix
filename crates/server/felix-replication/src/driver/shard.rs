@@ -2001,7 +2001,7 @@ async fn reship_last<R: PeerRequester>(
     if cursor.halted.is_some()
         || cursor.rebuilding
         || !level
-        || cursor.next_offset <= log.base_offset()
+        || cursor.next_offset <= log.physical_base()
     {
         return;
     }
