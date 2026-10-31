@@ -156,3 +156,44 @@ fn a_new_cluster_finalizes_prerequisites_first() {
         enabled.insert(feature.name().to_string());
     }
 }
+
+/// Nothing reports the election features yet, so a fleet running this build
+/// cannot finalize them even with every prerequisite enabled.
+#[test]
+fn the_election_features_cannot_be_finalized_yet() {
+    let reported: Vec<&str> = felix_common::fleet::IMPLEMENTED
+        .iter()
+        .map(|feature| feature.name())
+        .collect();
+    let nodes = [
+        at("a", NodeLifecycle::Live, &reported),
+        at("b", NodeLifecycle::Live, &reported),
+    ];
+    for feature in ["joint_fence", "replica_election"] {
+        let refused = check_finalize(&nodes, feature);
+        assert!(
+            matches!(&refused, Err(StoreError::Conflict(message)) if message.contains("do not support it")),
+            "{feature}: {refused:?}"
+        );
+        assert!(!NEW_CLUSTER.iter().any(|f| f.name() == feature));
+    }
+    // The prerequisites are still enforced in order.
+    let refused = check_prerequisites(&set(&["generation_start"]), "replica_election");
+    assert!(
+        matches!(&refused, Err(StoreError::Conflict(message)) if message.contains("majority_ack")),
+        "{refused:?}"
+    );
+    assert!(check_prerequisites(&set(&[]), "joint_fence").is_ok());
+    assert!(
+        check_prerequisites(
+            &set(&[
+                "generation_start",
+                "majority_ack",
+                "lease_free_reads",
+                "joint_fence"
+            ]),
+            "replica_election"
+        )
+        .is_ok()
+    );
+}

@@ -544,6 +544,26 @@ async fn serve_connection(
                             incarnation: at,
                         })
                     }
+                    // A kind that needs a capability this broker never offered
+                    // (ELECTION, today) is refused as a build that predates it
+                    // would, not decoded and acted on.
+                    request
+                        if request
+                            .required_capability()
+                            .is_some_and(|needed| !offered.capabilities.contains(needed)) =>
+                    {
+                        metrics::record_served(metrics::OUTCOME_UNSUPPORTED);
+                        let refusal = InternalMessage::ForwardPublishError(ForwardPublishError {
+                            correlation_id: request.correlation_id(),
+                            code: ErrorCode::UnsupportedKind,
+                            detail: "this broker does not offer the capability this kind needs"
+                                .to_string(),
+                        });
+                        if write_frame(&mut *send.lock().await, &refusal).await.is_err() {
+                            break;
+                        }
+                        continue;
+                    }
                     // Refused as a build without the fence would refuse it, so
                     // a broker with the fence turned off is exactly an older one
                     // to whoever sends it.

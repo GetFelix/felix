@@ -141,3 +141,27 @@ fn a_view_is_adopted_only_after_a_registration_answer() {
     assert!(view.supports(MAJORITY_ACK));
     assert!(!view.supports(GENERATION_START));
 }
+
+/// Declared so the control plane knows their prerequisites, but no build
+/// reports them yet: a finalize finds no broker that has them and is refused.
+#[test]
+fn election_features_are_declared_and_not_implemented() {
+    for feature in [JOINT_FENCE, REPLICA_ELECTION] {
+        assert!(!IMPLEMENTED.contains(&feature), "{feature}");
+        assert!(
+            !FleetGate::for_this_build()
+                .reported()
+                .contains(feature.name())
+        );
+    }
+    assert_eq!(prerequisites(JOINT_FENCE.name()), &[]);
+    assert_eq!(
+        prerequisites(REPLICA_ELECTION.name()),
+        &[
+            GENERATION_START,
+            MAJORITY_ACK,
+            LEASE_FREE_READS,
+            JOINT_FENCE
+        ]
+    );
+}

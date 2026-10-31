@@ -94,6 +94,7 @@ async fn a_restarted_follower_takes_nothing_before_the_catalog_registers_the_str
         correlation_id: 9,
         shard: incarnated(4, 0, &[], Some(7)).shard,
         log: ReplicaLog::Stream,
+        election: None,
     };
     assert_eq!(
         refusal(&handler.fence(SENDER, fence).await).code,
@@ -265,6 +266,7 @@ async fn a_recreate_between_the_check_and_the_open_is_refused() {
         correlation_id: 9,
         shard: incarnated(4, 0, &[], Some(7)).shard,
         log: ReplicaLog::Stream,
+        election: None,
     };
     assert_eq!(
         refusal(&handler.fence(SENDER, fence).await).code,

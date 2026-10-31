@@ -6,12 +6,13 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use super::replicate::GenerationStart;
 use super::replicate::{ProducerMark, put_marks, take_marks};
 use super::{
-    AckMode, CacheOpKind, ErrorCode, Fence, FenceOk, ForwardCacheCondition, ForwardCacheError,
-    ForwardCacheOk, ForwardCacheOp, ForwardCacheOutcome, ForwardPublish, ForwardPublishError,
-    ForwardPublishOk, Hello, HelloOk, InternalHeader, InternalMessage, Kind, MAX_BATCH_PAYLOADS,
-    MAX_BODY_BYTES, MAX_CREDENTIAL_BYTES, MAX_IDENT_BYTES, NotLeader, PeerCapabilities, Ping, Pong,
-    ReplicaLog, ReplicateBootstrap, ReplicateError, ReplicateFetch, ReplicateOk, ReplicateRebuild,
-    ReplicateRecords, ShardRef,
+    AckMode, CacheOpKind, ErrorCode, Fence, FenceElection, FenceOk, ForwardCacheCondition,
+    ForwardCacheError, ForwardCacheOk, ForwardCacheOp, ForwardCacheOutcome, ForwardPublish,
+    ForwardPublishError, ForwardPublishOk, Hello, HelloOk, InternalHeader, InternalMessage, Kind,
+    MAX_BATCH_PAYLOADS, MAX_BODY_BYTES, MAX_CREDENTIAL_BYTES, MAX_IDENT_BYTES, MAX_SET_MEMBERS,
+    MAX_SET_NODE_BYTES, NotLeader, PeerCapabilities, Ping, Pong, PreVote, PreVoteAnswer,
+    PreVoteRefusal, ReplicaLog, ReplicaSetView, ReplicateBootstrap, ReplicateError, ReplicateFetch,
+    ReplicateOk, ReplicateRebuild, ReplicateRecords, SetMember, ShardRef,
 };
 use crate::error::{Error, Result};
 
@@ -27,6 +28,9 @@ impl InternalMessage {
     /// Encode a complete frame: header then body.
     pub fn encode(&self) -> Result<Bytes> {
         let mut body = BytesMut::new();
+        // Set by the records arm, so the common frame pays one test of an
+        // `Option` and not a second match on the message.
+        let mut set_generation = None;
         match self {
             Self::ForwardPublish(m) => {
                 body.put_u64(m.correlation_id);
@@ -110,6 +114,37 @@ impl InternalMessage {
                 body.put_u32(m.shard.shard);
                 body.put_u64(m.shard.generation);
                 body.put_u8(m.log as u8);
+                if let Some(election) = &m.election {
+                    election.check()?;
+                    body.put_u8(u8::from(election.candidate));
+                    put_set(&mut body, &election.set);
+                    match &election.leaving {
+                        Some(leaving) => {
+                            body.put_u8(1);
+                            put_set(&mut body, leaving);
+                        }
+                        None => body.put_u8(0),
+                    }
+                }
+            }
+            Self::PreVote(m) => {
+                body.put_u64(m.correlation_id);
+                put_str(&mut body, &m.shard.tenant_id)?;
+                put_str(&mut body, &m.shard.namespace)?;
+                put_str(&mut body, &m.shard.stream)?;
+                body.put_u32(m.shard.shard);
+                body.put_u64(m.shard.generation);
+                body.put_u8(m.log as u8);
+                body.put_u64(m.last_generation);
+                body.put_u64(m.log_end);
+                body.put_u64(m.set_generation);
+            }
+            Self::PreVoteAnswer(m) => {
+                body.put_u64(m.correlation_id);
+                match m.refusal {
+                    None => body.put_slice(&[1, 0]),
+                    Some(reason) => body.put_slice(&[0, reason as u8]),
+                }
             }
             Self::ReplicateFetch(m) => {
                 body.put_u64(m.correlation_id);
@@ -138,6 +173,7 @@ impl InternalMessage {
             | Self::ReplicateDeadLetterRecords(m)
             | Self::ReplicateCounterRecords(m)
             | Self::ReplicateMarkedRecords(m) => {
+                set_generation = m.set_generation;
                 body.put_u64(m.correlation_id);
                 put_str(&mut body, &m.shard.tenant_id)?;
                 put_str(&mut body, &m.shard.namespace)?;
@@ -322,6 +358,19 @@ impl InternalMessage {
                 (Kind::Incarnated, outer)
             }
         };
+        // Outermost, so a stamped batch for an incarnated stream is a stamp
+        // around the incarnation.
+        let (kind, body) = match set_generation {
+            None => (kind, body),
+            Some(set_generation) => {
+                let mut outer = BytesMut::with_capacity(18 + body.len());
+                outer.put_u64(self.correlation_id());
+                outer.put_u64(set_generation);
+                outer.put_u16(kind as u16);
+                outer.extend_from_slice(&body);
+                (Kind::SetStamped, outer)
+            }
+        };
         let length = u32::try_from(body.len()).map_err(|_| Error::FrameTooLarge)?;
         if length > MAX_BODY_BYTES {
             return Err(Error::FrameTooLarge);
@@ -350,8 +399,9 @@ impl InternalMessage {
                 let correlation_id = take_u64(&mut body)?;
                 let incarnation = take_u64(&mut body)?;
                 let kind = Kind::from_u16(take_u16(&mut body)?)?;
-                // One envelope, never two.
-                if kind == Kind::Incarnated {
+                // One incarnation envelope, never two, and a set stamp goes
+                // around it, not inside.
+                if kind == Kind::Incarnated || kind == Kind::SetStamped {
                     return Err(Error::Incomplete);
                 }
                 let mut inner = BytesMut::with_capacity(InternalHeader::LEN + body.len());
@@ -367,6 +417,28 @@ impl InternalMessage {
                 }
                 let shard = message.incarnated_shard_mut().ok_or(Error::Incomplete)?;
                 shard.incarnation = Some(incarnation);
+                Ok(message)
+            }
+            Kind::SetStamped => {
+                let correlation_id = take_u64(&mut body)?;
+                let set_generation = take_u64(&mut body)?;
+                let kind = Kind::from_u16(take_u16(&mut body)?)?;
+                if kind == Kind::SetStamped {
+                    return Err(Error::Incomplete);
+                }
+                let mut inner = BytesMut::with_capacity(InternalHeader::LEN + body.len());
+                InternalHeader {
+                    kind,
+                    length: body.len() as u32,
+                }
+                .encode(&mut inner);
+                inner.extend_from_slice(&body);
+                let mut message = Self::decode(inner.freeze())?;
+                if message.correlation_id() != correlation_id {
+                    return Err(Error::Incomplete);
+                }
+                // Only a records batch is stamped.
+                *message.set_generation_mut().ok_or(Error::Incomplete)? = Some(set_generation);
                 Ok(message)
             }
             kind @ (Kind::ForwardPublish | Kind::AuthorizedForwardPublish) => {
@@ -496,8 +568,8 @@ impl InternalMessage {
                 expect_empty(&body)?;
                 Ok(Self::HelloOk(message))
             }
-            Kind::Fence => {
-                let message = Fence {
+            Kind::Fence | Kind::ElectionFence => {
+                let mut message = Fence {
                     correlation_id: take_u64(&mut body)?,
                     shard: ShardRef {
                         tenant_id: take_str(&mut body)?,
@@ -508,9 +580,62 @@ impl InternalMessage {
                         incarnation: None,
                     },
                     log: ReplicaLog::from_u8(take_u8(&mut body)?)?,
+                    election: None,
                 };
+                if header.kind == Kind::ElectionFence {
+                    let candidate = take_flag(&mut body)?;
+                    let set = take_set(&mut body)?;
+                    let leaving = if take_flag(&mut body)? {
+                        Some(take_set(&mut body)?)
+                    } else {
+                        None
+                    };
+                    let election = FenceElection {
+                        candidate,
+                        set,
+                        leaving,
+                    };
+                    election.check()?;
+                    message.election = Some(election);
+                }
                 expect_empty(&body)?;
                 Ok(Self::Fence(message))
+            }
+            Kind::PreVote => {
+                let message = PreVote {
+                    correlation_id: take_u64(&mut body)?,
+                    shard: ShardRef {
+                        tenant_id: take_str(&mut body)?,
+                        namespace: take_str(&mut body)?,
+                        stream: take_str(&mut body)?,
+                        shard: take_u32(&mut body)?,
+                        generation: take_u64(&mut body)?,
+                        incarnation: None,
+                    },
+                    log: ReplicaLog::from_u8(take_u8(&mut body)?)?,
+                    last_generation: take_u64(&mut body)?,
+                    log_end: take_u64(&mut body)?,
+                    set_generation: take_u64(&mut body)?,
+                };
+                expect_empty(&body)?;
+                Ok(Self::PreVote(message))
+            }
+            Kind::PreVoteAnswer => {
+                let correlation_id = take_u64(&mut body)?;
+                let granted = take_flag(&mut body)?;
+                let reason = take_u8(&mut body)?;
+                // A grant has no reason and a refusal has one, so each answer
+                // has a single encoding.
+                let refusal = match (granted, reason) {
+                    (true, 0) => None,
+                    (false, reason) => Some(PreVoteRefusal::from_u8(reason)?),
+                    (true, _) => return Err(Error::Incomplete),
+                };
+                expect_empty(&body)?;
+                Ok(Self::PreVoteAnswer(PreVoteAnswer {
+                    correlation_id,
+                    refusal,
+                }))
             }
             Kind::ReplicateFetch | Kind::ReplicateLabelledFetch | Kind::ReplicateTimedFetch => {
                 let message = ReplicateFetch {
@@ -662,6 +787,7 @@ impl InternalMessage {
                     commit_offset,
                     generations,
                     times,
+                    set_generation: None,
                 };
                 if let Some(log) = log {
                     return Ok(match log {
@@ -897,6 +1023,67 @@ fn take_str(buf: &mut Bytes) -> Result<String> {
     }
     let bytes = buf.split_to(len);
     String::from_utf8(bytes.to_vec()).map_err(|_| Error::InvalidUtf8)
+}
+
+/// A strict boolean byte: anything but 0 or 1 would give two encodings.
+fn take_flag(buf: &mut Bytes) -> Result<bool> {
+    match take_u8(buf)? {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(Error::Incomplete),
+    }
+}
+
+/// generation(8) + count(2), then per member: node length(2), the node id,
+/// flags(1) and, when bit 0 is set, the storage id(16). The layout of the
+/// replica-set file. The caller has checked the set.
+fn put_set(buf: &mut BytesMut, set: &ReplicaSetView) {
+    buf.put_u64(set.generation);
+    buf.put_u16(set.members.len() as u16);
+    for member in &set.members {
+        buf.put_u16(member.node_id.len() as u16);
+        buf.extend_from_slice(member.node_id.as_bytes());
+        buf.put_u8(u8::from(member.storage_id.is_some()) | (u8::from(member.learner) << 1));
+        if let Some(id) = &member.storage_id {
+            buf.extend_from_slice(id);
+        }
+    }
+}
+
+fn take_set(buf: &mut Bytes) -> Result<ReplicaSetView> {
+    let generation = take_u64(buf)?;
+    let count = take_u16(buf)? as usize;
+    // Each member is at least a length and a flags byte.
+    if count > MAX_SET_MEMBERS || count > buf.remaining() / 3 {
+        return Err(Error::Incomplete);
+    }
+    let mut members = Vec::with_capacity(count);
+    for _ in 0..count {
+        let len = take_u16(buf)? as usize;
+        if len > MAX_SET_NODE_BYTES || len > buf.remaining() {
+            return Err(Error::Incomplete);
+        }
+        let node_id =
+            String::from_utf8(buf.split_to(len).to_vec()).map_err(|_| Error::InvalidUtf8)?;
+        let flags = take_u8(buf)?;
+        if flags & !3 != 0 {
+            return Err(Error::Incomplete);
+        }
+        let storage_id = if flags & 1 != 0 {
+            Some(take_identity(buf)?)
+        } else {
+            None
+        };
+        members.push(SetMember {
+            node_id,
+            storage_id,
+            learner: flags & 2 != 0,
+        });
+    }
+    Ok(ReplicaSetView {
+        generation,
+        members,
+    })
 }
 
 fn take_u8(buf: &mut Bytes) -> Result<u8> {

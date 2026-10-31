@@ -167,6 +167,30 @@ pub enum Kind {
     ///
     /// [`PeerCapabilities::FORWARD_INCARNATION`]: super::PeerCapabilities::FORWARD_INCARNATION
     Incarnated = 40,
+    /// `Fence` followed by the election fields: whether the sender is a
+    /// candidate, the set (which carries its generation) and the set being
+    /// left. Sent
+    /// only to a peer that offered [`PeerCapabilities::ELECTION`]; without
+    /// the fields a fence travels as kind 29, byte for byte as before.
+    ///
+    /// [`PeerCapabilities::ELECTION`]: super::PeerCapabilities::ELECTION
+    ElectionFence = 41,
+    /// A records batch with the generation of the replica set the sender
+    /// counts: the correlation id, the set generation, the inner kind and the
+    /// inner body. The inner kind is any records kind or [`Kind::Incarnated`]
+    /// around one. Sent only to a peer that offered
+    /// [`PeerCapabilities::ELECTION`].
+    ///
+    /// [`PeerCapabilities::ELECTION`]: super::PeerCapabilities::ELECTION
+    SetStamped = 42,
+    /// A would-be candidate asks a replica whether it would vote, without
+    /// either side persisting anything. Sent only to a peer that offered
+    /// [`PeerCapabilities::ELECTION`].
+    ///
+    /// [`PeerCapabilities::ELECTION`]: super::PeerCapabilities::ELECTION
+    PreVote = 43,
+    /// The answer to `PreVote`: granted, or refused with a reason.
+    PreVoteAnswer = 44,
 }
 
 impl Kind {
@@ -214,6 +238,10 @@ impl Kind {
             38 => Ok(Kind::Ping),
             39 => Ok(Kind::Pong),
             40 => Ok(Kind::Incarnated),
+            41 => Ok(Kind::ElectionFence),
+            42 => Ok(Kind::SetStamped),
+            43 => Ok(Kind::PreVote),
+            44 => Ok(Kind::PreVoteAnswer),
             other => Err(Error::UnsupportedInternalKind(other)),
         }
     }

@@ -65,6 +65,12 @@ pub struct ReplicateRecords {
     /// Not covered by the checksum, so an unlabelled batch checksums as it
     /// always has.
     pub times: Option<Vec<u64>>,
+    /// The generation of the replica set the sender counts. `None` is a
+    /// sender that does not check sets, and the batch travels as it always
+    /// did; `Some` wraps it in a `SetStamped` frame, sent only to a peer that
+    /// advertised [`PeerCapabilities::ELECTION`](super::PeerCapabilities::ELECTION).
+    /// Not covered by the checksum.
+    pub set_generation: Option<u64>,
 }
 
 impl ReplicateRecords {

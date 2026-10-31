@@ -3,7 +3,9 @@
 //! The malformed cases matter most. A peer is authenticated, not assumed
 //! correct: every one of these must be an error, and none may panic.
 
+mod byte_identity;
 mod codec;
+mod election;
 mod error_code;
 mod fence;
 mod forward;
@@ -97,6 +99,7 @@ fn every_message() -> Vec<InternalMessage> {
             correlation_id: 42,
             shard: shard(),
             log: ReplicaLog::Stream,
+            election: None,
         }),
         InternalMessage::Ping(Ping { correlation_id: 42 }),
         InternalMessage::Pong(Pong { correlation_id: 42 }),
@@ -193,6 +196,7 @@ fn every_message() -> Vec<InternalMessage> {
             commit_offset: None,
             generations: None,
             publishers: Vec::new(),
+            set_generation: None,
         }),
         InternalMessage::ReplicateCacheBootstrap(ReplicateBootstrap {
             correlation_id: 42,
@@ -210,6 +214,7 @@ fn every_message() -> Vec<InternalMessage> {
             commit_offset: None,
             generations: None,
             publishers: Vec::new(),
+            set_generation: None,
         }),
         InternalMessage::ReplicateGroupBootstrap(ReplicateBootstrap {
             correlation_id: 42,
@@ -227,6 +232,7 @@ fn every_message() -> Vec<InternalMessage> {
             commit_offset: None,
             generations: None,
             publishers: Vec::new(),
+            set_generation: None,
         }),
         InternalMessage::ReplicateDeadLetterBootstrap(ReplicateBootstrap {
             correlation_id: 42,
@@ -244,6 +250,7 @@ fn every_message() -> Vec<InternalMessage> {
             commit_offset: None,
             generations: None,
             publishers: Vec::new(),
+            set_generation: None,
         }),
         InternalMessage::ReplicateCounterBootstrap(ReplicateBootstrap {
             correlation_id: 42,
@@ -273,6 +280,7 @@ fn every_message() -> Vec<InternalMessage> {
             commit_offset: None,
             generations: None,
             publishers: Vec::new(),
+            set_generation: None,
         }),
         InternalMessage::ReplicateRecords(ReplicateRecords {
             times: None,
@@ -285,6 +293,7 @@ fn every_message() -> Vec<InternalMessage> {
             commit_offset: Some(90),
             generations: None,
             publishers: Vec::new(),
+            set_generation: None,
         }),
         InternalMessage::ReplicateMarkedRecords(ReplicateRecords {
             times: None,
@@ -301,6 +310,7 @@ fn every_message() -> Vec<InternalMessage> {
             commit_offset: Some(100),
             generations: None,
             publishers: Vec::new(),
+            set_generation: None,
         }),
         InternalMessage::ReplicateCacheRecords(ReplicateRecords {
             times: None,
@@ -313,6 +323,7 @@ fn every_message() -> Vec<InternalMessage> {
             commit_offset: Some(0),
             generations: None,
             publishers: Vec::new(),
+            set_generation: None,
         }),
     ]
 }
@@ -330,5 +341,6 @@ fn replicate() -> InternalMessage {
         commit_offset: None,
         generations: None,
         publishers: Vec::new(),
+        set_generation: None,
     })
 }

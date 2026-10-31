@@ -109,13 +109,12 @@ never have dialled the one that shipped to it.
 | `1 << 6` | `BALLOTS` | keeps a ballot with each accepted generation, naming the leader by the node id it gave in its `Hello`, and refuses `Fence`, replication and `ReplicateFetch` from any other node at that generation (`docs/replication-design.md`, "Ballots") |
 | `1 << 7` | `PING` | answers `Ping` with `Pong` (see "Pinging a leader") |
 | `1 << 8` | `GROUP_FENCE` | answers `Fence` and `ReplicateFetch` for a stream shard's dead-letter and group cursor logs (`log` = `GroupDeadLetters`, `GroupCursors`), refusing a fence older than the generation its stream log accepted and answering as an empty log when it keeps no consumer groups, and reads group batches labelled with their generations |
+| `1 << 9` | `ELECTION` | takes part in electing a leader without the control plane: reads a `Fence` that names the replica set and says whether the sender is a candidate (`ElectionFence`), a batch stamped with the set's generation (`SetStamped`), and answers `PreVote` (see "Electing without the control plane") |
 | `1 << 10` | `STORAGE_IDENTITY` | answers a `HelloCapable` that offers this bit with its storage identity (see "Storage identity" below) |
 | `1 << 11` | `NODE_INCARNATION` | answers a `HelloCapable` that offers this bit with its node incarnation, and closes the connection once that changes (see "Node incarnation" below) |
 | `1 << 12` | `LANE_RENEWAL` | offered by a caller: it replaces a request stream it gets no answer on, so the listener may drop a stream whose handler overran (see "The transport") |
 | `1 << 13` | `FORWARD_INCARNATION` | reads a forwarded publish or cache op inside an `Incarnated` frame, and refuses one whose incarnation is not the one its routes name (see "Naming the stream incarnation") |
 | `1 << 14` | `HEAD_TRIM` | reads a head trim's mark (byte `5`) in a records batch and stores the trim record, applying its floor on a `Quorum` stream only once its commit offset passes the record. A batch holding a trim goes only to a peer that offered it |
-
-<!-- `1 << 9` is reserved for `ELECTION` (#1009). -->
 
 #### Storage identity
 
@@ -762,11 +761,53 @@ sequenceDiagram
     C-->>A: ReplicateError(FencedEpoch)
 ```
 
+### Electing without the control plane
+
+Four kinds carry what an election needs. All of them go only to a peer that
+offered `ELECTION`; the pool refuses to send one to a peer that did not
+(`PeerError::Unsupported`), and a peer that predates them answers
+`UnsupportedKind`. Without the capability every existing message is what it
+was, byte for byte (`every_message_that_predates_election_encodes_as_it_did`).
+No broker offers `ELECTION` or sends these kinds yet. The semantics are in
+`docs/replication-design.md`, "Electing without the control plane".
+
+`ElectionFence` (kind 41) is `Fence` followed by the election fields: a
+`candidate` byte (0 or 1) saying the sender is standing for election at
+`shard.generation` and not leading a generation the control plane named, then
+the replica set it counts, then a byte (0 or 1) and, when 1, the set it is
+leaving. A set is its generation (`u64`), a member count (`u16`), and per
+member the node id (`u16` length, bytes), a flags byte and, when bit 0 is
+set, the 16-byte storage id. Bit 1 marks a learner, which is listed and not
+counted. This is the layout of the replica-set file. A fence with none of it
+is the original kind 29.
+
+`SetStamped` (kind 42) wraps a records batch of any log, the same way
+`Incarnated` wraps a request: the correlation id, the generation of the set
+the sender counts (`u64`), the inner kind and the inner body. It goes outside
+an `Incarnated` envelope when a batch has both, never inside, and never around
+anything but a records kind. A batch with no set generation is sent as it
+always was.
+
+`PreVote` (kind 43) asks a replica whether it would vote for the sender,
+before the sender raises its generation. It carries the shard (with
+`shard.generation` the generation the sender would stand at), the log, the
+generation of the sender's last record, one past its last record, and the
+generation of its set. Neither side persists anything for it. `PreVoteAnswer`
+(kind 44) is a granted byte (0 or 1) and a reason byte, 0 for a grant and
+otherwise one of: 1 the leader is still reachable, 2 the replica's log is
+ahead, 3 it has accepted that generation or a later one, 4 it counts a newer
+set, 5 it does not vote, 6 it holds no copy of the shard.
+
+A set holds at most 64 members, each node id at most 1024 bytes, with no node
+or storage id listed twice, and a set being left is older than the one
+replacing it. A body that breaks any of these, or has a byte that is not a
+boolean where one is expected, is refused rather than read.
+
 ### Naming the stream incarnation
 
 A leader names the stream incarnation its log belongs to, when it is not 0,
 on every replication request for a stream shard: records of any log kind,
-bootstrap, rebuild, `Fence` and `ReplicateFetch`. The request travels inside
+bootstrap, rebuild, `Fence`, `PreVote` and `ReplicateFetch`. The request travels inside
 an `Incarnated` frame (kind 40):
 
 | Field | Type |
@@ -860,7 +901,8 @@ Typed, because they need different responses:
 `HelloCapable` 27, `HelloCapableOk` 28, `Fence` 29, `FenceOk` 30,
 `ReplicateFetch` 31, `ReplicateLabelledRecords` 32,
 `ReplicateLabelledFetch` 33, `ReplicateTimedRecords` 36,
-`ReplicateTimedFetch` 37 and `Incarnated` 40. A peer
+`ReplicateTimedFetch` 37, `Incarnated` 40, `ElectionFence` 41,
+`SetStamped` 42, `PreVote` 43 and `PreVoteAnswer` 44. A peer
 that predates any of them rejects the
 kind rather than misreading the body, which is why
 each is a new kind rather than a field on `ReplicateRecords`: this protocol

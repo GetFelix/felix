@@ -259,6 +259,7 @@ fn the_fence_names_the_shard_its_generation_and_its_log() {
         correlation_id: 42,
         shard: shard(),
         log: ReplicaLog::Cache,
+        election: None,
     });
     let encoded = fence.encode().expect("encode");
     assert_eq!(InternalMessage::decode(encoded).expect("decode"), fence);
@@ -270,6 +271,7 @@ fn a_fence_naming_an_unknown_log_is_refused() {
         correlation_id: 42,
         shard: shard(),
         log: ReplicaLog::Stream,
+        election: None,
     });
     let mut frame = BytesMut::from(&fence.encode().expect("encode")[..]);
     let last = frame.len() - 1;
@@ -302,6 +304,7 @@ fn fence(incarnation: Option<u64>) -> InternalMessage {
             ..shard()
         },
         log: ReplicaLog::Stream,
+        election: None,
     })
 }
 

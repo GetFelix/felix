@@ -52,6 +52,7 @@ fn a_cache_replication_batch_is_not_a_stream_one() {
         commit_offset: None,
         generations: None,
         publishers: Vec::new(),
+        set_generation: None,
     };
     let stream = InternalMessage::ReplicateRecords(body.clone());
     let cache = InternalMessage::ReplicateCacheRecords(body);
@@ -84,6 +85,7 @@ fn the_four_replication_kinds_are_distinguishable() {
         commit_offset: None,
         generations: None,
         publishers: Vec::new(),
+        set_generation: None,
     };
     let encoded: Vec<_> = [
         InternalMessage::ReplicateRecords(body.clone()),
@@ -152,6 +154,7 @@ fn a_commit_offset_travels_as_the_committed_kind_for_every_log() {
         commit_offset: Some(8),
         generations: None,
         publishers: Vec::new(),
+        set_generation: None,
     };
     for message in [
         InternalMessage::ReplicateRecords(body.clone()),
@@ -193,6 +196,7 @@ fn generations_travel_as_the_labelled_kind_for_every_log() {
             },
         ]),
         publishers: Vec::new(),
+        set_generation: None,
     };
     let opens = ProducerMark::Opens {
         producer_id: 7,
@@ -234,6 +238,7 @@ fn an_absent_commit_offset_must_be_zero() {
         commit_offset: None,
         generations: Some(Vec::new()),
         publishers: Vec::new(),
+        set_generation: None,
     });
     let encoded = message.encode().expect("encode");
     // The commit offset is the u64 just before the empty generations count.
@@ -296,6 +301,7 @@ fn a_generation_start_mark_round_trips_and_an_unknown_mark_is_refused() {
         commit_offset: None,
         generations: None,
         publishers: Vec::new(),
+        set_generation: None,
     };
     let message = InternalMessage::ReplicateMarkedRecords(batch);
     let bytes = message.encode().expect("encode");
@@ -344,6 +350,7 @@ fn a_trim_mark_round_trips_with_its_floor() {
         commit_offset: Some(3),
         generations: None,
         publishers: vec![None, Some(Bytes::from_static(b"svc"))],
+        set_generation: None,
     };
     assert!(batch.holds_trim());
     let message = InternalMessage::ReplicateMarkedRecords(batch);
@@ -383,6 +390,7 @@ fn publishers_travel_with_the_marks_and_are_checksummed() {
             commit_offset: None,
             generations: None,
             publishers: publishers.clone(),
+            set_generation: None,
         };
         let message = if marks.is_empty() {
             InternalMessage::ReplicateRecords(records)
@@ -420,6 +428,7 @@ fn timed(times: Option<Vec<u64>>, generations: Option<Vec<GenerationStart>>) -> 
         generations,
         publishers: Vec::new(),
         times,
+        set_generation: None,
     }
 }
 

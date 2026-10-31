@@ -148,6 +148,24 @@ pub const CACHE_INCARNATIONS: FleetFeature = FleetFeature::new("cache_incarnatio
 /// See `docs/durable-storage.md` ("Conditional head trim").
 pub const HEAD_TRIM: FleetFeature = FleetFeature::new("head_trim");
 
+/// Every change of a shard's replica set, and the next generation a leader
+/// opens for a replacement, is fenced jointly: a majority of the set being
+/// left and of the one replacing it must take the fence before the new set
+/// serves. A prerequisite of [`REPLICA_ELECTION`], finalized first so no shard
+/// elects while another still changes sets without it. Declared before any
+/// broker reports it, so a finalize is refused. See
+/// `docs/replication-design.md` ("Electing without the control plane").
+pub const JOINT_FENCE: FleetFeature = FleetFeature::new("joint_fence");
+
+/// Replicas elect a leader themselves when the leader is lost, without the
+/// control plane, which adopts the result. Needs every broker to offer the
+/// `ELECTION` peer capability and check replica sets, and the control plane
+/// to keep the pending set and adoption. Declared before any broker reports
+/// it, so a finalize is refused. Cache shards elect only once
+/// [`FENCED_CACHES`] is finalized; otherwise they stay on the lease. See
+/// `docs/replication-design.md` ("Electing without the control plane").
+pub const REPLICA_ELECTION: FleetFeature = FleetFeature::new("replica_election");
+
 /// The most features one gate tracks. A report longer than this is cut, which
 /// only ever leaves features off.
 pub const MAX_FEATURES: usize = 64;
@@ -188,7 +206,15 @@ pub fn missing<'a>(required: &'a BTreeSet<String>, offered: &BTreeSet<String>) -
 /// feature that needs no other, or a name this build does not know.
 pub fn prerequisites(feature: &str) -> &'static [FleetFeature] {
     const BY_FOLLOWERS: &[FleetFeature] = &[GENERATION_START, MAJORITY_ACK];
-    if feature == MAJORITY_ACK.name() {
+    const FOR_ELECTION: &[FleetFeature] = &[
+        GENERATION_START,
+        MAJORITY_ACK,
+        LEASE_FREE_READS,
+        JOINT_FENCE,
+    ];
+    if feature == REPLICA_ELECTION.name() {
+        FOR_ELECTION
+    } else if feature == MAJORITY_ACK.name() {
         &[GENERATION_START]
     } else if feature == LEASE_FREE_READS.name() || feature == FENCED_CACHES.name() {
         BY_FOLLOWERS

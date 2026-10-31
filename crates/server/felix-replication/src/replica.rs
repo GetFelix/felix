@@ -1243,6 +1243,7 @@ impl ReplicaHandler {
                 .then(|| generations_over(&log.generations(), first_offset, end)),
             publishers,
             times,
+            set_generation: None,
         };
         crate::ship::carry_marks(&mut batch, log_kind, false);
         match log_kind {
