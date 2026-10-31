@@ -790,8 +790,11 @@ It also does not cover elections: a candidate's generation is
 not in the control plane until it is adopted, so no view can back a promise
 made to one. The election driver needs its own guard before [electing
 without the control plane](#electing-without-the-control-plane) ships
-([#1331](https://github.com/GetFelix/felix/issues/1331)). The model's
-`FelixShardElectWipe*.cfg` check variants of that guard
+([#1331](https://github.com/GetFelix/felix/issues/1331)). The adopted rule:
+a copy with a new storage id is a non-voting member until a joint-fenced set
+change re-admits it, and it votes again only once it holds the leader's log
+through that generation's start record; failover never promotes it. The
+model's `FelixShardElectWipe*.cfg` check it and the variants that fail
 (`docs/formal/README.md`, "A wiped voter in an election").
 
 The cost is a fence round trip or a few while a follower's watch catches up,
