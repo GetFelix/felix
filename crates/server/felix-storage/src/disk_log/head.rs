@@ -169,8 +169,11 @@ pub(super) fn rebuild(
     let base = segments.base_offset();
     let tail = segments.tail_offset();
     let active_base = segments.active().base_offset();
-    let saved =
-        load(dir).filter(|(as_of, entries)| *as_of <= tail && verified(segments, entries, base));
+    let saved = load(dir).filter(|(as_of, entries)| {
+        *as_of <= tail
+            && entries.iter().all(|entry| entry.offset < *as_of)
+            && verified(segments, entries, base)
+    });
     let (mut entries, from) = match saved {
         Some((as_of, entries)) => (
             entries

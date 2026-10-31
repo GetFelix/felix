@@ -379,6 +379,22 @@ async fn the_floor_is_rebuilt_whatever_the_head_file_holds() {
     .expect("write");
     assert_floor(&dir, "with a file naming a trim that is not there").await;
 
+    // Naming the real trim, but from beyond where the file stops, so the
+    // read after it would find the trim again.
+    std::fs::write(
+        &path,
+        head::encode(
+            10,
+            &[head::HeadEntry {
+                offset: 10,
+                floor: 5,
+                headers: Bytes::from_static(b"t"),
+            }],
+        ),
+    )
+    .expect("write");
+    assert_floor(&dir, "with an entry past the file's offset").await;
+
     // From past the tail, as one left by a truncation a crash interrupted.
     std::fs::write(&path, head::encode(1_000, &[])).expect("write");
     assert_floor(&dir, "with a file from past the tail").await;
