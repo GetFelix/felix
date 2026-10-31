@@ -2262,9 +2262,19 @@ pub(super) async fn publish_mark(
             log.note_commit_offset(offset);
         }
     };
+    // A zero mark over a log with records in it would end `Settling` with
+    // nothing counted: a read is answered with an empty page, and a `Latest`
+    // subscribe starts at offset 0. Withheld, readers are refused as not ready
+    // until a majority holds something. The report still goes out.
+    let withheld = match held_log {
+        Some(log) if offset == 0 => log.tail_offset().await.map_or(true, |tail| tail > 0),
+        _ => false,
+    };
     if by_followers {
         note_committed();
-        marks.publish_by_followers_at(&watch_key(key), incarnation, generation, offset);
+        if !withheld {
+            marks.publish_by_followers_at(&watch_key(key), incarnation, generation, offset);
+        }
         release_readers(broker, key).await;
         if let Some(reporter) = reporter {
             reporter.submit(report.clone());
@@ -2279,7 +2289,9 @@ pub(super) async fn publish_mark(
     };
     if reported {
         note_committed();
-        marks.publish_at(&watch_key(key), incarnation, generation, offset);
+        if !withheld {
+            marks.publish_at(&watch_key(key), incarnation, generation, offset);
+        }
         release_readers(broker, key).await;
     } else {
         metrics::record_mark_withheld();

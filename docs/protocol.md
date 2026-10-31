@@ -1043,6 +1043,10 @@ page, each one from the last answer's `next_offset`.
   synced. It never waits for more. A page that reaches that point comes back
   short or empty, and asking again later from `next_offset` picks up what has
   been committed since.
+- A `Quorum` leader that has not committed anything at its generation yet,
+  just after a promotion, answers `shard_unavailable` with reason `not_ready`
+  instead of a page. Retry it: an empty page is only ever an answer at the
+  committed tail.
 - `from` below the oldest retained offset is answered with
   `subscribe_cursor_error` and `too_old`, and `from` past the shard's tail with
   `in_future`, the same as a subscribe. `end` at or below `from` is an empty

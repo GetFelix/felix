@@ -271,6 +271,109 @@ async fn inherited_records_count_only_once_the_start_record_is_on_a_majority() {
     assert_eq!(marks.offset(&watched, 4), Some(4));
 }
 
+/// Serves every shard at one generation, with a valid lease.
+struct LedAt(u64);
+
+impl crate::quorum::ShardServing for LedAt {
+    fn replicated(&self, _key: &crate::ShardKey) -> bool {
+        true
+    }
+    fn generation(&self, _key: &crate::ShardKey) -> Option<u64> {
+        Some(self.0)
+    }
+    fn lease_valid(&self) -> bool {
+        true
+    }
+    fn record_ack_refusal(&self) {}
+}
+
+/// **A promoted leader whose followers hold none of its generation refuses
+/// reads as not ready, rather than answering them empty (#1718).** A pass
+/// with no majority still reports, and used to publish the mark it counted,
+/// zero. That ended `Settling`, so a read of the inherited records came back
+/// as an empty page, which a client cannot tell from the tail.
+#[tokio::test]
+async fn a_promoted_leader_with_no_majority_yet_refuses_reads() {
+    use felix_common::fleet::{FleetGate, GENERATION_START, MAJORITY_ACK};
+
+    for features in [
+        vec![GENERATION_START.name()],
+        vec![GENERATION_START.name(), MAJORITY_ACK.name()],
+    ] {
+        let (broker, _dir) = super::head_trim::quorum_broker().await;
+        let log = super::head_trim::shard_log(&broker).await;
+        log.record_generation(3, 0).expect("generation");
+        for i in 0..3 {
+            log.append(&[Bytes::from(format!("v{i}"))])
+                .await
+                .expect("append");
+        }
+        log.record_generation(4, 3).expect("generation");
+        assert_eq!(log.append_generation_start(4).await.expect("start"), 3);
+
+        let fleet = FleetGate::new(features.clone());
+        fleet.observe(features.clone());
+        let marks = Arc::new(QuorumMarks::with_fleet(Arc::new(fleet)));
+        broker.set_read_bounds(Arc::new(crate::quorum::CommittedReads::new(
+            marks.clone(),
+            Arc::new(LedAt(4)),
+        )));
+        let router = router(LOCAL, &["broker-b", "broker-c"], 4);
+        let followers = HoldUpTo {
+            held: std::sync::atomic::AtomicU64::new(3),
+        };
+        let (mut cursors, mut group, mut dead, mut counters) = (
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+        );
+        let read = async || {
+            broker
+                .read_range(TENANT, NAMESPACE, STREAM, 0, 0, None, 100, 1 << 20)
+                .await
+        };
+
+        replicate_once(
+            &followers,
+            &broker,
+            &router,
+            &marks,
+            None,
+            &mut cursors,
+            &mut group,
+            &mut dead,
+            &mut counters,
+        )
+        .await;
+        match read().await {
+            Err(felix_broker::BrokerError::NotReadable {
+                reason: felix_broker::NotReadable::Settling,
+                ..
+            }) => {}
+            other => panic!("a settling shard answered {other:?} ({features:?})"),
+        }
+        assert_eq!(marks.offset(&watch_key(&key()), 4), None);
+
+        followers.held.store(4, std::sync::atomic::Ordering::SeqCst);
+        replicate_once(
+            &followers,
+            &broker,
+            &router,
+            &marks,
+            None,
+            &mut cursors,
+            &mut group,
+            &mut dead,
+            &mut counters,
+        )
+        .await;
+        let page = read().await.expect("served once the mark moved");
+        let served: Vec<_> = page.records.iter().map(|r| r.payload.clone()).collect();
+        assert_eq!(served, ["v0", "v1", "v2"], "{features:?}");
+    }
+}
+
 /// **Once finalized, a leader with no start record still counts nothing it
 /// inherited.** Whatever path named it, the first record of its own
 /// generation on a majority is what moves the mark, here a client's.
