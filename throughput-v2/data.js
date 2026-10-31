@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793392486805,
+  "lastUpdate": 1793405170297,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -39884,6 +39884,58 @@ window.BENCHMARK_DATA = {
             "range": "16453.68",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1701515.99\nmean: 1706383.95\nstdev: 16453.68\ncv: 0.96%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "452d79f7c1893b878b19f41348c75408f1a4cb95",
+          "message": "feat(storage): a trim record kind in segment format v7 (#1662) (#1664)\n\n* feat(storage): a trim record kind in segment format v7 (#1662)\n\nStep 2 of the conditional head trim. A trim record carries a floor in an\n8-byte tag and the caller's headers as its body. Its kind is bits 29 and 28\ntogether, the first two-bit kind, so it needs segment format v7, and a log\nmoves onto v7 only when a caller appends one. Nothing writes one yet.\n\nBefore v7 that bit pair was RecordFlags in every segment. The scan and the\nreader still report it that way in an older segment, so v1 to v6 read\nexactly as before. A torn trim is repaired like any torn record and a\ncorrupt one is fatal.\n\nread_range leaves trim records out and read_range_with_trims returns them.\nThe choice rides on ReadBudget. Recovery's producer rebuild and retention's\ntimestamps include them.\n\nThe header's kind is now one RecordKind instead of five bools, which makes\nthe per-record decode cheaper than before.\n\n* fix(replication): ship trim records in place or refuse them (#1662)\n\nread_log_from skips trim records, and a follower places a batch's records\nat consecutive offsets, so one trim would have shifted every later record\none offset low under valid checksums. Shipping, the follower's fetch and\nthe divergence check now read with read_replicated_from, which keeps trims.\nmark_to_wire returns an error for a trim instead of panicking, so a batch\nholding one stalls shipping (and the fetch answers StorageFailed) until\nreplication carries the mark.\n\nThe scan decodes record headers knowing the segment's version again, so a\npre-v7 header with the trim bits and an impossible length is still the\nfatal RecordFlags rather than a repairable RecordTooLarge.\n\nSpec-Unaffected: no protocol change. Shipping refuses a record kind nothing writes yet, rather than sending it.\n\n* Keep append_time_now's doc on it\n\nSpec-Unaffected: moves a doc comment only.",
+          "timestamp": "2026-10-31T00:01:57Z",
+          "tree_id": "b2cc58a9bfca2c9b8af428bc8ea45beb6c8dcb6f",
+          "url": "https://github.com/GetFelix/felix/commit/452d79f7c1893b878b19f41348c75408f1a4cb95"
+        },
+        "date": 1793405169688,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 515679.95,
+            "range": "27814.95",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 515679.95\nmean: 525909.14\nstdev: 27814.95\ncv: 5.29%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 515679.95,
+            "range": "27814.95",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 515679.95\nmean: 525909.14\nstdev: 27814.95\ncv: 5.29%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 118047.56,
+            "range": "1150.29",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 118047.56\nmean: 117483.79\nstdev: 1150.29\ncv: 0.98%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1180475.6,
+            "range": "11502.95",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1180475.60\nmean: 1174837.93\nstdev: 11502.95\ncv: 0.98%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
