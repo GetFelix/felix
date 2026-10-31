@@ -333,6 +333,12 @@
 (* `PromiseFromRoutes` it answers only what its routing view backs, as the *)
 (* broker does for a copy with no promise on disk                          *)
 (* (FelixShardSuspicionWipeRoutes.cfg).                                    *)
+(*                                                                         *)
+(* With `Elections` the wipe also takes the replica's set, and a view      *)
+(* cannot back a promise made to a candidate the control plane never       *)
+(* heard of (#1331). `WipedWaitsForAdopt` and the knobs beside it model    *)
+(* the guard's variants: FelixShardElectWipe*.cfg, and docs/formal/        *)
+(* README.md, "A wiped voter in an election".                              *)
 (***************************************************************************)
 
 EXTENDS Naturals, Sequences, FiniteSets, TLC
@@ -530,6 +536,29 @@ NameByInheritance == FALSE
 \* crates/server/felix-replication/src/replica.rs.
 LosePromises == FALSE
 PromiseFromRoutes == FALSE
+\* `WipedWaitsForAdopt`: under `Elections`, a follower that lost its
+\* promises answers no candidate's fence, and does not stand, until the
+\* control plane's generation, read linearizably (`gen`, not a planner's
+\* view), is past the one it had when the follower lost them (#1331).
+\* `WipedTakesBatches`: while it waits it still takes batches, a bootstrap
+\* and a fetch from a leader the control plane has not adopted.
+\* `WipedTakesNamed`: while it waits it still takes a fence and batches from
+\* the leader the control plane names, which an election it has not heard
+\* of may have deposed.
+\* `WipedLearnsSet`: while it waits it learns the set a candidate's fence
+\* carries, promising nothing.
+\* `WipedAboveAdopted`: once the wait ends, until it holds a promise at the
+\* control plane's generation, read the same way, it takes nothing below
+\* that generation and only the named leader at it.
+WipedWaitsForAdopt == FALSE
+WipedTakesBatches == TRUE
+WipedTakesNamed == TRUE
+WipedLearnsSet == FALSE
+WipedAboveAdopted == FALSE
+\* `WipeBoundOracle`: the wait's bound is the newest generation the follower
+\* had promised, not the control plane's. Nothing in a broker can know it;
+\* it isolates what the other guards do from what the bound does.
+WipeBoundOracle == FALSE
 \* `RefuseShortCopy`: a leader that gave its copy up in a crash answers no
 \* promotion fence from it until a newer leader has shipped to it, unless a
 \* set of two acknowledged what it may have lost (`AckedByTwo`):
@@ -555,11 +584,15 @@ ASSUME Wipes > 0 /\ ~RefuseShortCopy => ReportFromAnswers /\ ~StageMove /\ MaxMo
 ASSUME RefuseShortCopy => /\ CrashLeader /\ GiveUpOnCrash /\ CrashLoses /\ FenceOnPromote
                           /\ Elections = 0 /\ ~Handoff /\ ~Counters /\ ~Reclaims
 
-\* The routing view backs a promise only while the control plane issues every
-\* generation, so the lost promise is checked without elections, on the
-\* fenced path, and apart from the wipes of the report path.
-ASSUME LosePromises => /\ Elections = 0 /\ Wipes = 0 /\ AckByFollowers /\ FenceOnPromote
+\* The lost promise is checked on the fenced path, apart from the wipes of
+\* the report path. With elections the set file goes with it, so only with
+\* the set check.
+ASSUME LosePromises => /\ Wipes = 0 /\ AckByFollowers /\ FenceOnPromote
+                       /\ (Elections > 0 => SetCheck)
 ASSUME PromiseFromRoutes => LosePromises
+ASSUME WipedWaitsForAdopt => LosePromises /\ Elections > 0
+ASSUME ~WipedTakesBatches \/ ~WipedTakesNamed \/ WipedLearnsSet \/ WipedAboveAdopted \/ WipeBoundOracle
+       => WipedWaitsForAdopt
 
 \* Wipes and crashes on the fenced path, where the promoted leader checks the
 \* identities the report named. With `UnprobedStart` the first leader knows
@@ -641,7 +674,8 @@ VARIABLES
     leftDirty,  \* how much of its log a crashed process left to the page cache, until a clean stop
     gaveUp,     \* under `RefuseShortCopy`, the generation each broker gave its copy up at: 0 for none
     fenceIds,   \* under `RefuseShortCopy`, per leader, the members its promotion's fence ids name
-    named       \* under `RefuseShortCopy`, the members the last report the control plane stored named
+    named,      \* under `RefuseShortCopy`, the members the last report the control plane stored named
+    wipedAt     \* under `WipedWaitsForAdopt`, the control plane's generation when each broker lost its promises: 0 for never
 
 \* The counter log's state, which only a cache shard's actions change.
 counterVars == << clog, chwm, cconfirmed, canswered, cacked >>
@@ -654,10 +688,10 @@ setVars == << setGen, oldSet, installed, nextVars >>
 \* Storage identities and registrations: only a wipe, a crash, a leader
 \* learning one, a registration and a promotion change them.
 idVars == << sid, seen, seenInc, wipes, checked, registered, inc, restarting, expect, inherited,
-             leftDirty, gaveUp, fenceIds >>
+             leftDirty, gaveUp, fenceIds, wipedAt >>
 \* All of them but `expect`, `inherited` and the promoted leader's `seen`
 \* and `seenInc`, which a promotion sets.
-decideIdVars == << sid, wipes, checked, registered, inc, restarting, leftDirty, gaveUp >>
+decideIdVars == << sid, wipes, checked, registered, inc, restarting, leftDirty, gaveUp, wipedAt >>
 
 vars == << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
            hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit,
@@ -777,6 +811,18 @@ LearnSet(f, b) ==
 \* named at its generation.
 Candidate(b) == ~(leader = b /\ bgen[b] = gen)
 
+\* Under `WipedWaitsForAdopt`, whether `f` lost its promises and the control
+\* plane has not yet taken a generation past the one it had then. Until it
+\* has, `f` may have promised any generation a candidate took to that
+\* candidate. `gen` is the linearizable read; a planner's view can be older.
+WipeWaits(f) == WipedWaitsForAdopt /\ wipedAt[f] > 0 /\ gen <= wipedAt[f]
+
+\* Under `WipedAboveAdopted`, whether a wiped `f` that holds no promise at
+\* the control plane's generation may promise `b` generation `g`: only above
+\* it, or at it only to the leader the control plane names there.
+WipeFloor(f, b, g) ==
+    WipedAboveAdopted /\ wipedAt[f] > 0 /\ promised[f] < gen => g > gen \/ (g = gen /\ b = leader)
+
 \* Whether `m` hears a leader: the one it promised its generation to is still
 \* open there. The failure detector at its best; with `PreVote` it gates
 \* elections, which safety must not depend on.
@@ -879,6 +925,7 @@ IdInit ==
     /\ gaveUp = [b \in Brokers |-> 0]
     /\ fenceIds = [b \in Brokers |-> {}]
     /\ named = {}
+    /\ wipedAt = [b \in Brokers |-> 0]
 
 Init ==
     /\ now = 0
@@ -1132,6 +1179,8 @@ Ship(b, f) ==
        ELSE UNCHANGED << bgen, fencing, queued, pending >>
     /\ bgen[b] >= LastGen(f)
     /\ ~fencing[b]
+    /\ WipeWaits(f) => IF Candidate(b) THEN WipedTakesBatches ELSE WipedTakesNamed
+    /\ WipeFloor(f, b, bgen[b])
     /\ Promises => MayPromise(f, b, bgen[b])
     /\ IF Promises THEN Promise(f, b, bgen[b]) ELSE UNCHANGED << promised, ballot >>
     /\ SetCurrent(f, b)
@@ -1691,6 +1740,8 @@ AnswerFence(b, f) ==
     /\ ~ShortCopyRefuses(b, f)
     \* Stickiness: a replica that still hears its leader refuses a candidate.
     /\ PreVote /\ Candidate(b) => ~Hears(f)
+    /\ WipeWaits(f) => ~Candidate(b) /\ WipedTakesNamed
+    /\ WipeFloor(f, b, bgen[b])
     /\ Promise(f, b, bgen[b])
     /\ SetCurrent(f, b)
     /\ LearnSet(f, b)
@@ -1784,6 +1835,7 @@ Elect(f) ==
     \* `Adopt` bounds them too, or neither ends.
     /\ Adopt > 0 => promised[f] < Adopt
     /\ SetCheck => f \in mine[f] /\ setGen[f] > 0
+    /\ ~WipeWaits(f) /\ WipeFloor(f, f, promised[f] + 1)
     \* Pre-vote: a majority of its set, itself included, no longer hears a leader.
     /\ PreVote => MajorityOf({ m \in Members(f) : ~Hears(m) }, Members(f))
     /\ bgen' = [bgen EXCEPT ![f] = promised[f] + 1]
@@ -2422,7 +2474,7 @@ Wipe(f) ==
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, fenceVars, seen, seenInc, checked, expect, inherited, leftDirty,
-                    gaveUp, fenceIds >>
+                    gaveUp, fenceIds, wipedAt >>
 
 \* A follower crashes under `FsyncMode::Periodic` or `None` and restarts
 \* without a suffix it had not synced, which it may already have answered
@@ -2485,7 +2537,7 @@ Crash(f) ==
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bexpiry,
                     hbOut, hbAt, halted, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, promised, answered, ballot, opened, setVars, ackGen,
-                    seen, seenInc, expect, inherited, fenceIds >>
+                    seen, seenInc, expect, inherited, fenceIds, wipedAt >>
 
 \* `f`, back from a process crash that kept its identity, stops cleanly and
 \* starts again in the same boot. The stop syncs what this run wrote and
@@ -2506,7 +2558,7 @@ CleanStop(f) ==
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, fenceVars, sid, seen, seenInc, wipes, checked, registered,
-                    restarting, expect, inherited, gaveUp, fenceIds >>
+                    restarting, expect, inherited, gaveUp, fenceIds, wipedAt >>
 
 \* Under `StripIds`, the wiped broker registers again without an identity;
 \* otherwise registering with one is the wipe's own step. Nothing orders the
@@ -2522,7 +2574,7 @@ Register(f) ==
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, fenceVars >>
     /\ UNCHANGED << sid, seen, seenInc, wipes, checked, expect, inherited, leftDirty, gaveUp,
-                    fenceIds >>
+                    fenceIds, wipedAt >>
 
 \* `f` loses its data directory, and with it the generation and ballot it
 \* promised. Under `PromiseFromRoutes` it answers what its routing view
@@ -2532,7 +2584,10 @@ Register(f) ==
 \* refused by the view, at its generation only the leader it names is
 \* answered, and a newer generation was never promised. The model seeds the
 \* view at the wipe, the oldest it can be; the code reads it when asked,
-\* which refuses at least as much.
+\* which refuses at least as much. Under `Elections` a candidate's
+\* generation is in no view, and the guard is `WipedWaitsForAdopt`, whose
+\* bound is taken here too: the control plane's generation at the wipe, the
+\* lowest a registration can read.
 Forget(f) ==
     /\ LosePromises
     /\ wipes = 0
@@ -2542,11 +2597,34 @@ Forget(f) ==
        THEN Promise(f, leader, gen)
        ELSE /\ promised' = [promised EXCEPT ![f] = 0]
             /\ ballot' = [ballot EXCEPT ![f] = {}]
+    \* The set file goes with the directory.
+    /\ IF SetCheck
+       THEN /\ setGen' = [setGen EXCEPT ![f] = 0]
+            /\ mine' = [mine EXCEPT ![f] = {}]
+            /\ oldSet' = [oldSet EXCEPT ![f] = {}]
+       ELSE UNCHANGED << setGen, mine, oldSet >>
+    /\ wipedAt' = IF ~WipedWaitsForAdopt THEN wipedAt
+                  ELSE [wipedAt EXCEPT ![f] = IF WipeBoundOracle /\ promised[f] > gen THEN promised[f] ELSE gen]
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
-    /\ UNCHANGED << handoffVars, fencing, answered, confirmed, opened, setVars, ackGen >>
+    /\ UNCHANGED << placeVars, fencing, answered, confirmed, opened, installed, nextVars, ackGen >>
     /\ UNCHANGED << sid, seen, seenInc, checked, registered, inc, restarting, expect, inherited,
                     leftDirty, gaveUp, fenceIds >>
+
+\* Under `WipedLearnsSet`, a wiped replica the guard holds back still learns
+\* the newer set a candidate's fence carries. It promises nothing, and the
+\* candidate does not count it.
+WipedLearnSet(b, f) ==
+    /\ WipedLearnsSet
+    /\ fencing[b] /\ bgen[b] > 0 /\ f /= b
+    /\ f \in FenceMembers(b)
+    /\ Candidate(b) /\ WipeWaits(f)
+    /\ setGen[f] < setGen[b]
+    /\ LearnSet(f, b)
+    /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
+                    hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
+    /\ UNCHANGED << placeVars, promised, fencing, answered, confirmed, ballot, opened, installed,
+                    nextVars, ackGen >>
 
 \* The incarnation `f`'s handshake gives: none before it has registered.
 \* Registering closes the connections opened before it, so a leader learns
@@ -2572,7 +2650,7 @@ Probe(b, f) ==
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, promised, fencing, answered, ballot, opened, setVars, ackGen >>
     /\ UNCHANGED << sid, wipes, registered, inc, restarting, expect, inherited, leftDirty, gaveUp,
-                    fenceIds >>
+                    fenceIds, wipedAt >>
 
 \* `f` answers one of `b`'s requests over a connection from the copy `b`
 \* knows: the `Witness` in crates/server/felix-replication/src/driver/shard.rs.
@@ -2589,7 +2667,7 @@ Answer(b, f) ==
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, fenceVars, sid, seen, seenInc, wipes, registered, inc, restarting,
-                    expect, inherited, leftDirty, gaveUp, fenceIds >>
+                    expect, inherited, leftDirty, gaveUp, fenceIds, wipedAt >>
 
 \* A report ends `b`'s pass: what it heard before counts toward no later
 \* mark.
@@ -2625,7 +2703,7 @@ Next ==
         \/ AckQuorum(b) /\ UNCHANGED quietVars
         \/ Report(b) /\ EndPass(b)
            /\ UNCHANGED << counterVars, heard, sid, seen, seenInc, wipes, registered, inc, restarting,
-                           expect, inherited, leftDirty, gaveUp, fenceIds, named >>
+                           expect, inherited, leftDirty, gaveUp, fenceIds, wipedAt, named >>
         \/ ObserveFence(b) /\ UNCHANGED quietVars
         \/ Elect(b) /\ UNCHANGED quietVars
         \/ FinishChange(b) /\ UNCHANGED quietVars
@@ -2634,6 +2712,7 @@ Next ==
             \/ LearnHwm(b, f) /\ UNCHANGED quietVars
             \/ AnswerFence(b, f) /\ UNCHANGED quietVars
             \/ RefuseStaleSet(b, f) /\ UNCHANGED quietVars
+            \/ WipedLearnSet(b, f) /\ UNCHANGED quietVars
             \/ ShipCounter(b, f) /\ UNCHANGED loudVars
             \/ AnswerCounterFence(b, f) /\ UNCHANGED loudVars
             \/ Probe(b, f) /\ UNCHANGED << counterVars, heard, named >>
@@ -2848,6 +2927,7 @@ TypeOK ==
     /\ inherited \in [Brokers -> SUBSET Brokers]
     /\ leftDirty \in [Brokers -> Nat]
     /\ gaveUp \in [Brokers -> Nat] /\ fenceIds \in [Brokers -> SUBSET Brokers] /\ named \subseteq Brokers
+    /\ wipedAt \in [Brokers -> Nat]
     /\ wipes \in 0..(IF LosePromises THEN 1 ELSE Wipes)
 
 =============================================================================

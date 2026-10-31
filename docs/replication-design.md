@@ -790,7 +790,9 @@ It also does not cover elections: a candidate's generation is
 not in the control plane until it is adopted, so no view can back a promise
 made to one. The election driver needs its own guard before [electing
 without the control plane](#electing-without-the-control-plane) ships
-([#1331](https://github.com/GetFelix/felix/issues/1331)).
+([#1331](https://github.com/GetFelix/felix/issues/1331)). The model's
+`FelixShardElectWipe*.cfg` check variants of that guard
+(`docs/formal/README.md`, "A wiped voter in an election").
 
 The cost is a fence round trip or a few while a follower's watch catches up,
 and one control-plane read per answer, only for copies with no promise: a

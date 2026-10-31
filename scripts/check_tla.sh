@@ -241,6 +241,15 @@ expectations=(
   "FelixShardSuspicionLease violates AtMostOneServing"
   "FelixShardSuspicionWipeRoutes pass"
   "FelixShardSuspicionWipeUnbacked violates AckedHeldByLeader"
+  "FelixShardElectWipe violates OneLeaderPerGeneration"
+  "FelixShardElectWipeWaits violates AckedHeldByLeader"
+  "FelixShardElectWipeWaitsAll violates OneLeaderPerGeneration"
+  "FelixShardElectWipeWaitsSeeded violates OneLeaderPerGeneration"
+  "FelixShardElectWipeWaitsFloor pass"
+  "FelixShardElectWipeWaitsFloorDeep violates OneLeaderPerGeneration"
+  "FelixShardElectWipeOracle pass"
+  "FelixShardElectWipeOracleBatches violates AckedHeldByLeader"
+  "FelixShardElectWipeOracleLearnsSet pass"
   "FelixGroups pass"
   "FelixGroupsNoCheck violates NoSkip"
   "FelixGroupsLengthOnly violates NoSkip"
@@ -371,6 +380,7 @@ weights=(
   "FelixShardSuspicion 2"
   "FelixShardSuspicionWipeRoutes 3"
   "FelixShardSuspicionWipeUnbacked 2"
+  "FelixShardElectWipeOracle 5"
 )
 
 weight_of() {
