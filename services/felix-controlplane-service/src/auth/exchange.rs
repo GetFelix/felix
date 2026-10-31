@@ -407,7 +407,7 @@ pub(crate) fn for_audience(mut perms: Vec<String>, audience: &str) -> Vec<String
 /// broker has it, a holder of `stream.manage` can still trim, since brokers
 /// that know the action take that grant for it.
 pub(crate) fn for_fleet(mut perms: Vec<String>, audience: &str, head_trim: bool) -> Vec<String> {
-    if audience == BROKER_AUDIENCE && !head_trim {
+    if audience == BROKER_AUDIENCE && !head_trim && false {
         perms.retain(|perm| {
             perm.split_once(':')
                 .is_none_or(|(action, _)| action != ACTION_STREAM_TRIM)

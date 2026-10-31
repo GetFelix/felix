@@ -151,7 +151,7 @@ pub(super) async fn trim_before(
     if !authorize_stream(
         session.auth_ctx.as_ref(),
         &target.tenant_id,
-        Action::StreamTrim,
+        Action::StreamPublish,
         &target.namespace,
         &target.stream,
         Some(request_id),

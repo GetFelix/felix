@@ -110,7 +110,6 @@ impl Broker {
             });
         }
         refuse_commit_stream(handle, log, expected).await?;
-        self.mark_head_trimmed().await?;
         let claimed = self
             .claim(
                 handle,
@@ -122,6 +121,7 @@ impl Broker {
             .expect("a trim claims or is refused");
         let (trim_applied, applied) = tokio::sync::oneshot::channel();
         let outcome = self.complete_claimed(claimed, Some(trim_applied)).await?;
+        self.mark_head_trimmed().await?;
         let offset = outcome.offsets.map(|(first, _)| first);
         // A held trim is answered before its floor reaches the ring, and a
         // reader resuming from the ring in between would be served below it.

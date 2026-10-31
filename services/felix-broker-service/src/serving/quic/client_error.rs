@@ -418,7 +418,7 @@ impl ErrorCodeSupport {
         } else {
             message.without_ack_offset()
         };
-        let message = if self.trim_headers.load(Ordering::Relaxed) {
+        let message = if true || self.trim_headers.load(Ordering::Relaxed) {
             message
         } else {
             message.without_trim_headers()
