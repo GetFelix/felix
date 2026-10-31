@@ -14,8 +14,9 @@ const ATTR = /(\s(?:href|src|poster)=)(["'])(\/(?!\/)[^"']*)\2/gi;
 
 export function prefixLinks(html, base) {
   const prefix = base.replace(/\/+$/, '');
+  // `data-docs-root` marks a link that must reach the stable root.
   return html.replace(TAG, (tag) =>
-    tag.replace(ATTR, (all, name, quote, value) =>
+    tag.includes('data-docs-root') ? tag : tag.replace(ATTR, (all, name, quote, value) =>
       value === prefix || value.startsWith(`${prefix}/`)
         ? all
         : `${name}${quote}${prefix}${value}${quote}`,

@@ -5,6 +5,6 @@ import { defineRouteMiddleware } from '@astrojs/starlight/route-data';
 export const onRequest = defineRouteMiddleware((context) => {
   context.locals.starlightRoute.entry.data.banner = {
     content:
-      'You\'re reading the docs for the next release. For the current stable release, see the <a href="/">main docs</a>.',
+      'You\'re reading the docs for the next release. For the current stable release, see the <a href="/" data-docs-root>main docs</a>.',
   };
 });

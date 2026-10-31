@@ -44,7 +44,15 @@ for (const file of htmlFiles) {
   const links = [];
   for (const [tag] of html.matchAll(TAG)) {
     if (/rel=["']?(?:sitemap|canonical)/i.test(tag)) continue;
-    for (const m of tag.matchAll(ATTR)) links.push(m[2] ?? m[3]);
+    // The /next/ banner deliberately points at the stable root.
+    const toRoot = tag.includes('data-docs-root');
+    for (const m of tag.matchAll(ATTR)) {
+      const href = m[2] ?? m[3];
+      if (toRoot) {
+        checked++;
+        if (!exists(href)) problems.push(`${pageUrl}: ${href} does not resolve`);
+      } else links.push(href);
+    }
   }
   for (const m of html.matchAll(REFRESH)) links.push(m[1]);
 
