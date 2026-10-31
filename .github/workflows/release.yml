@@ -1617,7 +1617,9 @@ jobs:
     needs:
       [linux-x86_64, felixctl-release-assets, homebrew-tap, images-merge,
        python-publish, typescript-publish, dotnet-publish, crates-publish]
-    if: ${{ always() && !inputs.nightly && !inputs.dry_run && needs.linux-x86_64.result == 'success' && !contains(inputs.tag || github.ref_name, '-') }}
+    # Only once every publish job succeeded (or was skipped), so the stable docs
+    # never point at packages that failed to publish.
+    if: ${{ !failure() && !cancelled() && !inputs.nightly && !inputs.dry_run && needs.linux-x86_64.result == 'success' && !contains(inputs.tag || github.ref_name, '-') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
