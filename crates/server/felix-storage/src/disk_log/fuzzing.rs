@@ -12,6 +12,7 @@ use super::offload::Manifest;
 use super::producers::{self, SNAPSHOT_HEADER_LEN};
 use super::recovery::{End, plan_recovery, recover_shard};
 use super::replica_state::{ENCODED_LEN, ReplicaState};
+use super::set::ReplicaSet;
 use crate::StorageError;
 use crate::log::LogConfig;
 
@@ -37,6 +38,14 @@ pub(crate) fn sidecars(data: &[u8]) {
     for bytes in [data.to_vec(), with_crc(data, ballot_crc, 0..ballot_crc)] {
         if let Some(ballot) = Ballot::decode(&bytes) {
             assert_eq!(Ballot::decode(&ballot.encode()), Some(ballot));
+        }
+    }
+
+    // The replica set's CRC closes the file too.
+    for bytes in [data.to_vec(), with_crc(data, ballot_crc, 0..ballot_crc)] {
+        if let Some(set) = ReplicaSet::decode(&bytes) {
+            let again = set.encode().expect("a decoded set encodes");
+            assert_eq!(ReplicaSet::decode(&again), Some(set));
         }
     }
 
