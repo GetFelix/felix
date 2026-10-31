@@ -397,7 +397,7 @@ impl Broker {
     }
 
     pub(crate) fn head_trims_allowed(&self) -> bool {
-        self.head_trims.get().is_none_or(|gate| (gate.0)())
+        self.head_trims.get().is_some_and(|gate| (gate.0)())
     }
 
     /// Tie a new stream state to the broker's read bounds.
