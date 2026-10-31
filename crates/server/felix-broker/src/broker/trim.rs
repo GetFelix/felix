@@ -181,7 +181,14 @@ impl Broker {
         if let Some(offset) = offset
             && log.readable_base() < before
         {
-            log.advance_commit_offset(offset + 1).await?;
+            // The trim is committed by now, but the shard may have moved
+            // and closed this log since the fence dropped. Answer as
+            // ambiguous rather than as a storage failure.
+            if log.advance_commit_offset(offset + 1).await.is_err() {
+                return Err(BrokerError::PublishSuperseded {
+                    first_offset: stood_at,
+                });
+            }
         }
         Ok(TrimOutcome {
             offset,

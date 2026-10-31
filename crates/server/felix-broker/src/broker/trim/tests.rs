@@ -719,3 +719,32 @@ async fn racing_first_marker_writes_all_succeed() {
         assert!(felix_storage::run_state::head_trimmed(dir.path()).expect("read"));
     }
 }
+
+/// **A trim whose log closes before it is answered is ambiguous, not a
+/// storage failure.** The fence drops before the waits, so a shard move can
+/// close the log between the claim and the answer.
+#[tokio::test]
+async fn a_trim_answered_after_its_log_closed_is_ambiguous() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (broker, bound) = broker(dir.path(), ConsistencyLevel::Quorum).await;
+    publish(&broker, 10).await;
+    *bound.0.lock() = ReadBound::Committed(10);
+    let handle = handle(&broker).await;
+
+    let step = broker
+        .claim_trim(&handle, 5, 10, Bytes::from_static(b"epoch-2"))
+        .await
+        .expect("claim");
+    *bound.0.lock() = ReadBound::Committed(11);
+    handle.release_committed();
+    broker
+        .close_stream_shard("t1", "ns", "orders", 0, None)
+        .await
+        .expect("close");
+
+    let err = broker.finish_trim(&handle, step).await.expect_err("closed");
+    assert!(
+        matches!(err, BrokerError::PublishSuperseded { first_offset: 10 }),
+        "{err:?}"
+    );
+}
