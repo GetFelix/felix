@@ -374,8 +374,9 @@ pub struct Fixture {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trimmer_token: Option<String>,
     /// A durable single-shard stream with no commits, which head trims are
-    /// allowed on. Nothing else writes to it, so a suite reads its tail and
-    /// trims from there.
+    /// allowed on. Nothing else writes to it. Each scenario reads the tail
+    /// itself before it trims, so a suite's order does not matter; the
+    /// scenarios of one suite must not run at the same time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trim_stream: Option<String>,
     /// True when the brokers store each record's publisher, so a client that

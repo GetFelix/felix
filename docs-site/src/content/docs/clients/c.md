@@ -1005,6 +1005,7 @@ static void on_trim(void *user_data, FelixStatus status, const char *message,
     }
 }
 
+/* `result` is passed to the callback, so it must outlive the call. */
 static FelixStatus trim_history(const FelixClient *client, uint64_t floor,
                                 struct trim_result *result) {
     static const char headers[] = "writer-7";
@@ -1018,7 +1019,9 @@ static FelixStatus trim_history(const FelixClient *client, uint64_t floor,
 }
 ```
 
-The callback gets a borrowed `FelixTrimOutcome`, valid only while it runs, and null unless the status is
+`result`, the `user_data`, must stay alive until `on_trim` has run: keep it in storage the caller owns,
+such as the struct that holds the client, and do not return from the function that declares it until the
+callback has fired. The callback gets a borrowed `FelixTrimOutcome`, valid only while it runs, and null unless the status is
 `FELIX_STATUS_OK`. `trimmed` false is a stale tail: an answer, not an error, with the shard's next
 offset in `tail`, and nothing written. When `trimmed` is true, `oldest` is the offset reads start at
 now, and `has_offset` says whether the trim wrote a record at `offset`. It is false when the floor

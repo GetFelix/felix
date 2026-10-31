@@ -529,6 +529,7 @@ try
     Console.WriteLine($"reads now start at {trim.Oldest}");
     // A trim that landed took an offset, so the next write expects the one after it.
     next = trim.Offset is { } landed ? landed + 1 : next;
+    Console.WriteLine($"the next write expects offset {next}");
 }
 catch (FelixException e) when (e.Status == FelixStatus.Unsupported)
 {

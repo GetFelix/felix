@@ -10,3 +10,5 @@
   and a `trim_stream`, finalizes `head_trim`, and four `head_trim.*`
   conformance scenarios cover the bindings. The bindings' cursor errors still
   carry only the floor, not the trim's headers.
+  A publish refusal other than a stale tail, answered to a trim, is now a
+  `BrokerError` (`invalid_request`) instead of a `PublishRefused`.

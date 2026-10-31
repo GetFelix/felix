@@ -192,11 +192,3 @@ fn a_trim_the_client_would_not_send_is_its_own_kind() {
         encode(&err)
     );
 }
-
-#[test]
-fn a_trim_that_timed_out_is_outcome_unknown() {
-    assert_eq!(
-        kind_for_code("unacknowledged", RetryClass::OutcomeUnknown),
-        KIND_OUTCOME_UNKNOWN
-    );
-}

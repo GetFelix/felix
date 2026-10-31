@@ -3795,6 +3795,13 @@ static void head_trims(const struct fixture *f) {
   CHECK(status == FELIX_STATUS_OK && t.has_outcome && !t.o.trimmed,
         "a trim at a stale offset gave %d, trimmed %d", (int)status,
         (int)t.o.trimmed);
+  if (status != FELIX_STATUS_OK || !t.has_outcome || t.o.trimmed) {
+    /* Without the real tail nothing below can be asserted. */
+    SCENARIO_END("head_trim.refused_with_the_tail");
+    SCENARIO_END("head_trim.lands_at_the_expected_offset");
+    felix_client_free(client);
+    return;
+  }
   uint64_t tail = t.o.tail;
 
   const uint8_t data[] = {'t', '-', '1', 't', '-', '2', 't', '-', '3'};

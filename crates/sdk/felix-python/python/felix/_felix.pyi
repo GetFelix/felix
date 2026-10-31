@@ -122,6 +122,7 @@ class ConditionalTrim:
     """The oldest offset reads of the shard start at now; None when refused."""
     tail: int | None
     """The shard's next offset when refused; None when trimmed."""
+    def __repr__(self) -> str: ...
 
 class GroupPosition:
     offset: int

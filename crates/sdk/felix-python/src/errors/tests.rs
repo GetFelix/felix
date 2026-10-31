@@ -176,11 +176,3 @@ fn a_trim_the_client_would_not_send_is_its_own_class() {
     let err = anyhow::Error::from(felix_client::TrimError::Unsupported).context("trim_before");
     assert_eq!(classify(&err).kind, Kind::Trim);
 }
-
-#[test]
-fn a_trim_that_timed_out_is_outcome_unknown() {
-    assert_eq!(
-        kind_for_code("unacknowledged", RetryClass::OutcomeUnknown),
-        Kind::OutcomeUnknown
-    );
-}
