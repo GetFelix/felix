@@ -704,3 +704,27 @@ async fn a_broker_without_election_refuses_the_election_kinds() {
     connection.close(0u32.into(), b"done");
     listener.stop().await;
 }
+
+/// Nobody offers `ELECTION` by default, and the switch means nothing without
+/// the fence it builds on.
+#[test]
+fn election_is_offered_only_when_switched_on_with_the_fence() {
+    let default = PeerTransportConfig::default();
+    assert!(!default.election);
+    assert!(!default.capabilities().contains(PeerCapabilities::ELECTION));
+    let on = PeerTransportConfig {
+        election: true,
+        ..PeerTransportConfig::default()
+    };
+    assert!(on.capabilities().contains(PeerCapabilities::ELECTION));
+    let without_fence = PeerTransportConfig {
+        election: true,
+        fence: false,
+        ..PeerTransportConfig::default()
+    };
+    assert!(
+        !without_fence
+            .capabilities()
+            .contains(PeerCapabilities::ELECTION)
+    );
+}

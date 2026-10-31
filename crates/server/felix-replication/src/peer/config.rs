@@ -159,6 +159,11 @@ pub struct PeerTransportConfig {
     /// is spoken to as a broker that predates the fence, and every shard it
     /// replicates keeps the lease alone.
     pub fence: bool,
+    /// `FELIX_INTERNAL_ELECTION`: whether this broker offers `ELECTION` and
+    /// checks the replica set on fences and batches that carry one. Off by
+    /// default, and only takes effect with `fence`. A test switch until the
+    /// `replica_election` fleet feature ships.
+    pub election: bool,
 }
 
 /// Where a broker's peer identity comes from. All three or none: a listener
@@ -195,6 +200,7 @@ impl Default for PeerTransportConfig {
             handshake_timeout: Duration::from_millis(DEFAULT_HANDSHAKE_TIMEOUT_MS),
             partition_file: None,
             fence: true,
+            election: false,
         }
     }
 }
@@ -264,6 +270,11 @@ impl PeerTransportConfig {
                 .union(PeerCapabilities::CACHE_FENCE)
                 .union(PeerCapabilities::GROUP_FENCE)
                 .union(PeerCapabilities::BALLOTS)
+                .union(if self.election {
+                    PeerCapabilities::ELECTION
+                } else {
+                    PeerCapabilities::NONE
+                })
         } else {
             labels
         }
@@ -312,6 +323,20 @@ impl PeerTransportConfig {
                 return Err(std::io::Error::new(
                     ErrorKind::InvalidInput,
                     format!("FELIX_INTERNAL_FENCE must be true or false, not {other:?}"),
+                ));
+            }
+        };
+        config.election = match std::env::var("FELIX_INTERNAL_ELECTION")
+            .ok()
+            .map(|value| value.trim().to_ascii_lowercase())
+            .as_deref()
+        {
+            None | Some("" | "0" | "false" | "no") => false,
+            Some("1" | "true" | "yes") => true,
+            Some(other) => {
+                return Err(std::io::Error::new(
+                    ErrorKind::InvalidInput,
+                    format!("FELIX_INTERNAL_ELECTION must be true or false, not {other:?}"),
                 ));
             }
         };

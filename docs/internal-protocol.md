@@ -768,7 +768,8 @@ offered `ELECTION`; the pool refuses to send one to a peer that did not
 (`PeerError::Unsupported`), and a peer that predates them answers
 `UnsupportedKind`. Without the capability every existing message is what it
 was, byte for byte (`every_message_that_predates_election_encodes_as_it_did`).
-No broker offers `ELECTION` or sends these kinds yet. The semantics are in
+No broker offers `ELECTION` unless it runs with the test switch
+`FELIX_INTERNAL_ELECTION=true` (and the fence on). The semantics are in
 `docs/replication-design.md`, "Electing without the control plane".
 
 `ElectionFence` (kind 41) is `Fence` followed by the election fields: a
