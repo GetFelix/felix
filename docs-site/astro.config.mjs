@@ -1,7 +1,7 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 import mermaid from 'astro-mermaid';
-import { rehypeBaseLinks } from './plugins/rehype-base-links.mjs';
+import { prefixBaseLinks } from './plugins/prefix-base-links.mjs';
 
 // The stable docs build at '/'; the next release's docs build with
 // DOCS_BASE=/next/ (see scripts/build-docs-versions.sh).
@@ -11,12 +11,12 @@ const isNext = base !== '/';
 export default defineConfig({
   site: 'https://docs.getfelix.dev',
   base,
-  markdown: { rehypePlugins: [[rehypeBaseLinks, { base }]] },
   // Only the stable root carries the old-URL redirect.
   redirects: isNext
     ? {}
     : { '/features/real-network-performance': '/features/v060-performance/' },
   integrations: [
+    prefixBaseLinks({ base }),
     mermaid({ autoTheme: true, enableLog: false }),
     starlight({
       // Fonts are self-hosted via @fontsource so the site has no runtime

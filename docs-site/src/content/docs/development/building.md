@@ -494,9 +494,9 @@ release's tag as it shipped. `main` is published under `/next/`, marked
 docs. Previews are opt-in: the root never recommends one.
 
 A plain `npm run build` builds `main` at `/`. `DOCS_BASE=/next/` builds it for
-the sub-path, and a small rehype plugin (`docs-site/plugins/rehype-base-links.mjs`)
-prefixes the base onto root-relative links, so keep writing them as
-`/getting-started/...`. To build both trees as the site does:
+the sub-path, and a small integration (`docs-site/plugins/prefix-base-links.mjs`)
+prefixes the base onto root-relative links in the built HTML, so keep writing
+them as `/getting-started/...`. To build both trees as the site does:
 
 ```bash
 scripts/build-docs-versions.sh "$(scripts/latest-stable-tag.sh)" site
