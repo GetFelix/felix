@@ -244,8 +244,8 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardElectWipeNonVoterCountsWiped.cfg` | the same, no write, with the re-admission counting the wiped replica (`ReadmitCountsWiped`) | violate `OneLeaderPerGeneration` |
 | `FelixShardElectWipeNonVoterWipesLeader.cfg` | `FelixShardElectWipeNonVoter.cfg` where a leader or candidate can be wiped (`WipeLeads`) | pass, the same invariants (19.3M distinct states, depth 35, 8 min on seven workers) |
 | `FelixShardElectWipeNonVoterTwice.cfg` | `FelixShardElectWipeNonVoter.cfg` with two wipes (`Forgets`), of the same replica or a second one | pass, the same invariants (45.0M distinct states, depth 38, 18 min on seven workers) |
-| `FelixShardElectWipeNonVoterFailover.cfg` | `FelixShardElectWipeNonVoter.cfg` with a one-tick lease and time to 1, so control-plane failover is reachable; failover never names a non-voter | pass, the same invariants (measuring) |
-| `FelixShardElectWipeNonVoterFailoverWipesLeader.cfg` | the same where a leader or candidate can be wiped (`WipeLeads`) | pass, the same invariants (measuring) |
+| `FelixShardElectWipeNonVoterFailover.cfg` | `FelixShardElectWipeNonVoter.cfg` with a one-tick lease and time to 1, so control-plane failover is reachable, and adoption up to generation 2 (at 3 it passed 136M distinct states unfinished); failover never names a non-voter | pass, the same invariants (46.9M distinct states, depth 37, 10 min on twelve workers) |
+| `FelixShardElectWipeNonVoterFailoverWipesLeader.cfg` | the same where a leader or candidate can be wiped (`WipeLeads`) | pass, the same invariants (53.2M distinct states, depth 37, 11 min on twelve workers) |
 | `FelixShardElectWipeNonVoterPromotes.cfg` | `FelixShardElectWipeNonVoterFailover.cfg` with failover free to name a non-voter (`PromoteNonVoter`) | violate `OneLeaderPerGeneration`: the non-voter forgot its promise to a candidate and is promoted at that generation |
 | `FelixShardElectWipeNonVoterElects.cfg` | `FelixShardElectWipeNonVoter.cfg`, checking a witness | violate `NoLeaderBesideNonVoter`: a leader at a generation taken after the wipe opens without the non-voter |
 | `FelixShardElectWipeNonVoterReadmits.cfg` | the same | violate `NeverReadmitted`: the re-admission completes after the catch-up |
@@ -1005,10 +1005,11 @@ Each configuration is `FelixShardElectWipe.cfg`'s shard with one write,
 elections, and adoption up to generation 3, where every bound the control
 plane holds failed:
 
-- `FelixShardElectWipeNonVoter.cfg` (one follower wiped once, no time) and
+- `FelixShardElectWipeNonVoter.cfg` (one follower wiped once, no time),
   `FelixShardElectWipeNonVoterFailover.cfg` (time, so control-plane failover
-  is reachable, and a leader or candidate can be wiped as well,
-  `WipeLeads`) pass. So do `FelixShardElectWipeNonVoterWipesLeader.cfg`
+  is reachable; adoption only up to generation 2) and
+  `FelixShardElectWipeNonVoterFailoverWipesLeader.cfg` (the same, where a
+  leader or candidate can be wiped as well, `WipeLeads`) pass. So do `FelixShardElectWipeNonVoterWipesLeader.cfg`
   (`WipeLeads` without time: the control plane gets a new leader only by
   adopting an elected one) and `FelixShardElectWipeNonVoterTwice.cfg` (two
   wipes, `Forgets`: the same replica again while its re-admission is
@@ -1057,7 +1058,8 @@ What is not checked:
   not checked; there the replica forgets a newer set as well. A
   re-admission onto a different set is not modelled.
 - Size. Three brokers, so the overlap argument is only checked in its
-  smallest shape. One write, so acknowledgements after a re-admission at the
+  smallest shape. Failover only with adoption up to generation 2 and one
+  lapse of the lease. One write, so acknowledgements after a re-admission at the
   same generation are not exercised. Two wipes at most, and a wiped leader
   only in the configurations that name `WipeLeads`.
 - Planners. The control plane re-admits from a live read, so a re-admission

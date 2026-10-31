@@ -395,8 +395,8 @@ weights=(
   "FelixShardElectWipeNonVoter 12"
   "FelixShardElectWipeNonVoterWipesLeader 16"
   "FelixShardElectWipeNonVoterTwice 40"
-  "FelixShardElectWipeNonVoterFailover 60"
-  "FelixShardElectWipeNonVoterFailoverWipesLeader 120"
+  "FelixShardElectWipeNonVoterFailover 35"
+  "FelixShardElectWipeNonVoterFailoverWipesLeader 40"
 )
 
 weight_of() {
