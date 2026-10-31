@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793413874287,
+  "lastUpdate": 1793415787674,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -50754,6 +50754,72 @@ window.BENCHMARK_DATA = {
             "range": "592.53",
             "unit": "us",
             "extra": "trials: 5\nmedian: 363.00\nmean: 610.80\nstdev: 592.53\ncv: 97.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "87aaf47ab308150e4f8f78608e416de35273d91c",
+          "message": "feat(storage): apply a trim's floor, delete below it, rebuild it at open (#1662) (#1666)\n\n* feat(storage): apply a trim's floor, delete below it, rebuild it at open (#1662)\n\nStep 3 of the conditional head trim. Each trim record the log holds is a\nhead entry (offset, floor, headers) in memory. The floor is the largest\namong entries below the apply bound: the durable offset, and the commit\noffset too on a log held at it. A batch holding a trim is synced before it\nis acknowledged under every fsync policy, so its floor applies by then.\n\nreadable_base() is max(base_offset, floor): two atomic loads when no trim\nis pending. read_range below it returns Trimmed with oldest set to it and\nthe headers of the first trim to set the floor. read_range_with_trims\nkeeps the physical base for replication.\n\nread_range returns a ReadPage whose next is where to carry on, since a page\ncan be empty below the tail when only trims remain.\n\nRetention's timer, started by the first trim even with retention off,\ndeletes sealed segments wholly below min(floor, the setting record's\noffset), and on a held log below the commit offset on disk. The active\nsegment is never deleted.\n\nThe head file is a cache written at each roll once the log is on v7, as of\nthe new segment's base. At open it is used only if its checksum holds,\nas_of is at or below the tail and each entry matches its record; otherwise\nthe v7 segments are read header by header for trims. Truncation and reset\nremove it durably before anything is written past the cut.\n\nStorage does not check that a floor is at or below its record; the broker\nmust, under the append lock (step 4).\n\nSpec-Unaffected: the floor, ReadableStart and DeleteBound follow FelixHeadTrim.tla as written. The modelled files touched (cache_watch, log_cache) only adapt to read_range returning a ReadPage.\n\n* fix(storage): refuse a head file with an entry at or past its as_of (#1662)\n\nThe open reads trims on from as_of, so such an entry would be counted twice.\n\nSpec-Unaffected: open-time validation of a derived cache file; no protocol change.\n\n* fix(storage): set the commit hold before a follower's first apply and withdraw a floor the hold passes (#1662)\n\nSpec-Unaffected: the apply bound is storage-local; no protocol or model state changes.",
+          "timestamp": "2026-10-31T02:58:35Z",
+          "tree_id": "c51455e512981ec7a5a9e4e848eb3bd71f87c776",
+          "url": "https://github.com/GetFelix/felix/commit/87aaf47ab308150e4f8f78608e416de35273d91c"
+        },
+        "date": 1793415781284,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 149,
+            "range": "1.58",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 149.00\nmean: 149.00\nstdev: 1.58\ncv: 1.06%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 214,
+            "range": "20.39",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 214.00\nmean: 224.20\nstdev: 20.39\ncv: 9.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 247,
+            "range": "688.88",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 247.00\nmean: 646.20\nstdev: 688.88\ncv: 106.60%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 198,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 198.00\nmean: 197.80\nstdev: 0.84\ncv: 0.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 414,
+            "range": "19.46",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 414.00\nmean: 420.80\nstdev: 19.46\ncv: 4.62%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1115,
+            "range": "601.28",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1115.00\nmean: 1225.60\nstdev: 601.28\ncv: 49.06%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
