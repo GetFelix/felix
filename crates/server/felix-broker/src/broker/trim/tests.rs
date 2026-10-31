@@ -670,3 +670,30 @@ async fn a_restart_with_trims_at_the_tail_refills_the_ring() {
         .generation_start_run;
     assert_eq!(run, Some((12, 2)));
 }
+
+/// **The data directory is marked before the first trim is written.** A
+/// refused trim leaves no mark, and a trim whose mark cannot be written
+/// writes nothing, so a directory without the mark holds no trim.
+#[tokio::test]
+async fn the_first_trim_marks_the_directory_before_it_writes() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (broker, _) = broker(dir.path(), ConsistencyLevel::Leader).await;
+    publish(&broker, 4).await;
+    assert!(trim(&broker, 2, 3).await.is_err());
+    assert!(!felix_storage::run_state::head_trimmed(dir.path()).expect("read"));
+
+    // The marker is written through a temporary file; a directory in its
+    // place makes the write fail.
+    let blocker = dir.path().join("head-trimmed.tmp");
+    std::fs::create_dir(&blocker).expect("block the marker");
+    assert!(
+        matches!(trim(&broker, 2, 4).await, Err(BrokerError::Storage(_))),
+        "a trim whose marker cannot be written is refused"
+    );
+    assert_eq!(tail(&broker).await, 4, "nothing written");
+    assert!(!felix_storage::run_state::head_trimmed(dir.path()).expect("read"));
+
+    std::fs::remove_dir(&blocker).expect("unblock");
+    trim(&broker, 2, 4).await.expect("trim");
+    assert!(felix_storage::run_state::head_trimmed(dir.path()).expect("read"));
+}

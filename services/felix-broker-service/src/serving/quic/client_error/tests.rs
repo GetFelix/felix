@@ -199,3 +199,86 @@ fn ack_detail_reaches_only_a_client_that_offered_it() {
     both.negotiate(0, felix_wire::KNOWN_FLAGS);
     assert!(both.binary_ack_detail());
 }
+
+/// Each way a head trim is refused has a code a client can act on, not a
+/// bare `invalid_request`, and a trim that timed out may have landed.
+#[test]
+fn every_trim_refusal_has_its_own_code() {
+    use felix_broker::BrokerError as E;
+    use felix_wire::trim_reason;
+
+    let classify = |err: E| {
+        let classified = ClientError::from_broker(&err, err.to_string());
+        (
+            classified.code().clone(),
+            classified.retry(),
+            classified.detail().and_then(|d| d.reason.clone()),
+        )
+    };
+    let reason = |name: &str| Some(name.to_string());
+    assert_eq!(
+        classify(E::HeadTrimNotEnabled),
+        (
+            ErrorCode::FeatureNotEnabled,
+            RetryClass::Fatal,
+            reason(trim_reason::HEAD_TRIM)
+        )
+    );
+    assert_eq!(
+        classify(E::TrimOnCommitStream),
+        (ErrorCode::StreamHasCommits, RetryClass::Fatal, None)
+    );
+    assert_eq!(
+        classify(E::TrimTimedOut { offset: 9 }),
+        (
+            ErrorCode::Unacknowledged,
+            RetryClass::OutcomeUnknown,
+            reason(trim_reason::TIMED_OUT)
+        )
+    );
+    assert_eq!(
+        classify(E::TrimPastTail {
+            before: 5,
+            offset: 4
+        }),
+        (
+            ErrorCode::InvalidRequest,
+            RetryClass::Fatal,
+            reason(trim_reason::PAST_TAIL)
+        )
+    );
+    assert_eq!(
+        classify(E::TrimNeedsDurableStream),
+        (
+            ErrorCode::InvalidRequest,
+            RetryClass::Fatal,
+            reason(trim_reason::NOT_DURABLE)
+        )
+    );
+}
+
+/// A cursor error's trim headers reach only a client that offered
+/// `FEATURE_HEAD_TRIM`; any other client gets the frame it always got.
+#[test]
+fn trim_headers_reach_only_a_client_that_offered_head_trim() {
+    let refused = Message::SubscribeCursorError {
+        reason: felix_wire::CursorErrorReason::TooOld,
+        requested: 0,
+        available: 5,
+        trim_headers: Some(bytes::Bytes::from_static(b"holder-2")),
+    };
+    let old = ErrorCodeSupport::default();
+    old.negotiate(0, felix_wire::ORIGINAL_V1_FLAGS);
+    let shaped = old.shape(refused.clone());
+    assert_eq!(shaped, refused.clone().without_trim_headers());
+    let json = String::from_utf8(shaped.encode().expect("encode").payload.to_vec()).expect("utf8");
+    assert_eq!(
+        json,
+        r#"{"type":"subscribe_cursor_error","reason":"too_old","requested":0,"available":5}"#
+    );
+
+    let new = ErrorCodeSupport::default();
+    new.negotiate(0, felix_wire::ORIGINAL_V1_FLAGS);
+    new.negotiate_hi(felix_wire::FEATURE_HEAD_TRIM);
+    assert_eq!(new.shape(refused.clone()), refused);
+}

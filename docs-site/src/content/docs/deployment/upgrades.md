@@ -524,8 +524,9 @@ was down for the delete.
 
 Once finalized, a durable stream accepts head trims: a trim record that hides
 the stream's history below an offset. Until then a broker in a cluster refuses
-every trim and writes nothing. Over QUIC the client gets a generic `invalid`
-error; over Kafka, an unknown-server-error response.
+every trim and writes nothing. A `trim_before` over QUIC is refused with
+`feature_not_enabled` and `detail.reason` `head_trim`. The Kafka listener
+has no request that trims.
 
 - **It is the one-way step.** A trim record is storage format v7, which an
   older broker refuses to open. Take a backup first.
@@ -540,9 +541,17 @@ error; over Kafka, an unknown-server-error response.
   that cluster has finalized `head_trim`. A log that has trimmed holds
   records an older follower or leader cannot read, and a promoted older
   leader's fetch of it fails to decode, which stalls that shard's failover.
-  Broker startup does not check for this.
+  So the first trim writes a `head-trimmed` marker in the data directory,
+  before the trim record, and a broker holding it that registers with a
+  fleet that has not finalized `head_trim` deregisters and stops with an
+  error saying so. Finalize `head_trim` first, then start it.
+- **Tokens.** The control plane mints the `stream.trim` grant into broker
+  tokens only once `head_trim` is finalized, since a broker that predates
+  the action refuses a whole token naming it. `stream.manage` lets a holder
+  trim before that.
 - **What clients see.** Nothing until something trims. Reads below a trim's
-  floor are then refused as too old.
+  floor are then refused as too old, with the trim's headers for a client
+  that offered `FEATURE_HEAD_TRIM`.
 
 A control plane older than fleet features sends none, so brokers keep them
 all off. Under the Raft backend a broker's features are kept, and a feature

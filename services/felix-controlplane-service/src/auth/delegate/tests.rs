@@ -512,6 +512,27 @@ fn a_refused_actor_token_has_its_own_code() {
     );
 }
 
+/// `stream.trim` stays off a broker token until the fleet has finalized
+/// `head_trim`, since an older broker refuses a token naming it. A
+/// control-plane token is never filtered.
+#[test]
+fn broker_tokens_carry_stream_trim_only_once_head_trim_is_finalized() {
+    let trim = "stream.trim:stream:t1/ns/orders".to_string();
+    let perms = vec![trim.clone(), ALICE_FEED.to_string()];
+    assert_eq!(
+        crate::auth::exchange::for_fleet(perms.clone(), BROKER_AUDIENCE, false),
+        vec![ALICE_FEED.to_string()]
+    );
+    assert_eq!(
+        crate::auth::exchange::for_fleet(perms.clone(), BROKER_AUDIENCE, true),
+        perms
+    );
+    assert_eq!(
+        crate::auth::exchange::for_fleet(perms.clone(), CONTROLPLANE_AUDIENCE, false),
+        perms
+    );
+}
+
 /// Brokers enforce nothing with `token.delegate`, and one that predates it
 /// would refuse a token naming it.
 #[test]

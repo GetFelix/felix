@@ -16,7 +16,8 @@ use crate::serving::quic::handlers::publish::{
 const SERVED_FEATURES_HI: u32 = felix_wire::FEATURE_INSPECT
     | felix_wire::FEATURE_STREAM_DELETED
     | felix_wire::FEATURE_PUBLISH_WIDTH
-    | felix_wire::FEATURE_EXPLICIT_SHARD;
+    | felix_wire::FEATURE_EXPLICIT_SHARD
+    | felix_wire::FEATURE_HEAD_TRIM;
 
 pub(super) async fn authenticate(
     cx: &Ctx<'_>,
@@ -46,6 +47,12 @@ pub(super) async fn authenticate(
             client_features.unwrap_or(0),
             client_flags.unwrap_or(felix_wire::ORIGINAL_V1_FLAGS),
         );
+        session
+            .error_codes
+            .negotiate_hi(felix_wire::peer_features_hi(
+                client_features.unwrap_or(0),
+                client_features_hi,
+            ));
     }
     if session.auth_ctx.is_some() {
         send_control_error(

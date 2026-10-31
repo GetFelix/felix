@@ -110,6 +110,7 @@ impl Broker {
             });
         }
         refuse_commit_stream(handle, log, expected).await?;
+        self.mark_head_trimmed().await?;
         let claimed = self
             .claim(
                 handle,

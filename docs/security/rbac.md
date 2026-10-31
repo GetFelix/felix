@@ -21,6 +21,8 @@ Canonical actions:
 - `cache.manage`
 - `stream.publish`
 - `stream.subscribe`
+- `stream.trim`: a conditional head trim over the stream; see
+  [Head trims](#head-trims)
 - `cache.read`
 - `cache.write`
 - `group.consume`
@@ -88,6 +90,20 @@ every deployment that relies on `stream.subscribe` today, so it is not.
 
 A broker refuses a token carrying an action it does not know, so upgrade brokers
 before writing policies that use the group actions.
+
+### Head trims
+
+`stream.trim`, over the stream's object, allows `trim_before`: hiding the
+stream's history below an offset. `stream.manage` also grants it at the
+broker, and `ns.manage` and `tenant.manage` reach it through the
+`stream.manage` they expand to. `stream.publish` and `stream.subscribe` do
+not, so a viewer or a publish-only token is refused with `forbidden`.
+
+The control plane mints `stream.trim` into a broker token only once the fleet
+has finalized `head_trim`. Before that a broker that predates the action
+could be serving, and it would refuse the whole token. A grant written early
+is kept and reaches tokens from the first exchange or refresh after the
+finalize. See [Head trims](../auth.md#head-trims).
 
 ### Granting one group
 

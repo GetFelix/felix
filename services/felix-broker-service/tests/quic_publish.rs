@@ -1266,3 +1266,6 @@ mod shard_streams;
 
 #[path = "quic_publish/explicit_shard.rs"]
 mod explicit_shard;
+
+#[path = "quic_publish/head_trim.rs"]
+mod head_trim;

@@ -976,3 +976,80 @@ async fn a_refused_startup_lookup_fails_the_start() {
     let _ = stop.send(());
     let _ = handle.await;
 }
+
+/// Spawn membership for a data directory and wait until it either heartbeats
+/// or gives up on joining.
+async fn join_with(calls: &Shared, data: &std::path::Path) -> MembershipTask {
+    let (base_url, stop, handle) = serve(Arc::clone(calls)).await;
+    let serving = CancellationToken::new();
+    serving.cancel();
+    let shutdown = CancellationToken::new();
+    let task = spawn(
+        build_test_client().expect("client"),
+        base_url,
+        config(),
+        crate::cluster::credential::NodeCredential::new("a-node-token"),
+        serving,
+        shutdown.clone(),
+        Arc::new(crate::cluster::lease::LeaseState::new(Duration::from_secs(
+            30,
+        ))),
+        Arc::new(felix_common::fleet::FleetGate::for_this_build()),
+        Arc::default(),
+        Arc::default(),
+        tokio::sync::watch::channel(None).0,
+        None,
+        Some(data.to_path_buf()),
+    );
+    for _ in 0..300 {
+        if task.fatal.is_cancelled() || !calls.lock().expect("lock").heartbeats.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    shutdown.cancel();
+    let _ = stop.send(());
+    let _ = handle.await;
+    task
+}
+
+/// **A directory that took a head trim does not join a fleet without
+/// `head_trim`.** An older leader promoted over its logs could not read them.
+/// The broker leaves and stops instead of serving.
+#[tokio::test]
+async fn a_trimmed_directory_refuses_a_fleet_without_head_trim() {
+    let data = tempfile::tempdir().expect("tempdir");
+    felix_storage::run_state::record_head_trimmed(data.path()).expect("mark");
+    let calls: Shared = Arc::default();
+
+    let task = join_with(&calls, data.path()).await;
+    assert!(task.fatal.is_cancelled(), "the broker stops");
+    let calls = calls.lock().expect("lock");
+    assert!(calls.heartbeats.is_empty(), "never heartbeats as a member");
+    assert_eq!(calls.deregistered, vec!["broker-a".to_string()]);
+    assert_eq!(
+        felix_storage::run_state::read_registration(data.path()).expect("read"),
+        felix_storage::run_state::Recorded::Unrecorded,
+    );
+}
+
+/// The same directory joins once the fleet has finalized `head_trim`, and a
+/// directory that never trimmed joins either way.
+#[tokio::test]
+async fn a_trimmed_directory_joins_a_fleet_with_head_trim() {
+    let data = tempfile::tempdir().expect("tempdir");
+    felix_storage::run_state::record_head_trimmed(data.path()).expect("mark");
+    let calls: Shared = Arc::new(Mutex::new(Calls {
+        fleet_features: vec![felix_common::fleet::HEAD_TRIM.name().to_string()],
+        ..Calls::default()
+    }));
+    let task = join_with(&calls, data.path()).await;
+    assert!(!task.fatal.is_cancelled());
+    assert!(!calls.lock().expect("lock").heartbeats.is_empty());
+
+    let untrimmed = tempfile::tempdir().expect("tempdir");
+    let calls: Shared = Arc::default();
+    let task = join_with(&calls, untrimmed.path()).await;
+    assert!(!task.fatal.is_cancelled());
+    assert!(!calls.lock().expect("lock").heartbeats.is_empty());
+}

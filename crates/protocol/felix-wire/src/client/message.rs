@@ -471,6 +471,47 @@ pub enum Message {
         reason: PublishRefusalReason,
         message: String,
     },
+    /// Hide one durable stream shard's records below `before`, only if the
+    /// shard's next offset is exactly `expected_offset`. The trim is a record
+    /// of its own and lands at `expected_offset`, so `before` may be at most
+    /// that.
+    ///
+    /// Answered with `trim_ok` once the trim is durable (on a `Quorum`
+    /// stream, on a majority), or `publish_refused` with `offset_mismatch`
+    /// and the tail, having written nothing. A `before` at or below the
+    /// current floor writes nothing and is answered with the floor, but only
+    /// when the tail matches. Not forwarded: a broker that does not lead the
+    /// shard answers `not_leader`. Needs `stream.trim`. Sent only to a broker
+    /// that advertised `FEATURE_HEAD_TRIM`.
+    TrimBefore {
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        shard: u32,
+        before: u64,
+        expected_offset: u64,
+        /// Kept with the trim and returned as `trim_headers` to a reader
+        /// refused below the floor it sets, so a writer can tell who trimmed
+        /// past it. Absent is empty.
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            with = "crate::client::message::base64_serde::base64_option_bytes"
+        )]
+        headers: Option<Bytes>,
+        request_id: u64,
+    },
+    /// A `trim_before` is acknowledged: reads below `oldest` are refused.
+    TrimOk {
+        request_id: u64,
+        /// Where the trim record landed, so the shard's next offset is one
+        /// past it. Absent when the floor already stood at or past `before`
+        /// and nothing was written.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        offset: Option<u64>,
+        /// Where reads of the shard start now.
+        oldest: u64,
+    },
 
     // Subscribing, and the events a subscription delivers.
     /// Subscribe to a stream; server responds with Subscribed.
@@ -546,6 +587,15 @@ pub enum Message {
         /// For `too_old`, the oldest offset still retained. For `in_future`,
         /// the current tail. Either way: the nearest offset that would work.
         available: u64,
+        /// For `too_old` below a head trim's floor, the headers of the trim
+        /// that set it. Sent only to a client that offered
+        /// `FEATURE_HEAD_TRIM`.
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            with = "crate::client::message::base64_serde::base64_option_bytes"
+        )]
+        trim_headers: Option<Bytes>,
     },
     /// First message on the event stream for a subscription.
     EventStreamHello { subscription_id: u64 },
@@ -1338,6 +1388,25 @@ impl Message {
             Message::PublishOk { request_id, .. } => Message::PublishOk {
                 request_id,
                 offset: None,
+            },
+            other => other,
+        }
+    }
+
+    /// Drop a `SubscribeCursorError`'s trim headers, for a client that did
+    /// not offer `FEATURE_HEAD_TRIM`. Anything else is returned unchanged.
+    pub fn without_trim_headers(self) -> Self {
+        match self {
+            Message::SubscribeCursorError {
+                reason,
+                requested,
+                available,
+                ..
+            } => Message::SubscribeCursorError {
+                reason,
+                requested,
+                available,
+                trim_headers: None,
             },
             other => other,
         }

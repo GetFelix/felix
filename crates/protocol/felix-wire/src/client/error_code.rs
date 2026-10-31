@@ -66,13 +66,21 @@ pub enum ErrorCode {
     /// longer has here, most likely because it was deleted and created again.
     /// Nothing was written. Ask the stream's width again before retrying.
     StaleWidth,
+    /// The request needs a fleet feature this broker's fleet has not
+    /// finalized. `ErrorDetail::reason` names it, for example `head_trim`.
+    /// Nothing was applied. It keeps failing until an operator finalizes the
+    /// feature.
+    FeatureNotEnabled,
+    /// A head trim on a stream holding atomic commits, whose state lives in
+    /// the records a trim would remove. Nothing was written.
+    StreamHasCommits,
     /// A code this version does not know. Its retry class still applies.
     Unknown(String),
 }
 
 impl ErrorCode {
     /// Every code this version defines, for tables and checks.
-    pub const ALL: [ErrorCode; 17] = [
+    pub const ALL: [ErrorCode; 19] = [
         ErrorCode::Unauthenticated,
         ErrorCode::Forbidden,
         ErrorCode::NotFound,
@@ -90,6 +98,8 @@ impl ErrorCode {
         ErrorCode::StaleClaim,
         ErrorCode::Revoked,
         ErrorCode::StaleWidth,
+        ErrorCode::FeatureNotEnabled,
+        ErrorCode::StreamHasCommits,
     ];
 
     /// The wire name.
@@ -112,6 +122,8 @@ impl ErrorCode {
             ErrorCode::StaleClaim => "stale_claim",
             ErrorCode::Revoked => "revoked",
             ErrorCode::StaleWidth => "stale_width",
+            ErrorCode::FeatureNotEnabled => "feature_not_enabled",
+            ErrorCode::StreamHasCommits => "stream_has_commits",
             ErrorCode::Unknown(name) => name,
         }
     }
@@ -146,6 +158,8 @@ impl ErrorCode {
             ErrorCode::StaleClaim => 15,
             ErrorCode::Revoked => 16,
             ErrorCode::StaleWidth => 17,
+            ErrorCode::FeatureNotEnabled => 18,
+            ErrorCode::StreamHasCommits => 19,
             ErrorCode::Unknown(_) => 0,
         }
     }
@@ -167,7 +181,9 @@ impl ErrorCode {
             | ErrorCode::Forbidden
             | ErrorCode::InvalidRequest
             | ErrorCode::LimitExceeded
-            | ErrorCode::Revoked => RetryClass::Fatal,
+            | ErrorCode::Revoked
+            | ErrorCode::FeatureNotEnabled
+            | ErrorCode::StreamHasCommits => RetryClass::Fatal,
             // A broker learns streams from the control plane, so a promoted
             // broker says "not found" for a stream it is about to serve.
             ErrorCode::NotFound | ErrorCode::Overloaded => RetryClass::RetryAfter,
@@ -327,6 +343,21 @@ pub mod shard_unavailable_reason {
     /// forward the request there. Connecting to the leader directly is not
     /// refused by this.
     pub const REGION_NOT_ROUTABLE: &str = "region_not_routable";
+}
+
+/// The `reason` values a refused `trim_before` carries, beside its code.
+pub mod trim_reason {
+    /// With `feature_not_enabled`: the fleet has not finalized `head_trim`.
+    pub const HEAD_TRIM: &str = "head_trim";
+    /// With `invalid_request`: `before` is past the offset the trim record
+    /// would land at, `expected_offset`.
+    pub const PAST_TAIL: &str = "trim_past_tail";
+    /// With `invalid_request`: the stream keeps no log to trim.
+    pub const NOT_DURABLE: &str = "not_durable";
+    /// With `unacknowledged`: the broker stopped waiting for the trim to be
+    /// committed. It may still land; a retry with the same expected offset is
+    /// then refused with `offset_mismatch`.
+    pub const TIMED_OUT: &str = "trim_timed_out";
 }
 
 #[cfg(test)]

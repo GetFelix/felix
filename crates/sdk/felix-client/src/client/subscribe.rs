@@ -152,6 +152,7 @@ impl Connection {
                 reason,
                 requested,
                 available,
+                ..
             }) => {
                 // Surfaced as a typed error rather than a debug-formatted
                 // message, because the two reasons have opposite remedies and an
@@ -339,6 +340,7 @@ impl Connection {
                 reason,
                 requested,
                 available,
+                ..
             } => Err(SubscribeCursorError {
                 reason,
                 requested,

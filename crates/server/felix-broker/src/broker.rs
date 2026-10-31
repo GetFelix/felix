@@ -162,6 +162,8 @@ pub struct Broker {
     /// Whether head trims are allowed, once the node says. Unset refuses
     /// them.
     head_trims: std::sync::OnceLock<NodeGate>,
+    /// The data directory's head-trim marker is known to be on disk.
+    head_trim_marked: std::sync::atomic::AtomicBool,
     /// Seeds producer ids; randomly keyed at construction.
     producer_ids: ahash::RandomState,
     producer_id_counter: std::sync::atomic::AtomicU64,
@@ -229,6 +231,7 @@ impl Broker {
             appended: Arc::new(tokio::sync::Notify::new()),
             read_bounds: Arc::default(),
             head_trims: std::sync::OnceLock::new(),
+            head_trim_marked: std::sync::atomic::AtomicBool::new(false),
             trim_wait: crate::broker::trim::TRIM_WAIT,
             producer_ids: ahash::RandomState::new(),
             producer_id_counter: std::sync::atomic::AtomicU64::new(0),
@@ -398,6 +401,26 @@ impl Broker {
 
     pub(crate) fn head_trims_allowed(&self) -> bool {
         self.head_trims.get().is_some_and(|gate| (gate.0)())
+    }
+
+    /// Put the data directory's head-trim marker on disk before the first
+    /// trim is written, so the node can refuse a fleet that has not
+    /// finalized `head_trim` (`felix_storage::run_state::head_trimmed`).
+    pub(crate) async fn mark_head_trimmed(&self) -> Result<()> {
+        use std::sync::atomic::Ordering;
+        if self.head_trim_marked.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let Some(storage) = &self.durable_storage else {
+            return Ok(());
+        };
+        let root = storage.root().to_path_buf();
+        tokio::task::spawn_blocking(move || felix_storage::run_state::record_head_trimmed(&root))
+            .await
+            .map_err(|err| BrokerError::Storage(format!("record the head-trim marker: {err}")))?
+            .map_err(|err| BrokerError::Storage(format!("record the head-trim marker: {err}")))?;
+        self.head_trim_marked.store(true, Ordering::Release);
+        Ok(())
     }
 
     /// Tie a new stream state to the broker's read bounds.

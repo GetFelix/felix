@@ -248,11 +248,16 @@ impl ClientError {
             | E::GroupOffsetNotHandedOut { .. }
             | E::CommitNeedsDurableStream
             | E::ExpectedOffsetNeedsDurableStream
-            | E::EmptyConditionalPublish
-            | E::TrimPastTail { .. }
-            | E::TrimNeedsDurableStream
-            | E::TrimOnCommitStream
-            | E::HeadTrimNotEnabled => Self::invalid(message),
+            | E::EmptyConditionalPublish => Self::invalid(message),
+            E::TrimPastTail { .. } => {
+                Self::invalid(message).with_reason(felix_wire::trim_reason::PAST_TAIL)
+            }
+            E::TrimNeedsDurableStream => {
+                Self::invalid(message).with_reason(felix_wire::trim_reason::NOT_DURABLE)
+            }
+            E::TrimOnCommitStream => Self::new(ErrorCode::StreamHasCommits, message),
+            E::HeadTrimNotEnabled => Self::new(ErrorCode::FeatureNotEnabled, message)
+                .with_reason(felix_wire::trim_reason::HEAD_TRIM),
             // Answered as `publish_refused` with the tail wherever the request
             // can carry it; this is only for a caller that cannot.
             E::OffsetMismatch { .. } => Self::invalid(message).with_retry(RetryClass::Fatal),
@@ -274,7 +279,8 @@ impl ClientError {
             // Written to a log that was then reset: it may or may not survive.
             E::PublishSuperseded { .. } => Self::new(ErrorCode::Unacknowledged, message),
             // The trim may still land, so the caller cannot assume it did not.
-            E::TrimTimedOut { .. } => Self::new(ErrorCode::Unacknowledged, message),
+            E::TrimTimedOut { .. } => Self::new(ErrorCode::Unacknowledged, message)
+                .with_reason(felix_wire::trim_reason::TIMED_OUT),
             // Nothing was read; the shard is served again here once a mark or
             // a lease comes back, or by its new owner.
             E::NotReadable { reason, .. } | E::StateNotReadable(reason) => {
@@ -372,6 +378,7 @@ pub(crate) struct ErrorCodeSupport {
     binary_ack: AtomicBool,
     binary_ack_detail: AtomicBool,
     ack_offset: AtomicBool,
+    trim_headers: AtomicBool,
 }
 
 impl ErrorCodeSupport {
@@ -395,12 +402,26 @@ impl ErrorCodeSupport {
         );
     }
 
+    /// Record whether the client offered `FEATURE_HEAD_TRIM`, from the
+    /// extended word of its `Auth`.
+    pub(crate) fn negotiate_hi(&self, peer_features_hi: u32) {
+        self.trim_headers.store(
+            felix_wire::supports_feature(peer_features_hi, felix_wire::FEATURE_HEAD_TRIM),
+            Ordering::Relaxed,
+        );
+    }
+
     /// The message as this client should receive it.
     pub(crate) fn shape(&self, message: Message) -> Message {
         let message = if self.ack_offset() {
             message
         } else {
             message.without_ack_offset()
+        };
+        let message = if self.trim_headers.load(Ordering::Relaxed) {
+            message
+        } else {
+            message.without_trim_headers()
         };
         if self.json.load(Ordering::Relaxed) {
             message

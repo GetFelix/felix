@@ -1045,6 +1045,35 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 )
                 .await?
             }
+            Message::TrimBefore {
+                tenant_id,
+                namespace,
+                stream,
+                shard,
+                before,
+                expected_offset,
+                headers,
+                request_id,
+            } => {
+                commit::trim_before(
+                    &cx,
+                    &mut session,
+                    commit::Target {
+                        tenant_id,
+                        namespace,
+                        stream,
+                        entity_key: None,
+                        shard: Some(shard),
+                    },
+                    commit::Trim {
+                        before,
+                        expected_offset,
+                        headers: headers.unwrap_or_default(),
+                    },
+                    request_id,
+                )
+                .await?
+            }
             Message::StateGet {
                 tenant_id,
                 namespace,
@@ -1125,6 +1154,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
             | Message::StreamRecords { .. }
             | Message::OffsetValue { .. }
             | Message::CommitOk { .. }
+            | Message::TrimOk { .. }
             | Message::StateValue { .. }
             | Message::Unsupported { .. }
             | Message::GroupDeadLetterList { .. }

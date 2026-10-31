@@ -143,3 +143,74 @@ fn an_offset_mismatch_carries_the_tail() {
         .expect("json");
     assert_eq!(json, r#"{"offset_mismatch":{"tail":9}}"#);
 }
+
+/// `trim_before` and `trim_ok` round-trip, a trim without headers or a
+/// no-op answer leave the optional fields off the wire, and a cursor error
+/// without trim headers is the frame it always was.
+#[test]
+fn trim_messages_round_trip_and_omit_what_is_unset() {
+    let trim = Message::TrimBefore {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "orders".to_string(),
+        shard: 2,
+        before: 5,
+        expected_offset: 10,
+        headers: Some(Bytes::from_static(b"holder-2")),
+        request_id: 7,
+    };
+    let bare = Message::TrimBefore {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "orders".to_string(),
+        shard: 2,
+        before: 5,
+        expected_offset: 10,
+        headers: None,
+        request_id: 7,
+    };
+    let landed = Message::TrimOk {
+        request_id: 7,
+        offset: Some(10),
+        oldest: 5,
+    };
+    let no_op = Message::TrimOk {
+        request_id: 7,
+        offset: None,
+        oldest: 5,
+    };
+    for message in [&trim, &bare, &landed, &no_op] {
+        let decoded = Message::decode(message.encode().expect("encode")).expect("decode");
+        assert_eq!(&decoded, message);
+    }
+    let json = |message: &Message| {
+        String::from_utf8(message.encode().expect("encode").payload.to_vec()).expect("utf8")
+    };
+    assert!(!json(&bare).contains("headers"), "{}", json(&bare));
+    assert_eq!(
+        json(&no_op),
+        r#"{"type":"trim_ok","request_id":7,"oldest":5}"#
+    );
+
+    let cursor = Message::SubscribeCursorError {
+        reason: crate::CursorErrorReason::TooOld,
+        requested: 0,
+        available: 5,
+        trim_headers: None,
+    };
+    assert_eq!(
+        json(&cursor),
+        r#"{"type":"subscribe_cursor_error","reason":"too_old","requested":0,"available":5}"#
+    );
+    let tagged = Message::SubscribeCursorError {
+        reason: crate::CursorErrorReason::TooOld,
+        requested: 0,
+        available: 5,
+        trim_headers: Some(Bytes::from_static(b"holder-2")),
+    };
+    assert_eq!(
+        Message::decode(tagged.encode().expect("encode")).expect("decode"),
+        tagged
+    );
+    assert_eq!(tagged.without_trim_headers(), cursor);
+}

@@ -1,5 +1,5 @@
-//! Serving an atomic commit, a conditional publish, and reads of the state
-//! commits write.
+//! Serving an atomic commit, a conditional publish, a head trim, and reads of
+//! the state commits write.
 //!
 //! Each is a write to one stream shard's log, so it takes the same gates a
 //! publish does: the shard dispatched here, a place in its write fence, and on
@@ -10,7 +10,9 @@
 use std::future::Future;
 
 use bytes::Bytes;
-use felix_broker::{Broker, BrokerError, PublishOutcome, StateOp, StateRead, StreamHandle};
+use felix_broker::{
+    Broker, BrokerError, PublishOutcome, StateOp, StateRead, StreamHandle, TrimOutcome,
+};
 use felix_wire::StateChange;
 
 use crate::serving::quic::client_error::ClientError;
@@ -137,6 +139,46 @@ pub(crate) async fn publish_at(
         },
     )
     .await
+}
+
+/// Hide `shard` of `stream` below `before`, only if its next offset is
+/// `expected_offset`.
+///
+/// Not forwarded and not queued, like a conditional publish. The trim
+/// waits for its own commit (on a `Quorum` stream, the committed mark) before
+/// it answers, so there is no separate quorum wait here. The fence guard is
+/// held for that wait, which is bounded by the trim's own timeout.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn trim_at(
+    broker: &Broker,
+    publish_ctx: &PublishContext,
+    tenant_id: &str,
+    namespace: &str,
+    stream: &str,
+    shard: u32,
+    before: u64,
+    expected_offset: u64,
+    headers: Bytes,
+) -> Result<TrimOutcome, NotWritten> {
+    let context = "trim not served";
+    let key = shard_key(publish_ctx, tenant_id, namespace, stream, None, Some(shard))?;
+    let (dispatched, mut fenced) = dispatch_write(publish_ctx.ingress.as_deref(), &key).await;
+    let generation = owned(dispatched, &key)?;
+    let handle = broker
+        .resolve_stream_handle(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+        .await
+        .map_err(|err| ClientError::from_broker(&err, context))?;
+    let _guard: Option<FenceGuard> = fence::enter_or_keep(
+        &mut fenced,
+        publish_ctx.ingress.as_deref(),
+        Some(&key),
+        generation,
+    )
+    .map_err(ClientError::from)?;
+    broker
+        .trim_before_at(&handle, before, expected_offset, headers)
+        .await
+        .map_err(|err| NotWritten::from_broker(&err, context))
 }
 
 /// Make `write` on the shard `key` names, if this broker leads it, inside the

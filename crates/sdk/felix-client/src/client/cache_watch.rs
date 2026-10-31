@@ -184,6 +184,7 @@ impl Connection {
                 reason,
                 requested,
                 available,
+                ..
             }) => {
                 return Err(SubscribeCursorError {
                     reason,

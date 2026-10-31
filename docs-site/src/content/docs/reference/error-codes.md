@@ -34,12 +34,12 @@ The class is the default the broker sends. `Number` is the `u16` a binary publis
 | `unauthenticated` | 1 | `fatal` | The stream has not authenticated, or the credential was refused. | A request before `auth`, or a token that does not verify or has expired. | Get a new token. A client with a token provider does this once per refused stream. Do not retry with the same token. |
 | `forbidden` | 2 | `fatal` | The credential does not grant this operation. | A missing permission, or a tenant other than the token's. | Fix the grant. Retrying cannot succeed. |
 | `not_found` | 3 | `retry_after` | The tenant, namespace, stream, cache or group does not exist on this broker. | A typo, or a stream that was never created. On a cluster, a broker promoted a moment ago has not yet learned a stream it is about to serve. | Retry briefly, as the Rust cluster client does for 5 seconds. If it persists, create the resource or fix the name. |
-| `invalid_request` | 4 | `fatal` | The request is malformed or can never succeed as sent. | A malformed frame or batch, unknown frame flags, a missing `request_id`, a second `auth`, a bad watch filter, a shard at or past the stream's shard count. | Fix the request. Nothing was written. |
+| `invalid_request` | 4 | `fatal` | The request is malformed or can never succeed as sent. | A malformed frame or batch, unknown frame flags, a missing `request_id`, a second `auth`, a bad watch filter, a shard at or past the stream's shard count. A head trim past its own record (`detail.reason` `trim_past_tail`) or on an in-memory stream (`not_durable`). | Fix the request. Nothing was written. |
 | `shard_unavailable` | 5 | `retry` | Nobody can serve the shard right now. | A shard being moved, opened or failed over. `detail.reason` says which; see [shard unavailable reasons](#shard-unavailable-reasons). | Retry with backoff, honoring `retry_after_ms` when present. Nothing was applied. |
 | `not_leader` | 6 | `redirect` | Another broker owns the shard. | The client went to a broker that does not lead the shard, and the dedicated `not_leader` message could not be sent: to a client without `FEATURE_REDIRECT`, or for a publish the broker cannot forward. | Go to the owner. The cluster client does this itself. |
 | `quorum_timeout` | 7 | `outcome_unknown` | The leader wrote the batch and a majority did not confirm it in time. It may survive. | A write to a `Quorum` stream or cache while followers are slow or down. | Do not resend a plain publish. Use an idempotent producer, or reconcile by reading the stream. |
 | `leadership_lost` | 8 | `outcome_unknown` | Leadership moved after the leader wrote the batch and before a majority held it. | A write to a `Quorum` stream or cache during a failover or move. | As for `quorum_timeout`. |
-| `unacknowledged` | 9 | `outcome_unknown` | The broker stopped waiting for the write's outcome. | A forwarded batch whose answer never came, a commit that outlasted the ack wait, or a publish whose shard log was reset while it waited behind earlier publishes. | As for `quorum_timeout`. The last case reached no reader. |
+| `unacknowledged` | 9 | `outcome_unknown` | The broker stopped waiting for the write's outcome. | A forwarded batch whose answer never came, a commit that outlasted the ack wait, a publish whose shard log was reset while it waited behind earlier publishes, or a head trim that waited 30 seconds to commit (`detail.reason` `trim_timed_out`). | As for `quorum_timeout`. The publish case reached no reader. A timed-out trim may still land, and a retry with the same expected offset is then refused with `offset_mismatch`: read the shard to tell. |
 | `overloaded` | 10 | `retry_after` | The broker is shedding load. | A full ingress queue or ack path, a full disk under durable storage, a full per-tenant publish queue, or a tenant over its quota. See [overloaded reasons](#overloaded-reasons). | Back off and retry. Sent as `outcome_unknown` when the batch was already queued before the broker ran out of room to track its ack. |
 | `limit_exceeded` | 11 | `fatal` | The request exceeds a configured limit. | Too many subscriptions on one connection, or a payload over the size limit. | Reduce the request or raise the limit. It will keep failing. |
 | `draining` | 12 | `retry` | The broker is shutting down and takes no new work. | A new control stream opened while the connection drains. | Connect to another broker. |
@@ -48,6 +48,8 @@ The class is the default the broker sends. `Number` is the `u16` a binary publis
 | `stale_claim` | 15 | `retry`, shown as `fatal` by the clients | The group has no record of handing this offset out. Nothing was applied, and the record will be delivered again. | A `group_ack` or `group_nack` after the group's in-memory state was rebuilt, by eviction while idle or a shard failover. Sent as `fatal` to a `group_extend`, or a `group_nack` naming `attempts`, whose claim no longer stands. | Drop the settlement and poll again. The record comes back. |
 | `revoked` | 16 | `fatal` | The credential was revoked: its principal, or the actor of a delegated token. | Answer to `auth` with such a token, or the last frame of an open stream when the revocation reaches the broker. | Stop using the token. A token minted after the revocation may be accepted, so a client with a token provider can authenticate again. |
 | `stale_width` | 17 | `retry` | The keyed batch was routed by a width the stream does not have on this broker. Nothing was written. | The stream was deleted and created again with a different shard count after the client last asked for its width. | Ask `stream_shards` again, then retry. Only a client that sent `publish_width` gets it. |
+| `feature_not_enabled` | 18 | `fatal` | The request needs a fleet feature that has not been finalized. `detail.reason` names it. Nothing was applied. | A head trim on a cluster that has not finalized `head_trim` (`detail.reason` `head_trim`). | Finalize the feature (`felix-controlplane admin features finalize head_trim`) once every broker is upgraded. It keeps failing until then. |
+| `stream_has_commits` | 19 | `fatal` | The stream holds atomic commits, whose state lives in the records a trim would remove. Nothing was written. | A head trim on a stream that has taken a `commit`. | Do not trim that stream. Retention still applies to it. |
 
 A code this client does not know is kept as an unknown code with its retry class. `0` is never sent as a number.
 
@@ -74,9 +76,20 @@ A code this client does not know is kept as an unknown code with its retry class
 | `publish_queue_full` | The broker's publish queue had no room for the publish's tenant. Nothing was queued. |
 | `tenant_quota` | The publish's tenant is over its publish quota. Nothing was queued. `retry_after_ms` says when the tenant is back under. |
 
+## Head trim reasons
+
+`detail.reason` on a refused head trim (`trim_before`), beside its code. A stale expected offset is not among them: it is answered with `publish_refused` and `offset_mismatch`, like `publish_if`.
+
+| Reason | Code | Meaning | What to do |
+| --- | --- | --- | --- |
+| `head_trim` | `feature_not_enabled` | The cluster has not finalized `head_trim`. Nothing was written. | Finalize it once every broker is upgraded. |
+| `trim_past_tail` | `invalid_request` | `before` is past the expected offset, where the trim record would land. Nothing was written. | Trim to at most the expected offset. |
+| `not_durable` | `invalid_request` | The stream is in memory and keeps no log to trim. | Retention and the replay ring bound an in-memory stream instead. |
+| `trim_timed_out` | `unacknowledged` | The broker waited 30 seconds for the trim to commit. It may still land. | Read the shard: below `before` is `too_old` once it landed. A retry with the same expected offset is refused with `offset_mismatch` if it did. |
+
 ## Publish refusal reasons
 
-A conditional or idempotent write that the broker will not append is answered with `publish_refused`, not an error code, because each reason names a different remedy. It answers a `publish_idempotent`, a `publish_if`, or a `commit` that carried `expected_offset`. In the Rust client it arrives as a `PublishRefused` error carrying the reason. The Python and TypeScript bindings have no idempotent or conditional publish, so they never see it. The C ABI reports a refused conditional write as `FELIX_STATUS_OK` with `written` false and the shard's tail.
+A conditional or idempotent write that the broker will not append is answered with `publish_refused`, not an error code, because each reason names a different remedy. It answers a `publish_idempotent`, a `publish_if`, a `commit` that carried `expected_offset`, or a head trim (`trim_before`). In the Rust client it arrives as a `PublishRefused` error carrying the reason. The Python and TypeScript bindings have no idempotent or conditional publish, so they never see it. The C ABI reports a refused conditional write as `FELIX_STATUS_OK` with `written` false and the shard's tail.
 
 | Reason | Carries | Meaning | What to do |
 | --- | --- | --- | --- |
@@ -84,7 +97,7 @@ A conditional or idempotent write that the broker will not append is answered wi
 | `unknown_producer` | none | The broker holds no sequence for this producer on this shard and the batch was not its first. | Start again with a new producer id. |
 | `sequence_expired` | none | The sequence is older than the window the broker keeps, so whether it was appended cannot be told. | Treat the outcome as unknown and reconcile. |
 | `sequence_reused` | none | The broker already holds a batch under this sequence with different payloads. Only sent to a client that offered `FEATURE_SEQUENCE_REUSED`. | The producer reused a number it had spent. Fix the producer. |
-| `offset_mismatch` | `tail` | A `publish_if` or conditional `commit` expected a different next offset. Nothing was written and no offset consumed. | Read the shard, then try again from `tail` if you still own it. |
+| `offset_mismatch` | `tail` | A `publish_if`, conditional `commit` or head trim expected a different next offset. Nothing was written and no offset consumed. | Read the shard, then try again from `tail` if you still own it. |
 | `not_leader` | `node_id`, `addr` | This broker does not lead the shard, and only the leader holds the sequences. | Send the batch to the broker named. |
 
 ## Cursor error reasons
@@ -93,7 +106,7 @@ A subscribe that cannot start where it asked is answered with `subscribe_cursor_
 
 | Reason | Meaning | What to do |
 | --- | --- | --- |
-| `too_old` | Retention discarded the offset, or it fell out of an in-memory stream's replay ring. `available` is the oldest retained. | Decide whether to accept the gap and resume from `earliest` or `available`. |
+| `too_old` | Retention discarded the offset, a head trim hid it, or it fell out of an in-memory stream's replay ring. `available` is the oldest readable. Below a trim's floor, a client that offered `FEATURE_HEAD_TRIM` also gets `trim_headers`, the headers of the trim that set it. | Decide whether to accept the gap and resume from `earliest` or `available`. |
 | `in_future` | The offset is past the end of the stream. `available` is the current tail. | Usually a checkpoint written for a different stream. Fix the checkpoint. |
 
 ## How each client surfaces them
@@ -119,6 +132,8 @@ All clients pick the exception class from the code, except that an `outcome_unkn
 | `stale_claim` | `BrokerError` | `FelixError` | `FelixError` | `FELIX_STATUS_ERROR` (`Error`) |
 | `revoked` | `BrokerError` | `AuthError` | `AuthError` | `FELIX_STATUS_AUTH` (`Auth`) |
 | `stale_width` | `BrokerError` | `FelixError` | `FelixError` | `FELIX_STATUS_ERROR` (`Error`) |
+| `feature_not_enabled` | `BrokerError` | `FelixError` | `FelixError` | `FELIX_STATUS_ERROR` (`Error`) |
+| `stream_has_commits` | `BrokerError` | `FelixError` | `FelixError` | `FELIX_STATUS_ERROR` (`Error`) |
 
 A few errors come from the client rather than the broker and have no code:
 

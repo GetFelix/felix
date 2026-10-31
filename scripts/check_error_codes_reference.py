@@ -6,7 +6,7 @@ that the page omits is one nobody can look up. The page is checked against the
 wire crate that defines them:
 
 * `ErrorCode` and `RetryClass` in `client/error_code.rs`, from their `as_str` arms,
-* the `shard_unavailable_reason` constants in the same file,
+* the `shard_unavailable_reason` and `trim_reason` constants in the same file,
 * `PublishRefusalReason` and `CursorErrorReason` in `client/message/fields.rs`,
   from their variants.
 
@@ -70,6 +70,14 @@ def rows(section: str) -> set[str]:
     return set(re.findall(r"^\| `([a-z_0-9]+)` \|", section, re.M))
 
 
+def module_constants(source: str, module: str) -> set[str]:
+    """The string values of the `pub const`s in `pub mod <module> { ... }`."""
+    match = re.search(rf"pub mod {module} \{{(.*?)^\}}", source, re.S | re.M)
+    if match is None:
+        raise SystemExit(f"could not find `pub mod {module}`")
+    return set(re.findall(r'pub const [A-Z_]+: &str = "([a-z_]+)"', match.group(1)))
+
+
 def expected() -> dict[str, set[str]]:
     codes = (WIRE / "error_code.rs").read_text()
     fields = (WIRE / "message/fields.rs").read_text()
@@ -77,9 +85,8 @@ def expected() -> dict[str, set[str]]:
     return {
         "Error codes": set(re.findall(r'ErrorCode::[A-Za-z]+ => "([a-z_]+)"', codes)),
         "Retry classes": set(re.findall(r'RetryClass::[A-Za-z]+ => "([a-z_]+)"', codes)),
-        "Shard unavailable reasons": set(
-            re.findall(r'pub const [A-Z_]+: &str = "([a-z_]+)"', codes)
-        ),
+        "Shard unavailable reasons": module_constants(codes, "shard_unavailable_reason"),
+        "Head trim reasons": module_constants(codes, "trim_reason"),
         "Overloaded reasons": set(
             re.findall(r'(?:TENANT_QUOTA|QUEUE_FULL)_REASON: &str = "([a-z_]+)"', overloaded)
         ),

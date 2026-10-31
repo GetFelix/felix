@@ -301,6 +301,173 @@ async fn exchange_returns_tenant_scoped_token() {
     );
 }
 
+/// **`stream.trim` reaches a broker token only once the fleet has finalized
+/// `head_trim`.** An older broker refuses a whole token naming an action it
+/// cannot parse, so until then the grant is left off, and the stream's other
+/// grants still arrive.
+#[tokio::test]
+async fn stream_trim_is_minted_only_once_head_trim_is_finalized() {
+    use felix_controlplane_service::model::{
+        Node, NodeCapacity, NodeLifecycle, NodeSpec, NodeStatus,
+    };
+
+    let (addr, _handle) = spawn_jwks_server(jwks_for_key("kid-1")).await;
+    let issuer = format!("http://{addr}");
+    let token = mint_upstream_token(IDP_PRIVATE_KEY_PEM, &issuer, "aud-1", "kid-1");
+    let store = Arc::new(InMemoryStore::new(StoreConfig {
+        changes_limit: 200,
+        change_retention_max_rows: Some(200),
+    }));
+    store
+        .create_tenant(Tenant {
+            tenant_id: "t1".to_string(),
+            display_name: "Tenant One".to_string(),
+        })
+        .await
+        .expect("tenant");
+    store
+        .upsert_idp_issuer(
+            "t1",
+            IdpIssuerConfig {
+                issuer: issuer.clone(),
+                audiences: vec!["aud-1".to_string()],
+                discovery_url: None,
+                jwks_url: Some(format!("{issuer}/jwks")),
+                claim_mappings: ClaimMappings::default(),
+            },
+        )
+        .await
+        .expect("issuer");
+    for action in ["stream.trim", "stream.publish"] {
+        store
+            .add_rbac_policy(
+                "t1",
+                PolicyRule {
+                    subject: "role:holder".to_string(),
+                    object: "stream:t1/payments/ledger".to_string(),
+                    action: action.to_string(),
+                },
+            )
+            .await
+            .expect("policy");
+    }
+    store
+        .add_rbac_grouping(
+            "t1",
+            GroupingRule {
+                user: principal_id(&issuer, "user-1"),
+                role: "role:holder".to_string(),
+            },
+        )
+        .await
+        .expect("grouping");
+    let keys = TenantSigningKeys {
+        current: SigningKey {
+            kid: "k1".to_string(),
+            alg: Algorithm::EdDSA,
+            private_key: FELIX_PRIVATE_KEY,
+            public_key: Ed25519SigningKey::from_bytes(&FELIX_PRIVATE_KEY)
+                .verifying_key()
+                .to_bytes(),
+        },
+        previous: vec![],
+    };
+    store
+        .set_tenant_signing_keys("t1", keys.clone())
+        .await
+        .expect("keys");
+    let state = AppState {
+        region: Region {
+            region_id: "local".to_string(),
+            display_name: "Local Region".to_string(),
+        },
+        api_version: "v1".to_string(),
+        features: FeatureFlags {
+            durable_storage: false,
+            tiered_storage: false,
+            bridges: false,
+        },
+        store: Arc::clone(&store) as _,
+        oidc_validator: UpstreamOidcValidator::new_with_allowed_algorithms(
+            std::time::Duration::from_secs(3600),
+            std::time::Duration::from_secs(3600),
+            60,
+            vec![Algorithm::ES256, Algorithm::RS256],
+        ),
+        bootstrap_enabled: false,
+        bootstrap_tokens: Vec::new(),
+        node_liveness: Default::default(),
+        readiness: std::sync::Arc::new(felix_controlplane_service::api::readiness::Readiness::new(
+            std::sync::Arc::new(felix_controlplane_service::api::readiness::AlwaysReady),
+        )),
+        in_flight: Default::default(),
+        placement_wakes: Default::default(),
+        move_policy: Default::default(),
+        new_cluster: Default::default(),
+    };
+    let exchange = || async {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/tenants/t1/token/exchange")
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(Body::from("{}"))
+            .expect("request");
+        let response = build_router(state.clone())
+            .into_service::<Body>()
+            .oneshot(request)
+            .await
+            .expect("exchange");
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = read_json(response).await;
+        verify_token(&keys, "t1", payload["felix_token"].as_str().expect("token"))
+            .expect("verify")
+            .perms
+    };
+    let trim = "stream.trim:stream:t1/payments/ledger".to_string();
+    let publish = "stream.publish:stream:t1/payments/ledger".to_string();
+
+    let before = exchange().await;
+    assert!(before.contains(&publish), "{before:?}");
+    assert!(
+        !before.contains(&trim),
+        "minted before head_trim: {before:?}"
+    );
+
+    let feature = felix_common::fleet::HEAD_TRIM.name();
+    store
+        .register_node(Node {
+            node_id: "broker-a".to_string(),
+            spec: NodeSpec {
+                advertise_addr: "10.0.0.4:7000".to_string(),
+                client_addr: None,
+                kafka_addr: None,
+                region: "local".to_string(),
+                zone: None,
+                labels: Default::default(),
+                capacity: NodeCapacity::default(),
+            },
+            status: NodeStatus {
+                lifecycle: NodeLifecycle::Live,
+                last_heartbeat_at_millis: 1,
+                registered_at_millis: 1,
+                incarnation: 0,
+                features: [feature.to_string()].into(),
+                storage_id: None,
+            },
+        })
+        .await
+        .expect("node");
+    store
+        .finalize_fleet_feature(feature)
+        .await
+        .expect("finalize");
+
+    let after = exchange().await;
+    assert!(after.contains(&trim), "{after:?}");
+    assert!(after.contains(&publish), "{after:?}");
+}
+
 #[tokio::test]
 async fn exchange_forbidden_without_policies() {
     let jwks = jwks_for_key("kid-1");

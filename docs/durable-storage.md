@@ -1542,13 +1542,14 @@ waiting out the interval.
 
 ## Conditional head trim
 
-Issue 1662 designs `trim_before(stream, before)`: a client deletes a durable
-stream's history below an offset, but only if the stream's tail is still the
-one it expects. Storage is built: it stores trim records, applies their floor,
-deletes below it and rebuilds it at open. So is the broker's in-process call,
-`Broker::trim_before_at`, with every reader on the readable base (see
-[The broker](#the-broker)). The wire message, its grant and the replication
-of the record are designed, not built.
+`trim_before(stream, before)` lets a client delete a durable stream's history
+below an offset, but only if the stream's tail is still the one it expects.
+Storage stores trim records, applies their floor, deletes below it and
+rebuilds it at open. The broker's call, `Broker::trim_before_at`, puts every
+reader on the readable base (see [The broker](#the-broker)), replication
+ships the record, and a client sends it as `trim_before` behind the
+`stream.trim` grant (see [The call](#the-call)). No client library sends it
+yet.
 
 The trim is a log record (`RecordMark::Trim`) that carries the exact `before`
 the client asked for and the caller's headers. The broker is to append it
@@ -1732,17 +1733,47 @@ only trims neither ends the read nor spins.
 > `a_group_below_a_trim_resumes_at_its_floor`,
 > `a_trim_is_a_floor_and_never_a_record`
 
-### The call (designed, not built)
+### The call
 
-On the wire the call is a `TrimBefore` message with the stream, `before`,
-the expected tail and the caller's headers, behind a grant of its own so a
-reader cannot trim. The broker answers with the tail on success, a no-op
-included, and with `OffsetMismatch` when the expected tail is stale, as
-`publish_if` does. `CursorTooOld` gains an optional `trim_headers` field,
-absent by default, so a reader that predates trims sees the same frame as
-before. The new kind needs a segment format version 7, which a cluster writes
-only once the fleet has finalized `head_trim`, since an older broker cannot
-read it.
+On the wire the call is `trim_before`, with the shard, `before`, the
+expected tail and the caller's headers, sent only to a broker that advertised
+`FEATURE_HEAD_TRIM` (see `docs/protocol.md`, "TrimBefore"). It goes to the
+shard's leader, inside the shard's write fence, and is not forwarded. The
+answer is `trim_ok` with where the record landed and the new floor, or
+`publish_refused` with `offset_mismatch` and the tail, as for `publish_if`.
+Each other refusal has a code of its own: `feature_not_enabled` before the
+fleet finalizes `head_trim`, `stream_has_commits`, `invalid_request` with a
+reason for a floor past the record or a stream with no log, and
+`unacknowledged` with `trim_timed_out` when the waits run out. The cursor
+error a reader gets below the floor carries `trim_headers`, sent only to a
+client that offered `FEATURE_HEAD_TRIM`, so a reader that predates trims
+sees the same frame as before.
+
+A trim needs `stream.trim` on the stream, which `stream.manage` also grants.
+A publisher or reader cannot trim. The control plane leaves `stream.trim` out
+of broker tokens until the fleet has finalized `head_trim`, because a broker
+that predates the action refuses a token naming it (see `docs/auth.md`,
+"Head trims").
+
+The new kind needs a segment format version 7, which a cluster writes only
+once the fleet has finalized `head_trim`, since an older broker cannot read
+it. A lone broker trims from the start, so its data directory could later
+join a fleet that has not finalized it, and an older leader promoted over
+those logs would fail to read them. So before its first trim writes anything
+the broker records a `head-trimmed` marker in the data directory
+(`run_state::record_head_trimmed`), synced with the directory, and a trim
+whose marker cannot be written is refused with nothing written. A broker
+whose directory holds the marker checks each registration's answer: if the
+fleet has not finalized `head_trim` it deregisters and stops with an error
+that says so. It reads one file, not every log.
+
+> `a_trim_hides_history_and_a_stale_one_is_refused`,
+> `a_viewer_or_publisher_cannot_trim`,
+> `refusals_are_coded_and_old_clients_see_old_frames`,
+> `the_first_trim_marks_the_directory_before_it_writes`,
+> `a_trimmed_directory_refuses_a_fleet_without_head_trim`,
+> `a_trimmed_directory_joins_a_fleet_with_head_trim`,
+> `stream_trim_is_minted_only_once_head_trim_is_finalized`
 
 How it survives a failover, and the model that checks it, are in
 [Conditional head trim](replication-design.md#conditional-head-trim)

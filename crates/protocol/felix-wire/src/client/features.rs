@@ -400,10 +400,25 @@ pub const FEATURE_PUBLISH_WIDTH: u32 = 0x0000_0004;
 /// bit before sending the field.
 pub const FEATURE_EXPLICIT_SHARD: u32 = 0x0000_0008;
 
+/// The broker answers `trim_before`: hide a durable stream shard's records
+/// below an offset, only if the shard's next offset is the one the client
+/// expects.
+///
+/// An extended bit, in both words. Advertised by a *broker*: `trim_before` is
+/// a request, and an older broker has no arm for it. A broker that advertises
+/// it may still refuse every trim with `feature_not_enabled` until its fleet
+/// finalizes `head_trim`. Offered by a *client*, it asks for `trim_headers`
+/// on `subscribe_cursor_error`; any other client gets the frame it always
+/// got.
+pub const FEATURE_HEAD_TRIM: u32 = 0x0000_0010;
+
 /// Every extended feature bit this version implements: bits that travel in
 /// `client_features_hi` / `server_features_hi` rather than the first word.
-pub const KNOWN_FEATURES_HI: u32 =
-    FEATURE_INSPECT | FEATURE_STREAM_DELETED | FEATURE_PUBLISH_WIDTH | FEATURE_EXPLICIT_SHARD;
+pub const KNOWN_FEATURES_HI: u32 = FEATURE_INSPECT
+    | FEATURE_STREAM_DELETED
+    | FEATURE_PUBLISH_WIDTH
+    | FEATURE_EXPLICIT_SHARD
+    | FEATURE_HEAD_TRIM;
 
 /// The peer reads the other side's extended feature word.
 ///

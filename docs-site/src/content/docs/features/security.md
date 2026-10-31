@@ -395,9 +395,16 @@ Casbin is used with domains for tenant scoping. Policies and groupings are store
 **Actions**:
 - `rbac.view`, `rbac.policy.manage`, `rbac.assignment.manage`
 - `tenant.manage`, `ns.manage`, `stream.manage`, `cache.manage`
-- `stream.publish`, `stream.subscribe`
+- `stream.publish`, `stream.subscribe`, `stream.trim`
 - `cache.read`, `cache.write`
 - `group.consume`, `group.manage`
+
+`stream.trim` allows a conditional head trim, which hides a durable stream's
+history below an offset. `stream.manage` also grants it, and so do `ns.manage`
+and `tenant.manage` through the `stream.manage` they expand to. Publishing or
+reading does not. The control plane puts `stream.trim` in a broker token only
+once the fleet has finalized `head_trim`, because a broker that predates the
+action refuses a token naming it.
 
 Consumer-group operations are split in two, over the stream's object:
 
