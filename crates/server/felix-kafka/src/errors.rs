@@ -51,6 +51,9 @@ pub(crate) fn from_broker(err: &BrokerError) -> ResponseError {
         | BrokerError::OffsetMismatch { .. }
         | BrokerError::ExpectedOffsetNeedsDurableStream
         | BrokerError::EmptyConditionalPublish
+        | BrokerError::TrimPastTail { .. }
+        | BrokerError::TrimNeedsDurableStream
+        | BrokerError::TrimOnCommitStream
         | BrokerError::StateViewBusy
         | BrokerError::StateNotReadable(_) => ResponseError::UnknownServerError,
     }

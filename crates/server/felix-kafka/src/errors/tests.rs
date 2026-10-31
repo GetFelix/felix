@@ -10,6 +10,7 @@ fn read_errors_map_to_what_a_client_should_do_next() {
             BrokerError::CursorTooOld {
                 oldest: 10,
                 requested: 2,
+                trim_headers: None,
             },
             ResponseError::OffsetOutOfRange,
         ),

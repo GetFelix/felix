@@ -113,9 +113,13 @@ impl Broker {
         // list that did not yet include this one.
         let (backlog, subscriber_id, receiver) = stream_state
             .register_with_backlog(cursor.next_seq)
-            .map_err(|oldest| BrokerError::CursorTooOld {
-                oldest,
-                requested: cursor.next_seq,
+            .map_err(|oldest| match &stream_state.durable {
+                Some(log) => log.too_old(oldest, cursor.next_seq),
+                None => BrokerError::CursorTooOld {
+                    oldest,
+                    requested: cursor.next_seq,
+                    trim_headers: None,
+                },
             })?;
         Ok((
             backlog,
@@ -204,9 +208,9 @@ impl Broker {
         let requested = match start {
             StartPosition::Latest => committed_tail(bound, tail, stream, shard)?,
             StartPosition::Earliest => match &durable {
-                // The oldest offset still on disk, which retention raises as it
-                // trims. Never 0 for a trimmed stream.
-                Some(log) => log.base_offset(),
+                // The oldest offset a reader is served, which retention and
+                // head trims raise. Never 0 for a trimmed stream.
+                Some(log) => log.readable_base(),
                 None => stream_state.oldest_seq(),
             },
             StartPosition::Offset(offset) => offset,
@@ -258,6 +262,7 @@ impl Broker {
                 return Err(BrokerError::CursorTooOld {
                     oldest: backlog_start,
                     requested,
+                    trim_headers: None,
                 });
             }
             Some(HistoryRange {
@@ -270,13 +275,11 @@ impl Broker {
 
         // A durable stream can also have been trimmed past the request, which
         // the ring cannot tell us about -- it only knows its own oldest entry.
-        if let (Some(range), Some(log)) = (&history, &durable)
-            && range.from_offset < log.base_offset()
-        {
-            return Err(BrokerError::CursorTooOld {
-                oldest: log.base_offset(),
-                requested,
-            });
+        if let (Some(range), Some(log)) = (&history, &durable) {
+            let oldest = log.readable_base();
+            if range.from_offset < oldest {
+                return Err(log.too_old(oldest, requested));
+            }
         }
 
         Ok(ResumedSubscription {

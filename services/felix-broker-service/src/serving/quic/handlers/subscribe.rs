@@ -575,13 +575,13 @@ pub(crate) fn grant_queue_capacity(requested: u32, max: usize) -> u32 {
 /// everything else stays a generic `Error`.
 pub(crate) fn subscribe_error_message(err: felix_broker::BrokerError) -> Message {
     match err {
-        felix_broker::BrokerError::CursorTooOld { oldest, requested } => {
-            Message::SubscribeCursorError {
-                reason: felix_wire::CursorErrorReason::TooOld,
-                requested,
-                available: oldest,
-            }
-        }
+        felix_broker::BrokerError::CursorTooOld {
+            oldest, requested, ..
+        } => Message::SubscribeCursorError {
+            reason: felix_wire::CursorErrorReason::TooOld,
+            requested,
+            available: oldest,
+        },
         felix_broker::BrokerError::CursorInFuture { requested, tail } => {
             Message::SubscribeCursorError {
                 reason: felix_wire::CursorErrorReason::InFuture,

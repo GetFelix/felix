@@ -19,6 +19,7 @@ mod registry;
 mod shard_logs;
 mod shards;
 mod subscribe;
+mod trim;
 
 pub use backup::CommittedOffsets;
 pub use commit::StateRead;
@@ -32,6 +33,7 @@ pub use read::ReadPage;
 pub use shard_logs::LogKind;
 pub use shards::StreamHandle;
 pub use subscribe::{Cursor, HistoryRange, JoinOffsets, ResumedSubscription, RingRecord};
+pub use trim::TrimOutcome;
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;

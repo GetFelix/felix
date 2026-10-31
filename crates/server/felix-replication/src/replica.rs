@@ -218,7 +218,7 @@ impl ReplicaHandler {
         }
         // Records below the leader's base are gone from the leader too, so only
         // what this broker holds from there up is at stake.
-        let from = log.base_offset().max(request.base_offset);
+        let from = log.physical_base().max(request.base_offset);
         if let Some(commit) = cuts_committed(&log, from).await {
             return self
                 .rebuild_above_commit(correlation_id, &key, log_kind, &log, &request, from, commit)
@@ -439,7 +439,7 @@ impl ReplicaHandler {
             return refusal;
         }
 
-        let mut base = log.base_offset();
+        let mut base = log.physical_base();
         let mut tail = match log.tail_offset().await {
             Ok(tail) => tail,
             Err(err) => {
@@ -1171,7 +1171,7 @@ impl ReplicaHandler {
         // A promoted leader reads a cursor log whole to take its groups, and
         // compaction may have trimmed its head: what is left is all it needs.
         let from_offset = match log_kind {
-            felix_broker::LogKind::GroupCursors => request.from_offset.max(log.base_offset()),
+            felix_broker::LogKind::GroupCursors => request.from_offset.max(log.physical_base()),
             _ => request.from_offset,
         };
         let records = match log.read_replicated_from(from_offset, max_bytes).await {

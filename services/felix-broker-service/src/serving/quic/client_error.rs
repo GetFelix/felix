@@ -248,7 +248,10 @@ impl ClientError {
             | E::GroupOffsetNotHandedOut { .. }
             | E::CommitNeedsDurableStream
             | E::ExpectedOffsetNeedsDurableStream
-            | E::EmptyConditionalPublish => Self::invalid(message),
+            | E::EmptyConditionalPublish
+            | E::TrimPastTail { .. }
+            | E::TrimNeedsDurableStream
+            | E::TrimOnCommitStream => Self::invalid(message),
             // Answered as `publish_refused` with the tail wherever the request
             // can carry it; this is only for a caller that cannot.
             E::OffsetMismatch { .. } => Self::invalid(message).with_retry(RetryClass::Fatal),

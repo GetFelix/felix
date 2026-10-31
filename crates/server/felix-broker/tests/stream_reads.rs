@@ -159,11 +159,13 @@ async fn a_start_below_retention_is_too_old() {
         .open_stream(TENANT, NAMESPACE, STREAM, 0)
         .expect("log");
     assert!(log.enforce_retention_now().await.expect("retention") > 0);
-    let base = log.base_offset();
+    let base = log.readable_base();
     assert!(base > 0);
 
     match read(&broker, 0, Some(base + 5), 100, 1 << 20).await {
-        Err(BrokerError::CursorTooOld { oldest, requested }) => {
+        Err(BrokerError::CursorTooOld {
+            oldest, requested, ..
+        }) => {
             assert_eq!((oldest, requested), (base, 0));
         }
         other => panic!("expected CursorTooOld, got {other:?}"),

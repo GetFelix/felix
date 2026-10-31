@@ -143,3 +143,24 @@ async fn lookups_step_over_a_generation_start_record() {
     assert_eq!(answer(&mut client, 0, time_c, 7).await.2, 3);
     assert_eq!(answer(&mut client, 0, -1, 7).await, (0, -1, 4));
 }
+
+/// `earliest` is where reads start after a head trim, and lookups step over
+/// the trim record as over a generation-start record.
+#[tokio::test]
+async fn earliest_is_a_trims_floor() {
+    let fixture = Fixture::anonymous().await;
+    fixture.stream("orders", "created", 1, true).await;
+    fixture
+        .publish("orders", "created", 0, &["a", "b", "c"])
+        .await;
+    assert_eq!(fixture.trim("orders", "created", 0, 2).await, 3);
+    let mut client = fixture.connect();
+    assert_eq!(answer(&mut client, 0, -2, 7).await, (0, -1, 2));
+    assert_eq!(answer(&mut client, 0, -1, 7).await, (0, -1, 4));
+    let (code, _, offset) = answer(&mut client, 0, -3, 7).await;
+    assert_eq!(
+        (code, offset),
+        (0, 2),
+        "the last client record, not the trim"
+    );
+}

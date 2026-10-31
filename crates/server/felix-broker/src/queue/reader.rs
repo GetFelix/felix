@@ -255,13 +255,21 @@ impl GroupReader {
         let committed = committed.min(log.poisoned_read_end().unwrap_or(u64::MAX));
         let tail = log_tail.min(committed);
         let (held, mut locked) = self.current(key).await?;
+        // A cursor below where the log now starts moves to it at once,
+        // rather than one claimed offset at a time.
+        let skipped = locked.skip_below(log.readable_base());
         let claim = {
             locked.inherit_below(log_tail);
             locked.set_max_in_flight(self.max_in_flight());
             let visibility = visibility.unwrap_or(self.visibility);
             locked.claim_as(tail, max, now, visibility, consumer)
         };
+        let committed_now = locked.committed();
         drop(locked);
+        if let Some(skipped) = skipped {
+            self.trimmed.fetch_add(skipped, Ordering::Relaxed);
+            self.commit_cursor(key, &held, committed_now).await?;
+        }
         let tracker = Arc::clone(&held.tracker);
         if claim.capped {
             self.capped.fetch_add(1, Ordering::Relaxed);
@@ -314,7 +322,21 @@ impl GroupReader {
             // offset with the record after it, delivering that record twice
             // and the first time under the wrong offset.
             match log.read_log_from(offset, 1).await {
-                Ok(records) => match records.into_iter().next().filter(|r| r.offset == offset) {
+                // The read skips a trim record, so a page that starts past
+                // `offset` means `offset` holds one.
+                Ok(page)
+                    if page.next > offset
+                        && page.records.first().is_none_or(|r| r.offset > offset) =>
+                {
+                    tracker.lock().await.skip(offset);
+                    self.settle(key, &held, offset).await?;
+                }
+                Ok(page) => match page
+                    .records
+                    .into_iter()
+                    .next()
+                    .filter(|r| r.offset == offset)
+                {
                     // Not a client's record, so nothing to deliver. Settled like a
                     // trimmed one; left owed it would stall the group here.
                     Some(record) if record.mark.is_generation_start() => {
@@ -794,19 +816,26 @@ impl GroupReader {
         // Only when the run closed. An acknowledgement above a gap has not
         // finished anything the group can resume from.
         if let Some(committed) = advanced {
-            self.cursors
-                .commit_unless(
-                    &key.tenant_id,
-                    &key.namespace,
-                    &key.stream,
-                    key.shard,
-                    &key.group,
-                    committed,
-                    &held.retired,
-                    self.dead_letter_mark(key).await?,
-                )
-                .await?;
+            self.commit_cursor(key, held, committed).await?;
         }
+        Ok(())
+    }
+
+    /// Write `group`'s durable cursor at `committed`, unless its tracker was
+    /// retired.
+    async fn commit_cursor(&self, key: &GroupKey, held: &Held, committed: u64) -> Result<()> {
+        self.cursors
+            .commit_unless(
+                &key.tenant_id,
+                &key.namespace,
+                &key.stream,
+                key.shard,
+                &key.group,
+                committed,
+                &held.retired,
+                self.dead_letter_mark(key).await?,
+            )
+            .await?;
         Ok(())
     }
 

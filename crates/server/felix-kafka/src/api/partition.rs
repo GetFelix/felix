@@ -29,7 +29,7 @@ impl Readable {
     pub(super) fn high_watermark(&self, tail: u64) -> u64 {
         // Never below the log start: a mark behind retention's trim says
         // nothing new is readable, not that trimmed offsets are.
-        let floor = self.log.base_offset().min(tail);
+        let floor = self.log.readable_base().min(tail);
         let committed = match ((self.committed)(), self.log.poisoned_read_end()) {
             (Some(committed), Some(end)) => Some(committed.min(end)),
             (committed, end) => committed.or(end),

@@ -436,6 +436,7 @@ async fn stored_times(log: &StreamLog) -> Vec<u64> {
     log.read_log_from(0, 1 << 20)
         .await
         .expect("read")
+        .records
         .iter()
         .map(|record| record.timestamp_micros)
         .collect()

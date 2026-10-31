@@ -1545,9 +1545,10 @@ waiting out the interval.
 Issue 1662 designs `trim_before(stream, before)`: a client deletes a durable
 stream's history below an offset, but only if the stream's tail is still the
 one it expects. Storage is built: it stores trim records, applies their floor,
-deletes below it and rebuilds it at open. Nothing above storage writes a trim
-yet. The client call, the broker's checks and the replication of the record
-are designed, not built.
+deletes below it and rebuilds it at open. So is the broker's in-process call,
+`Broker::trim_before_at`, with every reader on the readable base (see
+[The broker](#the-broker)). The wire message, its grant and the replication
+of the record are designed, not built.
 
 The trim is a log record (`RecordMark::Trim`) that carries the exact `before`
 the client asked for and the caller's headers. The broker is to append it
@@ -1650,6 +1651,60 @@ with the same floor, since the record that set it was never a candidate.
 > `a_power_loss_during_a_roll_keeps_the_floor` and
 > `a_power_loss_before_a_trim_is_synced_leaves_no_floor_or_its_floor` (Linux
 > only)
+
+### The broker
+
+`Broker::trim_before_at(handle, before, expected, headers)` writes the trim
+record as a conditional publish is written: the record takes its offset and
+its place in the commit order under the append lock, only if it lands at
+`expected`, then waits for durability, then reaches the replay ring in its
+turn. A refusal is `OffsetMismatch` with the tail, and writes nothing.
+
+- **The tail first.** The tail is checked before anything else, so a trim at
+  or below the floor is answered as a no-op, with nothing written, only when
+  its tail is current.
+- **Never past its own record.** `before` may be at most `expected`, the
+  offset the record can only land at, so checking it there is checking it
+  under the lock (`TrimPastTail`).
+- **Not on a commit stream.** A stream holding an atomic commit refuses the
+  trim (`TrimOnCommitStream`), since a commit's state lives in its record.
+  The broker reads the log below `expected` once for commit records, from
+  where its last scan stopped, and the trim then lands only at `expected`.
+- **`Leader` and `Quorum` streams.** A trim on a `Quorum` stream is held from
+  the ring until the committed mark passes it, as a publish is, and the
+  caller waits for the mark. On a `Leader` stream an acknowledged trim can
+  be lost at a failover like any record there.
+- **A trim whose caller stopped waiting may have landed.** A retry with the
+  same `expected` is then refused as `OffsetMismatch`.
+
+When the record reaches the ring, the ring drops every entry below the floor
+under its lock, so no resume is served below it from memory once the trim is
+answered, and the next publish reports the record's offset as skipped. Every
+reader starts at `StreamLog::readable_base` rather than the oldest segment:
+`subscribe_from`, `read_range`, `read_durable`, earliest, hydration of the
+ring at startup, offset lookups by time, state view rebuilds, group cursors,
+and the Kafka listener's fetch, `ListOffsets` earliest and `log_start_offset`.
+Replication keeps `StreamLog::physical_base`. A read below the floor is
+`CursorTooOld` carrying the setting trim's headers in `trim_headers`.
+
+A consumer group whose cursor is below the readable base moves to it on its
+next poll, and a trim record past the cursor is settled as a skip, like a
+generation-start record. A Kafka consumer never receives a trim record:
+fetches below the floor are `OFFSET_OUT_OF_RANGE`, and one caught up to a
+trim at the end of the log is moved past it with an empty batch. Readers
+paging through the log carry on from `ReadPage::next`, so a page holding
+only trims neither ends the read nor spins.
+
+> `a_read_below_the_floor_is_too_old_and_names_the_trim`,
+> `the_ring_drops_what_the_trim_hides`,
+> `a_no_op_trim_is_refused_when_its_tail_is_stale`,
+> `a_floor_past_the_trim_record_is_refused`,
+> `a_commit_stream_refuses_a_trim`,
+> `a_trim_racing_a_publish_lands_in_one_order`,
+> `a_quorum_trim_reaches_the_ring_once_committed`,
+> `a_restart_with_trims_at_the_tail_refills_the_ring`,
+> `a_group_below_a_trim_resumes_at_its_floor`,
+> `a_trim_is_a_floor_and_never_a_record`
 
 ### The call (designed, not built)
 

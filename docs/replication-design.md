@@ -2783,8 +2783,9 @@ with a crash use the lease and the report.
 ### Conditional head trim (designed, not built)
 
 Issue 1662 designs a client call that trims a stream's history below an
-offset, conditional on the tail the client expects. Only the storage side is
-built: the logical floor, deletion below it and what a reader sees, in
+offset, conditional on the tail the client expects. The storage side and the
+broker's in-process call are built: the logical floor, deletion below it, the
+conditional append and what a reader sees, in
 [Conditional head trim](durable-storage.md#conditional-head-trim) in
 `docs/durable-storage.md`. Nothing below is built yet; this section is how it
 survives replication.

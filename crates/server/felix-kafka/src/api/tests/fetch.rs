@@ -476,3 +476,60 @@ fn last_offset_delta(bytes: &Bytes) -> i32 {
     let at = 8 + 4 + 4 + 1 + 4 + 2;
     i32::from_be_bytes(bytes[at..at + 4].try_into().expect("four bytes"))
 }
+
+/// **A head trim is never a record to a consumer.** Its headers are not
+/// handed out, as a value or as a tombstone; a fetch below the floor is out
+/// of range and the log start is the floor; and a consumer caught up to a
+/// trim at the tail is moved past it by an empty batch.
+#[tokio::test]
+async fn a_trim_is_a_floor_and_never_a_record() {
+    let fixture = Fixture::anonymous().await;
+    fixture.stream("orders", "created", 1, true).await;
+    fixture
+        .publish("orders", "created", 0, &["r0", "r1", "r2"])
+        .await;
+    let at = fixture.trim("orders", "created", 0, 1).await;
+    assert_eq!(at, 3);
+    let mut client = fixture.connect();
+
+    let response = client
+        .call(&request(&[("orders.created", 0, 0)], 1, 500), 11)
+        .await;
+    let partition = only(&response);
+    assert_eq!(
+        partition.error_code,
+        kafka_protocol::ResponseError::OffsetOutOfRange.code()
+    );
+    assert_eq!(partition.log_start_offset, 1);
+
+    let response = client
+        .call(&request(&[("orders.created", 0, 1)], 1, 500), 11)
+        .await;
+    let partition = only(&response);
+    assert_eq!(partition.error_code, 0);
+    assert_eq!(partition.high_watermark, 4);
+    let bytes = partition.records.clone().expect("batches");
+    let decoded = RecordBatchDecoder::decode(&mut bytes.clone()).expect("decode");
+    let values: Vec<(i64, Option<Bytes>)> = decoded
+        .records
+        .into_iter()
+        .map(|record| (record.offset, record.value))
+        .collect();
+    assert_eq!(
+        values,
+        [
+            (1, Some(Bytes::from_static(b"r1"))),
+            (2, Some(Bytes::from_static(b"r2")))
+        ]
+    );
+
+    // The next fetch, from the trim record, is moved past it.
+    let response = client
+        .call(&request(&[("orders.created", 0, at as i64)], 1, 500), 11)
+        .await;
+    let bytes = only(&response).records.clone().expect("a batch");
+    let batches = RecordBatchDecoder::decode_batch_info(&mut bytes.clone()).expect("info");
+    assert_eq!((batches[0].min_offset, batches[0].record_count), (3, 0));
+    let next = batches[0].min_offset + i64::from(last_offset_delta(&bytes)) + 1;
+    assert_eq!(next, 4);
+}

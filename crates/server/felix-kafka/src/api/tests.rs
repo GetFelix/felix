@@ -295,6 +295,28 @@ impl Fixture {
         offset
     }
 
+    /// Trim a shard's history below `before`, at the tail, with headers a
+    /// Kafka consumer must never be handed. Returns the trim record's offset.
+    pub(super) async fn trim(&self, namespace: &str, stream: &str, shard: u32, before: u64) -> u64 {
+        let handle = self
+            .broker
+            .resolve_stream_handle(TENANT, namespace, stream, shard)
+            .await
+            .expect("handle");
+        let tail = handle
+            .log()
+            .expect("log")
+            .tail_offset()
+            .await
+            .expect("tail");
+        self.broker
+            .trim_before_at(&handle, before, tail, Bytes::from_static(b""))
+            .await
+            .expect("trim")
+            .offset
+            .expect("written")
+    }
+
     pub(super) fn connect(&self) -> Client {
         self.connect_until(CancellationToken::new())
     }

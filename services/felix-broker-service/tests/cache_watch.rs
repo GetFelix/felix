@@ -390,7 +390,7 @@ async fn a_watch_from_a_compacted_offset_resnapshots() -> Result<()> {
                 .broker
                 .shard_log(felix_broker::LogKind::Cache, "t1", "default", CACHE, 0)
                 .await
-                .map(|log| log.base_offset());
+                .map(|log| log.readable_base());
             if base.is_some_and(|base| base > 0) {
                 return;
             }

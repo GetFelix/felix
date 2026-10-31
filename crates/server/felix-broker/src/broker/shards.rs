@@ -325,23 +325,30 @@ impl Broker {
             state.hydrate(Vec::new(), tail, capacity);
             return Ok(());
         }
-        let mut cursor = tail.saturating_sub(capacity as u64);
+        let mut cursor = tail
+            .saturating_sub(capacity as u64)
+            .max(log.readable_base());
         let mut window: VecDeque<felix_storage::log::LogRecord> = VecDeque::new();
         let mut bytes = 0usize;
-        // Generation-start records directly before `cursor`. They hold offsets
-        // but never go in the ring, so the window reaches the tail when the
-        // read does, not when its last client record does.
+        // Offsets directly before `cursor` that hold generation-start or trim
+        // records. They never go in the ring, so the window reaches the tail
+        // when the read does, not when its last client record does.
         let mut run = 0u64;
 
         while cursor < tail {
             let page = log.read_log_from(cursor, HYDRATE_MAX_BYTES).await?;
-            let Some(last) = page.last() else {
-                // The tail moved out from under the read, or the range was
-                // trimmed. Stop with what is in hand rather than spinning.
+            if page.next <= cursor {
+                // The tail moved out from under the read. Stop with what is
+                // in hand rather than spinning.
                 break;
-            };
-            cursor = last.offset + 1;
-            for record in page {
+            }
+            // Trim records are skipped by the read, so they show as offsets
+            // between the records returned, or past the last one.
+            let mut expected = cursor;
+            cursor = page.next;
+            for record in page.records {
+                run += record.offset - expected;
+                expected = record.offset + 1;
                 if record.mark.is_generation_start() {
                     run += 1;
                     continue;
@@ -356,6 +363,7 @@ impl Broker {
                     }
                 }
             }
+            run += cursor - expected;
         }
 
         // Only hand over a window that actually reaches the tail. Anything else

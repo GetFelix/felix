@@ -26,8 +26,8 @@ use std::sync::Arc;
 use bytes::Bytes;
 use felix_storage::disk_log::{DiskLog, PendingAppend, ProducerSequence};
 use felix_storage::log::{
-    AppendOnlyLog, AppendRecord, AppendResult, FsyncMode, LogConfig, LogRecord, Offset, ReadRange,
-    RecordMark, ShardKey,
+    AppendOnlyLog, AppendRecord, AppendResult, FsyncMode, LogConfig, LogRecord, Offset, ReadPage,
+    ReadRange, RecordMark, ShardKey,
 };
 use felix_storage::{CommitSequencer, CommitTurn, DiskLogProvider};
 
@@ -382,6 +382,34 @@ impl StreamLog {
             .map_err(BrokerError::from)
     }
 
+    /// Write a trim record asking that reads below `before` be refused, only
+    /// if it lands at exactly `expected`. `Err` with the log's tail, and
+    /// nothing written or claimed, otherwise. Pair it with
+    /// [`StreamLog::commit`] as a publish is paired.
+    ///
+    /// The caller checks `before <= expected` first: storage does not, and
+    /// the record can only land at `expected`, so that is the check against
+    /// its own offset made under the append lock.
+    pub async fn begin_trim_if(
+        &self,
+        expected: Offset,
+        before: Offset,
+        headers: Bytes,
+        timestamp_micros: u64,
+        order: &Arc<CommitSequencer>,
+    ) -> Result<std::result::Result<(PendingAppend, CommitTurn<'static>), Offset>> {
+        let record = AppendRecord {
+            payload: headers,
+            timestamp_micros,
+            mark: RecordMark::Trim { floor: before },
+            publisher: None,
+        };
+        self.log
+            .append_claimed_at(expected, std::slice::from_ref(&record), order)
+            .await
+            .map_err(BrokerError::from)
+    }
+
     /// [`Self::begin_append_marked`], only if the batch starts at exactly
     /// `first_offset`. `None`, and nothing written, otherwise.
     ///
@@ -472,17 +500,15 @@ impl StreamLog {
     /// makes a trim landing *mid-replay* surface as well, rather than a short
     /// history that looks complete.
     ///
-    /// Generation-start records are left out: they are the replication
-    /// protocol's, not a client's. A page is empty only at the tail, never
-    /// because every record it read was one of them.
+    /// Generation-start and trim records are left out: they are not a
+    /// client's. A page is empty only at the tail, never because every record
+    /// it read was one of them.
     /// A commit record is returned as its event.
     pub async fn read_from(&self, start: Offset, max_bytes: usize) -> Result<Vec<LogRecord>> {
         let mut start = start;
         loop {
-            let mut records = self.read_log_from(start, max_bytes).await?;
-            let Some(last) = records.last().map(|record| record.offset) else {
-                return Ok(records);
-            };
+            let page = self.read_log_from(start, max_bytes).await?;
+            let mut records = page.records;
             records.retain(|record| !record.mark.is_generation_start());
             if !records.is_empty() {
                 return Ok(records
@@ -490,7 +516,10 @@ impl StreamLog {
                     .map(crate::commit::client_record)
                     .collect());
             }
-            start = last + 1;
+            if page.next <= start {
+                return Ok(records);
+            }
+            start = page.next;
         }
     }
 
@@ -507,7 +536,7 @@ impl StreamLog {
         at_micros: u64,
         until: Offset,
     ) -> Result<Option<(Offset, u64)>> {
-        let (mut low, mut high) = (self.base_offset(), until);
+        let (mut low, mut high) = (self.readable_base(), until);
         while low < high {
             let mid = low + (high - low) / 2;
             match self.record_time_at(mid, until).await? {
@@ -535,14 +564,14 @@ impl StreamLog {
     }
 
     /// [`Self::read_from`] with generation-start records included. Trim
-    /// records are left out, so their offsets are gaps in what this returns;
-    /// replication, which must not have gaps, uses
+    /// records are left out, so their offsets are gaps in what this returns
+    /// and a page can be empty below the tail: carry on from
+    /// [`ReadPage::next`]. Replication, which must not have gaps, uses
     /// [`Self::read_replicated_from`].
-    pub async fn read_log_from(&self, start: Offset, max_bytes: usize) -> Result<Vec<LogRecord>> {
+    pub async fn read_log_from(&self, start: Offset, max_bytes: usize) -> Result<ReadPage> {
         self.log
             .read_range(ReadRange { start, max_bytes })
             .await
-            .map(|page| page.records)
             .map_err(read_error)
     }
 
@@ -562,18 +591,22 @@ impl StreamLog {
     }
 
     /// Just past the last client record below `tail`, stepping back over the
-    /// generation-start records the log ends with, but never below `floor`.
+    /// generation-start and trim records the log ends with, but never below
+    /// `floor`.
     ///
     /// Those records hold offsets no reader is ever handed, so a reader
     /// waiting to reach `tail` itself would wait for an event that never
     /// comes.
     pub async fn event_end(&self, floor: Offset, tail: Offset) -> Result<Offset> {
-        let floor = floor.max(self.base_offset());
+        let floor = floor.max(self.readable_base());
         let mut end = tail;
         while end > floor {
-            let records = self.read_log_from(end - 1, 1).await?;
+            let records = self.read_replicated_from(end - 1, 1).await?;
             match records.first() {
-                Some(record) if record.offset == end - 1 && record.mark.is_generation_start() => {
+                Some(record)
+                    if record.offset == end - 1
+                        && (record.mark.is_generation_start() || record.mark.is_trim()) =>
+                {
                     end -= 1;
                 }
                 _ => break,
@@ -766,8 +799,33 @@ impl StreamLog {
         self.log.generations()
     }
 
-    pub fn base_offset(&self) -> Offset {
+    /// Where the oldest segment starts. Replication ships from here; a
+    /// reader starts at [`Self::readable_base`].
+    pub fn physical_base(&self) -> Offset {
         self.log.base_offset()
+    }
+
+    /// The oldest offset a reader is served: the higher of
+    /// [`Self::physical_base`] and the head floor trims set. A read below it
+    /// is [`BrokerError::CursorTooOld`].
+    pub fn readable_base(&self) -> Offset {
+        self.log.readable_base()
+    }
+
+    /// The trim record that set the head floor, if one applies.
+    pub fn head_trim(&self) -> Option<felix_storage::disk_log::HeadTrim> {
+        self.log.head_trim()
+    }
+
+    /// [`BrokerError::CursorTooOld`] for a read from `requested`, below
+    /// `oldest`, with the headers of the trim that set the floor when one
+    /// did.
+    pub(crate) fn too_old(&self, oldest: Offset, requested: Offset) -> BrokerError {
+        BrokerError::CursorTooOld {
+            oldest,
+            requested,
+            trim_headers: self.head_trim().map(|trim| trim.headers),
+        }
     }
 
     /// Whether the shard was closed under this handle; see
@@ -853,8 +911,14 @@ pub fn append_time_now() -> u64 {
 fn read_error(err: felix_storage::StorageError) -> BrokerError {
     match err {
         felix_storage::StorageError::Trimmed {
-            requested, oldest, ..
-        } => BrokerError::CursorTooOld { oldest, requested },
+            requested,
+            oldest,
+            trim_headers,
+        } => BrokerError::CursorTooOld {
+            oldest,
+            requested,
+            trim_headers,
+        },
         other => BrokerError::from(other),
     }
 }

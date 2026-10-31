@@ -2,7 +2,7 @@
 //! and the bounded in-memory log that backs cursor replay.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use arc_swap::ArcSwap;
@@ -72,6 +72,23 @@ pub(crate) struct StreamState {
     /// Durable batches past the committed mark, kept from the ring and from
     /// subscribers until it passes them. Empty unless the stream is `Quorum`.
     pub(crate) held: CommitHold,
+    /// What this broker knows about atomic commits in the log, for refusing
+    /// a head trim on a stream that holds one. See [`CommitScan`].
+    pub(crate) commits: CommitScan,
+}
+
+/// Whether a stream's log holds an atomic commit, learned without reading
+/// the whole log on every trim.
+///
+/// `seen` is set before a commit is appended here, and `clear_below` is how
+/// far a scan found none. A trim scans from `clear_below` to the tail it
+/// expects and then reads `seen`; since the trim lands only at that tail, a
+/// commit appended after the scan either set `seen` first or lands after the
+/// trim.
+#[derive(Debug, Default)]
+pub(crate) struct CommitScan {
+    pub(crate) seen: AtomicBool,
+    pub(crate) clear_below: AtomicU64,
 }
 
 impl StreamState {
@@ -105,6 +122,7 @@ impl StreamState {
             producers: ProducerTable::default(),
             appended: Arc::new(tokio::sync::Notify::new()),
             held: CommitHold::default(),
+            commits: CommitScan::default(),
         }
     }
 
@@ -397,6 +415,34 @@ impl StreamState {
         // Captured while the log lock is still held, so any subscriber that
         // registers after this point takes these records as backlog instead.
         Some((self.subscribers_snapshot.load_full(), skipped_before))
+    }
+
+    /// The trim record at `offset` reached the ring in its turn: drop every
+    /// entry below `floor`, and move past the record as past a
+    /// generation-start record, so the next publish reports it as skipped
+    /// rather than as a drop. `false`, and nothing changed, if a reset
+    /// superseded `turn`.
+    ///
+    /// Under the ring lock, so a subscriber registering after this takes no
+    /// entry below the floor, and the trim is answered only after it.
+    pub(crate) fn apply_trim(
+        &self,
+        offset: u64,
+        floor: u64,
+        turn: Option<&CommitTurn<'_>>,
+    ) -> bool {
+        let mut state = self.log_state.lock();
+        if turn.is_some_and(|turn| !turn.is_current()) {
+            return false;
+        }
+        state.log.drop_below(floor);
+        let next = offset + 1;
+        state.generation_start_run = match state.generation_start_run {
+            Some((at, run)) if at == offset => Some((next, run + 1)),
+            _ => Some((next, 1)),
+        };
+        state.next_seq = state.next_seq.max(next);
+        true
     }
 
     /// A generation-start record sits at `offset` at the tail, the last of
@@ -738,8 +784,9 @@ pub(crate) struct LogState {
     // Next sequence number to assign.
     pub(crate) next_seq: u64,
     /// `(offset, run)`: the `run` offsets just below `offset` hold
-    /// generation-start records, so the batch published at `offset` reports
-    /// them as skipped rather than letting a subscriber read them as a drop.
+    /// generation-start or trim records, so the batch published at `offset`
+    /// reports them as skipped rather than letting a subscriber read them as
+    /// a drop.
     pub(crate) generation_start_run: Option<(u64, u64)>,
     /// The keyed state of every commit below `next_seq`, once built. `None`
     /// until a reader asks, and again whenever the ring is reset.

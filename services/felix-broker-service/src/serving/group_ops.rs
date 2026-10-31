@@ -278,7 +278,7 @@ pub(crate) async fn seek(
         reader_and_log(broker, publish_ctx, tenant_id, namespace, stream, shard)?;
     let key = group_key(tenant_id, namespace, stream, shard, group);
     let _fenced = owned.enter(publish_ctx, &mut admitted)?;
-    let earliest = log.base_offset();
+    let earliest = log.readable_base();
     let latest = read_end(broker, publish_ctx, &owned, &log).await?;
     let offset = match start {
         StartPosition::Earliest => earliest,

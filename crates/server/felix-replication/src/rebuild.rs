@@ -106,7 +106,7 @@ pub(super) async fn request_rebuild<R: PeerRequester>(
     log_kind: felix_broker::LogKind,
     cursor: &FollowerCursor,
 ) -> Rebuild {
-    let base_offset = log.base_offset();
+    let base_offset = log.physical_base();
     let request = InternalMessage::ReplicateRebuild(ReplicateRebuild {
         // The pool assigns the real id; it owns the connection this lands on.
         correlation_id: 0,

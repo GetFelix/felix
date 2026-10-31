@@ -218,6 +218,9 @@ pub(crate) struct HeldBatch {
     pub(crate) first_offset: u64,
     /// A commit's state updates, applied when the event is released.
     pub(crate) commit: Option<std::sync::Arc<[crate::commit::StateOp]>>,
+    /// The floor of a trim record, which is the batch's one record and is
+    /// applied to the ring rather than appended to it.
+    pub(crate) trim: Option<u64>,
 }
 
 impl HeldBatch {

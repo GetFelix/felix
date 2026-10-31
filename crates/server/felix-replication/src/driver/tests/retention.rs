@@ -193,7 +193,7 @@ async fn retention_and_rebuilds_never_carry_the_mark_over_a_lost_record() {
     }
 
     let mark = marks.offset(&watched, 4).unwrap_or(0);
-    let base = log.base_offset();
+    let base = log.physical_base();
     let lost: Vec<u64> = (committed..mark)
         .filter(|offset| *offset < base && !followers.holds(*offset))
         .collect();
@@ -294,7 +294,7 @@ async fn a_shard_whose_followers_are_removed_is_no_longer_held() {
     .await;
     log.enforce_retention_now().await.expect("retention");
     assert_eq!(
-        log.base_offset(),
+        log.physical_base(),
         0,
         "nothing is committed, so nothing goes"
     );
@@ -314,7 +314,7 @@ async fn a_shard_whose_followers_are_removed_is_no_longer_held() {
     .await;
     log.enforce_retention_now().await.expect("retention");
     assert!(
-        log.base_offset() > 0,
+        log.physical_base() > 0,
         "retention is still held on a shard with no follower"
     );
 }
@@ -335,7 +335,7 @@ async fn a_stream_raised_to_quorum_is_held_before_the_first_pass() {
     register(&broker, felix_broker::ConsistencyLevel::Quorum).await;
     log.enforce_retention_now().await.expect("retention");
     assert_eq!(
-        log.base_offset(),
+        log.physical_base(),
         0,
         "retention deleted above the commit offset between the raise and the first pass"
     );
@@ -343,5 +343,5 @@ async fn a_stream_raised_to_quorum_is_held_before_the_first_pass() {
     // Lowered again, retention applies in full.
     register(&broker, felix_broker::ConsistencyLevel::Leader).await;
     log.enforce_retention_now().await.expect("retention");
-    assert!(log.base_offset() > 0);
+    assert!(log.physical_base() > 0);
 }

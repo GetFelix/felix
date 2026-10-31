@@ -315,7 +315,7 @@ pub(crate) async fn handle_cache_watch_message(
             return Ok(true);
         }
     };
-    let base = log.base_offset();
+    let base = log.readable_base();
 
     // Everything the catch-up hands out is below the tail, so on a `Quorum`
     // cache it waits for the mark to get there first.
@@ -553,21 +553,22 @@ async fn write_replayed_changes(
 ) -> Result<()> {
     let mut at = from;
     while at < until {
-        let records = log
+        let page = log
             .read_range(ReadRange {
                 start: at,
                 max_bytes: HISTORY_PAGE_BYTES,
             })
-            .await?
-            .records;
-        if records.is_empty() {
+            .await?;
+        // Empty below the tail when only trim records are left: go on past
+        // them, and stop only where the log ends.
+        if page.next <= at {
             break;
         }
-        for record in records {
+        at = page.next;
+        for record in page.records {
             if record.offset >= until {
                 return Ok(());
             }
-            at = record.offset + 1;
             if record.mark.is_generation_start() {
                 // Replication's, not a change; see the cache index.
                 continue;
