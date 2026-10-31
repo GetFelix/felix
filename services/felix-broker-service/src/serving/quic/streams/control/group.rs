@@ -864,6 +864,7 @@ pub(super) async fn group_admin(
 /// `Ok(None)` leaves the answer to the group operation itself, which refuses
 /// with the reason when this broker cannot serve the shard: a client that
 /// cannot decode a redirect gets the error it always did.
+#[allow(clippy::result_large_err)] // the Err is the reply frame to send
 async fn group_admit(
     publish_ctx: &PublishContext,
     peer_features: u32,

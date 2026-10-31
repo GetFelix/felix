@@ -1149,7 +1149,7 @@ impl Faults {
 
     fn take(remaining: &std::sync::atomic::AtomicU32) -> StoreResult<()> {
         use std::sync::atomic::Ordering;
-        match remaining.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+        match remaining.try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
             left.checked_sub(1)
         }) {
             Ok(_) => Err(crate::store::StoreError::Unexpected(anyhow::anyhow!(

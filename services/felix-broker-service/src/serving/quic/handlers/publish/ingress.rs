@@ -494,11 +494,11 @@ pub(crate) fn decrement_depth(
     // Depth tracking is intentionally best-effort: we avoid panicking on underflow and tolerate drift.
     // Drift can occur if a task exits unexpectedly or if multiple teardown paths reset counters.
     // We record drift metrics and rely on `reset_local_depth_only` to reconcile on teardown.
-    if let Ok(prev) = depth.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+    if let Ok(prev) = depth.try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
         if value == 0 { None } else { Some(value - 1) }
     }) {
         let cur = prev.saturating_sub(1);
-        let updated = match global.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+        let updated = match global.try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
             if value == 0 { None } else { Some(value - 1) }
         }) {
             Ok(value) => value - 1,

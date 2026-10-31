@@ -310,7 +310,7 @@ pub(super) fn queue_metrics() -> &'static QueueMetrics {
 
 fn decrement_queue_depth(queued_items: &AtomicUsize, count: usize) {
     if queued_items
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
             value.checked_sub(count)
         })
         .is_ok()

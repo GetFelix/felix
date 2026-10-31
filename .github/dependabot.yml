@@ -130,7 +130,7 @@ updates:
         patterns: ["*"]
 
   # --- Container base images ----------------------------------------------
-  # The `rust` builder image tracks rust-toolchain.toml (1.97.1); bumping it
+  # The `rust` builder image tracks rust-toolchain.toml (1.99.1); bumping it
   # here alone would silently diverge the CI toolchain from the image toolchain,
   # so that one stays a manual, paired change.
   - package-ecosystem: "docker"
