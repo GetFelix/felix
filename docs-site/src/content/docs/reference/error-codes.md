@@ -146,6 +146,7 @@ A few errors come from the client rather than the broker and have no code:
 | Subscription fell behind and records were dropped | `SubscriptionLagged` | `SubscriptionLagged` | Rust client only | Rust client only | Rust client only |
 | Idempotent publish refused (a conditional publish returns its refusal as a result) | `PublishRefused` | `PublishRefusedError` with `reason` | `PublishRefusedError` with `reason` (`FELIX_PUBLISH_REFUSED` kind) | No typed case: the status is read from the refusal's message as for an error without a code, so it is `FELIX_STATUS_ERROR` unless the message names a class (for example "not leader" reads as `FELIX_STATUS_CONNECTION`). C# surfaces that status in `FelixException.Status` and has no refusal reason |
 | Commit refused before sending | `CommitError` | `CommitError`, `NotOnOwningShardError`, `EventCountError` | `FELIX_COMMIT`, `FELIX_NOT_ON_OWNING_SHARD`, `FELIX_EVENT_COUNT` kinds | `FELIX_STATUS_UNSUPPORTED` or `FELIX_STATUS_INVALID_ARGUMENT` |
+| Head trim refused before sending (the broker did not advertise `FEATURE_HEAD_TRIM`) | `TrimError::Unsupported` | `TrimError` | `TrimError` (`FELIX_TRIM` kind) | `FELIX_STATUS_UNSUPPORTED` |
 | Bad argument to the client | none | `ValueError` | `InvalidArgumentError` | `FELIX_STATUS_INVALID_ARGUMENT` |
 
 ### Rust
