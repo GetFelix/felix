@@ -64,6 +64,8 @@ for (const file of htmlFiles) {
     const target = pathPart.startsWith('/')
       ? posix.normalize(pathPart)
       : posix.join(dirname(pageUrl), pathPart);
+    // pages.yml adds the benchmark dashboards to both trees after this build.
+    if (/^(?:\/next)?\/benchmarks\//.test(target)) continue;
     checked++;
     const targetInNext = target === '/next' || target.startsWith('/next/');
     if (inNext !== targetInNext) {
