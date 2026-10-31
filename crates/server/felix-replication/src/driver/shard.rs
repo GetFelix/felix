@@ -458,7 +458,9 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     if electing
         && log.set_generation() < route.generation
         && log.accepted_generation() >= route.generation
-        && let Err(err) = log.accept_set(crate::replica_set::kept(route)).await
+        && let Err(err) = log
+            .accept_set(crate::replica_set::kept(route, entry.learner.as_deref()))
+            .await
     {
         tracing::warn!(
             stream = %key.stream,

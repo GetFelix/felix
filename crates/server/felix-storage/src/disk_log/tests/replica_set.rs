@@ -115,12 +115,28 @@ async fn concurrent_sets_leave_the_newer_on_disk() {
 }
 
 #[tokio::test]
-async fn leftover_temporaries_are_swept_at_open() {
+async fn leftover_temporaries_are_swept_at_open_once_a_set_exists() {
+    let dir = tempdir().expect("tempdir");
+    {
+        let log = open(&dir, FsyncMode::OnCommit);
+        log.accept_generation(4, Some("a")).await.expect("ballot");
+        log.accept_set(set_at(4)).await.expect("accept");
+    }
+    let leftover = dir.path().join("replica-set.tmp.1.1");
+    std::fs::write(&leftover, b"half a set").expect("write");
+    let log = open(&dir, FsyncMode::OnCommit);
+    assert_eq!(log.replica_set(), Some(set_at(4)));
+    assert!(!leftover.exists());
+}
+
+/// A shard that never kept a set does not scan its directory for temporaries.
+#[tokio::test]
+async fn a_shard_without_a_set_does_not_scan_for_temporaries() {
     let dir = tempdir().expect("tempdir");
     drop(open(&dir, FsyncMode::OnCommit));
     let leftover = dir.path().join("replica-set.tmp.1.1");
     std::fs::write(&leftover, b"half a set").expect("write");
     let log = open(&dir, FsyncMode::OnCommit);
     assert_eq!(log.replica_set(), None);
-    assert!(!leftover.exists());
+    assert!(leftover.exists());
 }

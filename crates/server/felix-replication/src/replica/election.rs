@@ -28,7 +28,25 @@ impl ReplicaHandler {
         key: &felix_router::ShardKey,
         log: &felix_broker::StreamLog,
         election: &FenceElection,
+        generation: u64,
     ) -> Option<InternalMessage> {
+        // A set is stamped with a route generation no newer than the fence's
+        // own. One ahead is a sender running ahead of itself; taking it would
+        // make this replica refuse the real leader's batches as StaleSet.
+        // Unauthorized, not StaleSet: nobody is deposed, the answer just
+        // must not count.
+        if election.set.generation > generation {
+            metrics::record_replicated(metrics::OUTCOME_REFUSED);
+            return Some(refused(
+                correlation_id,
+                ErrorCode::Unauthorized,
+                0,
+                format!(
+                    "the set of generation {} is newer than the fence's generation {generation}",
+                    election.set.generation
+                ),
+            ));
+        }
         if let Some(refusal) = stale_set(correlation_id, key, log, election.set.generation) {
             return Some(refusal);
         }
@@ -97,9 +115,24 @@ impl ReplicaHandler {
         key: &felix_router::ShardKey,
         log: &felix_broker::StreamLog,
         stamped: u64,
+        generation: u64,
     ) -> Option<InternalMessage> {
         if let Some(refusal) = stale_set(correlation_id, key, log, stamped) {
             return Some(refusal);
+        }
+        // A leader stamps its route generation, which is the batch's own. Any
+        // other stamp is refused as StaleRoute (retried) rather than StaleSet,
+        // which would halt a leader that is not at fault.
+        if stamped != generation {
+            metrics::record_replicated(metrics::OUTCOME_REFUSED);
+            return Some(refused(
+                correlation_id,
+                ErrorCode::StaleRoute,
+                0,
+                format!(
+                    "the set of generation {stamped} does not match the batch's generation {generation}"
+                ),
+            ));
         }
         if stamped == log.set_generation() {
             return None;
@@ -119,7 +152,13 @@ impl ReplicaHandler {
                 ),
             ));
         };
-        keep(correlation_id, key, log, crate::replica_set::kept(route)).await
+        keep(
+            correlation_id,
+            key,
+            log,
+            crate::replica_set::kept(route, None),
+        )
+        .await
     }
 
     /// Note that this replica heard its leader for `key`, for the stickiness

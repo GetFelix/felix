@@ -3545,13 +3545,18 @@ production broker sends or reads a set yet. With it on:
   rules out) raises the accepted generation, which only refuses more.
 - A fence or a batch carrying an older set generation than the one kept is
   refused with `StaleSet`, naming the newer generation, and nothing is
-  persisted for it. A batch at a newer set learns the members from the
-  routing view at that generation, or is refused as retryable until a fence
-  carries the set.
+  persisted for it. A batch whose set is newer than the one kept learns the
+  members from the routing view at that generation, or is refused as
+  retryable until a fence carries the set.
 - A fence whose set lists this replica only as a learner, or not at all, is
   refused: a learner never votes. A move's staged successor is listed as a
-  learner in every set built from a route, so the leader and its followers
-  keep the same set at one generation.
+  learner only in the set the leader keeps while shipping, where it is left
+  out of the quorum; a successor that already replicated the stream keeps
+  voting, and every other set built from a route lists no learner.
+- A fence whose set is newer than its own generation is refused as
+  `Unauthorized` and keeps nothing, and a batch whose stamp is not its own
+  generation is refused as `StaleRoute`: a leader stamps its route generation,
+  and neither refusal deposes it the way `StaleSet` would.
 - A candidate's fence is refused while the replica heard its leader within
   `FELIX_LEADER_SUSPECT_AFTER_MS`.
 - A leader whose followers all offered `ELECTION` stops counting once its log
@@ -3569,7 +3574,9 @@ plane's pending set and adoption, the pre-vote and the election driver.
 > stickiness. `a_replica_that_does_not_vote_in_the_set_refuses_the_fence`:
 > learners do not vote. `a_leader_that_answers_a_newer_fence_stops_counting`:
 > rule 5. `a_set_newer_than_the_ballot_raises_the_accepted_generation_at_open`:
-> the order at open. `a_replica_that_left_the_set_cannot_win_a_fence`
+> the order at open. `a_fence_carrying_a_set_ahead_of_its_generation_is_refused`
+> and `a_batch_stamped_with_another_generation_than_its_own_is_refused`: the
+> set never runs ahead of the generation. `a_replica_that_left_the_set_cannot_win_a_fence`
 > (felix-cluster): a follower drained out of the set stands on its old set
 > and every live replica refuses it with `StaleSet`.
 

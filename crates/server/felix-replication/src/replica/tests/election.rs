@@ -300,3 +300,55 @@ async fn a_fence_without_a_set_keeps_none() {
     ok(&answer);
     assert_eq!(stream_log(&broker).await.set_generation(), 9);
 }
+
+/// **A set newer than the fence's own generation is refused**, taking no
+/// ballot and keeping nothing: a sender stamps a route generation no newer
+/// than its fence's, and keeping the set would have the real leader's batches
+/// refused as `StaleSet`. Unauthorized, so nobody is deposed.
+#[tokio::test]
+async fn a_fence_carrying_a_set_ahead_of_its_generation_is_refused() {
+    let (broker, _dir) = broker_with_storage().await;
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
+    handler
+        .apply(SENDER, batch(4, 0, &["a"]), felix_broker::LogKind::Stream)
+        .await;
+
+    let answer = handler
+        .fence(SENDER, election_fence(5, voters(9), false))
+        .await;
+
+    assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
+    let log = stream_log(&broker).await;
+    assert_eq!(log.accepted_generation(), 4);
+    assert_eq!(log.set_generation(), 0);
+    // A set at the fence's own generation is still taken.
+    ok(&handler
+        .fence(SENDER, election_fence(5, voters(5), false))
+        .await);
+}
+
+/// **A batch is stamped with its own generation**: a stamp that names another
+/// set is refused as retryable, even when the routing view has it, and the
+/// batch stores nothing.
+#[tokio::test]
+async fn a_batch_stamped_with_another_generation_than_its_own_is_refused() {
+    let (broker, _dir) = broker_with_storage().await;
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 6));
+    handler
+        .apply(SENDER, batch(6, 0, &["a"]), felix_broker::LogKind::Stream)
+        .await;
+    knows_set(&broker, 5).await;
+
+    let answer = handler
+        .apply(
+            SENDER,
+            stamped(6, 1, &["b"], 5),
+            felix_broker::LogKind::Stream,
+        )
+        .await;
+
+    assert_eq!(refusal(&answer).code, ErrorCode::StaleRoute);
+    assert!(refusal(&answer).code.is_retryable());
+    assert_eq!(stream_log(&broker).await.set_generation(), 5);
+    assert_eq!(held(&broker).await, vec!["a"]);
+}

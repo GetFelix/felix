@@ -618,7 +618,7 @@ impl ReplicaHandler {
         }
         if let Some(stamped) = batch.set_generation
             && let Some(refusal) = self
-                .check_batch_set(correlation_id, &key, &log, stamped)
+                .check_batch_set(correlation_id, &key, &log, stamped, batch.shard.generation)
                 .await
         {
             return refusal;
@@ -1108,7 +1108,8 @@ impl ReplicaHandler {
         // is the leader confirming it still leads, once per read round. From
         // any other node it is refused below, by the ballot.
         if let Some(election) = &request.election
-            && let Some(refusal) = self.check_fence_set(correlation_id, &key, &log, election)
+            && let Some(refusal) =
+                self.check_fence_set(correlation_id, &key, &log, election, generation)
         {
             return refusal;
         }

@@ -161,7 +161,7 @@ pub async fn fence_shard<R: PeerRequester>(
     // The set this leader counts, for replicas that check sets.
     let set = requester
         .offers_election()
-        .then(|| crate::replica_set::view(route));
+        .then(|| crate::replica_set::view(route, None));
     let own_logs = async {
         let mut caught_up_from = None;
         for &kind in logs {
@@ -774,7 +774,7 @@ async fn keep_own_set(
             ));
         }
     }
-    match log.accept_set(crate::replica_set::kept(route)).await {
+    match log.accept_set(crate::replica_set::kept(route, None)).await {
         Ok(felix_storage::disk_log::SetCheck::Stale { known }) => Err(Outcome::pending(
             format!("this broker counts the set of generation {known}, newer than this one"),
             Vec::new(),

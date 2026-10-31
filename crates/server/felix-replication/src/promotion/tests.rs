@@ -884,6 +884,40 @@ async fn a_promotion_fence_carries_the_set_only_to_replicas_that_check_sets() {
     }
 }
 
+/// **A successor that was already a voting replica still votes in the
+/// promotion fence's set.** A move to a broker that holds a copy stages it
+/// without adding it, so the quorum keeps counting it; listing it as a learner
+/// would have it refuse the fence, and with the other replica down the
+/// promotion would stall short of a majority.
+#[tokio::test]
+async fn a_successor_that_was_already_a_replica_still_votes_in_the_promotion_set() {
+    let electing = PeerCapabilities::from_bits(REQUIRED.bits()).union(PeerCapabilities::ELECTION);
+    let mut replicas = Replicas::new();
+    replicas.electing = true;
+    replicas.get_mut("broker-c").reachable = false;
+    replicas.get_mut("broker-b").capabilities = electing;
+    replicas
+        .get("broker-b")
+        .holds("broker-b", 4, 0, &["a"])
+        .await;
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+    let mut staged = route();
+    staged.successor = Some("broker-b".to_string());
+
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &staged, true).await;
+
+    assert_eq!(
+        outcome,
+        Outcome::Fenced {
+            caught_up_from: None
+        }
+    );
+    assert_eq!(
+        set_generation(&replicas.get("broker-b").broker).await,
+        PROMOTED
+    );
+}
+
 async fn set_generation(broker: &Broker) -> u64 {
     broker
         .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)

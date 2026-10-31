@@ -13,12 +13,15 @@ use felix_wire::internal::{ReplicaSetView, SetMember};
 ///
 /// Every set built from a route lists the same members: an equal-generation
 /// set never replaces the stored one, so the leader's and a replica's must
-/// agree. The staged `successor` is a learner, which an election refuses as a
-/// voter; that only costs liveness while a move is staged.
-pub(crate) fn view(route: &Route) -> ReplicaSetView {
+/// agree, which is why `learner` is the one thing a caller adds: the staged
+/// destination the leader leaves out of its quorum (`staged_learner`), and
+/// `None` wherever that is not known. A successor that already replicated the
+/// stream keeps voting, so marking it a learner would make a promotion fence
+/// refuse its answer.
+pub(crate) fn view(route: &Route, learner: Option<&str>) -> ReplicaSetView {
     ReplicaSetView {
         generation: route.generation,
-        members: members(route)
+        members: members(route, learner)
             .map(|(node, storage, learner)| SetMember {
                 node_id: node.to_string(),
                 storage_id: storage,
@@ -29,9 +32,9 @@ pub(crate) fn view(route: &Route) -> ReplicaSetView {
 }
 
 /// The route's set at its generation, as a log keeps it.
-pub(crate) fn kept(route: &Route) -> ReplicaSet {
+pub(crate) fn kept(route: &Route, learner: Option<&str>) -> ReplicaSet {
     ReplicaSet {
-        current: membership(&view(route)),
+        current: membership(&view(route, learner)),
         leaving: None,
     }
 }
@@ -52,7 +55,10 @@ pub(crate) fn membership(view: &ReplicaSetView) -> Membership {
     }
 }
 
-fn members(route: &Route) -> impl Iterator<Item = (&str, Option<[u8; 16]>, bool)> + '_ {
+fn members<'a>(
+    route: &'a Route,
+    staged: Option<&'a str>,
+) -> impl Iterator<Item = (&'a str, Option<[u8; 16]>, bool)> + 'a {
     let storage = |node: &str| {
         route
             .fence_storage_ids
@@ -64,7 +70,7 @@ fn members(route: &Route) -> impl Iterator<Item = (&str, Option<[u8; 16]>, bool)
         .chain(&route.replicas)
         .map(|node| node.node_id.as_str())
         .map(move |node| {
-            let learner = route.successor.as_deref() == Some(node) && node != route.leader.node_id;
+            let learner = staged == Some(node) && node != route.leader.node_id;
             (node, storage(node), learner)
         })
 }

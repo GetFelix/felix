@@ -205,7 +205,12 @@ pub(super) fn reconcile(
     label: &str,
     accepted: Accepted,
 ) -> Result<(Option<ReplicaSet>, Accepted)> {
-    discard_leftovers(dir)?;
+    // A shard that never kept a set pays one stat, not a directory scan. A
+    // temporary from a crash during the very first write waits for the next
+    // open after a set exists; `load` ignores it meanwhile.
+    if path_in(dir).exists() {
+        discard_leftovers(dir)?;
+    }
     let set = load(dir)?;
     let accepted = match &set {
         Some(set) if set.current.generation > accepted.0 => {
