@@ -233,29 +233,10 @@ async fn ship_batch<R: PeerRequester>(
     // Marks go only when there are any: an unmarked batch is byte for byte
     // what a follower that predates them reads.
     let marks: Vec<ProducerMark> = if records.iter().any(|r| r.mark != RecordMark::None) {
-        match records
+        records
             .iter()
             .map(|record| felix_broker::replication::mark_to_wire(record.mark))
             .collect()
-        {
-            Ok(marks) => marks,
-            Err(err) => {
-                // A trim record before replication carries its mark. Sent
-                // without it, the follower would store the trim's headers as
-                // an event, so the follower is held here, loudly, instead.
-                tracing::error!(
-                    node_id = %cursor.node_id,
-                    stream = %shard.stream,
-                    shard = shard.shard,
-                    offset = cursor.next_offset,
-                    error = %err,
-                    "cannot ship this batch to the follower",
-                );
-                metrics::record_shipped(metrics::OUTCOME_READ_FAILED);
-                cursor.stalled = true;
-                return Progress::Retry;
-            }
-        }
     } else {
         Vec::new()
     };
@@ -311,6 +292,7 @@ async fn ship_batch<R: PeerRequester>(
         felix_broker::LogKind::Stream => InternalMessage::ReplicateRecords(batch),
     };
 
+    let holds_trim = request_holds_trim(&request);
     let mut answer = requester
         .request(&cursor.node_id, cursor.addr, request.clone())
         .await;
@@ -338,6 +320,26 @@ async fn ship_batch<R: PeerRequester>(
     }
     let answer = match answer {
         Ok(answer) => answer,
+        Err(PeerError::Unsupported { .. }) if holds_trim => {
+            // The follower never said it reads trim records, so it is held
+            // here rather than sent one it would refuse. Logged at most once
+            // a minute per follower and shard: the next pass meets the same trim.
+            if TRIM_REFUSALS_LOGGED.due(&format!(
+                "{}/{}/{}/{}/{}",
+                cursor.node_id, shard.tenant_id, shard.namespace, shard.stream, shard.shard
+            )) {
+                tracing::error!(
+                    node_id = %cursor.node_id,
+                    stream = %shard.stream,
+                    shard = shard.shard,
+                    offset = cursor.next_offset,
+                    "cannot ship a head trim to a follower that does not offer `head_trim`",
+                );
+            }
+            metrics::record_shipped(metrics::OUTCOME_TRIM_UNSUPPORTED);
+            cursor.stalled = true;
+            return Progress::Retry;
+        }
         Err(err) => {
             metrics::record_shipped(unreachable_outcome(&err));
             cursor.stalled = true;
@@ -534,6 +536,54 @@ pub(super) fn replica_log(log_kind: felix_broker::LogKind) -> ReplicaLog {
         felix_broker::LogKind::GroupCursors => ReplicaLog::GroupCursors,
         felix_broker::LogKind::GroupDeadLetters => ReplicaLog::GroupDeadLetters,
         felix_broker::LogKind::Counters => ReplicaLog::Counters,
+    }
+}
+
+fn request_holds_trim(request: &InternalMessage) -> bool {
+    matches!(request, InternalMessage::ReplicateMarkedRecords(batch) if batch.holds_trim())
+}
+
+/// When the refusal to ship a trim was last logged, per follower and shard.
+static TRIM_REFUSALS_LOGGED: LogLimit = LogLimit::new(std::time::Duration::from_secs(60));
+
+/// Most keys a [`LogLimit`] remembers.
+const LOG_LIMIT_KEYS: usize = 1024;
+
+/// Lets a log line through at most once per `every` for each key, so one held
+/// follower does not hide another. Remembers at most `LOG_LIMIT_KEYS` keys.
+pub(crate) struct LogLimit {
+    every: std::time::Duration,
+    last: std::sync::Mutex<Option<std::collections::HashMap<String, std::time::Instant>>>,
+}
+
+impl LogLimit {
+    pub(crate) const fn new(every: std::time::Duration) -> Self {
+        Self {
+            every,
+            last: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// Whether a line for `key` may go now. The key is built only when this
+    /// is called, which the refusal path does once per pass.
+    pub(crate) fn due(&self, key: &str) -> bool {
+        let now = std::time::Instant::now();
+        let mut guard = self.last.lock().unwrap_or_else(|e| e.into_inner());
+        let seen = guard.get_or_insert_with(Default::default);
+        if let Some(at) = seen.get(key)
+            && now.duration_since(*at) < self.every
+        {
+            return false;
+        }
+        if seen.len() >= LOG_LIMIT_KEYS {
+            seen.retain(|_, at| now.duration_since(*at) < self.every);
+            if seen.len() >= LOG_LIMIT_KEYS {
+                // Too many held at once to track; log rather than hide one.
+                return true;
+            }
+        }
+        seen.insert(key.to_string(), now);
+        true
     }
 }
 

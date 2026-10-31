@@ -784,6 +784,12 @@ impl StreamLog {
             .map_err(BrokerError::from)
     }
 
+    /// Raise the commit offset in memory only; see
+    /// `DiskLog::note_commit_offset`.
+    pub fn note_commit_offset(&self, offset: Offset) {
+        self.log.note_commit_offset(offset);
+    }
+
     /// Keep retention and compaction below the commit offset, for a log
     /// replicated under `Quorum`. Survives a restart. See
     /// `DiskLog::hold_retention_at_commit`.

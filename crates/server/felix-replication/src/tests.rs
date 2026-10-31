@@ -96,7 +96,10 @@ impl PeerRequester for ScriptedFollower {
         message: InternalMessage,
     ) -> std::result::Result<InternalMessage, PeerError> {
         match message {
-            InternalMessage::ReplicateRecords(batch) => self.sent.lock().expect("lock").push(batch),
+            InternalMessage::ReplicateRecords(batch)
+            | InternalMessage::ReplicateMarkedRecords(batch) => {
+                self.sent.lock().expect("lock").push(batch)
+            }
             InternalMessage::ReplicateBootstrap(request) => {
                 self.offered.lock().expect("lock").push(request.base_offset)
             }

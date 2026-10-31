@@ -150,3 +150,49 @@ fn a_counter_fence_needs_the_cache_fence() {
         );
     }
 }
+
+/// **A batch holding a trim goes only to a peer that offers `HEAD_TRIM`.**
+/// An older follower would refuse the mark and stop replicating there; a
+/// batch without one needs nothing.
+#[test]
+fn a_batch_holding_a_trim_needs_head_trim() {
+    use felix_wire::internal::{ProducerMark, ReplicateRecords, ShardRef};
+    let batch = |marks: Vec<ProducerMark>| {
+        InternalMessage::ReplicateMarkedRecords(ReplicateRecords {
+            correlation_id: 0,
+            shard: ShardRef {
+                tenant_id: "t1".into(),
+                namespace: "ns".into(),
+                stream: "orders".into(),
+                shard: 0,
+                generation: 1,
+                incarnation: None,
+            },
+            first_offset: 0,
+            checksum: 0,
+            payloads: vec![bytes::Bytes::new(); marks.len()],
+            marks,
+            publishers: Vec::new(),
+            commit_offset: None,
+            generations: None,
+            times: None,
+        })
+    };
+    assert_eq!(
+        required_capability(&batch(vec![
+            ProducerMark::Commit,
+            ProducerMark::Trim { floor: 1 }
+        ])),
+        Some(PeerCapabilities::HEAD_TRIM)
+    );
+    assert_eq!(
+        required_capability(&batch(vec![ProducerMark::Commit])),
+        None
+    );
+    assert!(
+        crate::peer::PeerTransportConfig::default()
+            .capabilities()
+            .contains(PeerCapabilities::HEAD_TRIM),
+        "this build offers it"
+    );
+}

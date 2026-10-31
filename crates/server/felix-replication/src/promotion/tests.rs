@@ -17,6 +17,7 @@ use crate::ReplicaHandler;
 
 mod cache;
 mod groups;
+mod head_trim;
 mod identity;
 mod times;
 

@@ -265,6 +265,15 @@ where
     if let Err(err) = broker.finish_pending_cache_deletes().await {
         tracing::error!(error = %err, "could not finish deleting caches; retrying as they are named again");
     }
+    // A follower that predates trim records stops replicating at one, so a
+    // cluster member trims only once its fleet has finalized `head_trim`. A
+    // lone broker has no followers.
+    if config.membership.is_some() {
+        let fleet = Arc::clone(&fleet);
+        broker.allow_head_trims_when(move || fleet.supports(felix_common::fleet::HEAD_TRIM));
+    } else {
+        broker.allow_head_trims_when(|| true);
+    }
     // A cursor that carries its dependency is a value an older build refuses,
     // so a cluster waits for its fleet. A lone broker writes them from the
     // start: it has no older replica to read them.
@@ -279,7 +288,6 @@ where
     // Readers of a replicated `Quorum` stream see only what its quorum mark
     // has passed; see `replication::quorum::committed_bound`.
     if let Some(ingress) = &ingress_router {
-        broker.set_replication_enabled();
         broker.set_read_bounds(Arc::new(replication::quorum::CommittedReads::new(
             Arc::clone(&quorum_marks),
             Arc::clone(ingress) as Arc<dyn replication::quorum::ShardServing>,

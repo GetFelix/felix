@@ -82,7 +82,7 @@ async fn ship(
     let payloads: Vec<Bytes> = records.iter().map(|r| r.payload.clone()).collect();
     let marks: Vec<_> = records
         .iter()
-        .map(|r| crate::replication::mark_to_wire(r.mark).expect("ships"))
+        .map(|r| crate::replication::mark_to_wire(r.mark))
         .collect();
     let checksum = felix_wire::internal::batch_checksum(&payloads, &marks, &[]);
     let applied =

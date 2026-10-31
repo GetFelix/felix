@@ -1183,7 +1183,7 @@ the state view is updated under the ring's lock.
 
 `FelixHeadTrim.tla` is a small model of its own for the conditional head
 trim designed in issue 1662 and described in
-[Conditional head trim](../replication-design.md#conditional-head-trim-designed-not-built).
+[Conditional head trim](../replication-design.md#conditional-head-trim).
 Nothing in it is built yet; every configuration says so in its evidence
 line. Leadership is the same plain Raft as `FelixAtomicCommit.tla`, with a
 generation-start record, so the question is only what a trim adds.

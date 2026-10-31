@@ -1207,16 +1207,10 @@ impl ReplicaHandler {
             .iter()
             .any(|record| record.mark != felix_storage::log::RecordMark::None)
         {
-            match records
+            records
                 .iter()
                 .map(|record| replication::mark_to_wire(record.mark))
                 .collect()
-            {
-                Ok(marks) => marks,
-                Err(err) => {
-                    return refused(correlation_id, ErrorCode::StorageFailed, 0, err.to_string());
-                }
-            }
         } else {
             Vec::new()
         };

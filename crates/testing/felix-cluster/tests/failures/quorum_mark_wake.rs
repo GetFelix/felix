@@ -16,7 +16,7 @@ const PUBLISHERS_PER_CONNECTION: usize = 8;
 const PAYLOAD: usize = 256;
 const LOAD: Duration = Duration::from_secs(25);
 /// Every fleet feature but the opt-in `publisher_principal`, prerequisites first.
-const FEATURES: [&str; 9] = [
+const FEATURES: [&str; 10] = [
     "generation_start",
     "majority_ack",
     "lease_free_reads",
@@ -26,6 +26,7 @@ const FEATURES: [&str; 9] = [
     "group_cursor_dependencies",
     "stream_incarnations",
     "cache_incarnations",
+    "head_trim",
 ];
 /// `FELIX_CONTROLPLANE_SYNC_INTERVAL_MS`, which is the replication tick and
 /// also the cadence of the broker's metadata and routing feeds. A wake the

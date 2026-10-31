@@ -642,6 +642,10 @@ pub(crate) fn required_capability(message: &InternalMessage) -> Option<PeerCapab
     let (base, log) = match message {
         InternalMessage::Fence(fence) => (PeerCapabilities::FENCE, fence.log),
         InternalMessage::ReplicateFetch(fetch) => (PeerCapabilities::TAIL_FETCH, fetch.log),
+        // An older follower refuses the mark and its replication stops there.
+        InternalMessage::ReplicateMarkedRecords(batch) if batch.holds_trim() => {
+            return Some(PeerCapabilities::HEAD_TRIM);
+        }
         _ => return None,
     };
     Some(match log {

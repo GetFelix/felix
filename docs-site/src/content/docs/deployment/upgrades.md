@@ -520,6 +520,30 @@ was down for the delete.
 - **What clients see.** Nothing. Cache answers carry `incarnation` once it is
   not 0.
 
+#### `head_trim`
+
+Once finalized, a durable stream accepts head trims: a trim record that hides
+the stream's history below an offset. Until then a broker in a cluster refuses
+every trim and writes nothing. Over QUIC the client gets a generic `invalid`
+error; over Kafka, an unknown-server-error response.
+
+- **It is the one-way step.** A trim record is storage format v7, which an
+  older broker refuses to open. Take a backup first.
+- **Replication carries it.** A trim ships with a mark of its own, and a
+  follower that predates the feature would refuse the batch and stop
+  replicating there. A leader also sends a batch holding a trim only to a
+  follower that offered `HEAD_TRIM` in its handshake, and holds the others at
+  the trim, counted as `trim_unsupported` in
+  `felix_broker_replication_shipped_total`.
+- **A single broker** allows trims from the start: it has no followers.
+  A data directory that trimmed as a single broker joins a cluster only once
+  that cluster has finalized `head_trim`. A log that has trimmed holds
+  records an older follower or leader cannot read, and a promoted older
+  leader's fetch of it fails to decode, which stalls that shard's failover.
+  Broker startup does not check for this.
+- **What clients see.** Nothing until something trims. Reads below a trim's
+  floor are then refused as too old.
+
 A control plane older than fleet features sends none, so brokers keep them
 all off. Under the Raft backend a broker's features are kept, and a feature
 can be finalized, only once every control-plane member is at metadata
@@ -594,8 +618,9 @@ once something enables it: a v4 segment for a generation-start record, once
 above); v5 for an atomic commit, once `atomic_commit` is; and v6 for a record
 with its publisher, once `publisher_principal` is, or on a single broker with
 `FELIX_RECORD_PUBLISHERS=true` (see
-[`publisher_principal`](#publisher_principal)). v7 holds a trim record, which
-nothing writes yet. Each of those is the one-way
+[`publisher_principal`](#publisher_principal)); and v7 for a head trim, once
+`head_trim` is, or from the start on a single broker (see
+[`head_trim`](#head_trim)). Each of those is the one-way
 step. Consumer-group cursors are not in the segment format but have a layout
 of their own: a cluster moves to the newer one once
 [`group_cursor_dependencies`](#group_cursor_dependencies) is finalized, and a

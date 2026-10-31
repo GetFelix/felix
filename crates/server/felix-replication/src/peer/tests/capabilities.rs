@@ -160,7 +160,8 @@ async fn two_current_brokers_learn_each_others_capabilities() {
         .union(PeerCapabilities::GROUP_FENCE)
         .union(PeerCapabilities::RECORD_TIMES)
         .union(PeerCapabilities::BALLOTS)
-        .union(PeerCapabilities::PING);
+        .union(PeerCapabilities::PING)
+        .union(PeerCapabilities::HEAD_TRIM);
     assert_eq!(theirs, offered);
     assert_eq!(pool.known_capabilities().get(PEER), Some(offered));
     // A caller reads an identity whether or not it gives one, and replaces
@@ -480,8 +481,8 @@ async fn an_older_broker_dialling_in_is_answered_the_old_way() {
 
 /// **A broker with the fence turned off is an older broker to whoever sends
 /// one**: it offers nothing of the fence, the pool will not send it, and one
-/// sent by hand is refused as an unknown kind. Labels, forwarded offsets and
-/// record times are not the fence's, so they are still offered.
+/// sent by hand is refused as an unknown kind. Labels, forwarded offsets,
+/// record times and head trims are not the fence's, so they are still offered.
 #[tokio::test]
 async fn a_broker_with_the_fence_off_neither_offers_nor_answers_it() {
     let (listener, _noted) = listener_noting(false).await;
@@ -496,6 +497,7 @@ async fn a_broker_with_the_fence_off_neither_offers_nor_answers_it() {
             .union(PeerCapabilities::FORWARD_INCARNATION)
             .union(PeerCapabilities::RECORD_TIMES)
             .union(PeerCapabilities::PING)
+            .union(PeerCapabilities::HEAD_TRIM)
     );
     let err = pool
         .request(PEER, listener.addr, fence())

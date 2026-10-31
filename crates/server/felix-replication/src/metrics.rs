@@ -28,6 +28,9 @@ pub const OUTCOME_RESUMED: &str = "resumed";
 pub const OUTCOME_REFUSED: &str = "refused";
 /// The leader could not read its own log.
 pub const OUTCOME_READ_FAILED: &str = "read_failed";
+/// The batch held a head trim and the follower does not offer `head_trim`,
+/// so nothing was sent. The follower waits there until it is upgraded.
+pub const OUTCOME_TRIM_UNSUPPORTED: &str = "trim_unsupported";
 pub const OUTCOME_UNREACHABLE: &str = "unreachable";
 pub const OUTCOME_TIMEOUT: &str = "timeout";
 pub const OUTCOME_DISCONNECTED: &str = "disconnected";

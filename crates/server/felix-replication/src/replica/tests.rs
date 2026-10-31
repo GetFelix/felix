@@ -17,6 +17,7 @@ use super::*;
 mod fence;
 mod groups;
 mod incarnation;
+mod trim;
 
 const TENANT: &str = "t1";
 const NAMESPACE: &str = "ns";

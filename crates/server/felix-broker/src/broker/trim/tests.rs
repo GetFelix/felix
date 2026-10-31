@@ -27,6 +27,16 @@ impl ReadBounds for Bound {
 }
 
 async fn broker(dir: &std::path::Path, consistency: ConsistencyLevel) -> (Broker, Arc<Bound>) {
+    let (broker, bound) = undecided_broker(dir, consistency).await;
+    broker.allow_head_trims_when(|| true);
+    (broker, bound)
+}
+
+/// [`broker`] before the node has said whether trims are allowed.
+async fn undecided_broker(
+    dir: &std::path::Path,
+    consistency: ConsistencyLevel,
+) -> (Broker, Arc<Bound>) {
     let config = LogConfig {
         fsync_mode: FsyncMode::OnCommit,
         preallocate_segments: false,
@@ -529,26 +539,44 @@ async fn a_quorum_no_op_trim_waits_for_the_mark() {
     );
 }
 
-/// **A broker with replication enabled does not trim yet**, whatever the
-/// shard's consistency or route: replication cannot ship the record, and the
-/// route is empty during startup and moves, so only the process-start fact
-/// can be trusted.
+/// **Trims fail closed.** Until the node says the broker runs alone or the
+/// fleet has finalized `head_trim`, a trim is refused with nothing written,
+/// whatever the shard's consistency: a follower that predates trim records
+/// would stop replicating at one.
 #[tokio::test]
-async fn a_broker_with_replication_refuses_a_trim() {
+async fn a_trim_is_refused_until_the_node_allows_it() {
     for consistency in [ConsistencyLevel::Leader, ConsistencyLevel::Quorum] {
         let dir = tempfile::tempdir().expect("tempdir");
-        let (broker, _) = broker(dir.path(), consistency).await;
+        let (broker, _) = undecided_broker(dir.path(), consistency).await;
         publish(&broker, 4).await;
-        broker.set_replication_enabled();
         assert!(
             matches!(
                 trim(&broker, 2, 4).await,
-                Err(BrokerError::TrimNotReplicatedYet)
+                Err(BrokerError::HeadTrimNotEnabled)
             ),
             "{consistency:?}"
         );
         assert_eq!(tail(&broker).await, 4, "nothing written");
     }
+}
+
+/// **A fleet that has not finalized `head_trim` refuses a trim, and one that
+/// has allows it**, asked on every trim.
+#[tokio::test]
+async fn a_trim_follows_the_fleet_gate() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (broker, _) = undecided_broker(dir.path(), ConsistencyLevel::Leader).await;
+    let finalized = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let gate = Arc::clone(&finalized);
+    broker.allow_head_trims_when(move || gate.load(std::sync::atomic::Ordering::Acquire));
+    publish(&broker, 4).await;
+    assert!(matches!(
+        trim(&broker, 2, 4).await,
+        Err(BrokerError::HeadTrimNotEnabled)
+    ));
+    finalized.store(true, std::sync::atomic::Ordering::Release);
+    let outcome = trim(&broker, 2, 4).await.expect("trim");
+    assert_eq!(outcome.offset, Some(4));
 }
 
 /// **A commit-mark wait that never ends times out** with the typed error.

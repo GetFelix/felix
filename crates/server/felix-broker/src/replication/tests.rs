@@ -482,11 +482,32 @@ async fn a_batch_without_times_takes_this_brokers_clock() {
     assert!(stored[0] >= before, "{stored:?} predates {before}");
 }
 
-/// A trim record has no wire mark yet, so it is refused, never shipped as
-/// an ordinary record.
-#[test]
-fn a_trim_mark_is_refused_on_the_wire() {
-    let trim = RecordMark::Trim { floor: 3 };
-    assert_eq!(mark_to_wire(trim), Err(UnshippableMark { mark: trim }));
-    assert_eq!(mark_to_wire(RecordMark::Commit), Ok(ProducerMark::Commit));
+/// **A replicated trim keeps its floor, and a follower held at its commit
+/// offset applies it only once that offset passes the record.** Applied on
+/// arrival, a trim a later leader truncates would still hide records.
+#[tokio::test]
+async fn a_replicated_trim_applies_its_floor_only_at_commit() {
+    let trim = mark_to_wire(RecordMark::Trim { floor: 3 });
+    assert_eq!(trim, ProducerMark::Trim { floor: 3 });
+    assert_eq!(mark_from_wire(trim), RecordMark::Trim { floor: 3 });
+
+    let (log, _dir) = follower().await;
+    log.hold_retention_at_commit(true).await.expect("hold");
+    ship(&log, 0, &["a", "b", "c", "d"]).await.expect("stored");
+    let payloads = batch(&["headers"]);
+    let marks = [trim];
+    let checksum = felix_wire::internal::batch_checksum(&payloads, &marks, &[]);
+    apply(&log, 4, checksum, &payloads, &marks, &[], &[])
+        .await
+        .expect("apply")
+        .expect("stored");
+    assert_eq!(log.readable_base(), 0, "applied above the commit offset");
+    log.advance_commit_offset(4).await.expect("commit");
+    assert_eq!(log.readable_base(), 0, "applied below its own record");
+    log.advance_commit_offset(5).await.expect("commit");
+    assert_eq!(log.readable_base(), 3);
+    assert!(matches!(
+        log.read_from(0, 1 << 20).await,
+        Err(BrokerError::CursorTooOld { oldest: 3, .. })
+    ));
 }

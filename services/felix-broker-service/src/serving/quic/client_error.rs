@@ -252,7 +252,7 @@ impl ClientError {
             | E::TrimPastTail { .. }
             | E::TrimNeedsDurableStream
             | E::TrimOnCommitStream
-            | E::TrimNotReplicatedYet => Self::invalid(message),
+            | E::HeadTrimNotEnabled => Self::invalid(message),
             // Answered as `publish_refused` with the tail wherever the request
             // can carry it; this is only for a caller that cannot.
             E::OffsetMismatch { .. } => Self::invalid(message).with_retry(RetryClass::Fatal),

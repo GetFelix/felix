@@ -656,6 +656,15 @@ impl DiskLog {
         Ok(())
     }
 
+    /// Raise the commit offset in memory only, so a trim's floor below it
+    /// applies at once. A later [`Self::advance_commit_offset`] writes it.
+    ///
+    /// For a leader about to open reads up to `offset`: a reader let in
+    /// before the floor applies is served below an acknowledged trim.
+    pub fn note_commit_offset(&self, offset: Offset) {
+        self.inner.commit_offset.fetch_max(offset, Ordering::AcqRel);
+    }
+
     /// Keep retention and compaction's head trims below the commit offset.
     ///
     /// For a log replicated under `Quorum`, where a record above the commit

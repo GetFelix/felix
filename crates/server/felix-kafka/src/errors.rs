@@ -54,7 +54,7 @@ pub(crate) fn from_broker(err: &BrokerError) -> ResponseError {
         | BrokerError::TrimPastTail { .. }
         | BrokerError::TrimNeedsDurableStream
         | BrokerError::TrimOnCommitStream
-        | BrokerError::TrimNotReplicatedYet
+        | BrokerError::HeadTrimNotEnabled
         | BrokerError::TrimTimedOut { .. }
         | BrokerError::StateViewBusy
         | BrokerError::StateNotReadable(_) => ResponseError::UnknownServerError,

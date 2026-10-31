@@ -159,24 +159,25 @@ pub struct Broker {
     read_bounds: Arc<std::sync::OnceLock<Arc<dyn crate::stream::ReadBounds>>>,
     /// How long a head trim waits on the mark or the ring.
     pub(crate) trim_wait: std::time::Duration,
-    /// Replication is configured on this process. Set once at startup, before
-    /// the broker serves, and never cleared.
-    replication_enabled: std::sync::atomic::AtomicBool,
+    /// Whether head trims are allowed, once the node says. Unset refuses
+    /// them.
+    head_trims: std::sync::OnceLock<NodeGate>,
     /// Seeds producer ids; randomly keyed at construction.
     producer_ids: ahash::RandomState,
     producer_id_counter: std::sync::atomic::AtomicU64,
     /// Whether a durable stream stores each record's publisher, once the
     /// node says. Unset stores none.
-    record_publishers: std::sync::OnceLock<PublisherGate>,
+    record_publishers: std::sync::OnceLock<NodeGate>,
 }
 
-/// Decides whether durable streams store publishers; see
-/// [`Broker::record_publishers_when`].
-struct PublisherGate(Arc<dyn Fn() -> bool + Send + Sync>);
+/// A yes or no the node decides at startup and may change its answer to
+/// later; see [`Broker::record_publishers_when`] and
+/// [`Broker::allow_head_trims_when`].
+struct NodeGate(Arc<dyn Fn() -> bool + Send + Sync>);
 
-impl std::fmt::Debug for PublisherGate {
+impl std::fmt::Debug for NodeGate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("PublisherGate")
+        f.write_str("NodeGate")
     }
 }
 
@@ -227,7 +228,7 @@ impl Broker {
             cache_watches,
             appended: Arc::new(tokio::sync::Notify::new()),
             read_bounds: Arc::default(),
-            replication_enabled: std::sync::atomic::AtomicBool::new(false),
+            head_trims: std::sync::OnceLock::new(),
             trim_wait: crate::broker::trim::TRIM_WAIT,
             producer_ids: ahash::RandomState::new(),
             producer_id_counter: std::sync::atomic::AtomicU64::new(0),
@@ -242,7 +243,7 @@ impl Broker {
     /// turns this on only once that is acceptable: in a cluster when the
     /// fleet has finalized `publisher_principal`. Only the first call counts.
     pub fn record_publishers_when(&self, gate: impl Fn() -> bool + Send + Sync + 'static) {
-        let _ = self.record_publishers.set(PublisherGate(Arc::new(gate)));
+        let _ = self.record_publishers.set(NodeGate(Arc::new(gate)));
     }
 
     /// Whether a durable publish now stores its publisher.
@@ -386,17 +387,17 @@ impl Broker {
         self
     }
 
-    /// Record that replication is configured on this process. Called once at
-    /// startup, before the broker serves. Head trims are refused from then on,
-    /// whatever the route of the shard, until replication ships them.
-    pub fn set_replication_enabled(&self) {
-        self.replication_enabled
-            .store(true, std::sync::atomic::Ordering::Release);
+    /// Allow head trims whenever `gate` says so. Only the first call counts.
+    ///
+    /// Until it is called every trim is refused: a follower that predates
+    /// trim records would stop replicating at one, so the node says either
+    /// that it runs alone or that the fleet has finalized `head_trim`.
+    pub fn allow_head_trims_when(&self, gate: impl Fn() -> bool + Send + Sync + 'static) {
+        let _ = self.head_trims.set(NodeGate(Arc::new(gate)));
     }
 
-    pub(crate) fn replication_enabled(&self) -> bool {
-        self.replication_enabled
-            .load(std::sync::atomic::Ordering::Acquire)
+    pub(crate) fn head_trims_allowed(&self) -> bool {
+        self.head_trims.get().is_some_and(|gate| (gate.0)())
     }
 
     /// Tie a new stream state to the broker's read bounds.

@@ -303,11 +303,52 @@ fn a_generation_start_mark_round_trips_and_an_unknown_mark_is_refused() {
 
     let mut body = bytes::BytesMut::new();
     crate::internal::replicate::put_marks(&mut body, &[ProducerMark::GenerationStart], &[]);
-    body[0] = 5;
+    body[0] = 6;
     assert!(matches!(
         crate::internal::replicate::take_marks(&mut body.freeze(), 1),
-        Err(Error::UnknownInternalProducerMark(5))
+        Err(Error::UnknownInternalProducerMark(6))
     ));
+}
+
+/// **A trim's mark carries its floor**: byte 5, then the floor, with or
+/// without a publisher after it. Cut short, it is incomplete rather than
+/// read as some other floor.
+#[test]
+fn a_trim_mark_round_trips_with_its_floor() {
+    let marks = [
+        ProducerMark::None,
+        ProducerMark::Trim {
+            floor: 0x0102_0304_0506_0708,
+        },
+    ];
+    let mut body = bytes::BytesMut::new();
+    crate::internal::replicate::put_marks(&mut body, &marks, &[]);
+    assert_eq!(&body[..], &[0, 5, 1, 2, 3, 4, 5, 6, 7, 8]);
+    let (taken, _) =
+        crate::internal::replicate::take_marks(&mut body.clone().freeze(), 2).expect("take");
+    assert_eq!(taken, marks);
+    let cut = body.split_to(body.len() - 1).freeze();
+    assert!(matches!(
+        crate::internal::replicate::take_marks(&mut cut.clone(), 2),
+        Err(Error::Incomplete)
+    ));
+
+    let batch = ReplicateRecords {
+        times: None,
+        correlation_id: 7,
+        shard: shard(),
+        first_offset: 3,
+        checksum: 1,
+        payloads: vec![Bytes::from_static(b"x"), Bytes::from_static(b"headers")],
+        marks: marks.to_vec(),
+        commit_offset: Some(3),
+        generations: None,
+        publishers: vec![None, Some(Bytes::from_static(b"svc"))],
+    };
+    assert!(batch.holds_trim());
+    let message = InternalMessage::ReplicateMarkedRecords(batch);
+    let bytes = message.encode().expect("encode");
+    assert_eq!(InternalMessage::decode(bytes).expect("decode"), message);
 }
 
 /// Publishers ride the marks section: a batch with any goes as a kind that

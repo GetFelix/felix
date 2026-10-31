@@ -1679,13 +1679,16 @@ turn. A refusal is `OffsetMismatch` with the tail, and writes nothing.
   past the record, so the log's floor applies by the time the trim is
   answered. On a `Leader` stream an acknowledged trim can be lost at a
   failover like any record there.
-- **Not on a broker with replication, for now.** Replication cannot ship a
-  trim record until the wire carries its mark, and a follower would stop at
-  it. Until then a broker with replication enabled refuses every trim, on
-  any shard and at either consistency, with `TrimNotReplicatedYet`, and
-  writes nothing. The gate is a fact of the process, not of the shard's
-  route, which is empty at startup and changes as followers are added. The
-  refusal goes when replication ships trims.
+- **Only once the node allows it.** A follower that predates trim records
+  would stop replicating at one, so trims are refused with
+  `HeadTrimNotEnabled`, writing nothing, until startup says either that the
+  broker runs alone (no `FELIX_NODE_ID`) or that it is a cluster member, in
+  which case it trims only while its fleet has finalized `head_trim`
+  (`Broker::allow_head_trims_when`). The default refuses. The gate is a fact
+  of the process, not of the shard's route, which is empty at startup and
+  changes as followers are added. How a trim then replicates is in
+  [Conditional head trim](replication-design.md#conditional-head-trim) in
+  `docs/replication-design.md`.
 - **The waits are bounded.** The committed mark and the ring are waited on
   for 30 seconds; after that the trim answers `TrimTimedOut`, and may still
   land.
@@ -1721,7 +1724,8 @@ only trims neither ends the read nor spins.
 > `a_quorum_trim_is_answered_once_the_ring_has_it`,
 > `a_resume_below_the_floor_is_refused_before_the_ring_drops`,
 > `a_quorum_no_op_trim_waits_for_the_mark`,
-> `a_broker_with_replication_refuses_a_trim`,
+> `a_trim_is_refused_until_the_node_allows_it`,
+> `a_trim_follows_the_fleet_gate`,
 > `a_no_op_trim_times_out_waiting_for_the_mark`,
 > `a_commit_replicated_below_an_old_scan_refuses_a_trim`,
 > `a_restart_with_trims_at_the_tail_refills_the_ring`,
@@ -1736,12 +1740,12 @@ reader cannot trim. The broker answers with the tail on success, a no-op
 included, and with `OffsetMismatch` when the expected tail is stale, as
 `publish_if` does. `CursorTooOld` gains an optional `trim_headers` field,
 absent by default, so a reader that predates trims sees the same frame as
-before. The new kind needs a segment format version 7, written only once the
-fleet has finalized a `head_trim` feature, since an older broker cannot read
-it.
+before. The new kind needs a segment format version 7, which a cluster writes
+only once the fleet has finalized `head_trim`, since an older broker cannot
+read it.
 
 How it survives a failover, and the model that checks it, are in
-[Conditional head trim](replication-design.md#conditional-head-trim-designed-not-built)
+[Conditional head trim](replication-design.md#conditional-head-trim)
 in `docs/replication-design.md`.
 
 ## Cache and counter compaction

@@ -2780,26 +2780,47 @@ promotion and the reclaim too.
 followers and loses the record. None models the fence: the configurations
 with a crash use the lease and the report.
 
-### Conditional head trim (designed, not built)
+### Conditional head trim
 
 Issue 1662 designs a client call that trims a stream's history below an
-offset, conditional on the tail the client expects. The storage side and the
-broker's in-process call are built: the logical floor, deletion below it, the
-conditional append and what a reader sees, in
+offset, conditional on the tail the client expects. The storage side, the
+broker's in-process call and replication are built: the logical floor,
+deletion below it, the conditional append and what a reader sees are in
 [Conditional head trim](durable-storage.md#conditional-head-trim) in
-`docs/durable-storage.md`. Nothing below is built yet; this section is how it
-survives replication.
+`docs/durable-storage.md`. The client call is not built yet. This section is
+how a trim survives replication.
 
 The trim is a record in the log, so it is ordered with the writes around it
 and the existing rules carry it across a failover. It replicates like any
-other record (`ProducerMark::Trim` on the internal transport, written only
-once the fleet has finalized `head_trim`, since an older follower refuses the
-mark). On a `Quorum` stream it is acknowledged once the quorum mark passes
-it, so every future leader holds it. The leader applies the floor when its
-read bound passes the record, before it answers; a follower applies it when
-its commit offset passes the record. A new leader serves only once its mark
-covers what it inherited, which its generation-start record committing does,
-so it has applied every acknowledged trim before its first read.
+other record, with `ProducerMark::Trim` and its floor on the internal
+transport (see `docs/internal-protocol.md`, "Producer marks"). A cluster
+member writes one only once the fleet has finalized `head_trim`, since an
+older follower refuses the mark, and a broker refuses every trim until
+startup says which it is. The pool also sends a batch holding a trim only to
+a peer that offered `HEAD_TRIM`, so a follower that cannot read one is held
+below it (`trim_unsupported`) and never sent it.
+
+On a `Quorum` stream a trim is acknowledged once the quorum mark passes it,
+so every future leader holds it. The leader applies the floor when its read
+bound passes the record, before it answers. A follower stores the record
+when it arrives and applies the floor only when its commit offset passes the
+record, which it learns from the leader's next batch: its log is held at the
+commit offset from before its first apply, so a trim that is later cut never
+applied. A new leader serves only once its mark covers what it inherited,
+which its generation-start record committing does. Readers stop at the mark,
+but the log applies a floor only below its own commit offset, so the driver
+raises that offset in memory before it publishes the mark, and writes it
+after. The other order lets a reader in between see records below a trim the
+old leader acknowledged. So a new leader has applied every acknowledged trim
+before its first read.
+
+> `an_acknowledged_trim_survives_the_leaders_death`,
+> `the_mark_opens_reads_only_once_an_inherited_trim_applies`,
+> `the_floor_applies_when_the_commit_offset_passes_the_trim`,
+> `an_unacknowledged_trim_is_dropped_with_the_dead_leaders_suffix`,
+> `a_trim_record_ships_in_place_with_its_mark`,
+> `a_follower_without_head_trim_is_held_at_the_trim`,
+> `a_batch_holding_a_trim_needs_head_trim`
 
 A deposed leader's unacknowledged trim can be truncated like any record above
 the high-water mark, and its floor goes with it. No reader saw that floor,

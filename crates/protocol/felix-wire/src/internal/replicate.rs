@@ -67,6 +67,15 @@ pub struct ReplicateRecords {
     pub times: Option<Vec<u64>>,
 }
 
+impl ReplicateRecords {
+    /// Whether any record in the batch is a head trim.
+    pub fn holds_trim(&self) -> bool {
+        self.marks
+            .iter()
+            .any(|mark| matches!(mark, ProducerMark::Trim { .. }))
+    }
+}
+
 /// One leadership generation, and the offset of its first record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GenerationStart {
@@ -99,6 +108,11 @@ pub enum ProducerMark {
     /// An atomic commit record. Written only once the fleet finalized
     /// `atomic_commit`, for the same reason as `GenerationStart`.
     Commit,
+    /// A head trim record asking that reads below `floor` be refused. Its
+    /// payload is the trim's headers. Written only once the fleet finalized
+    /// `head_trim`, and sent only to a peer that advertised
+    /// [`PeerCapabilities::HEAD_TRIM`](super::PeerCapabilities::HEAD_TRIM).
+    Trim { floor: u64 },
 }
 
 /// The follower stored the batch.
@@ -237,8 +251,8 @@ pub fn batch_checksum(
 const MARK_PUBLISHER: u8 = 0x80;
 
 /// Marks as they travel: one byte per record (0 none, 1 opens, 2 continues,
-/// 3 generation start, 4 commit), an opening record's byte followed by its
-/// producer id, sequence and length. A record with a publisher has
+/// 3 generation start, 4 commit, 5 trim), an opening record's byte followed by
+/// its producer id, sequence and length, a trim's by its floor. A record with a publisher has
 /// [`MARK_PUBLISHER`] set and its publisher after the rest of the mark.
 /// `publishers` is one per mark, or empty.
 pub(super) fn put_marks(
@@ -269,6 +283,10 @@ pub(super) fn put_marks(
             ProducerMark::Continues => out.put_u8(2 | flag),
             ProducerMark::GenerationStart => out.put_u8(3 | flag),
             ProducerMark::Commit => out.put_u8(4 | flag),
+            ProducerMark::Trim { floor } => {
+                out.put_u8(5 | flag);
+                out.put_u64(*floor);
+            }
         }
         if let Some(publisher) = publisher {
             // A storage limit too, so a longer one never reaches here.
@@ -308,6 +326,14 @@ pub(super) fn take_marks(
             2 => ProducerMark::Continues,
             3 => ProducerMark::GenerationStart,
             4 => ProducerMark::Commit,
+            5 => {
+                if body.remaining() < 8 {
+                    return Err(Error::Incomplete);
+                }
+                ProducerMark::Trim {
+                    floor: body.get_u64(),
+                }
+            }
             _ => return Err(Error::UnknownInternalProducerMark(byte)),
         };
         marks.push(mark);

@@ -214,6 +214,7 @@ impl Fixture {
         .expect("storage");
         let broker =
             Arc::new(Broker::new(EphemeralCache::new().into()).with_durable_storage(storage));
+        broker.allow_head_trims_when(|| true);
         broker.register_tenant(TENANT).await.expect("tenant");
         let cluster = Arc::new(FakeCluster {
             placements: Mutex::new(HashMap::new()),
