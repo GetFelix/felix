@@ -201,10 +201,8 @@ pub(super) fn store(dir: &Path, set: &ReplicaSet) -> Result<()> {
     {
         let mut file = std::fs::File::create(&temporary).map_err(StorageError::Io)?;
         file.write_all(&set.encode()).map_err(StorageError::Io)?;
-        crate::io::sync_all(&file).map_err(StorageError::Io)?;
     }
     std::fs::rename(&temporary, &path).map_err(StorageError::Io)?;
-    sync_dir(dir).map_err(StorageError::Io)?;
     Ok(())
 }
 
