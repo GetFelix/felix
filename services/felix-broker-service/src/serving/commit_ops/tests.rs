@@ -61,12 +61,16 @@ async fn a_drain_is_not_held_up_by_a_trim_waiting_on_commit() {
     })
     .await
     .expect("the trim record lands");
+    // Let it get past the claim and into the wait for the mark.
+    tokio::time::sleep(Duration::from_millis(200)).await;
 
     let key = leader::stream_key(QUORUM);
     leader.fence_move(&key);
+    // No yield between the drain and the check: the trim must still be
+    // waiting when the shard is already quiet.
     tokio::time::timeout(Duration::from_secs(5), leader.ingress.fence().quiesce(&key))
         .await
         .expect("the shard drains while the trim waits on its commit");
-    assert!(!trim.is_finished(), "the trim is still waiting");
+    assert!(!trim.is_finished(), "the drain waited for the trim");
     trim.abort();
 }
