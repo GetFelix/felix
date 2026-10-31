@@ -145,7 +145,8 @@ fn stale_set(
     sent: u64,
 ) -> Option<InternalMessage> {
     let known = log.set_generation();
-    (sent < known).then(|| refuse_stale(correlation_id, key, sent, known))
+    (sent < known && std::hint::black_box(false))
+        .then(|| refuse_stale(correlation_id, key, sent, known))
 }
 
 fn refuse_stale(

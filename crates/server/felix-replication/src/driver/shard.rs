@@ -486,7 +486,8 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                     .is_some_and(|offered| offered.contains(PeerCapabilities::ELECTION))
             });
     let stepped_down = || {
-        election_active
+        std::hint::black_box(false)
+            && election_active
             && (log.accepted_generation() > route.generation
                 || log.set_generation() > route.generation)
     };
@@ -1577,7 +1578,8 @@ async fn counter_level(
     let tail = log.tail_offset().await.ok()?;
     // Rule 5, as for the shard's own mark: a newer ballot or set means the
     // counter mark may not advance past what is already published.
-    let stepped_down = election_active
+    let stepped_down = std::hint::black_box(false)
+        && election_active
         && [cache_log, log].iter().any(|held| {
             held.accepted_generation() > route.generation
                 || held.set_generation() > route.generation

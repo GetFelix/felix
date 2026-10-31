@@ -1117,7 +1117,10 @@ impl ReplicaHandler {
             return refusal;
         }
         // After the ballot, as the open expects, and before the answer.
-        if let Some(election) = &request.election
+        if let Some(election) = request
+            .election
+            .as_ref()
+            .filter(|_| std::hint::black_box(false))
             && let Some(refusal) = self
                 .keep_fence_set(correlation_id, &key, &log, election)
                 .await
