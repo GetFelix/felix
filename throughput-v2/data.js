@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793415792212,
+  "lastUpdate": 1793431863602,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -40040,6 +40040,58 @@ window.BENCHMARK_DATA = {
             "range": "6400.14",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 825261.47\nmean: 827301.87\nstdev: 6400.14\ncv: 0.77%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5ef522f5822d95a38c1b0f0839e0627f98af8b29",
+          "message": "feat(broker): conditional head trim in process, every reader on the readable base (#1662) (#1672)\n\n* feat(broker): conditional head trim in process, every reader on the readable base (#1662)\n\nStep 4 of the conditional head trim. Broker::trim_before_at appends a trim\nrecord as a conditional publish is appended: offsets and the commit order\nunder the append lock, only at the expected tail, then durability, then the\nreplay ring in its turn. The tail is checked before the no-op shortcut, a\nfloor past the record's own offset is refused, and so is a stream holding\natomic commits (a one-time scan below the expected tail, then cached). A\nQuorum trim is held from the ring until the mark passes it.\n\nThe ring drops its entries below the floor when the trim reaches it, and the\nnext publish reports the trim's offset as skipped. Every reader starts at\nStreamLog::readable_base; base_offset is renamed physical_base, which only\nreplication keeps. CursorTooOld carries the setting trim's headers. Group\ncursors below the floor move to it on the next poll, and a trim record is\nsettled as a skip. Kafka fetch, ListOffsets earliest and log_start_offset use\nthe readable base, and a trailing trim gets an empty batch. read_from,\nhydration, cache_watch and the other pagers carry on from ReadPage.next.\n\nSpec-Unaffected: the broker follows FelixHeadTrim.tla as written (conditional append at the expected tail, tail checked before the no-op, ReadableStart for readers); no protocol or model state changes.\n\n* fix(broker): answer a trim once the ring has it, and refuse it on replicated shards (#1662)\n\nA trim held for the committed mark was answered before its floor reached\nthe ring, so a resume in between was served below it. The call now waits\nfor the ring, and moves a held log's commit offset past the record so the\nlog's floor applies too. Every durable resume checks the readable base\nafter it registers, so the ring is never the only check.\n\nThe commit scan forgets how far it read when the log is truncated, and a\ncommit arriving by replication is noted. A no-op trim on a Quorum stream\nwaits for the mark to reach the expected tail. Until replication ships trim\nrecords, a shard with followers refuses a trim with TrimNotReplicatedYet.\n\nSpec-Unaffected: the broker now matches FelixHeadTrim.tla's NoReadBelowAckedTrim (a trim is acknowledged only after every reader observes its floor); no model state or protocol changes.\n\n* fix(broker): refuse head trims on any broker with replication, bound their waits (#1662)\n\nTrims are refused for the whole process when replication is configured, not by the shard's live route, which fails open at startup and while a shard moves. The mark and ring waits end in TrimTimedOut. A replicated commit is noted before the tail advances.\n\nSpec-Unaffected: the trim record is not replicated or modelled yet; this only refuses it earlier.",
+          "timestamp": "2026-10-31T07:23:50Z",
+          "tree_id": "9f4c53194df0354c0570a9dee3d7a417ffadbd9f",
+          "url": "https://github.com/GetFelix/felix/commit/5ef522f5822d95a38c1b0f0839e0627f98af8b29"
+        },
+        "date": 1793431862818,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 459586.28,
+            "range": "18243.99",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 459586.28\nmean: 461264.00\nstdev: 18243.99\ncv: 3.96%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 459586.28,
+            "range": "18243.99",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 459586.28\nmean: 461264.00\nstdev: 18243.99\ncv: 3.96%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 100191.54,
+            "range": "4780.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 100191.54\nmean: 97941.38\nstdev: 4780.56\ncv: 4.88%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1001915.39,
+            "range": "47805.66",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1001915.39\nmean: 979413.83\nstdev: 47805.66\ncv: 4.88%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
