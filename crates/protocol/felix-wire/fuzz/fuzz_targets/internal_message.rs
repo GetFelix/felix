@@ -11,7 +11,7 @@ use bytes::Bytes;
 use libfuzzer_sys::fuzz_target;
 
 use felix_wire::internal::{
-    FrameEnvelope, InternalHeader, InternalMessage, Kind, correlation_id_in,
+    FrameEnvelope, InternalHeader, InternalMessage, Kind, PeerCapabilities, correlation_id_in,
 };
 
 fuzz_target!(|data: &[u8]| {
@@ -49,7 +49,26 @@ fuzz_target!(|data: &[u8]| {
     };
     assert_eq!(re_encoded.as_ref(), data);
 
-    // Property 4: the round trip is stable, so decoding is a function of the
+    // Property 4: a message needs `ELECTION` exactly when it travelled as one
+    // of the kinds that carry election fields, or inside an incarnation
+    // envelope that might hold one. Nothing else may be withheld from a peer
+    // that did not offer it.
+    if let Ok(header) = InternalHeader::decode(&input) {
+        let election_kind = matches!(
+            header.kind,
+            Kind::ElectionFence | Kind::SetStamped | Kind::PreVote | Kind::PreVoteAnswer
+        );
+        match header.kind {
+            _ if election_kind => assert_eq!(
+                message.required_capability(),
+                Some(PeerCapabilities::ELECTION)
+            ),
+            Kind::Incarnated => {}
+            _ => assert_eq!(message.required_capability(), None),
+        }
+    }
+
+    // Property 5: the round trip is stable, so decoding is a function of the
     // bytes rather than of anything left over from the first pass.
     let again = InternalMessage::decode(re_encoded).expect("re-decode");
     assert_eq!(again, message);

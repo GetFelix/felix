@@ -3,7 +3,7 @@
 //!
 //! See "Fencing a promotion" in `docs/replication-design.md`.
 
-use super::{ReplicaLog, ShardRef};
+use super::{FenceElection, ReplicaLog, ShardRef};
 
 /// What a peer can do beyond the protocol every build speaks.
 ///
@@ -63,7 +63,12 @@ impl PeerCapabilities {
     /// promoted stream leader takes both from the replica whose pair is
     /// furthest ahead once a majority has taken both fences.
     pub const GROUP_FENCE: Self = Self(1 << 8);
-    // `1 << 9` is reserved for `ELECTION` (#1009).
+    /// Takes part in electing a leader without the control plane: reads a
+    /// [`Fence`] that names the set and says whether the sender is a
+    /// candidate, a batch that carries the set's generation, and answers
+    /// [`PreVote`](super::PreVote). A peer without it is sent none of these,
+    /// and what it is sent is byte for byte what it always read.
+    pub const ELECTION: Self = Self(1 << 9);
     /// Answers a `HelloCapable` offering this bit with its storage identity,
     /// which a restart keeps and a wiped data directory changes
     /// ([`HelloOk::identity`]).
@@ -131,6 +136,11 @@ pub struct Fence {
     pub correlation_id: u64,
     pub shard: ShardRef,
     pub log: ReplicaLog,
+    /// The set the sender counts and whether it is standing for election.
+    /// `None` sends the original fence, byte for byte; `Some` travels as
+    /// `ElectionFence`, sent only to a peer that advertised
+    /// [`PeerCapabilities::ELECTION`].
+    pub election: Option<FenceElection>,
 }
 
 /// The replica took the fence, and where its copy of the shard's log stands

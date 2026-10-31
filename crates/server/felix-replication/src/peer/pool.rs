@@ -639,6 +639,13 @@ impl PeerRequester for PeerPool {
 
 /// The capability a peer must have said it has before `message` goes to it.
 pub(crate) fn required_capability(message: &InternalMessage) -> Option<PeerCapabilities> {
+    match (message_capability(message), message.required_capability()) {
+        (Some(base), Some(wire)) => Some(base.union(wire)),
+        (base, wire) => base.or(wire),
+    }
+}
+
+fn message_capability(message: &InternalMessage) -> Option<PeerCapabilities> {
     let (base, log) = match message {
         InternalMessage::Fence(fence) => (PeerCapabilities::FENCE, fence.log),
         InternalMessage::ReplicateFetch(fetch) => (PeerCapabilities::TAIL_FETCH, fetch.log),

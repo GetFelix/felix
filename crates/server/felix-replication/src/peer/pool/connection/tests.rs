@@ -40,6 +40,8 @@ mod correlation {
             InternalMessage::ReplicateFetch(m) => m.correlation_id,
             InternalMessage::Ping(m) => m.correlation_id,
             InternalMessage::Pong(m) => m.correlation_id,
+            InternalMessage::PreVote(m) => m.correlation_id,
+            InternalMessage::PreVoteAnswer(m) => m.correlation_id,
         }
     }
 
@@ -59,6 +61,18 @@ mod correlation {
         vec![
             InternalMessage::Ping(Ping { correlation_id: 7 }),
             InternalMessage::Pong(Pong { correlation_id: 7 }),
+            InternalMessage::PreVote(PreVote {
+                correlation_id: 7,
+                shard: shard(),
+                log: ReplicaLog::Stream,
+                last_generation: 3,
+                log_end: 9,
+                set_generation: 2,
+            }),
+            InternalMessage::PreVoteAnswer(PreVoteAnswer {
+                correlation_id: 7,
+                refusal: None,
+            }),
             InternalMessage::ForwardPublish(ForwardPublish {
                 correlation_id: 7,
                 shard: shard(),
@@ -105,6 +119,7 @@ mod correlation {
                 commit_offset: None,
                 generations: None,
                 publishers: Vec::new(),
+                set_generation: None,
             }),
             InternalMessage::ReplicateOk(ReplicateOk {
                 correlation_id: 7,
@@ -131,6 +146,7 @@ mod correlation {
                 correlation_id: 7,
                 shard: shard(),
                 log: ReplicaLog::Stream,
+                election: None,
             }),
             InternalMessage::FenceOk(FenceOk {
                 correlation_id: 7,
@@ -158,6 +174,7 @@ mod correlation {
                 commit_offset: None,
                 generations: None,
                 publishers: Vec::new(),
+                set_generation: None,
             }),
         ]
     }
@@ -211,6 +228,7 @@ mod correlation {
                 }
                 InternalMessage::Hello(_)
                 | InternalMessage::Fence(_)
+                | InternalMessage::PreVote(_)
                 | InternalMessage::ReplicateFetch(_)
                 | InternalMessage::Ping(_) => {
                     assert_eq!(class, LaneClass::Control, "{:?}", message.kind())

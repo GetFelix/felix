@@ -485,6 +485,7 @@ impl LaneClass {
         match message {
             InternalMessage::Hello(_)
             | InternalMessage::Fence(_)
+            | InternalMessage::PreVote(_)
             | InternalMessage::ReplicateFetch(_)
             | InternalMessage::Ping(_) => Self::Control,
             InternalMessage::ForwardPublish(_) | InternalMessage::ForwardCacheOp(_) => {
@@ -638,6 +639,14 @@ pub(super) fn with_correlation(message: InternalMessage, correlation_id: u64) ->
         }),
         InternalMessage::Ping(_) => InternalMessage::Ping(Ping { correlation_id }),
         InternalMessage::Pong(_) => InternalMessage::Pong(Pong { correlation_id }),
+        InternalMessage::PreVote(m) => InternalMessage::PreVote(PreVote {
+            correlation_id,
+            ..m
+        }),
+        InternalMessage::PreVoteAnswer(m) => InternalMessage::PreVoteAnswer(PreVoteAnswer {
+            correlation_id,
+            ..m
+        }),
     }
 }
 

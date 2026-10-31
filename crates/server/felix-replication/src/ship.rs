@@ -274,6 +274,7 @@ async fn ship_batch<R: PeerRequester>(
         publishers,
         // Sent only on a labelled batch; see `ReplicateRecords::times`.
         times,
+        set_generation: None,
     };
     carry_marks(&mut batch, log_kind, cursor.legacy_frames);
     // Which log this is belongs in the message kind, not in the shard

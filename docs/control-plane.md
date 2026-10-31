@@ -196,6 +196,12 @@ member applying the command never decides differently from one on an older
 release. An older control plane sends no `fleet_features`, which leaves every
 broker with nothing enabled.
 
+`joint_fence` and `replica_election` are declared the same way, the second
+after `generation_start`, `majority_ack`, `lease_free_reads` and the first.
+No build reports either yet, so a finalize of either is refused
+(`the_election_features_cannot_be_finalized_yet`), and a new cluster does not
+start with them.
+
 **Finalizing is one-way.** From then on a broker that registers without the
 feature is **refused with 409**, naming what it lacks; it logs the reason and
 exits, as for any refused identity. That holds even with no broker serving:

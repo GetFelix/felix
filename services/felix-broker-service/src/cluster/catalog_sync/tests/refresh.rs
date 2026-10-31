@@ -184,6 +184,7 @@ fn records() -> ReplicateRecords {
         generations: None,
         publishers: Vec::new(),
         times: None,
+        set_generation: None,
     }
 }
 

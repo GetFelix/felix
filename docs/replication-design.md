@@ -1047,9 +1047,12 @@ control plane.
   set it is leaving, fsynced before it answers at that set. A build without
   it still opens the shard.
 - *Wire.* A broker that checks sets offers the `ELECTION` internal capability
-  (bit `1 << 9`). The fence, the pre-vote and the batch carry the set's
-  generation only to a peer that offered it, and a missing one means what it
-  means today: no check.
+  (bit `1 << 9`). The fence (with an explicit candidate flag, the set and
+  the set being left), the pre-vote and the batch (stamped with the set's
+  generation) are new kinds sent only to a peer that offered it, and a
+  missing set generation means what it means today: no check
+  (`docs/internal-protocol.md`, "Electing without the control plane"). The
+  kinds are declared and decoded; nothing offers or sends them yet.
 - *Control plane.* Adoption, the pending set a cut-over records beside the
   current one, and the flip to it after the joint fence are new store
   writes, so under Raft they need the next free metadata level on every

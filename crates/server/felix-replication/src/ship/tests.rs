@@ -55,6 +55,7 @@ fn a_cache_batch_with_a_start_record_travels_in_a_layout_with_marks() {
         publishers: Vec::new(),
         commit_offset: None,
         generations: None,
+        set_generation: None,
     };
 
     carry_marks(&mut batch, LogKind::Counters, false);

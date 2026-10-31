@@ -106,6 +106,7 @@ fn batch(generation: u64, first_offset: u64, values: &[&str]) -> ReplicateRecord
         generations: None,
         publishers: Vec::new(),
         times: None,
+        set_generation: None,
     }
 }
 

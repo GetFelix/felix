@@ -728,6 +728,7 @@ async fn ask_fence<R: PeerRequester>(
         correlation_id: 0,
         shard,
         log,
+        election: None,
     });
     if !identified {
         let answer = requester.request(&node_id, addr, request).await;
