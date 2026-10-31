@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793440892759,
+  "lastUpdate": 1793458613928,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -40144,6 +40144,58 @@ window.BENCHMARK_DATA = {
             "range": "14980.12",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 802601.99\nmean: 803174.14\nstdev: 14980.12\ncv: 1.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d0464c496e2f3d60826a5d365556abaa8b39e182",
+          "message": "feat(wire): conditional head trim over QUIC, stream.trim, join enforcement (#1662) (#1676)\n\n* feat(wire): conditional head trim over QUIC, the stream.trim grant, and join enforcement (#1662)\n\ntrim_before hides a durable shard's records below an offset, only at the\ntail the client expects. It goes to the control-stream handler and\nBroker::trim_before_at, inside the shard's write fence, and is answered\nwith trim_ok or publish_refused/offset_mismatch. Negotiated as\nFEATURE_HEAD_TRIM, the fifth extended bit. Each other refusal has a code:\nfeature_not_enabled (head_trim), stream_has_commits, invalid_request with\ntrim_past_tail or not_durable, unacknowledged with trim_timed_out.\nsubscribe_cursor_error carries trim_headers, only to a client that offered\nthe bit.\n\nstream.trim is a new action; stream.manage grants it at the broker, so\nns.manage and tenant.manage reach it. The control plane mints stream.trim\ninto broker tokens only once the fleet finalizes head_trim.\n\nThe first trim writes a head-trimmed marker in the data directory before\nits record. A broker holding it that registers with a fleet without\nhead_trim deregisters and stops.\n\nSpec-Unaffected: FelixHeadTrim.tla models the trim as a conditional append at the expected tail; this change only puts it on the wire, gates who may send it, and refuses to join an unfinalized fleet, none of which adds state the model tracks.\n\n* fix(broker-service): keep the broker's text in a refused trim's message (#1662)\n\nA trim refusal read \"trim not served: trim not served\": the context was\npassed as the message and then put in front again. It now carries the\nbroker's error after the context.\n\nSpec-Unaffected: changes only the prose of an error message.\n\n* test(client): map the two new error codes in the client and binding tables (#1662)\n\nSpec-Unaffected: test tables only.\n\n* fix(trim): mark replicas before a trim, serialize the marker, release the fence before the waits, mint without stream.trim on a failed fleet read (#1662)\n\n* test(trim): let the trim reach its wait before the drain (#1662)\n\n* test(trim): hold the committed mark so the drain test actually waits (#1662)\n\n* Answer a trim whose log closed before its answer as ambiguous\n\nThe fence drops before the commit and ring waits, so a shard move can\nclose the log between the claim and the answer. The trim is committed by\nthen; advancing the closed log's commit offset failed as Storage, which\ntold the client it was not written. Answer PublishSuperseded instead.\n\nSpec-Unaffected: answer classification only; no change to what is written or when.",
+          "timestamp": "2026-10-31T14:52:14Z",
+          "tree_id": "29de23ea4a979c358827c648383630871c67efce",
+          "url": "https://github.com/GetFelix/felix/commit/d0464c496e2f3d60826a5d365556abaa8b39e182"
+        },
+        "date": 1793458613395,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 367145.38,
+            "range": "6487.80",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 367145.38\nmean: 367851.56\nstdev: 6487.80\ncv: 1.76%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 367145.38,
+            "range": "6487.80",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 367145.38\nmean: 367851.56\nstdev: 6487.80\ncv: 1.76%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81364.24,
+            "range": "492.06",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81364.24\nmean: 81461.55\nstdev: 492.06\ncv: 0.60%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 813642.37,
+            "range": "4920.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 813642.37\nmean: 814615.54\nstdev: 4920.56\ncv: 0.60%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
