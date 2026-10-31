@@ -27,6 +27,13 @@ pub const INTERNAL_VERSION: u16 = 1;
 /// a peer-provided number.
 pub const MAX_BODY_BYTES: u32 = 64 * 1024 * 1024;
 
+/// Most bytes the incarnation and set-stamp envelopes add around a body.
+pub const MAX_ENVELOPE_BYTES: u32 = 36;
+
+/// Largest body `encode` accepts before wrapping it, so a body that fits stays
+/// under [`MAX_BODY_BYTES`] once both envelopes go around it.
+pub const MAX_INNER_BODY_BYTES: u32 = MAX_BODY_BYTES - MAX_ENVELOPE_BYTES;
+
 /// Fixed-size header preceding every internal body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InternalHeader {

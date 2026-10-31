@@ -30,6 +30,10 @@ use crate::{
 /// batch, not the distance it is behind.
 pub(super) const MAX_BATCH_BYTES: usize = 1024 * 1024;
 
+// A read can overshoot the budget by one record, and the batch still has to
+// fit once stamped and incarnated.
+const _: () = assert!(2 * MAX_BATCH_BYTES <= felix_wire::internal::MAX_INNER_BODY_BYTES as usize);
+
 /// How long one exchange ships to a destination that is still copying.
 ///
 /// The driver hands an exchange still under way back from the pass, so the

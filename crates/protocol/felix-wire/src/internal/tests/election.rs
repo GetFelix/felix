@@ -628,3 +628,58 @@ fn the_fuzz_seeds_for_the_new_kinds_are_valid_frames() {
         assert_eq!(message.encode().expect(name), seed, "{name}");
     }
 }
+
+/// A stamped batch for an incarnated stream carrying one payload of `len`.
+fn wrapped_batch(len: usize) -> InternalMessage {
+    let InternalMessage::ReplicateRecords(mut records) = stamped(InternalMessage::ReplicateRecords)
+    else {
+        unreachable!()
+    };
+    records.shard.incarnation = Some(5);
+    records.payloads = vec![Bytes::from(vec![7u8; len])];
+    records.marks.clear();
+    records.publishers.clear();
+    InternalMessage::ReplicateRecords(records)
+}
+
+#[test]
+fn a_wrapped_batch_at_the_inner_limit_fits_under_the_frame_limit() {
+    let empty = wrapped_batch(0).encode().expect("encode").len();
+    let inner_overhead = empty - InternalHeader::LEN - MAX_ENVELOPE_BYTES as usize;
+    let at_limit = MAX_INNER_BODY_BYTES as usize - inner_overhead;
+
+    let message = wrapped_batch(at_limit);
+    let encoded = message.encode().expect("a batch at the limit encodes");
+    assert_eq!(
+        InternalHeader::decode(&encoded).expect("header").length,
+        MAX_BODY_BYTES
+    );
+    assert_eq!(InternalMessage::decode(encoded).expect("decode"), message);
+
+    assert!(matches!(
+        wrapped_batch(at_limit + 1).encode(),
+        Err(Error::FrameTooLarge)
+    ));
+}
+
+#[test]
+fn unwrapping_an_envelope_copies_no_payload() {
+    let incarnated = {
+        let InternalMessage::ReplicateRecords(mut records) = wrapped_batch(4096) else {
+            unreachable!()
+        };
+        records.set_generation = None;
+        InternalMessage::ReplicateRecords(records)
+    };
+    for message in [wrapped_batch(4096), incarnated] {
+        let encoded = message.encode().expect("encode");
+        let range = encoded.as_ptr_range();
+        let InternalMessage::ReplicateRecords(decoded) =
+            InternalMessage::decode(encoded.clone()).expect("decode")
+        else {
+            unreachable!()
+        };
+        let payload = decoded.payloads[0].as_ptr_range();
+        assert!(range.start <= payload.start && payload.end <= range.end);
+    }
+}

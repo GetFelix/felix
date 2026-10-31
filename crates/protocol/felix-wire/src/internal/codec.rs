@@ -9,10 +9,11 @@ use super::{
     AckMode, CacheOpKind, ErrorCode, Fence, FenceElection, FenceOk, ForwardCacheCondition,
     ForwardCacheError, ForwardCacheOk, ForwardCacheOp, ForwardCacheOutcome, ForwardPublish,
     ForwardPublishError, ForwardPublishOk, Hello, HelloOk, InternalHeader, InternalMessage, Kind,
-    MAX_BATCH_PAYLOADS, MAX_BODY_BYTES, MAX_CREDENTIAL_BYTES, MAX_IDENT_BYTES, MAX_SET_MEMBERS,
-    MAX_SET_NODE_BYTES, NotLeader, PeerCapabilities, Ping, Pong, PreVote, PreVoteAnswer,
-    PreVoteRefusal, ReplicaLog, ReplicaSetView, ReplicateBootstrap, ReplicateError, ReplicateFetch,
-    ReplicateOk, ReplicateRebuild, ReplicateRecords, SetMember, ShardRef,
+    MAX_BATCH_PAYLOADS, MAX_CREDENTIAL_BYTES, MAX_ENVELOPE_BYTES, MAX_IDENT_BYTES,
+    MAX_INNER_BODY_BYTES, MAX_SET_MEMBERS, MAX_SET_NODE_BYTES, NotLeader, PeerCapabilities, Ping,
+    Pong, PreVote, PreVoteAnswer, PreVoteRefusal, ReplicaLog, ReplicaSetView, ReplicateBootstrap,
+    ReplicateError, ReplicateFetch, ReplicateOk, ReplicateRebuild, ReplicateRecords, SetMember,
+    ShardRef,
 };
 use crate::error::{Error, Result};
 
@@ -24,10 +25,26 @@ const LEN_PREFIX: usize = 4;
 /// keeps.
 const MAX_GENERATIONS: usize = 512;
 
+/// One envelope: correlation id, the stamped value, the inner kind.
+const ENVELOPE_BYTES: usize = 18;
+
+/// Header plus both envelopes, reserved in front of every encoded body.
+const PREFIX: usize = InternalHeader::LEN + MAX_ENVELOPE_BYTES as usize;
+
+fn put_envelope(mut buf: &mut [u8], correlation_id: u64, value: u64, kind: Kind) {
+    buf.put_u64(correlation_id);
+    buf.put_u64(value);
+    buf.put_u16(kind as u16);
+}
+
 impl InternalMessage {
     /// Encode a complete frame: header then body.
     pub fn encode(&self) -> Result<Bytes> {
+        // Room for the header and both envelopes goes in front, so wrapping a
+        // batch writes a few bytes instead of copying its body. The unused
+        // front is advanced past at the end.
         let mut body = BytesMut::new();
+        body.put_bytes(0, PREFIX);
         // Set by the records arm, so the common frame pays one test of an
         // `Option` and not a second match on the message.
         let mut set_generation = None;
@@ -341,45 +358,38 @@ impl InternalMessage {
             }
         }
 
-        let length = u32::try_from(body.len()).map_err(|_| Error::FrameTooLarge)?;
-        if length > MAX_BODY_BYTES {
+        let inner_len = body.len() - PREFIX;
+        if inner_len > MAX_INNER_BODY_BYTES as usize {
             return Err(Error::FrameTooLarge);
         }
 
         let incarnation = self.incarnated_shard().and_then(|shard| shard.incarnation);
-        let (kind, body) = match incarnation {
-            None => (self.kind(), body),
-            Some(incarnation) => {
-                let mut outer = BytesMut::with_capacity(18 + body.len());
-                outer.put_u64(self.correlation_id());
-                outer.put_u64(incarnation);
-                outer.put_u16(self.kind() as u16);
-                outer.extend_from_slice(&body);
-                (Kind::Incarnated, outer)
-            }
-        };
+        let mut start = PREFIX;
+        let mut kind = self.kind();
+        if let Some(incarnation) = incarnation {
+            start -= ENVELOPE_BYTES;
+            put_envelope(&mut body[start..], self.correlation_id(), incarnation, kind);
+            kind = Kind::Incarnated;
+        }
         // Outermost, so a stamped batch for an incarnated stream is a stamp
         // around the incarnation.
-        let (kind, body) = match set_generation {
-            None => (kind, body),
-            Some(set_generation) => {
-                let mut outer = BytesMut::with_capacity(18 + body.len());
-                outer.put_u64(self.correlation_id());
-                outer.put_u64(set_generation);
-                outer.put_u16(kind as u16);
-                outer.extend_from_slice(&body);
-                (Kind::SetStamped, outer)
-            }
-        };
-        let length = u32::try_from(body.len()).map_err(|_| Error::FrameTooLarge)?;
-        if length > MAX_BODY_BYTES {
-            return Err(Error::FrameTooLarge);
+        if let Some(set_generation) = set_generation {
+            start -= ENVELOPE_BYTES;
+            put_envelope(
+                &mut body[start..],
+                self.correlation_id(),
+                set_generation,
+                kind,
+            );
+            kind = Kind::SetStamped;
         }
-
-        let mut frame = BytesMut::with_capacity(InternalHeader::LEN + body.len());
-        InternalHeader { kind, length }.encode(&mut frame);
-        frame.extend_from_slice(&body);
-        Ok(frame.freeze())
+        let length = (body.len() - start) as u32;
+        start -= InternalHeader::LEN;
+        let mut header = BytesMut::with_capacity(InternalHeader::LEN);
+        InternalHeader { kind, length }.encode(&mut header);
+        body[start..start + InternalHeader::LEN].copy_from_slice(&header);
+        body.advance(start);
+        Ok(body.freeze())
     }
 
     /// Decode a complete frame.
@@ -392,9 +402,13 @@ impl InternalMessage {
         if body.len() != header.length as usize {
             return Err(Error::Incomplete);
         }
-        let mut body = body;
+        Self::decode_body(header.kind, body)
+    }
 
-        match header.kind {
+    /// Decode one body of `kind`. An envelope's inner body is a slice of the
+    /// same buffer, so unwrapping it copies nothing.
+    fn decode_body(kind: Kind, mut body: Bytes) -> Result<Self> {
+        match kind {
             Kind::Incarnated => {
                 let correlation_id = take_u64(&mut body)?;
                 let incarnation = take_u64(&mut body)?;
@@ -404,14 +418,7 @@ impl InternalMessage {
                 if kind == Kind::Incarnated || kind == Kind::SetStamped {
                     return Err(Error::Incomplete);
                 }
-                let mut inner = BytesMut::with_capacity(InternalHeader::LEN + body.len());
-                InternalHeader {
-                    kind,
-                    length: body.len() as u32,
-                }
-                .encode(&mut inner);
-                inner.extend_from_slice(&body);
-                let mut message = Self::decode(inner.freeze())?;
+                let mut message = Self::decode_body(kind, body)?;
                 if message.correlation_id() != correlation_id {
                     return Err(Error::Incomplete);
                 }
@@ -426,14 +433,7 @@ impl InternalMessage {
                 if kind == Kind::SetStamped {
                     return Err(Error::Incomplete);
                 }
-                let mut inner = BytesMut::with_capacity(InternalHeader::LEN + body.len());
-                InternalHeader {
-                    kind,
-                    length: body.len() as u32,
-                }
-                .encode(&mut inner);
-                inner.extend_from_slice(&body);
-                let mut message = Self::decode(inner.freeze())?;
+                let mut message = Self::decode_body(kind, body)?;
                 if message.correlation_id() != correlation_id {
                     return Err(Error::Incomplete);
                 }
@@ -525,7 +525,7 @@ impl InternalMessage {
                 let message = Hello {
                     correlation_id: take_u64(&mut body)?,
                     node_id: take_str(&mut body)?,
-                    capabilities: match header.kind {
+                    capabilities: match kind {
                         Kind::HelloCapable => {
                             Some(PeerCapabilities::from_bits(take_u64(&mut body)?))
                         }
@@ -538,7 +538,7 @@ impl InternalMessage {
             Kind::HelloOk | Kind::HelloCapableOk => {
                 let correlation_id = take_u64(&mut body)?;
                 let node_id = take_str(&mut body)?;
-                let capabilities = match header.kind {
+                let capabilities = match kind {
                     Kind::HelloCapableOk => Some(PeerCapabilities::from_bits(take_u64(&mut body)?)),
                     _ => None,
                 };
@@ -582,7 +582,7 @@ impl InternalMessage {
                     log: ReplicaLog::from_u8(take_u8(&mut body)?)?,
                     election: None,
                 };
-                if header.kind == Kind::ElectionFence {
+                if kind == Kind::ElectionFence {
                     let candidate = take_flag(&mut body)?;
                     let set = take_set(&mut body)?;
                     let leaving = if take_flag(&mut body)? {
@@ -651,8 +651,8 @@ impl InternalMessage {
                     log: ReplicaLog::from_u8(take_u8(&mut body)?)?,
                     from_offset: take_u64(&mut body)?,
                     max_bytes: take_u32(&mut body)?,
-                    labelled: header.kind != Kind::ReplicateFetch,
-                    timed: header.kind == Kind::ReplicateTimedFetch,
+                    labelled: kind != Kind::ReplicateFetch,
+                    timed: kind == Kind::ReplicateTimedFetch,
                 };
                 expect_empty(&body)?;
                 Ok(Self::ReplicateFetch(message))
@@ -660,7 +660,7 @@ impl InternalMessage {
             Kind::Ping | Kind::Pong => {
                 let correlation_id = take_u64(&mut body)?;
                 expect_empty(&body)?;
-                Ok(if header.kind == Kind::Ping {
+                Ok(if kind == Kind::Ping {
                     Self::Ping(Ping { correlation_id })
                 } else {
                     Self::Pong(Pong { correlation_id })
@@ -708,15 +708,14 @@ impl InternalMessage {
                     }
                     payloads.push(body.split_to(len));
                 }
-                let timed = header.kind == Kind::ReplicateTimedRecords;
-                let labelled = header.kind == Kind::ReplicateLabelledRecords || timed;
-                let committed = header.kind == Kind::ReplicateCommittedRecords || labelled;
-                let (mut marks, publishers) =
-                    if header.kind == Kind::ReplicateMarkedRecords || committed {
-                        take_marks(&mut body, payloads.len())?
-                    } else {
-                        (Vec::new(), Vec::new())
-                    };
+                let timed = kind == Kind::ReplicateTimedRecords;
+                let labelled = kind == Kind::ReplicateLabelledRecords || timed;
+                let committed = kind == Kind::ReplicateCommittedRecords || labelled;
+                let (mut marks, publishers) = if kind == Kind::ReplicateMarkedRecords || committed {
+                    take_marks(&mut body, payloads.len())?
+                } else {
+                    (Vec::new(), Vec::new())
+                };
                 let (log, commit_offset) = if labelled {
                     let log = ReplicaLog::from_u8(take_u8(&mut body)?)?;
                     let present = take_u8(&mut body)?;
@@ -801,7 +800,7 @@ impl InternalMessage {
                         ReplicaLog::Counters => Self::ReplicateCounterRecords(message),
                     });
                 }
-                Ok(match header.kind {
+                Ok(match kind {
                     Kind::ReplicateCacheRecords => Self::ReplicateCacheRecords(message),
                     Kind::ReplicateGroupRecords => Self::ReplicateGroupRecords(message),
                     Kind::ReplicateDeadLetterRecords => Self::ReplicateDeadLetterRecords(message),
@@ -852,7 +851,7 @@ impl InternalMessage {
                     base_offset: take_u64(&mut body)?,
                 };
                 expect_empty(&body)?;
-                Ok(match header.kind {
+                Ok(match kind {
                     Kind::ReplicateCacheBootstrap => Self::ReplicateCacheBootstrap(message),
                     Kind::ReplicateGroupBootstrap => Self::ReplicateGroupBootstrap(message),
                     Kind::ReplicateDeadLetterBootstrap => {
