@@ -458,6 +458,28 @@ serving or a replica can take over without loss.
 
 These need `node.manage` on the cluster.
 
+### Trimming a shard's head
+
+```bash
+felixctl stream trim orders --shard 0 --before 1000 --expected-offset 5000
+felixctl stream trim orders --shard 2 --before 400 --expected-offset 410 --headers holder-7
+```
+
+`stream trim` hides the records of one shard of a durable stream below
+`--before`. It goes to the shard's leader, not the control plane, and needs a
+token allowed `stream.trim`. `--expected-offset` is the shard's next offset as
+you last saw it: the trim is a record of its own and lands there, so
+`--before` can be at most that. `--headers` is kept with the trim and shown to a
+reader refused below the new floor.
+
+It prints where the trim record landed and where reads start now. A stale
+`--expected-offset` writes nothing, prints the shard's real next offset and
+stops with status 4. If a trim times out it may still have been written, and
+the same command again is then refused the same way, so read the shard's
+earliest offset before deciding. A fleet that has not finalized head trims
+refuses with `feature_not_enabled`, and a stream that holds atomic commits
+with `stream_has_commits`.
+
 ### Confirmation
 
 `tenant rm`, `namespace rm`, `stream rm`, `cache rm`, `node drain` and

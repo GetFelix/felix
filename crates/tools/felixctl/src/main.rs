@@ -40,12 +40,13 @@ mod rbac;
 mod reference;
 mod subscribe;
 mod topology;
+mod trim;
 
 use std::process::ExitCode;
 
 use clap::Parser;
 
-use crate::cli::{Cli, Command};
+use crate::cli::{Cli, Command, StreamCommand};
 use crate::error::exit_for;
 use crate::output::Output;
 
@@ -101,6 +102,7 @@ async fn run(cli: Cli, out: &Output) -> anyhow::Result<()> {
         Command::Counter(command) => counter::run(command, &settings, out).await,
         Command::Tenant(command) => controlplane::tenant(command, &settings, out).await,
         Command::Namespace(command) => controlplane::namespace(command, &settings, out).await,
+        Command::Stream(StreamCommand::Trim(args)) => trim::run(args, &settings, out).await,
         Command::Stream(command) => controlplane::stream(command, &settings, out).await,
         Command::Node(command) => controlplane::node(command, &settings, out).await,
         Command::Shard(command) => controlplane::shard(command, &settings, out).await,

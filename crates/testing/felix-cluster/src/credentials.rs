@@ -174,6 +174,17 @@ impl Credentials {
         )
     }
 
+    /// The client's grants plus `stream.trim`, for a writer that trims the head
+    /// of its own streams. The control plane mints that action into a broker
+    /// token only once the fleet has finalized `head_trim`; the harness signs
+    /// its own.
+    pub fn trimmer_token(&self) -> String {
+        let tenant_id = &self.tenant_id;
+        let (mut perms, _) = self.client_grants();
+        perms.push(format!("stream.trim:stream:{tenant_id}/*/*"));
+        self.mint("p:harness-trimmer", perms, BROKER_AUDIENCE)
+    }
+
     /// Redrives and discards dead letters, which a consumer's
     /// `stream.subscribe` does not allow.
     pub fn group_operator_token(&self) -> String {

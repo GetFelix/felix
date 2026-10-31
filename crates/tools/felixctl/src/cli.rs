@@ -1054,6 +1054,24 @@ pub(crate) enum StreamCommand {
   felixctl stream set orders --consistency quorum"
     )]
     Set(StreamSetArgs),
+    /// Hide a shard's oldest records (broker)
+    #[command(
+        long_about = "Hide the records of one shard of a durable stream below an offset, \
+                      only if the shard's next offset is exactly --expected-offset. The \
+                      trim is a record of its own and lands at that offset, so --before \
+                      can be at most that. Reads below the new floor are refused as too \
+                      old.\n\n\
+                      A stale --expected-offset is refused with the shard's next offset and \
+                      exit status 4, and nothing is written. A trim that times out may \
+                      still have been written, and the same command again is then refused \
+                      the same way; read the shard's earliest offset to tell. Needs a \
+                      token allowed stream.trim, and a broker fleet that has finalized \
+                      head trims.",
+        after_long_help = "Examples:
+  felixctl stream trim orders --shard 0 --before 1000 --expected-offset 5000
+  felixctl stream trim orders --shard 2 --before 400 --expected-offset 410 --headers holder-7"
+    )]
+    Trim(StreamTrimArgs),
     /// Delete a stream and its records
     #[command(
         long_about = "Delete a stream and its records. Asks first on a terminal; elsewhere \
@@ -1068,6 +1086,24 @@ pub(crate) enum StreamCommand {
         #[command(flatten)]
         confirm: Confirm,
     },
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct StreamTrimArgs {
+    /// Stream name
+    pub(crate) stream: String,
+    /// The shard to trim
+    #[arg(long, value_name = "N")]
+    pub(crate) shard: u32,
+    /// The new floor: records below this offset are hidden
+    #[arg(long, value_name = "OFFSET")]
+    pub(crate) before: u64,
+    /// The shard's next offset, as the caller last saw it
+    #[arg(long, value_name = "OFFSET")]
+    pub(crate) expected_offset: u64,
+    /// Kept with the trim and shown to a reader refused below its floor
+    #[arg(long, value_name = "TEXT")]
+    pub(crate) headers: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]

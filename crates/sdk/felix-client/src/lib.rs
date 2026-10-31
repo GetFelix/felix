@@ -67,6 +67,7 @@ mod subscribe;
 #[cfg(test)]
 mod test_support;
 mod tls;
+mod trim;
 
 pub mod timings;
 
@@ -97,6 +98,7 @@ pub use telemetry::{
 pub use tls::{
     ClientIdentity, quic_client_config, quic_client_config_with_identity, root_store_from_pem_file,
 };
+pub use trim::{ConditionalTrim, TrimError};
 
 pub use felix_wire::routing::ShardRouting;
 pub use felix_wire::{

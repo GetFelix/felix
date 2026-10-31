@@ -143,6 +143,11 @@ impl StubBroker {
         self.seen.explicit_shard.store(true, Ordering::SeqCst);
     }
 
+    /// Advertise `FEATURE_HEAD_TRIM` to streams authenticated from now on.
+    pub(super) fn honour_head_trim(&self) {
+        self.seen.head_trim.store(true, Ordering::SeqCst);
+    }
+
     pub(super) fn publishes(&self) -> usize {
         self.seen.publishes.load(Ordering::SeqCst)
     }
@@ -321,6 +326,8 @@ struct Seen {
     batches: Arc<Mutex<Vec<Received>>>,
     /// Advertise `FEATURE_EXPLICIT_SHARD`.
     explicit_shard: Arc<AtomicBool>,
+    /// Advertise `FEATURE_HEAD_TRIM`.
+    head_trim: Arc<AtomicBool>,
     named: Arc<Mutex<Vec<Named>>>,
 }
 
@@ -348,6 +355,7 @@ impl Default for Seen {
             producers: Arc::default(),
             batches: Arc::default(),
             explicit_shard: Arc::default(),
+            head_trim: Arc::default(),
             named: Arc::default(),
         }
     }
@@ -435,6 +443,10 @@ async fn serve_stream(
                     0
                 } | if seen.explicit_shard.load(Ordering::SeqCst) {
                     felix_wire::FEATURE_EXPLICIT_SHARD
+                } else {
+                    0
+                } | if seen.head_trim.load(Ordering::SeqCst) {
+                    felix_wire::FEATURE_HEAD_TRIM
                 } else {
                     0
                 };
@@ -531,6 +543,31 @@ async fn serve_stream(
                     _ => Message::PublishOk {
                         request_id,
                         offset: Some(7),
+                    },
+                };
+                write_message(&mut *send.lock().await, answer).await?;
+            }
+            // The script's `not_leader`, error or refusal is the answer;
+            // anything else trims to the floor asked for.
+            Message::TrimBefore {
+                shard,
+                before,
+                request_id,
+                ..
+            } => {
+                seen.named
+                    .lock()
+                    .unwrap()
+                    .push(("trim_before", Some(shard), vec![]));
+                let answer = match script(request_id) {
+                    refusal @ (Message::NotLeader { .. }
+                    | Message::Error { .. }
+                    | Message::PublishError { .. }
+                    | Message::PublishRefused { .. }) => refusal,
+                    _ => Message::TrimOk {
+                        request_id,
+                        offset: Some(7),
+                        oldest: before,
                     },
                 };
                 write_message(&mut *send.lock().await, answer).await?;

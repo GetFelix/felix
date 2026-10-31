@@ -184,12 +184,13 @@ impl Connection {
                 reason,
                 requested,
                 available,
-                ..
+                trim_headers,
             }) => {
                 return Err(SubscribeCursorError {
                     reason,
                     requested,
                     available,
+                    trim_headers,
                 }
                 .into());
             }

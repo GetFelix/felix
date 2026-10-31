@@ -24,6 +24,7 @@ pub use subscribe::StreamPage;
 mod publish;
 mod rechecks;
 mod subscribe;
+mod trim;
 
 use std::net::SocketAddr;
 use std::sync::Arc;

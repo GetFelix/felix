@@ -327,6 +327,7 @@ pub(crate) async fn stream(
         StreamCommand::Rm { stream, confirm } => {
             manage::remove_stream(&api, settings, stream, *confirm, out).await
         }
+        StreamCommand::Trim(_) => unreachable!("a trim goes to a broker, not the control plane"),
     }
 }
 

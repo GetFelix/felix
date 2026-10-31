@@ -77,6 +77,12 @@ impl Cluster {
         self.credentials.client_token()
     }
 
+    /// Presented to brokers by a writer that trims stream heads. See
+    /// [`Credentials::trimmer_token`].
+    pub fn trimmer_token(&self) -> String {
+        self.credentials.trimmer_token()
+    }
+
     /// Presented to the control plane's HTTP API for reads.
     pub fn admin_token(&self) -> String {
         self.credentials.admin_token()
@@ -137,6 +143,16 @@ impl Cluster {
     /// Every broker's client address, for a seed list.
     pub fn broker_addrs(&self) -> Vec<SocketAddr> {
         self.nodes.iter().map(|node| node.client_addr).collect()
+    }
+
+    /// The client address of every broker the harness has not stopped or
+    /// killed, for a seed list after a fault.
+    pub fn live_broker_addrs(&self) -> Vec<SocketAddr> {
+        self.nodes
+            .iter()
+            .filter(|node| node.is_running())
+            .map(|node| node.client_addr)
+            .collect()
     }
 
     /// Stop everything. Called by `Drop` too, so an aborted test leaves nothing
