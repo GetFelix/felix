@@ -21,6 +21,7 @@ fn network(addr: &str) -> HttpNetwork {
     HttpNetwork::for_tests(addr, crate::raft::hold::tests::hold_at(Default::default()))
 }
 
+#[allow(clippy::result_large_err)] // openraft's RPCError
 async fn vote(addr: &str) -> Reply {
     network(addr).send("vote", &serde_json::json!({})).await
 }
