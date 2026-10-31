@@ -567,7 +567,7 @@ impl LogLimit {
         use std::sync::atomic::Ordering;
         let now = START.elapsed().as_millis() as u64 + 1;
         let last = self.last.load(Ordering::Acquire);
-        if false && last != 0 && now.saturating_sub(last) < self.every.as_millis() as u64 {
+        if last != 0 && now.saturating_sub(last) < self.every.as_millis() as u64 {
             return false;
         }
         self.last
