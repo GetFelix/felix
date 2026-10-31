@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793485266891,
+  "lastUpdate": 1793485477554,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -40560,6 +40560,58 @@ window.BENCHMARK_DATA = {
             "range": "7165.38",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 818387.09\nmean: 818383.01\nstdev: 7165.38\ncv: 0.88%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5cc583b1121dce56e1014037241817e76f4a9fb8",
+          "message": "build(deps): bump the python-tooling group across 1 directory with 2 updates (#1714)\n\nUpdates the requirements on [pandas](https://github.com/pandas-dev/pandas) and [pyarrow](https://github.com/apache/arrow) to permit the latest version.\n\nUpdates `pandas` to 3.1.0\n- [Release notes](https://github.com/pandas-dev/pandas/releases)\n- [Commits](https://github.com/pandas-dev/pandas/compare/v3.0.6...v3.1.0)\n\nUpdates `pyarrow` to 26.0.0\n- [Release notes](https://github.com/apache/arrow/releases)\n- [Commits](https://github.com/apache/arrow/compare/apache-arrow-25.0.1...apache-arrow-26.0.0)\n\n---\nupdated-dependencies:\n- dependency-name: pandas\n  dependency-version: 3.1.0\n  dependency-type: direct:production\n  dependency-group: python-tooling\n- dependency-name: pyarrow\n  dependency-version: 26.0.0\n  dependency-type: direct:production\n  dependency-group: python-tooling\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-10-31T15:17:27-07:00",
+          "tree_id": "92843f35198c38650d308597729b0847fb3a0cea",
+          "url": "https://github.com/GetFelix/felix/commit/5cc583b1121dce56e1014037241817e76f4a9fb8"
+        },
+        "date": 1793485476813,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 661365.07,
+            "range": "73373.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 661365.07\nmean: 706610.62\nstdev: 73373.05\ncv: 10.38%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 661365.07,
+            "range": "73373.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 661365.07\nmean: 706610.62\nstdev: 73373.05\ncv: 10.38%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 166300.29,
+            "range": "2470.09",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 166300.29\nmean: 165957.22\nstdev: 2470.09\ncv: 1.49%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1663002.93,
+            "range": "24700.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1663002.93\nmean: 1659572.18\nstdev: 24700.88\ncv: 1.49%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
