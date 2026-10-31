@@ -26,8 +26,15 @@ fn a_broker_refusal_is_a_server_error() {
         reason: felix_client::CursorErrorReason::TooOld,
         requested: 1,
         available: 10,
+        trim_headers: None,
     };
     let err = anyhow::Error::new(refusal).context("publish");
+    assert_eq!(exit_for(&err), Exit::Server);
+}
+
+#[test]
+fn a_trim_the_client_would_not_send_is_a_server_error() {
+    let err = anyhow::Error::new(felix_client::TrimError::Unsupported).context("stream trim");
     assert_eq!(exit_for(&err), Exit::Server);
 }
 
@@ -45,9 +52,10 @@ fn statuses_are_stable() {
             Exit::Usage,
             Exit::Connection,
             Exit::Server,
-            Exit::NotFound
+            Exit::NotFound,
+            Exit::Unknown
         ]
         .map(Exit::code),
-        [1, 2, 3, 4, 5]
+        [1, 2, 3, 4, 5, 6]
     );
 }

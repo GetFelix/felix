@@ -885,6 +885,7 @@ fn group_response_id(message: &Message) -> Option<u64> {
         | Message::CommitOk { request_id, .. }
         | Message::PublishOk { request_id, .. }
         | Message::PublishRefused { request_id, .. }
+        | Message::TrimOk { request_id, .. }
         | Message::StateValue { request_id, .. }
         | Message::OffsetValue { request_id, .. }
         | Message::StreamRecords { request_id, .. }

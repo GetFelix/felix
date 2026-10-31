@@ -98,6 +98,10 @@ fn exit_status(out: &mut String) {
             Exit::NotFound,
             "The key, resource or context does not exist.",
         ),
+        (
+            Exit::Unknown,
+            "A write may have been applied: the broker stopped waiting for it.",
+        ),
     ] {
         let _ = writeln!(out, "| {} | {meaning} |", exit.code());
     }

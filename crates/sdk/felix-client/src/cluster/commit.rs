@@ -24,7 +24,7 @@ impl Client {
     /// `not_leader` means nothing was written. Anything else, including
     /// `leadership_lost` and `quorum_timeout`, which can follow an apply, is
     /// returned as it came. Bounded by the policy's attempts and deadline.
-    async fn on_write_shard<T, F, Fut>(&self, key: ShardKey, op: F) -> Result<T>
+    pub(super) async fn on_write_shard<T, F, Fut>(&self, key: ShardKey, op: F) -> Result<T>
     where
         F: Fn(Arc<Connection>) -> Fut,
         Fut: Future<Output = Result<T>>,

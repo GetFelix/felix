@@ -458,6 +458,29 @@ serving or a replica can take over without loss.
 
 These need `node.manage` on the cluster.
 
+### Trimming a shard's head
+
+```bash
+felixctl stream trim orders --shard 0 --before 1000 --expected-offset 5000
+felixctl stream trim orders --shard 2 --before 400 --expected-offset 410 --headers holder-7
+```
+
+`stream trim` hides the records of one shard of a durable stream below
+`--before`. It goes to the shard's leader, not the control plane, and needs a
+token allowed `stream.trim`. `--expected-offset` is the shard's next offset as
+you last saw it: the trim is a record of its own and lands there, so
+`--before` can be at most that. `--headers` is kept with the trim and shown to a
+reader refused below the new floor.
+
+It prints where the trim record landed and where reads start now. A stale
+`--expected-offset` writes nothing, prints the shard's real next offset and
+stops with status 4, as do `forbidden` and a broker that cannot trim. If a
+trim times out it may still have been written: that is status 6, not 4. The
+same command again is then refused with the tail, so read the shard's earliest
+offset before deciding. A fleet that has not finalized head trims
+refuses with `feature_not_enabled`, and a stream that holds atomic commits
+with `stream_has_commits`.
+
 ### Confirmation
 
 `tenant rm`, `namespace rm`, `stream rm`, `cache rm`, `node drain` and
@@ -633,6 +656,7 @@ error goes to stderr as `{"error": "...", "exit": N}`.
 | 3 | No broker or control plane could be reached |
 | 4 | A broker or the control plane refused the request |
 | 5 | The key, resource or context does not exist |
+| 6 | A write may have been applied: the broker stopped waiting for it |
 
 ## Help, completions and man pages
 

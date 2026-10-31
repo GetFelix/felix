@@ -8,7 +8,7 @@
 use std::fmt;
 
 use felix_client::{
-    BrokerError, CommitError, NotLeaderError, PublishRefused, SubscribeCursorError,
+    BrokerError, CommitError, NotLeaderError, PublishRefused, SubscribeCursorError, TrimError,
 };
 
 /// Why the process stopped.
@@ -24,6 +24,8 @@ pub(crate) enum Exit {
     Server = 4,
     /// The key, resource or context does not exist.
     NotFound = 5,
+    /// A write may have been applied: the broker stopped waiting for it.
+    Unknown = 6,
 }
 
 impl Exit {
@@ -87,6 +89,7 @@ pub(crate) fn exit_for(err: &anyhow::Error) -> Exit {
         || err.downcast_ref::<NotLeaderError>().is_some()
         || err.downcast_ref::<SubscribeCursorError>().is_some()
         || err.downcast_ref::<CommitError>().is_some()
+        || err.downcast_ref::<TrimError>().is_some()
     {
         return Exit::Server;
     }

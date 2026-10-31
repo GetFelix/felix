@@ -65,6 +65,7 @@ mod routing;
 mod seeds;
 mod sharded;
 mod subscribe;
+mod trim;
 
 pub use batch::{BatchReport, ShardPublish};
 pub use follow::{ClusterCacheWatch, ClusterSubscription};

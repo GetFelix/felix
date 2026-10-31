@@ -474,6 +474,14 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         },
     ),
     example(
+        "Trimming a shard's head",
+        1,
+        Body {
+            params: "cluster: &Client, floor: u64, mut next: u64",
+            context: "",
+        },
+    ),
+    example(
         "Clusters",
         1,
         Body {

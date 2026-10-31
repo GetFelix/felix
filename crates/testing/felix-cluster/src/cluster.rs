@@ -77,6 +77,12 @@ impl Cluster {
         self.credentials.client_token()
     }
 
+    /// Presented to brokers by a writer that trims stream heads. See
+    /// [`Credentials::trimmer_token`].
+    pub fn trimmer_token(&self) -> String {
+        self.credentials.trimmer_token()
+    }
+
     /// Presented to the control plane's HTTP API for reads.
     pub fn admin_token(&self) -> String {
         self.credentials.admin_token()

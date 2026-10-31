@@ -791,6 +791,10 @@ if let Some(cursor) = err.downcast_ref::<SubscribeCursorError>() {
 }
 ```
 
+A `TooOld` below a head trim's floor also carries `trim_headers`, the bytes the
+trim was written with (see [Trimming a shard's head](#trimming-a-shards-head)).
+It is `None` when retention set the floor.
+
 ## Idempotent producers
 
 At-least-once *without* the duplication. The producer numbers its batches, the
@@ -1819,6 +1823,75 @@ filters by key misses those records the same way: subscribe to the named shard.
 
 What atomic does and does not cover is in
 [`docs/atomic-commit.md`](https://github.com/GetFelix/felix/blob/main/docs/atomic-commit.md).
+
+## Trimming a shard's head
+
+`trim_before` hides the records of one shard of a durable stream below an
+offset, for a single writer that owns the shard's history, such as a state
+machine that has snapshotted. It is conditional like `publish_if`: it writes
+only if the shard's next offset is the one the caller expects, and the trim is
+a record of its own that lands there.
+
+```rust
+use anyhow::bail;
+use felix_client::{BrokerError, ConditionalTrim, RetryClass, TrimError};
+
+// `next` is the shard's next offset as this writer last saw it, and `floor`
+// the first offset it still needs. `floor` can be at most `next`.
+let trimmed = cluster
+    .trim_before("acme", "games", "match-7", 0, floor, next, Some(b"writer-7"))
+    .await;
+match trimmed {
+    Ok(ConditionalTrim::Trimmed { offset, oldest }) => {
+        // Reads of the shard start at `oldest` now. A trim that landed took
+        // an offset, so the next write expects the one after it.
+        if let Some(offset) = offset {
+            next = offset + 1;
+        }
+        tracing::info!(oldest, "trimmed");
+    }
+    Ok(ConditionalTrim::Refused { tail }) => {
+        bail!("the shard moved on; its next offset is {tail}")
+    }
+    Err(err) if err.is::<TrimError>() => bail!("this broker cannot trim: {err}"),
+    Err(err) => match err.downcast_ref::<BrokerError>() {
+        // The broker stopped waiting. The trim may have landed.
+        Some(refusal) if matches!(refusal.retry, RetryClass::OutcomeUnknown) => {
+            tracing::warn!("trim outcome unknown; read the shard before trimming again");
+        }
+        _ => return Err(err),
+    },
+}
+```
+
+`ConditionalTrim::Trimmed` carries where the trim record landed, absent when
+the floor already stood at or past `before` and nothing was written, and the
+oldest offset reads start at now. A stale tail is an answer, `Refused`, and
+writes nothing. `trim_before` is not retried on it.
+
+Every other refusal is a `BrokerError`:
+
+| Code | Meaning | Retry |
+| --- | --- | --- |
+| `feature_not_enabled` | the fleet has not finalized head trims | not until it has |
+| `stream_has_commits` | the stream holds atomic commits | never |
+| `invalid_request` | `before` is past `expected_offset` (`trim_past_tail`), or the stream is not durable (`not_durable`) | never |
+| `forbidden` | the token lacks `stream.trim` | never |
+| `unacknowledged` | the broker stopped waiting for the trim to commit (`trim_timed_out`) | outcome unknown |
+
+Do not send a timed-out trim again as it is. If it landed, the same call is
+refused with a tail one past the trim, which looks like a lost race. Read the
+shard's earliest offset, or read below the floor you asked for, to tell the two
+apart. `Client` follows the leader and asks again only after a coded
+`not_leader`. A `shard_unavailable` or `not_found` from the entry broker comes
+back without a backoff; nothing was written, so it is safe to call again.
+
+A read below the floor fails with `SubscribeCursorError` (`TooOld`), whose
+`available` is the new floor and whose `trim_headers` are the bytes passed as
+`headers`, so a writer can see who trimmed past it. The call needs the
+`stream.trim` permission, which `stream.manage` includes, and fails with
+`TrimError::Unsupported`, sending nothing, against a broker that did not
+advertise `FEATURE_HEAD_TRIM`.
 
 ## Clusters
 

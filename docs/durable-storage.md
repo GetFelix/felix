@@ -1548,8 +1548,9 @@ Storage stores trim records, applies their floor, deletes below it and
 rebuilds it at open. The broker's call, `Broker::trim_before_at`, puts every
 reader on the readable base (see [The broker](#the-broker)), replication
 ships the record, and a client sends it as `trim_before` behind the
-`stream.trim` grant (see [The call](#the-call)). No client library sends it
-yet.
+`stream.trim` grant (see [The call](#the-call)). The Rust client
+(`Client::trim_before`) and `felixctl stream trim` send it; the other client
+libraries do not yet.
 
 The trim is a log record (`RecordMark::Trim`) that carries the exact `before`
 the client asked for and the caller's headers. The broker is to append it

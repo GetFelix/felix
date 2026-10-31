@@ -152,7 +152,7 @@ impl Connection {
                 reason,
                 requested,
                 available,
-                ..
+                trim_headers,
             }) => {
                 // Surfaced as a typed error rather than a debug-formatted
                 // message, because the two reasons have opposite remedies and an
@@ -161,6 +161,7 @@ impl Connection {
                     reason,
                     requested,
                     available,
+                    trim_headers,
                 }
                 .into());
             }
@@ -340,11 +341,12 @@ impl Connection {
                 reason,
                 requested,
                 available,
-                ..
+                trim_headers,
             } => Err(SubscribeCursorError {
                 reason,
                 requested,
                 available,
+                trim_headers,
             }
             .into()),
             other => Err(anyhow::anyhow!(

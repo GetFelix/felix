@@ -144,7 +144,7 @@ impl std::fmt::Display for NotLeaderError {
 /// whether to accept the gap or start from `earliest`; `InFuture` means the
 /// offset does not exist yet, which usually means a checkpoint was written from
 /// a different stream.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub struct SubscribeCursorError {
     /// Whether the offset was too old or not yet written.
     pub reason: CursorErrorReason,
@@ -153,6 +153,10 @@ pub struct SubscribeCursorError {
     /// The nearest offset that would have worked: the oldest retained for
     /// `TooOld`, the current tail for `InFuture`.
     pub available: u64,
+    /// For `TooOld` below a head trim's floor, the headers the trim was
+    /// written with, so a writer can tell who trimmed past it. `None` for a
+    /// floor that retention set, and from a broker that predates head trims.
+    pub trim_headers: Option<bytes::Bytes>,
 }
 
 impl std::fmt::Display for SubscribeCursorError {
@@ -239,6 +243,17 @@ pub struct BrokerError {
 }
 
 impl BrokerError {
+    /// A refusal built by hand, for a caller that maps or tests broker errors.
+    pub fn new(code: ErrorCode, retry: RetryClass, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            retry,
+            detail: None,
+            message: message.into(),
+            context: "request refused",
+        }
+    }
+
     /// Why a `shard_unavailable` shard cannot be served, when the broker said.
     pub fn reason(&self) -> Option<&str> {
         self.detail.as_ref()?.reason.as_deref()

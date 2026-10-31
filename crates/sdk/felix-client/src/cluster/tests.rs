@@ -6,6 +6,7 @@ mod connections;
 mod decisions;
 mod error_codes;
 mod explicit_shard;
+mod head_trim;
 mod identity;
 mod keyed_producer;
 mod not_leader_retry;
@@ -111,6 +112,7 @@ fn a_cursor_error_is_terminal() {
         reason: felix_wire::CursorErrorReason::TooOld,
         requested: 5,
         available: 100,
+        trim_headers: None,
     }
     .into();
     assert!(is_terminal(&err));

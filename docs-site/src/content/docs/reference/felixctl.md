@@ -83,6 +83,7 @@ Scripts can branch on the exit status. Each value means one thing.
 | 3 | No broker or control plane could be reached. |
 | 4 | A broker or the control plane refused the request. |
 | 5 | The key, resource or context does not exist. |
+| 6 | A write may have been applied: the broker stopped waiting for it. |
 
 With `--json`, errors go to stderr as a JSON object holding `error` and `exit`.
 
@@ -1170,6 +1171,34 @@ Examples:
 felixctl stream set orders --retention-secs 86400
 felixctl stream set orders --retention-bytes default
 felixctl stream set orders --consistency quorum
+```
+
+### `felixctl stream trim`
+
+Hide the records of one shard of a durable stream below an offset, only if the shard's next offset is exactly --expected-offset. The trim is a record of its own and lands at that offset, so --before can be at most that. Reads below the new floor are refused as too old.
+
+A stale --expected-offset is refused with the shard's next offset and exit status 4, and nothing is written. A trim that times out may still have been written and exits with status 6; the same command again is then refused with the tail, so read the shard's earliest offset to tell. Needs a token allowed stream.trim, and a broker fleet that has finalized head trims.
+
+```text
+felixctl stream trim [OPTIONS] --shard <N> --before <OFFSET> --expected-offset <OFFSET> <STREAM>
+```
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `STREAM` | yes | Stream name |
+
+| Option | Value | Default | Description |
+| --- | --- | --- | --- |
+| `--shard` | `<N>` | - | The shard to trim |
+| `--before` | `<OFFSET>` | - | The new floor: records below this offset are hidden |
+| `--expected-offset` | `<OFFSET>` | - | The shard's next offset, as the caller last saw it |
+| `--headers` | `<TEXT>` | - | Kept with the trim and shown to a reader refused below its floor |
+
+Examples:
+
+```bash
+felixctl stream trim orders --shard 0 --before 1000 --expected-offset 5000
+felixctl stream trim orders --shard 2 --before 400 --expected-offset 410 --headers holder-7
 ```
 
 ### `felixctl stream rm`
