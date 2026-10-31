@@ -243,7 +243,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardElectWipeNonVoterNoCatchUp.cfg` | the same, re-admitted as soon as the leader opens (`ReadmitBeforeCatchUp`) | violate `AckedHeldByLeader`: the re-admitted replica votes with an empty log for a leader without write 1 |
 | `FelixShardElectWipeNonVoterCountsWiped.cfg` | the same, no write, with the re-admission counting the wiped replica (`ReadmitCountsWiped`) | violate `OneLeaderPerGeneration` |
 | `FelixShardElectWipeNonVoterWipesLeader.cfg` | `FelixShardElectWipeNonVoter.cfg` where a leader or candidate can be wiped (`WipeLeads`) | pass, the same invariants (19.3M distinct states, depth 35, 8 min on seven workers) |
-| `FelixShardElectWipeNonVoterTwice.cfg` | `FelixShardElectWipeNonVoter.cfg` with two wipes (`Forgets`), of the same replica or a second one | pass, the same invariants (45.0M distinct states, depth 38, 18 min on seven workers) |
+| `FelixShardElectWipeNonVoterTwice.cfg` | `FelixShardElectWipeNonVoter.cfg` with two wipes (`Forgets`), of the same replica again or of a second once the first is re-admitted; `OneNonVoter` keeps at most one non-voter at a time, since two distinct wiped brokers exceed what three replicas tolerate | pass, the same invariants (29.8M distinct states, depth 38, 12 min on eight workers) |
 | `FelixShardElectWipeNonVoterFailover.cfg` | `FelixShardElectWipeNonVoter.cfg` with a one-tick lease and time to 1, so control-plane failover is reachable, and adoption up to generation 2 (at 3 it passed 136M distinct states unfinished); failover never names a non-voter | pass, the same invariants (46.9M distinct states, depth 37, 10 min on twelve workers) |
 | `FelixShardElectWipeNonVoterFailoverWipesLeader.cfg` | the same where a leader or candidate can be wiped (`WipeLeads`) | pass, the same invariants (53.2M distinct states, depth 37, 11 min on twelve workers) |
 | `FelixShardElectWipeNonVoterPromotes.cfg` | `FelixShardElectWipeNonVoterFailover.cfg` with failover free to name a non-voter (`PromoteNonVoter`) | violate `OneLeaderPerGeneration`: the non-voter forgot its promise to a candidate and is promoted at that generation |
@@ -1069,6 +1069,17 @@ What is not checked:
   wipe, so an answer from before it can still count toward a later
   acknowledgement. That admits more than a leader that resets on the new
   storage id, so it hides nothing.
+- Crash. It never fires under `WipedNonVoter` (`Wipes = 0` in those
+  configurations), which relies on acknowledged records being fsynced
+  (`OnCommit`): a crash then loses nothing acknowledged.
+- Failure budget. At most one distinct broker is a non-voter at a time
+  (`NonVoterCredit`). A second wipe of the same broker is one failure; two
+  distinct brokers wiped, including `WipeLeads` with `Forgets = 2`, exceed
+  what three replicas tolerate and are not checked.
+- #1009 S8. In the code, the caught-up report that ends non-voting must be
+  tied to the copy's current storage id. Otherwise a report sent before a
+  second wipe could re-admit an empty copy; the model reads the logs directly
+  and cannot show this.
 - Cache shards. The counter log is left out (`Counters = FALSE`).
 
 ### The round that makes a read linearizable

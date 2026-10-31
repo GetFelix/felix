@@ -574,13 +574,18 @@ WipeBoundOracle == FALSE
 \* or not.
 \* `PromoteNonVoter`: control-plane failover may promote it.
 \* `WipeLeads`: a leader or candidate can be wiped, not only a follower.
-\* `Forgets`: how many wipes, of one broker or two.
+\* `Forgets`: how many wipes, of one broker or two. `WipeLeads` with
+\* `Forgets > 1` across distinct brokers is outside the failure budget: two
+\* of three lost can lose an acknowledged record, which is not a defect. Such
+\* a run sets `OneNonVoter`.
 WipedNonVoter == FALSE
 ReadmitCountsWiped == FALSE
 ReadmitBeforeCatchUp == FALSE
 PromoteNonVoter == FALSE
 WipeLeads == FALSE
 Forgets == 1
+\* `OneNonVoter`: a wipe is refused while it would leave two brokers non-voters.
+OneNonVoter == FALSE
 \* `RefuseShortCopy`: a leader that gave its copy up in a crash answers no
 \* promotion fence from it until a newer leader has shipped to it, unless a
 \* set of two acknowledged what it may have lost (`AckedByTwo`):
@@ -849,6 +854,13 @@ WipeWaits(f) == WipedWaitsForAdopt /\ wipedAt[f] > 0 /\ gen <= wipedAt[f]
 
 \* Under `WipedNonVoter`, whether `f` is a wiped replica not yet re-admitted.
 NonVoter(f) == WipedNonVoter /\ wipedAt[f] > 0
+
+\* The credit given to a non-voter (`SetChangesJoint`, `AckedOnMajority`) is the
+\* one loss a record or set already survived, so it holds only while at most one
+\* distinct broker is a non-voter. A second wipe of the same broker is still
+\* one failure; two distinct brokers wiped at once is two, beyond what a set
+\* of three tolerates, and the plain checks apply.
+NonVoterCredit == Cardinality({ m \in Brokers : NonVoter(m) }) <= 1
 
 \* Under `WipedAboveAdopted`, whether a wiped `f` that holds no promise at
 \* the control plane's generation may promise `b` generation `g`: only above
@@ -2670,6 +2682,7 @@ Forget(f) ==
     /\ UNCHANGED << placeVars, answered, confirmed, opened, installed, nextVars, ackGen >>
     /\ UNCHANGED << sid, seen, seenInc, checked, registered, inc, restarting, expect, inherited,
                     leftDirty, gaveUp, fenceIds >>
+    /\ OneNonVoter => NonVoterCredit'
 
 \* Under `WipedLearnsSet`, a wiped replica the guard holds back still learns
 \* the newer set a candidate's fence carries. It promises nothing, and the
@@ -2953,7 +2966,7 @@ AdoptedMatchesOpened ==
 \* break this by forgetting the set rather than by any majority forming.
 SetChangesJoint ==
     \A r \in installed :
-        LET knows == { m \in Brokers : setGen[m] >= r[1] \/ NonVoter(m) }
+        LET knows == { m \in Brokers : setGen[m] >= r[1] \/ (NonVoterCredit /\ NonVoter(m)) }
         IN MajorityOf(knows, r[2]) /\ MajorityOf(knows, r[3])
 
 \* Witnesses, not safety properties, under `WipedNonVoter`. TLC finds: a
@@ -3002,7 +3015,7 @@ NoTruncationBelowHwm ==
 AckedOnMajority ==
     Quorum =>
         \A id \in acked :
-            LET holders == { b \in Counted : NonVoter(b) \/ \E i \in 1..Len(log[b]) : log[b][i].id = id }
+            LET holders == { b \in Counted : (NonVoterCredit /\ NonVoter(b)) \/ \E i \in 1..Len(log[b]) : log[b][i].id = id }
             IN \/ Cardinality(holders) * 2 > Cardinality(Counted)
                \/ Cardinality(Counted) = 4 /\ Cardinality(holders) = 2
 
