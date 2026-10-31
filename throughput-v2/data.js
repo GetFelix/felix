@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793478592126,
+  "lastUpdate": 1793484302715,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -40456,6 +40456,58 @@ window.BENCHMARK_DATA = {
             "range": "47659.62",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1612241.05\nmean: 1634158.33\nstdev: 47659.62\ncv: 2.92%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "36a3950f9a5c4d94a3666e083eeee68ed4f2c8c8",
+          "message": "feat(wire): declare the ELECTION capability, its messages and fleet features (#1009 S2) (#1710)\n\n* feat(wire): declare the ELECTION capability, its messages and fleet features (#1009 S2)\n\nBit 1 << 9 is ELECTION. Four new kinds carry what an election needs, all\nsent only to a peer that offered it: ElectionFence (Fence plus an explicit\ncandidate flag, the set with storage ids and the set being left),\nSetStamped (a records batch with the generation of the set the sender\ncounts), PreVote and its answer. The set layout and limits are the\nreplica-set file's: at most 64 members, node ids up to 1024 bytes, no\nduplicates, a set being left older than the current one.\n\nEvery existing message encodes as before, pinned by vectors taken from the\nbuild that predates the capability. The pool withholds the new messages from\na peer without ELECTION. No broker offers the capability or sends them yet,\nso peer config is unchanged.\n\nThe fleet features joint_fence and replica_election are declared with their\nprerequisites and left out of IMPLEMENTED and NEW_CLUSTER, so a finalize is\nrefused.\n\nSpec-Unaffected: wire and feature declarations only; nothing sends or reads them\n\n* fix(wire): refuse election kinds on a broker that never offered ELECTION (#1009 S2)\n\nThe server now refuses any request whose required capability it did not\noffer, with UnsupportedKind, so a candidate fence is not read as a plain one\nand a set stamp is not dropped. Byte-identity vectors gain kinds 34 and 35,\ntaken from origin/main's encoder. Docs list the new kinds among those an\nolder peer rejects, and PreVote among the incarnated requests.\n\nSpec-Unaffected: wire and feature declarations only; nothing sends or reads them",
+          "timestamp": "2026-10-31T14:59:25-07:00",
+          "tree_id": "b6689a1f8877b8709a81227ba1a664ac1e4d284c",
+          "url": "https://github.com/GetFelix/felix/commit/36a3950f9a5c4d94a3666e083eeee68ed4f2c8c8"
+        },
+        "date": 1793484301859,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 519550.85,
+            "range": "42534.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 519550.85\nmean: 517087.62\nstdev: 42534.58\ncv: 8.23%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 519550.85,
+            "range": "42534.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 519550.85\nmean: 517087.62\nstdev: 42534.58\ncv: 8.23%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 123528.08,
+            "range": "662.85",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 123528.08\nmean: 123871.72\nstdev: 662.85\ncv: 0.54%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1235280.77,
+            "range": "6628.49",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1235280.77\nmean: 1238717.20\nstdev: 6628.49\ncv: 0.54%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
