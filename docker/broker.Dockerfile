@@ -15,7 +15,7 @@
 ARG BASE_REGISTRY=docker.io/library
 
 # --- build ---------------------------------------------------------------
-FROM ${BASE_REGISTRY}/rust:1.97-bookworm AS build
+FROM ${BASE_REGISTRY}/rust:1.99-bookworm AS build
 WORKDIR /felix
 
 # Everything, rather than a manifest-first dependency-caching dance. That trick

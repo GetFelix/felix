@@ -58,6 +58,7 @@ pub(super) async fn offset_for_time(
 }
 
 /// The offset, or the message to answer with instead.
+#[allow(clippy::result_large_err)] // the Err is the reply frame to send
 async fn lookup(
     cx: &Ctx<'_>,
     peer_features: u32,

@@ -52,7 +52,7 @@ The [Quickstart](https://docs.getfelix.dev/getting-started/quickstart/) goes fur
     <img src="https://img.shields.io/badge/license-AGPL--3.0%20%2B%20Apache--2.0-blue.svg" alt="License: AGPL-3.0 + Apache-2.0 (split, see LICENSING.md)" />
   </a>
   <a href="https://www.rust-lang.org/">
-    <img src="https://img.shields.io/badge/rust-1.97.1-blue" alt="Rust 1.97.1" />
+    <img src="https://img.shields.io/badge/rust-1.99.1-blue" alt="Rust 1.99.1" />
   </a>
   <a href="https://docs.getfelix.dev">
     <img src="https://img.shields.io/badge/Documentation-8A2BE2" alt="Documentation" />
@@ -226,7 +226,7 @@ is kept current per capability. Trust it when another page disagrees.
 
 ## Getting Started
 
-You need Rust 1.97.1 and [Task](https://taskfile.dev). Docker or Podman is
+You need Rust 1.99.1 and [Task](https://taskfile.dev). Docker or Podman is
 optional: `task test` uses one to run the Postgres tests (see
 [Docker or Podman](https://docs.getfelix.dev/getting-started/containers/)).
 

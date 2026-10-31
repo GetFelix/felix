@@ -371,7 +371,7 @@ impl Slot {
     /// Take the right to answer, if the current state allows it.
     fn take(&self, from: impl Fn(u8) -> bool) -> bool {
         self.state
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |state| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |state| {
                 from(state).then_some(ANSWERED)
             })
             .is_ok()
@@ -426,7 +426,7 @@ impl Drop for CommitReply {
         };
         let prev =
             slot.state
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |state| match state {
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |state| match state {
                     PENDING => Some(ORPHANED),
                     ARMED => Some(ANSWERED),
                     _ => None,

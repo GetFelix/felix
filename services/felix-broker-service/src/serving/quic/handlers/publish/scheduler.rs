@@ -420,7 +420,7 @@ impl Partition {
     /// `jobs` left the queue: hand each freed slot to the oldest parked job
     /// whose tenant may take it, and wake just those submitters.
     fn popped(&self, mut state: parking_lot::MutexGuard<'_, State>, jobs: usize) {
-        let _ = GLOBAL_INGRESS_DEPTH.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |depth| {
+        let _ = GLOBAL_INGRESS_DEPTH.try_update(Ordering::Relaxed, Ordering::Relaxed, |depth| {
             Some(depth.saturating_sub(jobs))
         });
         report_ingress_depth();

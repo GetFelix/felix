@@ -190,7 +190,7 @@ impl Spinning {
             std::thread::available_parallelism().map_or(1, |cores| (cores.get() / 4).max(1))
         });
         SPINNING
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |now| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |now| {
                 (now < cap).then_some(now + 1)
             })
             .ok()
