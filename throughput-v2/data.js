@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793485477554,
+  "lastUpdate": 1793486764225,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -40612,6 +40612,58 @@ window.BENCHMARK_DATA = {
             "range": "24700.88",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1663002.93\nmean: 1659572.18\nstdev: 24700.88\ncv: 1.49%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b883da405cc5ba13921348519177e90ec37b2f76",
+          "message": "build(deps): bump the cargo-minor-and-patch group with 2 updates (#1715)\n\nBumps the cargo-minor-and-patch group with 2 updates: [uuid](https://github.com/uuid-rs/uuid) and [crc32fast](https://github.com/srijs/rust-crc32fast).\n\n\nUpdates `uuid` from 1.28.0 to 1.29.0\n- [Release notes](https://github.com/uuid-rs/uuid/releases)\n- [Commits](https://github.com/uuid-rs/uuid/compare/v1.28.0...v1.29.0)\n\nUpdates `crc32fast` from 1.5.2 to 1.5.3\n- [Commits](https://github.com/srijs/rust-crc32fast/compare/v1.5.2...v1.5.3)\n\n---\nupdated-dependencies:\n- dependency-name: uuid\n  dependency-version: 1.29.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: cargo-minor-and-patch\n- dependency-name: crc32fast\n  dependency-version: 1.5.3\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: cargo-minor-and-patch\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-10-31T15:38:04-07:00",
+          "tree_id": "67cadb9d3dab60706c8460d1c8c885375ba79022",
+          "url": "https://github.com/GetFelix/felix/commit/b883da405cc5ba13921348519177e90ec37b2f76"
+        },
+        "date": 1793486763690,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 368716.92,
+            "range": "6182.41",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 368716.92\nmean: 369564.35\nstdev: 6182.41\ncv: 1.67%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 368716.92,
+            "range": "6182.41",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 368716.92\nmean: 369564.35\nstdev: 6182.41\ncv: 1.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82834.8,
+            "range": "279.48",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82834.80\nmean: 82737.33\nstdev: 279.48\ncv: 0.34%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 828347.96,
+            "range": "2794.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 828347.96\nmean: 827373.33\nstdev: 2794.79\ncv: 0.34%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
