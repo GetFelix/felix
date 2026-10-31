@@ -2700,7 +2700,8 @@ follower is behind it:
   it lost there (its generation-start record survived), the route must be
   the failover written straight after that generation, and the set that
   failover's `fence_storage_ids` names, taken from the assignment before it,
-  must be the same two the route shows, the fencing leader one of them
+  must be the same two the route shows, and the fence must be at the route's
+  generation and come from the route's leader
   (`acknowledged_by_two` in `replica.rs`). The report a failover reads can
   predate a set change and name a copy that change dropped, so placement
   names only members of the old set and the new one

@@ -956,7 +956,7 @@ async fn a_crashed_leader_of_two_copies_takes_the_fence() {
 /// refused. A fence from another sender at 6 is refused too.
 #[tokio::test]
 async fn a_crashed_leader_refuses_a_fence_past_the_set_of_two() {
-    for (sender, generation) in [(SENDER, 8), (Some("broker-d"), 6)] {
+    for (sender, generation) in [(SENDER, 8), (Some(LOCAL), 6)] {
         let dir = tempfile::tempdir().expect("tempdir");
         led_with_its_start_record(dir.path()).await;
         let broker = broker_on(dir.path());
