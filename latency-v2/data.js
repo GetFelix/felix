@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793478589762,
+  "lastUpdate": 1793484298671,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -51348,6 +51348,72 @@ window.BENCHMARK_DATA = {
             "range": "604.86",
             "unit": "us",
             "extra": "trials: 5\nmedian: 432.00\nmean: 796.80\nstdev: 604.86\ncv: 75.91%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "36a3950f9a5c4d94a3666e083eeee68ed4f2c8c8",
+          "message": "feat(wire): declare the ELECTION capability, its messages and fleet features (#1009 S2) (#1710)\n\n* feat(wire): declare the ELECTION capability, its messages and fleet features (#1009 S2)\n\nBit 1 << 9 is ELECTION. Four new kinds carry what an election needs, all\nsent only to a peer that offered it: ElectionFence (Fence plus an explicit\ncandidate flag, the set with storage ids and the set being left),\nSetStamped (a records batch with the generation of the set the sender\ncounts), PreVote and its answer. The set layout and limits are the\nreplica-set file's: at most 64 members, node ids up to 1024 bytes, no\nduplicates, a set being left older than the current one.\n\nEvery existing message encodes as before, pinned by vectors taken from the\nbuild that predates the capability. The pool withholds the new messages from\na peer without ELECTION. No broker offers the capability or sends them yet,\nso peer config is unchanged.\n\nThe fleet features joint_fence and replica_election are declared with their\nprerequisites and left out of IMPLEMENTED and NEW_CLUSTER, so a finalize is\nrefused.\n\nSpec-Unaffected: wire and feature declarations only; nothing sends or reads them\n\n* fix(wire): refuse election kinds on a broker that never offered ELECTION (#1009 S2)\n\nThe server now refuses any request whose required capability it did not\noffer, with UnsupportedKind, so a candidate fence is not read as a plain one\nand a set stamp is not dropped. Byte-identity vectors gain kinds 34 and 35,\ntaken from origin/main's encoder. Docs list the new kinds among those an\nolder peer rejects, and PreVote among the incarnated requests.\n\nSpec-Unaffected: wire and feature declarations only; nothing sends or reads them",
+          "timestamp": "2026-10-31T14:59:25-07:00",
+          "tree_id": "b6689a1f8877b8709a81227ba1a664ac1e4d284c",
+          "url": "https://github.com/GetFelix/felix/commit/36a3950f9a5c4d94a3666e083eeee68ed4f2c8c8"
+        },
+        "date": 1793484292827,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 96,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 96.00\nmean: 96.00\nstdev: 0.71\ncv: 0.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 138,
+            "range": "10.03",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 138.00\nmean: 137.20\nstdev: 10.03\ncv: 7.31%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 433,
+            "range": "219.78",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 433.00\nmean: 392.60\nstdev: 219.78\ncv: 55.98%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 131,
+            "range": "3.85",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 131.00\nmean: 132.40\nstdev: 3.85\ncv: 2.91%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 262,
+            "range": "187.13",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 262.00\nmean: 341.40\nstdev: 187.13\ncv: 54.81%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 437,
+            "range": "440.65",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 437.00\nmean: 692.00\nstdev: 440.65\ncv: 63.68%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
