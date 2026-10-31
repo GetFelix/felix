@@ -1353,7 +1353,7 @@ impl ReplicaHandler {
         }
         // Refusing the other copy of a set of two would leave no majority at
         // all, and it holds every record the two acknowledged.
-        if self.acknowledged_by_two(key, log, sender).await {
+        if self.acknowledged_by_two(key, log, generation, sender).await {
             return None;
         }
         if led_before
@@ -1370,7 +1370,7 @@ impl ReplicaHandler {
         }
         metrics::record_replicated(metrics::OUTCOME_REFUSED);
         let beyond = self
-            .failover_two(key, log, sender)
+            .failover_two(key, log, generation, sender)
             .await
             .map(|two| two.beyond())
             .unwrap_or_default();
@@ -1430,14 +1430,16 @@ impl ReplicaHandler {
     /// accepted, which puts everything it lost in that generation. The
     /// failover that followed it names that generation's set
     /// (`fence_storage_ids`, from the assignment just before it), and that
-    /// set must be the two the routes show.
+    /// set must be the two the routes show, and `sender` must lead it with
+    /// the fence at that generation.
     async fn acknowledged_by_two(
         &self,
         key: &felix_router::ShardKey,
         log: &felix_broker::StreamLog,
+        generation: u64,
         sender: Option<&str>,
     ) -> bool {
-        self.failover_two(key, log, sender)
+        self.failover_two(key, log, generation, sender)
             .await
             .is_some_and(|two| two.acknowledged())
     }
@@ -1448,6 +1450,7 @@ impl ReplicaHandler {
         &self,
         key: &felix_router::ShardKey,
         log: &felix_broker::StreamLog,
+        generation: u64,
         sender: Option<&str>,
     ) -> Option<FailoverTwo> {
         let sender = sender?;
@@ -1459,7 +1462,12 @@ impl ReplicaHandler {
         let snapshot = self.router.snapshot();
         let route = snapshot.get(key)?;
         let acknowledged = route.fence_storage_ids.as_deref()?;
-        if accepted.checked_add(1) != Some(route.generation) {
+        // The fence must be the one at the failover's generation, from the
+        // leader of the set of two, not a later fence this view predates.
+        if accepted.checked_add(1) != Some(route.generation)
+            || route.generation != generation
+            || route.leader.node_id != sender
+        {
             return None;
         }
         let routed: std::collections::BTreeSet<String> = std::iter::once(&route.leader)
