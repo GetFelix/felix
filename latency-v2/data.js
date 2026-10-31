@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793466425756,
+  "lastUpdate": 1793469595772,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -51150,6 +51150,72 @@ window.BENCHMARK_DATA = {
             "range": "1004.18",
             "unit": "us",
             "extra": "trials: 5\nmedian: 624.00\nmean: 1282.20\nstdev: 1004.18\ncv: 78.32%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "755f1b0e972553c7af6ec2b8b849b563757116ff",
+          "message": "feat(bindings): conditional head trim in the C ABI, C#, Python and TypeScript (#1662, step 8) (#1683)\n\n* feat(bindings): conditional head trim in the C ABI, C#, Python and TypeScript (#1662, step 8)\n\nfelix_client_trim_before, FelixClient.TrimBeforeAsync, Python's trim_before\n(sync and async) and TypeScript's trimBefore wrap Client::trim_before. A\nstale tail is an answer in every binding, a broker without FEATURE_HEAD_TRIM\nis refused locally, and a timed-out trim is outcome unknown. client-fixture\ngains a trimmer token and a trim stream, finalizes head_trim, and four\nhead_trim.* conformance scenarios cover the bindings.\n\nSpec-Unaffected: client bindings only; FelixHeadTrim.tla models the broker's conditional append, which this does not change.\n\n* docs: list the trim error kind in the env checks and the error table (#1662)\n\nSpec-Unaffected: docs and check scripts only.\n\n* fix(client): a non-stale publish refusal to a trim is a broker error; review fixes (#1662)\n\nSpec-Unaffected: client-side error mapping and test/doc fixes only.",
+          "timestamp": "2026-10-31T17:56:24Z",
+          "tree_id": "6b4f7af4e8cc03d428127d5febf8a8786e550166",
+          "url": "https://github.com/GetFelix/felix/commit/755f1b0e972553c7af6ec2b8b849b563757116ff"
+        },
+        "date": 1793469591441,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 66,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 66.00\nmean: 65.80\nstdev: 0.45\ncv: 0.68%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 90,
+            "range": "2.86",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 90.00\nmean: 90.20\nstdev: 2.86\ncv: 3.17%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 119,
+            "range": "21.34",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 119.00\nmean: 127.00\nstdev: 21.34\ncv: 16.81%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 84,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 84.00\nmean: 84.00\nstdev: 0.71\ncv: 0.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 204,
+            "range": "16.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 204.00\nmean: 204.80\nstdev: 16.45\ncv: 8.03%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 391,
+            "range": "507.87",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 391.00\nmean: 622.60\nstdev: 507.87\ncv: 81.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
