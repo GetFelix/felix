@@ -3549,7 +3549,9 @@ production broker sends or reads a set yet. With it on:
   routing view at that generation, or is refused as retryable until a fence
   carries the set.
 - A fence whose set lists this replica only as a learner, or not at all, is
-  refused: a learner never votes.
+  refused: a learner never votes. A move's staged successor is listed as a
+  learner in every set built from a route, so the leader and its followers
+  keep the same set at one generation.
 - A candidate's fence is refused while the replica heard its leader within
   `FELIX_LEADER_SUSPECT_AFTER_MS`.
 - A leader whose followers all offered `ELECTION` stops counting once its log
@@ -3567,7 +3569,9 @@ plane's pending set and adoption, the pre-vote and the election driver.
 > stickiness. `a_replica_that_does_not_vote_in_the_set_refuses_the_fence`:
 > learners do not vote. `a_leader_that_answers_a_newer_fence_stops_counting`:
 > rule 5. `a_set_newer_than_the_ballot_raises_the_accepted_generation_at_open`:
-> the order at open.
+> the order at open. `a_replica_that_left_the_set_cannot_win_a_fence`
+> (felix-cluster): a follower drained out of the set stands on its old set
+> and every live replica refuses it with `StaleSet`.
 
 ## What this does to the other M5 issues
 
