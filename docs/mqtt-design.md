@@ -1,7 +1,7 @@
 # MQTT ingress: design
 
-Status: proposed, for review in #1685. Nothing here is built. The decisions at
-the end are open; where the body depends on one, it says which.
+Status: accepted in #1685 on 2026-10-31, with the decisions listed at the end.
+Nothing here is built yet; the work is tracked as slices #1687 to #1698.
 
 Devices speak MQTT, and a Felix broker cannot accept an MQTT connection today.
 This page designs a native MQTT listener, built the way the Kafka listener is
@@ -24,7 +24,7 @@ Concretely, that means four things.
 The listener runs inside every broker, off by default. An operator *mounts* a
 durable stream at an MQTT topic prefix; every MQTT topic under that prefix is a
 record in that stream, hashed to a shard by its full topic name, with the topic
-kept in a small envelope in the record. A publish is written through the
+kept as the record's key and MQTT's message properties as record headers. A publish is written through the
 broker's ordinary publish path, forwarded to the shard's owner when this broker
 does not own it, and acknowledged when Felix would acknowledge it. A
 subscription is served by the broker the device is connected to, which reads
@@ -49,8 +49,8 @@ flowchart LR
 
 Both MQTT 3.1.1 and 5.0 are in scope for the codec from the first slice, because
 5.0 is where an honest error can be said: 3.1.1 has no negative `PUBACK`, so the
-only refusal it can express for a publish is closing the connection. Which
-version the first usable slices speak is decision [D1](#d1-protocol-versions).
+only refusal it can express for a publish is closing the connection. The first
+usable slices speak both ([D1](#d1-protocol-versions)).
 
 In:
 
@@ -106,17 +106,17 @@ What exists on crates.io, checked on 2026-10-31:
 | `rmqtt` | 0.24.0 | MIT/Apache-2.0 | A full plugin broker. | Wrong shape. |
 | `mqttbytes` 0.6.0, `mqttrs` 0.4.1, `mqtt-protocol` 0.12.0 | | | Standalone codecs. | Unmaintained since 2021 to 2024. |
 
-That leaves two real options, set out as [D2](#d2-codec). Either Felix owns a
-small codec, or it vendors `rumqttc`'s `mqttbytes` and hardens
-it as it did `kafka-protocol`. MQTT has about 15 packet types plus 5.0's
-properties, so an owned codec is roughly 2,000 lines plus tests. Either way the
+That left two real options: Felix owns a small codec, or it vendors `rumqttc`'s
+`mqttbytes` and hardens it as it did `kafka-protocol`. Felix owns the codec
+([D2](#d2-codec)). MQTT has about 15 packet types plus 5.0's properties, so it is
+roughly 2,000 lines plus tests. The
 codec decodes into `bytes::Bytes` without copying the payload, has a fuzz target
 from its first commit, and is cross-checked against encodings produced by
 `rumqttc` and the mosquitto clients, kept as golden vectors.
 
 ### Crate layout
 
-If Felix owns the codec, the proposed layout splits it from the listener:
+The codec is split from the listener:
 
 - `crates/protocol/felix-mqtt-wire` is the codec only: 3.1.1 and 5.0, limits
   enforced during decode, zero-copy into `bytes::Bytes`. It depends on `bytes`
@@ -129,8 +129,8 @@ Keeping both in the Felix repository means the decode limits, which are broker
 settings, change in the same PR as the code that reads them; the fuzz, coverage
 and conformance tooling already in CI covers the codec without new setup; and
 nothing makes a public semver promise before the API has met real devices.
-Publishing the codec later as a standalone crate is [D5](#d5-a-standalone-codec-crate);
-the split makes that a directory move.
+Publishing the codec later as a standalone crate stays an option
+([D5](#d5-a-standalone-codec-crate)); the split makes that a directory move.
 
 ## Topic model
 
@@ -144,34 +144,47 @@ mount.
 with `plant/` a record in that stream. The mount is explicit, as a stream is;
 the topics under it are dynamic and need no creation. A publish to a topic under
 no mount is refused. Streams are never created by an MQTT client, which matches
-the Kafka listener and keeps stream creation an administrative act. Where mounts
-are declared, a convention like Kafka's `<namespace>.<stream>`, a field on the
-stream, or a table of their own, is [D3](#d3-where-mounts-are-declared).
+the Kafka listener and keeps stream creation an administrative act. A mount is a
+field on the stream, set through the control plane
+([D3](#d3-where-mounts-are-declared)), so device firmware keeps its own topic
+scheme and there is no second object to keep in step with the stream.
 
 Mount prefixes in one tenant may not overlap, so a topic resolves to at most one
 stream with a longest-prefix lookup, done once per publish in the listener.
 
-**The full topic is kept with the record.** Felix records have a payload, an
-append time, and no key or headers (`StreamRecord`; the Kafka listener drops
-keys for the same reason). An MQTT subscriber needs the topic, and a 5.0
-subscriber needs the properties. Where those live is
-[D4](#d4-where-the-topic-lives-in-the-record); the design below assumes the
-option that changes nothing outside the listener, a versioned envelope at the
-front of the payload:
+**The full topic is kept with the record, in record headers.** Felix records
+today have a payload, an append time, and no key or headers (`StreamRecord`; the
+Kafka listener drops keys and headers for that reason). An MQTT subscriber needs
+the topic, and a 5.0 subscriber needs the message properties. Both travel in a
+new optional part of the record ([D4](#d4-where-the-topic-lives-in-the-record)),
+built in #1688 before any MQTT traffic flows:
 
-| Field | Size | Meaning |
-|---|---|---|
-| magic and version | 2 bytes | Identifies an MQTT record and its envelope version |
-| flags | 1 byte | Original QoS, retain, payload format indicator, which optional fields follow |
-| topic | varint length + UTF-8 | The full topic name, after topic-alias resolution |
-| properties | varint length + 5.0 property bytes | Only the properties that travel with a message (content type, response topic, correlation data, user properties, message expiry as an absolute time) |
-| QoS 2 packet id | 2 bytes, optional | See [QoS 2](#qos-2) |
-| payload | rest | The application payload, untouched |
+- A record may carry a key and a list of headers (name and value pairs). They
+  are stored in a new segment record version, shipped by replication with the
+  record, and delivered to subscribers that negotiated a new wire flag. A record
+  without them is written in the existing version, byte for byte, and an old
+  peer exchanges byte-identical frames. A subscriber that did not negotiate the
+  flag receives the payload alone.
+- The Kafka listener maps a produced record's key and headers onto them and
+  serves them back on fetch, which removes "keys and headers are dropped" from
+  `docs/kafka-compatibility.md`.
 
-A Felix client reading a mounted stream sees the envelope. The compatibility
-page will specify it byte for byte, and each SDK can grow a small decode helper.
-Whether a Felix client may publish into a mounted stream, and how, is part of
-D4.
+The MQTT listener uses them this way:
+
+| Record part | MQTT field |
+|---|---|
+| key | The full topic name, after topic-alias resolution. It is also the routing key. |
+| headers under a prefix reserved for the listener | Original QoS, retain, payload format indicator, content type, response topic, correlation data, message expiry as an absolute time, and the QoS 2 packet id (see [QoS 2](#qos-2)) |
+| ordinary headers | 5.0 user properties, name for name |
+| payload | The application payload, untouched |
+
+The exact header names, and how a non-MQTT publisher is kept from writing the
+reserved ones, are settled in #1688 and specified in the compatibility page.
+
+Because the payload is untouched, a QUIC or Kafka consumer reading a mounted
+stream sees exactly what the device sent, and a Felix client that publishes with
+a key under a mount is visible to MQTT subscribers on that topic without any
+MQTT-specific encoding.
 
 **The shard is chosen by the full topic.** The listener computes the routing key
 as the topic bytes, so `shard_for` sends every message on one topic to one
@@ -317,11 +330,11 @@ packet id 7 was already written, and packet ids are 16 bits and reused, so "the
 log has a record for packet 7 from producer P" could be an earlier, finished use
 of 7.
 
-The proposed answer writes the packet id into the envelope and makes `PUBREL`
-durable before `PUBCOMP`:
+The answer writes the packet id into a record header and makes `PUBREL` durable
+before `PUBCOMP`:
 
 1. On `PUBLISH` QoS 2, write the record as an idempotent batch for producer P
-   with the packet id in its envelope. Send `PUBREC` at the Felix ack.
+   with the packet id in its headers. Send `PUBREC` at the Felix ack.
 2. On `PUBREL`, append a release mark for that packet id: a small record on the
    same shard, under the same producer, that subscribers never see (as a new
    leader's generation-start record already is). Send `PUBCOMP` only once the
@@ -339,13 +352,12 @@ keeps every pending id inside it.
 
 The cost is a second log write per QoS 2 message, which is what the protocol's
 second round trip pays for in any broker that keeps the guarantee across a
-crash. Alternatives, including advertising `Maximum QoS` 1 until this lands, are
-[D8](#d8-qos-2). Outbound QoS 2 (the broker delivering at QoS 2) needs the same
-care on the delivery side; the proposal grants subscribers at most QoS 1 until
-the QoS 2 slice.
+crash. Until the QoS 2 slice lands, the listener advertises `Maximum QoS` 1
+([D8](#d8-qos-2)). Outbound QoS 2 (the broker delivering at QoS 2) needs the same
+care on the delivery side, and subscribers are granted at most QoS 1 until then.
 
 A new protocol step that a crash can interrupt is what the TLA specs exist for.
-If D8 picks release marks, the QoS 2 slice adds a small model of packet-id reuse,
+The QoS 2 slice adds a small model of packet-id reuse,
 release marks and takeover, checked for "a released id is never deduplicated
 and a pending id is never written twice".
 
@@ -416,8 +428,8 @@ pull-based reader avoids that choice on durable streams:
   alone. Its QoS 0 subscriptions follow the subscriber overflow policy and drop,
   as a QUIC subscriber's would.
 
-Which of these three arrangements to build is [D6](#d6-cross-broker-delivery);
-the alternatives are 5.0 server redirects and constraining mounts to one shard.
+This is the arrangement chosen ([D6](#d6-cross-broker-delivery)), over 5.0
+server redirects and constraining mounts to one shard.
 
 ```mermaid
 flowchart LR
@@ -447,7 +459,7 @@ flowchart LR
 
 ### Delivery
 
-The delivered QoS is the lower of the publish's QoS (from the envelope) and the
+The delivered QoS is the lower of the publish's QoS (from the record's headers) and the
 subscription's granted QoS. A QoS 1 delivery advances the session's per-shard
 cursor once the device's `PUBACK` covers a contiguous run, the same rule a
 consumer group's cursor follows. At most `Receive Maximum` deliveries are
@@ -479,8 +491,8 @@ it reads. It ends with the connection.
 **A persistent session** is a record in the session cache, a durable cache named
 by `FELIX_MQTT_SESSION_CACHE`, keyed by tenant and client id. It holds the
 subscriptions, a cursor per shard read, the session's producer id, the will,
-the expiry interval and the owning broker. Keeping cursors there rather than in
-consumer groups is [D9](#d9-session-state).
+the expiry interval and the owning broker. Cursors live there rather than in a
+consumer group per device ([D9](#d9-session-state)).
 
 - **Offline queueing is a cursor, not a copy.** While a device is away, nothing
   is queued for it in memory; its messages are in the log, and on reconnect the
@@ -509,8 +521,8 @@ consumer groups is [D9](#d9-session-state).
 - **Wills.** The will is stored with the session and published by the home
   broker when the connection ends without `DISCONNECT`, or with 5.0's
   `DISCONNECT` reason 0x04, after `Will Delay Interval` unless the session
-  resumes first. What happens to a pending will when the home broker itself
-  crashes is [D10](#d10-wills-when-a-broker-crashes).
+  resumes first. A pending will is lost if the home broker itself crashes, and
+  the compatibility page says so ([D10](#d10-wills-when-a-broker-crashes)).
 - **Keepalive.** A connection silent for 1.5 times its keepalive is closed. A
   keepalive above `FELIX_MQTT_KEEPALIVE_MAX_SECS`, or 0 (none), is replaced by
   the maximum, and 5.0 clients are told so with `Server Keep Alive`.
@@ -529,15 +541,16 @@ client-facing certificate, and `FELIX_TLS_CLIENT_CA` requires a client
 certificate here as on the QUIC and Kafka listeners. With
 `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT=true`, a token whose subject the certificate
 was not issued to is refused. Today a certificate binds a token and is not an
-identity on its own; many fleets authenticate devices by certificate alone,
-which is [D11](#d11-device-identity).
+identity on its own. Certificate-only device identity is later work
+([D11](#d11-device-identity)).
 
 **Grants.** Publishing to a topic needs `stream.publish` on the mounted stream;
 subscribing needs `stream.subscribe`. Authorization is checked before existence,
 as on the other listeners, so a principal cannot probe for mounts it may not
 use. Stream-level grants cannot say "device 42 may publish only under
-`plant/7/devices/42/`", which most fleets want. Grants on topic filters are
-[D12](#d12-topic-level-grants).
+`plant/7/devices/42/`", which most fleets want, so grants on topic filters
+land before the listener is called production-ready
+([D12](#d12-topic-level-grants)).
 
 A token is checked at `CONNECT` and its expiry is enforced on the connection:
 the connection closes when the token expires, unless a 5.0 client refreshes it
@@ -555,12 +568,11 @@ resource one can hold is bounded by a setting, and the listener runs apart from
 the QUIC listeners so that exhausting it does not reach them.
 
 **A separate accept loop and runtime.** The Kafka listener has its own accept
-loop on the broker's shared runtime. The MQTT listener would have its own accept
+loop on the broker's shared runtime. The MQTT listener has its own accept
 loop on its own tokio runtime with `FELIX_MQTT_WORKER_THREADS` threads, so a
 reconnect storm of a hundred thousand TLS handshakes spends those threads and not
 the ones serving QUIC. Publishes and reads cross into the broker through the
-same calls the Kafka listener makes. Whether a separate runtime is worth its
-cost is [D13](#d13-runtime).
+same calls the Kafka listener makes ([D13](#d13-runtime)).
 
 The settings, with proposed defaults:
 
@@ -602,12 +614,21 @@ closed connection where it does not, and a count in
 ## Performance plan
 
 **Off means off.** The listener is a crate, `felix-mqtt` (with the codec in
-`felix-mqtt-wire`), used by `felix-broker-service` the way `felix-kafka` is. With `FELIX_MQTT_LISTEN` unset,
-nothing is bound, no runtime is built and no reader exists. Nothing in this
-design adds a branch to the QUIC publish, subscribe, ship or ack paths: topics,
-filters, sessions and envelopes live in the listener, forwarding and the
-internal read are on broker-to-broker paths, and mounts are control-plane
-metadata. The proof, in each slice that touches a broker crate:
+`felix-mqtt-wire`), used by `felix-broker-service` the way `felix-kafka` is.
+With `FELIX_MQTT_LISTEN` unset, nothing is bound, no runtime is built and no
+reader exists. Topics, filters and sessions live in the listener, forwarding and
+the internal read are on broker-to-broker paths, and mounts are control-plane
+metadata.
+
+Record headers (#1688) are the one change every record path sees, since the
+storage format, replication and the event frame all learn an optional part.
+Their bar is that a record without a key or headers costs what it costs today:
+it is stored in the existing record version, byte for byte, proven by golden
+vectors; a peer that did not negotiate the flag exchanges byte-identical frames;
+and the append and read benchmarks and the IPM gate are unchanged with no
+headers present.
+
+The proof, in each slice that touches a broker crate:
 
 - The `instructions_per_message` gate (`scripts/perf/ipm_gate.py`, in CI as
   `ipm-gate.yml`) stays within tolerance on every existing cell with the listener
@@ -617,8 +638,7 @@ metadata. The proof, in each slice that touches a broker crate:
 - The perf A/B against the last release tag, including the large-payload fanout
   cells, before any slice that touches the broker merges.
 - The release binary's size before and after each slice, reported in the PR.
-  Whether to put the listener behind a cargo feature as well is
-  [D17](#d17-cargo-feature).
+  There is no cargo feature ([D17](#d17-cargo-feature)).
 
 **When on, what it costs others.** MQTT publishes are ordinary publishes and
 draw on the tenant's publish quota. MQTT readers are additional log readers on
@@ -643,7 +663,7 @@ and `delivered_throughput` counts deliveries.
 
 - **Fuzzing from the first commit.** Targets for the packet decoder at both
   versions (any bytes, never a panic, allocation bounded by the limits), the
-  record envelope, topic and filter parsing, and the session record. A property
+  record header encoding in storage and on the wire, topic and filter parsing, and the session record. A property
   test checks the trie's matches against a direct implementation of the
   specification's matching rules.
 - **Conformance against open-source clients**, run in containers in CI as kcat is
@@ -673,224 +693,139 @@ refusing the rest with a reason. Each ships its docs (`docs/mqtt-compatibility.m
 the docs-site page, the env reference, the status row in What Felix Is For) and
 its tests. Sizes are rough lines of Rust including tests.
 
-1. **Codec.** `felix-mqtt-wire` with the 3.1.1 and 5.0 packet codec, limits enforced
-   during decode, golden vectors and fuzz targets. No broker wiring. About 2,500.
-2. **Listener skeleton.** `felix-mqtt` with settings, env registry, bind and spawn beside Kafka in
-   `node/listeners.rs`, the separate runtime, connection caps and rate, TLS,
-   `CONNECT` auth, keepalive, `PINGREQ`, `DISCONNECT`. Every `PUBLISH` and
-   `SUBSCRIBE` is refused as not authorized. Adds the idle-listener IPM cell.
-   About 1,500.
-3. **Mounts and envelope.** Mount declaration in the control plane (per D3),
-   topic validation and resolution, the envelope format and its fuzz target.
-   About 1,200.
-4. **Publish QoS 0 and 1.** Local and forwarded, idempotent batches, outcome
-   resolution, quotas, conformance with `mosquitto_pub` and `rumqttc`, the
-   history-checker publish case. About 1,800.
-5. **Subscribe QoS 0 and 1, clean sessions, one broker.** Local shard readers, the
-   trie, session queues and catch-up reads. About 2,000.
-6. **Cross-broker readers.** The internal offset read, readers on non-owners,
-   moves and failover, three-broker cluster tests. About 2,000.
-7. **Retained messages.** Mount caches, conditional put by offset, clearing,
-   expiry, the subscribe join. About 1,200.
-8. **Persistent sessions.** Session cache, takeover, expiry, checkpoints, offline
-   delivery, wills, the history-checker subscriber case. About 2,500.
-9. **Topic-level grants** (per D12). About 1,000.
-10. **QoS 2** (per D8), with its model if needed. About 1,500.
-11. **Benchmarks.** The matrix above in `scripts/perf/`, and the results page.
-    About 800, mostly scripts.
+1. [#1687](https://github.com/GetFelix/felix/issues/1687) **Codec.** `felix-mqtt-wire` with the 3.1.1 and 5.0
+   packet codec, limits enforced during decode, golden vectors and fuzz targets.
+   No broker wiring. About 2,500.
+2. [#1688](https://github.com/GetFelix/felix/issues/1688) **Record headers.** Optional key and headers on Felix
+   records: a new segment record version, a negotiated wire flag, replication,
+   Kafka keys and headers mapped onto them, Rust client APIs. Records without
+   them stay byte-identical. About 1,500 plus the format work.
+3. [#1689](https://github.com/GetFelix/felix/issues/1689) **Listener skeleton.** `felix-mqtt` with settings, env
+   registry, bind and spawn beside Kafka in `node/listeners.rs`, the separate
+   runtime, connection caps and rate, TLS, `CONNECT` auth, keepalive,
+   `PINGREQ`, `DISCONNECT`. Every `PUBLISH` and `SUBSCRIBE` is refused as not
+   authorized. Adds the idle-listener IPM cell. About 1,500.
+4. [#1690](https://github.com/GetFelix/felix/issues/1690) **Mounts and topic resolution.** The mount field on streams
+   in the control plane, topic validation and longest-prefix resolution. About
+   1,200.
+5. [#1691](https://github.com/GetFelix/felix/issues/1691) **Publish at QoS 0 and 1.** Local and forwarded, idempotent
+   batches, outcome resolution, quotas, conformance with `mosquitto_pub` and
+   `rumqttc`, the history-checker publish case. About 1,800.
+6. [#1692](https://github.com/GetFelix/felix/issues/1692) **Subscribe on one broker.** QoS 0 and 1, clean sessions,
+   local shard readers, the trie, session queues and catch-up reads. About
+   2,000.
+7. [#1693](https://github.com/GetFelix/felix/issues/1693) **Cross-broker reads.** The internal offset read, readers on
+   non-owners, moves and failover, three-broker cluster tests. About 2,000.
+8. [#1694](https://github.com/GetFelix/felix/issues/1694) **Retained messages.** Mount caches, conditional put by
+   offset, clearing, expiry, the subscribe join. About 1,200.
+9. [#1695](https://github.com/GetFelix/felix/issues/1695) **Persistent sessions and wills.** Session cache, takeover,
+   expiry, checkpoints, offline delivery, wills, the history-checker subscriber
+   case. About 2,500.
+10. [#1696](https://github.com/GetFelix/felix/issues/1696) **Grants on topic filters.** About 1,000.
+11. [#1697](https://github.com/GetFelix/felix/issues/1697) **QoS 2.** Release marks and their TLA model. About 1,500.
+12. [#1698](https://github.com/GetFelix/felix/issues/1698) **Benchmarks and docs as shipped.** The matrix above in
+    `scripts/perf/`, the results page, and the compatibility page checked
+    against what landed. About 800, mostly scripts.
 
-Slices 1 to 4 make Felix a working MQTT ingress for devices that only publish,
-the commonest fleet shape. Shared subscriptions, if wanted, follow as a twelfth
-slice.
+Slices 1 and 2 are independent and come first, then 3 to 6, then 7 to 11, then
+12. Slices 1 to 5 make Felix a working MQTT ingress for devices that only
+publish, the commonest fleet shape. Shared subscriptions follow after the first
+release as [#1699](https://github.com/GetFelix/felix/issues/1699).
 
-## Open decisions
+## Decisions
 
-These are for Gabriel. Each lists the options and a recommendation; none is
-settled by this page.
+Decided by Gabriel on 2026-10-31 in #1685. Each entry gives the outcome and the
+options it was chosen over.
 
 ### D1. Protocol versions
 
-- **A.** 3.1.1 and 5.0 from the first usable slice.
-- **B.** 3.1.1 first, 5.0 later.
-- **C.** 5.0 only.
-
-Recommendation: A. The codec carries both from slice 1 either way. 3.1.1 is
-what most deployed firmware speaks; 5.0's reason codes are what let the listener
-refuse honestly instead of closing connections.
+MQTT 3.1.1 and 5.0 together from the first usable slice, over 3.1.1 first or 5.0
+only. 3.1.1 is what deployed firmware speaks; 5.0's reason codes let the listener
+refuse honestly.
 
 ### D2. Codec
 
-- **A.** Own a small codec in `felix-mqtt-wire`: limits checked before allocation,
-  zero-copy into `Bytes`, fuzzed from day one, with `rumqttc` and the mosquitto
-  clients used only as test clients and as sources of golden vectors. About
-  2,000 lines that Felix maintains alone.
-- **B.** Vendor `rumqttc`'s `mqttbytes` module and harden it, as was done for
-  `kafka-protocol`. Less code to write, but a vendored fork drifts from upstream,
-  every hardening is a diff to carry, and its allocation behaviour has to be
-  audited line by line anyway.
-
-Recommendation: A. MQTT's framing is small enough that owning it costs less than
-auditing and carrying a fork, and limits enforced during decode are easier to
-build in than to retrofit.
+Felix owns a small codec in `felix-mqtt-wire`, used with `rumqttc` and the
+mosquitto clients only as test clients and golden-vector sources. Vendoring and
+hardening `rumqttc`'s `mqttbytes` was the alternative; carrying a fork costs
+more than owning MQTT's small framing.
 
 ### D3. Where mounts are declared
 
-- **A.** A convention, like Kafka's: the first topic level is the namespace and
-  the second the stream. No control-plane change, but device firmware must use
-  Felix's hierarchy, and most fleets' topic schemes are fixed already.
-- **B.** A field on the stream (`mqtt_mount: "plant/"`), set through the control
-  plane. One source of truth; grants and placement stay on the stream.
-- **C.** A separate mount table in the control plane mapping prefixes to streams
-  and retained caches.
-
-Recommendation: B. It fits existing topic schemes without a second object to keep
-in step with the stream.
+A mount field on the stream, set through the control plane. Rejected: a
+Kafka-style naming convention, which would force Felix's hierarchy on firmware,
+and a separate mount table.
 
 ### D4. Where the topic lives in the record
 
-- **A.** A versioned envelope at the front of the payload, as described above.
-  No storage or wire change, so no cost anywhere else. Felix clients reading a
-  mounted stream see the envelope and need a decode helper, and a Felix client
-  publishing into a mounted stream must write one.
-- **B.** A new optional record field (key or attributes) in the storage format
-  and the event frame, negotiated by a flag. It would also let the Kafka
-  listener keep keys and headers. It touches the record format every path reads,
-  which is exactly what the `instructions_per_message` gate guards, and is a much
-  larger change.
-
-Recommendation: A for MQTT, with B considered on its own merits later, for Kafka
-keys as much as for MQTT.
+A key and headers on records (#1688): a new record version and a negotiated wire
+flag, with Kafka keys and headers mapped onto them, so QUIC and Kafka consumers
+see an untouched payload. Chosen over an envelope at the front of the payload,
+which would have needed no format change but would have handed every non-MQTT
+reader bytes it had to decode.
 
 ### D5. A standalone codec crate
 
-- **A.** Keep `felix-mqtt-wire` internal in the Felix repository, as proposed
-  under [Crate layout](#crate-layout).
-- **B.** Start it as a standalone published crate in its own repository (for
-  example `fxmqtt`). Useful to others, but every limit change becomes a release
-  and a version bump in two places, and its API is promised before it has run
-  in production.
-- **C.** A, then extract it as a published crate once its API has settled under
-  production load.
-
-Recommendation: C. The codec has no `felix-*` dependencies, so extracting it is
-a directory move whenever there is a reason to.
+`felix-mqtt-wire` stays internal to the Felix repository and off crates.io.
+Extracting it as a published crate (for example `fxmqtt`) once its API has
+settled stays an option.
 
 ### D6. Cross-broker delivery
 
-- **A.** The home broker reads remote shards by offset with one reader per (home
-  broker, shard), as described above.
-- **B.** 5.0 `Server Reference` redirects to the owner. Unusable for wildcards
-  that span shards and absent in 3.1.1.
-- **C.** Require mounts to have one shard, so a home broker can be chosen per
-  mount. Caps a mount at one broker's throughput.
-
-Recommendation: A. It keeps fanout amortised and subscribers isolated, and it is
-the only option that serves wildcards on a sharded stream.
+The device's broker reads remote shards by offset, one reader per (broker,
+shard). Rejected: 5.0 server redirects, unusable for wildcards and absent from
+3.1.1, and single-shard mounts, which cap a mount at one broker.
 
 ### D7. Durable streams only
 
-- **A.** Only durable streams can be mounted, as only durable streams are served
-  to Kafka.
-- **B.** Allow in-memory streams for QoS 0 telemetry, served from the replay
-  ring, with persistent sessions and catch-up reads refused on them.
-
-Recommendation: A. Offset-addressed readers, persistent sessions and outcome
-resolution all depend on the log. B can be revisited if fleets ask for it.
+Only durable streams can be mounted. Offset readers, persistent sessions and
+outcome resolution all depend on the log.
 
 ### D8. QoS 2
 
-- **A.** Release marks, as described above: exactly once across a home-broker
-  crash, at two log writes per message.
-- **B.** Exactly once while the session stays on one broker; a crash of that
-  broker can duplicate a re-sent message. One write per message.
-- **C.** Advertise `Maximum QoS` 1 and grant at most QoS 1. Some large managed
-  brokers do this.
-
-Recommendation: C until slice 10, then A. Shipping C first gets devices
-connected without a weaker promise; B is a weaker promise under the name of the
-stronger one.
+QoS 1 first, with `Maximum QoS` 1 advertised, then QoS 2 with release marks and a
+TLA model. Rejected: exactly once only while a session stays on one broker,
+which is a weaker promise under the stronger one's name.
 
 ### D9. Session state
 
-- **A.** A session cache, holding cursors, subscriptions, will and owner.
-- **B.** A consumer group per session per stream for the cursors, with the rest in
-  a cache. Group state already moves with its shard, but one group per device
-  means millions of groups, and group semantics (claims, visibility timeouts) are
-  not what a session needs.
-
-Recommendation: A.
+Session state lives in a cache, over a consumer group per session per stream.
 
 ### D10. Wills when a broker crashes
 
-- **A.** A will is published by the broker holding the connection. If that
-  broker crashes, its pending wills are lost. Documented.
-- **B.** A sweeper: when the control plane declares a broker dead, the owners of
-  the session cache's shards publish the wills of sessions it held.
-
-Recommendation: A in slice 8, B as a follow-up if fleets depend on wills for
-liveness, since the case that most needs a will (a dead device) is unaffected by
-A.
+A will is published by the broker holding the connection and is lost if that
+broker crashes, which is documented. A sweeper that publishes a dead broker's
+wills can follow if fleets need it.
 
 ### D11. Device identity
 
-- **A.** Token in the password, optionally bound to a client certificate. Works
-  with today's auth unchanged.
-- **B.** A client certificate as identity on its own: the certificate's subject
-  maps to a principal, and the broker fetches that principal's grants from the
-  control plane. Matches how many fleets provision devices, and needs a new
-  control-plane path.
-
-Recommendation: A first, B as its own slice after slice 8.
+A token in the password, optionally bound to a client certificate.
+Certificate-only identity needs a new control-plane path and is later work.
 
 ### D12. Topic-level grants
 
-- **A.** Stream-level grants only.
-- **B.** A grant object for topic filters under a mount, with substitution of the
-  client id and principal (`devices/{client_id}/#`), checked in the listener
-  against a per-connection compiled trie.
-
-Recommendation: A to start, B before the listener is called production-ready.
-Most fleets need one device unable to impersonate another.
+Stream-level grants first; grants on topic filters (#1696) before the listener
+is called production-ready.
 
 ### D13. Runtime
 
-- **A.** A separate tokio runtime with its own threads.
-- **B.** The shared runtime, bounded only by connection caps and rates, as Kafka
-  is.
-
-Recommendation: A. A handshake storm is CPU, and only a separate set of
-threads keeps it from QUIC.
+A separate tokio runtime for the listener, over sharing the broker's runtime
+with connection caps alone.
 
 ### D14. Filters that span mounts
 
-- **A.** Refuse a filter whose literal prefix does not fall inside one mount
-  (`#`, `+/temp`).
-- **B.** Resolve such a filter against every mount the principal may read, and
-  watch the mount list for changes.
-
-Recommendation: A. B multiplies the readers one subscription can open, which
-should be decided with numbers in hand.
+Refused in the first release. Resolving them against every readable mount can be
+revisited with measurements.
 
 ### D15. A 3.1.1 publish to an unmounted topic
 
-- **A.** Close the connection.
-- **B.** Drop the message silently.
-
-Recommendation: A, counted in `felix_mqtt_refused_total`. A silent drop is the
-failure Felix avoids elsewhere.
+The connection is closed and the refusal counted in
+`felix_mqtt_refused_total`, never a silent drop.
 
 ### D16. Shared subscriptions
 
-- **A.** Out of scope for the first release.
-- **B.** Map `$share/<group>/<filter>` onto a Felix consumer group now.
-
-Recommendation: A, then B as a slice of its own. The mapping is natural but
-brings claims and redelivery into the listener.
+Out of the first release; mapped onto consumer groups afterwards (#1699).
 
 ### D17. Cargo feature
 
-- **A.** No feature, as with Kafka: the crate is always built and off at runtime.
-- **B.** A `mqtt` cargo feature, so a build without it is byte-identical to today.
-
-Recommendation: A, with binary size reported per slice. B splits CI's build
-matrix for a guarantee the runtime switch and the IPM gate already provide.
+No cargo feature, as with Kafka. The binary size is reported per slice.
