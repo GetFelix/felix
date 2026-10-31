@@ -503,8 +503,11 @@ scripts/build-docs-versions.sh "$(scripts/latest-stable-tag.sh)" site
 node scripts/check-docs-links.mjs site
 ```
 
-`pages.yml` runs the first script on a push to `main`, on a published release
-(which moves the root to the new tag) and on demand. A failed build of the tag
+`pages.yml` runs the first script on a push to `main`, after the performance
+data publishes, and on demand. A stable release ends with a job in `release.yml`
+that dispatches `pages.yml` on `main`, which moves the root to the new tag. It
+is dispatched rather than triggered by the release event because that event runs
+on the tag, and the `github-pages` environment only deploys from `main`. A failed build of the tag
 fails the deploy; `main` never fills in at the root. CI runs both scripts on a
 docs change, and a link that leaves its own tree fails the check.
 

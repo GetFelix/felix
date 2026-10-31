@@ -16,9 +16,6 @@ on:
       - Performance Data Publish
     types:
       - completed
-  # A new stable release becomes the root of the site.
-  release:
-    types: [published]
   workflow_dispatch:
 
 permissions:
