@@ -8,7 +8,7 @@ tasks, so a green local run of the ones below predicts a green CI run.
 
 ## Toolchain
 
-- **Rust 1.97.1**, pinned in `rust-toolchain.toml` with `rustfmt` and `clippy`.
+- **Rust 1.99.1**, pinned in `rust-toolchain.toml` with `rustfmt` and `clippy`.
   The workspace is edition 2024 with `rust-version = "1.97"`.
 - **[Task](https://taskfile.dev)** for the shortcuts.
 - **Docker or Podman**, optional. `task test` uses one to start Postgres for

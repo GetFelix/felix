@@ -154,7 +154,9 @@ impl EpochMap {
             return None;
         }
         let entries = body
-            .chunks_exact(EPOCH_ENTRY_LEN)
+            .as_chunks::<EPOCH_ENTRY_LEN>()
+            .0
+            .iter()
             .map(|chunk| Epoch {
                 generation: u64::from_be_bytes(chunk[0..8].try_into().expect("8 bytes")),
                 start_offset: u64::from_be_bytes(chunk[8..16].try_into().expect("8 bytes")),

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-Rust 1.97, edition 2024. The `Taskfile.yml` shortcuts are the source of truth. CI runs the same ones.
+Rust 1.99, edition 2024. The `Taskfile.yml` shortcuts are the source of truth. CI runs the same ones.
 
 ```bash
 task lint          # cargo fmt --check + clippy --workspace --all-targets --all-features -D warnings

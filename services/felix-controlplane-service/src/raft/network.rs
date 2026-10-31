@@ -146,6 +146,7 @@ impl HttpNetwork {
         }
     }
 
+    #[allow(clippy::result_large_err)] // openraft's RPCError is the trait's error type
     async fn send<Req, Resp, E>(
         &self,
         path: &str,

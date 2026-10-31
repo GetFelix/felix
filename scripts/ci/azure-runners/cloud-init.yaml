@@ -63,7 +63,7 @@ write_files:
     content: |
       #!/bin/bash
       set -euo pipefail
-      RUST_TOOLCHAIN=1.97.1
+      RUST_TOOLCHAIN=1.99.1
       # No debconf or needrestart dialogs: there is no terminal to answer them.
       export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a
 
