@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793487203840,
+  "lastUpdate": 1793489748174,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -40716,6 +40716,58 @@ window.BENCHMARK_DATA = {
             "range": "6517.92",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 817087.50\nmean: 816010.47\nstdev: 6517.92\ncv: 0.80%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e26a16041f712c91f33a763a9f0367590d3354e5",
+          "message": "spec(formal): #1331 wiped-voter guard in the election spec (#1009 S0) (#1682)\n\n* spec(formal): model the #1331 wiped-voter guard in elections (#1009)\n\nA follower that loses its directory now loses its ballot and its set\nunder elections too, and WipedWaitsForAdopt models the guard #1331 asks\nfor, with knobs for the open questions: refusing the named leader while\nwaiting, taking batches from an unadopted leader, learning a candidate's\nset, a floor at the control plane's generation once the wait ends, and\nan oracle bound that isolates the bound from the rest.\n\nNine configurations, registered with their outcomes. The guard as worded\nloses a write through the named leader; with either control-plane bound\nfrom question 1 TLC finds two leaders at one generation; the floor\npasses only while elections stay one generation past adoption.\n\n* spec(formal): model a wiped copy as a non-voter until re-admitted (#1009)\n\nWipedNonVoter: a wiped copy answers no fence, takes no batch and counts\nin no majority until Readmit, a set change at the next generation whose\njoint fence counts the old set's majority without it. It may learn a set\nand extend its log meanwhile. FelixShardElectWipeNonVoter passes at\ngeneration 3 with no oracle; counting the wiped copy in the re-admission\nfinds two leaders at one generation. Two witnesses show a leader can\nstill open while it waits and that re-admission completes; liveness\nproper is not checked.\n\n* spec(formal): make the non-voter rule non-vacuous and add the catch-up gate (#1009)\n\nThe wiped-voter configs passed only because the wipe kept the log. Under\nWipedNonVoter the wipe now empties the log and mark, and the replica votes\nagain only once it holds the re-admitting leader's log through the start\nrecord at that generation (Readmitted), the rule adopted on #1331.\n\n- Promote never names a non-voter; PromoteNonVoter drops the guard.\n- WipeLeads wipes a leader or candidate; Forgets allows a second wipe.\n- AckedOnMajority and SetChangesJoint count a non-voter as the loss\n  already spent (README says why).\n- NoLeaderBesideNonVoter only counts leaders above every generation\n  promised at the wipe; NoFailoverBesideNonVoter shows failover is reached.\n- New configs: NoCatchUp, Promotes, Failover, FailoverWipesLeader,\n  FailsOver, WipesLeader, Twice.\n- FelixShardReads/Sessions: keep wipeVars unchanged in their round steps.\n\n* spec(formal): give the new non-voter configs an evidence line (#1009)\n\n* spec(formal): check failover to adoption at 2 so it finishes; record the TLC results (#1009)\n\n* spec(formal): credit a non-voter only while it is the one loss; say what Twice checks (#1009)\n\nNonVoterCredit: AckedOnMajority and SetChangesJoint count a non-voter as the\none loss already spent only while at most one distinct broker is a non-voter;\nwith two the original check runs. OneNonVoter (set in NonVoterTwice.cfg) refuses\na wipe that would leave two, since two distinct wiped brokers exceed what RF 3\ntolerates (unconstrained, TLC finds SetChangesJoint violated at depth 8). The\nTwice header names the invariants that carry the check, and the README adds\nthe Crash, failure-budget and S8 storage-id notes.\n\nTLC (no error): NonVoter, NonVoterTwice (29.8M distinct, depth 38), WipesLeader,\nFailover (46.9M), FailoverWipesLeader (53.2M).\n\n* ci(tla): check the four heavy NonVoter configs nightly by name, not per PR",
+          "timestamp": "2026-10-31T23:29:07Z",
+          "tree_id": "094f1ee3400e4a88ce8731f462f419f8fa3f660a",
+          "url": "https://github.com/GetFelix/felix/commit/e26a16041f712c91f33a763a9f0367590d3354e5"
+        },
+        "date": 1793489747345,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 427374.93,
+            "range": "20367.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 427374.93\nmean: 429623.29\nstdev: 20367.89\ncv: 4.74%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 427374.93,
+            "range": "20367.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 427374.93\nmean: 429623.29\nstdev: 20367.89\ncv: 4.74%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 93910.63,
+            "range": "810.23",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 93910.63\nmean: 93677.07\nstdev: 810.23\ncv: 0.86%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 939106.34,
+            "range": "8102.27",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 939106.34\nmean: 936770.74\nstdev: 8102.27\ncv: 0.86%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
