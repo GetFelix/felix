@@ -39,6 +39,7 @@ async fn read_from(log: &DiskLog, start: u64) -> Vec<String> {
     })
     .await
     .expect("read")
+    .records
     .into_iter()
     .map(|record| String::from_utf8(record.payload.to_vec()).expect("utf8"))
     .collect()

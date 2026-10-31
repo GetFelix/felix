@@ -451,7 +451,8 @@ impl CounterShard {
                     start: offset,
                     max_bytes: SCAN_CHUNK_BYTES,
                 })
-                .await?;
+                .await?
+                .records;
             if records.is_empty() {
                 break;
             }

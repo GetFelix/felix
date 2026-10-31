@@ -19,6 +19,7 @@ async fn marks(log: &DiskLog) -> Vec<RecordMark> {
     })
     .await
     .expect("read")
+    .records
     .iter()
     .map(|record| record.mark)
     .collect()

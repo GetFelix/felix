@@ -94,6 +94,14 @@ impl DiskLog {
         if let Some(extension) = extension {
             Arc::clone(&inner).extend_reservation(extension);
         }
+        // Retention's timer is what deletes the segments below a floor.
+        // The batch is written by now, so a failure here is not the append's.
+        if written.pending.holds_trim
+            && !inner.config.retention_check_interval.is_zero()
+            && let Err(err) = inner.start_retention()
+        {
+            tracing::warn!(shard = %inner.label, error = %err, "could not start deleting below the head floor");
+        }
 
         // Start the replacement while the current segment still has room,
         // so the flushes it costs never land on an append. `Idle ->
@@ -240,9 +248,9 @@ impl LogInner {
             // `roll` sealed the retired segment, so the snapshot describes
             // only records already on the device.
             self.note_sealed_before(segments.active().id());
-            let snapshot = self.producer_snapshot(&segments);
+            let snapshot = self.snapshot(&segments);
             drop(segments);
-            self.store_producer_snapshot(snapshot);
+            self.store_snapshot(snapshot);
             segments = self.segments.write();
         }
         let holds = match condition {
@@ -283,6 +291,9 @@ impl LogInner {
                 last_offset,
             },
             durable_target,
+            // Only a marked batch can hold one, and `digests` is empty for
+            // any other.
+            holds_trim: !digests.is_empty() && records.iter().any(|r| r.mark.is_trim()),
         };
         let turn = order.map(|order| order.reserve_owned(first_offset, last_offset + 1));
         self.hold_append_at(HoldAt::Reply);
@@ -326,7 +337,7 @@ impl LogInner {
                         // As of the new segment's base: everything it covers
                         // is in segments that are sealed once this roll is.
                         let active = segments.active().id();
-                        (retired, inner.producer_snapshot(&segments), active)
+                        (retired, inner.snapshot(&segments), active)
                     }
                     // The tail moved past the offset this segment was built
                     // for. Delete it here — leaving it for recovery to clean up
@@ -354,7 +365,7 @@ impl LogInner {
                     inner.note_sealed_before(active);
                     // Saved only once they are, so the snapshot never vouches
                     // for a batch a crash could still take away.
-                    inner.store_producer_snapshot(snapshot);
+                    inner.store_snapshot(snapshot);
                     Ok::<(), StorageError>(())
                 }
                 Err(err) => {

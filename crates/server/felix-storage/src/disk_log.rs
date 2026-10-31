@@ -51,6 +51,7 @@ mod epochs;
 mod flush;
 #[cfg(feature = "fuzzing")]
 pub(crate) mod fuzzing;
+mod head;
 mod offload;
 mod producers;
 mod provider;
@@ -79,7 +80,7 @@ use self::sync::{Durability, PeriodicSyncer};
 use crate::io::log_thread::LogThread;
 use crate::log::{
     AppendOnlyLog, AppendRecord, AppendResult, BoxFuture, Epoch, FsyncMode, LogConfig, LogRecord,
-    Offset, ReadRange, RecordMark, SealedSegment, SegmentDescriptor,
+    Offset, ReadPage, ReadRange, RecordMark, SealedSegment, SegmentDescriptor,
 };
 use crate::segment::{ReadBudget, TrimRecords};
 use crate::{CommitSequencer, CommitTurn, Result, StorageError, metrics_names};
@@ -176,9 +177,29 @@ impl DiskLog {
         &self.inner.config
     }
 
-    /// Oldest offset still readable.
+    /// Where the oldest segment starts: the oldest offset still on disk.
+    /// Replication ships from here. A reader starts at
+    /// [`Self::readable_base`] instead.
     pub fn base_offset(&self) -> Offset {
         self.inner.segments.read().base_offset()
+    }
+
+    /// The oldest offset [`AppendOnlyLog::read_range`] serves: the higher of
+    /// [`Self::base_offset`] and the head floor that trim records set. A read
+    /// below it is [`StorageError::Trimmed`].
+    ///
+    /// A trim's floor applies once its record is durable and, on a log held
+    /// at its commit offset ([`Self::hold_retention_at_commit`]), below the
+    /// commit offset. With no trim waiting for that, this costs two atomic
+    /// loads beyond the base offset.
+    pub fn readable_base(&self) -> Offset {
+        let base = self.inner.segments.read().base_offset();
+        base.max(self.inner.head_floor())
+    }
+
+    /// The trim record that set the head floor, if one applies.
+    pub fn head_trim(&self) -> Option<HeadTrim> {
+        self.inner.head_trim()
     }
 
     /// Exclusive bound on durable offsets: everything below it survives a crash.
@@ -382,8 +403,9 @@ impl DiskLog {
     }
 
     /// Wait until a [`PendingAppend`] satisfies the configured fsync policy.
+    /// A batch holding a trim record is synced under every policy.
     pub async fn commit(&self, pending: &PendingAppend) -> Result<()> {
-        if self.inner.durability.acknowledges_before_sync() {
+        if self.inner.durability.acknowledges_before_sync() && !pending.holds_trim {
             return Ok(());
         }
         self.inner.ensure_durable(pending.durable_target).await?;
@@ -654,6 +676,11 @@ impl DiskLog {
         if self.inner.hold_at_commit.swap(hold, Ordering::AcqRel) == hold {
             return Ok(());
         }
+        // A floor applied before the hold is withdrawn, not kept.
+        {
+            let mut head = self.inner.head.lock();
+            self.inner.apply_head(&mut head);
+        }
         self.persist_replica_state().await
     }
 
@@ -832,6 +859,25 @@ impl DiskLog {
         // producer state that does not yet include what is already on disk.
         let producer_state =
             producers::rebuild(&epochs_dir, &segments, Some(&recovered.active_marks))?;
+        let active_has_trims = recovered
+            .active_marks
+            .iter()
+            .any(|(_, mark, _)| mark.is_trim());
+        let (head, read_sealed) = head::rebuild(&epochs_dir, &segments, active_has_trims)?;
+        if read_sealed {
+            // So the next open need not read those segments again.
+            let as_of = segments.active().base_offset();
+            let below: Vec<_> = head
+                .entries()
+                .iter()
+                .filter(|entry| entry.offset < as_of)
+                .cloned()
+                .collect();
+            if let Err(err) = head::store(&epochs_dir, as_of, &below) {
+                tracing::warn!(shard = %label, error = %err, "could not save the head file");
+            }
+        }
+        let holds_trims = !head.entries().is_empty();
 
         // Everything that survived recovery is on disk, so the durable bound
         // starts at the recovered tail.
@@ -864,6 +910,9 @@ impl DiskLog {
             replica_persisted: Mutex::new((replica, None)),
             batch_open: std::sync::atomic::AtomicBool::new(producer_state.is_open()),
             producers: Mutex::new(producer_state),
+            head: Mutex::new(head),
+            head_pending: std::sync::atomic::AtomicBool::new(true),
+            head_floor: AtomicU64::new(0),
             dir: epochs_dir,
             roll_state: AtomicU8::new(RollState::Idle as u8),
             failure: Mutex::new(None),
@@ -926,7 +975,12 @@ impl DiskLog {
             *inner.syncer.lock() = Some(syncer);
         }
 
-        if config.retention().is_set() || inner.offloader.is_some() {
+        // The floor applies at once to what recovery kept, below the bound.
+        inner.head_floor();
+        let deletes_below_floor = holds_trims
+            && !config.retention_check_interval.is_zero()
+            && tokio::runtime::Handle::try_current().is_ok();
+        if config.retention().is_set() || inner.offloader.is_some() || deletes_below_floor {
             inner.start_retention()?;
         }
 
@@ -935,34 +989,37 @@ impl DiskLog {
 }
 
 impl DiskLog {
-    /// The read behind both `read_range` methods.
+    /// The read behind both `read_range` methods, and the tail it ran to.
+    /// Without trims a start below the head floor is refused; with them only
+    /// one below the oldest segment is, since replication ships from there.
     fn read_records(
         &self,
         range: ReadRange,
         trims: TrimRecords,
-    ) -> BoxFuture<'_, Result<Vec<LogRecord>>> {
+    ) -> BoxFuture<'_, Result<(Vec<LogRecord>, Offset)>> {
         let inner = Arc::clone(&self.inner);
         Box::pin(async move {
             if inner.closed.load(std::sync::atomic::Ordering::Acquire) {
                 return Err(StorageError::Closed(inner.label.clone()));
             }
             let started = std::time::Instant::now();
-            let records = tokio::task::spawn_blocking(move || {
+            let (records, tail) = tokio::task::spawn_blocking(move || {
                 loop {
                     // Planned under the lock, read without it: a cold `pread`
                     // must not hold up the appends queued on `segments`.
-                    let plan = {
+                    let (plan, tail) = {
                         let segments = inner.segments.read();
-                        let oldest = segments.base_offset();
+                        let base = segments.base_offset();
+                        let oldest = match trims {
+                            TrimRecords::Skip => base.max(inner.head_floor()),
+                            TrimRecords::Include | TrimRecords::Only => base,
+                        };
                         if range.start < oldest {
                             // Not an empty range: these offsets existed and
-                            // are gone.
-                            return Err(StorageError::Trimmed {
-                                requested: range.start,
-                                oldest,
-                            });
+                            // are gone, or a trim hides them.
+                            return Err(inner.trimmed(range.start, base, trims));
                         }
-                        segments.read_plan(range.start)
+                        (segments.read_plan(range.start), segments.tail_offset())
                     };
                     #[cfg(test)]
                     if let Some(pause) = inner.pause_next_read.lock().take() {
@@ -976,7 +1033,7 @@ impl DiskLog {
                     // A truncation in between may have put other records at
                     // the positions just read. Rare, so read again.
                     if inner.segments.read().generation() == plan.generation {
-                        return read;
+                        return read.map(|records| (records, tail));
                     }
                 }
             })
@@ -988,7 +1045,7 @@ impl DiskLog {
                 .increment(records.iter().map(|r| r.payload.len() as u64).sum::<u64>());
             metrics::histogram!(metrics_names::READ_DURATION_SECONDS)
                 .record(started.elapsed().as_secs_f64());
-            Ok(records)
+            Ok((records, tail))
         })
     }
 }
@@ -1009,8 +1066,9 @@ impl AppendOnlyLog for DiskLog {
 
             // `OnCommit` is the only policy that makes the caller wait. The
             // others acknowledge once the bytes are in the page cache and rely
-            // on the periodic flush (or the operating system) from there.
-            if !inner.durability.acknowledges_before_sync() {
+            // on the periodic flush (or the operating system) from there. A
+            // trim waits whatever the policy, so its floor applies by then.
+            if !inner.durability.acknowledges_before_sync() || pending.holds_trim {
                 inner.ensure_durable(pending.durable_target).await?;
                 // Checked again after the wait: `check_healthy` at the top of
                 // `write_batch` only covers rollovers that had already failed
@@ -1025,12 +1083,25 @@ impl AppendOnlyLog for DiskLog {
         })
     }
 
-    fn read_range(&self, range: ReadRange) -> BoxFuture<'_, Result<Vec<LogRecord>>> {
-        self.read_records(range, TrimRecords::Skip)
+    fn read_range(&self, range: ReadRange) -> BoxFuture<'_, Result<ReadPage>> {
+        Box::pin(async move {
+            let start = range.start;
+            let (records, tail) = self.read_records(range, TrimRecords::Skip).await?;
+            // The plan read to `tail` unless the budget stopped it, which
+            // only a returned record can do. So an empty page skipped
+            // nothing but trims, and the next read starts past them.
+            let next = records
+                .last()
+                .map_or(tail.max(start), |record| record.offset + 1);
+            Ok(ReadPage { records, next })
+        })
     }
 
     fn read_range_with_trims(&self, range: ReadRange) -> BoxFuture<'_, Result<Vec<LogRecord>>> {
-        self.read_records(range, TrimRecords::Include)
+        Box::pin(async move {
+            let (records, _) = self.read_records(range, TrimRecords::Include).await?;
+            Ok(records)
+        })
     }
 
     fn tail_offset(&self) -> BoxFuture<'_, Result<Offset>> {
@@ -1125,6 +1196,21 @@ pub struct PendingAppend {
     pub result: AppendResult,
     /// Exclusive offset bound this batch needs durable.
     durable_target: Offset,
+    /// The batch holds a trim record, which is synced before it is
+    /// acknowledged whatever the fsync policy: its floor applies only once
+    /// the record is durable.
+    holds_trim: bool,
+}
+
+/// The trim record that set a log's head floor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeadTrim {
+    /// Where the record is.
+    pub offset: Offset,
+    /// The floor it asked for. Reads below it are refused.
+    pub floor: Offset,
+    /// The trimming caller's headers, the record's payload.
+    pub headers: bytes::Bytes,
 }
 
 impl PendingAppend {
@@ -1135,6 +1221,14 @@ impl PendingAppend {
     pub fn last_offset(&self) -> Offset {
         self.result.last_offset
     }
+}
+
+/// What a rollover saves beside the segments, as of `as_of`.
+struct Snapshot {
+    as_of: Offset,
+    producers: ProducerState,
+    /// `None` while the log holds no v7 segment, so has no trims to save.
+    head: Option<Vec<head::HeadEntry>>,
 }
 
 /// Shared state behind every clone of a [`DiskLog`].
@@ -1206,6 +1300,14 @@ struct LogInner {
     /// Each idempotent producer's place in the log. Written only under the
     /// `segments` write lock, in offset order, so it always matches the tail.
     producers: Mutex<producers::ProducerState>,
+    /// The log's trim records and the floor they set. Taken under `segments`
+    /// when both are held.
+    head: Mutex<head::Head>,
+    /// Whether `head` has an entry the apply bound has not passed yet. While
+    /// it is clear a read checks only `head_floor`.
+    head_pending: std::sync::atomic::AtomicBool,
+    /// `head`'s floor, for reads.
+    head_floor: AtomicU64,
     /// Mirrors `ProducerState::is_open`, so an unmarked append can skip the
     /// lock in the common case of no batch waiting for records.
     batch_open: std::sync::atomic::AtomicBool,
@@ -1341,15 +1443,91 @@ impl LogInner {
             return;
         }
         let mut producers = self.producers.lock();
+        let mut trims = Vec::new();
         for (index, (offset, record)) in (first_offset..).zip(records).enumerate() {
             producers.observe(
                 offset,
                 record.mark,
                 digests.get(index).copied().unwrap_or(0),
             );
+            if let RecordMark::Trim { floor } = record.mark {
+                trims.push(head::HeadEntry {
+                    offset,
+                    floor,
+                    headers: record.payload.clone(),
+                });
+            }
         }
         self.batch_open
             .store(producers.is_open(), Ordering::Release);
+        drop(producers);
+        if !trims.is_empty() {
+            let mut head = self.head.lock();
+            head.observe(trims);
+            self.publish_head(&head);
+        }
+    }
+
+    /// Where a trim's floor starts to apply: below the durable offset, and on
+    /// a log held at its commit offset below that too. A floor from a record
+    /// a crash or a truncation can still take away would hide records nobody
+    /// asked to hide.
+    fn head_apply_bound(&self) -> Offset {
+        let durable = self.durability.durable_upto();
+        if self.hold_at_commit.load(Ordering::Acquire) {
+            durable.min(self.commit_offset.load(Ordering::Acquire))
+        } else {
+            durable
+        }
+    }
+
+    /// The head floor, applying first any entry the bound has passed.
+    fn head_floor(&self) -> Offset {
+        if self.head_pending.load(Ordering::Acquire) {
+            let mut head = self.head.lock();
+            self.apply_head(&mut head);
+        }
+        self.head_floor.load(Ordering::Acquire)
+    }
+
+    fn apply_head(&self, head: &mut head::Head) {
+        head.apply(self.head_apply_bound());
+        self.publish_head(head);
+    }
+
+    /// Copy `head` out for reads. Called holding the `head` lock.
+    fn publish_head(&self, head: &head::Head) {
+        self.head_floor.store(head.floor(), Ordering::Release);
+        self.head_pending
+            .store(head.has_pending(), Ordering::Release);
+    }
+
+    fn head_trim(&self) -> Option<HeadTrim> {
+        let mut head = self.head.lock();
+        self.apply_head(&mut head);
+        head.setter().map(|entry| HeadTrim {
+            offset: entry.offset,
+            floor: entry.floor,
+            headers: entry.headers.clone(),
+        })
+    }
+
+    /// The refusal of a read from `requested`, below where the log serves.
+    /// Called holding the `segments` read lock, so the floor can only have
+    /// risen since the caller checked it.
+    #[cold]
+    fn trimmed(&self, requested: Offset, base: Offset, trims: TrimRecords) -> StorageError {
+        let mut head = self.head.lock();
+        self.apply_head(&mut head);
+        let oldest = match trims {
+            TrimRecords::Skip => base.max(head.floor()),
+            TrimRecords::Include | TrimRecords::Only => base,
+        };
+        StorageError::Trimmed {
+            requested,
+            oldest,
+            trim_headers: head.setter().map(|entry| entry.headers.clone()),
+        }
     }
 
     /// Drop every record at or after `offset` and bring the durable mark,
@@ -1378,39 +1556,68 @@ impl LogInner {
         )
     }
 
-    /// The producer state as of the tail, for the snapshot taken at a
-    /// rollover. Called holding the `segments` write lock.
+    /// The producer state and the head entries as of the tail, for the
+    /// snapshots taken at a rollover. Called holding the `segments` write
+    /// lock.
     ///
-    /// Taken even when empty, which is almost every log: without a snapshot
-    /// an open has to read every v3 sealed segment to learn there is nothing
-    /// in them.
-    fn producer_snapshot(&self, segments: &SegmentSet) -> (Offset, ProducerState) {
-        (segments.tail_offset(), self.producers.lock().clone())
+    /// The producer state is taken even when empty, which is almost every
+    /// log: without a snapshot an open has to read every v3 sealed segment to
+    /// learn there is nothing in them. The head entries are taken once the
+    /// log is on v7, for the same reason.
+    fn snapshot(&self, segments: &SegmentSet) -> Snapshot {
+        let producers = self.producers.lock().clone();
+        let head = {
+            let head = self.head.lock();
+            (!head.entries().is_empty() || segments.newest_sealed_holds_trims())
+                .then(|| head.entries().to_vec())
+        };
+        Snapshot {
+            as_of: segments.tail_offset(),
+            producers,
+            head,
+        }
     }
 
-    /// Save a snapshot taken by [`Self::producer_snapshot`]. Failing costs a
-    /// longer open later, so it is logged rather than returned.
-    fn store_producer_snapshot(&self, (as_of, state): (Offset, ProducerState)) {
+    /// Save a snapshot taken by [`Self::snapshot`]. Failing costs a longer
+    /// open later, so it is logged rather than returned.
+    fn store_snapshot(&self, snapshot: Snapshot) {
         // Held so a close cannot land between the check and the write.
         let segments = self.segments.read();
         if segments.check_open().is_err() {
             return;
         }
-        if let Err(err) = producers::store(&self.dir, &state, as_of) {
+        if let Err(err) = producers::store(&self.dir, &snapshot.producers, snapshot.as_of) {
             tracing::warn!(
                 shard = %self.label,
                 error = %err,
                 "could not save the producer snapshot; the next open reads further back",
             );
         }
+        if let Some(entries) = &snapshot.head
+            && let Err(err) = head::store(&self.dir, snapshot.as_of, entries)
+        {
+            tracing::warn!(
+                shard = %self.label,
+                error = %err,
+                "could not save the head file; the next open reads the trim records again",
+            );
+        }
     }
 
-    /// Rebuild producer state after the log was cut back. The producer
-    /// snapshot, and a cache's key index snapshot when this log backs a
-    /// cache, may describe records that are gone, so both are removed first,
-    /// durably: one that came back after a crash would be read as describing
-    /// the records that replaced them.
+    /// Rebuild producer state and the head entries after the log was cut
+    /// back to its tail. The producer snapshot, the head file, and a cache's
+    /// key index snapshot when this log backs a cache, may describe records
+    /// that are gone, so all three are removed first, durably: one that came
+    /// back after a crash would be read as describing the records that
+    /// replaced them.
     fn reset_producers(&self, segments: &SegmentSet) -> Result<()> {
+        {
+            let mut head = self.head.lock();
+            head.truncate_from(segments.tail_offset());
+            head.prune_below(segments.base_offset());
+            self.publish_head(&head);
+        }
+        head::discard(&self.dir).map_err(StorageError::Io)?;
         producers::discard(&self.dir).map_err(StorageError::Io)?;
         crate::index_snapshot::remove(&self.dir).map_err(StorageError::Io)?;
         crate::io::sync_dir(&self.dir).map_err(StorageError::Io)?;

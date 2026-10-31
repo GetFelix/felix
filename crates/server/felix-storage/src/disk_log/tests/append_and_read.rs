@@ -120,7 +120,8 @@ async fn reads_are_bounded_by_bytes_and_by_record_count() {
             max_bytes: usize::MAX,
         })
         .await
-        .expect("read");
+        .expect("read")
+        .records;
     assert_eq!(capped.len(), 4);
     assert_eq!(capped[0].offset, 0);
     assert_eq!(capped[3].offset, 3);
@@ -132,7 +133,8 @@ async fn reads_are_bounded_by_bytes_and_by_record_count() {
             max_bytes: 8,
         })
         .await
-        .expect("read");
+        .expect("read")
+        .records;
     assert_eq!(small.len(), 2);
 
     // Paging with the returned offsets covers the whole log without gaps.
@@ -145,7 +147,8 @@ async fn reads_are_bounded_by_bytes_and_by_record_count() {
                 max_bytes: usize::MAX,
             })
             .await
-            .expect("read");
+            .expect("read")
+            .records;
         assert!(!page.is_empty());
         cursor = page.last().expect("last").offset + 1;
         seen.extend(page.into_iter().map(|r| r.offset));

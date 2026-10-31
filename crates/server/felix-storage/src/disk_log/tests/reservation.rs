@@ -113,7 +113,8 @@ async fn a_failed_extension_does_not_fail_an_append() {
             max_bytes: usize::MAX,
         })
         .await
-        .expect("read");
+        .expect("read")
+        .records;
     assert_eq!(read.len(), next);
     log.shutdown().await.expect("shutdown");
 }
@@ -163,7 +164,8 @@ async fn a_crash_mid_extension_recovers_exactly_the_written_records() {
             max_bytes: usize::MAX,
         })
         .await
-        .expect("read");
+        .expect("read")
+        .records;
     assert_eq!(
         read.len(),
         next,

@@ -129,7 +129,8 @@ impl CacheShard {
                     start: offset,
                     max_bytes: SCAN_CHUNK_BYTES,
                 })
-                .await?;
+                .await?
+                .records;
             if records.is_empty() {
                 break;
             }
@@ -249,7 +250,8 @@ impl CacheShard {
                 // than this could not have been appended in the first place.
                 max_bytes: SCAN_CHUNK_BYTES,
             })
-            .await?;
+            .await?
+            .records;
         let Some(found) = records.first() else {
             // The index points past the end of the log. Nothing can make that
             // right, and returning a miss would hide it.

@@ -159,7 +159,8 @@ async fn verify(
             max_bytes: usize::MAX,
         })
         .await
-        .unwrap_or_else(|err| panic!("read after recovery ({replay}): {err}"));
+        .unwrap_or_else(|err| panic!("read after recovery ({replay}): {err}"))
+        .records;
 
     assert!(
         records.len() as u64 >= acknowledged,
@@ -847,5 +848,140 @@ async fn a_power_loss_mid_extension_recovers_the_written_records() {
         verify(image.path(), &config, scenario, seed, acknowledged, next).await;
     }
     drop(release);
+    log.shutdown().await.expect("shutdown");
+}
+
+fn trim_record(floor: Offset, headers: &'static str) -> AppendRecord {
+    AppendRecord {
+        payload: Bytes::from_static(headers.as_bytes()),
+        timestamp_micros: 1,
+        mark: crate::log::RecordMark::Trim { floor },
+        publisher: None,
+    }
+}
+
+/// Retention off: these tests run deletion themselves.
+fn trim_config() -> LogConfig {
+    LogConfig {
+        retention_check_interval: Duration::from_secs(3600),
+        ..config(FsyncMode::None)
+    }
+}
+
+/// Deletion below a head floor unlinks oldest first, each synced. A power
+/// loss at any point recovers the same floor, the trim that set it, and
+/// every record above it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_power_loss_during_deletion_below_the_floor_keeps_the_floor() {
+    let config = trim_config();
+    let floor = 12;
+    let mut seed = 0x7a0e_0000u64;
+    let mut stops = 0..;
+    loop {
+        let stop = stops.next().expect("unbounded");
+        let dir = tempdir().expect("dir");
+        let root = dir.path().join("log");
+        let (observer, log, payloads) = watched_log(&root, &config).await;
+        // Synced before it is acknowledged, whatever the fsync policy.
+        let trim = log
+            .append(&[trim_record(floor, "t")])
+            .await
+            .expect("trim")
+            .first_offset;
+
+        crate::disk_log::segments::stop_after_unlinks(&root, stop);
+        let finished = log.enforce_retention_now().await.is_ok();
+        check_images(&observer, &config, &mut seed, async |recovered, when| {
+            assert_eq!(recovered.readable_base(), floor, "{when}");
+            assert!(recovered.base_offset() <= floor, "{when}");
+            assert_eq!(
+                recovered.head_trim().map(|trim| trim.offset),
+                Some(trim),
+                "{when}"
+            );
+            assert_eq!(
+                read_all(recovered, floor).await,
+                payloads[floor as usize..],
+                "{when}, stopped after {stop} unlinks: records lost above the floor",
+            );
+        })
+        .await;
+        log.shutdown().await.ok();
+        if finished {
+            assert!(stop >= 2, "deletion finished after only {stop} unlinks");
+            break;
+        }
+    }
+}
+
+/// Power goes while a roll is sealing the segment that holds a trim, before
+/// the roll saves the `head` file, and again after. Every image has the
+/// floor and the records above it that were synced.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_power_loss_during_a_roll_keeps_the_floor() {
+    let config = trim_config();
+    let dir = tempdir().expect("dir");
+    let root = dir.path().join("log");
+    let (observer, log, payloads) = watched_log(&root, &config).await;
+    let floor = 6;
+    log.append(&[trim_record(floor, "t")]).await.expect("trim");
+    log.append(&records(&["after"])).await.expect("append");
+
+    let (roll, release) = park_a_seal(&log).await;
+    let mut seed = 0x7a0f_0000u64;
+    let synced = &payloads[floor as usize..];
+    for stage in ["sealing", "after the roll"] {
+        if stage == "after the roll" {
+            release.send(()).expect("release the seal");
+        }
+        check_images(&observer, &config, &mut seed, async |recovered, when| {
+            assert_eq!(recovered.readable_base(), floor, "{stage}, {when}");
+            let read = read_all(recovered, floor).await;
+            assert_eq!(
+                read[..synced.len()],
+                *synced,
+                "{stage}, {when}: synced records lost above the floor",
+            );
+        })
+        .await;
+    }
+    roll.await.expect("roll task").expect("roll");
+    log.shutdown().await.expect("shutdown");
+}
+
+/// A trim written but not synced may or may not survive a power loss. Each
+/// image has no floor or the trim's, and every synced record either way.
+/// Once committed, every image has the floor.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_power_loss_before_a_trim_is_synced_leaves_no_floor_or_its_floor() {
+    let config = trim_config();
+    let dir = tempdir().expect("dir");
+    let root = dir.path().join("log");
+    let (observer, log, payloads) = watched_log(&root, &config).await;
+    let floor = 18;
+    let pending = log
+        .append_pending(&[trim_record(floor, "t")])
+        .await
+        .expect("trim");
+    let mut seed = 0x7a10_0000u64;
+    check_images(&observer, &config, &mut seed, async |recovered, when| {
+        let readable = recovered.readable_base();
+        assert!(
+            readable == 0 || readable == floor,
+            "{when}: floor {readable}"
+        );
+        assert_eq!(
+            read_all(recovered, readable).await,
+            payloads[readable as usize..],
+            "{when}: synced records lost",
+        );
+    })
+    .await;
+
+    log.commit(&pending).await.expect("commit");
+    check_images(&observer, &config, &mut seed, async |recovered, when| {
+        assert_eq!(recovered.readable_base(), floor, "{when}");
+    })
+    .await;
     log.shutdown().await.expect("shutdown");
 }

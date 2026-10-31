@@ -233,6 +233,24 @@ fn a_trim_is_skipped_by_default_and_returned_on_request() {
     assert_eq!(all[1].offset, 3);
 }
 
+/// The open-time rebuild of a head floor reads only trim records, so a
+/// budget of one record is spent on the trim and not on what comes before.
+#[test]
+fn a_trims_only_read_returns_just_the_trims() {
+    let dir = tempdir().expect("dir");
+    let path = dir.path().join("a.log");
+    let outcome = write_with_trim(&path, 7);
+    let only = read(&path, &outcome, 0, 1, TrimRecords::Only).expect("read");
+    assert_eq!(only.len(), 1);
+    assert_eq!(only[0].offset, 2);
+    assert!(only[0].mark.is_trim());
+    assert!(
+        read(&path, &outcome, 3, usize::MAX, TrimRecords::Only)
+            .expect("read")
+            .is_empty()
+    );
+}
+
 /// Recovery scans only the active segment, so the reader itself refuses a
 /// trim found in a sealed segment older than v7, whether it would return
 /// the record or skip it.
@@ -241,7 +259,7 @@ fn a_trim_in_an_older_segment_is_refused_by_the_reader() {
     let dir = tempdir().expect("dir");
     let path = dir.path().join("a.log");
     let outcome = write_with_trim(&path, 6);
-    for trims in [TrimRecords::Skip, TrimRecords::Include] {
+    for trims in [TrimRecords::Skip, TrimRecords::Include, TrimRecords::Only] {
         let err = read(&path, &outcome, 0, usize::MAX, trims).expect_err("v6");
         let crate::StorageError::Corruption(corruption) = err else {
             panic!("expected corruption, got {err:?}");

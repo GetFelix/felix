@@ -58,7 +58,8 @@ async fn marks_are_read_back_with_their_records() {
             max_bytes: usize::MAX,
         })
         .await
-        .expect("read");
+        .expect("read")
+        .records;
     let marks: Vec<RecordMark> = read.iter().map(|record| record.mark).collect();
     let expected: Vec<RecordMark> = std::iter::once(RecordMark::None)
         .chain(RecordMark::for_batch(5, 0, 2))

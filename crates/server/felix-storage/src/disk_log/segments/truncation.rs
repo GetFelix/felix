@@ -222,7 +222,7 @@ pub(crate) fn stop_after_unlinks(dir: &std::path::Path, unlinks: usize) {
 }
 
 #[cfg(all(test, target_os = "linux"))]
-fn stop_point(dir: &std::path::Path) -> Result<()> {
+pub(crate) fn stop_point(dir: &std::path::Path) -> Result<()> {
     let mut stops = STOPS.lock();
     let Some(at) = stops.iter().position(|(stop, _)| stop == dir) else {
         return Ok(());

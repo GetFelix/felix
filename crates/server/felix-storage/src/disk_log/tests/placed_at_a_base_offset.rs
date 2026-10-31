@@ -37,7 +37,8 @@ async fn the_first_record_takes_the_base_offset() {
             max_bytes: 1024,
         })
         .await
-        .expect("read");
+        .expect("read")
+        .records;
     assert_eq!(read.len(), 2);
     assert_eq!(read[0].offset, BASE);
     assert_eq!(read[1].offset, BASE + 1);
@@ -146,7 +147,8 @@ async fn a_placed_log_rolls_over_without_breaking_the_offsets() {
             max_bytes: 64 * 1024,
         })
         .await
-        .expect("read");
+        .expect("read")
+        .records;
     for (index, record) in read.iter().enumerate() {
         assert_eq!(
             record.offset,

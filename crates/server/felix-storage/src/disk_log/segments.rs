@@ -13,7 +13,7 @@ mod test_support;
 
 pub(super) use rollover::RollOutcome;
 #[cfg(all(test, target_os = "linux"))]
-pub(super) use truncation::stop_after_unlinks;
+pub(super) use truncation::{stop_after_unlinks, stop_point};
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -27,7 +27,7 @@ use crate::io::read_at;
 use crate::log::AppendRecord;
 use crate::log::{LogConfig, LogRecord, Offset, SegmentDescriptor, SegmentId};
 use crate::segment::{
-    ReadBudget, SegmentReader, SegmentWriter, index_file_name, segment_file_name,
+    ReadBudget, SegmentReader, SegmentWriter, TrimRecords, index_file_name, segment_file_name,
 };
 use crate::{Result, StorageError, metrics_names};
 
@@ -204,6 +204,71 @@ impl SegmentSet {
             spans,
             files: Arc::clone(&self.files),
         }
+    }
+
+    /// Every trim record at or after `from` and below `to`, oldest first.
+    ///
+    /// Reads only the segments that can hold one (v7), and in them only
+    /// record headers until a trim turns up. For rebuilding the head floor
+    /// at open, under the lock.
+    pub(super) fn trim_records(&self, from: Offset, to: Offset) -> Result<Vec<LogRecord>> {
+        let mut out = Vec::new();
+        let mut budget = ReadBudget::unbounded().with_trims(TrimRecords::Only);
+        for entry in &self.sealed {
+            if !entry.holds_trims || entry.next_offset() <= from {
+                continue;
+            }
+            if entry.descriptor.base_offset >= to {
+                break;
+            }
+            let locator = entry.locator(&self.dir, self.config.index_spacing_bytes);
+            let handle = locator.open(&self.files, &self.label)?;
+            handle.reader.read_from(
+                &handle.index,
+                from,
+                locator.valid_bytes(),
+                &mut budget,
+                &self.label,
+                &mut out,
+            )?;
+        }
+        if self.active.holds_trims()
+            && self.active.base_offset() < to
+            && self.active.next_offset() > from
+        {
+            self.active_reader.read_from_position(
+                self.active.index().seek_position(from),
+                from,
+                self.active.size_bytes(),
+                &mut budget,
+                &self.label,
+                &mut out,
+            )?;
+        }
+        out.retain(|record| record.offset < to);
+        Ok(out)
+    }
+
+    /// Whether the newest sealed segment may hold trim records, which every
+    /// segment after one that does may too.
+    pub(super) fn newest_sealed_holds_trims(&self) -> bool {
+        self.sealed.last().is_some_and(|entry| entry.holds_trims)
+    }
+
+    /// The first offset a trim record can be at: the base of the oldest v7
+    /// segment, or the tail when there is none.
+    pub(super) fn first_trimmable_offset(&self) -> Offset {
+        self.sealed
+            .iter()
+            .find(|entry| entry.holds_trims)
+            .map(|entry| entry.descriptor.base_offset)
+            .unwrap_or_else(|| {
+                if self.active.holds_trims() {
+                    self.active.base_offset()
+                } else {
+                    self.tail_offset()
+                }
+            })
     }
 
     /// Changes whenever a truncation or reset may have rewritten bytes a

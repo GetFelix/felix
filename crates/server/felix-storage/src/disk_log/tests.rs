@@ -7,6 +7,7 @@ mod commit;
 mod conditional;
 mod durability;
 mod generation_start;
+mod head_floor;
 mod offload;
 mod placed_at_a_base_offset;
 #[cfg(target_os = "linux")]
@@ -66,6 +67,7 @@ async fn read_all(log: &DiskLog, start: Offset) -> Vec<String> {
     })
     .await
     .expect("read")
+    .records
     .into_iter()
     .map(|r| String::from_utf8(r.payload.to_vec()).expect("utf8"))
     .collect()

@@ -63,7 +63,8 @@ async fn a_log_without_trims_never_writes_v7() {
 }
 
 /// The first trim rolls the log onto v7, a normal read leaves it out, the
-/// internal read returns it, and both hold after a restart.
+/// internal read returns it from below the floor, and both hold after a
+/// restart.
 #[tokio::test]
 async fn a_trim_rolls_onto_v7_and_is_read_only_on_request() {
     let dir = tempdir().expect("dir");
@@ -79,7 +80,9 @@ async fn a_trim_rolls_onto_v7_and_is_read_only_on_request() {
     drop(log);
 
     let log = open(&dir, FsyncMode::OnCommit);
-    assert_eq!(read_all(&log, 0).await, vec!["a", "b", "c"]);
+    // The trim's floor applies: offset 0 is refused, and offset 1 on reads.
+    assert_eq!(log.readable_base(), 1);
+    assert_eq!(read_all(&log, 1).await, vec!["b", "c"]);
     let all: Vec<_> = log
         .read_range_with_trims(ReadRange {
             start: 0,

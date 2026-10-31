@@ -220,7 +220,7 @@ impl SegmentSet {
         descriptor: crate::log::SegmentDescriptor,
         retired: &SegmentWriter,
     ) -> Result<()> {
-        let entry = SealedEntry::new(descriptor, retired.holds_marks());
+        let entry = SealedEntry::new(descriptor, retired.holds_marks(), retired.holds_trims());
         self.files.seed(
             entry.key(),
             SealedHandle {
