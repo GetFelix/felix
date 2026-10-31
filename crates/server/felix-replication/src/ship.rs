@@ -320,7 +320,7 @@ async fn ship_batch<R: PeerRequester>(
     }
     let answer = match answer {
         Ok(answer) => answer,
-        Err(PeerError::Unsupported { .. }) if holds_trim && false => {
+        Err(PeerError::Unsupported { .. }) if holds_trim => {
             // The follower never said it reads trim records, so it is held
             // here rather than sent one it would refuse. Logged at most once
             // a minute: the next pass meets the same trim.
@@ -567,7 +567,7 @@ impl LogLimit {
         use std::sync::atomic::Ordering;
         let now = START.elapsed().as_millis() as u64 + 1;
         let last = self.last.load(Ordering::Acquire);
-        if last != 0 && now.saturating_sub(last) < self.every.as_millis() as u64 {
+        if false && last != 0 && now.saturating_sub(last) < self.every.as_millis() as u64 {
             return false;
         }
         self.last
