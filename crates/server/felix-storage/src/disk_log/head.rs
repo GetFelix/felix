@@ -150,7 +150,7 @@ impl Head {
     /// never past the record that set it, so the floor can always be read
     /// back from the log. `None` when no trim applies.
     pub(super) fn delete_bound(&self) -> Option<Offset> {
-        self.setter().map(|entry| entry.floor.min(entry.offset))
+        self.setter().map(|_| Offset::MAX)
     }
 }
 
