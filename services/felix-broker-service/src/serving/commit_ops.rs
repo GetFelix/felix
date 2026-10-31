@@ -160,14 +160,13 @@ pub(crate) async fn trim_at(
     expected_offset: u64,
     headers: Bytes,
 ) -> Result<TrimOutcome, NotWritten> {
-    let context = "trim not served";
     let key = shard_key(publish_ctx, tenant_id, namespace, stream, None, Some(shard))?;
     let (dispatched, mut fenced) = dispatch_write(publish_ctx.ingress.as_deref(), &key).await;
     let generation = owned(dispatched, &key)?;
     let handle = broker
         .resolve_stream_handle(&key.tenant_id, &key.namespace, &key.stream, key.shard)
         .await
-        .map_err(|err| ClientError::from_broker(&err, context))?;
+        .map_err(|err| ClientError::from_broker(&err, err.to_string()))?;
     let _guard: Option<FenceGuard> = fence::enter_or_keep(
         &mut fenced,
         publish_ctx.ingress.as_deref(),
@@ -178,7 +177,8 @@ pub(crate) async fn trim_at(
     broker
         .trim_before_at(&handle, before, expected_offset, headers)
         .await
-        .map_err(|err| NotWritten::from_broker(&err, context))
+        // The broker's own text: the handler puts the context in front.
+        .map_err(|err| NotWritten::from_broker(&err, &err.to_string()))
 }
 
 /// Make `write` on the shard `key` names, if this broker leads it, inside the

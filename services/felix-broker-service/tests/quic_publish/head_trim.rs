@@ -280,10 +280,17 @@ async fn refusals_are_coded_and_old_clients_see_old_frames() -> Result<()> {
     session.publish(4).await?;
 
     let answer = session.trim(2, 4).await?;
-    assert!(
-        matches!(answer, Message::PublishError { request_id: 7, .. }),
-        "a refusal answers the request: {answer:?}"
-    );
+    match &answer {
+        Message::PublishError {
+            request_id: 7,
+            message,
+            ..
+        } => assert!(
+            message.starts_with("trim not served: head trims are not enabled"),
+            "{message}"
+        ),
+        other => panic!("a refusal answers the request: {other:?}"),
+    }
     assert_eq!(
         code_of(&answer),
         Some((
