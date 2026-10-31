@@ -250,6 +250,10 @@ expectations=(
   "FelixShardElectWipeOracle pass"
   "FelixShardElectWipeOracleBatches violates AckedHeldByLeader"
   "FelixShardElectWipeOracleLearnsSet pass"
+  "FelixShardElectWipeNonVoter pass"
+  "FelixShardElectWipeNonVoterCountsWiped violates OneLeaderPerGeneration"
+  "FelixShardElectWipeNonVoterElects violates NoLeaderBesideNonVoter"
+  "FelixShardElectWipeNonVoterReadmits violates NeverReadmitted"
   "FelixGroups pass"
   "FelixGroupsNoCheck violates NoSkip"
   "FelixGroupsLengthOnly violates NoSkip"
@@ -381,6 +385,7 @@ weights=(
   "FelixShardSuspicionWipeRoutes 3"
   "FelixShardSuspicionWipeUnbacked 2"
   "FelixShardElectWipeOracle 5"
+  "FelixShardElectWipeNonVoter 12"
 )
 
 weight_of() {

@@ -239,6 +239,10 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardElectWipeOracle.cfg` | `FelixShardElectWipeWaitsFloor.cfg` at generation 3, waiting for a bound no broker can know, the newest generation the replica had promised (`WipeBoundOracle`) | pass, the same invariants (5.45M distinct states, depth 30, 1 min 45 s on eight workers) |
 | `FelixShardElectWipeOracleBatches.cfg` | the same taking batches from an unadopted leader while it waits (`WipedTakesBatches`) | violate `AckedHeldByLeader` |
 | `FelixShardElectWipeOracleLearnsSet.cfg` | `FelixShardElectWipeOracle.cfg` with pre-vote and stickiness, and the waiting replica learning a candidate's set without answering it (`WipedLearnsSet`) | pass, the same invariants (83K distinct states, 2 s) |
+| `FelixShardElectWipeNonVoter.cfg` | `FelixShardElectWipe.cfg` with one write, generation 3, and the wiped replica a non-voter until a re-admission whose joint fence counts the old set's majority without it (`WipedNonVoter`); it may learn a set and copy records meanwhile | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (15.2M distinct states, depth 32, 4 min on ten workers) |
+| `FelixShardElectWipeNonVoterCountsWiped.cfg` | the same, no write, with the re-admission counting the wiped replica (`ReadmitCountsWiped`) | violate `OneLeaderPerGeneration` |
+| `FelixShardElectWipeNonVoterElects.cfg` | `FelixShardElectWipeNonVoter.cfg`, checking a witness | violate `NoLeaderBesideNonVoter`: a leader opens on a majority without the non-voter |
+| `FelixShardElectWipeNonVoterReadmits.cfg` | the same | violate `NeverReadmitted`: the re-admission completes |
 | `FelixShardFencedAckAnyKept.cfg` | `FelixShardFencedAck.cfg` with a spare fourth broker outside the replica set (`Spares`), promotion of any replica however far behind (`Promotion = "any"`), and the promotion keeping the replica set, the old leader in it; no drift | pass `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (0.48M distinct states, depth 31, 27 s on four workers; with `Drift = 1`, 39.0M distinct states in 35 min on four workers, by hand) |
 | `FelixShardFencedAckAnyReplaced.cfg` | the same with the promotion swapping the old leader for the spare (`ReplaceOnPromote`), as failover's `choose_replicas` would | violate `AckedHeldByLeader`: the new leader and the spare are a majority of the new set and open without the record the old leader and the third replica acknowledged |
 | `FelixShardFencedAckSeat.cfg` | `FelixShardFencedAckAnyKept.cfg` with one follower replacement (`MaxMoves = 1`): a spare joins beside a leaving follower at one generation, counting toward the quorum, and the leaving one goes at the next, once the newcomer holds what a majority of the set held when it joined (`SeatHoldsCopy`); one write, `L = 2`, time to 3, no start records | pass `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (6.93M distinct states, depth 35, 15 min on a four-core CI runner; a failover that names the joining copy leaves four in the set, which `TrimFence` and `TrimSet` then trim) |
@@ -971,6 +975,29 @@ check, and adoption up to generation 2, or 3 where named:
   (`FelixShardElectWipeOracleBatches.cfg`). Saying yes to pre-votes, which a
   replica that hears no leader does, and learning a candidate's set without
   answering it are safe (`FelixShardElectWipeOracleLearnsSet.cfg`).
+
+In short: the guard as #1331 words it is unsafe, no bound the control plane
+holds is safe (question 1), taking batches while waiting is unsafe (question
+2), and pre-votes and learning a set are safe (question 4).
+
+One direction does pass without an oracle: a wiped replica is a new member
+that does not vote (`WipedNonVoter`). It answers no fence, takes no batch
+and counts in no majority until the control plane re-admits it (`Readmit`):
+the set is written again at the next generation, and the leader named there
+fences it jointly, counting the old set's majority without the wiped
+replica. Meanwhile it may learn a set and copy an open leader's records
+(`CatchUp`), which count for nothing. Any majority that counted the replica
+before its wipe shares a non-wiped replica with that majority, and the
+shared replica refuses the re-admission at a generation it promised
+elsewhere. `FelixShardElectWipeNonVoter.cfg` passes at generation 3, where
+every control-plane bound failed. Counting the wiped replica in the
+re-admission instead finds two leaders at one generation
+(`FelixShardElectWipeNonVoterCountsWiped.cfg`). Two witnesses show a leader
+can still open on the other two while the replica waits, and that the
+re-admission completes (`FelixShardElectWipeNonVoterElects.cfg`,
+`FelixShardElectWipeNonVoterReadmits.cfg`). That either eventually happens
+needs fairness the model does not have, so liveness is not checked. With
+three brokers the overlap argument is only checked in its smallest shape.
 
 The configurations have no spares, so a set change beside the wipe is not
 checked: there the wiped replica forgets a newer set as well, and
