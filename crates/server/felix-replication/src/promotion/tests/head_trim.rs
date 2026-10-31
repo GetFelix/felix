@@ -41,7 +41,8 @@ async fn a_trim_in_a_taken_tail_is_stored_as_a_trim() {
 
     // The lagging leader holds the first record only; with c it is a majority.
     replicas.get_mut("broker-b").reachable = false;
-    let (leader, _dir) = leader_holding(4, &["v0"]).await;
+    let (leader, dir) = leader_holding(4, &["v0"]).await;
+    assert!(!felix_storage::run_state::head_trimmed(&dir.path().join("streams")).expect("read"));
     let log = leader
         .shard_log(LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
         .await
@@ -61,6 +62,10 @@ async fn a_trim_in_a_taken_tail_is_stored_as_a_trim() {
         .await
         .expect("read");
     assert_eq!(stored.len(), 7);
+    assert!(
+        felix_storage::run_state::head_trimmed(&dir.path().join("streams")).expect("read"),
+        "the take marks the directory before it stores the trim"
+    );
     assert_eq!(stored[6].mark, RecordMark::Trim { floor: FLOOR });
     assert_eq!(
         log.readable_base(),

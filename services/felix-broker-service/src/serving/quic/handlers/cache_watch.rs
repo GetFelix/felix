@@ -369,6 +369,7 @@ pub(crate) async fn handle_cache_watch_message(
                     reason: felix_wire::CursorErrorReason::InFuture,
                     requested: from,
                     available: tail,
+                    trim_headers: None,
                 })
                 .await?;
             return Ok(true);

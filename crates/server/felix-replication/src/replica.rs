@@ -645,6 +645,11 @@ impl ReplicaHandler {
             ),
             Err(_) => None,
         };
+        // Before any trim record is stored here, as on the leader.
+        if let Err(err) = self.broker.mark_head_trimmed_for(&batch.marks).await {
+            metrics::record_replicated(metrics::OUTCOME_ERROR);
+            return refused(correlation_id, ErrorCode::StorageFailed, 0, err.to_string());
+        }
         let mut outcome = match unverified {
             Some(expected) if batch.first_offset > expected => Ok(Err(Divergence::Gap {
                 expected,

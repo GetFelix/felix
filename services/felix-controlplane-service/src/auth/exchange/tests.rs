@@ -757,3 +757,17 @@ async fn only_a_delegating_gateway_gets_an_empty_token_and_only_when_it_asks() {
         assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN, "{principal}");
     }
 }
+
+/// **A failed fleet-feature read costs the token only `stream.trim`.** It
+/// used to fail every exchange, refresh and delegation.
+#[test]
+fn a_failed_fleet_read_leaves_off_stream_trim_and_mints_the_rest() {
+    let perms = vec![
+        "stream.trim:stream:t1/payments/ledger".to_string(),
+        "stream.publish:stream:t1/payments/ledger".to_string(),
+    ];
+    let unreadable = Err(crate::api::error::api_internal_message("read failed"));
+    let minted = for_fleet(perms, BROKER_AUDIENCE, finalized_or_closed(unreadable));
+    assert_eq!(minted, ["stream.publish:stream:t1/payments/ledger"]);
+    assert!(finalized_or_closed(Ok(true)));
+}

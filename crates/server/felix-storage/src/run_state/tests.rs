@@ -568,3 +568,15 @@ fn a_restored_directory_rotates_even_after_a_same_boot_crash() {
     assert_ne!(second.id, first.id);
     assert_eq!(syncs(), before, "a rotation needs no sync");
 }
+
+/// The head-trim marker survives being recorded twice and is all a later
+/// start needs to read.
+#[test]
+fn the_head_trim_marker_is_kept_once_recorded() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    assert!(!head_trimmed(dir.path()).expect("read"));
+    record_head_trimmed(dir.path()).expect("record");
+    record_head_trimmed(dir.path()).expect("record again");
+    assert!(head_trimmed(dir.path()).expect("read"));
+    assert!(!dir.path().join("head-trimmed.tmp").exists());
+}

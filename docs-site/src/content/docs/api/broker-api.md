@@ -280,6 +280,44 @@ match client
 }
 ```
 
+### Conditional Head Trim
+
+Hides a durable stream shard's records below `before`, only if the shard's
+next offset is exactly `expected_offset`. The trim is a record of its own at
+`expected_offset`, so `before` may be at most that. Needs `stream.trim` or
+`stream.manage` on the stream. Sent only to a broker that advertised
+`FEATURE_HEAD_TRIM`.
+
+```json
+{
+  "type": "trim_before",
+  "tenant_id": "acme",
+  "namespace": "games",
+  "stream": "match-7",
+  "shard": 0,
+  "before": 100,
+  "expected_offset": 120,
+  "headers": "<base64, optional>",
+  "request_id": 10
+}
+```
+
+Trimmed, the answer is `trim_ok` with `offset` (where the trim record landed,
+so the next offset is `offset + 1`) and `oldest`, where reads start now.
+Refused for a stale tail, it is `publish_refused` with `offset_mismatch` and
+the tail, and nothing was written. A read below the floor is then answered
+with `subscribe_cursor_error` and `too_old`, carrying the trim's `headers` as
+`trim_headers` to a client that offered `FEATURE_HEAD_TRIM`. A cluster refuses
+every trim with `feature_not_enabled` until its fleet finalizes `head_trim`,
+and a stream holding atomic commits refuses it with `stream_has_commits`. The
+other refusals are in the
+[specification](https://github.com/GetFelix/felix/blob/main/docs/protocol.md#trimbefore).
+
+A trim whose answer was lost may have landed: a retry with the same
+`expected_offset` is refused with `offset_mismatch`, so read the shard to tell.
+On a `Leader` stream an acknowledged trim can be lost at a failover, like any
+record there.
+
 ### Publish Pipeline Configuration
 
 Broker-side tuning for publish pipeline:

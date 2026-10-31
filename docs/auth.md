@@ -127,6 +127,8 @@ Actions:
 - `ns.manage`, `stream.manage`, `cache.manage`: the control plane's resource
   API, over the namespace, stream or cache being changed
 - `stream.publish`, `stream.subscribe`
+- `stream.trim`: a conditional head trim (`trim_before`) over the stream.
+  See [Head trims](#head-trims)
 - `cache.read`, `cache.write`
 - `group.consume`, `group.manage`: consumer groups, over the stream's object
   or one group's `group:{tenant_id}/{namespace}/{stream}/{group}`
@@ -148,6 +150,20 @@ Consumer-group operations are split in two, over the stream's object:
 
 A broker that predates these actions refuses a token carrying either one, so
 upgrade brokers before writing policies that use them.
+
+### Head trims
+
+`stream.trim` lets a principal hide a durable stream's history below an
+offset with `trim_before`. `stream.publish` does not grant it, since a trim
+removes what every reader can see. `stream.manage` does, at the broker, so
+`ns.manage` and `tenant.manage` reach it through the `stream.manage` they
+expand to, and a viewer or a publish-only token is refused with `forbidden`.
+
+A broker that predates the action refuses a whole token naming it. So the
+control plane leaves `stream.trim` out of broker tokens until the fleet has
+finalized `head_trim`, which needs every broker to support it. A policy can
+grant it before then; it reaches tokens from the first exchange or refresh
+after the finalize. A holder of `stream.manage` can trim either way.
 
 Granting either action on a `group:` object scopes a principal to those groups:
 its stream grants then stop covering the stream's other groups for that action.

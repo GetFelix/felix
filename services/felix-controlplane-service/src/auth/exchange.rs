@@ -24,8 +24,8 @@ use crate::auth::felix_token::{BROKER_AUDIENCE, CONTROLPLANE_AUDIENCE, mint_toke
 use crate::auth::oidc::OidcError;
 use crate::auth::principal;
 use crate::auth::rbac::authorize::{
-    ACTION_TOKEN_DELEGATE, ParsedObject, format_object, narrow_object, parse_object,
-    parse_permission,
+    ACTION_STREAM_TRIM, ACTION_TOKEN_DELEGATE, ParsedObject, format_object, narrow_object,
+    parse_object, parse_permission,
 };
 use crate::auth::rbac::enforcer::build_enforcer;
 use crate::auth::rbac::permissions::effective_permissions;
@@ -245,9 +245,13 @@ pub(crate) async fn mint_for_principal(
         })?;
 
     let granted = effective_permissions(&enforcer, principal_id, &tenant_id);
-    let perms = for_audience(
-        narrow_permissions(granted.clone(), &narrowing, &tenant_id),
+    let perms = for_fleet(
+        for_audience(
+            narrow_permissions(granted.clone(), &narrowing, &tenant_id),
+            audience,
+        ),
         audience,
+        head_trim_finalized(state).await,
     );
 
     // A token with no permissions usually masks a misconfiguration, so it is
@@ -394,6 +398,42 @@ pub(crate) fn for_audience(mut perms: Vec<String>, audience: &str) -> Vec<String
         });
     }
     perms
+}
+
+/// `perms` without `stream.trim` on a broker token until the fleet has
+/// finalized `head_trim`.
+///
+/// A broker that predates the action refuses the whole token. Until every
+/// broker has it, a holder of `stream.manage` can still trim, since brokers
+/// that know the action take that grant for it.
+pub(crate) fn for_fleet(mut perms: Vec<String>, audience: &str, head_trim: bool) -> Vec<String> {
+    if audience == BROKER_AUDIENCE && !head_trim {
+        perms.retain(|perm| {
+            perm.split_once(':')
+                .is_none_or(|(action, _)| action != ACTION_STREAM_TRIM)
+        });
+    }
+    perms
+}
+
+/// Whether the fleet has finalized `head_trim`, so a broker token may name
+/// `stream.trim`. A fleet-feature read that fails answers no: only
+/// `stream.trim` is left off, and the rest of the token is still minted.
+pub(crate) async fn head_trim_finalized(state: &AppState) -> bool {
+    finalized_or_closed(
+        crate::api::streams::fleet_finalized(state, felix_common::fleet::HEAD_TRIM).await,
+    )
+}
+
+/// The read's answer, or `false` with a warning when it failed.
+fn finalized_or_closed(read: Result<bool, ApiError>) -> bool {
+    read.unwrap_or_else(|err| {
+        tracing::warn!(
+            error = ?err,
+            "could not read the fleet features; minting without `stream.trim`"
+        );
+        false
+    })
 }
 
 /// Whether `narrowing` asks for a connection-only broker token, one with no

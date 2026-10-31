@@ -15,6 +15,12 @@
 //! last gave this broker. A directory restored from a snapshot or copied in
 //! carries an older one than the control plane holds, which a crash cannot
 //! show, so [`begin`] rotates the id for that too.
+//!
+//! `<durable root>/head-trimmed` says a log here may hold a head trim, which
+//! an older broker cannot read. The broker writes it before it stores its
+//! first trim record, whether it leads the shard or replicates it, and never
+//! removes it, so a broker can refuse to join a fleet that has not finalized
+//! `head_trim` without opening every log. See [`record_head_trimmed`].
 
 mod boot;
 
@@ -256,6 +262,25 @@ pub fn record_registration(root: &Path, incarnation: u64) -> Result<()> {
         &encode_registration(incarnation),
         true,
     )
+}
+
+/// The head-trim marker's name under the durable root. Not a directory, so
+/// shard discovery passes over it.
+pub const HEAD_TRIMMED_FILE_NAME: &str = "head-trimmed";
+
+/// Record, durably, that a log under `root` is about to take a head trim.
+/// Call before the first trim's record is written: a crash after the record
+/// and before the marker would let the directory join an older fleet.
+pub fn record_head_trimmed(root: &Path) -> Result<()> {
+    write_atomically(root, HEAD_TRIMMED_FILE_NAME, b"head_trim\n", true)
+}
+
+/// Whether a log under `root` may hold a head trim. Only the file's presence
+/// counts: it is renamed into place whole, and it is never removed.
+pub fn head_trimmed(root: &Path) -> Result<bool> {
+    root.join(HEAD_TRIMMED_FILE_NAME)
+        .try_exists()
+        .map_err(StorageError::Io)
 }
 
 /// The node incarnation recorded under `root`.

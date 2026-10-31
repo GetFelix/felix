@@ -12,6 +12,7 @@ fn action_string_roundtrip() {
         Action::CacheManage,
         Action::StreamPublish,
         Action::StreamSubscribe,
+        Action::StreamTrim,
         Action::CacheRead,
         Action::CacheWrite,
         Action::GroupConsume,
@@ -49,4 +50,19 @@ fn group_actions_follow_the_stream_grants_that_covered_them() {
     assert!(!Action::GroupManage.is_granted_by(Action::GroupConsume));
     assert!(!Action::GroupConsume.is_granted_by(Action::StreamPublish));
     assert!(!Action::StreamSubscribe.is_granted_by(Action::GroupConsume));
+}
+
+/// A trim removes history every reader sees, so only managing the stream, or
+/// the trim action itself, allows it. Publishing or reading does not.
+#[test]
+fn only_a_manage_grant_or_the_trim_action_allows_a_trim() {
+    assert!(Action::StreamTrim.is_granted_by(Action::StreamTrim));
+    assert!(Action::StreamTrim.is_granted_by(Action::StreamManage));
+
+    assert!(!Action::StreamTrim.is_granted_by(Action::StreamPublish));
+    assert!(!Action::StreamTrim.is_granted_by(Action::StreamSubscribe));
+    assert!(!Action::StreamTrim.is_granted_by(Action::GroupManage));
+    // The trim action grants nothing else.
+    assert!(!Action::StreamManage.is_granted_by(Action::StreamTrim));
+    assert!(!Action::StreamPublish.is_granted_by(Action::StreamTrim));
 }

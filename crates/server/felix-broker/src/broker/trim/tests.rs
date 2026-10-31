@@ -670,3 +670,81 @@ async fn a_restart_with_trims_at_the_tail_refills_the_ring() {
         .generation_start_run;
     assert_eq!(run, Some((12, 2)));
 }
+
+/// **The data directory is marked before the first trim is written here.** A
+/// refused trim leaves no mark, and a trim whose mark cannot be written
+/// writes nothing. A follower's trims are marked in `felix-replication`.
+#[tokio::test]
+async fn the_first_trim_marks_the_directory_before_it_writes() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (broker, _) = broker(dir.path(), ConsistencyLevel::Leader).await;
+    publish(&broker, 4).await;
+    assert!(trim(&broker, 2, 3).await.is_err());
+    assert!(!felix_storage::run_state::head_trimmed(dir.path()).expect("read"));
+
+    // The marker is written through a temporary file; a directory in its
+    // place makes the write fail.
+    let blocker = dir.path().join("head-trimmed.tmp");
+    std::fs::create_dir(&blocker).expect("block the marker");
+    assert!(
+        matches!(trim(&broker, 2, 4).await, Err(BrokerError::Storage(_))),
+        "a trim whose marker cannot be written is refused"
+    );
+    assert_eq!(tail(&broker).await, 4, "nothing written");
+    assert!(!felix_storage::run_state::head_trimmed(dir.path()).expect("read"));
+
+    std::fs::remove_dir(&blocker).expect("unblock");
+    trim(&broker, 2, 4).await.expect("trim");
+    assert!(felix_storage::run_state::head_trimmed(dir.path()).expect("read"));
+}
+
+/// **Trims racing for the first marker write all succeed.** The marker goes
+/// through one temporary file, so unserialized writers would remove each
+/// other's file and fail.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn racing_first_marker_writes_all_succeed() {
+    for _ in 0..20 {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (broker, _) = broker(dir.path(), ConsistencyLevel::Leader).await;
+        let broker = std::sync::Arc::new(broker);
+        let writers: Vec<_> = (0..8)
+            .map(|_| {
+                let broker = std::sync::Arc::clone(&broker);
+                tokio::spawn(async move { broker.mark_head_trimmed().await })
+            })
+            .collect();
+        for writer in writers {
+            writer.await.expect("join").expect("a racing marker write");
+        }
+        assert!(felix_storage::run_state::head_trimmed(dir.path()).expect("read"));
+    }
+}
+
+/// **A trim whose log closes before it is answered is ambiguous, not a
+/// storage failure.** The fence drops before the waits, so a shard move can
+/// close the log between the claim and the answer.
+#[tokio::test]
+async fn a_trim_answered_after_its_log_closed_is_ambiguous() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (broker, bound) = broker(dir.path(), ConsistencyLevel::Quorum).await;
+    publish(&broker, 10).await;
+    *bound.0.lock() = ReadBound::Committed(10);
+    let handle = handle(&broker).await;
+
+    let step = broker
+        .claim_trim(&handle, 5, 10, Bytes::from_static(b"epoch-2"))
+        .await
+        .expect("claim");
+    *bound.0.lock() = ReadBound::Committed(11);
+    handle.release_committed();
+    broker
+        .close_stream_shard("t1", "ns", "orders", 0, None)
+        .await
+        .expect("close");
+
+    let err = broker.finish_trim(&handle, step).await.expect_err("closed");
+    assert!(
+        matches!(err, BrokerError::PublishSuperseded { first_offset: 10 }),
+        "{err:?}"
+    );
+}

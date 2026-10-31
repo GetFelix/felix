@@ -575,18 +575,24 @@ pub(crate) fn grant_queue_capacity(requested: u32, max: usize) -> u32 {
 /// everything else stays a generic `Error`.
 pub(crate) fn subscribe_error_message(err: felix_broker::BrokerError) -> Message {
     match err {
+        // The writer drops `trim_headers` for a client that did not offer
+        // `FEATURE_HEAD_TRIM`.
         felix_broker::BrokerError::CursorTooOld {
-            oldest, requested, ..
+            oldest,
+            requested,
+            trim_headers,
         } => Message::SubscribeCursorError {
             reason: felix_wire::CursorErrorReason::TooOld,
             requested,
             available: oldest,
+            trim_headers,
         },
         felix_broker::BrokerError::CursorInFuture { requested, tail } => {
             Message::SubscribeCursorError {
                 reason: felix_wire::CursorErrorReason::InFuture,
                 requested,
                 available: tail,
+                trim_headers: None,
             }
         }
         other => {

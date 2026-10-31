@@ -588,6 +588,31 @@ pub fn spawn(
                         }
                     }
                 };
+                if let Some(reason) =
+                    trimmed_join_refusal(record_in.as_deref(), &registration.fleet_features).await
+                {
+                    mm::record_registration(mm::KIND_REJECTED);
+                    mm::record_membership_live(false);
+                    tracing::error!(
+                        node_id = %config.node_id,
+                        error = %reason,
+                        "this broker cannot join a fleet that has not finalized head_trim",
+                    );
+                    // Registered already, so placement could pick it; leave
+                    // before stopping rather than wait for the expiry.
+                    if let Err(err) = deregister(
+                        &client,
+                        &base_url,
+                        &config.node_id,
+                        &registration.token.bearer(),
+                    )
+                    .await
+                    {
+                        tracing::warn!(error = %err, "could not deregister after refusing to join");
+                    }
+                    fatal.cancel();
+                    return;
+                }
                 if let Some(root) = &record_in {
                     record_registration(root, registration.incarnation).await;
                 }
@@ -650,6 +675,41 @@ async fn record_registration(root: &std::path::Path, incarnation: u64) {
         Err(err) => {
             tracing::error!(incarnation, error = %err, "recording the registration panicked")
         }
+    }
+}
+
+/// Why this broker must not serve in a fleet whose enabled features are
+/// `enabled`, or `None` when it may.
+///
+/// A data directory under `root` that took a head trim holds records an
+/// older broker cannot decode: an older leader promoted over it would fail
+/// to read them and stall that shard. So once a log here has trimmed
+/// (`felix_storage::run_state::head_trimmed`), the fleet must have finalized
+/// `head_trim`. A marker that cannot be read counts as one.
+pub(crate) async fn trimmed_join_refusal(
+    root: Option<&std::path::Path>,
+    enabled: &BTreeSet<String>,
+) -> Option<String> {
+    let root = root?.to_path_buf();
+    if enabled.contains(felix_common::fleet::HEAD_TRIM.name()) {
+        return None;
+    }
+    let shown = root.display().to_string();
+    let trimmed = tokio::task::spawn_blocking(move || {
+        felix_storage::run_state::head_trimmed(&root).map_err(|err| err.to_string())
+    })
+    .await
+    .unwrap_or_else(|err| Err(err.to_string()));
+    match trimmed {
+        Ok(false) => None,
+        Ok(true) => Some(format!(
+            "a log in {shown} has taken a head trim, which brokers older than head_trim cannot \
+             read; finalize head_trim for the fleet before this broker joins it"
+        )),
+        Err(err) => Some(format!(
+            "could not tell whether a log in {shown} has taken a head trim ({err}); \
+             finalize head_trim for the fleet before this broker joins it"
+        )),
     }
 }
 

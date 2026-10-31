@@ -192,10 +192,68 @@ Where `reason` is one of `{"sequence_gap": {"expected": <u64>}}`,
 `"unknown_producer"`, `"sequence_expired"`, `"sequence_reused"`,
 `{"offset_mismatch": {"tail": <u64>}}`, or
 `{"not_leader": {"node_id": "<string>", "addr": "<host:port, optional>"}}`.
-Sent in answer to a `publish_idempotent`, a `publish_if`, or a `commit` that
-carried `expected_offset`. `"sequence_reused"` goes only to a client that
-offered `FEATURE_SEQUENCE_REUSED`, and `offset_mismatch` only in answer to a
-conditional write. `tail` is the shard's next offset as the broker checked it.
+Sent in answer to a `publish_idempotent`, a `publish_if`, a `commit` that
+carried `expected_offset`, or a `trim_before`. `"sequence_reused"` goes only to
+a client that offered `FEATURE_SEQUENCE_REUSED`, and `offset_mismatch` only in
+answer to a conditional write or a trim. `tail` is the shard's next offset as
+the broker checked it.
+
+### TrimBefore
+```
+{ "type": "trim_before", "tenant_id": "<string>", "namespace": "<string>", "stream": "<string>", "shard": <u32>, "before": <u64>, "expected_offset": <u64>, "headers": "<base64, optional>", "request_id": <u64> }
+```
+Hides a durable stream shard's records below `before`, only if the shard's
+next offset is exactly `expected_offset`. The trim is a record of its own,
+written at `expected_offset` with the same lock and tail check as
+`publish_if`, so of a trim and a write expecting the same tail exactly one
+lands. `before` may be at most `expected_offset`. `expected_offset` is
+required: there is no unconditional trim. `headers` are kept with the trim and
+handed back as `trim_headers` to a reader refused below the floor it set, so
+a writer fenced by a newer trim can tell who trimmed past it.
+
+Answered with `trim_ok` once the trim is committed (on a `Quorum` stream,
+once the committed mark passes it), after which no read is served below the
+floor. A trim with `before` at or below the current floor writes nothing and
+answers with the floor, but only when its tail matches: a stale no-op is
+refused like any other trim. Refusals:
+
+- The tail is not `expected_offset`: `publish_refused` with `offset_mismatch`
+  and the tail. Nothing was written and no offset was consumed.
+- `before` past `expected_offset`: `invalid_request`, `detail.reason` =
+  `trim_past_tail`.
+- An in-memory stream: `invalid_request`, `detail.reason` = `not_durable`.
+- A stream holding atomic commits: `stream_has_commits`. A commit's state
+  lives in its record, which a trim would remove.
+- The fleet has not finalized `head_trim`: `feature_not_enabled`,
+  `detail.reason` = `head_trim`. A lone broker allows trims from the start.
+- No `stream.trim` (or `stream.manage`) on the stream: `forbidden`. The stream
+  stays open.
+- The broker stopped waiting for the trim to commit (30 s): `unacknowledged`
+  with `outcome_unknown` and `detail.reason` = `trim_timed_out`.
+
+The refusals that are not `publish_refused` are `publish_error` frames
+carrying the request's `request_id`. Not forwarded: a broker that does not
+lead the shard answers `not_leader` to a client that offered
+`FEATURE_REDIRECT`, and `not_leader` as an error code otherwise. Sent on its own
+bidirectional stream, and only to a broker that advertised
+`FEATURE_HEAD_TRIM`.
+
+A trim whose answer was lost, or that timed out, may have landed. A retry with
+the same `expected_offset` is then refused with `offset_mismatch`, because the
+trim record took that offset. The writer reads the shard to learn which:
+below `before` is `too_old` once the trim landed. On a `Leader` stream an
+acknowledged trim can be lost at a failover, like any record there; on a
+`Quorum` stream it cannot. Every later reader, including `earliest`, starts at
+the floor. See
+[Conditional head trim](durable-storage.md#conditional-head-trim).
+
+### TrimOk (server -> client)
+```
+{ "type": "trim_ok", "request_id": <u64>, "offset": <u64, optional>, "oldest": <u64> }
+```
+`offset` is where the trim record landed, so the shard's next offset is
+`offset + 1`. It is absent for a no-op, which wrote nothing. `oldest` is where
+reads of the shard start now: at least `before`.
 
 ### Subscribe
 ```
@@ -218,11 +276,14 @@ Requesting an offset the broker cannot serve returns `subscribe_cursor_error`
 rather than a silent restart at the tail:
 
 ```
-{ "type": "subscribe_cursor_error", "reason": "<too_old|in_future>", "requested": <number>, "available": <number> }
+{ "type": "subscribe_cursor_error", "reason": "<too_old|in_future>", "requested": <number>, "available": <number>, "trim_headers": "<base64, optional>" }
 ```
 
-`too_old` means retention has discarded the offset and `available` is the oldest
-still retained. `in_future` means the offset is past the end of the stream and
+`too_old` means retention has discarded the offset, or a head trim hid it, and
+`available` is the oldest still readable. Below a head trim's floor,
+`trim_headers` carries the headers of the trim that set it (see
+[TrimBefore](#trimbefore)). It is sent only to a client that offered
+`FEATURE_HEAD_TRIM`; any other client gets the frame it always got. `in_future` means the offset is past the end of the stream and
 `available` is the current tail. The two have opposite remedies, which is why
 they are distinguishable in code rather than only in prose.
 
@@ -1932,6 +1993,7 @@ Bits in the extended word (see [Extended feature word](#extended-feature-word)):
 | `0x2` | `FEATURE_STREAM_DELETED` | The client reads `stream_deleted` at the end of an event stream. See [StreamDeleted](#streamdeleted-server---client) |
 | `0x4` | `FEATURE_PUBLISH_WIDTH` | The broker takes `publish_width` and refuses a keyed batch routed by a width the stream does not have with `stale_width`. See [PublishWidth](#publishwidth) |
 | `0x8` | `FEATURE_EXPLICIT_SHARD` | The broker honours `shard` on `publish`, `publish_batch`, `publish_idempotent`, `publish_if`, `commit` and `state_get`. See [Named shards](#named-shards) |
+| `0x10` | `FEATURE_HEAD_TRIM` | From a broker: it answers `trim_before`, though it refuses every trim with `feature_not_enabled` until its fleet finalizes `head_trim`. From a client: it reads `trim_headers` on `subscribe_cursor_error`. See [TrimBefore](#trimbefore) |
 
 Features are advertised in **both** directions. A client offers its own in the
 `auth` it already sends:
@@ -2019,8 +2081,8 @@ know the broker's age until the answer comes back. An unknown field it simply
 ignores.
 
 `FEATURE_INSPECT` is the first feature in the second word,
-`FEATURE_STREAM_DELETED` the second, `FEATURE_PUBLISH_WIDTH` the third and
-`FEATURE_EXPLICIT_SHARD` the fourth. The Rust constants are
+`FEATURE_STREAM_DELETED` the second, `FEATURE_PUBLISH_WIDTH` the third,
+`FEATURE_EXPLICIT_SHARD` the fourth and `FEATURE_HEAD_TRIM` the fifth. The Rust constants are
 `FEATURE_EXTENDED` and `KNOWN_FEATURES_HI` in `felix-wire`, with
 `offer_features`, `answer_features` and `peer_features_hi` applying the rules
 above.
@@ -2065,12 +2127,12 @@ client MUST act on the class it received, not on this table.
 | `unauthenticated` | `fatal` | 1 | The stream has not authenticated, or the credential was refused. | A request before `auth`; a token that does not verify. |
 | `forbidden` | `fatal` | 2 | The credential does not grant this operation. | A missing permission, or a tenant other than the token's. Also a forward the owner refused on the client's credential. |
 | `not_found` | `retry_after` | 3 | The tenant, namespace, stream or cache does not exist on this broker. | An unknown stream or cache. Retryable because a broker learns streams from the control plane, and one promoted a moment ago says "not found" for a stream it is about to serve. A publish refused for any other reason keeps that reason's own code and text: an unservable shard is `shard_unavailable`, never "stream not found". |
-| `invalid_request` | `fatal` | 4 | The request can never succeed as sent. | A malformed frame or batch, unknown frame flags, a missing `request_id`, a second `auth`, a bad watch filter or shard. |
+| `invalid_request` | `fatal` | 4 | The request can never succeed as sent. | A malformed frame or batch, unknown frame flags, a missing `request_id`, a second `auth`, a bad watch filter or shard. A `trim_before` past its own record (`detail.reason` = `trim_past_tail`) or on an in-memory stream (`not_durable`). |
 | `shard_unavailable` | `retry` | 5 | Nobody can serve the shard right now. `detail.reason` says why: `not_assigned`, `owner_unavailable`, `not_ready`, `stale`, `fenced`, `moving` or `region_not_routable`. | The shard is unassigned, its owner unreachable, still opening, or the routing view is behind; `fenced` when this broker's lease lapsed, the owner's epoch was superseded, or the shard stopped serving here between admitting a write and claiming its place in the log (nothing was written). `moving` when the shard is being moved to another broker and the move had not cut over within `FELIX_SHARD_MOVE_HOLD_MS`, or too many publishes were already waiting on moving shards; `detail.retry_after_ms` then suggests when to try again. `region_not_routable` when the leader is in a region this broker has no `FELIX_REGION_BRIDGES` bridge to, so it will not forward there; a client routing to the leader directly is not refused. An older client sees the reason as text and treats the error like any other `shard_unavailable`. |
 | `not_leader` | `redirect` | 6 | Another broker owns the shard. | Only where the `not_leader` message cannot be sent: to a client without `FEATURE_REDIRECT`, or a publish this broker cannot forward. |
 | `quorum_timeout` | `outcome_unknown` | 7 | The leader wrote the batch; a majority did not confirm it in time. It may survive. | A write to a `Quorum` stream or cache. |
 | `leadership_lost` | `outcome_unknown` | 8 | Leadership moved after the leader wrote the batch and before a majority held it. | A write to a `Quorum` stream or cache during a move. |
-| `unacknowledged` | `outcome_unknown` | 9 | The broker stopped waiting for the write's outcome. | A forwarded batch whose answer never came; a commit that outlasted the ack wait; a publish whose shard's log was reset (the broker became a follower, or the log was rebuilt) while it waited behind earlier publishes. That publish reached no reader or subscriber. |
+| `unacknowledged` | `outcome_unknown` | 9 | The broker stopped waiting for the write's outcome. | A forwarded batch whose answer never came; a commit that outlasted the ack wait; a publish whose shard's log was reset (the broker became a follower, or the log was rebuilt) while it waited behind earlier publishes. That publish reached no reader or subscriber. A `trim_before` that waited 30 s for its commit (`detail.reason` = `trim_timed_out`); it may still land. |
 | `overloaded` | `retry_after` | 10 | The broker is shedding load. | A full ingress queue or ack path, or a full disk under durable storage, where nothing was written. Sent as `outcome_unknown` when the batch was already queued before the broker ran out of room to track its ack. With `detail.reason = "publish_queue_full"` when the broker's publish queue had no room for the publish's tenant (`FELIX_BROKER_PUB_QUEUE_DEPTH`); nothing was queued, the message still reads "publish queue full", and `detail.retry_after_ms` suggests a short wait. No new code or flag: a client that predates the reason retries it like any other `overloaded`. With `detail.reason = "tenant_quota"` when the publish's tenant is over its publish quota (`FELIX_TENANT_PUBLISH_*`); nothing was queued, and `detail.retry_after_ms` says when the tenant is back under. An older client sees the reason as text and backs off as for any other overload. |
 | `limit_exceeded` | `fatal` | 11 | The request exceeds a configured limit. | Too many subscriptions on one connection. |
 | `draining` | `retry` | 12 | The broker is shutting down and takes no new work. | In answer to `auth` on a control stream opened while the connection drains. Connect to another broker. |
@@ -2078,8 +2140,9 @@ client MUST act on the class it received, not on this table.
 | `storage` | `outcome_unknown` | 14 | The storage layer failed. | A durable write, a group's state, or a cache log that could not be read. `retry` for reads. |
 | `stale_claim` | `retry` | 15 | The group has no record of handing this offset out. Nothing was applied; the record will be delivered again. | A `group_ack` or `group_nack` for an offset the log holds that was written after the group's in-flight state was last rebuilt and not yet handed out. Also sent as `fatal` to a `group_extend`, or a `group_nack` naming `attempts`, whose claim no longer stands. A client that does not know the code sees an unknown code with `retry`. |
 | `revoked` | `fatal` | 16 | The credential was revoked: its principal, or the actor of a delegated token, was revoked after the token was issued. | In answer to `auth` with such a token. Also as the last frame of an open stream when the revocation reaches the broker: an `error` on a control stream, which is then closed, and on the event stream of a subscription or cache watch. A token minted after the revocation may still be accepted, so a client with a token provider can authenticate again. A client that does not know the code sees an unknown code with `fatal`; a client without `FEATURE_ERROR_CODES` gets the `error` with the text `credential revoked`. |
-
 | `stale_width` | `retry` | 17 | The keyed batch was routed by a width the stream does not have on this broker. Nothing was written. | A keyed batch to the stream named by the client's last `publish_width` on that control stream, when the width or mapping it names differs from the broker's routing snapshot: the stream was most likely deleted and created again. Ask `stream_shards` again before retrying. Only a client that sent `publish_width` can get it. |
+| `feature_not_enabled` | `fatal` | 18 | The request needs a fleet feature that has not been finalized. `detail.reason` names it. Nothing was applied. | A `trim_before` before the fleet finalizes `head_trim` (`detail.reason` = `head_trim`). It keeps failing until an operator finalizes the feature. Only a client that offered `FEATURE_HEAD_TRIM` can get it. |
+| `stream_has_commits` | `fatal` | 19 | The stream holds atomic commits, whose state lives in the records a trim would remove. Nothing was written. | A `trim_before` on such a stream. Only a client that offered `FEATURE_HEAD_TRIM` can get it. |
 
 `Number` is the `u16` the binary ack carries. `0` is never sent.
 

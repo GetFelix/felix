@@ -867,6 +867,10 @@ async fn catch_up<R: PeerRequester>(
             // does hold has been taken.
             break;
         }
+        broker
+            .mark_head_trimmed_for(&batch.marks)
+            .await
+            .map_err(|err| err.to_string())?;
         let applied = replication::apply(
             log,
             batch.first_offset,

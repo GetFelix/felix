@@ -17,6 +17,11 @@ pub enum Action {
     CacheManage,
     StreamPublish,
     StreamSubscribe,
+    /// Hide a durable stream's records below an offset (`trim_before`).
+    /// Not granted by `stream.publish`, since a trim removes history every
+    /// reader can see. Granted by `stream.manage` too; see
+    /// [`Action::is_granted_by`].
+    StreamTrim,
     CacheRead,
     CacheWrite,
     /// Work a stream's consumer groups: poll, acknowledge, hand back, and list
@@ -54,6 +59,7 @@ impl Action {
             Action::CacheManage => "cache.manage",
             Action::StreamPublish => "stream.publish",
             Action::StreamSubscribe => "stream.subscribe",
+            Action::StreamTrim => "stream.trim",
             Action::CacheRead => "cache.read",
             Action::CacheWrite => "cache.write",
             Action::GroupConsume => "group.consume",
@@ -70,12 +76,18 @@ impl Action {
     /// `stream.manage` were already deployed, and those grants covered group
     /// work. Honouring them here keeps every existing consumer working; the
     /// new actions let a policy grant group work without the stream action.
+    /// `stream.manage` grants `stream.trim` the same way, so a token minted
+    /// without the new action still trims, and `ns.manage` and
+    /// `tenant.manage` reach it through the `stream.manage` they expand to.
     pub fn is_granted_by(self, granted: Action) -> bool {
         self == granted
             || matches!(
                 (self, granted),
                 (Action::GroupConsume, Action::StreamSubscribe)
-                    | (Action::GroupManage, Action::StreamManage)
+                    | (
+                        Action::GroupManage | Action::StreamTrim,
+                        Action::StreamManage
+                    )
             )
     }
 }
@@ -100,6 +112,7 @@ impl std::str::FromStr for Action {
             "cache.manage" => Ok(Action::CacheManage),
             "stream.publish" => Ok(Action::StreamPublish),
             "stream.subscribe" => Ok(Action::StreamSubscribe),
+            "stream.trim" => Ok(Action::StreamTrim),
             "cache.read" => Ok(Action::CacheRead),
             "cache.write" => Ok(Action::CacheWrite),
             "group.consume" => Ok(Action::GroupConsume),

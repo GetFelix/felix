@@ -483,7 +483,7 @@ fn stream_deleted_is_the_second_extended_bit() {
 fn publish_width_is_the_third_extended_bit() {
     assert_eq!(crate::FEATURE_PUBLISH_WIDTH, 0x0000_0004);
     assert_eq!(
-        crate::KNOWN_FEATURES_HI & !crate::FEATURE_EXPLICIT_SHARD,
+        crate::KNOWN_FEATURES_HI & !(crate::FEATURE_EXPLICIT_SHARD | crate::FEATURE_HEAD_TRIM),
         crate::FEATURE_INSPECT | crate::FEATURE_STREAM_DELETED | crate::FEATURE_PUBLISH_WIDTH
     );
     assert_eq!(
@@ -500,6 +500,25 @@ fn explicit_shard_is_the_fourth_extended_bit() {
     assert_ne!(crate::KNOWN_FEATURES_HI & crate::FEATURE_EXPLICIT_SHARD, 0);
     assert_eq!(
         crate::answer_features(crate::KNOWN_FEATURES, crate::FEATURE_EXPLICIT_SHARD, 0),
+        (crate::KNOWN_FEATURES, None)
+    );
+}
+
+/// Head trim is the fifth extended bit, in the second word only, so a client
+/// that offered none is never told about it.
+#[test]
+fn head_trim_is_the_fifth_extended_bit() {
+    assert_eq!(crate::FEATURE_HEAD_TRIM, 0x0000_0010);
+    assert_eq!(
+        crate::KNOWN_FEATURES_HI,
+        crate::FEATURE_INSPECT
+            | crate::FEATURE_STREAM_DELETED
+            | crate::FEATURE_PUBLISH_WIDTH
+            | crate::FEATURE_EXPLICIT_SHARD
+            | crate::FEATURE_HEAD_TRIM
+    );
+    assert_eq!(
+        crate::answer_features(crate::KNOWN_FEATURES, crate::FEATURE_HEAD_TRIM, 0),
         (crate::KNOWN_FEATURES, None)
     );
 }

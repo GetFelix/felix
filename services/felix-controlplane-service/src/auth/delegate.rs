@@ -23,7 +23,9 @@ use utoipa::ToSchema;
 use crate::api::AppState;
 use crate::api::error::{ApiError, api_internal, api_internal_message, api_validation_error};
 use crate::auth::bearer::{Refusal, refused, tenant_claims};
-use crate::auth::exchange::{access_token_ttl, for_audience, narrow_permissions};
+use crate::auth::exchange::{
+    access_token_ttl, for_audience, for_fleet, head_trim_finalized, narrow_permissions,
+};
 use crate::auth::felix_token::{
     BROKER_AUDIENCE, CONTROLPLANE_AUDIENCE, FelixClaims, TenantSigningKeys, mint_delegated_token,
     verify_token_for,
@@ -198,9 +200,13 @@ pub async fn delegate_token(
         audience: BROKER_AUDIENCE.to_string(),
         may_act: None,
     };
-    let perms = for_audience(
-        narrow_permissions(subject.perms, &narrowing, &tenant_id),
+    let perms = for_fleet(
+        for_audience(
+            narrow_permissions(subject.perms, &narrowing, &tenant_id),
+            BROKER_AUDIENCE,
+        ),
         BROKER_AUDIENCE,
+        head_trim_finalized(&state).await,
     );
     if perms.is_empty() {
         return Err(refused(Refusal::Forbidden, "no permissions"));

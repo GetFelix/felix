@@ -14,6 +14,10 @@ pub const ACTION_STREAM_MANAGE: &str = "stream.manage";
 pub const ACTION_CACHE_MANAGE: &str = "cache.manage";
 pub const ACTION_STREAM_PUBLISH: &str = "stream.publish";
 pub const ACTION_STREAM_SUBSCRIBE: &str = "stream.subscribe";
+/// Hide a durable stream's records below an offset. `stream.manage` also
+/// grants it at the broker. Minted into a broker token only once the fleet
+/// has finalized `head_trim`; see `exchange::for_audience`.
+pub const ACTION_STREAM_TRIM: &str = "stream.trim";
 pub const ACTION_CACHE_READ: &str = "cache.read";
 pub const ACTION_CACHE_WRITE: &str = "cache.write";
 /// Work a stream's consumer groups. `stream.subscribe` also grants it.
@@ -46,6 +50,7 @@ pub fn canonical_action(action: &str) -> Option<&'static str> {
         ACTION_CACHE_MANAGE => Some(ACTION_CACHE_MANAGE),
         ACTION_STREAM_PUBLISH => Some(ACTION_STREAM_PUBLISH),
         ACTION_STREAM_SUBSCRIBE => Some(ACTION_STREAM_SUBSCRIBE),
+        ACTION_STREAM_TRIM => Some(ACTION_STREAM_TRIM),
         ACTION_CACHE_READ => Some(ACTION_CACHE_READ),
         ACTION_CACHE_WRITE => Some(ACTION_CACHE_WRITE),
         ACTION_GROUP_CONSUME => Some(ACTION_GROUP_CONSUME),

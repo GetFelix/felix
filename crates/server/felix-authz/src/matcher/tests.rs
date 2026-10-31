@@ -343,3 +343,23 @@ fn node_actions_parse() {
     .expect("node actions parse");
     assert_eq!(parsed.patterns().len(), 2);
 }
+
+/// A token parses `stream.trim`, and a trim is allowed by it or by
+/// `stream.manage` over the stream, never by a viewer's or a publisher's
+/// grants.
+#[test]
+fn a_trim_needs_the_trim_or_manage_grant() {
+    let orders = "stream:t1/ns/orders";
+    let trimmer = matcher(&["stream.trim:stream:t1/ns/orders"]);
+    assert!(trimmer.allows(Action::StreamTrim, orders));
+    assert!(!trimmer.allows(Action::StreamPublish, orders));
+    assert!(!trimmer.allows(Action::StreamTrim, "stream:t1/ns/payments"));
+
+    let manager = matcher(&["stream.manage:stream:t1/ns/*"]);
+    assert!(manager.allows(Action::StreamTrim, orders));
+
+    let viewer = matcher(&["stream.subscribe:stream:t1/ns/*"]);
+    assert!(!viewer.allows(Action::StreamTrim, orders));
+    let publisher = matcher(&["stream.publish:stream:t1/ns/*"]);
+    assert!(!publisher.allows(Action::StreamTrim, orders));
+}

@@ -304,7 +304,11 @@ pub async fn refresh_token_handler(
     if let Some(narrowing) = &found.narrowing {
         perms = crate::auth::exchange::narrow_permissions(perms, narrowing, &tenant_id);
     }
-    let perms = crate::auth::exchange::for_audience(perms, audience);
+    let perms = crate::auth::exchange::for_fleet(
+        crate::auth::exchange::for_audience(perms, audience),
+        audience,
+        crate::auth::exchange::head_trim_finalized(&state).await,
+    );
     let connect_only = found.narrowing.as_ref().is_some_and(|narrowing| {
         crate::auth::exchange::may_connect_only(&granted, narrowing, &tenant_id)
     });

@@ -172,3 +172,49 @@ async fn an_unacknowledged_trim_is_dropped_with_the_dead_leaders_suffix() {
         .collect();
     assert_eq!(held, ["a", "b", "c", "x"]);
 }
+
+/// **A follower marks its data directory before it stores a trim.** The
+/// marker is what lets it refuse a fleet that has not finalized `head_trim`,
+/// so a trim must never be durable without it.
+#[tokio::test]
+async fn a_follower_writes_the_head_trim_marker_before_it_stores_a_trim() {
+    let (broker, dir) = quorum_follower().await;
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
+    stored_ok(
+        &handler
+            .apply(
+                SENDER,
+                with_commit(batch(4, 0, &["a", "b", "c"]), 0),
+                felix_broker::LogKind::Stream,
+            )
+            .await,
+    );
+    assert!(
+        !felix_storage::run_state::head_trimmed(dir.path()).expect("read"),
+        "an ordinary batch leaves no marker"
+    );
+
+    // A directory in the marker's temporary path makes its write fail.
+    let blocker = dir.path().join("head-trimmed.tmp");
+    std::fs::create_dir(&blocker).expect("block the marker");
+    let answer = handler
+        .apply(SENDER, trim(4, 3, 2, 3), felix_broker::LogKind::Stream)
+        .await;
+    assert!(
+        matches!(&answer, InternalMessage::ReplicateError(_)),
+        "a trim whose marker cannot be written is refused, got {answer:?}"
+    );
+    let log = broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    assert_eq!(log.tail_offset().await.expect("tail"), 3, "nothing stored");
+
+    std::fs::remove_dir(&blocker).expect("unblock");
+    stored_ok(
+        &handler
+            .apply(SENDER, trim(4, 3, 2, 3), felix_broker::LogKind::Stream)
+            .await,
+    );
+    assert!(felix_storage::run_state::head_trimmed(dir.path()).expect("read"));
+}

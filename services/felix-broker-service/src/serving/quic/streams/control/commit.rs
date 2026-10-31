@@ -1,5 +1,5 @@
-//! Atomic commits, conditional publishes and state reads on the control
-//! stream.
+//! Atomic commits, conditional publishes, head trims and state reads on the
+//! control stream.
 
 use anyhow::Result;
 use bytes::Bytes;
@@ -132,6 +132,69 @@ pub(super) async fn publish_if(
     Ok(Step::Next)
 }
 
+/// What a `trim_before` asks for besides the shard.
+pub(super) struct Trim {
+    pub(super) before: u64,
+    pub(super) expected_offset: u64,
+    pub(super) headers: Bytes,
+}
+
+/// A `trim_before`: answered with `trim_ok` once the trim is committed, or
+/// refused with the tail. Not queued, for the reason `publish_if` is not.
+pub(super) async fn trim_before(
+    cx: &Ctx<'_>,
+    session: &mut Session,
+    target: Target,
+    trim: Trim,
+    request_id: u64,
+) -> Result<Step> {
+    if !authorize_stream(
+        session.auth_ctx.as_ref(),
+        &target.tenant_id,
+        Action::StreamTrim,
+        &target.namespace,
+        &target.stream,
+        Some(request_id),
+        cx.authz_ctx,
+    )
+    .await?
+    {
+        // Kept open once authenticated, so the refusal reaches the client.
+        return Ok(if session.auth_ctx.is_some() {
+            Step::Next
+        } else {
+            Step::Close(false)
+        });
+    }
+    let shard = target.shard.unwrap_or_default();
+    let answer = match redirect(cx.publish_ctx, session.peer_features, &target) {
+        Some(answer) => answer,
+        None => match crate::serving::commit_ops::trim_at(
+            cx.broker,
+            cx.publish_ctx,
+            &target.tenant_id,
+            &target.namespace,
+            &target.stream,
+            shard,
+            trim.before,
+            trim.expected_offset,
+            trim.headers,
+        )
+        .await
+        {
+            Ok(outcome) => Message::TrimOk {
+                request_id,
+                offset: outcome.offset,
+                oldest: outcome.oldest,
+            },
+            Err(err) => moved(&err, cx, session.peer_features, &target)
+                .unwrap_or_else(|| trim_not_written(err, request_id)),
+        },
+    };
+    responder(cx).send(answer).await?;
+    Ok(Step::Next)
+}
+
 /// The typed redirect for a request refused `not_leader` after [`redirect`]
 /// saw the shard as local, because leadership moved in between. Nothing was
 /// applied: the owner check comes before any write. `None` when the shard
@@ -155,6 +218,16 @@ fn not_written(err: NotWritten, request_id: u64, context: &str) -> Message {
             message: format!("the shard's next offset is {tail}"),
         },
         NotWritten::Refused(err) => err.prefixed(context).into_message(),
+    }
+}
+
+/// [`not_written`] for a trim, whose other refusals carry its request id.
+fn trim_not_written(err: NotWritten, request_id: u64) -> Message {
+    match err {
+        NotWritten::Refused(err) => err
+            .prefixed("trim not served")
+            .into_publish_error(request_id),
+        offset_mismatch => not_written(offset_mismatch, request_id, "trim not served"),
     }
 }
 
