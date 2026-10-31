@@ -40,6 +40,18 @@ public sealed class GroupFixtureFactAttribute : FixtureFactAttribute
     }
 }
 
+/// <summary>As <see cref="FixtureFactAttribute"/>, and skips when the fixture has no trim stream or trimmer token.</summary>
+public sealed class TrimFixtureFactAttribute : FixtureFactAttribute
+{
+    public TrimFixtureFactAttribute()
+    {
+        if (Skip is null && (Fixture.Load().TrimmerToken is null || Fixture.Load().TrimStream is null))
+        {
+            Skip = "the fixture has no trimmer_token or trim_stream (an older client-fixture)";
+        }
+    }
+}
+
 internal sealed record Fixture(
     string[] Addrs,
     string Tenant,
@@ -52,7 +64,9 @@ internal sealed record Fixture(
     string? GroupOperatorToken,
     bool RecordsPublishers,
     string Cache,
-    string SingleShardCache)
+    string SingleShardCache,
+    string? TrimmerToken,
+    string? TrimStream)
 {
     internal static Fixture Load()
     {
@@ -71,7 +85,9 @@ internal sealed record Fixture(
             root.TryGetProperty("group_operator_token", out var op) && op.ValueKind == JsonValueKind.String ? op.GetString() : null,
             root.TryGetProperty("records_publishers", out var rp) && rp.ValueKind == JsonValueKind.True,
             Text("cache"),
-            Text("single_shard_cache"));
+            Text("single_shard_cache"),
+            root.TryGetProperty("trimmer_token", out var tt) && tt.ValueKind == JsonValueKind.String ? tt.GetString() : null,
+            root.TryGetProperty("trim_stream", out var ts) && ts.ValueKind == JsonValueKind.String ? ts.GetString() : null);
     }
 
     internal Task<FelixClient> ConnectAsync(string? token = null, CancellationToken ct = default) =>

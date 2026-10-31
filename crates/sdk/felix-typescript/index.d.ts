@@ -215,6 +215,12 @@ export declare class EventCountError extends CommitError {
 }
 
 /**
+ * A head trim was refused before it was sent: the broker does not support
+ * them. Retrying will not help.
+ */
+export declare class TrimError extends FelixError {}
+
+/**
  * The broker would not append an idempotent publish, and said why. Nothing was
  * written, and the producer is finished on that stream.
  */
@@ -304,6 +310,21 @@ export interface CacheConditionResult {
 export type ConditionalWrite =
   | { written: true; offset: bigint; tail: null }
   | { written: false; offset: null; tail: bigint };
+
+/**
+ * The answer to `trimBefore`. A stale tail is not an error: nothing was
+ * written.
+ */
+export type ConditionalTrim =
+  | {
+      trimmed: true;
+      /** Where the trim record landed; `null` when the floor already stood at or past `before`. */
+      offset: bigint | null;
+      /** The oldest offset reads of the shard start at now. */
+      oldest: bigint;
+      tail: null;
+    }
+  | { trimmed: false; offset: null; oldest: null; tail: bigint };
 
 /** Where `groupSeek` or `groupCreate` left a group on one shard. */
 export interface GroupPosition {
@@ -996,6 +1017,33 @@ export declare class Client {
     payloads: Buffer[],
     expectedOffset: bigint,
   ): Promise<ConditionalWrite>;
+
+  /**
+   * Hide the records of `shard` below `before`, only if the shard's next
+   * offset is exactly `expectedOffset`. A read below the floor is then a
+   * `CursorError`.
+   *
+   * The trim is a record of its own and lands at `expectedOffset`, so `before`
+   * can be at most that. `headers` are kept with the trim. A stale tail
+   * resolves with `trimmed: false` and the shard's `tail`; a `before` at or
+   * below the current floor writes nothing, and resolves with `offset: null`
+   * when the tail matches. Needs `stream.trim`, and a durable stream without
+   * atomic commits.
+   *
+   * Rejects with a `TrimError`, sending nothing, when the broker does not
+   * support head trims. A trim that timed out rejects with an
+   * `OutcomeUnknownError`: it may have landed, and sending it again then
+   * resolves with the current tail.
+   */
+  trimBefore(
+    tenantId: string,
+    namespace: string,
+    stream: string,
+    shard: number,
+    before: bigint,
+    expectedOffset: bigint,
+    headers?: Buffer,
+  ): Promise<ConditionalTrim>;
 
   /** Add to a counter and return its new value. `delta` may be negative. */
   counterAdd(

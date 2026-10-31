@@ -23,12 +23,12 @@ const VALUES = [
   "AuthError", "CacheCondition", "Client", "CommitError", "CommitOp", "ConnectionError", "CursorError",
   "EventCountError", "FelixError", "InvalidArgumentError", "NotFoundError",
   "NotOnOwningShardError", "OutcomeUnknownError", "OverloadedError", "Producer", "PublishRefusedError",
-  "ShardUnavailableError", "SubscriptionHandle", "ShardedSubscriptionHandle",
+  "ShardUnavailableError", "SubscriptionHandle", "TrimError", "ShardedSubscriptionHandle",
   "CacheWatchHandle", "ShardedCacheWatchHandle", "ShardedGroupHandle",
 ];
 const TYPES = [
   "AckMode", "CacheChange", "CacheConditionResult", "CacheWatchItem", "CommitReceipt",
-  "ConditionalWrite", "ConnectOptions",
+  "ConditionalTrim", "ConditionalWrite", "ConnectOptions",
   "BatchReport", "ConnectionCount", "Event", "GroupDelivery", "GroupInfo", "GroupPosition", "GroupRecord", "IdentityOptions", "ShardEvent",
   "KeyedRecord", "ShardMoved", "ShardPositions", "ShardPublish", "ShardedCacheWatchItem",
   "ShardedGroupDelivery", "ShardedGroupRecord", "StartPosition", "StateValue", "StreamPage",

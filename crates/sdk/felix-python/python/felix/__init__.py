@@ -57,7 +57,8 @@ Beyond streams, both surfaces cover:
   ``cache_get_versioned`` write a cache key only at the version just read.
   ``publish_if`` and ``commit_if`` write only if the shard's next offset is the
   one expected, and ``commit_on_shard`` names the shard. A refusal is a result,
-  not an error, and a lost answer is never resent.
+  not an error, and a lost answer is never resent. ``trim_before`` hides a
+  durable shard's oldest records the same way, only if the tail is as expected.
 * **Idempotent producers** — ``producer()`` returns a producer whose batches are
   numbered, so one that got no answer can be sent again and lands once.
   ``publish_on_shard`` sends a batch to a shard you name.
@@ -94,6 +95,7 @@ from ._felix import (
     CommitError,
     CommitOp,
     CommitReceipt,
+    ConditionalTrim,
     ConditionalWrite,
     ConnectionError,
     CursorError,
@@ -118,6 +120,7 @@ from ._felix import (
     StateValue,
     StreamDeleted,
     SubscriptionHandle,
+    TrimError,
     VersionedValue,
     __version__,
 )
@@ -170,6 +173,7 @@ __all__ = [
     "CacheCondition",
     "CacheConditionResult",
     "VersionedValue",
+    "ConditionalTrim",
     "ConditionalWrite",
     # Idempotent producers
     "Producer",
@@ -187,5 +191,6 @@ __all__ = [
     "NotOnOwningShardError",
     "EventCountError",
     "PublishRefusedError",
+    "TrimError",
     "__version__",
 ]

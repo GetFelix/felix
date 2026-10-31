@@ -9,7 +9,7 @@
 
 use felix_client::{
     AckLost, AuthError, BrokerError, CommitError, NotLeaderError, RetryClass, SubscribeCursorError,
-    SubscriptionLost,
+    SubscriptionLost, TrimError,
 };
 
 /// The result of every fallible call. `FELIX_STATUS_OK` is zero; every other
@@ -53,9 +53,9 @@ pub const FELIX_STATUS_OVERLOADED: FelixStatus = 26;
 /// The write may or may not have been applied. Resend only if it is
 /// idempotent.
 pub const FELIX_STATUS_OUTCOME_UNKNOWN: FelixStatus = 27;
-/// The broker does not advertise atomic commits, so a commit was not sent;
-/// retrying the same call will not help. Other missing broker features are
-/// still reported as `FELIX_STATUS_ERROR`.
+/// The broker does not advertise atomic commits or head trims, so the call
+/// was not sent; retrying the same call will not help. Other missing broker
+/// features are still reported as `FELIX_STATUS_ERROR`.
 pub const FELIX_STATUS_UNSUPPORTED: FelixStatus = 28;
 
 /// The status for an error from the Rust client.
@@ -75,6 +75,9 @@ pub(crate) fn classify(err: &anyhow::Error) -> FelixStatus {
                 FELIX_STATUS_INVALID_ARGUMENT
             }
         };
+    }
+    if err.chain().any(|e| e.is::<TrimError>()) {
+        return FELIX_STATUS_UNSUPPORTED;
     }
     // A redirect the client could not follow says what `not_leader` says.
     if err.chain().any(|e| e.is::<NotLeaderError>()) {

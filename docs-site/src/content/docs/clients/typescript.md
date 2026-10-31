@@ -1156,6 +1156,68 @@ committed to another named shard; read it with `stateGetOnShard`. A shard the
 stream does not have is refused and nothing is written. These need a broker
 that advertises `FEATURE_EXPLICIT_SHARD`.
 
+### Trimming a shard's head
+
+`trimBefore` hides the records of one shard of a durable stream below an
+offset, for a single writer that owns the shard's history, such as a state
+machine that has snapshotted. It is conditional like `publishIf`: it writes
+only if the shard's next offset is the one you expect, and the trim is a record
+of its own that lands there.
+
+```ts
+import { Client, OutcomeUnknownError, TrimError } from "felix-client";
+
+/** Hide the shard's records below `floor`; resolves to the writer's next offset. */
+async function trimHistory(client: Client, floor: bigint, next: bigint): Promise<bigint> {
+  try {
+    const result = await client.trimBefore(
+      "acme", "games", "match-7", 0, floor, next, Buffer.from("writer-7"),
+    );
+    if (!result.trimmed) {
+      throw new Error(`another writer has the shard; its next offset is ${result.tail}`);
+    }
+    console.log(`reads now start at ${result.oldest}`);
+    // A trim that landed took an offset, so the next write expects the one after it.
+    return result.offset === null ? next : result.offset + 1n;
+  } catch (err) {
+    if (err instanceof TrimError) {
+      console.warn("this broker cannot trim; keeping the history");
+      return next;
+    }
+    if (err instanceof OutcomeUnknownError) {
+      // The broker stopped waiting. The trim may have landed.
+      console.warn("trim outcome unknown; read the shard before trimming again");
+    }
+    throw err;
+  }
+}
+```
+
+`floor` can be at most `next`. A `ConditionalTrim` is
+`{ trimmed: true, offset, oldest, tail: null }` or
+`{ trimmed: false, offset: null, oldest: null, tail }`. `oldest` is the offset
+reads of the shard start at now, and `offset` is where the trim record landed,
+`null` when the floor already stood at or past `floor` and nothing was written.
+A stale tail is a result, not an error, and writes nothing. It is not retried.
+
+Every other refusal rejects with a `FelixError` carrying the broker's `code`:
+
+| Code | Meaning | Retry |
+| --- | --- | --- |
+| `feature_not_enabled` | the fleet has not finalized head trims | not until it has |
+| `stream_has_commits` | the stream holds atomic commits | never |
+| `invalid_request` | `floor` is past `next` (`trim_past_tail`), or the stream is not durable (`not_durable`) | never |
+| `forbidden` | the token lacks `stream.trim` (an `AuthError`) | never |
+| `unacknowledged` | the broker stopped waiting for the trim to commit (`trim_timed_out`), an `OutcomeUnknownError` | outcome unknown |
+
+Do not send a timed-out trim again as it is. If it landed, the same call is
+refused with a tail one past the trim, which looks like a lost race. Read the
+shard's earliest offset, or read below the floor you asked for, to tell the two
+apart. A read below the floor rejects with `CursorError`. The call needs the
+`stream.trim` permission, which `stream.manage` includes. Against a broker that
+did not advertise `FEATURE_HEAD_TRIM` it rejects with `TrimError`, sending
+nothing.
+
 ## Multi-shard streams
 
 A subscription reads one shard. `subscribeSharded` opens one per shard, follows

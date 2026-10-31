@@ -4,9 +4,10 @@ use std::sync::atomic::Ordering;
 
 use anyhow::Result;
 use bytes::Bytes;
-use felix_wire::{Message, PublishRefusalReason};
+use felix_wire::{ErrorCode, Message, PublishRefusalReason, RetryClass};
 
 use super::Connection;
+use crate::BrokerError;
 use crate::trim::{ConditionalTrim, TrimError};
 
 impl Connection {
@@ -68,9 +69,17 @@ impl Connection {
                 reason: PublishRefusalReason::OffsetMismatch { tail },
                 ..
             } => Ok(ConditionalTrim::Refused { tail }),
+            // Only a stale tail is a trim's refusal. Any other reason is the
+            // broker misusing the frame, and a `PublishRefused` would tell a
+            // caller its producer is finished.
             Message::PublishRefused {
                 reason, message, ..
-            } => Err(crate::PublishRefused { reason, message }.into()),
+            } => Err(BrokerError::new(
+                ErrorCode::InvalidRequest,
+                RetryClass::Fatal,
+                format!("trim_before got a publish refusal ({reason:?}): {message}"),
+            )
+            .into()),
             Message::PublishError {
                 message,
                 code,

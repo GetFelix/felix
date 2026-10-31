@@ -590,6 +590,31 @@ typedef void (*FelixOffsetCallback)(void *user_data,
                                     bool has_offset,
                                     uint64_t offset);
 
+// What a trim did. Valid only while the callback runs.
+typedef struct FelixTrimOutcome {
+  // The trim is durable. False when the shard's next offset was not
+  // `expected_offset`: nothing was written, and `tail` is that offset.
+  bool trimmed;
+  // Whether the trim wrote a record. False when the floor already stood
+  // at or past `before`.
+  bool has_offset;
+  // Where the trim record landed; zero unless `has_offset`.
+  uint64_t offset;
+  // The oldest offset reads of the shard start at now; zero unless
+  // `trimmed`.
+  uint64_t oldest;
+  // The shard's next offset; zero unless `trimmed` is false.
+  uint64_t tail;
+} FelixTrimOutcome;
+
+// Called once when `felix_client_trim_before` finishes. `outcome` is null
+// unless the status is `FELIX_STATUS_OK`, and is valid only while the
+// callback runs.
+typedef void (*FelixTrimCallback)(void *user_data,
+                                  FelixStatus status,
+                                  const char *message,
+                                  const struct FelixTrimOutcome *outcome);
+
 // The key has no live entry: never written, deleted, or expired.
 #define FELIX_IF_ABSENT 0
 
@@ -731,9 +756,9 @@ typedef void (*FelixOffsetCallback)(void *user_data,
 // idempotent.
 #define FELIX_STATUS_OUTCOME_UNKNOWN 27
 
-// The broker does not advertise atomic commits, so a commit was not sent;
-// retrying the same call will not help. Other missing broker features are
-// still reported as `FELIX_STATUS_ERROR`.
+// The broker does not advertise atomic commits or head trims, so the call
+// was not sent; retrying the same call will not help. Other missing broker
+// features are still reported as `FELIX_STATUS_ERROR`.
 #define FELIX_STATUS_UNSUPPORTED 28
 
 // Only records published after the subscription is made.
@@ -2391,6 +2416,46 @@ FelixStatus felix_token_reply_ok(const struct FelixTokenReply *reply, const char
 //
 // As for `felix_token_reply_ok`, with `message` null or NUL-terminated.
 FelixStatus felix_token_reply_err(const struct FelixTokenReply *reply, const char *message);
+
+// Hide the records of `shard` below `before`, only if the shard's next offset
+// is exactly `expected_offset`. Reads below the floor are then refused as
+// `FELIX_STATUS_CURSOR`.
+//
+// The trim is a record of its own and lands at `expected_offset`, so `before`
+// can be at most that. `headers` (`headers_len` bytes, null for none) are kept
+// with the trim and handed back to a reader refused below it. A stale tail is
+// an answer: `FELIX_STATUS_OK` with `trimmed` false and the shard's `tail`.
+// A `before` at or below the current floor writes nothing and answers
+// `trimmed` true with `has_offset` false, but only when the tail matches.
+//
+// Needs the `stream.trim` permission (`FELIX_STATUS_AUTH` without it) and a
+// durable stream without atomic commits. A broker that does not advertise
+// head trims completes the call with `FELIX_STATUS_UNSUPPORTED`, sending
+// nothing. Other refusals, such as a fleet that has not finalized head trims,
+// are `FELIX_STATUS_ERROR` with the broker's reason in the message.
+//
+// A write: cancelled after it may have been sent, or when the broker stopped
+// waiting for it, it completes with `FELIX_STATUS_OUTCOME_UNKNOWN`. The trim
+// may have landed; send the call again and, if it did, the answer is a
+// refusal with the current tail.
+//
+// # Safety
+//
+// `client` is a live client, the strings are NUL-terminated, `headers` is
+// null or valid for `headers_len` bytes, `cancel` is null or a live token,
+// and `callback` is safe to call with `user_data` from any thread.
+FelixStatus felix_client_trim_before(const struct FelixClient *client,
+                                     const char *tenant_id,
+                                     const char *ns,
+                                     const char *stream,
+                                     uint32_t shard,
+                                     uint64_t before,
+                                     uint64_t expected_offset,
+                                     const uint8_t *headers,
+                                     size_t headers_len,
+                                     const struct FelixCancelToken *cancel,
+                                     FelixTrimCallback callback,
+                                     void *user_data);
 
 #ifdef __cplusplus
 }  // extern "C"

@@ -19,7 +19,8 @@ use crate::args::{
 };
 use crate::batch::{BatchReport, OwnedBatchReport};
 use crate::conditional::{
-    CacheCondition, CacheConditionResult, ConditionalWrite, OwnedVersionedValue, VersionedValue,
+    CacheCondition, CacheConditionResult, ConditionalTrim, ConditionalWrite, OwnedVersionedValue,
+    VersionedValue,
 };
 use crate::errors::to_py_err;
 use crate::group_admin::{GroupInfo, GroupPosition};
@@ -724,6 +725,55 @@ impl Client {
                     shard,
                     payloads,
                     expected_offset,
+                )
+                .await
+                .map(Into::into)
+                .map_err(to_py_err)
+        })
+    }
+
+    /// Hide the records of `shard` below `before`, only if the shard's next
+    /// offset is exactly `expected_offset`.
+    ///
+    /// Afterwards a read below the floor raises `CursorError`. The trim is a
+    /// record of its own and lands at `expected_offset`, so `before` can be at
+    /// most that. `headers`, if given, are kept with the trim. A stale tail is
+    /// a `ConditionalTrim` with `trimmed` false and the shard's `tail`.
+    /// Needs `stream.trim`, and a durable stream without atomic commits.
+    ///
+    /// A broker that does not support head trims raises `TrimError` and is
+    /// sent nothing. A trim that timed out raises `OutcomeUnknownError`: it
+    /// may have landed, and sending it again then answers with the tail.
+    #[pyo3(signature = (tenant_id, namespace, stream, shard, before, expected_offset, *, headers=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn trim_before(
+        &self,
+        py: Python<'_>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        before: u64,
+        expected_offset: u64,
+        headers: Option<&[u8]>,
+    ) -> PyResult<ConditionalTrim> {
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, stream) = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            stream.to_string(),
+        );
+        let headers = headers.map(<[u8]>::to_vec);
+        block_on(py, async move {
+            inner
+                .trim_before(
+                    &tenant_id,
+                    &namespace,
+                    &stream,
+                    shard,
+                    before,
+                    expected_offset,
+                    headers.as_deref(),
                 )
                 .await
                 .map(Into::into)

@@ -142,3 +142,50 @@ impl From<felix_client::ConditionalWrite> for ConditionalWrite {
         }
     }
 }
+
+/// The answer to `trim_before`. A stale tail is an answer, not an error:
+/// `trimmed` is false and nothing was written.
+#[pyclass(module = "felix", frozen, get_all)]
+pub struct ConditionalTrim {
+    /// The trim is durable and reads of the shard below `oldest` are refused.
+    pub trimmed: bool,
+    /// Where the trim record landed. `None` when refused, and when the floor
+    /// already stood at or past `before` so nothing was written.
+    pub offset: Option<u64>,
+    /// The oldest offset reads of the shard start at now; `None` when refused.
+    pub oldest: Option<u64>,
+    /// The shard's next offset when refused; `None` when trimmed.
+    pub tail: Option<u64>,
+}
+
+#[pymethods]
+impl ConditionalTrim {
+    fn __repr__(&self) -> String {
+        format!(
+            "ConditionalTrim(trimmed={}, offset={:?}, oldest={:?}, tail={:?})",
+            self.trimmed, self.offset, self.oldest, self.tail
+        )
+    }
+}
+
+impl From<felix_client::ConditionalTrim> for ConditionalTrim {
+    fn from(answer: felix_client::ConditionalTrim) -> Self {
+        match answer {
+            felix_client::ConditionalTrim::Trimmed { offset, oldest } => Self {
+                trimmed: true,
+                offset,
+                oldest: Some(oldest),
+                tail: None,
+            },
+            felix_client::ConditionalTrim::Refused { tail } => Self {
+                trimmed: false,
+                offset: None,
+                oldest: None,
+                tail: Some(tail),
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;

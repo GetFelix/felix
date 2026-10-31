@@ -97,3 +97,9 @@ fn a_publish_whose_ack_was_lost_is_outcome_unknown() {
     .context("publish to orders");
     assert_eq!(classify(&err), FELIX_STATUS_OUTCOME_UNKNOWN);
 }
+
+#[test]
+fn a_trim_the_client_would_not_send_is_unsupported() {
+    let unsupported = anyhow::Error::from(felix_client::TrimError::Unsupported).context("trim");
+    assert_eq!(classify(&unsupported), FELIX_STATUS_UNSUPPORTED);
+}

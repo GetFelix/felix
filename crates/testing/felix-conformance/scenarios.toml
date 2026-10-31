@@ -972,6 +972,48 @@ publish_refused and offset_mismatch naming the new tail, and writes nothing.
 """
 
 [[scenario]]
+id = "head_trim.lands_at_the_expected_offset"
+required = false
+title = "A trim at the tail is written there and moves the floor"
+detail = """
+trim_before with the shard's next offset as expected_offset and a before at or
+below it is answered with trim_ok: the offset the trim record landed at, and
+the new oldest offset. The headers given come back as trim_headers to a reader
+refused below the floor. A before at or below the current floor writes nothing:
+trim_ok without an offset.
+"""
+
+[[scenario]]
+id = "head_trim.refused_with_the_tail"
+required = false
+title = "A trim at a stale offset is refused with the tail"
+detail = """
+trim_before expecting an offset the shard has moved past is refused with
+publish_refused and offset_mismatch naming the shard's next offset, and writes
+nothing. A client returns it as an answer, not an error.
+"""
+
+[[scenario]]
+id = "head_trim.negotiated"
+required = false
+title = "A trim is sent only to a broker that advertised head trims"
+detail = """
+The broker advertises FEATURE_HEAD_TRIM in auth_ok. A client uses trim_before
+only against one that did: against a broker that advertised nothing it refuses
+the call without sending a frame.
+"""
+
+[[scenario]]
+id = "head_trim.requires_permission"
+required = false
+title = "A trim without stream.trim is refused as an authorization failure"
+detail = """
+A token with the client's grants but not stream.trim is refused with
+forbidden, which a client reports as its authorization failure, and nothing is
+trimmed.
+"""
+
+[[scenario]]
 id = "commit.another_stream_is_refused"
 required = true
 title = "An operation on another stream is refused before anything is sent"

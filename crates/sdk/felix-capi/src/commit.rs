@@ -204,16 +204,16 @@ impl Deliver for State {
 }
 
 /// The tenant and namespace of a call, with the client it goes through.
-struct Scope {
-    inner: Arc<Client>,
-    tenant_id: String,
-    ns: String,
+pub(crate) struct Scope {
+    pub(crate) inner: Arc<Client>,
+    pub(crate) tenant_id: String,
+    pub(crate) ns: String,
 }
 
 /// # Safety
 ///
 /// `client` is null or live, and each string null or NUL-terminated.
-unsafe fn scope<'a>(
+pub(crate) unsafe fn scope<'a>(
     client: *const FelixClient,
     tenant_id: *const c_char,
     ns: *const c_char,

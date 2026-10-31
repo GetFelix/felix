@@ -724,6 +724,40 @@ impl Client {
         Ok(answer.into())
     }
 
+    /// Hide the records of `shard` below `before`, only if the shard's next
+    /// offset is exactly `expectedOffset`. `headers`, if given, are kept with
+    /// the trim. A stale tail resolves with `trimmed: false` and the shard's
+    /// `tail`.
+    #[napi]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn trim_before(
+        &self,
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        shard: u32,
+        before: BigInt,
+        expected_offset: BigInt,
+        headers: Option<Buffer>,
+    ) -> Result<crate::conditional::ConditionalTrim> {
+        let before = u64_of(before)?;
+        let expected = u64_of(expected_offset)?;
+        let answer = self
+            .cluster()?
+            .trim_before(
+                &tenant_id,
+                &namespace,
+                &stream,
+                shard,
+                before,
+                expected,
+                headers.as_deref(),
+            )
+            .await
+            .map_err(classify)?;
+        Ok(answer.into())
+    }
+
     /// Add to a counter and return its new value. `delta` may be negative.
     #[napi]
     pub async fn counter_add(

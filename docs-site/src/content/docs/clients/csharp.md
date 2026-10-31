@@ -506,6 +506,62 @@ StateValue state = await client.GetStateAsync(
   with the shard's tail in `Offset`, not an exception; nothing was written. `PublishIfAsync` takes at
   least one payload and routes by `key` (null is shard 0) or by `shard:`, not both.
 
+### Trimming a shard's head
+
+`TrimBeforeAsync` hides the records of one shard of a durable stream below an offset, for a single writer
+that owns the shard's history, such as a state machine that has snapshotted. It is conditional like
+`PublishIfAsync`: it writes only if the shard's next offset is the one you expect, and the trim is a
+record of its own that lands there.
+
+```csharp
+long floor = 40;  // the first offset this writer still needs
+long next = 57;   // the shard's next offset, as this writer last saw it
+
+try
+{
+    ConditionalTrim trim = await client.TrimBeforeAsync(
+        "acme", "games", "match-7", shard: 0, before: floor, expectedOffset: next, headers: "writer-7"u8.ToArray());
+    if (!trim.Trimmed)
+    {
+        throw new InvalidOperationException($"another writer has the shard; its next offset is {trim.Tail}");
+    }
+
+    Console.WriteLine($"reads now start at {trim.Oldest}");
+    // A trim that landed took an offset, so the next write expects the one after it.
+    next = trim.Offset is { } landed ? landed + 1 : next;
+    Console.WriteLine($"the next write expects offset {next}");
+}
+catch (FelixException e) when (e.Status == FelixStatus.Unsupported)
+{
+    Console.WriteLine("this broker cannot trim; keeping the history");
+}
+catch (FelixException e) when (e.OutcomeUnknown)
+{
+    // The broker stopped waiting. The trim may have landed.
+    Console.WriteLine("trim outcome unknown; read the shard before trimming again");
+    throw;
+}
+```
+
+`before` can be at most `expectedOffset`. A `ConditionalTrim` has `Trimmed`, then `Oldest` (the offset reads
+of the shard start at now) and `Offset` (where the trim record landed, null when the floor already stood at
+or past `before` and nothing was written), or `Tail` when refused. A stale tail is a result, not an
+exception, and writes nothing. It is not retried.
+
+Every other refusal is a `FelixException` whose `Status` says what to do next:
+
+| Status | Meaning | Retry |
+| --- | --- | --- |
+| `Unsupported` | the broker did not advertise head trims; nothing was sent | never |
+| `Error` | the fleet has not finalized head trims (`feature_not_enabled`), the stream holds atomic commits, `before` is past `expectedOffset`, or the stream is not durable; the message names which | not until fixed |
+| `Auth` | the token lacks `stream.trim` | never |
+| `OutcomeUnknown` | the broker stopped waiting for the trim to commit, or the call was cancelled after it was sent | outcome unknown |
+
+Do not send a timed-out trim again as it is. If it landed, the same call is refused with a tail one past the
+trim, which looks like a lost race. Read the shard's earliest offset, or read below the floor you asked for,
+to tell the two apart. A read below the floor fails with `Cursor`. The call needs the `stream.trim`
+permission, which `stream.manage` includes.
+
 ## Idempotent producers
 
 `client.CreateProducerAsync()` asks the broker for a producer id and returns a `FelixProducer`.

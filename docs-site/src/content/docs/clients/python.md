@@ -1176,6 +1176,66 @@ stream does not have is refused and nothing is written. These need a broker that
 advertises `FEATURE_EXPLICIT_SHARD`. `AsyncClient` has all of them as
 coroutines.
 
+### Trimming a shard's head
+
+`trim_before` hides the records of one shard of a durable stream below an
+offset, for a single writer that owns the shard's history, such as a state
+machine that has snapshotted. It is conditional like `publish_if`: it writes
+only if the shard's next offset is the one you expect, and the trim is a record
+of its own that lands there.
+
+```python
+import logging
+
+import felix
+
+log = logging.getLogger(__name__)
+
+
+def trim_history(client, floor, next_offset):
+    """Hide the shard's records below `floor`; return the writer's next offset."""
+    try:
+        result = client.trim_before(
+            "acme", "games", "match-7", 0, floor, next_offset, headers=b"writer-7"
+        )
+    except felix.TrimError:
+        log.warning("this broker cannot trim; keeping the history")
+        return next_offset
+    except felix.OutcomeUnknownError:
+        # The broker stopped waiting. The trim may have landed.
+        log.warning("trim outcome unknown; read the shard before trimming again")
+        raise
+    if not result.trimmed:
+        raise RuntimeError(f"another writer has the shard; its next offset is {result.tail}")
+    log.info("reads now start at %d", result.oldest)
+    # A trim that landed took an offset, so the next write expects the one after it.
+    return next_offset if result.offset is None else result.offset + 1
+```
+
+`floor` can be at most `next_offset`. A `ConditionalTrim` has `trimmed`, then
+`oldest` (the offset reads of the shard start at now) and `offset` (where the
+trim record landed, `None` when the floor already stood at or past `floor` and
+nothing was written), or `tail` when refused. A stale tail is a result, not an
+error, and writes nothing. It is not retried.
+
+Every other refusal raises a `FelixError` carrying the broker's `code`:
+
+| Code | Meaning | Retry |
+| --- | --- | --- |
+| `feature_not_enabled` | the fleet has not finalized head trims | not until it has |
+| `stream_has_commits` | the stream holds atomic commits | never |
+| `invalid_request` | `floor` is past `next_offset` (`trim_past_tail`), or the stream is not durable (`not_durable`) | never |
+| `forbidden` | the token lacks `stream.trim` (raised as `AuthError`) | never |
+| `unacknowledged` | the broker stopped waiting for the trim to commit (`trim_timed_out`), raised as `OutcomeUnknownError` | outcome unknown |
+
+Do not send a timed-out trim again as it is. If it landed, the same call is
+refused with a tail one past the trim, which looks like a lost race. Read the
+shard's earliest offset, or read below the floor you asked for, to tell the two
+apart. A read below the floor raises `CursorError`. The call needs the
+`stream.trim` permission, which `stream.manage` includes. Against a broker that
+did not advertise `FEATURE_HEAD_TRIM` it raises `TrimError`, sending nothing.
+`AsyncClient.trim_before` is the same call as a coroutine.
+
 ## Multi-shard streams
 
 A subscription reads one shard. `subscribe_sharded` opens one per shard,

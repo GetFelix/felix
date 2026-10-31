@@ -37,6 +37,10 @@ public class CommitTests
         Assert.Equal(16, (int)Marshal.OffsetOf<NativeCommitOp>(nameof(NativeCommitOp.Key)));
         Assert.Equal(24, (int)Marshal.OffsetOf<NativeCommitOp>(nameof(NativeCommitOp.Data)));
         Assert.Equal(32, (int)Marshal.OffsetOf<NativeCommitOp>(nameof(NativeCommitOp.DataLen)));
+        Assert.Equal(32, sizeof(NativeTrimOutcome));
+        Assert.Equal(8, (int)Marshal.OffsetOf<NativeTrimOutcome>(nameof(NativeTrimOutcome.Offset)));
+        Assert.Equal(16, (int)Marshal.OffsetOf<NativeTrimOutcome>(nameof(NativeTrimOutcome.Oldest)));
+        Assert.Equal(24, (int)Marshal.OffsetOf<NativeTrimOutcome>(nameof(NativeTrimOutcome.Tail)));
         Assert.Equal(56, sizeof(NativeStateValue));
         Assert.Equal(8, (int)Marshal.OffsetOf<NativeStateValue>(nameof(NativeStateValue.Value)));
         Assert.Equal(24, (int)Marshal.OffsetOf<NativeStateValue>(nameof(NativeStateValue.HasVersion)));
@@ -206,6 +210,49 @@ public class CommitTests
         userData = state.Pin();
         unsafe { ((delegate* unmanaged[Cdecl]<nint, int, byte*, byte, ulong, void>)&Callbacks.OnConditional)(userData, 0, null, 1, 17); }
         Assert.Equal(new ConditionalWrite(true, 17), await state.Task);
+    }
+
+    [Fact]
+    public async Task ATrimIsAnAnswerWhetherItLandedWroteNothingOrWasRefused()
+    {
+        var landed = await DeliverTrim(new NativeTrimOutcome { Trimmed = 1, HasOffset = 1, Offset = 12, Oldest = 9 });
+        Assert.Equal(new ConditionalTrim(true, 12, 9, null), landed);
+
+        var wroteNothing = await DeliverTrim(new NativeTrimOutcome { Trimmed = 1, Oldest = 4 });
+        Assert.Equal(new ConditionalTrim(true, null, 4, null), wroteNothing);
+
+        var refused = await DeliverTrim(new NativeTrimOutcome { Tail = 31 });
+        Assert.Equal(new ConditionalTrim(false, null, null, 31), refused);
+    }
+
+    private static unsafe Task<ConditionalTrim> DeliverTrim(NativeTrimOutcome outcome)
+    {
+        var state = new CallState<ConditionalTrim>(default);
+        var userData = state.Pin();
+        ((delegate* unmanaged[Cdecl]<nint, int, byte*, NativeTrimOutcome*, void>)&Callbacks.OnTrim)(userData, 0, null, &outcome);
+        return state.Task;
+    }
+
+    [Theory]
+    [InlineData(FelixStatus.Unsupported)]
+    [InlineData(FelixStatus.OutcomeUnknown)]
+    [InlineData(FelixStatus.Auth)]
+    public async Task ATrimFailureIsTypedByItsStatus(FelixStatus status)
+    {
+        var state = new CallState<ConditionalTrim>(default);
+        var userData = state.Pin();
+        unsafe { ((delegate* unmanaged[Cdecl]<nint, int, byte*, NativeTrimOutcome*, void>)&Callbacks.OnTrim)(userData, (int)status, null, null); }
+        var error = await Assert.ThrowsAsync<FelixException>(() => state.Task);
+        Assert.Equal(status, error.Status);
+        Assert.Equal(status == FelixStatus.OutcomeUnknown, error.OutcomeUnknown);
+    }
+
+    [Fact]
+    public async Task ATrimOffsetBelowZeroIsRefusedBeforeItIsSent()
+    {
+        var client = DisposedClient();
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => client.TrimBeforeAsync("t", "n", "s", 0, -1, 0));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => client.TrimBeforeAsync("t", "n", "s", 0, 0, -1));
     }
 
     [Fact]

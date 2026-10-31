@@ -432,6 +432,9 @@ static FelixStatus connect_reconnecting(const char *addrs, const char *tenant,
 struct fixture {
   const char *addrs, *tenant, *ns, *token, *ca_file, *stream, *missing,
       *unauthorized_token, *group_operator_token, *cache, *single_shard_cache;
+  /* A token that may also trim, and the stream nothing else writes to, for the
+     head trim scenarios. Empty when the fixture has none. */
+  const char *trimmer_token, *trim_stream;
   /* Empty when the fixture has no control endpoint. */
   const char *movable_stream, *quorum_stream, *control_url;
   /* "true" when the fixture's brokers store each record's publisher. That
@@ -500,6 +503,8 @@ static bool load_fixture(const char *path, struct fixture *f) {
       {&f->link_addr, "link_addr", false},
       {&f->link_stream, "link_stream", false},
       {&f->kill_helper, "kill_helper", false},
+      {&f->trimmer_token, "trimmer_token", false},
+      {&f->trim_stream, "trim_stream", false},
   };
   bool ok = true;
   for (size_t i = 0; i < sizeof fields / sizeof *fields; i++) {
@@ -3556,6 +3561,23 @@ static void on_state_done(void *user_data, FelixStatus status,
   finish(&r->w, status, message, NULL);
 }
 
+/* A trim's outcome, copied out of the borrowed struct. */
+struct tres {
+  struct waiter w;
+  bool has_outcome;
+  FelixTrimOutcome o;
+};
+
+static void on_trim_done(void *user_data, FelixStatus status,
+                         const char *message, const FelixTrimOutcome *outcome) {
+  struct tres *r = user_data;
+  r->has_outcome = outcome != NULL;
+  if (outcome) {
+    r->o = *outcome;
+  }
+  finish(&r->w, status, message, NULL);
+}
+
 static FelixStatus kres_wait(struct kres *r, FelixStatus started) {
   FelixStatus status =
       started == FELIX_STATUS_OK ? wait_for(&r->w, WAIT_MS) : started;
@@ -3726,6 +3748,122 @@ static void commits_negotiated(const struct fixture *f, const char *run) {
   CHECK(sent == 0, "the broker without the feature was sent %ld commits or state reads", sent);
   felix_client_free(client);
   SCENARIO_END("commit.negotiated");
+}
+
+/* A trim of `shard` 0 of `stream` below `before`, only if its next offset is
+   `expected`. */
+static FelixStatus c_trim(FelixClient *client, const struct fixture *f,
+                          const char *stream, uint64_t before,
+                          uint64_t expected, const char *headers,
+                          struct tres *r) {
+  memset(r, 0, sizeof *r);
+  waiter_init(&r->w);
+  FelixStatus started = felix_client_trim_before(
+      client, f->tenant, f->ns, stream, 0, before, expected,
+      (const uint8_t *)headers, headers ? strlen(headers) : 0, NULL,
+      on_trim_done, r);
+  FelixStatus status =
+      started == FELIX_STATUS_OK ? wait_for(&r->w, WAIT_MS) : started;
+  waiter_destroy(&r->w);
+  return status;
+}
+
+/* Head trims: a trim at the tail lands there and moves the floor, a stale tail
+   is an answer, a token without stream.trim is refused as AUTH, and a broker
+   that advertised no head trims is sent none. */
+static void head_trims(const struct fixture *f) {
+  if (!f->trimmer_token[0] || !f->trim_stream[0]) {
+    SKIP("head_trim.lands_at_the_expected_offset",
+         "the fixture file has no trimmer_token or trim_stream");
+    SKIP("head_trim.refused_with_the_tail",
+         "the fixture file has no trimmer_token or trim_stream");
+    SKIP("head_trim.requires_permission",
+         "the fixture file has no trimmer_token or trim_stream");
+    SKIP("head_trim.negotiated",
+         "the fixture file has no trimmer_token or trim_stream");
+    return;
+  }
+  FelixClient *client = NULL;
+  REQUIRE_OK(connect_sync(f->addrs, f->tenant, f->trimmer_token, f->ca_file, &client));
+  struct tres t;
+  const char *stream = f->trim_stream;
+
+  SCENARIO_BEGIN("head_trim.lands_at_the_expected_offset");
+  SCENARIO_BEGIN("head_trim.refused_with_the_tail");
+  /* No shard's tail is this large, so the first trim is always stale. */
+  FelixStatus status = c_trim(client, f, stream, 0, UINT64_MAX, NULL, &t);
+  CHECK(status == FELIX_STATUS_OK && t.has_outcome && !t.o.trimmed,
+        "a trim at a stale offset gave %d, trimmed %d", (int)status,
+        (int)t.o.trimmed);
+  if (status != FELIX_STATUS_OK || !t.has_outcome || t.o.trimmed) {
+    /* Without the real tail nothing below can be asserted. */
+    SCENARIO_END("head_trim.refused_with_the_tail");
+    SCENARIO_END("head_trim.lands_at_the_expected_offset");
+    felix_client_free(client);
+    return;
+  }
+  uint64_t tail = t.o.tail;
+
+  const uint8_t data[] = {'t', '-', '1', 't', '-', '2', 't', '-', '3'};
+  const size_t lens[3] = {3, 3, 3};
+  struct kres w;
+  kres_init(&w);
+  FelixStatus started = felix_client_publish_if_on_shard(
+      client, f->tenant, f->ns, stream, 0, data, lens, 3, tail, NULL,
+      on_conditional_done, &w);
+  status = kres_wait(&w, started);
+  CHECK(status == FELIX_STATUS_OK && w.written,
+        "the records at the trim stream's tail gave %d, written %d",
+        (int)status, (int)w.written);
+  tail += 3;
+
+  status = c_trim(client, f, stream, tail - 1, tail, "who", &t);
+  CHECK(status == FELIX_STATUS_OK && t.has_outcome && t.o.trimmed &&
+            t.o.has_offset && t.o.offset == tail && t.o.oldest == tail - 1,
+        "a trim at the tail %" PRIu64 " gave %d, trimmed %d, offset %" PRIu64
+        ", oldest %" PRIu64,
+        tail, (int)status, (int)t.o.trimmed, t.o.offset, t.o.oldest);
+  /* The trim took the offset the first one expected. */
+  status = c_trim(client, f, stream, tail - 1, tail, "who", &t);
+  CHECK(status == FELIX_STATUS_OK && t.has_outcome && !t.o.trimmed &&
+            t.o.tail == tail + 1,
+        "the same trim again gave %d, trimmed %d, tail %" PRIu64, (int)status,
+        (int)t.o.trimmed, t.o.tail);
+  /* At or below the floor nothing is written, but the tail must still match. */
+  status = c_trim(client, f, stream, tail - 2, tail + 1, NULL, &t);
+  CHECK(status == FELIX_STATUS_OK && t.has_outcome && t.o.trimmed &&
+            !t.o.has_offset && t.o.oldest == tail - 1,
+        "a trim below the floor gave %d, trimmed %d, has_offset %d", (int)status,
+        (int)t.o.trimmed, (int)t.o.has_offset);
+  /* Past its own record is a plain error. */
+  status = c_trim(client, f, stream, tail + 6, tail + 1, NULL, &t);
+  CHECK(status == FELIX_STATUS_ERROR && !t.has_outcome,
+        "a trim past its own record gave %d", (int)status);
+  SCENARIO_END("head_trim.refused_with_the_tail");
+  SCENARIO_END("head_trim.lands_at_the_expected_offset");
+  felix_client_free(client);
+
+  SCENARIO_BEGIN("head_trim.requires_permission");
+  REQUIRE_OK(connect_sync(f->addrs, f->tenant, f->token, f->ca_file, &client));
+  status = c_trim(client, f, stream, 0, UINT64_MAX, NULL, &t);
+  CHECK(status == FELIX_STATUS_AUTH && !t.has_outcome,
+        "a trim without stream.trim gave %d", (int)status);
+  SCENARIO_END("head_trim.requires_permission");
+  felix_client_free(client);
+
+  if (!f->no_commit_addrs[0] || !f->control_url[0]) {
+    SKIP("head_trim.negotiated", "the fixture file has no no_commit_addrs or control_url");
+    return;
+  }
+  SCENARIO_BEGIN("head_trim.negotiated");
+  REQUIRE_OK(connect_sync(f->no_commit_addrs, f->tenant, f->token, f->ca_file, &client));
+  status = c_trim(client, f, f->stream, 0, 0, NULL, &t);
+  CHECK(status == FELIX_STATUS_UNSUPPORTED && !t.has_outcome,
+        "a trim to a broker without the feature gave %d", (int)status);
+  long sent = no_commit_requests(f);
+  CHECK(sent == 0, "the broker without the feature was sent %ld requests", sent);
+  felix_client_free(client);
+  SCENARIO_END("head_trim.negotiated");
 }
 
 static void commits(const struct fixture *f, const char *run) {
@@ -5584,6 +5722,7 @@ int main(int argc, char **argv) {
     caches(&f, run);
     commits(&f, run);
     commits_negotiated(&f, run);
+    head_trims(&f);
     producers(&f, run);
     concurrency(&f, run);
     delivery(&f, run);

@@ -20,7 +20,7 @@
 //!   trusts, so it looks live to the client and every broker refuses it. The
 //!   brokers allow 60 s of clock skew, so "expires" is the client's view of
 //!   the token's `exp`, not a refusal at the broker.
-//! - `GET /no-commit/requests` answers how many commits, state reads and
+//! - `GET /no-commit/requests` answers how many commits, state reads, head trims and
 //!   named-shard publishes the broker at `no_commit_addrs` has been sent (a
 //!   plain integer).
 //!

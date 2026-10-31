@@ -144,6 +144,28 @@ async fn other_refusals_are_typed_and_not_retried() -> Result<()> {
     Ok(())
 }
 
+/// **A publish refusal other than a stale tail is not a producer's refusal.**
+/// A `PublishRefused` would tell the caller its producer is finished.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_publish_refusal_that_is_not_a_stale_tail_is_a_broker_error() -> Result<()> {
+    let (broker, cluster) = client_of(
+        |request_id| Message::PublishRefused {
+            request_id,
+            reason: PublishRefusalReason::SequenceGap { expected: 3 },
+            message: "gap".into(),
+        },
+        true,
+    )
+    .await?;
+    let error = trim(&cluster).await.expect_err("refused");
+    assert!(!error.is::<crate::PublishRefused>(), "{error:#}");
+    let typed = error.downcast_ref::<BrokerError>().expect("typed");
+    assert_eq!(typed.code, ErrorCode::InvalidRequest);
+    assert_eq!(trims(&broker), 1, "not retried");
+    Ok(())
+}
+
 /// **A coded `not_leader` is asked again**: the broker answers it before it
 /// writes anything.
 #[tokio::test]

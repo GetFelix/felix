@@ -86,6 +86,7 @@ Everything the Python binding wraps.
 | Cache watches | `watchCache(..., key?, prefix?, start?, retained?)` → `recv()`, `retainedCount`; `watchCacheSharded(tenant, ns, cache, prefix, resume?, retained?)` merges a prefix across every shard → `recv()`, `resumeOffsets()`, `shards`, `retainedCount` |
 | Consumer groups | `groupPoll` (with `visibilityMs`), `groupAck`, `groupNack`, `groupNackAfter`, `groupDeadLetter`, `groupDeadLetters`, `groupDiscard`, `groupRedrive`, `groupExtend`, `groupSeek`, `groupCreate`, `groupDescribe`, `groupDelete` (each follows the broker's redirect to the shard's leader), the stream-wide `groupSeekStream`, `groupCreateStream`, `groupDescribeStream` and `groupDeleteStream`, and `groupSharded` → a `ShardedGroupHandle` that polls and settles across every shard |
 | Atomic commits | `commit(tenant, ns, entityKey, [CommitOp.publish \| enqueue, put, delete])` → `{ offset }`, `stateGet(tenant, ns, stream, entityKey, key)` → `{ value, version, asOf }`; `NotOnOwningShardError` and `EventCountError` refuse a commit that is not one record. See [atomic commits](../../../docs/atomic-commit.md) |
+| Head trims | `trimBefore(tenant, ns, stream, shard, before, expectedOffset, headers?)` → `{ trimmed, offset, oldest, tail }`; a stale tail is a result, and `TrimError` means the broker has no head trims |
 
 Every handle has an idempotent `close()` and implements `Symbol.asyncDispose`,
 so on Node 24 and newer a `throw` releases it on the way out:

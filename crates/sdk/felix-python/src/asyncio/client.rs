@@ -17,7 +17,7 @@ use crate::args::{
 };
 use crate::batch::OwnedBatchReport;
 use crate::conditional::{
-    CacheCondition, CacheConditionResult, ConditionalWrite, OwnedVersionedValue,
+    CacheCondition, CacheConditionResult, ConditionalTrim, ConditionalWrite, OwnedVersionedValue,
 };
 use crate::errors::to_py_err;
 use crate::group_admin::{GroupInfo, GroupPosition};
@@ -641,6 +641,45 @@ impl AsyncClient {
                 .await
                 .map_err(to_py_err)?;
             Ok(ConditionalWrite::from(answer))
+        })
+    }
+
+    /// Hide the records of `shard` below `before`, only if the shard's next
+    /// offset is `expected_offset`. See the synchronous `Client.trim_before`.
+    #[pyo3(signature = (tenant_id, namespace, stream, shard, before, expected_offset, *, headers=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn trim_before<'py>(
+        &self,
+        py: Python<'py>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        before: u64,
+        expected_offset: u64,
+        headers: Option<&[u8]>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, stream) = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            stream.to_string(),
+        );
+        let headers = headers.map(<[u8]>::to_vec);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let answer = inner
+                .trim_before(
+                    &tenant_id,
+                    &namespace,
+                    &stream,
+                    shard,
+                    before,
+                    expected_offset,
+                    headers.as_deref(),
+                )
+                .await
+                .map_err(to_py_err)?;
+            Ok(ConditionalTrim::from(answer))
         })
     }
 

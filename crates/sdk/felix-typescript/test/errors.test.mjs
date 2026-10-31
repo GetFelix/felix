@@ -123,3 +123,13 @@ test("a publish refusal carries its reason and fields", () => {
   assert.equal(forgotten.reason, "unknown_producer");
   assert.equal(forgotten.expected, undefined);
 });
+
+test("a trim the client would not send is a TrimError", () => {
+  const err = errors.typed(
+    native("FELIX_TRIM: this broker does not support head trims"),
+  );
+  assert.ok(err instanceof errors.TrimError);
+  assert.ok(err instanceof errors.FelixError);
+  assert.equal(err.kind, "FELIX_TRIM");
+  assert.equal(err.retryable, false);
+});

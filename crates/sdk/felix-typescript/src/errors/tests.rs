@@ -182,3 +182,13 @@ fn a_publish_refusal_carries_its_reason() {
         assert!(refused(reason).starts_with("FELIX_PUBLISH_REFUSED {"));
     }
 }
+
+#[test]
+fn a_trim_the_client_would_not_send_is_its_own_kind() {
+    let err = anyhow::Error::new(felix_client::TrimError::Unsupported).context("trim_before");
+    assert!(
+        encode(&err).starts_with(&format!("{KIND_TRIM}{KIND_SEPARATOR}")),
+        "{}",
+        encode(&err)
+    );
+}

@@ -96,3 +96,39 @@ impl From<felix_client::ConditionalWrite> for ConditionalWrite {
         }
     }
 }
+
+/// The answer to `trimBefore`. A stale tail is an answer, not an error.
+#[napi(object)]
+pub struct ConditionalTrim {
+    /// The trim is durable and reads of the shard below `oldest` are refused.
+    pub trimmed: bool,
+    /// Where the trim record landed. Null when refused, and when the floor
+    /// already stood at or past `before` so nothing was written.
+    pub offset: Either<BigInt, Null>,
+    /// The oldest offset reads of the shard start at now; null when refused.
+    pub oldest: Either<BigInt, Null>,
+    /// The shard's next offset when refused; null when trimmed.
+    pub tail: Either<BigInt, Null>,
+}
+
+impl From<felix_client::ConditionalTrim> for ConditionalTrim {
+    fn from(answer: felix_client::ConditionalTrim) -> Self {
+        match answer {
+            felix_client::ConditionalTrim::Trimmed { offset, oldest } => Self {
+                trimmed: true,
+                offset: or_null(offset.map(BigInt::from)),
+                oldest: or_null(Some(BigInt::from(oldest))),
+                tail: or_null(None),
+            },
+            felix_client::ConditionalTrim::Refused { tail } => Self {
+                trimmed: false,
+                offset: or_null(None),
+                oldest: or_null(None),
+                tail: or_null(Some(BigInt::from(tail))),
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;
