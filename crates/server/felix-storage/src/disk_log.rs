@@ -676,6 +676,11 @@ impl DiskLog {
         if self.inner.hold_at_commit.swap(hold, Ordering::AcqRel) == hold {
             return Ok(());
         }
+        // A floor applied before the hold is withdrawn, not kept.
+        {
+            let mut head = self.inner.head.lock();
+            self.inner.apply_head(&mut head);
+        }
         self.persist_replica_state().await
     }
 

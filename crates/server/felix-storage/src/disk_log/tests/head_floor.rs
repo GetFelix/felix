@@ -527,3 +527,31 @@ async fn a_crash_before_a_trim_is_synced_leaves_no_floor_or_its_floor() {
     }
     drop(log);
 }
+
+/// A trim applied before the hold turned on is withdrawn by it, and a
+/// retention pass deletes nothing past the commit offset.
+#[tokio::test]
+async fn a_hold_set_after_a_trim_applied_withdraws_its_floor() {
+    let dir = tempdir().expect("dir");
+    let log = DiskLog::open(dir.path(), "t/ns/s/0", quiet(FsyncMode::OnCommit)).expect("open");
+    fill(&log, 0..12).await;
+    log.roll_now().await.expect("roll");
+    log.append(&[trim(10, "t")]).await.expect("trim");
+    assert_eq!(log.readable_base(), 10, "unheld, the trim applies at once");
+
+    log.advance_commit_offset(3).await.expect("advance");
+    log.hold_retention_at_commit(true).await.expect("hold");
+    log.enforce_retention_now().await.expect("retention");
+
+    assert!(
+        log.base_offset() <= 4,
+        "base {} past commit 3",
+        log.base_offset()
+    );
+    assert!(
+        log.readable_base() <= 4,
+        "readable base {} past commit 3",
+        log.readable_base()
+    );
+    page(&log, 3).await.expect("committed range still readable");
+}

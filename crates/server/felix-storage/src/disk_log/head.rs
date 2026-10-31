@@ -57,8 +57,8 @@ impl HeadEntry {
 pub(super) struct Head {
     /// Ascending by offset.
     entries: Vec<HeadEntry>,
-    /// How many entries, from the first, are below the apply bound. The
-    /// bound only rises between truncations, so this is a prefix.
+    /// How many entries, from the first, are below the apply bound: a
+    /// prefix, since entries ascend.
     applied: usize,
     /// The first applied entry with the largest floor: the one that set it.
     setter: Option<usize>,
@@ -105,8 +105,14 @@ impl Head {
         }
     }
 
-    /// Apply every entry below `bound`.
+    /// Apply every entry below `bound`, and withdraw any applied entry at or
+    /// past it: the bound falls when a log becomes held at its commit offset.
     pub(super) fn apply(&mut self, bound: Offset) {
+        let keep = self.entries[..self.applied].partition_point(|entry| entry.offset < bound);
+        if keep < self.applied {
+            self.applied = keep;
+            self.recompute();
+        }
         while let Some(entry) = self.entries.get(self.applied)
             && entry.offset < bound
         {

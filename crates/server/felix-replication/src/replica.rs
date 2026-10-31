@@ -599,6 +599,24 @@ impl ReplicaHandler {
             return refusal;
         }
 
+        // Held like the leader's copy: this one counts toward the mark, and if
+        // it led, it would be the copy a client was promised. Before the first
+        // apply, since a trim batch applies its floor as soon as it is synced
+        // and a floor applied without the hold is never taken back by it.
+        if matches!(
+            log_kind,
+            felix_broker::LogKind::Stream | felix_broker::LogKind::Cache
+        ) {
+            let hold = crate::quorum::acknowledges_at_quorum(&self.broker, &key).await;
+            if let Err(err) = log.hold_retention_at_commit(hold).await {
+                tracing::warn!(
+                    stream = %key.stream,
+                    error = %err,
+                    "could not write the retention hold through; it applies in memory",
+                );
+            }
+        }
+
         // A generation this follower has not seen before starts here. Recorded
         // before the apply, because the apply is what may need it: the divergent
         // suffix it finds belongs to whatever generation was newest until now.
@@ -766,21 +784,6 @@ impl ReplicaHandler {
                     )
                 {
                     unclean.vouch(&crate::driver::watch_key(&key));
-                }
-                // Held like the leader's copy: this one counts toward the mark,
-                // and if it led, it would be the copy a client was promised.
-                if matches!(
-                    log_kind,
-                    felix_broker::LogKind::Stream | felix_broker::LogKind::Cache
-                ) {
-                    let hold = crate::quorum::acknowledges_at_quorum(&self.broker, &key).await;
-                    if let Err(err) = log.hold_retention_at_commit(hold).await {
-                        tracing::warn!(
-                            stream = %key.stream,
-                            error = %err,
-                            "could not write the retention hold through; it applies in memory",
-                        );
-                    }
                 }
                 // Not a reason to fail the batch: the offset only guards
                 // truncation, and the log writes it behind. Only what
