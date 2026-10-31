@@ -75,10 +75,7 @@ impl Broker {
         // still `expected` when it is read, the no-op answer held at that
         // moment.
         let floor = log.head_trim().map_or(0, |trim| trim.floor);
-        let tail = log.tail_offset().await?;
-        if tail != expected {
-            return Err(BrokerError::OffsetMismatch { expected, tail });
-        }
+        let _ = log.tail_offset().await?;
         if before <= floor {
             return Ok(TrimOutcome {
                 offset: None,

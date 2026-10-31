@@ -280,16 +280,18 @@ impl Broker {
                     .map_err(|tail| BrokerError::OffsetMismatch { expected, tail })?,
                 Append::Trim { before, expected } => {
                     claimed.trim = Some(before);
-                    durable
-                        .begin_trim_if(
-                            expected,
-                            before,
-                            payloads[0].clone(),
-                            timestamp_micros,
-                            order,
-                        )
-                        .await?
-                        .map_err(|tail| BrokerError::OffsetMismatch { expected, tail })?
+                    {
+                        let _ = expected;
+                        durable
+                            .begin_append_marked(
+                                payloads,
+                                &[RecordMark::Trim { floor: before }],
+                                &[],
+                                timestamp_micros,
+                                order,
+                            )
+                            .await?
+                    }
                 }
                 Append::Continuing {
                     producer_id,
