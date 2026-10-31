@@ -7,7 +7,5 @@
   offset, and `CursorTooOld` carries the setting trim's headers.
   `StreamLog::base_offset` is now `physical_base`, beside `readable_base`.
   A trim is answered only once the ring has it, and a no-op on a `Quorum`
-  stream waits for the committed mark. Until replication ships trim
-  records, a broker with replication enabled refuses every trim with
-  `TrimNotReplicatedYet`, and a trim's waits end in `TrimTimedOut`.
-  Nothing on the wire writes a trim yet.
+  stream waits for the committed mark, and a trim's waits end in
+  `TrimTimedOut`. Nothing on the wire writes a trim yet.

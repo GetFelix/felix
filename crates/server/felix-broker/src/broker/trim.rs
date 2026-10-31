@@ -57,9 +57,9 @@ impl Broker {
     /// `Quorum` stream that waits for the committed mark to pass the record,
     /// and a no-op answer waits for the mark to reach `expected`.
     ///
-    /// Refused on a broker with replication enabled
-    /// ([`BrokerError::TrimNotReplicatedYet`]) until replication ships trim
-    /// records. The waits for the committed mark and the ring are bounded by
+    /// Refused ([`BrokerError::HeadTrimNotEnabled`]) until the node allows
+    /// trims ([`Broker::allow_head_trims_when`]). The waits for the
+    /// committed mark and the ring are bounded by
     /// [`BrokerError::TrimTimedOut`].
     ///
     /// A trim whose caller stopped waiting may still have landed, and a
@@ -78,12 +78,11 @@ impl Broker {
         let Some(log) = &handle.state.durable else {
             return Err(BrokerError::TrimNeedsDurableStream);
         };
-        // Replication cannot ship a trim record until the wire carries one,
-        // and a follower would stop at it. A process-start fact rather than
+        // A follower that predates trim records stops replicating at one. Not
         // the shard's live route, which is empty during startup and moves, so
         // a follower added mid-trim cannot slip past it.
-        if self.replication_enabled() {
-            return Err(BrokerError::TrimNotReplicatedYet);
+        if !self.head_trims_allowed() {
+            return Err(BrokerError::HeadTrimNotEnabled);
         }
         if before > expected {
             return Err(BrokerError::TrimPastTail {

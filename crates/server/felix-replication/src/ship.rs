@@ -233,29 +233,10 @@ async fn ship_batch<R: PeerRequester>(
     // Marks go only when there are any: an unmarked batch is byte for byte
     // what a follower that predates them reads.
     let marks: Vec<ProducerMark> = if records.iter().any(|r| r.mark != RecordMark::None) {
-        match records
+        records
             .iter()
             .map(|record| felix_broker::replication::mark_to_wire(record.mark))
             .collect()
-        {
-            Ok(marks) => marks,
-            Err(err) => {
-                // A trim record before replication carries its mark. Sent
-                // without it, the follower would store the trim's headers as
-                // an event, so the follower is held here, loudly, instead.
-                tracing::error!(
-                    node_id = %cursor.node_id,
-                    stream = %shard.stream,
-                    shard = shard.shard,
-                    offset = cursor.next_offset,
-                    error = %err,
-                    "cannot ship this batch to the follower",
-                );
-                metrics::record_shipped(metrics::OUTCOME_READ_FAILED);
-                cursor.stalled = true;
-                return Progress::Retry;
-            }
-        }
     } else {
         Vec::new()
     };
@@ -311,6 +292,7 @@ async fn ship_batch<R: PeerRequester>(
         felix_broker::LogKind::Stream => InternalMessage::ReplicateRecords(batch),
     };
 
+    let holds_trim = request_holds_trim(&request);
     let mut answer = requester
         .request(&cursor.node_id, cursor.addr, request.clone())
         .await;
@@ -338,6 +320,23 @@ async fn ship_batch<R: PeerRequester>(
     }
     let answer = match answer {
         Ok(answer) => answer,
+        Err(PeerError::Unsupported { .. }) if holds_trim => {
+            // The follower never said it reads trim records, so it is held
+            // here rather than sent one it would refuse. Logged at most once
+            // a minute: the next pass meets the same trim.
+            if TRIM_REFUSALS_LOGGED.due() {
+                tracing::error!(
+                    node_id = %cursor.node_id,
+                    stream = %shard.stream,
+                    shard = shard.shard,
+                    offset = cursor.next_offset,
+                    "cannot ship a head trim to a follower that does not offer `head_trim`",
+                );
+            }
+            metrics::record_shipped(metrics::OUTCOME_TRIM_UNSUPPORTED);
+            cursor.stalled = true;
+            return Progress::Retry;
+        }
         Err(err) => {
             metrics::record_shipped(unreachable_outcome(&err));
             cursor.stalled = true;
@@ -534,6 +533,46 @@ pub(super) fn replica_log(log_kind: felix_broker::LogKind) -> ReplicaLog {
         felix_broker::LogKind::GroupCursors => ReplicaLog::GroupCursors,
         felix_broker::LogKind::GroupDeadLetters => ReplicaLog::GroupDeadLetters,
         felix_broker::LogKind::Counters => ReplicaLog::Counters,
+    }
+}
+
+fn request_holds_trim(request: &InternalMessage) -> bool {
+    matches!(request, InternalMessage::ReplicateMarkedRecords(batch) if batch.holds_trim())
+}
+
+/// When the refusal to ship a trim was last logged, for the whole process.
+static TRIM_REFUSALS_LOGGED: LogLimit = LogLimit::new(std::time::Duration::from_secs(60));
+
+/// Lets a log line through at most once per `every`.
+pub(crate) struct LogLimit {
+    every: std::time::Duration,
+    /// Milliseconds since `START`, plus one, when a line last went; zero for
+    /// never.
+    last: std::sync::atomic::AtomicU64,
+}
+
+static START: std::sync::LazyLock<std::time::Instant> =
+    std::sync::LazyLock::new(std::time::Instant::now);
+
+impl LogLimit {
+    pub(crate) const fn new(every: std::time::Duration) -> Self {
+        Self {
+            every,
+            last: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    /// Whether a line may go now. Only one caller of several racing wins.
+    pub(crate) fn due(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        let now = START.elapsed().as_millis() as u64 + 1;
+        let last = self.last.load(Ordering::Acquire);
+        if last != 0 && now.saturating_sub(last) < self.every.as_millis() as u64 {
+            return false;
+        }
+        self.last
+            .compare_exchange(last, now, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
     }
 }
 

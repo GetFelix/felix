@@ -349,14 +349,9 @@ async fn the_batch_carries_the_checksum_the_follower_will_verify() {
     );
 }
 
-/// **A trim record stalls shipping instead of shifting the records after
-/// it.** A follower places a batch's records at consecutive offsets from
-/// the first, so a batch read without the trim would put every later record
-/// one offset low, under valid checksums. Until replication carries the
-/// trim's mark, the batch is not sent at all.
-#[tokio::test]
-async fn a_trim_record_is_refused_rather_than_shipped_out_of_place() {
-    let (log, _dir) = leader_log(&["a", "b"]).await;
+/// A leader log holding `a`, `b`, a trim to floor 1, then `c`.
+async fn log_with_trim() -> (StreamLog, TempDir) {
+    let (log, dir) = leader_log(&["a", "b"]).await;
     let tail = log.tail_offset().await.expect("tail");
     let pending = log
         .begin_append_marked_at(
@@ -373,7 +368,60 @@ async fn a_trim_record_is_refused_rather_than_shipped_out_of_place() {
     log.append(&[Bytes::from_static(b"c")])
         .await
         .expect("append");
+    (log, dir)
+}
+
+/// **A trim ships in its place, with its floor.** A batch read without the
+/// trim would put every later record one offset low under valid checksums,
+/// and one sent unmarked would hand the follower its headers as an event.
+#[tokio::test]
+async fn a_trim_record_ships_in_place_with_its_mark() {
+    let (log, _dir) = log_with_trim().await;
     let follower = ScriptedFollower::new([Ok(stored(4))]);
+    let mut cursor = cursor(0);
+
+    let progress = ship_once(
+        &follower,
+        &log,
+        &shard(),
+        felix_broker::LogKind::Stream,
+        &mut cursor,
+        BATCH_BYTES,
+        &Rebuilds::disabled(),
+    )
+    .await;
+
+    assert_eq!(progress, Progress::Stored { durable_offset: 4 });
+    let batch = follower.sent.lock().expect("lock")[0].clone();
+    assert_eq!(batch.first_offset, 0);
+    assert_eq!(
+        batch.marks,
+        [
+            felix_wire::internal::ProducerMark::None,
+            felix_wire::internal::ProducerMark::None,
+            felix_wire::internal::ProducerMark::Trim { floor: 1 },
+            felix_wire::internal::ProducerMark::None,
+        ]
+    );
+    assert_eq!(batch.payloads[2], Bytes::from_static(b"headers"));
+    assert_eq!(
+        batch.checksum,
+        batch_checksum(&batch.payloads, &batch.marks, &[])
+    );
+}
+
+/// **A follower that does not offer `head_trim` is held at the trim**, with
+/// its cursor where it was, rather than sent a mark it would refuse.
+#[tokio::test]
+async fn a_follower_without_head_trim_is_held_at_the_trim() {
+    let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+    let handle = recorder.handle();
+    let _local = ::metrics::set_default_local_recorder(&recorder);
+    let (log, _dir) = log_with_trim().await;
+    let follower = ScriptedFollower::new([Err(PeerError::Unsupported {
+        node_id: "follower".to_string(),
+        kind: felix_wire::internal::Kind::ReplicateMarkedRecords,
+    })]);
     let mut cursor = cursor(0);
 
     let progress = ship_once(
@@ -390,5 +438,19 @@ async fn a_trim_record_is_refused_rather_than_shipped_out_of_place() {
     assert_eq!(progress, Progress::Retry);
     assert!(cursor.stalled);
     assert_eq!(cursor.next_offset, 0);
-    assert_eq!(follower.sent(), Vec::<(u64, Vec<String>)>::new());
+    let rendered = handle.render();
+    assert!(
+        rendered.contains(r#"outcome="trim_unsupported"} 1"#),
+        "{rendered}"
+    );
+}
+
+/// **The refusal's log line goes at most once a minute**, since every pass
+/// meets the same trim.
+#[test]
+fn the_trim_refusal_log_is_rate_limited() {
+    let limit = LogLimit::new(std::time::Duration::from_secs(60));
+    assert!(limit.due());
+    assert!(!limit.due());
+    assert!(LogLimit::new(std::time::Duration::ZERO).due());
 }

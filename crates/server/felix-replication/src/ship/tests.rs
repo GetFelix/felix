@@ -34,10 +34,9 @@ fn a_cache_batch_with_a_start_record_travels_in_a_layout_with_marks() {
     use felix_broker::LogKind;
     use felix_wire::internal::{ShardRef, batch_checksum};
     let payloads = vec![Bytes::from_static(&[0, 0, 0, 0, 0, 0, 0, 5])];
-    let marks = vec![
-        felix_broker::replication::mark_to_wire(felix_storage::log::RecordMark::GenerationStart)
-            .expect("a start record ships"),
-    ];
+    let marks = vec![felix_broker::replication::mark_to_wire(
+        felix_storage::log::RecordMark::GenerationStart,
+    )];
     let mut batch = ReplicateRecords {
         times: None,
         correlation_id: 1,

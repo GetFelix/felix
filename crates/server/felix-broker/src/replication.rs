@@ -290,26 +290,9 @@ pub fn publishers_to_wire(records: &[felix_storage::log::LogRecord]) -> Vec<Opti
         .collect()
 }
 
-/// A record whose mark the replication protocol cannot carry yet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct UnshippableMark {
-    pub mark: RecordMark,
-}
-
-impl std::fmt::Display for UnshippableMark {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "replication cannot carry a {:?} record yet", self.mark)
-    }
-}
-
-impl std::error::Error for UnshippableMark {}
-
-/// A record's mark as it travels between brokers, or `Err` for a trim
-/// record, which the wire has no mark for until replication carries trims
-/// (issue 1662). Shipping one as unmarked would hand the follower a trim's
-/// headers as an event, so the batch is refused instead.
-pub fn mark_to_wire(mark: RecordMark) -> std::result::Result<ProducerMark, UnshippableMark> {
-    Ok(match mark {
+/// A record's mark as it travels between brokers.
+pub fn mark_to_wire(mark: RecordMark) -> ProducerMark {
+    match mark {
         RecordMark::None => ProducerMark::None,
         RecordMark::Opens(batch) => ProducerMark::Opens {
             producer_id: batch.producer_id,
@@ -319,8 +302,8 @@ pub fn mark_to_wire(mark: RecordMark) -> std::result::Result<ProducerMark, Unshi
         RecordMark::Continues => ProducerMark::Continues,
         RecordMark::GenerationStart => ProducerMark::GenerationStart,
         RecordMark::Commit => ProducerMark::Commit,
-        RecordMark::Trim { .. } => return Err(UnshippableMark { mark }),
-    })
+        RecordMark::Trim { floor } => ProducerMark::Trim { floor },
+    }
 }
 
 /// A shipped mark as the log stores it.
@@ -339,6 +322,7 @@ pub fn mark_from_wire(mark: ProducerMark) -> RecordMark {
         ProducerMark::Continues => RecordMark::Continues,
         ProducerMark::GenerationStart => RecordMark::GenerationStart,
         ProducerMark::Commit => RecordMark::Commit,
+        ProducerMark::Trim { floor } => RecordMark::Trim { floor },
     }
 }
 

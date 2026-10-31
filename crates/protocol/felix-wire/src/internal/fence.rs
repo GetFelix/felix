@@ -88,6 +88,12 @@ impl PeerCapabilities {
     ///
     /// [`Kind::Incarnated`]: super::Kind::Incarnated
     pub const FORWARD_INCARNATION: Self = Self(1 << 13);
+    /// Reads a head trim's mark ([`ProducerMark::Trim`]) in a records batch,
+    /// stores the trim record, and applies its floor once the record is
+    /// committed. A batch holding a trim goes only to a peer that offers it.
+    ///
+    /// [`ProducerMark::Trim`]: super::ProducerMark::Trim
+    pub const HEAD_TRIM: Self = Self(1 << 14);
 
     pub fn from_bits(bits: u64) -> Self {
         Self(bits)

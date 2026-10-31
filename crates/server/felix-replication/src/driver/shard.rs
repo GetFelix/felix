@@ -1088,6 +1088,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
             &report,
             offset,
             by_followers,
+            quorum_shard.then_some(&log),
         )
         .await;
         if landed && let Some(counters) = &counters {
@@ -1261,6 +1262,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
             &settled,
             held_offset(tail, &counted),
             by_followers,
+            quorum_shard.then_some(&log),
         )
         .await
             && let Some(counters) = &counters
@@ -2244,6 +2246,7 @@ pub(super) async fn publish_mark(
     report: &ShardReport,
     offset: u64,
     by_followers: bool,
+    held_log: Option<&felix_broker::StreamLog>,
 ) -> bool {
     // A pass that shipped a stream incarnation since replaced here measured
     // the old log. The control plane cannot tell the two apart at one
@@ -2251,7 +2254,16 @@ pub(super) async fn publish_mark(
     if crate::incarnation::of(broker, key) != incarnation {
         return false;
     }
+    // Readers stop at the mark, but a trim's floor applies only below the
+    // log's own commit offset. Raised first, so the mark never lets a reader
+    // in below a trim it covers, as a promoted leader's inherited one.
+    let note_committed = || {
+        if let Some(log) = held_log {
+            log.note_commit_offset(offset);
+        }
+    };
     if by_followers {
+        note_committed();
         marks.publish_by_followers_at(&watch_key(key), incarnation, generation, offset);
         release_readers(broker, key).await;
         if let Some(reporter) = reporter {
@@ -2266,6 +2278,7 @@ pub(super) async fn publish_mark(
         None => true,
     };
     if reported {
+        note_committed();
         marks.publish_at(&watch_key(key), incarnation, generation, offset);
         release_readers(broker, key).await;
     } else {

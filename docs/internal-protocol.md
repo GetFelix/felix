@@ -113,6 +113,7 @@ never have dialled the one that shipped to it.
 | `1 << 11` | `NODE_INCARNATION` | answers a `HelloCapable` that offers this bit with its node incarnation, and closes the connection once that changes (see "Node incarnation" below) |
 | `1 << 12` | `LANE_RENEWAL` | offered by a caller: it replaces a request stream it gets no answer on, so the listener may drop a stream whose handler overran (see "The transport") |
 | `1 << 13` | `FORWARD_INCARNATION` | reads a forwarded publish or cache op inside an `Incarnated` frame, and refuses one whose incarnation is not the one its routes name (see "Naming the stream incarnation") |
+| `1 << 14` | `HEAD_TRIM` | reads a head trim's mark (byte `5`) in a records batch and stores the trim record, applying its floor on a `Quorum` stream only once its commit offset passes the record. A batch holding a trim goes only to a peer that offered it |
 
 <!-- `1 << 9` is reserved for `ELECTION` (#1009). -->
 
@@ -551,6 +552,19 @@ tag ([`atomic-commit.md`](atomic-commit.md)). It follows the same rule: a
 leader accepts a commit only once the fleet has finalized `atomic_commit`, and
 a peer that predates the byte refuses the batch rather than storing the
 commit as an ordinary event.
+
+A **head trim record** travels the same way, with mark byte `5` followed by
+its floor as a `u64`; its payload is the trim's headers
+([durable-storage.md](durable-storage.md#conditional-head-trim)). A leader
+writes one only once the fleet has finalized `head_trim`, or on a broker
+running alone. Unlike the bytes above it is also checked per peer: the pool
+sends a batch holding a trim only to a peer that offered `HEAD_TRIM`, and
+answers `PeerError::Unsupported` otherwise, so a follower that cannot read it
+is held below the trim rather than refusing the batch. Shipping counts that as
+the `trim_unsupported` outcome. A follower stores the record at the leader's
+offset. On a `Quorum` stream it applies the floor only once the commit offset
+the leader sends passes the record, since a later leader may still cut it; on
+a `Leader` stream, once the record is durable.
 
 A record's **publisher** travels in the marks section too. Bit `0x80` on a mark
 byte says the record's publisher follows the rest of its mark, as a `u8`

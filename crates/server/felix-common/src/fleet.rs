@@ -69,6 +69,7 @@ pub const IMPLEMENTED: &[FleetFeature] = &[
     STREAM_INCARNATIONS,
     GROUP_CURSOR_DEPENDENCIES,
     CACHE_INCARNATIONS,
+    HEAD_TRIM,
 ];
 
 /// A leader writes a generation-start record whenever it starts leading a
@@ -140,6 +141,12 @@ pub const GROUP_CURSOR_DEPENDENCIES: FleetFeature = FleetFeature::new("group_cur
 /// this would open an incarnated cache's records in the deleted cache's
 /// directories. See `docs/durable-storage.md` ("Deleting a cache").
 pub const CACHE_INCARNATIONS: FleetFeature = FleetFeature::new("cache_incarnations");
+
+/// A durable stream shard accepts head trims: a trim record that hides the
+/// records below its floor, shipped with a replication mark an older build
+/// refuses and stored in storage format v7. So it waits for the whole fleet.
+/// See `docs/durable-storage.md` ("Conditional head trim").
+pub const HEAD_TRIM: FleetFeature = FleetFeature::new("head_trim");
 
 /// The most features one gate tracks. A report longer than this is cut, which
 /// only ever leaves features off.

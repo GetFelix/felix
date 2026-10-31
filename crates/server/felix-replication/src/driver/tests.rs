@@ -10,6 +10,7 @@ mod cursors;
 mod drain;
 mod groups;
 mod halts;
+mod head_trim;
 mod identity;
 mod inherited;
 mod learner;
