@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793476666140,
+  "lastUpdate": 1793478592126,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -40404,6 +40404,58 @@ window.BENCHMARK_DATA = {
             "range": "2268.37",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 828039.84\nmean: 828067.99\nstdev: 2268.37\ncv: 0.27%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "70cc5e06a19f2418f03c6a7e6cf19ab35c06a66a",
+          "message": "chore: build with Rust 1.99.1 (#1706)\n\n* chore: build with Rust 1.99.1\n\nPin the toolchain, CI, Docker builders and docs to 1.99.1 and fix the new\nlints (deprecated fetch_update, chunks_exact_to_as_chunks, result_large_err).\nThe minimum supported Rust version stays 1.97.\n\n* chore: name the changelog fragment for its PR\n\n* chore: mark the toolchain bump as spec-neutral\n\nSpec-Unaffected: atomic method rename and lint allows only; no behaviour change.",
+          "timestamp": "2026-10-31T13:24:39-07:00",
+          "tree_id": "d8ce58f574e1d73798c5c8e8129f64760e64657f",
+          "url": "https://github.com/GetFelix/felix/commit/70cc5e06a19f2418f03c6a7e6cf19ab35c06a66a"
+        },
+        "date": 1793478591497,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 777674.76,
+            "range": "60593.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 777674.76\nmean: 757307.14\nstdev: 60593.54\ncv: 8.00%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 777674.76,
+            "range": "60593.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 777674.76\nmean: 757307.14\nstdev: 60593.54\ncv: 8.00%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 161224.1,
+            "range": "4765.96",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 161224.10\nmean: 163415.83\nstdev: 4765.96\ncv: 2.92%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1612241.05,
+            "range": "47659.62",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1612241.05\nmean: 1634158.33\nstdev: 47659.62\ncv: 2.92%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
