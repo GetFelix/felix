@@ -47,6 +47,7 @@ pub(super) struct Completion {
     /// A trim record's floor. Its one record is applied to the ring in its
     /// turn instead of appended and fanned out.
     trim: Option<u64>,
+    trim_applied: Option<tokio::sync::oneshot::Sender<()>>,
     /// Holds the commit turn until the batch is fanned out.
     durable: Option<ClaimedDurable>,
     sample: bool,
@@ -79,6 +80,7 @@ struct Delivery {
 impl Completion {
     pub(super) fn new(
         claimed: ClaimedPublish,
+        trim_applied: Option<tokio::sync::oneshot::Sender<()>>,
         log_capacity: usize,
         replication: Arc<tokio::sync::Notify>,
     ) -> Self {
@@ -99,6 +101,7 @@ impl Completion {
             timestamp_micros,
             commit,
             trim,
+            trim_applied,
             durable,
             sample,
             log_capacity,
@@ -118,6 +121,7 @@ impl Completion {
             timestamp_micros: batch.timestamp_micros,
             commit: batch.commit,
             trim: batch.trim,
+            trim_applied: batch.trim_applied,
             durable: None,
             sample: false,
             log_capacity,
@@ -179,6 +183,7 @@ impl Completion {
             first_offset,
             commit: self.commit.take(),
             trim: self.trim,
+            trim_applied: self.trim_applied.take(),
         };
         let start = state.held.push(batch);
         drop(ring);
@@ -203,6 +208,9 @@ impl Completion {
         let turn = self.durable.as_ref().map(|claimed| &claimed.turn);
         if !self.handle.state.apply_trim(first_offset, floor, turn) {
             return Err(BrokerError::PublishSuperseded { first_offset });
+        }
+        if let Some(applied) = self.trim_applied.take() {
+            let _ = applied.send(());
         }
         Ok(PublishOutcome {
             subscribers: 0,

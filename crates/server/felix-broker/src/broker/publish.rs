@@ -329,9 +329,21 @@ impl Broker {
     /// offsets are claimed its records exist, so the ring append and fanout
     /// finish on a detached task. See `publish/completion.rs`.
     pub async fn complete_publish(&self, claimed: ClaimedPublish) -> Result<PublishOutcome> {
+        self.complete_claimed(claimed, None).await
+    }
+
+    /// [`Self::complete_publish`], telling `trim_applied` once a trim's floor
+    /// reaches the ring, which on a `Quorum` stream is after the answer. It is
+    /// dropped untold if a reset superseded the trim first.
+    pub(super) async fn complete_claimed(
+        &self,
+        claimed: ClaimedPublish,
+        trim_applied: Option<tokio::sync::oneshot::Sender<()>>,
+    ) -> Result<PublishOutcome> {
         let send_start = t_now_if(claimed.sample);
         let outcome = completion::Finisher::new(completion::Completion::new(
             claimed,
+            trim_applied,
             self.log_capacity,
             Arc::clone(&self.appended),
         ))

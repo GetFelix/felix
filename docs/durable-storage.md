@@ -1670,16 +1670,28 @@ turn. A refusal is `OffsetMismatch` with the tail, and writes nothing.
   trim (`TrimOnCommitStream`), since a commit's state lives in its record.
   The broker reads the log below `expected` once for commit records, from
   where its last scan stopped, and the trim then lands only at `expected`.
-- **`Leader` and `Quorum` streams.** A trim on a `Quorum` stream is held from
-  the ring until the committed mark passes it, as a publish is, and the
-  caller waits for the mark. On a `Leader` stream an acknowledged trim can
-  be lost at a failover like any record there.
+  A truncation forgets where the scan stopped, and a commit that arrives by
+  replication is noted as one appended here is.
+- **Answered once the ring has it.** A trim on a `Quorum` stream is held from
+  the ring until the committed mark passes it, as a publish is, and the call
+  returns only after that. A no-op waits for the mark to reach `expected`.
+  On a log held at its commit offset the broker then moves the commit offset
+  past the record, so the log's floor applies by the time the trim is
+  answered. On a `Leader` stream an acknowledged trim can be lost at a
+  failover like any record there.
+- **Not on a shard with followers, for now.** Replication cannot ship a trim
+  record until the wire carries its mark, and a follower would stop at it.
+  Until then a trim on a shard with followers, `Leader` or `Quorum`, is
+  refused with `TrimNotReplicatedYet` and writes nothing. The refusal goes
+  when replication ships trims.
 - **A trim whose caller stopped waiting may have landed.** A retry with the
   same `expected` is then refused as `OffsetMismatch`.
 
 When the record reaches the ring, the ring drops every entry below the floor
 under its lock, so no resume is served below it from memory once the trim is
-answered, and the next publish reports the record's offset as skipped. Every
+answered, and the next publish reports the record's offset as skipped. A
+resume, from a cursor or an offset, also checks the readable base after it
+registers, so the ring is never the only check. Every
 reader starts at `StreamLog::readable_base` rather than the oldest segment:
 `subscribe_from`, `read_range`, `read_durable`, earliest, hydration of the
 ring at startup, offset lookups by time, state view rebuilds, group cursors,
@@ -1701,7 +1713,11 @@ only trims neither ends the read nor spins.
 > `a_floor_past_the_trim_record_is_refused`,
 > `a_commit_stream_refuses_a_trim`,
 > `a_trim_racing_a_publish_lands_in_one_order`,
-> `a_quorum_trim_reaches_the_ring_once_committed`,
+> `a_quorum_trim_is_answered_once_the_ring_has_it`,
+> `a_resume_below_the_floor_is_refused_before_the_ring_drops`,
+> `a_quorum_no_op_trim_waits_for_the_mark`,
+> `a_replicated_shard_refuses_a_trim`,
+> `a_commit_replicated_below_an_old_scan_refuses_a_trim`,
 > `a_restart_with_trims_at_the_tail_refills_the_ring`,
 > `a_group_below_a_trim_resumes_at_its_floor`,
 > `a_trim_is_a_floor_and_never_a_record`

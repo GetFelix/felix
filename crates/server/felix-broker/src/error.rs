@@ -156,6 +156,11 @@ pub enum BrokerError {
     /// in the records a trim would remove. Nothing was written.
     #[error("a stream holding atomic commits cannot be trimmed")]
     TrimOnCommitStream,
+    /// A head trim on a shard with followers. Replication cannot ship a trim
+    /// record yet, so one would stall the shard's followers. Nothing was
+    /// written.
+    #[error("a shard with followers cannot be trimmed yet")]
+    TrimNotReplicatedYet,
     /// The shard's state view could not be rebuilt because commits kept
     /// landing while it read. Retry.
     #[error("the shard's state is being rebuilt; retry")]

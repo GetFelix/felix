@@ -7,6 +7,7 @@
 //! below its floor instead of being appended. See `docs/durable-storage.md`,
 //! "Conditional head trim".
 
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use bytes::Bytes;
@@ -14,8 +15,11 @@ use bytes::Bytes;
 use super::Broker;
 use super::publish::Append;
 use super::shards::StreamHandle;
+use super::subscribe::{COMMIT_RECHECK, not_readable};
+use crate::ConsistencyLevel;
 use crate::durable::StreamLog;
-use crate::error::{BrokerError, Result};
+use crate::error::{BrokerError, NotReadable, Result};
+use crate::stream::ReadBound;
 
 /// Bytes read per page while looking for atomic commits before a trim.
 const COMMIT_SCAN_PAGE_BYTES: usize = 1 << 20;
@@ -44,10 +48,14 @@ impl Broker {
     ///
     /// The record goes through the commit order like a publish: offsets
     /// first, then durability, then the ring in its turn, where entries
-    /// below the floor are dropped. On a `Quorum` stream it reaches the ring,
-    /// and its floor applies, once the committed mark passes it; the caller
-    /// waits for the mark as for a publish. On a `Leader` stream an
-    /// acknowledged trim can be lost at a failover, like any record there.
+    /// below the floor are dropped. It is answered only once the ring has
+    /// it, so no reader is served below the floor after the answer. On a
+    /// `Quorum` stream that waits for the committed mark to pass the record,
+    /// and a no-op answer waits for the mark to reach `expected`.
+    ///
+    /// Refused on a shard with followers
+    /// ([`BrokerError::TrimNotReplicatedYet`]) until replication ships trim
+    /// records.
     ///
     /// A trim whose caller stopped waiting may still have landed, and a
     /// retry with the same `expected` is then refused as an offset mismatch.
@@ -65,6 +73,11 @@ impl Broker {
         let Some(log) = &handle.state.durable else {
             return Err(BrokerError::TrimNeedsDurableStream);
         };
+        // Replication cannot ship a trim record until the wire carries one,
+        // and a follower would stop at it. Lifted with the trim's wire mark.
+        if handle.state.held.replicated() {
+            return Err(BrokerError::TrimNotReplicatedYet);
+        }
         if before > expected {
             return Err(BrokerError::TrimPastTail {
                 before,
@@ -80,6 +93,11 @@ impl Broker {
             return Err(BrokerError::OffsetMismatch { expected, tail });
         }
         if before <= floor {
+            // Answered only once what it stands on is committed, as a write
+            // would be: past the mark, the floor and the tail can still be
+            // lost at a failover.
+            await_committed(handle, expected).await?;
+
             return Ok(TrimOutcome {
                 offset: None,
                 oldest: log.readable_base(),
@@ -95,11 +113,52 @@ impl Broker {
             )
             .await?
             .expect("a trim claims or is refused");
-        let outcome = self.complete_publish(claimed).await?;
+        let (trim_applied, applied) = tokio::sync::oneshot::channel();
+        let outcome = self.complete_claimed(claimed, Some(trim_applied)).await?;
+        let offset = outcome.offsets.map(|(first, _)| first);
+        // A held trim is answered before its floor reaches the ring, and a
+        // reader resuming from the ring in between would be served below it.
+        applied.await.map_err(|_| BrokerError::PublishSuperseded {
+            first_offset: offset.unwrap_or(expected),
+        })?;
+        // The ring has it, so the mark has passed it. A log held at its commit
+        // offset applies the floor only below that offset, which replication
+        // may not have moved yet, and on a broker without it never does.
+        if let Some(offset) = offset
+            && log.readable_base() < before
+        {
+            log.advance_commit_offset(offset + 1).await?;
+        }
         Ok(TrimOutcome {
-            offset: outcome.offsets.map(|(first, _)| first),
+            offset,
             oldest: log.readable_base().max(before),
         })
+    }
+}
+
+/// Wait until a `Quorum` stream's committed mark reaches `end`. Other streams
+/// do not wait.
+async fn await_committed(handle: &StreamHandle, end: u64) -> Result<()> {
+    let state = &handle.state;
+    if state.consistency() != ConsistencyLevel::Quorum {
+        return Ok(());
+    }
+    loop {
+        let appended = Arc::clone(&state.appended);
+        let moved = appended.notified();
+        tokio::pin!(moved);
+        // Registered before the bound is read, so a mark moving in between
+        // still wakes this.
+        moved.as_mut().enable();
+        match state.read_bound() {
+            ReadBound::Refused => {
+                let (stream, shard) = state.held.shard().unwrap_or_default();
+                return Err(not_readable(stream, shard, NotReadable::Refused));
+            }
+            bound if bound.covers(end) => return Ok(()),
+            _ => {}
+        }
+        let _ = tokio::time::timeout(COMMIT_RECHECK, moved).await;
     }
 }
 
@@ -109,10 +168,8 @@ impl Broker {
 /// commit appended after this is above it.
 async fn refuse_commit_stream(handle: &StreamHandle, log: &StreamLog, expected: u64) -> Result<()> {
     let commits = &handle.state.commits;
-    let mut next = commits
-        .clear_below
-        .load(Ordering::Acquire)
-        .max(log.readable_base());
+    let scan = commits.start();
+    let mut next = scan.below.max(log.readable_base());
     while next < expected && !commits.seen.load(Ordering::Acquire) {
         let page = match log.read_log_from(next, COMMIT_SCAN_PAGE_BYTES).await {
             Ok(page) => page,
@@ -143,7 +200,7 @@ async fn refuse_commit_stream(handle: &StreamHandle, log: &StreamLog, expected: 
     if commits.seen.load(Ordering::Acquire) {
         return Err(BrokerError::TrimOnCommitStream);
     }
-    commits.clear_below.fetch_max(expected, Ordering::AcqRel);
+    commits.clear_below(scan, expected);
     Ok(())
 }
 

@@ -2,7 +2,7 @@
 //! and the bounded in-memory log that backs cursor replay.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use arc_swap::ArcSwap;
@@ -80,15 +80,49 @@ pub(crate) struct StreamState {
 /// Whether a stream's log holds an atomic commit, learned without reading
 /// the whole log on every trim.
 ///
-/// `seen` is set before a commit is appended here, and `clear_below` is how
-/// far a scan found none. A trim scans from `clear_below` to the tail it
-/// expects and then reads `seen`; since the trim lands only at that tail, a
-/// commit appended after the scan either set `seen` first or lands after the
-/// trim.
+/// `seen` is set before a commit is appended here, and when one arrives by
+/// replication. `clear` is how far a scan found none. A trim scans from there
+/// to the tail it expects and then reads `seen`; since the trim lands only at
+/// that tail, a commit appended after the scan either set `seen` first or
+/// lands after the trim.
+///
+/// A truncation can put a different record below `clear`, so it forgets
+/// both. Its epoch keeps a scan that started before it from recording a
+/// result read from the records that went.
 #[derive(Debug, Default)]
 pub(crate) struct CommitScan {
     pub(crate) seen: AtomicBool,
-    pub(crate) clear_below: AtomicU64,
+    clear: Mutex<ScanMark>,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct ScanMark {
+    pub(crate) below: u64,
+    epoch: u64,
+}
+
+impl CommitScan {
+    /// Where a scan starts, and the epoch it must still be in to record what
+    /// it found.
+    pub(crate) fn start(&self) -> ScanMark {
+        *self.clear.lock()
+    }
+
+    /// No commit below `below`, as read from `from`'s epoch.
+    pub(crate) fn clear_below(&self, from: ScanMark, below: u64) {
+        let mut clear = self.clear.lock();
+        if clear.epoch == from.epoch {
+            clear.below = clear.below.max(below);
+        }
+    }
+
+    /// The log was cut back or rebuilt: nothing read from it still holds.
+    pub(crate) fn reset(&self) {
+        let mut clear = self.clear.lock();
+        clear.epoch += 1;
+        clear.below = 0;
+        self.seen.store(false, Ordering::Release);
+    }
 }
 
 impl StreamState {
@@ -307,6 +341,7 @@ impl StreamState {
         state.generation_start_run = None;
         state.state_view = None;
         self.held.discard();
+        self.commits.reset();
         // Under the ring lock, as in `advance_to`.
         self.commit_sequencer.reset(next_seq);
     }

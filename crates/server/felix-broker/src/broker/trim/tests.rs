@@ -2,12 +2,14 @@
 //! publish, and no reader is served below its floor once it is answered.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
 use felix_storage::EphemeralCache;
 use felix_storage::log::{FsyncMode, LogConfig};
 use felix_wire::StartPosition;
+use felix_wire::internal::ProducerMark;
 use parking_lot::Mutex;
 
 use crate::stream::{ReadBound, ReadBounds};
@@ -17,11 +19,15 @@ use crate::{
 };
 
 #[derive(Debug)]
-struct Bound(Mutex<ReadBound>);
+struct Bound(Mutex<ReadBound>, AtomicBool);
 
 impl ReadBounds for Bound {
     fn stream_bound(&self, _: &str, _: &str, _: &str, _: u32) -> ReadBound {
         *self.0.lock()
+    }
+
+    fn replicated(&self, _: &str, _: &str, _: &str, _: u32) -> bool {
+        self.1.load(Ordering::Acquire)
     }
 }
 
@@ -33,7 +39,10 @@ async fn broker(dir: &std::path::Path, consistency: ConsistencyLevel) -> (Broker
     };
     let broker = Broker::new(EphemeralCache::new().into())
         .with_durable_storage(DurableStorage::open(dir, config).expect("storage"));
-    let bound = Arc::new(Bound(Mutex::new(ReadBound::Unbounded)));
+    let bound = Arc::new(Bound(
+        Mutex::new(ReadBound::Unbounded),
+        AtomicBool::new(false),
+    ));
     broker.set_read_bounds(Arc::clone(&bound) as Arc<dyn ReadBounds>);
     broker.register_tenant("t1").await.expect("tenant");
     broker
@@ -387,38 +396,205 @@ async fn a_history_read_across_a_trim_is_too_old() {
     assert_eq!(too_old(read(&broker, 1, 1 << 20).await), (5, headers()));
 }
 
-/// **On a `Quorum` stream the ring keeps its entries until the mark passes
-/// the trim**, as it holds a publish back until then, and drops them when it
-/// does.
-#[tokio::test]
-async fn a_quorum_trim_reaches_the_ring_once_committed() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let (broker, bound) = broker(dir.path(), ConsistencyLevel::Quorum).await;
-    publish(&broker, 10).await;
-    *bound.0.lock() = ReadBound::Committed(10);
-    let outcome = trim(&broker, 5, 10).await.expect("trim");
-    assert_eq!(outcome.offset, Some(10));
-    let ring_front = |handle: &StreamHandle| {
-        handle
-            .state
-            .log_state
-            .lock()
-            .log
-            .front()
-            .map(|entry| entry.seq)
-    };
-    assert_eq!(ring_front(&handle(&broker).await), Some(0), "held");
+fn ring_front(handle: &StreamHandle) -> Option<u64> {
+    handle
+        .state
+        .log_state
+        .lock()
+        .log
+        .front()
+        .map(|entry| entry.seq)
+}
 
-    *bound.0.lock() = ReadBound::Committed(11);
+/// Publish ten records to a `Quorum` stream, take a cursor at 2, and start a
+/// trim below 5 that the mark holds back. Returns once it is held.
+async fn held_trim(
+    dir: &std::path::Path,
+) -> (
+    Arc<Broker>,
+    Arc<Bound>,
+    StreamHandle,
+    crate::Cursor,
+    tokio::task::JoinHandle<crate::Result<TrimOutcome>>,
+) {
+    let (broker, bound) = broker(dir, ConsistencyLevel::Quorum).await;
+    publish(&broker, 2).await;
+    let cursor = broker
+        .cursor_tail("t1", "ns", "orders", 0)
+        .await
+        .expect("cursor");
+    publish(&broker, 8).await;
+    *bound.0.lock() = ReadBound::Committed(10);
+    let broker = Arc::new(broker);
     let handle = handle(&broker).await;
-    handle.release_committed();
+    let trimming = {
+        let broker = Arc::clone(&broker);
+        tokio::spawn(async move { trim(&broker, 5, 10).await })
+    };
     tokio::time::timeout(Duration::from_secs(5), async {
-        while ring_front(&handle) != Some(5) {
-            tokio::time::sleep(Duration::from_millis(5)).await;
+        while !handle.state.held.is_busy() {
+            tokio::time::sleep(Duration::from_millis(1)).await;
         }
     })
     .await
-    .expect("released");
+    .expect("held");
+    assert_eq!(ring_front(&handle), Some(0), "held");
+    (broker, bound, handle, cursor, trimming)
+}
+
+/// **On a `Quorum` stream a trim is answered only once the ring has it.**
+/// The ring keeps its entries until the mark passes the trim, as it holds a
+/// publish back until then. Once the trim is answered, no reader is served
+/// below it: not from the ring, and not from the log, whose floor waits for
+/// the commit offset.
+#[tokio::test]
+async fn a_quorum_trim_is_answered_once_the_ring_has_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (broker, bound, handle, cursor, mut trimming) = held_trim(dir.path()).await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), &mut trimming)
+            .await
+            .is_err(),
+        "answered before the ring has it"
+    );
+
+    *bound.0.lock() = ReadBound::Committed(11);
+    handle.release_committed();
+    let outcome = tokio::time::timeout(Duration::from_secs(5), trimming)
+        .await
+        .expect("released")
+        .expect("trim task")
+        .expect("trim");
+    assert_eq!(outcome.offset, Some(10));
+    assert_eq!(ring_front(&handle), Some(5));
+    assert_eq!(too_old(subscribe_from(&broker, 2).await), (5, headers()));
+    let resumed = broker
+        .subscribe_with_cursor("t1", "ns", "orders", 0, cursor)
+        .await;
+    assert_eq!(too_old(resumed), (5, headers()));
+    assert_eq!(too_old(read(&broker, 2, 1 << 20).await), (5, headers()));
+}
+
+/// **A resume below the log's floor is refused even while the ring still
+/// holds it.** Here the commit offset reached the trim before the mark let
+/// it into the ring, so the log refuses reads below 5 while the ring still
+/// holds 0 to 9.
+#[tokio::test]
+async fn a_resume_below_the_floor_is_refused_before_the_ring_drops() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (broker, _bound, handle, cursor, _trimming) = held_trim(dir.path()).await;
+    let log = handle.log().expect("log");
+    log.advance_commit_offset(11).await.expect("commit offset");
+    assert_eq!(log.readable_base(), 5);
+    assert_eq!(ring_front(&handle), Some(0));
+
+    assert_eq!(too_old(subscribe_from(&broker, 2).await), (5, headers()));
+    let resumed = broker
+        .subscribe_with_cursor("t1", "ns", "orders", 0, cursor)
+        .await;
+    assert_eq!(too_old(resumed), (5, headers()));
+    let registered = broker.registered_subscribers("t1", "ns", "orders", 0).await;
+    assert_eq!(
+        registered.expect("count"),
+        0,
+        "refused resumes leave nothing"
+    );
+}
+
+/// **A no-op trim on a `Quorum` stream waits for the mark.** The floor and
+/// the tail it answers from can be lost at a failover until the mark passes
+/// them.
+#[tokio::test]
+async fn a_quorum_no_op_trim_waits_for_the_mark() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (broker, bound) = broker(dir.path(), ConsistencyLevel::Quorum).await;
+    publish(&broker, 10).await;
+    trim(&broker, 5, 10).await.expect("trim");
+    *bound.0.lock() = ReadBound::Committed(5);
+    let broker = Arc::new(broker);
+    let mut no_op = {
+        let broker = Arc::clone(&broker);
+        tokio::spawn(async move { trim(&broker, 3, 11).await })
+    };
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), &mut no_op)
+            .await
+            .is_err(),
+        "answered past the mark"
+    );
+    *bound.0.lock() = ReadBound::Committed(11);
+    let outcome = tokio::time::timeout(Duration::from_secs(5), no_op)
+        .await
+        .expect("answered")
+        .expect("trim task")
+        .expect("no-op");
+    assert_eq!(
+        outcome,
+        TrimOutcome {
+            offset: None,
+            oldest: 5
+        }
+    );
+}
+
+/// **A shard with followers is not trimmed yet**, whatever its consistency:
+/// replication cannot ship the record, so a follower would stop at it.
+#[tokio::test]
+async fn a_replicated_shard_refuses_a_trim() {
+    for consistency in [ConsistencyLevel::Leader, ConsistencyLevel::Quorum] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (broker, bound) = broker(dir.path(), consistency).await;
+        publish(&broker, 4).await;
+        bound.1.store(true, Ordering::Release);
+        assert!(
+            matches!(
+                trim(&broker, 2, 4).await,
+                Err(BrokerError::TrimNotReplicatedYet)
+            ),
+            "{consistency:?}"
+        );
+        assert_eq!(tail(&broker).await, 4, "nothing written");
+    }
+}
+
+/// **A truncation forgets how far the log was found free of commits.** A
+/// commit replicated below that point after the cut must still refuse a
+/// trim.
+#[tokio::test]
+async fn a_commit_replicated_below_an_old_scan_refuses_a_trim() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (broker, _) = broker(dir.path(), ConsistencyLevel::Leader).await;
+    publish(&broker, 100).await;
+    let handle = handle(&broker).await;
+    let log = handle.log().expect("log").clone();
+    super::refuse_commit_stream(&handle, &log, 100)
+        .await
+        .expect("no commit yet");
+
+    log.truncate(90).await.expect("truncate");
+    broker
+        .reset_log(crate::LogKind::Stream, "t1", "ns", "orders", 0, 90)
+        .await
+        .expect("reset");
+    let payloads: Vec<Bytes> = (90..96).map(|n| Bytes::from(format!("x{n}"))).collect();
+    let mut marks = vec![ProducerMark::None; 5];
+    marks.push(ProducerMark::Commit);
+    let checksum = felix_wire::internal::batch_checksum(&payloads, &marks, &[]);
+    crate::replication::apply(&log, 90, checksum, &payloads, &marks, &[], &[])
+        .await
+        .expect("apply")
+        .expect("applied");
+    broker
+        .adopt_replicated("t1", "ns", "orders", 0, 96)
+        .await
+        .expect("adopt");
+    publish(&broker, 54).await;
+    assert_eq!(tail(&broker).await, 150);
+
+    assert!(matches!(
+        trim(&broker, 10, 150).await,
+        Err(BrokerError::TrimOnCommitStream)
+    ));
 }
 
 /// **A restart with trims at the tail keeps its replay window.** The read

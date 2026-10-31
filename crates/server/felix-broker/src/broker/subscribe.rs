@@ -14,7 +14,7 @@ use crate::stream::{ReadBound, Subscription, SubscriptionGuard};
 /// How often a history read waiting for the committed mark looks again
 /// without being woken. The mark wakes it when it moves; this catches a bound
 /// that changed another way, such as a lapsed lease.
-const COMMIT_RECHECK: std::time::Duration = std::time::Duration::from_millis(250);
+pub(super) const COMMIT_RECHECK: std::time::Duration = std::time::Duration::from_millis(250);
 
 impl Broker {
     /// Subscribe to records published to one shard from now on.
@@ -121,14 +121,18 @@ impl Broker {
                     trim_headers: None,
                 },
             })?;
+        let guard = SubscriptionGuard {
+            stream_state: Arc::downgrade(&stream_state),
+            subscriber_id,
+        };
+        if let Some(log) = &stream_state.durable {
+            refuse_below_floor(log, cursor.next_seq)?;
+        }
         Ok((
             backlog,
             Subscription {
                 receiver,
-                guard: SubscriptionGuard {
-                    stream_state: Arc::downgrade(&stream_state),
-                    subscriber_id,
-                },
+                guard,
                 pending: VecDeque::new(),
                 // A publish that claimed this offset before the ring saw it
                 // will arrive live; the caller asked to resume at `next_seq`.
@@ -273,13 +277,8 @@ impl Broker {
             None
         };
 
-        // A durable stream can also have been trimmed past the request, which
-        // the ring cannot tell us about -- it only knows its own oldest entry.
-        if let (Some(range), Some(log)) = (&history, &durable) {
-            let oldest = log.readable_base();
-            if range.from_offset < oldest {
-                return Err(log.too_old(oldest, requested));
-            }
+        if let Some(log) = &durable {
+            refuse_below_floor(log, requested)?;
         }
 
         Ok(ResumedSubscription {
@@ -474,7 +473,23 @@ pub(super) fn committed_tail(bound: ReadBound, tail: u64, stream: &str, shard: u
     }
 }
 
-fn not_readable(stream: &str, shard: u32, reason: NotReadable) -> BrokerError {
+/// Refuse a durable read from `requested` below the readable base, checked
+/// after the reader registered.
+///
+/// The ring only knows its own oldest entry. A trim held for the committed
+/// mark has raised the log's floor but not yet dropped the ring below it, and
+/// retention moves the base without touching the ring at all. Checked after
+/// registration, a trim acknowledged before the reader registered is always
+/// seen here.
+fn refuse_below_floor(log: &crate::StreamLog, requested: u64) -> Result<()> {
+    let oldest = log.readable_base();
+    if requested < oldest {
+        return Err(log.too_old(oldest, requested));
+    }
+    Ok(())
+}
+
+pub(super) fn not_readable(stream: &str, shard: u32, reason: NotReadable) -> BrokerError {
     BrokerError::NotReadable {
         stream: stream.to_string(),
         shard,

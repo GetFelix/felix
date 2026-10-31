@@ -868,6 +868,27 @@ impl ReplicaHandler {
                         "stored a replicated batch but could not advance the stream's tail",
                     );
                 }
+                if log_kind == felix_broker::LogKind::Stream
+                    && batch
+                        .marks
+                        .iter()
+                        .any(|mark| matches!(mark, felix_wire::internal::ProducerMark::Commit))
+                    && let Err(err) = self
+                        .broker
+                        .note_replicated_commit(
+                            &key.tenant_id,
+                            &key.namespace,
+                            &key.stream,
+                            key.shard,
+                        )
+                        .await
+                {
+                    tracing::warn!(
+                        stream = %key.stream,
+                        error = %err,
+                        "stored a replicated commit but could not note it for head trims",
+                    );
+                }
                 metrics::record_replicated(metrics::OUTCOME_OK);
                 InternalMessage::ReplicateOk(ReplicateOk {
                     correlation_id,

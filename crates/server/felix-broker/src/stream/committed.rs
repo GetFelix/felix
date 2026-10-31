@@ -58,6 +58,12 @@ impl ReadBound {
 pub trait ReadBounds: Send + Sync + std::fmt::Debug {
     fn stream_bound(&self, tenant_id: &str, namespace: &str, stream: &str, shard: u32)
     -> ReadBound;
+
+    /// Whether the shard has followers, whatever its consistency. `false`
+    /// when the service does not say.
+    fn replicated(&self, _tenant_id: &str, _namespace: &str, _stream: &str, _shard: u32) -> bool {
+        false
+    }
 }
 
 /// Batches durable on this broker that readers may not see yet.
@@ -95,6 +101,29 @@ impl CommitHold {
             &source.stream,
             source.shard,
         )
+    }
+
+    /// The stream and shard this hold is bound to, for naming them in an
+    /// error.
+    pub(crate) fn shard(&self) -> Option<(&str, u32)> {
+        self.source
+            .get()
+            .map(|source| (source.stream.as_str(), source.shard))
+    }
+
+    /// Whether the shard has followers, as the service states it now.
+    pub(crate) fn replicated(&self) -> bool {
+        let Some(source) = self.source.get() else {
+            return false;
+        };
+        source.bounds.get().is_some_and(|bounds| {
+            bounds.replicated(
+                &source.tenant_id,
+                &source.namespace,
+                &source.stream,
+                source.shard,
+            )
+        })
     }
 
     /// The replay ring's capacity, which a released batch is appended under.
@@ -221,6 +250,8 @@ pub(crate) struct HeldBatch {
     /// The floor of a trim record, which is the batch's one record and is
     /// applied to the ring rather than appended to it.
     pub(crate) trim: Option<u64>,
+    /// Told once the trim's floor reaches the ring.
+    pub(crate) trim_applied: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 impl HeldBatch {
