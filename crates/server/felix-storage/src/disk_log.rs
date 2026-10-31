@@ -81,7 +81,7 @@ use crate::log::{
     AppendOnlyLog, AppendRecord, AppendResult, BoxFuture, Epoch, FsyncMode, LogConfig, LogRecord,
     Offset, ReadRange, RecordMark, SealedSegment, SegmentDescriptor,
 };
-use crate::segment::ReadBudget;
+use crate::segment::{ReadBudget, TrimRecords};
 use crate::{CommitSequencer, CommitTurn, Result, StorageError, metrics_names};
 
 /// How long an append thread and a lone appender poll before parking. A
@@ -934,6 +934,65 @@ impl DiskLog {
     }
 }
 
+impl DiskLog {
+    /// The read behind both `read_range` methods.
+    fn read_records(
+        &self,
+        range: ReadRange,
+        trims: TrimRecords,
+    ) -> BoxFuture<'_, Result<Vec<LogRecord>>> {
+        let inner = Arc::clone(&self.inner);
+        Box::pin(async move {
+            if inner.closed.load(std::sync::atomic::Ordering::Acquire) {
+                return Err(StorageError::Closed(inner.label.clone()));
+            }
+            let started = std::time::Instant::now();
+            let records = tokio::task::spawn_blocking(move || {
+                loop {
+                    // Planned under the lock, read without it: a cold `pread`
+                    // must not hold up the appends queued on `segments`.
+                    let plan = {
+                        let segments = inner.segments.read();
+                        let oldest = segments.base_offset();
+                        if range.start < oldest {
+                            // Not an empty range: these offsets existed and
+                            // are gone.
+                            return Err(StorageError::Trimmed {
+                                requested: range.start,
+                                oldest,
+                            });
+                        }
+                        segments.read_plan(range.start)
+                    };
+                    #[cfg(test)]
+                    if let Some(pause) = inner.pause_next_read.lock().take() {
+                        pause.wait();
+                        pause.wait();
+                    }
+                    let mut budget =
+                        ReadBudget::new(range.max_bytes, inner.config.max_records_per_read)
+                            .with_trims(trims);
+                    let read = plan.execute(range.start, &mut budget, &inner.label);
+                    // A truncation in between may have put other records at
+                    // the positions just read. Rare, so read again.
+                    if inner.segments.read().generation() == plan.generation {
+                        return read;
+                    }
+                }
+            })
+            .await
+            .map_err(|err| StorageError::Io(std::io::Error::other(err)))??;
+
+            metrics::counter!(metrics_names::READ_RECORDS_TOTAL).increment(records.len() as u64);
+            metrics::counter!(metrics_names::READ_BYTES_TOTAL)
+                .increment(records.iter().map(|r| r.payload.len() as u64).sum::<u64>());
+            metrics::histogram!(metrics_names::READ_DURATION_SECONDS)
+                .record(started.elapsed().as_secs_f64());
+            Ok(records)
+        })
+    }
+}
+
 impl AppendOnlyLog for DiskLog {
     fn append(&self, records: &[AppendRecord]) -> BoxFuture<'_, Result<AppendResult>> {
         // `records` is borrowed for the duration of the future, so the write
@@ -967,54 +1026,11 @@ impl AppendOnlyLog for DiskLog {
     }
 
     fn read_range(&self, range: ReadRange) -> BoxFuture<'_, Result<Vec<LogRecord>>> {
-        let inner = Arc::clone(&self.inner);
-        Box::pin(async move {
-            if inner.closed.load(std::sync::atomic::Ordering::Acquire) {
-                return Err(StorageError::Closed(inner.label.clone()));
-            }
-            let started = std::time::Instant::now();
-            let records = tokio::task::spawn_blocking(move || {
-                loop {
-                    // Planned under the lock, read without it: a cold `pread`
-                    // must not hold up the appends queued on `segments`.
-                    let plan = {
-                        let segments = inner.segments.read();
-                        let oldest = segments.base_offset();
-                        if range.start < oldest {
-                            // Not an empty range: these offsets existed and
-                            // are gone.
-                            return Err(StorageError::Trimmed {
-                                requested: range.start,
-                                oldest,
-                            });
-                        }
-                        segments.read_plan(range.start)
-                    };
-                    #[cfg(test)]
-                    if let Some(pause) = inner.pause_next_read.lock().take() {
-                        pause.wait();
-                        pause.wait();
-                    }
-                    let mut budget =
-                        ReadBudget::new(range.max_bytes, inner.config.max_records_per_read);
-                    let read = plan.execute(range.start, &mut budget, &inner.label);
-                    // A truncation in between may have put other records at
-                    // the positions just read. Rare, so read again.
-                    if inner.segments.read().generation() == plan.generation {
-                        return read;
-                    }
-                }
-            })
-            .await
-            .map_err(|err| StorageError::Io(std::io::Error::other(err)))??;
+        self.read_records(range, TrimRecords::Skip)
+    }
 
-            metrics::counter!(metrics_names::READ_RECORDS_TOTAL).increment(records.len() as u64);
-            metrics::counter!(metrics_names::READ_BYTES_TOTAL)
-                .increment(records.iter().map(|r| r.payload.len() as u64).sum::<u64>());
-            metrics::histogram!(metrics_names::READ_DURATION_SECONDS)
-                .record(started.elapsed().as_secs_f64());
-            Ok(records)
-        })
+    fn read_range_with_trims(&self, range: ReadRange) -> BoxFuture<'_, Result<Vec<LogRecord>>> {
+        self.read_records(range, TrimRecords::Include)
     }
 
     fn tail_offset(&self) -> BoxFuture<'_, Result<Offset>> {

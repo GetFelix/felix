@@ -586,7 +586,7 @@ accepted.
 **So before an upgrade that changes `FORMAT_VERSION`: take a backup, and treat
 the rollout as one-way.**
 
-The current build reads format 6 but writes 3, which the previous release
+The current build reads format 7 but writes 3, which the previous release
 reads, so upgrading to it is still reversible. It moves a log to a newer
 version only to hold a record that needs it, and writes each such record only
 once something enables it: a v4 segment for a generation-start record, once
@@ -594,7 +594,8 @@ once something enables it: a v4 segment for a generation-start record, once
 above); v5 for an atomic commit, once `atomic_commit` is; and v6 for a record
 with its publisher, once `publisher_principal` is, or on a single broker with
 `FELIX_RECORD_PUBLISHERS=true` (see
-[`publisher_principal`](#publisher_principal)). Each of those is the one-way
+[`publisher_principal`](#publisher_principal)). v7 holds a trim record, which
+nothing writes yet. Each of those is the one-way
 step. Consumer-group cursors are not in the segment format but have a layout
 of their own: a cluster moves to the newer one once
 [`group_cursor_dependencies`](#group_cursor_dependencies) is finalized, and a

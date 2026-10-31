@@ -29,7 +29,7 @@ use crate::io::{preallocate, sync_data, sync_dir};
 use crate::log::{AppendRecord, Offset, RecordMark, SegmentDescriptor, SegmentId};
 use crate::segment::format::{
     BASELINE_VERSION, MAX_PAYLOAD_BYTES, MAX_PUBLISHER_BYTES, PUBLISHER_VERSION,
-    SEGMENT_HEADER_LEN, SegmentHeader, body_len, encode_record, record_len,
+    SEGMENT_HEADER_LEN, SegmentHeader, TRIM_VERSION, body_len, encode_record, record_len,
 };
 use crate::segment::index::{IndexWriter, SparseIndex, UnwrittenEntries};
 use crate::segment::reservation::{Extension, Reservation};
@@ -221,13 +221,19 @@ impl SegmentWriter {
         self.version >= PUBLISHER_VERSION
     }
 
+    /// Whether a trim record may be appended here.
+    pub fn holds_trims(&self) -> bool {
+        self.version >= TRIM_VERSION
+    }
+
     /// The layout version in the segment header.
     pub fn version(&self) -> u16 {
         self.version
     }
 
     /// The version a segment following this one is written at so that it
-    /// holds `records`: never below this one's, v6 when a record carries its
+    /// holds `records`: never below this one's, v7 when `records` include a
+    /// trim record, v6 when a record carries its
     /// publisher, v5 when `records` include a commit record, v4 when they
     /// include a generation-start record, and [`BASELINE_VERSION`] otherwise.
     /// A log moves up only when it has to, so a build that predates a version
@@ -236,6 +242,7 @@ impl SegmentWriter {
         let needed = records
             .iter()
             .map(|record| match record.mark {
+                RecordMark::Trim { .. } => TRIM_VERSION,
                 _ if record.publisher.is_some() => PUBLISHER_VERSION,
                 RecordMark::Commit => 5,
                 RecordMark::GenerationStart => 4,
@@ -254,6 +261,7 @@ impl SegmentWriter {
                 RecordMark::Opens(_) | RecordMark::Continues => self.holds_marks(),
                 RecordMark::GenerationStart => self.holds_generation_starts(),
                 RecordMark::Commit => self.holds_commits(),
+                RecordMark::Trim { .. } => self.holds_trims(),
             };
             mark && (record.publisher.is_none() || self.holds_publishers())
         })

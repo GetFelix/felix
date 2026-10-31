@@ -534,19 +534,30 @@ impl StreamLog {
             .map(|record| (record.offset, record.timestamp_micros)))
     }
 
-    /// [`Self::read_from`] with every record the log holds, generation-start
-    /// records included. For replication, which ships and compares the log
-    /// exactly as it is.
+    /// [`Self::read_from`] with generation-start records included. Trim
+    /// records are left out, so their offsets are gaps in what this returns;
+    /// replication, which must not have gaps, uses
+    /// [`Self::read_replicated_from`].
     pub async fn read_log_from(&self, start: Offset, max_bytes: usize) -> Result<Vec<LogRecord>> {
         self.log
             .read_range(ReadRange { start, max_bytes })
             .await
-            .map_err(|err| match err {
-                felix_storage::StorageError::Trimmed { requested, oldest } => {
-                    BrokerError::CursorTooOld { oldest, requested }
-                }
-                other => BrokerError::from(other),
-            })
+            .map_err(read_error)
+    }
+
+    /// Every record the log holds, trim records included. For replication,
+    /// which ships and compares the log exactly as it is: a follower places
+    /// a batch's records at consecutive offsets, so a skipped record would
+    /// shift every one after it.
+    pub async fn read_replicated_from(
+        &self,
+        start: Offset,
+        max_bytes: usize,
+    ) -> Result<Vec<LogRecord>> {
+        self.log
+            .read_range_with_trims(ReadRange { start, max_bytes })
+            .await
+            .map_err(read_error)
     }
 
     /// Just past the last client record below `tail`, stepping back over the
@@ -836,6 +847,15 @@ pub fn append_time_now() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_micros() as u64)
         .unwrap_or(0)
+}
+
+fn read_error(err: felix_storage::StorageError) -> BrokerError {
+    match err {
+        felix_storage::StorageError::Trimmed { requested, oldest } => {
+            BrokerError::CursorTooOld { oldest, requested }
+        }
+        other => BrokerError::from(other),
+    }
 }
 
 #[cfg(test)]

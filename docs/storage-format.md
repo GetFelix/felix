@@ -1,4 +1,4 @@
-# Felix Durable Segment Format (v6)
+# Felix Durable Segment Format (v7)
 
 This document defines the on-disk representation of a durable Felix stream. It is
 the source of truth for anyone reading, writing, repairing, or replicating
@@ -172,7 +172,7 @@ file:
 | Offset | Size | Field | Value |
 | --- | --- | --- | --- |
 | 0 | 4 | `magic` | `0x464C5347` (`"FLSG"`) |
-| 4 | 2 | `version` | `3` when written, `4` for a segment that holds a generation-start record, `5` for one that holds a commit record, or `6` for one that holds a record with its publisher; `2` is still read |
+| 4 | 2 | `version` | `3` when written, `4` for a segment that holds a generation-start record, `5` for one that holds a commit record, `6` for one that holds a record with its publisher, or `7` for one that holds a trim record; `2` is still read |
 | 6 | 2 | `flags` | `0`; any other value is rejected |
 | 8 | 8 | `base_offset` | logical offset of this segment's first record |
 | 16 | 8 | `created_at_micros` | wall clock at creation, informational |
@@ -195,8 +195,8 @@ segment, so damage here is never a torn write. It is always an error.
 | 12 | 8 | `timestamp_micros` | publish time |
 | 20 | 4 | `header_crc` | CRC-32 over bytes `0..20` |
 | 24 | 4 | `checksum` | CRC-32 over bytes `0..24`, **followed by** the tag and the body |
-| 28 | 20 | `tag` | only when bit 31 is set: `producer_id u64`, `sequence u64`, `len u32` |
-| 28 or 48 | n | body | the payload, opaque bytes; with bit 27, followed by the publisher and its `u8` length |
+| 28 | 20 or 8 | `tag` | 20 bytes when bit 31 is set: `producer_id u64`, `sequence u64`, `len u32`. 8 bytes on a trim record: `floor u64` |
+| 28, 36 or 48 | n | body | the payload, opaque bytes; with bit 27, followed by the publisher and its `u8` length |
 
 The diagram shows a record without a tag, which is every record not written by
 an idempotent producer.
@@ -209,7 +209,7 @@ holds), and recovery had to guess. Guessing wrong meant silently truncating a
 record that had been fsynced and acknowledged.
 
 `payload_len` comes first and is covered by both checksums, so a reader can step
-to the next record with `position + 28 + payload_len` without touching payload
+to the next record with `position + 28 + tag + payload_len` without touching payload
 bytes. That property is what makes the index rebuild and the recovery scan cost
 proportional to record *count* rather than to bytes decoded.
 
@@ -250,7 +250,8 @@ It takes an offset like any record, and every reader but replication skips it:
 subscriptions and replay, Kafka fetch, consumer groups, and the cache and
 counter projections. Replication ships and compares it exactly as stored.
 
-At most one of bits 29, 30 and 31 is set; any two is `RecordFlags`. Only a v4
+At most one of bits 29, 30 and 31 is set; any two is `RecordFlags`. (Bits 29
+and 28 together are the v7 trim record.) Only a v4
 segment may hold the record, for the reason only a v3 one may hold marks: a v3
 build reading bit 29 would see a length past the limit and could cut the record
 off as a torn tail, where a v4 header makes it refuse the segment. A v4 build
@@ -285,7 +286,7 @@ offset. The stream shard's state view is projected from the operations.
 Replication ships and compares the record exactly as stored.
 
 Payloads are capped below 2^28, so the length never reaches bit 28. At most
-one of bits 28 to 31 is set. Only a v5 segment may hold the record, for the
+one of bits 28 to 31 is set, apart from the trim record's pair. Only a v5 segment may hold the record, for the
 same reason only a v4 one may hold a generation-start record, and a segment
 is written at v5 only to hold one. The record is written only once the fleet
 has finalized `atomic_commit`, so until then no log leaves v4.
@@ -315,6 +316,39 @@ commit: a v5 build reading bit 27 would see a length past the limit. A segment
 is written at v6 only to hold one, and the broker writes one only once it is
 enabled (the `publisher_principal` fleet feature in a cluster,
 `FELIX_RECORD_PUBLISHERS` on a single broker). Until then no log leaves v5.
+
+### Trim records
+
+Bits 29 and 28 set together mark a trim record: a request that reads below
+an offset, its floor, be refused. It is the storage half of the conditional
+head trim in issue 1662. The 8-byte tag holds the floor, a big-endian `u64`.
+The body is the trimming caller's headers, in the broker's layout. The step to
+the next record is `28 + 8 + payload_len`, still from the header alone.
+
+The four kind bits were all taken, so this kind is the one code that uses two
+of them. Before v7 that pair was `RecordFlags` in every segment, so a segment
+older than v7 that holds it is still `RecordFlags`: recovery's scan refuses
+it at the same point an older build did, and the reader refuses it in a sealed
+segment the scan did not visit. Any other pair or triple of kind bits is
+`RecordFlags` in every version.
+
+Recovery treats a trim like any other record. One cut short is a torn tail
+and is repaired. One whose floor or headers fail the checksum is fatal unless
+it is the last record and `repair_checksum_tail` is set.
+
+A normal read (`read_range`) leaves trim records out, so their offsets are
+gaps in what it returns, and a read that starts at one gets the next record
+after it. `read_range_with_trims` returns them, for replication and for
+finding the trim that set a log's floor. Storage only stores and returns the
+record; nothing applies its floor yet.
+
+Only a v7 segment may hold the record, and a segment is written at v7 only
+to hold one. Nothing writes one unless a caller appends a record marked as a
+trim, so until then no log leaves v6, and a log that never trims is written
+byte for byte as before. As with commit and generation-start records, the
+roll happens before the record is written, so a crash or a failed append in
+between leaves an empty v7 active segment. An older build then refuses the
+log even though it holds no trim.
 
 ## Index file
 
@@ -369,7 +403,7 @@ the file is read up to the last whole entry.
 | Short read | `Truncated { needed, available }`: the one shape recovery may repair |
 | Bad record header CRC | `RecordHeaderChecksum`: the length cannot be trusted |
 | Bad record CRC | `RecordChecksum` |
-| More than one of the three kind bits set | `RecordFlags` |
+| More than one kind bit set, other than bits 29 and 28 together in a v7 segment | `RecordFlags` |
 | `payload_len` over the limit | `RecordTooLarge`, raised *before* any allocation |
 | Offset gap within a segment | `OffsetOutOfOrder` |
 
@@ -459,7 +493,10 @@ The full rules live in `is_repairable_tail` and `is_zero_filled_tail` in
 
 `format.rs` pins exact bytes for a segment header and a record. Changing either
 is a format change: bump `FORMAT_VERSION`, update this document, and state the
-migration path.
+migration path. It also pins the header CRC of every version from 2 to 7 and
+every older record kind, and `writer.rs` pins the checksums of a segment and
+its index at each of v3 to v6 holding every kind that version allows, so a
+new kind cannot change what an older one writes.
 
 ```text
 SegmentHeader::new(base_offset = 1, created_at_micros = 2):
@@ -488,6 +525,15 @@ encode_record(offset = 7, timestamp = 9, payload = "hi", publisher = "al"):
   7B 1D 74 DE
   51 5E 81 63
   68 69  61 6C  02
+
+encode_record(offset = 7, timestamp = 9, headers = "hi", trim floor = 5):
+  30 00 00 02
+  00 00 00 00 00 00 00 07
+  00 00 00 00 00 00 00 09
+  3C 6E 25 09
+  23 C7 73 0E
+  00 00 00 00 00 00 00 05
+  68 69
 ```
 
 ## Version history
@@ -500,6 +546,7 @@ encode_record(offset = 7, timestamp = 9, payload = "hi", publisher = "al"):
 | 4 | Generation-start records: a third flag bit in `payload_len`. Written only to hold that record, once `generation_start` is finalized; v2 and v3 segments are read unchanged. |
 | 5 | Commit records: a fourth flag bit. Written only to hold one, once `atomic_commit` is finalized. |
 | 6 | Publishers: bit 27 and a trailer on the body. Written only to hold a record with one, once publishers are enabled; every older segment is read unchanged, and a record without a publisher is byte for byte a v5 record. |
+| 7 | Trim records: bits 29 and 28 together, and an 8-byte floor tag. Written only to hold one; every older segment is read unchanged, and every other record is byte for byte what v6 wrote. |
 
 A v1 segment is rejected on open with `CorruptionKind::SegmentVersion`, naming
 the version found. v1 was only ever written by unreleased builds, so the

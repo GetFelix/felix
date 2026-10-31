@@ -22,7 +22,13 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// An ordered, append-only sequence of records addressed by offset.
 pub trait AppendOnlyLog: Send + Sync {
     fn append(&self, records: &[AppendRecord]) -> BoxFuture<'_, Result<AppendResult>>;
+    /// Records from `range.start` on, leaving out trim records. The offsets
+    /// they hold are gaps in what this returns.
     fn read_range(&self, range: ReadRange) -> BoxFuture<'_, Result<Vec<LogRecord>>>;
+    /// [`Self::read_range`] with trim records included, for the paths that
+    /// must see every record: replication, and finding the trim that set a
+    /// log's floor.
+    fn read_range_with_trims(&self, range: ReadRange) -> BoxFuture<'_, Result<Vec<LogRecord>>>;
     fn tail_offset(&self) -> BoxFuture<'_, Result<Offset>>;
     fn truncate(&self, offset: Offset) -> BoxFuture<'_, Result<()>>;
     /// Note that `generation` begins at `start_offset`, and persist it.
@@ -93,6 +99,13 @@ pub enum RecordMark {
     /// commit mark take all of it or none. The payload layout is the
     /// broker's; see `docs/atomic-commit.md`.
     Commit,
+    /// A head trim, asking that reads below `floor` be refused. Storage
+    /// only stores and returns it; nothing applies the floor yet. The payload is the trimming caller's headers, in the
+    /// broker's layout. [`AppendOnlyLog::read_range`] skips the record;
+    /// [`AppendOnlyLog::read_range_with_trims`] returns it. Needs a v7
+    /// segment, so a log moves onto v7 only when it writes one. See
+    /// `docs/storage-format.md`, "Trim records".
+    Trim { floor: Offset },
 }
 
 /// An idempotent producer's batch, as its first record describes it.
@@ -114,6 +127,11 @@ impl RecordMark {
     /// Whether the record is an atomic commit.
     pub fn is_commit(&self) -> bool {
         matches!(self, Self::Commit)
+    }
+
+    /// Whether the record is a head trim.
+    pub fn is_trim(&self) -> bool {
+        matches!(self, Self::Trim { .. })
     }
 
     /// The marks for a batch of `len` records: the first opens it, the rest

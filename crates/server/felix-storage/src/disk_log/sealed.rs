@@ -22,8 +22,8 @@ use parking_lot::Mutex;
 
 use crate::log::{Offset, SegmentDescriptor};
 use crate::segment::{
-    ReadBudget, SEGMENT_HEADER_LEN, ScanStart, SegmentReader, SparseIndex, index_file_name,
-    scan_segment, segment_file_name,
+    ReadBudget, SEGMENT_HEADER_LEN, ScanStart, SegmentReader, SparseIndex, TrimRecords,
+    index_file_name, scan_segment, segment_file_name,
 };
 use crate::{Result, metrics_names};
 
@@ -106,7 +106,8 @@ impl SealedLocator {
         let base_offset = self.descriptor.base_offset;
         let reader = SegmentReader::open(&self.path(), id, base_offset)?;
         let mut out = Vec::new();
-        let mut budget = ReadBudget::new(usize::MAX, 1);
+        // A trim's timestamp is as real as any record's.
+        let mut budget = ReadBudget::new(usize::MAX, 1).with_trims(TrimRecords::Include);
         reader.read_from_position(
             SEGMENT_HEADER_LEN,
             base_offset,
@@ -163,7 +164,8 @@ impl SealedLocator {
     pub(crate) fn newest_timestamp(&self, files: &SealedFiles, label: &str) -> Result<Option<u64>> {
         let last_offset = self.descriptor.last_offset;
         let mut out = Vec::new();
-        let mut budget = ReadBudget::new(usize::MAX, 1);
+        // A trim's timestamp is as real as any record's.
+        let mut budget = ReadBudget::new(usize::MAX, 1).with_trims(TrimRecords::Include);
         if let Some(handle) = files.get(self.key) {
             handle.reader.read_from(
                 &handle.index,

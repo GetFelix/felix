@@ -2,7 +2,8 @@ use bytes::Bytes;
 use tempfile::{TempDir, tempdir};
 
 use super::*;
-use crate::segment::{ScanOutcome, ScanStart, scan_segment};
+use crate::segment::format::crc32;
+use crate::segment::{ScanOutcome, ScanStart, index_file_name, scan_segment};
 
 fn record(payload: &str) -> AppendRecord {
     AppendRecord {
@@ -442,4 +443,124 @@ fn creating_over_an_existing_segment_fails() {
     let dir = tempdir().expect("dir");
     let _writer = new_writer(&dir, 0);
     assert!(SegmentWriter::create(dir.path(), 0, 0, 1, 0, 4096).is_err());
+}
+
+/// Each version's records and the batch that needs it.
+fn records_for(version: u16) -> Vec<AppendRecord> {
+    let mut records = vec![record("plain")];
+    for mark in RecordMark::for_batch(4, 1, 2) {
+        records.push(AppendRecord {
+            mark,
+            ..record("batch")
+        });
+    }
+    if version >= 4 {
+        records.push(AppendRecord {
+            mark: RecordMark::GenerationStart,
+            ..record("g")
+        });
+    }
+    if version >= 5 {
+        records.push(AppendRecord {
+            mark: RecordMark::Commit,
+            ..record("c")
+        });
+    }
+    if version >= 6 {
+        records.push(AppendRecord {
+            publisher: Some(Bytes::from_static(b"alice")),
+            ..record("p")
+        });
+    }
+    records
+}
+
+/// A segment holding every kind its version allows is byte for byte what
+/// the build before trim records wrote, index included. The checksums were
+/// taken from that build.
+#[test]
+fn segments_without_trims_are_byte_for_byte_unchanged() {
+    let dir = tempdir().expect("dir");
+    let expected: [(u16, u64, u32, u64, u32); 4] = [
+        (3, 151, 0xA12E_2EB3, 56, 0x7583_DF27),
+        (4, 180, 0xD19A_A8CC, 56, 0x7583_DF27),
+        (5, 209, 0x8E83_4724, 56, 0x7583_DF27),
+        (6, 244, 0x548A_6A28, 72, 0xE44F_3774),
+    ];
+    for (version, seg_len, seg_crc, idx_len, idx_crc) in expected {
+        let id = u64::from(version);
+        let mut writer = SegmentWriter::create_at_version(dir.path(), id, 10, 1, 0, 64, version)
+            .expect("create");
+        let records = records_for(version);
+        assert!(writer.successor_version(&records) <= version);
+        writer.append(&records).expect("append");
+        writer.sync().expect("sync");
+        drop(writer);
+        let segment = std::fs::read(dir.path().join(segment_file_name(id))).expect("segment");
+        let index = std::fs::read(dir.path().join(index_file_name(id))).expect("index");
+        assert_eq!(
+            (segment.len() as u64, crc32(&[&segment])),
+            (seg_len, seg_crc),
+            "v{version} segment"
+        );
+        assert_eq!(
+            (index.len() as u64, crc32(&[&index])),
+            (idx_len, idx_crc),
+            "v{version} index"
+        );
+    }
+}
+
+/// Only a trim record moves a log onto v7: no other record asks for it,
+/// and a segment older than v7 refuses one.
+#[test]
+fn only_a_trim_needs_a_v7_segment() {
+    let dir = tempdir().expect("dir");
+    let trim = AppendRecord {
+        mark: RecordMark::Trim { floor: 0 },
+        ..record("headers")
+    };
+    let mut writer =
+        SegmentWriter::create_at_version(dir.path(), 0, 0, 1, 0, 64, 6).expect("create");
+    assert_eq!(writer.successor_version(&records_for(6)), 6);
+    assert!(!writer.holds(std::slice::from_ref(&trim)));
+    assert!(matches!(
+        writer.append(std::slice::from_ref(&trim)),
+        Err(StorageError::Unsupported(_))
+    ));
+    // A trim with a publisher still needs v7, not v6.
+    let published = AppendRecord {
+        publisher: Some(Bytes::from_static(b"alice")),
+        ..trim.clone()
+    };
+    assert_eq!(writer.successor_version(&[published]), TRIM_VERSION);
+    let baseline_dir = tempdir().expect("dir");
+    let baseline = new_writer(&baseline_dir, 0);
+    assert_eq!(
+        baseline.successor_version(&records_for(3)),
+        BASELINE_VERSION
+    );
+    assert_eq!(
+        baseline.successor_version(std::slice::from_ref(&trim)),
+        TRIM_VERSION
+    );
+
+    let dir = tempdir().expect("dir");
+    let mut writer =
+        SegmentWriter::create_at_version(dir.path(), 0, 0, 1, 0, 64, TRIM_VERSION).expect("create");
+    assert!(writer.holds_trims());
+    let mut batch = records_for(6);
+    batch.push(trim);
+    writer.append(&batch).expect("append");
+    writer.sync().expect("sync");
+    let outcome = scan(&dir);
+    assert_eq!(outcome.record_count, batch.len() as u64);
+    assert!(outcome.torn_tail.is_none());
+    assert_eq!(
+        outcome
+            .marks
+            .last()
+            .map(|(offset, mark, _)| (*offset, *mark)),
+        Some((batch.len() as u64 - 1, RecordMark::Trim { floor: 0 }))
+    );
 }

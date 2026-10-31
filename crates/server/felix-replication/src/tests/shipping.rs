@@ -348,3 +348,47 @@ async fn the_batch_carries_the_checksum_the_follower_will_verify() {
         "the epoch was not carried"
     );
 }
+
+/// **A trim record stalls shipping instead of shifting the records after
+/// it.** A follower places a batch's records at consecutive offsets from
+/// the first, so a batch read without the trim would put every later record
+/// one offset low, under valid checksums. Until replication carries the
+/// trim's mark, the batch is not sent at all.
+#[tokio::test]
+async fn a_trim_record_is_refused_rather_than_shipped_out_of_place() {
+    let (log, _dir) = leader_log(&["a", "b"]).await;
+    let tail = log.tail_offset().await.expect("tail");
+    let pending = log
+        .begin_append_marked_at(
+            tail,
+            &[Bytes::from_static(b"headers")],
+            &[felix_storage::log::RecordMark::Trim { floor: 1 }],
+            &[],
+            &[],
+        )
+        .await
+        .expect("append")
+        .expect("at the tail");
+    log.commit(&pending).await.expect("commit");
+    log.append(&[Bytes::from_static(b"c")])
+        .await
+        .expect("append");
+    let follower = ScriptedFollower::new([Ok(stored(4))]);
+    let mut cursor = cursor(0);
+
+    let progress = ship_once(
+        &follower,
+        &log,
+        &shard(),
+        felix_broker::LogKind::Stream,
+        &mut cursor,
+        BATCH_BYTES,
+        &Rebuilds::disabled(),
+    )
+    .await;
+
+    assert_eq!(progress, Progress::Retry);
+    assert!(cursor.stalled);
+    assert_eq!(cursor.next_offset, 0);
+    assert_eq!(follower.sent(), Vec::<(u64, Vec<String>)>::new());
+}

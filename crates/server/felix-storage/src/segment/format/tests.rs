@@ -256,10 +256,10 @@ fn index_header_rejects_bad_magic_and_version() {
         CorruptionKind::IndexMagic { .. }
     ));
     let mut bad = good;
-    bad[4..6].copy_from_slice(&7u16.to_be_bytes());
+    bad[4..6].copy_from_slice(&8u16.to_be_bytes());
     assert!(matches!(
         IndexHeader::decode(&bad).expect_err("version").kind,
-        CorruptionKind::IndexVersion { found: 7 }
+        CorruptionKind::IndexVersion { found: 8 }
     ));
 }
 
@@ -355,8 +355,10 @@ fn a_commit_record_round_trips_and_is_one_kind_only() {
         (RecordMark::Commit, &b"commit"[..], len)
     );
 
+    // Bit 29 with bit 28 is the trim code (see the trim tests below), so
+    // pair the commit with bit 30.
     let mut both = buf.clone();
-    both[0] |= 0x20;
+    both[0] |= 0x40;
     let crc = crc32(&[&both[0..20]]);
     both[20..24].copy_from_slice(&crc.to_be_bytes());
     assert!(matches!(
@@ -463,4 +465,231 @@ fn a_record_with_a_publisher_is_a_stable_golden_vector() {
             0x61, 0x6C, 0x02, // publisher "al", its length
         ]
     );
+}
+
+/// Pinned bytes for every kind an older build writes, from before the trim
+/// record existed. Adding v7 must not change any of them.
+#[test]
+fn every_older_record_kind_is_a_stable_golden_vector() {
+    let prefix = |kind: u8, len: u8| {
+        [
+            [kind, 0x00, 0x00, len],
+            [0x00, 0x00, 0x00, 0x00],
+            [0x00, 0x00, 0x00, 0x07],
+            [0x00, 0x00, 0x00, 0x00],
+            [0x00, 0x00, 0x00, 0x09],
+        ]
+        .concat()
+    };
+    let opens = RecordMark::Opens(ProducerBatch {
+        producer_id: 3,
+        sequence: 5,
+        len: 2,
+    });
+    type Case = (RecordMark, Option<&'static [u8]>, Vec<u8>);
+    let cases: [Case; 5] = [
+        (
+            opens,
+            None,
+            [
+                prefix(0x80, 0x02),
+                vec![0xAD, 0xA5, 0x9E, 0x0B, 0x8A, 0x63, 0xA6, 0xD3],
+                vec![0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 2],
+                b"hi".to_vec(),
+            ]
+            .concat(),
+        ),
+        (
+            RecordMark::Continues,
+            None,
+            [
+                prefix(0x40, 0x02),
+                vec![0xF3, 0xAC, 0x7E, 0x31, 0x99, 0xEB, 0x39, 0x4A],
+                b"hi".to_vec(),
+            ]
+            .concat(),
+        ),
+        (
+            RecordMark::GenerationStart,
+            None,
+            [
+                prefix(0x20, 0x02),
+                vec![0xDC, 0xA8, 0x8E, 0x2C, 0x43, 0x06, 0xD9, 0x7F],
+                b"hi".to_vec(),
+            ]
+            .concat(),
+        ),
+        (
+            RecordMark::Commit,
+            None,
+            [
+                prefix(0x10, 0x02),
+                vec![0x26, 0x92, 0x75, 0x02, 0x5A, 0xAD, 0x52, 0xA2],
+                b"hi".to_vec(),
+            ]
+            .concat(),
+        ),
+        (
+            RecordMark::Commit,
+            Some(b"al"),
+            [
+                prefix(0x18, 0x05),
+                vec![0x9B, 0xDB, 0xDF, 0xFB, 0x43, 0xA4, 0xD0, 0x2C],
+                b"hial\x02".to_vec(),
+            ]
+            .concat(),
+        ),
+    ];
+    for (mark, publisher, expected) in cases {
+        let mut buf = Vec::new();
+        encode_record(&mut buf, 7, 9, b"hi", publisher, &mark);
+        assert_eq!(buf, expected, "{mark:?}");
+        let (decoded, _) = decode_record(&buf).expect("decode");
+        assert_eq!(decoded.mark, mark);
+    }
+}
+
+/// The header's version and CRC for every version this build reads.
+#[test]
+fn every_segment_header_version_is_a_stable_golden_vector() {
+    let crcs: [(u16, [u8; 4]); 6] = [
+        (2, [0x7A, 0x09, 0xE5, 0xB1]),
+        (3, [0xAD, 0xEB, 0x65, 0xE9]),
+        (4, [0xE7, 0xD5, 0xEE, 0xA2]),
+        (5, [0x30, 0x37, 0x6E, 0xFA]),
+        (6, [0x93, 0x61, 0xE8, 0x53]),
+        (7, [0x44, 0x83, 0x68, 0x0B]),
+    ];
+    for (version, crc) in crcs {
+        let bytes = SegmentHeader::at_version(1, 2, version).encode();
+        assert_eq!(bytes[4..6], version.to_be_bytes(), "v{version}");
+        assert_eq!(bytes[24..28], crc, "v{version}");
+        let decoded = SegmentHeader::decode(&bytes).expect("decodes");
+        assert_eq!(decoded.holds_trims(), version >= TRIM_VERSION, "v{version}");
+    }
+    let mut v8 = SegmentHeader::at_version(1, 2, 8);
+    v8.version = 8;
+    assert!(matches!(
+        SegmentHeader::decode(&v8.encode()).expect_err("v8").kind,
+        CorruptionKind::SegmentVersion { found: 8 }
+    ));
+}
+
+/// Pinned bytes for a trim record: bits 29 and 28, the floor as an 8-byte
+/// tag, then the caller's headers as the body.
+#[test]
+fn a_trim_record_is_a_stable_golden_vector() {
+    let mut buf = Vec::new();
+    let len = encode_record(&mut buf, 7, 9, b"hi", None, &RecordMark::Trim { floor: 5 });
+    assert_eq!(len, RECORD_HEADER_LEN + TRIM_TAG_LEN + 2);
+    assert_eq!(
+        buf,
+        [
+            0x30, 0x00, 0x00, 0x02, // body length 2, bits 29 and 28
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, // offset
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x09, // timestamp
+            0x3C, 0x6E, 0x25, 0x09, // header crc32
+            0x23, 0xC7, 0x73, 0x0E, // checksum
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, // floor
+            0x68, 0x69, // headers
+        ]
+    );
+}
+
+#[test]
+fn a_trim_record_round_trips_with_and_without_a_publisher() {
+    for publisher in [None, Some(&b"alice"[..])] {
+        let mark = RecordMark::Trim { floor: 40 };
+        let mut buf = Vec::new();
+        let len = encode_record(&mut buf, 41, 3, b"headers", publisher, &mark);
+        assert_eq!(len, record_len(body_len(7, publisher), &mark));
+        let (decoded, consumed) = decode_record(&buf).expect("decode");
+        assert_eq!(consumed, len);
+        assert_eq!(decoded.header.kind, RecordKind::Trim);
+        assert_eq!(decoded.header.encoded_len(), len);
+        assert_eq!(decoded.mark, mark);
+        assert!(decoded.mark.is_trim());
+        assert_eq!(decoded.payload.as_ref(), b"headers");
+        assert_eq!(decoded.publisher.as_deref(), publisher);
+        assert!(decoded.header.check_version(TRIM_VERSION).is_ok());
+    }
+}
+
+/// The floor is under the record checksum like a producer tag.
+#[test]
+fn a_damaged_trim_floor_fails_the_checksum() {
+    let mut buf = Vec::new();
+    encode_record(&mut buf, 4, 1, b"", None, &RecordMark::Trim { floor: 2 });
+    buf[RECORD_HEADER_LEN as usize + 7] ^= 1;
+    assert!(matches!(
+        decode_record(&buf).expect_err("damaged floor").kind,
+        CorruptionKind::RecordChecksum { .. }
+    ));
+}
+
+/// Before v7 the trim code was two kinds at once. A segment older than v7
+/// holding it reads as `RecordFlags`, exactly as its own build reported it,
+/// and every other pair or triple of kind bits is still `RecordFlags`.
+#[test]
+fn a_trim_is_record_flags_before_v7_and_other_kind_pairs_always_are() {
+    let mut buf = Vec::new();
+    encode_record(
+        &mut buf,
+        4,
+        1,
+        b"x",
+        Some(b"a"),
+        &RecordMark::Trim { floor: 2 },
+    );
+    let header = RecordHeader::decode(&buf).expect("decode");
+    for version in OLDEST_READABLE_VERSION..TRIM_VERSION {
+        assert!(matches!(
+            header.check_version(version).expect_err("older").kind,
+            CorruptionKind::RecordFlags { found } if found == read_u32(&buf, 0)
+        ));
+    }
+    assert!(header.check_version(TRIM_VERSION).is_ok());
+
+    for kinds in [0xC0u8, 0xA0, 0x90, 0x60, 0x50, 0x70, 0xB0, 0xF0] {
+        let mut both = Vec::new();
+        encode_record(&mut both, 4, 1, b"x", None, &RecordMark::None);
+        both[0] |= kinds;
+        let crc = crc32(&[&both[0..20]]);
+        both[20..24].copy_from_slice(&crc.to_be_bytes());
+        assert!(
+            matches!(
+                RecordHeader::decode(&both).expect_err("kinds").kind,
+                CorruptionKind::RecordFlags { .. }
+            ),
+            "{kinds:#x}"
+        );
+    }
+}
+
+/// Before v7 a trim's bits are judged before the length, as an older build
+/// judged them: with an impossible length they are still `RecordFlags`,
+/// which recovery never repairs, and not `RecordTooLarge`, which it may.
+#[test]
+fn an_oversized_trim_before_v7_is_record_flags_not_too_large() {
+    let mut buf = Vec::new();
+    encode_record(&mut buf, 4, 1, b"", None, &RecordMark::Trim { floor: 2 });
+    let oversized = (MAX_PAYLOAD_BYTES + 1) | 0x3000_0000;
+    buf[0..4].copy_from_slice(&oversized.to_be_bytes());
+    let crc = crc32(&[&buf[0..20]]);
+    buf[20..24].copy_from_slice(&crc.to_be_bytes());
+    for version in OLDEST_READABLE_VERSION..TRIM_VERSION {
+        assert!(
+            matches!(
+                RecordHeader::decode_in(&buf, version).expect_err("older").kind,
+                CorruptionKind::RecordFlags { found } if found == oversized
+            ),
+            "v{version}"
+        );
+    }
+    assert!(matches!(
+        RecordHeader::decode_in(&buf, TRIM_VERSION)
+            .expect_err("v7")
+            .kind,
+        CorruptionKind::RecordTooLarge { .. }
+    ));
 }

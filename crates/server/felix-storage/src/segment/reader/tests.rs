@@ -157,3 +157,105 @@ fn reader_past_the_tail_returns_nothing() {
     let outcome = scan_segment(&path, 0, "t/ns/s/0", 64, ScanStart::Full, true).expect("scan");
     assert!(read_all(&path, &outcome, 99).is_empty());
 }
+
+/// A v7 segment: offsets 0 and 1 plain, 2 a trim with floor 1, 3 plain.
+fn write_with_trim(path: &std::path::Path, version: u16) -> crate::segment::ScanOutcome {
+    use crate::log::RecordMark;
+    use crate::segment::format::{SegmentHeader, encode_record};
+    let mut bytes = SegmentHeader::at_version(0, 1, version).encode().to_vec();
+    encode_record(&mut bytes, 0, 100, b"a", None, &RecordMark::None);
+    encode_record(&mut bytes, 1, 101, b"b", None, &RecordMark::None);
+    encode_record(
+        &mut bytes,
+        2,
+        102,
+        b"headers",
+        None,
+        &RecordMark::Trim { floor: 1 },
+    );
+    encode_record(&mut bytes, 3, 103, b"d", None, &RecordMark::None);
+    std::fs::write(path, &bytes).expect("write");
+    // The scan would refuse a trim in an older segment, so take the
+    // outcome from a v7 copy: the reader is what is under test.
+    let checked = path.with_extension("v7");
+    let mut v7 = bytes.clone();
+    v7[..SEGMENT_HEADER_LEN as usize].copy_from_slice(&SegmentHeader::at_version(0, 1, 7).encode());
+    std::fs::write(&checked, &v7).expect("write");
+    scan_segment(&checked, 0, "t/ns/s/0", 4096, ScanStart::Full, false).expect("scan")
+}
+
+fn read(
+    path: &std::path::Path,
+    outcome: &crate::segment::ScanOutcome,
+    start: u64,
+    max_records: usize,
+    trims: TrimRecords,
+) -> crate::Result<Vec<crate::log::LogRecord>> {
+    let reader = SegmentReader::open(path, 0, 0).expect("open");
+    let mut out = Vec::new();
+    reader.read_from(
+        &outcome.index,
+        start,
+        outcome.valid_bytes,
+        &mut ReadBudget::new(usize::MAX, max_records).with_trims(trims),
+        "t/ns/s/0",
+        &mut out,
+    )?;
+    Ok(out)
+}
+
+/// A normal read leaves the trim out, and a read starting at it, or one
+/// with room for a single record, gets the next real record instead of
+/// nothing. The internal read returns it with its floor and headers.
+#[test]
+fn a_trim_is_skipped_by_default_and_returned_on_request() {
+    use crate::log::RecordMark;
+    let dir = tempdir().expect("dir");
+    let path = dir.path().join("a.log");
+    let outcome = write_with_trim(&path, 7);
+
+    let offsets = |records: Vec<crate::log::LogRecord>| {
+        records
+            .iter()
+            .map(|record| record.offset)
+            .collect::<Vec<_>>()
+    };
+    let skipped = read(&path, &outcome, 0, usize::MAX, TrimRecords::Skip).expect("read");
+    assert_eq!(offsets(skipped), vec![0, 1, 3]);
+    let from_trim = read(&path, &outcome, 2, 1, TrimRecords::Skip).expect("read");
+    assert_eq!(offsets(from_trim), vec![3]);
+
+    let all = read(&path, &outcome, 2, usize::MAX, TrimRecords::Include).expect("read");
+    assert_eq!(all.len(), 2);
+    assert_eq!(all[0].offset, 2);
+    assert_eq!(all[0].mark, RecordMark::Trim { floor: 1 });
+    assert_eq!(all[0].payload, Bytes::from_static(b"headers"));
+    assert_eq!(all[1].offset, 3);
+}
+
+/// Recovery scans only the active segment, so the reader itself refuses a
+/// trim found in a sealed segment older than v7, whether it would return
+/// the record or skip it.
+#[test]
+fn a_trim_in_an_older_segment_is_refused_by_the_reader() {
+    let dir = tempdir().expect("dir");
+    let path = dir.path().join("a.log");
+    let outcome = write_with_trim(&path, 6);
+    for trims in [TrimRecords::Skip, TrimRecords::Include] {
+        let err = read(&path, &outcome, 0, usize::MAX, trims).expect_err("v6");
+        let crate::StorageError::Corruption(corruption) = err else {
+            panic!("expected corruption, got {err:?}");
+        };
+        assert!(matches!(
+            corruption.kind,
+            crate::CorruptionKind::RecordFlags { .. }
+        ));
+    }
+    // Records before the trim still read.
+    assert_eq!(
+        read(&path, &outcome, 0, 2, TrimRecords::Skip)
+            .expect("read")
+            .len(),
+        2
+    );
+}
