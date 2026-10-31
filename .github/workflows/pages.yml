@@ -8,12 +8,17 @@ on:
       - 'docs-site/**'
       - 'CHANGELOG.md'
       - 'scripts/gen-release-notes.mjs'
+      - 'scripts/build-docs-versions.sh'
+      - 'scripts/latest-stable-tag.sh'
       - '.github/workflows/pages.yml'
   workflow_run:
     workflows:
       - Performance Data Publish
     types:
       - completed
+  # A new stable release becomes the root of the site.
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -33,6 +38,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
+          # A release event checks out the tag; /next/ is always main.
+          ref: main
           persist-credentials: false
           fetch-depth: 0
 
@@ -43,11 +50,21 @@ jobs:
           cache: 'npm'
           cache-dependency-path: 'docs-site/package-lock.json'
 
-      - name: Install dependencies
-        run: npm ci --prefix docs-site
+      # The root serves the newest stable release's docs, built from its tag;
+      # main is built under /next/. A failure here fails the deploy.
+      - name: Pick the stable release tag
+        id: stable
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(scripts/latest-stable-tag.sh)
+          echo "Stable release: $tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
-      - name: Build documentation
-        run: npm run build --prefix docs-site
+      - name: Build documentation (stable at /, main at /next/)
+        env:
+          STABLE_TAG: ${{ steps.stable.outputs.tag }}
+        run: scripts/build-docs-versions.sh "$STABLE_TAG" site
 
       - name: Checkout benchmark dashboards
         uses: actions/checkout@v7
@@ -65,20 +82,20 @@ jobs:
       - name: Add benchmark dashboards to Pages
         run: |
           set -euo pipefail
-          mkdir -p docs-site/dist/benchmarks
+          mkdir -p site/benchmarks
           latency_dir=latency-v2
           throughput_dir=throughput-v2
           [ -d "benchmark-data/$latency_dir" ] || latency_dir=latency
           [ -d "benchmark-data/$throughput_dir" ] || throughput_dir=throughput
-          cp -R "benchmark-data/$latency_dir" docs-site/dist/benchmarks/latency
-          cp -R "benchmark-data/$throughput_dir" docs-site/dist/benchmarks/throughput
+          cp -R "benchmark-data/$latency_dir" site/benchmarks/latency
+          cp -R "benchmark-data/$throughput_dir" site/benchmarks/throughput
           npm pack chart.js@2.9.2 --silent --pack-destination /tmp
           mkdir -p /tmp/chartjs
           tar -xzf /tmp/chart.js-2.9.2.tgz -C /tmp/chartjs
-          cp /tmp/chartjs/package/dist/Chart.min.js docs-site/dist/benchmarks/chart.min.js
-          cp scripts/perf/benchmark-chart-enhancements.js docs-site/dist/benchmarks/chart-enhancements.js
+          cp /tmp/chartjs/package/dist/Chart.min.js site/benchmarks/chart.min.js
+          cp scripts/perf/benchmark-chart-enhancements.js site/benchmarks/chart-enhancements.js
           for dashboard in latency throughput; do
-            index="docs-site/dist/benchmarks/$dashboard/index.html"
+            index="site/benchmarks/$dashboard/index.html"
             sed -i \
               's#https://cdn.jsdelivr.net/npm/chart.js@2.9.2/dist/Chart.min.js#../chart.min.js#' \
               "$index"
@@ -94,7 +111,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v5
         with:
-          path: ./docs-site/dist
+          path: ./site
 
   deploy:
     needs: build

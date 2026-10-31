@@ -486,6 +486,28 @@ The build runs the mermaid, diagram and evidence checks before `astro build`.
 running `astro` directly: they first generate the release notes pages from
 `CHANGELOG.md`, which the sidebar needs.
 
+### Versions
+
+docs.getfelix.dev serves the newest stable release at the root, built from that
+release's tag as it shipped. `main` is published under `/next/`, marked
+`noindex` and left out of the sitemap, with a banner pointing back to the stable
+docs. Previews are opt-in: the root never recommends one.
+
+A plain `npm run build` builds `main` at `/`. `DOCS_BASE=/next/` builds it for
+the sub-path, and a small rehype plugin (`docs-site/plugins/rehype-base-links.mjs`)
+prefixes the base onto root-relative links, so keep writing them as
+`/getting-started/...`. To build both trees as the site does:
+
+```bash
+scripts/build-docs-versions.sh "$(scripts/latest-stable-tag.sh)" site
+node scripts/check-docs-links.mjs site
+```
+
+`pages.yml` runs the first script on a push to `main`, on a published release
+(which moves the root to the new tag) and on demand. A failed build of the tag
+fails the deploy; `main` never fills in at the root. CI runs both scripts on a
+docs change, and a link that leaves its own tree fails the check.
+
 ## Cleaning up
 
 - `task clean` runs `cargo clean` and removes the latency demo's raw output.

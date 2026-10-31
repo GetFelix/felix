@@ -6,8 +6,9 @@ import config from 'virtual:starlight/user-config';
 type Doc = CollectionEntry<'docs'>;
 type Section = { label: string; docs: Doc[] };
 
+const base = import.meta.env.BASE_URL.replace(/\/+$/, '');
 const pageUrl = (id: string, site: URL) =>
-  new URL(id === 'index' ? '/' : `/${id.replace(/\/index$/, '')}/`, site).href;
+  new URL(id === 'index' ? `${base}/` : `${base}/${id.replace(/\/index$/, '')}/`, site).href;
 
 const siteTitle =
   typeof config.title === 'string' ? config.title : Object.values(config.title)[0];
@@ -74,7 +75,7 @@ export async function buildIndex(site: URL): Promise<string> {
     '',
     `> ${config.description}`,
     '',
-    `The full text of every page is at ${new URL('/llms-full.txt', site).href}.`,
+    `The full text of every page is at ${new URL(`${base}/llms-full.txt`, site).href}.`,
   ];
   for (const section of await sections()) {
     lines.push('', `## ${section.label}`, '');

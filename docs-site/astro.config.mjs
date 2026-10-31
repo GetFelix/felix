@@ -1,13 +1,21 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 import mermaid from 'astro-mermaid';
+import { rehypeBaseLinks } from './plugins/rehype-base-links.mjs';
+
+// The stable docs build at '/'; the next release's docs build with
+// DOCS_BASE=/next/ (see scripts/build-docs-versions.sh).
+const base = process.env.DOCS_BASE || '/';
+const isNext = base !== '/';
 
 export default defineConfig({
   site: 'https://docs.getfelix.dev',
-  base: '/',
-  redirects: {
-    '/features/real-network-performance': '/features/v060-performance/',
-  },
+  base,
+  markdown: { rehypePlugins: [[rehypeBaseLinks, { base }]] },
+  // Only the stable root carries the old-URL redirect.
+  redirects: isNext
+    ? {}
+    : { '/features/real-network-performance': '/features/v060-performance/' },
   integrations: [
     mermaid({ autoTheme: true, enableLog: false }),
     starlight({
@@ -28,6 +36,13 @@ export default defineConfig({
         './src/styles/custom.css',
       ],
       title: 'Felix',
+      ...(isNext && {
+        head: [{ tag: 'meta', attrs: { name: 'robots', content: 'noindex' } }],
+        banner: {
+          content:
+            'You\'re reading the docs for the next release. For the current stable release, see the <a href="/">main docs</a>.',
+        },
+      }),
       description: 'A QUIC-based clustered log serving stream, cache and queue semantics, built for high-fanout delivery, predictable tail latency and strict slow-consumer isolation.',
       // The header renders the logo at ~32px. The full logo — ringed badge, whole
       // cat, and the "Felix" script inside it — carries far too much detail to
