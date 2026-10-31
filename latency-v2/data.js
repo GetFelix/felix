@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793431860891,
+  "lastUpdate": 1793440888846,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -50886,6 +50886,72 @@ window.BENCHMARK_DATA = {
             "range": "640.59",
             "unit": "us",
             "extra": "trials: 5\nmedian: 389.00\nmean: 716.80\nstdev: 640.59\ncv: 89.37%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "86d9a3acf39aa36fc28857f39cdeaadd82d17c6a",
+          "message": "feat(replication): ship head trims, gated on head_trim, failing closed (#1662) (#1674)\n\n* feat(replication): ship head trims, gate them on head_trim, fail closed (#1662)\n\nStep 5 of the conditional head trim. A trim record travels with mark byte 5\nand its floor, so mark_to_wire no longer fails. A follower stores it at the\nleader's offset; on a Quorum stream its log is held at the commit offset\nbefore the first apply, so the floor applies only once the leader's commit\noffset passes the record.\n\nTrims fail closed. Broker::allow_head_trims_when replaces\nset_replication_enabled, and until startup calls it every trim is refused\nwith HeadTrimNotEnabled. A broker without FELIX_NODE_ID allows them; a\ncluster member allows them while its fleet has finalized the new head_trim\nfeature, which a new cluster finalizes at its first registration.\n\nA new peer capability, HEAD_TRIM, is required by the pool for any batch\nholding a trim, so a follower that cannot read one is held below it. Ship\ncounts that as trim_unsupported and logs it at most once a minute.\n\nA promoted leader's mark opened reads before the driver raised the log's\ncommit offset, and a trim's floor applies only below that offset, so a\nreader could be served below a trim the old leader acknowledged. The driver\nnow raises the offset in memory before it publishes the mark.\n\nSpec-Unaffected: FelixHeadTrim.tla already models trims replicated as records, the follower floor at its commit offset, and a new leader serving only once its commit covers what it inherited; this change makes the code match (the mark and the floor move together, as AdvanceMark does). The per-peer HEAD_TRIM check refuses to send and adds no state the model tracks.\n\n* fix(replication): test a trim taken through promotion, per-shard refusal log limit, document the lone-broker rule (#1662)",
+          "timestamp": "2026-10-31T02:56:27-07:00",
+          "tree_id": "11be74ede755c63514cd2d976eafa94b9a75ac39",
+          "url": "https://github.com/GetFelix/felix/commit/86d9a3acf39aa36fc28857f39cdeaadd82d17c6a"
+        },
+        "date": 1793440882491,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 151,
+            "range": "7.40",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 151.00\nmean: 153.80\nstdev: 7.40\ncv: 4.81%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 219,
+            "range": "403.61",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 219.00\nmean: 400.00\nstdev: 403.61\ncv: 100.90%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 277,
+            "range": "514.37",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 277.00\nmean: 499.00\nstdev: 514.37\ncv: 103.08%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 198,
+            "range": "3.35",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 198.00\nmean: 199.20\nstdev: 3.35\ncv: 1.68%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 395,
+            "range": "159.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 395.00\nmean: 463.40\nstdev: 159.30\ncv: 34.38%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 579,
+            "range": "940.87",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 579.00\nmean: 980.00\nstdev: 940.87\ncv: 96.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.97.1 (8bab26f4f 2026-07-14)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
