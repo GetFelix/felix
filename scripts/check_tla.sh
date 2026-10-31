@@ -241,6 +241,22 @@ expectations=(
   "FelixShardSuspicionLease violates AtMostOneServing"
   "FelixShardSuspicionWipeRoutes pass"
   "FelixShardSuspicionWipeUnbacked violates AckedHeldByLeader"
+  "FelixShardElectWipe violates OneLeaderPerGeneration"
+  "FelixShardElectWipeWaits violates AckedHeldByLeader"
+  "FelixShardElectWipeWaitsAll violates OneLeaderPerGeneration"
+  "FelixShardElectWipeWaitsSeeded violates OneLeaderPerGeneration"
+  "FelixShardElectWipeWaitsFloor pass"
+  "FelixShardElectWipeWaitsFloorDeep violates OneLeaderPerGeneration"
+  "FelixShardElectWipeOracle pass"
+  "FelixShardElectWipeOracleBatches violates AckedHeldByLeader"
+  "FelixShardElectWipeOracleLearnsSet pass"
+  "FelixShardElectWipeNonVoter pass"
+  "FelixShardElectWipeNonVoterCountsWiped violates OneLeaderPerGeneration"
+  "FelixShardElectWipeNonVoterElects violates NoLeaderBesideNonVoter"
+  "FelixShardElectWipeNonVoterReadmits violates NeverReadmitted"
+  "FelixShardElectWipeNonVoterNoCatchUp violates AckedHeldByLeader"
+  "FelixShardElectWipeNonVoterFailsOver violates NoFailoverBesideNonVoter"
+  "FelixShardElectWipeNonVoterPromotes violates OneLeaderPerGeneration"
   "FelixGroups pass"
   "FelixGroupsNoCheck violates NoSkip"
   "FelixGroupsLengthOnly violates NoSkip"
@@ -311,6 +327,9 @@ fi
 
 # FelixShardElectSwap is not registered: it has never finished a run, and
 # the nightly exhaustive job (tla-walk.yml) checks it by name instead.
+# So are FelixShardElectWipeNonVoter{Twice,Failover,FailoverWipesLeader,
+# WipesLeader}: each runs well over an hour on a four-core runner. Their
+# violating twins and witnesses stay registered.
 
 # Minutes each of the longer configurations takes on a four-core CI runner,
 # from the `Finished in` lines of a CI run (a new one is a guess until it has
@@ -371,6 +390,8 @@ weights=(
   "FelixShardSuspicion 2"
   "FelixShardSuspicionWipeRoutes 3"
   "FelixShardSuspicionWipeUnbacked 2"
+  "FelixShardElectWipeOracle 5"
+  "FelixShardElectWipeNonVoter 20"
 )
 
 weight_of() {
