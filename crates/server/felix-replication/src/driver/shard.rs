@@ -446,7 +446,50 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     {
         fence.deposed(mark_key, route.generation);
     }
+    // The leader keeps its own set before shipping at it, so a fence or
+    // batch from an older set is refused here too once this broker follows.
+    let electing = requester.offers_election();
+    if electing
+        && log.set_generation() < route.generation
+        && let Err(err) = log
+            .accept_set(crate::replica_set::kept(route, learner.as_deref()))
+            .await
+    {
+        tracing::warn!(
+            stream = %key.stream,
+            shard = key.shard,
+            error = %err,
+            "could not keep this leader's replica set",
+        );
+    }
+    // Rule 5 of electing without the control plane: once this broker has
+    // answered a newer fence or batch, or counts a newer set, a candidate may
+    // have been elected on its answer, and records its followers confirmed
+    // here may not be in the new leader's log. So it counts nothing more.
+    // Only once every follower offered `ELECTION`; until then the control
+    // plane alone replaces leaders, and the ack path is as it was.
+    let election_active = electing
+        && route
+            .replicas
+            .iter()
+            .filter(|replica| replica.node_id != route.leader.node_id)
+            .all(|replica| {
+                requester
+                    .recorded_capabilities(&replica.node_id)
+                    .is_some_and(|offered| offered.contains(PeerCapabilities::ELECTION))
+            });
+    let stepped_down = || {
+        election_active
+            && (log.accepted_generation() > route.generation
+                || log.set_generation() > route.generation)
+    };
+    if stepped_down() {
+        fence.deposed(mark_key, route.generation);
+    }
     let held_offset = |tail: u64, followers: &[FollowerCursor]| {
+        if stepped_down() {
+            return 0;
+        }
         let held = if by_followers {
             // Read after the tail, which `held_at_generation` relies on.
             let current = log.accepted_generation() <= route.generation;
@@ -472,7 +515,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         // the floor, a new leader whose followers have not answered yet names
         // all of them. Acknowledging by the followers, the promoted leader
         // fences a majority and takes the furthest log instead.
-        if by_followers {
+        if by_followers || stepped_down() {
             promised
         } else {
             promised.max(inherited.min(tail))
@@ -2079,6 +2122,10 @@ impl<R: PeerRequester> PeerRequester for Witness<'_, R> {
 
     fn recorded_capabilities(&self, node_id: &str) -> Option<PeerCapabilities> {
         self.inner.recorded_capabilities(node_id)
+    }
+
+    fn offers_election(&self) -> bool {
+        self.inner.offers_election()
     }
 
     async fn identity(

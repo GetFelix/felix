@@ -521,6 +521,12 @@ pub trait PeerRequester: Sync {
         None
     }
 
+    /// Whether this broker offers `ELECTION`, so may send set fields to a
+    /// peer that offered it too. A requester that cannot tell does not.
+    fn offers_election(&self) -> bool {
+        false
+    }
+
     /// The storage identity and incarnation `node_id` gave in its
     /// handshake, reaching it if need be. A peer that gave neither cannot be
     /// told apart from a wiped copy of itself.
@@ -576,6 +582,10 @@ impl<T: PeerRequester + Send> PeerRequester for std::sync::Arc<T> {
         T::recorded_capabilities(self, node_id)
     }
 
+    fn offers_election(&self) -> bool {
+        T::offers_election(self)
+    }
+
     fn identity(
         &self,
         node_id: &str,
@@ -617,6 +627,12 @@ impl PeerRequester for PeerPool {
 
     fn recorded_capabilities(&self, node_id: &str) -> Option<PeerCapabilities> {
         self.known.get(node_id)
+    }
+
+    fn offers_election(&self) -> bool {
+        self.config
+            .capabilities()
+            .contains(PeerCapabilities::ELECTION)
     }
 
     async fn identity(

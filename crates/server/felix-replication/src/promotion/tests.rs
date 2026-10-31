@@ -227,6 +227,8 @@ impl Replica {
 struct Replicas {
     replicas: HashMap<String, Replica>,
     sent: Mutex<Vec<(String, Kind)>>,
+    /// Whether the promoted leader offers `ELECTION`.
+    electing: bool,
 }
 
 impl Replicas {
@@ -237,6 +239,7 @@ impl Replicas {
                 .map(|id| (id.to_string(), Replica::new(id)))
                 .collect(),
             sent: Mutex::new(Vec::new()),
+            electing: false,
         }
     }
 
@@ -311,6 +314,10 @@ impl PeerRequester for Replicas {
 
     fn recorded_capabilities(&self, node_id: &str) -> Option<PeerCapabilities> {
         Some(self.get(node_id).capabilities)
+    }
+
+    fn offers_election(&self) -> bool {
+        self.electing
     }
 
     async fn identity(
@@ -824,4 +831,63 @@ async fn an_inherited_record_acknowledged_on_a_majority_survives_the_next_fence(
             caught_up_from: None
         }
     );
+}
+
+/// **A promoted leader sends its set only to a replica that offered
+/// `ELECTION`, and only with the switch on**, and keeps that set itself,
+/// after its ballot, before the shard opens. With the switch off every fence
+/// is the one it always was and nothing is kept.
+#[tokio::test]
+async fn a_promotion_fence_carries_the_set_only_to_replicas_that_check_sets() {
+    let electing = PeerCapabilities::from_bits(REQUIRED.bits()).union(PeerCapabilities::ELECTION);
+    for (switch, b_offers, reachable, expected_kind) in [
+        (true, true, "broker-b", Kind::ElectionFence),
+        (true, false, "broker-b", Kind::Fence),
+        (false, true, "broker-b", Kind::Fence),
+    ] {
+        let mut replicas = Replicas::new();
+        replicas.electing = switch;
+        replicas.get_mut("broker-c").reachable = false;
+        if b_offers {
+            replicas.get_mut("broker-b").capabilities = electing;
+        }
+        replicas.get(reachable).holds(reachable, 4, 0, &["a"]).await;
+        let (leader, _dir) = leader_holding(4, &["a"]).await;
+
+        let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route(), true).await;
+
+        assert_eq!(
+            outcome,
+            Outcome::Fenced {
+                caught_up_from: None
+            }
+        );
+        assert_eq!(replicas.sent(expected_kind), vec![reachable.to_string()]);
+        let kept = if expected_kind == Kind::ElectionFence {
+            PROMOTED
+        } else {
+            0
+        };
+        assert_eq!(set_generation(&replicas.get(reachable).broker).await, kept);
+        let leader_log = leader
+            .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+            .await
+            .expect("log");
+        if switch {
+            assert_eq!(leader_log.set_generation(), PROMOTED);
+            assert_eq!(leader_log.accepted_generation(), PROMOTED);
+            assert_eq!(leader_log.accepted_leader().as_deref(), Some(LEADER));
+        } else {
+            assert_eq!(leader_log.set_generation(), 0);
+            assert!(leader_log.accepted_generation() < PROMOTED);
+        }
+    }
+}
+
+async fn set_generation(broker: &Broker) -> u64 {
+    broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log")
+        .set_generation()
 }

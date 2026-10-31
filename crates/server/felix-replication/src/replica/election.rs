@@ -11,8 +11,7 @@
 
 use std::time::Instant;
 
-use felix_storage::StorageId;
-use felix_storage::disk_log::{Member, Membership, ReplicaSet, SetCheck};
+use felix_storage::disk_log::{ReplicaSet, SetCheck};
 use felix_wire::internal::{ErrorCode, FenceElection, InternalMessage, ReplicaSetView};
 
 use super::{ReplicaHandler, refused};
@@ -79,8 +78,11 @@ impl ReplicaHandler {
         election: &FenceElection,
     ) -> Option<InternalMessage> {
         let set = ReplicaSet {
-            current: membership(&election.set),
-            leaving: election.leaving.as_ref().map(membership),
+            current: crate::replica_set::membership(&election.set),
+            leaving: election
+                .leaving
+                .as_ref()
+                .map(crate::replica_set::membership),
         };
         keep(correlation_id, key, log, set).await
     }
@@ -117,29 +119,13 @@ impl ReplicaHandler {
                 ),
             ));
         };
-        let storage = |node: &str| {
-            route
-                .fence_storage_ids
-                .as_deref()
-                .and_then(|ids| ids.get(node))
-                .and_then(|hex| storage_id_from_hex(hex))
-                .map(StorageId::from_bytes)
-        };
-        let set = ReplicaSet {
-            current: Membership {
-                generation: stamped,
-                members: std::iter::once(&route.leader)
-                    .chain(&route.replicas)
-                    .map(|node| Member {
-                        node: node.node_id.clone(),
-                        storage: storage(&node.node_id),
-                        learner: false,
-                    })
-                    .collect(),
-            },
-            leaving: None,
-        };
-        keep(correlation_id, key, log, set).await
+        keep(
+            correlation_id,
+            key,
+            log,
+            crate::replica_set::kept(route, None),
+        )
+        .await
     }
 
     /// Note that this replica heard its leader for `key`, for the stickiness
@@ -213,31 +199,4 @@ async fn keep(
             ))
         }
     }
-}
-
-fn membership(view: &ReplicaSetView) -> Membership {
-    Membership {
-        generation: view.generation,
-        members: view
-            .members
-            .iter()
-            .map(|member| Member {
-                node: member.node_id.clone(),
-                storage: member.storage_id.map(StorageId::from_bytes),
-                learner: member.learner,
-            })
-            .collect(),
-    }
-}
-
-/// The storage id a route names as hex, or `None` for an empty or damaged one.
-pub(crate) fn storage_id_from_hex(hex: &str) -> Option<[u8; 16]> {
-    if hex.len() != 32 {
-        return None;
-    }
-    let mut out = [0u8; 16];
-    for (i, byte) in out.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(hex.get(2 * i..2 * i + 2)?, 16).ok()?;
-    }
-    Some(out)
 }

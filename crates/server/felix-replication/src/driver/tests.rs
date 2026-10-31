@@ -8,6 +8,7 @@ mod answers;
 mod counters;
 mod cursors;
 mod drain;
+mod election;
 mod groups;
 mod halts;
 mod head_trim;

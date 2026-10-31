@@ -53,6 +53,7 @@ pub mod quorum;
 mod rebuild;
 pub mod reclaim;
 pub mod replica;
+mod replica_set;
 pub mod reporter;
 mod shard;
 mod ship;
