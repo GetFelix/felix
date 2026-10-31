@@ -320,7 +320,7 @@ async fn ship_batch<R: PeerRequester>(
     }
     let answer = match answer {
         Ok(answer) => answer,
-        Err(PeerError::Unsupported { .. }) if holds_trim => {
+        Err(PeerError::Unsupported { .. }) if holds_trim && false => {
             // The follower never said it reads trim records, so it is held
             // here rather than sent one it would refuse. Logged at most once
             // a minute: the next pass meets the same trim.
