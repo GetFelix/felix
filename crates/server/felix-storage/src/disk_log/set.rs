@@ -18,6 +18,7 @@
 
 use std::path::{Path, PathBuf};
 
+#[allow(unused_imports)]
 use crate::io::sync_dir;
 use crate::{Result, StorageError, StorageId};
 
