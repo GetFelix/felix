@@ -97,7 +97,28 @@ async fn level_at(cluster: &Cluster, leader: &str, followers: &[String], generat
 #[tokio::test]
 async fn a_two_member_swap_waits_for_the_old_majority() {
     let mut cluster = start().await;
+    // A set is kept from generation 1 on (0 is no set), and a set never kept
+    // is one nobody can stand on. Write the same set again so the leader
+    // keeps it before it changes.
+    let placed = assignment(&cluster).await;
+    let store = &cluster
+        .control_plane
+        .as_ref()
+        .expect("control plane running")
+        .store;
+    let same = store
+        .list_shard_assignments()
+        .await
+        .expect("assignments")
+        .into_iter()
+        .find(|assignment| assignment.key.stream == STREAM)
+        .expect("the stream's assignment");
+    store
+        .put_shard_assignment(same)
+        .await
+        .expect("rewrite the set");
     let before = assignment(&cluster).await;
+    assert!(before.generation > placed.generation, "{before:?}");
     let leader = before.leader.clone();
     assert_eq!(before.replicas.len(), 2, "RF 3: {before:?}");
     let spares: Vec<String> = cluster
