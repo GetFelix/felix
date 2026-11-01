@@ -205,9 +205,9 @@ it as `peer_election`, which no build does yet. Finalizing `joint_fence` is
 refused while a serving broker lacks it; `replica_election` is also refused
 before `joint_fence` and its other prerequisites, and until the control plane
 has the metadata level for the pending replica set (see
-[Moving a shard](#moving-a-shard)) and adoption. The pending set is built;
-adoption shares its level (21 under Raft) and is not, so the finalize stays
-refused. Like the prerequisites, these are checked when the operator asks.
+[Moving a shard](#moving-a-shard)) and adoption (see [Adopting an elected
+leader](#adopting-an-elected-leader)), 21 under Raft on every member. Like
+the prerequisites, these are checked when the operator asks.
 
 **Finalizing is one-way.** From then on a broker that registers without the
 feature is **refused with 409**, naming what it lacks; it logs the reason and
@@ -1099,6 +1099,7 @@ does not run placement (a Raft follower) waits for the leader's next tick.
 | `shard_move_timeout_ms` | `FELIX_SHARD_MOVE_TIMEOUT_MS` | 1800000 (30 min); `0` never gives up |
 | `shard_fence_timeout_ms` | `FELIX_SHARD_FENCE_TIMEOUT_MS` | 120000 (2 min); `0` waits for a fenced leader forever |
 | `shard_pending_set_timeout_ms` | `FELIX_SHARD_PENDING_SET_TIMEOUT_MS` | 600000 (10 min); `0` waits for a pending replica set forever |
+| `shard_election_hold_ms` | `FELIX_SHARD_ELECTION_HOLD_MS` | 10000 (10 s); `0` promotes on the followers' word without waiting under `replica_election` |
 | `shard_restore_after_ms` | `FELIX_SHARD_RESTORE_AFTER_MS` | 300000 (5 min); `0` never replaces a lost follower |
 | `shard_restore_stall_ms` | `FELIX_SHARD_RESTORE_STALL_MS` | 120000 (2 min); `0` waits for the move timeout |
 | `placement_settle_ms` | `FELIX_PLACEMENT_SETTLE_MS` | 10000 (10 s); `0` places new shards on whatever is live |
@@ -1171,6 +1172,53 @@ report's joint start is dropped, which keeps a change pending; finalizing
 migration 0038 (`pending_set`, `joint_start_acked`), each with a marker
 (`pending_set_generation`, `joint_start_acked_at`): what a member that
 predates the columns leaves behind reads as none.
+
+#### Adopting an elected leader
+
+Under `replica_election` a shard's replicas elect a leader themselves when
+theirs is lost, and the control plane adopts the result
+([replication-design.md](replication-design.md#electing-without-the-control-plane),
+rule 10). The elected broker reports at the generation it opened at, with
+`elected` in its shard entry: `leader` (itself), `generation`, `replicas`
+(the followers of the set it fenced) and `set_generation`. A report without
+it is unchanged, and no broker sends it yet.
+
+When the report's generation is above the assignment's, the report handler
+adopts before it judges the report, once `replica_election` is finalized.
+The write is conditional on the generation the handler read and lands at the
+elected generation itself, not the next one:
+
+- **The set is the control plane's** (while a change is pending, the pending
+  set at its `set_generation`, with the leader also in the old set): the
+  broker becomes `leader`, the rest of the old set stays in `replicas`, and a
+  pending set stays pending under the new leader. A move in progress ends;
+  a follower replacement goes on. The report is then that leader's and is
+  judged as usual.
+- **Any other set**: only the generation is taken. The leader, the set and
+  any pending set stay as they were, and the report is refused as
+  `not_leader`. A leader elected on the old set while a change is pending is
+  recorded this way: the new set's leader deposes it.
+
+Either way every later write, whoever makes it, is above the elected
+generation, because the store gives each write the one after the stored
+generation. An adoption that loses to another write is not retried; the
+elected leader's next report tries again. The confirmed read
+(`GET /v1/shard-assignments/confirmed`, under [How brokers follow
+ownership](#how-brokers-follow-ownership)) returns the adopted leader and
+generation like any other.
+
+Placement's promotion on the followers' word stays as the fallback. Under
+`replica_election`, on a shard whose replicas elect, a follower's suspicion
+counts only once the instance running placement has seen it held for
+`shard_election_hold_ms` (2×S at the brokers' default S of 5 s), so it does
+not race an election. Keep it at twice `FELIX_LEADER_SUSPECT_AFTER_MS` if
+that is changed. The clock is the instance's own and starts again when the
+lease changes hands. Promotion on a lapsed lease is unchanged.
+
+Under Raft adoption needs metadata level 21, like the pending set. Below it
+the write is refused before it reaches the log, so every member keeps the
+assignment it had and the report is judged as before. Postgres needs no
+migration for it.
 
 **Postgres: finish the control-plane upgrade before finalizing
 `replica_election`.** The finalize check runs on the instance that receives
@@ -1502,7 +1550,10 @@ none) read on the Raft leader after a read-index, so it is no older than any
 write acknowledged before the request. 503 means no leader confirmed it in
 time, 501 that the Raft leader predates it. A broker asks here only for a
 copy with no election promise on disk, before it takes a leader
-([#1332](https://github.com/GetFelix/felix/issues/1332)). It needs
+([#1332](https://github.com/GetFelix/felix/issues/1332)). An adopted
+leader is the assignment's leader at the elected generation, so this is
+also the read that tells a broker whether the control plane has adopted an
+election. It needs
 `node.view:cluster:*`, like the feed.
 
 **Long-poll.** `changes?since=N&wait_ms=M` waits, when there is nothing new,

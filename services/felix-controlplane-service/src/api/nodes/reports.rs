@@ -299,6 +299,7 @@ async fn record_one(
         Err(StoreError::NotFound(_)) => return Ok(ReportOutcome::Unassigned),
         Err(ref other) => return Err(api_internal("read shard assignment", other)),
     };
+    let assignment = adopt_if_elected(state, node_id, &key, shard, assignment).await?;
     if assignment.leader != node_id {
         tracing::warn!(
             node_id = %node_id,
@@ -421,6 +422,68 @@ async fn record_one(
         // shard is nobody's to report on any more.
         Err(StoreError::NotFound(_)) => Ok(ReportOutcome::Unassigned),
         Err(ref err) => Err(api_internal("record replica report", err)),
+    }
+}
+
+/// Adopt the reporting broker as the shard's leader if it elected itself
+/// above `assignment`'s generation (rule 10 of "Electing without the control
+/// plane" in docs/replication-design.md), and answer the assignment the rest
+/// of the report is judged against. Only once `replica_election` is
+/// finalized, and only on the elected leader's own report at the generation
+/// it opened at. An adoption that loses to another write is left to the
+/// leader's next report.
+async fn adopt_if_elected(
+    state: &AppState,
+    node_id: &str,
+    key: &crate::model::ShardKey,
+    shard: &ShardReplicaStatus,
+    assignment: crate::model::ShardAssignment,
+) -> Result<crate::model::ShardAssignment, ApiError> {
+    let Some(elected) = shard.elected.as_ref() else {
+        return Ok(assignment);
+    };
+    if elected.leader != node_id
+        || elected.generation != shard.generation
+        || shard.generation <= assignment.generation
+        || shard.stream_incarnation != assignment.incarnation
+    {
+        return Ok(assignment);
+    }
+    let enabled = state
+        .store
+        .enabled_fleet_features()
+        .await
+        .map_err(|ref err| api_internal("read fleet features", err))?;
+    if !enabled.contains(felix_common::fleet::REPLICA_ELECTION.name()) {
+        return Ok(assignment);
+    }
+    match state
+        .store
+        .adopt_elected_leader(key, assignment.generation, elected.clone().into())
+        .await
+    {
+        Ok(crate::store::AssignmentWrite::Written(written)) => {
+            let adopted = written.leader == node_id;
+            tracing::info!(
+                node_id = %node_id,
+                generation = written.generation,
+                stream = %key.stream,
+                shard = key.shard,
+                adopted,
+                "an elected leader reported; the control plane took its generation",
+            );
+            state.placement_wakes.request_pass();
+            Ok(written)
+        }
+        Ok(_) => Ok(assignment),
+        // Below metadata level 21 under Raft, or a set the store refuses:
+        // the report is judged as before, against the assignment as it is.
+        Err(StoreError::Conflict(reason)) => {
+            tracing::debug!(%reason, "an elected leader was not adopted");
+            Ok(assignment)
+        }
+        Err(StoreError::NotFound(_)) => Ok(assignment),
+        Err(ref err) => Err(api_internal("adopt an elected leader", err)),
     }
 }
 

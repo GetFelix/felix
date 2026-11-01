@@ -26,8 +26,9 @@ pub use node::{
 };
 pub(crate) use shard::first_generation;
 pub use shard::{
-    HaltedCopy, MoveReason, PendingSet, ReplicaReport, ShardAssignment, ShardAssignmentChange,
-    ShardAssignmentChangeOp, ShardKey, ShardKind, ShardState, ShardValidationError,
+    ElectedLeader, HaltedCopy, MoveReason, PendingSet, ReplicaReport, ShardAssignment,
+    ShardAssignmentChange, ShardAssignmentChangeOp, ShardKey, ShardKind, ShardState,
+    ShardValidationError,
 };
 pub(crate) use stream::default_replication_factor;
 pub(crate) use stream::deleted_stream_payload;

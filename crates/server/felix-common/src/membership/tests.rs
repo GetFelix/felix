@@ -48,6 +48,7 @@ fn a_report_that_is_not_drained_omits_the_field() {
         replica_storage_ids: BTreeMap::new(),
         inherited_storage_ids: BTreeMap::new(),
         joint_start_acked: None,
+        elected: None,
     };
     let json = serde_json::to_string(&status).expect("write");
     assert!(!json.contains("drained"), "{json}");
@@ -84,6 +85,7 @@ fn a_report_without_storage_ids_is_unchanged() {
         replica_storage_ids: BTreeMap::new(),
         inherited_storage_ids: BTreeMap::new(),
         joint_start_acked: None,
+        elected: None,
     };
     let today = r#"{"tenant_id":"t1","namespace":"ns","stream":"orders","shard":0,"kind":"stream","generation":1,"caught_up":["broker-b"],"replica_offsets":[],"leader_offset":3}"#;
     assert_eq!(serde_json::to_string(&status).expect("write"), today);
@@ -152,6 +154,7 @@ fn a_report_round_trips() {
                 "cd000000000000000000000000000000".into(),
             )]),
             joint_start_acked: None,
+            elected: None,
         }],
     };
     let json = serde_json::to_string(&report).expect("write");
@@ -172,4 +175,32 @@ fn an_older_report_without_a_kind_reads_as_a_stream() {
     assert!(parsed.shards[0].replica_offsets.is_empty());
     // And as a leader on its lease, so placement waits the lease out.
     assert!(!parsed.shards[0].by_round);
+}
+
+/// **An elected leader's report names its election after everything else**,
+/// and an older report reads as from a leader the control plane named.
+#[test]
+fn an_elected_leadership_is_appended_and_absent_reads_as_none() {
+    let today = r#"{"tenant_id":"t1","namespace":"ns","stream":"orders","shard":0,"kind":"stream","generation":4,"caught_up":[],"replica_offsets":[]}"#;
+    let status: ShardReplicaStatus = serde_json::from_str(today).expect("read");
+    assert_eq!(status.elected, None);
+    assert_eq!(serde_json::to_string(&status).expect("write"), today);
+    let elected = ShardReplicaStatus {
+        elected: Some(ElectedLeadership {
+            leader: "broker-b".into(),
+            generation: 4,
+            replicas: vec!["broker-a".into(), "broker-c".into()],
+            set_generation: 2,
+        }),
+        ..status
+    };
+    let json = serde_json::to_string(&elected).expect("write");
+    assert!(
+        json.ends_with(
+            r#","elected":{"leader":"broker-b","generation":4,"replicas":["broker-a","broker-c"],"set_generation":2}}"#
+        ),
+        "{json}"
+    );
+    let parsed: ShardReplicaStatus = serde_json::from_str(&json).expect("read");
+    assert_eq!(parsed, elected);
 }

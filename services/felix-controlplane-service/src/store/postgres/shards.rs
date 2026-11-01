@@ -4,8 +4,8 @@ use sqlx::FromRow;
 
 use super::{PostgresStore, begin_consistent_read, page_fetch};
 use crate::model::{
-    MoveReason, ReplicaReport, ShardAssignment, ShardAssignmentChange, ShardAssignmentChangeOp,
-    ShardKey, ShardKind, ShardState, ShardValidationError,
+    ElectedLeader, MoveReason, ReplicaReport, ShardAssignment, ShardAssignmentChange,
+    ShardAssignmentChangeOp, ShardKey, ShardKind, ShardState, ShardValidationError,
 };
 use crate::store::{
     AssignmentWrite, ChangeSet, Page, PageRequest, PlacementLease, ReportWrite, Snapshot,
@@ -81,7 +81,7 @@ pub(super) async fn put_shard_assignment(
     store: &PostgresStore,
     assignment: ShardAssignment,
 ) -> StoreResult<ShardAssignment> {
-    match write_shard_assignment(store, assignment, None, None).await? {
+    match write_shard_assignment(store, assignment, None, None, None).await? {
         AssignmentWrite::Written(stored) => Ok(stored),
         AssignmentWrite::Stale { .. } | AssignmentWrite::Fenced { .. } => {
             unreachable!("an unconditional write is never stale")
@@ -95,17 +95,57 @@ pub(super) async fn put_shard_assignment_if(
     expected_generation: Option<u64>,
     fence: u64,
 ) -> StoreResult<AssignmentWrite> {
-    write_shard_assignment(store, assignment, Some(expected_generation), Some(fence)).await
+    write_shard_assignment(
+        store,
+        assignment,
+        Some(expected_generation),
+        Some(fence),
+        None,
+    )
+    .await
+}
+
+/// Decided from a read outside the transaction, and written only over the
+/// generation that read found: every write moves the generation, so the row
+/// is still the one decided from.
+pub(super) async fn adopt_elected_leader(
+    store: &PostgresStore,
+    key: &ShardKey,
+    expected_generation: u64,
+    elected: &ElectedLeader,
+) -> StoreResult<AssignmentWrite> {
+    let current = get_shard_assignment(store, key).await?;
+    if current.generation != expected_generation {
+        return Ok(AssignmentWrite::Stale {
+            current: Some(current.generation),
+        });
+    }
+    let Some(adopted) = current.adopting(elected) else {
+        return Ok(AssignmentWrite::Stale {
+            current: Some(current.generation),
+        });
+    };
+    write_shard_assignment(
+        store,
+        adopted,
+        Some(Some(expected_generation)),
+        None,
+        Some(elected.generation),
+    )
+    .await
 }
 
 /// `expected`: `None` writes unconditionally, `Some(generation)` only over
 /// that generation (`Some(None)`: only where there is no assignment).
-/// `fence`: the placement token the write must find.
+/// `fence`: the placement token the write must find. `elected`: an
+/// adoption's generation, written in place of the next one; only over an
+/// assignment below it.
 async fn write_shard_assignment(
     store: &PostgresStore,
     assignment: ShardAssignment,
     expected: Option<Option<u64>>,
     fence: Option<u64>,
+    elected: Option<u64>,
 ) -> StoreResult<AssignmentWrite> {
     assignment.validate().map_err(invalid_shard)?;
     let mut tx = store.pool.begin().await?;
@@ -210,11 +250,17 @@ async fn write_shard_assignment(
                     to: assignment.state,
                 }));
             }
-            (
-                ShardAssignmentChangeOp::Updated,
-                existing.generation.saturating_add(1),
-            )
+            let generation = match elected {
+                Some(elected) if elected <= existing.generation => {
+                    return Ok(AssignmentWrite::Stale { current });
+                }
+                Some(elected) => elected,
+                None => existing.generation.saturating_add(1),
+            };
+            (ShardAssignmentChangeOp::Updated, generation)
         }
+        // Only an assignment can be adopted.
+        None if elected.is_some() => return Ok(AssignmentWrite::Stale { current }),
         // The change's sequence number is taken here, before the write, so
         // a new stream's first generation can be it; see
         // `model::first_generation`.

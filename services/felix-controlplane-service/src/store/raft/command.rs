@@ -245,6 +245,13 @@ pub enum MetaCommand {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         seq_generation: bool,
     },
+    /// Adopt a leader that elected itself
+    /// ([`crate::store::ControlPlaneStore::adopt_elected_leader`]). Level 21.
+    AdoptElectedLeader {
+        key: ShardKey,
+        expected_generation: u64,
+        elected: crate::model::ElectedLeader,
+    },
     /// The placement lease goes to `holder`, advancing the token if it
     /// changes hands. Proposed only by a confirmed leader, so no expiry.
     TakePlacementLease {
@@ -491,6 +498,9 @@ impl MetaCommand {
                 21
             }
             Self::RegisterNodeInFleet { .. } | Self::FinalizeFleetFeature { .. } => 2,
+            // Writes a generation the store did not pick, which a member
+            // before level 21 cannot apply.
+            Self::AdoptElectedLeader { .. } => 21,
             Self::CreateResources { .. } => 5,
             Self::RevokePrincipals { .. } => 7,
             Self::ChangeAuthAndRevoke { .. } | Self::RotateRefreshToken { .. } => 9,

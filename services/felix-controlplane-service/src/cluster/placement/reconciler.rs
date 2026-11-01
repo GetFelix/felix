@@ -302,6 +302,8 @@ pub(super) async fn plan_pass(
     read.positions.set_fences(fenced);
     let pending = progress.observe_pending(&read.existing, &read.positions);
     read.positions.set_pending(pending);
+    let suspected = progress.observe_suspicions(&read.positions);
+    read.positions.set_suspected_since(suspected);
     read.positions
         .set_give_ups(progress.give_ups(&read.existing));
     let plan = read.plan(policy);

@@ -39,6 +39,7 @@ fn status(
     felix_common::membership::ShardReplicaStatus {
         inherited_storage_ids: Default::default(),
         joint_start_acked: None,
+        elected: None,
         given_up: false,
         replica_counter_offsets: Vec::new(),
         tenant_id: "t1".to_string(),
@@ -664,4 +665,76 @@ async fn a_follower_measured_at_no_incarnation_is_not_counted() {
     let held = store.list_replica_reports().await.expect("list");
     assert!(!held[0].node_incarnations.contains_key("broker-y"));
     assert!(held[0].node_incarnations.contains_key("broker-x"));
+}
+
+/// **Over the API: broker-x reports that it elected itself on y's set, two
+/// generations past y.** Until `replica_election` is finalized it is not the
+/// leader, and refused as before. After,
+/// the control plane makes x the leader at exactly that generation, and the
+/// same report is then x's to make.
+#[tokio::test]
+async fn an_elected_leaders_report_is_adopted_once_replica_election_is_finalized() {
+    let (store, keys) = one_shard_cluster().await;
+    let led_by_y = store
+        .put_shard_assignment(ShardAssignment {
+            key: shard_zero(),
+            leader: "broker-y".to_string(),
+            replicas: vec!["broker-x".to_string()],
+            generation: 0,
+            state: ShardState::Assigning,
+            successor: None,
+            joining: None,
+            move_started_at_millis: None,
+            move_reason: None,
+            incarnation: 0,
+            fence_storage_ids: Default::default(),
+            pending_set: None,
+        })
+        .await
+        .expect("assign");
+    let at = led_by_y.generation + 2;
+    let mut shard = shard_json(0, at, 10, &["broker-y"]);
+    shard["elected"] = serde_json::json!({
+        "leader": "broker-x",
+        "generation": at,
+        "replicas": ["broker-y"],
+        "set_generation": led_by_y.generation,
+    });
+    let state = app_state_ready(Arc::clone(&store) as _);
+    let election = felix_common::fleet::REPLICA_ELECTION.name();
+    let outcome =
+        |answer: felix_common::membership::ReplicaStatusResponse| answer.shards[0].outcome;
+
+    let (_, refused) = post_report(state.clone(), &keys, serde_json::json!([shard.clone()])).await;
+    assert_eq!(
+        outcome(refused),
+        felix_common::membership::ReportOutcome::NotLeader
+    );
+    assert_eq!(
+        store
+            .get_shard_assignment(&shard_zero())
+            .await
+            .expect("get"),
+        led_by_y,
+        "adopted before replica_election was finalized"
+    );
+
+    for id in ["broker-x", "broker-y"] {
+        let mut node = store.get_node(id).await.expect("node");
+        node.status.features = [election.to_string()].into();
+        store.register_node(node).await.expect("offer the feature");
+    }
+    store
+        .finalize_fleet_feature(election)
+        .await
+        .expect("finalize");
+    let (status, adopted) = post_report(state, &keys, serde_json::json!([shard])).await;
+    assert_eq!(status, StatusCode::OK, "{adopted:?}");
+    let assignment = store
+        .get_shard_assignment(&shard_zero())
+        .await
+        .expect("get");
+    assert_eq!(assignment.leader, "broker-x");
+    assert_eq!(assignment.generation, at);
+    assert_eq!(assignment.replicas, vec!["broker-y"]);
 }

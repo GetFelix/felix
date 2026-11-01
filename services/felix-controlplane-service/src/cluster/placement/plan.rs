@@ -317,6 +317,7 @@ fn plan_once(
         .collect();
     let unpaced_max = policy.fence_max_lag_records;
     let (replica_election, fenced_caches) = (policy.replica_election, policy.fenced_caches);
+    let election_hold = policy.election_hold_millis;
     let mut moves = Moves::counting(existing, policy, &|assignment| {
         let replication_factor = placeable_of
             .get(owner_of(&assignment.key).as_str())
@@ -393,10 +394,14 @@ fn plan_once(
         // plane still hears from it. Only where a promoted leader fences a
         // majority before it serves and the old one serves nothing on its
         // lease alone, so the old one is kept out without waiting for it.
+        // The shards whose replicas elect (replication-design.md, "Which
+        // shards") hold this back for 2×S, so it does not race an election.
+        let elects = replica_election && fenced && (key.kind == ShardKind::Stream || fenced_caches);
+        let hold = election_hold.filter(|_| elects);
         let deposed = current.get(&key).is_some_and(|existing| {
             fenced
                 && is_live(&existing.leader)
-                && deposed_by_followers(&key, existing, &is_live, caught_up)
+                && deposed_by_followers(&key, existing, &is_live, caught_up, hold)
                 && promote(&key, existing, &eligible, caught_up).is_some()
         });
 
@@ -440,9 +445,7 @@ fn plan_once(
                 &mut moves,
                 fenced,
                 &is_lost,
-                // The shards whose replicas elect (replication-design.md,
-                // "Which shards").
-                replica_election && fenced && (key.kind == ShardKind::Stream || fenced_caches),
+                elects,
             );
             shards.push(ShardPlan { key, decision });
             note_spread(&mut unspread, shards.last(), &current, &eligible);
@@ -701,11 +704,16 @@ pub fn assignment_for(key: &ShardKey, leader: &str, replicas: Vec<String>) -> Sh
 /// can answer the next leader's fence. Not while a move or a replacement is
 /// under way: those change the set, and finish or end through their own
 /// steps.
+///
+/// With `hold`, a follower counts only once this instance has seen it
+/// suspect the leader for that long: under `replica_election` the replicas
+/// elect first, and this is the fallback.
 fn deposed_by_followers(
     key: &ShardKey,
     existing: &ShardAssignment,
     is_live: &dyn Fn(&str) -> bool,
     caught_up: &dyn CaughtUp,
+    hold: Option<u64>,
 ) -> bool {
     if existing.successor.is_some()
         || existing.joining.is_some()
@@ -718,6 +726,17 @@ fn deposed_by_followers(
         .iter()
         .filter(|follower| is_live(follower))
         .filter(|follower| caught_up.suspects(key, existing.generation, follower, &existing.leader))
+        .filter(|follower| {
+            hold.is_none_or(|hold| {
+                match (
+                    caught_up.suspected_since_millis(follower, &existing.leader),
+                    caught_up.as_of_millis(),
+                ) {
+                    (Some(since), Some(now)) => now.saturating_sub(since) >= hold,
+                    _ => false,
+                }
+            })
+        })
         .count();
     // A majority of the set, the leader in it.
     saying * 2 > existing.replicas.len() + 1

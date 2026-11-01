@@ -240,6 +240,31 @@ pub struct ShardAssignment {
     pub pending_set: Option<PendingSet>,
 }
 
+/// A leader that elected itself, as its report names it (rule 10 of
+/// "Electing without the control plane" in docs/replication-design.md).
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq, Eq)]
+pub struct ElectedLeader {
+    /// The node that opened, and reported it.
+    pub leader: String,
+    /// The generation it opened at.
+    pub generation: u64,
+    /// The followers of the set it fenced.
+    pub replicas: Vec<String>,
+    /// The generation that set was written at.
+    pub set_generation: u64,
+}
+
+impl From<felix_common::membership::ElectedLeadership> for ElectedLeader {
+    fn from(elected: felix_common::membership::ElectedLeadership) -> Self {
+        Self {
+            leader: elected.leader,
+            generation: elected.generation,
+            replicas: elected.replicas,
+            set_generation: elected.set_generation,
+        }
+    }
+}
+
 /// A set change a cut-over has started and the control plane has not yet
 /// taken as its own.
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq, Eq)]
@@ -385,13 +410,101 @@ impl ShardAssignment {
     ) -> Result<(), ShardValidationError> {
         match &self.pending_set {
             Some(pending)
-                if current.and_then(|c| c.pending_set.as_ref()) != Some(pending)
+                if !current
+                    .is_some_and(|current| current.pending_members() == self.pending_members())
                     && pending.generation != written =>
             {
                 Err(ShardValidationError::PendingSetGeneration)
             }
             _ => Ok(()),
         }
+    }
+
+    /// A pending set's members, its leader (the assignment's) included, and
+    /// the generation that wrote it. An adoption can change the leader of a
+    /// set without starting a new one.
+    fn pending_members(&self) -> Option<(BTreeSet<&String>, u64)> {
+        let pending = self.pending_set.as_ref()?;
+        let members = std::iter::once(&self.leader)
+            .chain(pending.replicas.iter())
+            .collect();
+        Some((members, pending.generation))
+    }
+
+    /// What adopting `elected` writes over this assignment, at
+    /// `elected.generation`, or `None` when that is not above this one's.
+    ///
+    /// When the leader's set is the control plane's (while a change is
+    /// pending, the pending set at its generation) the leader becomes this
+    /// shard's, the change staying pending. Otherwise only the generation is
+    /// taken, so every later one the control plane issues is above it. This
+    /// is `CpAdopt` in docs/formal/FelixShard.tla. A pending set's leader
+    /// must also be in the old set, which is the control plane's while the
+    /// change is pending; one that is not is recorded only.
+    pub fn adopting(&self, elected: &ElectedLeader) -> Option<ShardAssignment> {
+        if elected.generation <= self.generation {
+            return None;
+        }
+        let members: BTreeSet<&String> = std::iter::once(&elected.leader)
+            .chain(elected.replicas.iter())
+            .collect();
+        let matches = match &self.pending_set {
+            Some(pending) => {
+                pending.generation == elected.set_generation
+                    && Some((members, pending.generation)) == self.pending_members()
+                    && self.nodes().any(|node| *node == elected.leader)
+            }
+            None => members == self.nodes().collect(),
+        };
+        // Set only by a promotion, and this is none.
+        let recorded = ShardAssignment {
+            generation: elected.generation,
+            fence_storage_ids: BTreeMap::new(),
+            ..self.clone()
+        };
+        if !matches {
+            return Some(recorded);
+        }
+        let others = |nodes: Vec<&String>| -> Vec<String> {
+            nodes
+                .into_iter()
+                .filter(|node| **node != elected.leader)
+                .cloned()
+                .collect()
+        };
+        // A move was planned around the leader this replaces, so it ends. A
+        // replacement goes on: its copy is in the set either way.
+        let moving = self.successor.is_some() || self.state == ShardState::Draining;
+        let joining = self
+            .joining
+            .clone()
+            .filter(|joining| *joining != elected.leader);
+        let (move_started_at_millis, move_reason) = if joining.is_some() || !moving {
+            (self.move_started_at_millis, self.move_reason)
+        } else {
+            (None, None)
+        };
+        Some(ShardAssignment {
+            leader: elected.leader.clone(),
+            replicas: others(self.nodes().collect()),
+            state: match self.state {
+                ShardState::Draining => ShardState::Assigning,
+                state => state,
+            },
+            successor: None,
+            joining,
+            move_started_at_millis,
+            move_reason,
+            pending_set: self.pending_set.as_ref().map(|pending| PendingSet {
+                replicas: others(
+                    std::iter::once(&self.leader)
+                        .chain(pending.replicas.iter())
+                        .collect(),
+                ),
+                generation: pending.generation,
+            }),
+            ..recorded
+        })
     }
 
     /// Every node in the control plane's set, leader first. Not the

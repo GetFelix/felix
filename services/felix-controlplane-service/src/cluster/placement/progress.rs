@@ -25,6 +25,9 @@ pub(super) struct CopyProgress {
     /// Pending replica sets, by shard and the generation that wrote them:
     /// when this instance first saw each.
     pendings: HashMap<(ShardKey, u64), u64>,
+    /// Fresh suspicions, by follower and the leader it suspects: when this
+    /// instance first saw each.
+    suspicions: HashMap<(String, String), u64>,
     /// Moves given up at the fence in a row, by shard: the leader they left
     /// in place, how many, and when the last was. Forgotten once the shard
     /// has another leader, which a cut-over gives it.
@@ -128,6 +131,27 @@ impl CopyProgress {
             })
             .collect();
         self.fences.clone()
+    }
+
+    /// Note every fresh suspicion in `positions`, and answer since when this
+    /// instance has seen each without a break. One that lapsed is forgotten,
+    /// so it starts again when it is next held.
+    pub(super) fn observe_suspicions(
+        &mut self,
+        positions: &super::ReplicaPositions,
+    ) -> HashMap<(String, String), u64> {
+        let Some(now) = positions.as_of_millis() else {
+            return HashMap::new();
+        };
+        self.suspicions = positions
+            .suspicions()
+            .map(|(follower, leader)| {
+                let id = (follower.to_string(), leader.to_string());
+                let since = self.suspicions.get(&id).copied().unwrap_or(now);
+                (id, since)
+            })
+            .collect();
+        self.suspicions.clone()
     }
 
     /// Note every pending set in `existing`, and answer when this instance

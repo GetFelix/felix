@@ -331,6 +331,24 @@ pub trait ControlPlaneStore: Send + Sync {
         expected_generation: Option<u64>,
         fence: u64,
     ) -> StoreResult<AssignmentWrite>;
+    /// Adopt a leader that elected itself, if the shard is still at
+    /// `expected_generation`: [`ShardAssignment::adopting`], written at the
+    /// elected generation rather than the next one, so every later write
+    /// issues above it. Not fenced by the placement token: it starts no
+    /// move, and any placement write planned from an older read is stale.
+    ///
+    /// [`AssignmentWrite::Stale`] when the shard has moved on, or when the
+    /// elected generation is not above `expected_generation`. A write whose
+    /// leader is not `elected.leader` recorded the generation only.
+    ///
+    /// Under Raft it needs metadata level 21 on every member, and is
+    /// refused below it.
+    async fn adopt_elected_leader(
+        &self,
+        key: &ShardKey,
+        expected_generation: u64,
+        elected: crate::model::ElectedLeader,
+    ) -> StoreResult<AssignmentWrite>;
     async fn get_shard_assignment(&self, key: &ShardKey) -> StoreResult<ShardAssignment>;
     /// The assignment for `key`, read no earlier than every write
     /// acknowledged before the call. [`Self::get_shard_assignment`] on a
