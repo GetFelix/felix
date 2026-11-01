@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793509533499,
+  "lastUpdate": 1793537033275,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -52008,6 +52008,72 @@ window.BENCHMARK_DATA = {
             "range": "349.45",
             "unit": "us",
             "extra": "trials: 5\nmedian: 403.00\nmean: 559.80\nstdev: 349.45\ncv: 62.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3320c985eff5930fe075654ab65cb718c598e7a1",
+          "message": "feat(controlplane): adopt elected leaders, never reissue below them, 2xS hold (#1009 S7) (#1729)\n\n* feat(controlplane): adopt elected leaders, never reissue below them, hold suspicion promotion 2xS (#1009 S7)\n\nA broker's replica report can carry `elected`: the generation it opened at\nand the set it fenced, with that set's generation. Brokers do not send it\nyet (S9); absent, the report is byte-identical.\n\nOnce replica_election is finalized, the report handler adopts an elected\nleader whose report is above the assignment's generation. The write is\nconditional on the generation it read and lands at the elected generation\nitself, so every later write, from any writer, is above it. On the set the\ncontrol plane records (the pending set at its generation while one is\npending, with the leader also in the old set) the broker becomes the leader\nand a pending change stays pending. On any other set only the generation is\ntaken: a leader elected on the old set while a change is pending is\nrecorded, not adopted. Under Raft adoption is a new command at metadata\nlevel 21, refused before it reaches the log below it. Postgres needs no\nmigration.\n\nUnder replica_election, placement's promotion on the followers' word waits\nuntil the instance has seen each suspicion held for\nFELIX_SHARD_ELECTION_HOLD_MS (10 s, 2xS). Lease-lapse promotion is\nunchanged.\n\nELECTION_METADATA_LEVEL_READY is now true. replica_election stays\nunfinalizable while no broker offers ELECTION.\n\nSpec-Unaffected: implements CpAdopt with AdoptMatch as FelixShard.tla models it; ElectAdopt, ElectAdoptNoMatch and ElectAdoptPromote now cite the tests.\n\n* fix(controlplane): bound elected generations, keep election finalize off, record a joining leader (#1009 S7)\n\nRefuse adoption more than 16 generations past the stored one or above\ni64::MAX, issue generations with checked_add in every store, hold\nELECTION_METADATA_LEVEL_READY false until the election driver, and record\nonly (generation) when the elected leader is the joining copy.",
+          "timestamp": "2026-11-01T04:39:34-08:00",
+          "tree_id": "b45a22f7169603e385d09b993c128adc0d94ba11",
+          "url": "https://github.com/GetFelix/felix/commit/3320c985eff5930fe075654ab65cb718c598e7a1"
+        },
+        "date": 1793537025822,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 111,
+            "range": "1.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 111.00\nmean: 111.00\nstdev: 1.00\ncv: 0.90%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 155,
+            "range": "6.18",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 155.00\nmean: 155.20\nstdev: 6.18\ncv: 3.98%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 205,
+            "range": "88.04",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 205.00\nmean: 247.60\nstdev: 88.04\ncv: 35.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 144,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 144.00\nmean: 144.20\nstdev: 0.45\ncv: 0.31%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 286,
+            "range": "9.04",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 286.00\nmean: 286.60\nstdev: 9.04\ncv: 3.16%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 416,
+            "range": "116.91",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 416.00\nmean: 443.40\nstdev: 116.91\ncv: 26.37%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
