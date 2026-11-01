@@ -3576,7 +3576,9 @@ capability, and `replica_election` is refused until `joint_fence` and its
 other prerequisites are finalized, every serving broker offers `ELECTION`,
 and the control plane has the metadata level for the pending replica set and
 adoption (level 21 under Raft, which every member must report). No broker
-offers `ELECTION`, so both features stay unfinalizable.
+offers `ELECTION`, and the control plane holds its own flag back until the
+election driver (#1009 S9) turns it on, with joint fences, two-majority acks
+and the wiped-voter guard in, so both features stay unfinalizable.
 
 Not built yet: joint fences and the fenced next-generation open, the pre-vote
 and the election driver.
@@ -3615,7 +3617,13 @@ and its cancel) then issues the next generation above it, because the store
 gives each write the one after the stored generation. A pending set's leader
 must also be in the old set, which is the control plane's while the change is
 pending, so one elected on the new set from outside the old one is recorded
-and not adopted; the change then ends on its timeout or a failover. Placement's
+and not adopted; the change then ends on its timeout or a failover. This is
+stricter than the model, which would adopt there, and the difference is not
+modelled. Recorded has a liveness cost: while the old leader stays live, the
+shard waits for the pending timeout (10 min) or a lease lapse, and with no
+pending set it has no bound until the election driver; see the S9 liveness
+issue. An election more than 16 generations past the control plane's is
+refused, and a joining follower elected leader is recorded only. Placement's
 promotion on the followers' word waits 2×S under `replica_election`
 (`FELIX_SHARD_ELECTION_HOLD_MS`, 10 s), and promotion on a lapsed lease is
 unchanged. No broker sends `elected` yet.

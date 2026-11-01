@@ -254,8 +254,13 @@ async fn write_shard_assignment(
                 Some(elected) if elected <= existing.generation => {
                     return Ok(AssignmentWrite::Stale { current });
                 }
-                Some(elected) => elected,
-                None => existing.generation.saturating_add(1),
+                Some(elected) => {
+                    crate::model::check_elected_generation(existing.generation, elected)
+                        .map_err(StoreError::Conflict)?;
+                    elected
+                }
+                None => crate::model::next_generation(existing.generation)
+                    .map_err(StoreError::Conflict)?,
             };
             (ShardAssignmentChangeOp::Updated, generation)
         }

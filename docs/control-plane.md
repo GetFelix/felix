@@ -206,8 +206,11 @@ refused while a serving broker lacks it; `replica_election` is also refused
 before `joint_fence` and its other prerequisites, and until the control plane
 has the metadata level for the pending replica set (see
 [Moving a shard](#moving-a-shard)) and adoption (see [Adopting an elected
-leader](#adopting-an-elected-leader)), 21 under Raft on every member. Like
-the prerequisites, these are checked when the operator asks.
+leader](#adopting-an-elected-leader)), 21 under Raft on every member. The
+level is built, but the control plane still refuses the finalize: the election
+driver turns it on once joint fences, two-majority acks and the wiped-voter
+guard are in. Like the prerequisites, these are checked when the operator
+asks.
 
 **Finalizing is one-way.** From then on a broker that registers without the
 feature is **refused with 409**, naming what it lacks; it logs the reason and
@@ -1199,9 +1202,21 @@ elected generation itself, not the next one:
   `not_leader`. A leader elected on the old set while a change is pending is
   recorded this way: the new set's leader deposes it.
 
+An election more than 16 generations past the assignment's, or past
+`i64::MAX`, is refused and the report is judged as before: elections run a
+few generations at most between two reports, and a far generation would push
+every later write toward the top of the range. A store whose generation is
+the last it can issue refuses further writes instead of repeating one.
+
 Either way every later write, whoever makes it, is above the elected
 generation, because the store gives each write the one after the stored
-generation. An adoption that loses to another write is not retried; the
+generation. A store error during adoption is logged and the report is judged
+against the assignment as it was, like a lost write.
+
+A joining follower (a replacement in progress) elected leader is recorded
+only: the copy it replaces is not named in the assignment, so naming the
+joining copy leader could not drop that copy from the set. The replacement
+goes on under the old leader. An adoption that loses to another write is not retried; the
 elected leader's next report tries again. The confirmed read
 (`GET /v1/shard-assignments/confirmed`, under [How brokers follow
 ownership](#how-brokers-follow-ownership)) returns the adopted leader and

@@ -456,6 +456,11 @@ impl ShardAssignment {
             }
             None => members == self.nodes().collect(),
         };
+        // The copy a joining follower replaces is not recorded, so naming the
+        // joining copy leader could not drop it from the set (RF + 1 for
+        // good) or end the replacement consistently: only the generation is
+        // taken, and the replacement goes on under its own leader.
+        let matches = matches && self.joining.as_ref() != Some(&elected.leader);
         // Set only by a promotion, and this is none.
         let recorded = ShardAssignment {
             generation: elected.generation,
@@ -475,10 +480,7 @@ impl ShardAssignment {
         // A move was planned around the leader this replaces, so it ends. A
         // replacement goes on: its copy is in the set either way.
         let moving = self.successor.is_some() || self.state == ShardState::Draining;
-        let joining = self
-            .joining
-            .clone()
-            .filter(|joining| *joining != elected.leader);
+        let joining = self.joining.clone();
         let (move_started_at_millis, move_reason) = if joining.is_some() || !moving {
             (self.move_started_at_millis, self.move_reason)
         } else {
@@ -739,6 +741,36 @@ pub(crate) fn first_generation(incarnation: u64, change_seq: u64, from_seq: bool
     } else {
         change_seq
     }
+}
+
+/// How far past the control plane's generation an adopted election may land.
+/// An election takes one generation per attempt, and a leader reports within
+/// seconds of winning, so a few failed attempts between two reports is the
+/// most a healthy cluster shows. A generation far past that is a corrupt or
+/// hostile report, and taking it would push every later write toward the top
+/// of the range.
+pub(crate) const ELECTION_GENERATION_WINDOW: u64 = 16;
+
+/// The generation after `current`, or why there is none. Generations are
+/// bound as signed integers by Postgres, so the top is `i64::MAX`; a store
+/// at it refuses to issue instead of repeating one.
+pub(crate) fn next_generation(current: u64) -> Result<u64, String> {
+    current
+        .checked_add(1)
+        .filter(|next| *next <= i64::MAX as u64)
+        .ok_or_else(|| format!("generation {current} is the last the control plane can issue"))
+}
+
+/// Whether adopting an election at `elected` over `current` is allowed:
+/// within [`ELECTION_GENERATION_WINDOW`] and representable.
+pub(crate) fn check_elected_generation(current: u64, elected: u64) -> Result<(), String> {
+    if elected > i64::MAX as u64 || elected > current.saturating_add(ELECTION_GENERATION_WINDOW) {
+        return Err(format!(
+            "elected generation {elected} is more than {ELECTION_GENERATION_WINDOW} past the \
+             control plane's {current}",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

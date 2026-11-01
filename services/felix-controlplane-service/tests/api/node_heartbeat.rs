@@ -483,8 +483,8 @@ async fn follower_features_are_finalized_after_generation_start() {
 
 /// The election features are refused over the API while a serving broker does
 /// not offer `ELECTION`, and `replica_election` is refused before
-/// `joint_fence`. With everything in place it goes through: this control
-/// plane has the metadata level (the pending set and adoption).
+/// `joint_fence`. Even with everything offered it is refused for the metadata
+/// level: the election driver (#1009 S9) turns that on.
 #[tokio::test]
 async fn election_features_are_refused_with_their_reason() {
     let store = store();
@@ -582,14 +582,9 @@ async fn election_features_are_refused_with_their_reason() {
         .await
         .expect("request");
     assert_eq!(response.status(), StatusCode::OK);
-    let response = app
-        .clone()
-        .oneshot(finalize("replica_election", false))
-        .await
-        .expect("request");
-    assert_eq!(response.status(), StatusCode::OK);
+    refused("control-plane metadata level", "replica_election").await;
     assert!(
-        store
+        !store
             .enabled_fleet_features()
             .await
             .expect("enabled")

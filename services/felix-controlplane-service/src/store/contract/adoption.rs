@@ -16,6 +16,57 @@ pub(super) async fn run(store: &dyn ControlPlaneStore) {
     every_write_after_an_adoption_issues_above_it(store).await;
     an_election_on_the_old_set_is_recorded_not_adopted(store).await;
     an_election_on_the_pending_set_is_adopted_and_stays_pending(store).await;
+    an_election_far_past_the_generation_is_refused(store).await;
+}
+
+/// **An election more than the window past the control plane's generation is
+/// refused**, writing nothing; one at the edge of the window is adopted.
+async fn an_election_far_past_the_generation_is_refused(store: &dyn ControlPlaneStore) {
+    let current = three(store).await;
+    let window = crate::model::ELECTION_GENERATION_WINDOW;
+    for far in [
+        current.generation + window + 1,
+        i64::MAX as u64 + 1,
+        u64::MAX,
+    ] {
+        let refused = store
+            .adopt_elected_leader(
+                &key(0),
+                current.generation,
+                elected(
+                    "broker-y",
+                    far,
+                    &["broker-x", "broker-z"],
+                    current.generation,
+                ),
+            )
+            .await;
+        assert!(
+            matches!(refused, Err(crate::store::StoreError::Conflict(_))),
+            "{far}: {refused:?}"
+        );
+        assert_eq!(
+            store.get_shard_assignment(&key(0)).await.expect("get"),
+            current
+        );
+    }
+    let edge = current.generation + window;
+    let adopted = written(
+        store
+            .adopt_elected_leader(
+                &key(0),
+                current.generation,
+                elected(
+                    "broker-y",
+                    edge,
+                    &["broker-x", "broker-z"],
+                    current.generation,
+                ),
+            )
+            .await
+            .expect("adopt"),
+    );
+    assert_eq!(adopted.generation, edge);
 }
 
 /// x leading y and z.

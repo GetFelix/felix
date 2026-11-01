@@ -547,3 +547,39 @@ async fn a_shard_write_holds_its_cache_until_it_lands() {
         );
     }
 }
+
+/// A store whose generation is the last it can issue refuses a write instead
+/// of repeating that generation.
+#[tokio::test]
+async fn a_store_at_the_top_generation_refuses_to_issue() {
+    use crate::store::contract::shards::{assignment, key, seed};
+    let store = store_with_limits(100, 1000);
+    seed(&store).await;
+    store
+        .put_shard_assignment(assignment(0, "broker-x"))
+        .await
+        .expect("put");
+    for top in [i64::MAX as u64, u64::MAX] {
+        store
+            .shards
+            .write()
+            .await
+            .records
+            .get_mut(&key(0))
+            .expect("record")
+            .generation = top;
+        let refused = store.put_shard_assignment(assignment(0, "broker-x")).await;
+        assert!(
+            matches!(refused, Err(StoreError::Conflict(_))),
+            "{refused:?}"
+        );
+        assert_eq!(
+            store
+                .get_shard_assignment(&key(0))
+                .await
+                .expect("get")
+                .generation,
+            top
+        );
+    }
+}

@@ -205,12 +205,11 @@ where
     Ok(())
 }
 
-/// Whether this control plane has the metadata level `replica_election`
-/// needs: the pending replica set and adoption, both level 21 under Raft
-/// (Postgres needs migration 0038 for the set; adoption only writes a
-/// generation). The finalize is still refused until every serving broker
-/// offers `ELECTION` and `joint_fence` is finalized.
-pub(crate) const ELECTION_METADATA_LEVEL_READY: bool = true;
+/// Whether `replica_election` may be finalized. The metadata it needs (the
+/// pending replica set and adoption) is in, but the election driver (#1009
+/// S9) flips this only once joint fences (S5), two-majority acks (S6b) and
+/// the wiped-voter guard (S8) are in too.
+pub(crate) const ELECTION_METADATA_LEVEL_READY: bool = false;
 
 /// The features a cluster created on this release starts with. A finalize
 /// is one-way so that an upgraded fleet can still roll back before it, and a

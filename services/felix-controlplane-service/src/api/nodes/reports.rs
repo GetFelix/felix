@@ -483,7 +483,12 @@ async fn adopt_if_elected(
             Ok(assignment)
         }
         Err(StoreError::NotFound(_)) => Ok(assignment),
-        Err(ref err) => Err(api_internal("adopt an elected leader", err)),
+        // A store error is no reason to fail the report: the leader's next
+        // one retries, as for a lost CAS.
+        Err(err) => {
+            tracing::warn!(error = %err, "adopting an elected leader failed");
+            Ok(assignment)
+        }
     }
 }
 
