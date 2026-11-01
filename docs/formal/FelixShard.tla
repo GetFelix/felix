@@ -1097,7 +1097,12 @@ Tick ==
 (* its belief from the instant it sent, never from the instant it heard    *)
 (* back. A heartbeat can be lost.                                          *)
 
+\* The pieces checked under QuietView send none: a heartbeat there changes
+\* only what the view leaves out, so a state it leads to is one TLC already
+\* has (up to symmetry). Skipping it saves a quarter of the states a piece
+\* generates.
 SendHeartbeat(b) ==
+    /\ ~SplitAtCutOver
     /\ bgen[b] > 0
     /\ ~hbOut[b]
     /\ hbOut' = [hbOut EXCEPT ![b] = TRUE]
@@ -3089,7 +3094,7 @@ NoTruncationBelowHwm ==
 AckedOnMajority ==
     Quorum =>
         \A id \in acked :
-            LET holders == { b \in Counted : (NonVoterCredit /\ NonVoter(b)) \/ \E i \in 1..Len(log[b]) : log[b][i].id = id }
+            LET holders == { b \in Counted : (NonVoter(b) /\ NonVoterCredit) \/ \E i \in 1..Len(log[b]) : log[b][i].id = id }
             IN \/ Cardinality(holders) * 2 > Cardinality(Counted)
                \/ Cardinality(Counted) = 4 /\ Cardinality(holders) = 2
 
