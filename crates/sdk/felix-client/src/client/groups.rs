@@ -17,7 +17,7 @@ use felix_wire::{Message, StartPosition};
 use super::Connection;
 use crate::NotLeaderError;
 use crate::connection::OpenedStream;
-use crate::frame_io::{read_message_with_limit, write_frame_parts, write_message};
+use crate::frame_io::{read_message_with_limit, write_frame_parts};
 
 /// A member of a consumer group that names itself when it polls. See
 /// [`Connection::group_poll_as`].
