@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793547700990,
+  "lastUpdate": 1793558838039,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -52272,6 +52272,72 @@ window.BENCHMARK_DATA = {
             "range": "313.91",
             "unit": "us",
             "extra": "trials: 5\nmedian: 817.00\nmean: 677.60\nstdev: 313.91\ncv: 46.33%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0cdbac84a51d7e73f960b5f3b80124634cd0af5f",
+          "message": "feat(replication): leader acks on both majorities while a set change is pending (#1009 S6b) (#1732)\n\n* feat(replication): leader acks on both majorities while a set change is pending (#1009 S6b)\n\nWhile a route carries a pending change, a record is held only when a\nmajority of the new set and of the set being left hold it, and the leader\nreports the pending set's generation in joint_start_acked once its\ngeneration-start record is held that way. The broker's watch now reads the\nassignment's pending_set: the route names the pending followers and keeps\nthe control plane's set beside it. Gated on joint_fence; with it off the\nack path is unchanged.\n\nSpec-Unaffected: the code implements HeldAtGen under JointFence as\nFelixShard.tla models it; the broker reads the pending set the model's Swap\nrecords, and an unknown set being left only withholds acknowledgements.\n\n* fix(replication): a pending change acks nothing when it cannot be counted, no joint start without quorum acks (#1009 S6b)\n\nSpec-Unaffected: both only withhold acknowledgements and reports.",
+          "timestamp": "2026-11-01T10:44:03-08:00",
+          "tree_id": "7c9225892c336afc4ef5398f5abe25b30eb684ca",
+          "url": "https://github.com/GetFelix/felix/commit/0cdbac84a51d7e73f960b5f3b80124634cd0af5f"
+        },
+        "date": 1793558833387,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 63,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 63.00\nmean: 63.40\nstdev: 1.14\ncv: 1.80%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 97,
+            "range": "9.42",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 97.00\nmean: 98.20\nstdev: 9.42\ncv: 9.59%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 192,
+            "range": "349.12",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 192.00\nmean: 359.80\nstdev: 349.12\ncv: 97.03%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 81,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 81.00\nmean: 80.60\nstdev: 1.14\ncv: 1.41%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 195,
+            "range": "8.83",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 195.00\nmean: 193.00\nstdev: 8.83\ncv: 4.58%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 383,
+            "range": "400.57",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 383.00\nmean: 587.80\nstdev: 400.57\ncv: 68.15%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
