@@ -181,6 +181,7 @@ fn assignment() -> ShardAssignment {
         move_reason: Some(MoveReason::Drain),
         incarnation: 7,
         fence_storage_ids: any_map(s("0123456789abcdef0123456789abcdef")),
+        member_storage_ids: any_map(s("0123456789abcdef0123456789abcdef")),
         pending_set: Some(crate::model::PendingSet {
             replicas: vec![s("d")],
             generation: 1,

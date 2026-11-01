@@ -27,6 +27,7 @@ fn swapped() -> Route {
         successor: None,
         incarnation: 0,
         fence_storage_ids: None,
+        member_storage_ids: None,
         pending: None,
     }
 }
@@ -250,6 +251,7 @@ fn prior_xbc() -> PriorSet {
             replicas: vec!["broker-b".into(), "broker-c".into()],
             successor: None,
             storage_ids: Default::default(),
+            member_storage_ids: Default::default(),
         })),
     }
 }

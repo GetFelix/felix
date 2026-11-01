@@ -25,6 +25,7 @@ async fn a_requested_pass_runs_without_waiting_for_the_interval() {
             move_reason: None,
             incarnation: 0,
             fence_storage_ids: Default::default(),
+            member_storage_ids: Default::default(),
             pending_set: None,
         })
         .await

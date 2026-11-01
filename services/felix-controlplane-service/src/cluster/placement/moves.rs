@@ -412,6 +412,7 @@ pub(super) fn move_step<'a>(
                     pending_set: None,
                     generation: 0,
                     fence_storage_ids: Default::default(),
+                    member_storage_ids: Default::default(),
                     ..existing.clone()
                 },
             )
@@ -435,6 +436,7 @@ pub(super) fn move_step<'a>(
                 pending_set: None,
                 generation: 0,
                 fence_storage_ids: Default::default(),
+                member_storage_ids: Default::default(),
                 ..existing.clone()
             },
         );
@@ -486,6 +488,7 @@ pub(super) fn move_step<'a>(
                         replicas,
                         generation: 0,
                         fence_storage_ids: Default::default(),
+                        member_storage_ids: Default::default(),
                         ..existing.clone()
                     },
                 );
@@ -561,6 +564,7 @@ pub(super) fn move_step<'a>(
             move_reason: None,
             incarnation: 0,
             fence_storage_ids: Default::default(),
+            member_storage_ids: Default::default(),
             pending_set: None,
         };
         return Decision::Move(
@@ -592,6 +596,7 @@ pub(super) fn move_step<'a>(
                     replicas,
                     generation: 0,
                     fence_storage_ids: Default::default(),
+                    member_storage_ids: Default::default(),
                     ..existing.clone()
                 },
             );
@@ -603,6 +608,7 @@ pub(super) fn move_step<'a>(
                     state: ShardState::Draining,
                     generation: 0,
                     fence_storage_ids: Default::default(),
+                    member_storage_ids: Default::default(),
                     ..existing.clone()
                 },
             );
@@ -848,6 +854,7 @@ pub(super) fn start(
         move_reason: Some(reason),
         incarnation: 0,
         fence_storage_ids: Default::default(),
+        member_storage_ids: Default::default(),
         pending_set: None,
     };
     if already_a_replica && moves.ready_to_fence(caught_up, &existing.key, destination) {
@@ -882,6 +889,7 @@ pub(super) fn retake(existing: &ShardAssignment, replication_factor: u32) -> Sha
         joining: None,
         move_reason: None,
         fence_storage_ids: Default::default(),
+        member_storage_ids: Default::default(),
         ..existing.clone()
     }
 }
@@ -904,6 +912,7 @@ pub(super) fn undo_staged(
         replicas,
         generation: 0,
         fence_storage_ids: Default::default(),
+        member_storage_ids: Default::default(),
         ..existing.clone()
     }
 }
@@ -960,6 +969,7 @@ pub(super) fn undo_fenced(existing: &ShardAssignment) -> ShardAssignment {
         state: ShardState::Draining,
         generation: 0,
         fence_storage_ids: Default::default(),
+        member_storage_ids: Default::default(),
         ..existing.clone()
     }
 }
@@ -975,6 +985,7 @@ pub(super) fn undo_replacement(existing: &ShardAssignment, joining: &str) -> Sha
         joining: None,
         move_reason: None,
         fence_storage_ids: Default::default(),
+        member_storage_ids: Default::default(),
         ..existing.clone()
     }
 }
@@ -1042,6 +1053,7 @@ fn reseat<'a>(
             move_started_at_millis: caught_up.as_of_millis(),
             move_reason: Some(MoveReason::Replace),
             fence_storage_ids: Default::default(),
+            member_storage_ids: Default::default(),
             ..existing.clone()
         },
     )
@@ -1143,6 +1155,7 @@ pub(super) fn seat_or_fence(
                 state: ShardState::Draining,
                 generation: 0,
                 fence_storage_ids: Default::default(),
+                member_storage_ids: Default::default(),
                 ..existing.clone()
             },
         );
@@ -1167,6 +1180,7 @@ fn seated(existing: &ShardAssignment, from: Option<&str>) -> ShardAssignment {
         move_started_at_millis: None,
         move_reason: None,
         fence_storage_ids: Default::default(),
+        member_storage_ids: Default::default(),
         ..existing.clone()
     }
 }
@@ -1284,6 +1298,7 @@ fn seat_after_fence(
             serving(ShardAssignment {
                 generation: 0,
                 fence_storage_ids: Default::default(),
+                member_storage_ids: Default::default(),
                 ..existing.clone()
             }),
         );
@@ -1376,6 +1391,7 @@ fn trim_fence(
             successor: None,
             generation: 0,
             fence_storage_ids: Default::default(),
+            member_storage_ids: Default::default(),
             ..existing.clone()
         },
     )

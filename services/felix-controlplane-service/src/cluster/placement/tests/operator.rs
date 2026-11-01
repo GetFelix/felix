@@ -854,3 +854,78 @@ async fn an_operator_move_started_under_a_pause_runs_to_its_cut_over() {
     assert_ne!(after.state, ShardState::Draining);
     assert!(store.moves_paused().await.expect("read"), "still paused");
 }
+
+/// Register every node of `store` again with a storage identity of its own.
+async fn register_storage_ids(store: &crate::store::memory::InMemoryStore) {
+    for mut node in store.list_nodes().await.expect("nodes") {
+        node.status.storage_id = Some(storage_of(&node.node_id));
+        store.register_node(node).await.expect("register");
+    }
+}
+
+fn storage_of(node: &str) -> String {
+    format!(
+        "{:0>32}",
+        node.bytes().map(|b| format!("{b:02x}")).collect::<String>()
+    )
+}
+
+/// Every member of `assignment`, and only those, named by its registered id.
+fn assert_names_members(assignment: &ShardAssignment, what: &str) {
+    let expected: std::collections::BTreeMap<String, String> = assignment
+        .named_nodes()
+        .chain(assignment.successor.iter())
+        .map(|node| (node.clone(), storage_of(node)))
+        .collect();
+    assert!(!expected.is_empty());
+    assert_eq!(assignment.member_storage_ids, expected, "{what}");
+}
+
+/// **Every control-plane write names its members' registered ids.** The
+/// operator's staging write, the cut-over placement's move writes, and a
+/// creation all carry them, because a copy learns it was wiped only from a
+/// set that names another id for it (#1009 S8).
+#[tokio::test]
+async fn every_placement_write_names_the_members_registered_storage_ids() {
+    use super::reconciler::shard_zero;
+    let (store, placed) = quorum_shard().await;
+    assert!(
+        placed.member_storage_ids.is_empty(),
+        "nothing was registered yet"
+    );
+    register_storage_ids(&store).await;
+    let destination = placed.replicas[0].clone();
+    store.set_moves_paused(true).await.expect("pause");
+    run_operator(
+        &store,
+        &Default::default(),
+        unsettled(),
+        &PlacementWakes::default(),
+        |catalog| start_move(catalog, &shard_zero(), &destination),
+    )
+    .await
+    .expect("operator write");
+    let staged = store
+        .get_shard_assignment(&shard_zero())
+        .await
+        .expect("get");
+    assert_names_members(&staged, "operator write");
+
+    let after = settle(&store).await;
+    assert_eq!(after.leader, destination, "{after:?}");
+    assert_names_members(&after, "move write");
+}
+
+#[tokio::test]
+async fn a_creation_names_the_members_registered_storage_ids() {
+    use super::reconciler::cluster;
+    let store = cluster(&["broker-x", "broker-y", "broker-z"]).await;
+    register_storage_ids(&store).await;
+    reconcile_once(&store, &Default::default(), unsettled()).await;
+    let assignments = store.list_shard_assignments().await.expect("list");
+    assert!(!assignments.is_empty());
+    for assignment in &assignments {
+        assert_names_members(assignment, "creation write");
+        assert!(assignment.fence_storage_ids.is_empty());
+    }
+}

@@ -27,6 +27,7 @@ fn moving_router_at(replicas: &[&str], successor: &str, generation: u64) -> Arc<
             routing: Default::default(),
             incarnation: 0,
             fence_storage_ids: Default::default(),
+            member_storage_ids: Default::default(),
             pending: None,
         }],
         &nodes,

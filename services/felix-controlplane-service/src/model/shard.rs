@@ -230,6 +230,13 @@ pub struct ShardAssignment {
     /// write that promotes a follower; empty on every other write.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub fence_storage_ids: BTreeMap<String, String>,
+    /// The storage identity each member registered with, by node id (32
+    /// lowercase hex), as of this write. Empty for a member that registered
+    /// none. Written on every placement write, unlike `fence_storage_ids`, so
+    /// a copy can tell from the set it learns whether it is still the copy
+    /// the set names (#1009 S8). Under Raft it needs metadata level 22.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub member_storage_ids: BTreeMap<String, String>,
     /// The set a cut-over is moving the shard to, while the change is
     /// pending. `leader` and `replicas` stay the control plane's own set until
     /// the leader reports its generation's start record acknowledged on a
@@ -330,6 +337,18 @@ impl std::fmt::Display for MoveReason {
 }
 
 impl ShardAssignment {
+    /// Names each member's registered storage identity, from `registered`
+    /// (node id to storage id). A member with none registered is left out.
+    pub fn name_member_storage(&mut self, registered: &BTreeMap<String, String>) {
+        let named = self
+            .named_nodes()
+            .chain(self.joining.iter())
+            .chain(self.successor.iter())
+            .filter_map(|node| Some((node.clone(), registered.get(node)?.clone())))
+            .collect();
+        self.member_storage_ids = named;
+    }
+
     /// Check node identities and replica-set shape.
     ///
     /// Does not check the shard bound, which needs the stream's shard count, or

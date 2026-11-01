@@ -334,6 +334,7 @@ pub fn cancel_move(catalog: &Catalog<'_>, key: &ShardKey) -> Result<OperatorStep
                 pending_set: None,
                 generation: 0,
                 fence_storage_ids: Default::default(),
+                member_storage_ids: Default::default(),
                 ..existing.clone()
             },
             expected_generation: existing.generation,
@@ -619,12 +620,12 @@ pub(super) async fn write_operator_step(
 ) -> crate::store::StoreResult<OperatorWrite> {
     let decided = &fenced.step;
     let key = &decided.assignment.key;
+    let mut assignment = decided.assignment.clone();
+    assignment.name_member_storage(&super::reconciler::registered_storage(
+        &store.list_nodes().await?,
+    ));
     match store
-        .put_shard_assignment_if(
-            decided.assignment.clone(),
-            Some(decided.expected_generation),
-            fenced.fence,
-        )
+        .put_shard_assignment_if(assignment, Some(decided.expected_generation), fenced.fence)
         .await?
     {
         crate::store::AssignmentWrite::Fenced { token } => {

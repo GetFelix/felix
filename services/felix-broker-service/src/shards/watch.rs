@@ -68,6 +68,11 @@ pub struct ShardAssignment {
     /// [`felix_router::Route::fence_storage_ids`].
     #[serde(default)]
     pub fence_storage_ids: std::collections::BTreeMap<String, String>,
+    /// The storage identity each member registered with, written on every
+    /// placement write. Absent from a control plane that predates it. See
+    /// [`felix_router::Route::member_storage_ids`].
+    #[serde(default)]
+    pub member_storage_ids: std::collections::BTreeMap<String, String>,
     /// A set change the control plane holds as pending: `leader` and
     /// `replicas` stay its own set until the leader reports its generation's
     /// start record acknowledged on a majority of both. Absent from every
@@ -313,6 +318,7 @@ fn prior_of(
             replicas: current.replicas.clone(),
             successor: current.successor.clone(),
             storage_ids: current.fence_storage_ids.clone(),
+            member_storage_ids: current.member_storage_ids.clone(),
         })),
     })
 }

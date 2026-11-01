@@ -759,6 +759,15 @@ from that copy (`docs/replication-design.md`, "Fencing a promotion"). Every
 other write leaves it out. Postgres keeps it only for the generation that wrote
 it, and the Raft store writes it only at metadata level 16.
 
+Every placement write, creation and move and operator step included, also
+carries `member_storage_ids`: the storage id each member of the set had
+registered, by node id, left out for a member that registered none. A broker
+that learns the set from it reads a different id for itself as a wiped copy
+(`docs/replication-design.md`, "Fencing a promotion"). The fence never reads it, because a
+registered id is not the id a report vouched for. Postgres keeps it only for
+the generation that wrote it (migration 0039), and the Raft store writes it
+only at metadata level 22.
+
 States are `assigning` (placement decided, the leader has not confirmed),
 `active` (the leader is serving), and `draining` (the leader has been told to
 stop serving at this generation so the shard can move). A drained shard leaves

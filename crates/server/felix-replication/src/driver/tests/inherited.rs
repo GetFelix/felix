@@ -37,6 +37,7 @@ fn promoted_router() -> Arc<ShardRouter> {
                 ("broker-c".to_string(), id(3).to_hex()),
             ]
             .into(),
+            member_storage_ids: Default::default(),
             pending: None,
         }],
         &nodes,

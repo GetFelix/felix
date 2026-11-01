@@ -22,6 +22,7 @@ fn route(replicas: &[&str], successor: Option<&str>) -> Route {
         successor: successor.map(str::to_string),
         incarnation: 0,
         fence_storage_ids: None,
+        member_storage_ids: None,
         pending: None,
     }
 }

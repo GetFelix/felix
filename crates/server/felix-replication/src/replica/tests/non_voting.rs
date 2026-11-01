@@ -398,6 +398,64 @@ async fn a_wiped_copy_refuses_before_the_gate_is_adopted() {
     assert_eq!(log.member_is_learner(LOCAL), Some(true));
 }
 
+/// **A route's member ids alone make a wiped copy a learner.** The assignment
+/// names no failover ids, only each member's registered storage id, as every
+/// placement write does; a batch stamped with that set's generation teaches
+/// the copy it, so a move or a creation no longer lets a wiped copy vote.
+#[tokio::test]
+async fn a_route_naming_member_ids_makes_a_wiped_copy_a_learner() {
+    let (broker, _dir) = broker_with_storage().await;
+    let router = Arc::new(ShardRouter::new(
+        LOCAL,
+        "us-west-2",
+        RegionRouter::new("us-west-2".to_string()),
+    ));
+    let nodes: HashMap<String, NodeRef> = ["broker-a", LOCAL]
+        .into_iter()
+        .zip(7001..)
+        .map(|(id, port)| (id.to_string(), node(id, port)))
+        .collect();
+    let table = RoutingTable::build_with(
+        [felix_router::Placed {
+            key: key(),
+            leader: "broker-a".to_string(),
+            replicas: vec![LOCAL.to_string()],
+            generation: 6,
+            draining: false,
+            successor: None,
+            routing: Default::default(),
+            incarnation: 0,
+            fence_storage_ids: Default::default(),
+            member_storage_ids: [
+                (
+                    "broker-a".to_string(),
+                    StorageId::from_bytes([1; 16]).to_hex(),
+                ),
+                (LOCAL.to_string(), StorageId::from_bytes(OLD).to_hex()),
+            ]
+            .into(),
+            pending: None,
+        }],
+        &nodes,
+    );
+    router.publish(table, &nodes);
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router)
+        .with_fleet(marks(true))
+        .with_local_storage(StorageId::from_bytes(OWN))
+        .with_stickiness(Duration::ZERO)
+        .with_confirmed_routes(ConfirmedAs::new(Confirmed::Assigned {
+            generation: 6,
+            leader: "broker-a".to_string(),
+        }) as _);
+
+    let _ = handler
+        .apply(SENDER, stamped(6, 0, &["a"]), felix_broker::LogKind::Stream)
+        .await;
+    let log = log_of(&broker).await;
+    assert_eq!(log.set_generation(), 6, "the route's set was not learned");
+    assert_eq!(log.member_is_learner(LOCAL), Some(true));
+}
+
 /// A learner asks the control plane once for a run of batches at one
 /// generation, not once per batch.
 #[tokio::test]
