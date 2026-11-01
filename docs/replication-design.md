@@ -800,7 +800,9 @@ model's `FelixShardElectWipe*.cfg` check it and the variants that fail
 The broker enforces it under `joint_fence`, and answers as before without it.
 A copy becomes a learner only on evidence of a wipe: a set it learns, from a
 fence or from the route a batch is stamped with, names another storage id for
-it. The mark is written to the `replica-set` file, so a restart keeps it, and
+it. Every control-plane write names each member's registered storage id
+(`member_storage_ids`, apart from `fence_storage_ids`, which only a failover
+fills and which the promoted leader's fence counts from). The mark is written to the `replica-set` file, so a restart keeps it, and
 a set learned later keeps it whatever that set says. No set file, a set that
 names no storage id for the copy, or a fence without a set is no evidence. So
 a new shard's copies, which hold no set and no promise, vote at creation (they
@@ -808,7 +810,15 @@ hold every acknowledged record, which is none), and a copy written before sets
 existed stays a voter when the fleet finalizes. The model shows why the
 evidence has to be the storage id: a wipe takes the set file too, and treating
 a missing set as a new shard lets a wiped copy promise one generation to two
-leaders (`FelixShardElectWipeNonVoterCreateCountsEmpty.cfg`). A learner:
+leaders (`FelixShardElectWipeNonVoterCreateCountsEmpty.cfg`).
+
+That evidence alone is not enough. A copy wiped before it hears any set
+naming its old id can first hear a failover's set naming its new one, and
+would answer that fence with an empty log
+(`FelixShardElectWipeNonVoterEvidenceOnly.cfg`). So a broker whose storage id
+was minted at this start marks itself a learner in every shard log it creates
+from a set above generation 1. A shard created after the start (generation 1)
+still votes. A learner:
 
 - refuses every fence, a candidate's and its own re-admission's included,
   after learning the set the fence carried (`Unauthorized`, no ballot taken),
@@ -818,6 +828,9 @@ leaders (`FelixShardElectWipeNonVoterCreateCountsEmpty.cfg`). A learner:
   generation, so an elected leader the control plane never saw gets no
   acknowledgement from it. The confirmed leader is reused for 500 ms at the
   same generation rather than read for every batch;
+- is never promoted: a leader whose kept set marks it a learner under another
+  storage id refuses to open, before it fences or writes anything, so the
+  mark survives;
 - is written as a voter once its kept set names it under the storage id it
   holds now and a batch leaves its log holding the generation-start record of
   that set's generation.
@@ -846,10 +859,14 @@ Not covered yet, and needed before elections (#1009 S9):
 - The leader counts a learner's acknowledgements. That is safe while only the
   control plane names leaders; once a leader can be elected without it, the
   leader must leave a learner's acknowledgements out.
-- Evidence needs the control plane to name the copy's storage id. It does so
-  on failover; on creation, moves and other writes it names none, and a copy
-  wiped then votes. Under elections every set the control plane writes should
-  name each member's registered id.
+- The control plane does not yet re-admit a learner by itself. A set naming
+  its new id is written only by a write placement makes anyway, so a learner
+  whose assignment never changes stays one, and a move that needs it waits.
+  Placement should write the same members at the next generation, naming the
+  new id, once a report shows the copy caught up under it.
+- Placement does not exclude a learner from failover; the broker refuses to
+  open, and the control plane may try it again. Its log is empty, so log
+  order rarely picks it.
 
 The cost is a fence round trip or a few while a follower's watch catches up,
 and one control-plane read per answer, only for copies with no promise: a
@@ -890,6 +907,9 @@ For non-voting copies (`replica/tests/non_voting.rs`):
 `a_pre_set_copy_stays_a_voter_at_finalize`,
 `a_wiped_copy_refuses_before_the_gate_is_adopted`,
 `a_learner_reuses_a_confirmed_read`,
+`a_route_naming_member_ids_makes_a_wiped_copy_a_learner`,
+`a_fresh_storage_id_is_a_learner`, `a_fresh_storage_id_votes_at_creation`,
+`a_learner_named_leader_refuses_and_keeps_its_mark`,
 `a_wiped_copy_refuses_records_from_an_unconfirmed_leader`, and
 `with_the_gate_off_a_copy_with_no_set_answers_as_before`.
 
