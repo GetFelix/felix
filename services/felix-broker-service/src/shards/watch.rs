@@ -68,6 +68,19 @@ pub struct ShardAssignment {
     /// [`felix_router::Route::fence_storage_ids`].
     #[serde(default)]
     pub fence_storage_ids: std::collections::BTreeMap<String, String>,
+    /// A set change the control plane holds as pending: `leader` and
+    /// `replicas` stay its own set until the leader reports its generation's
+    /// start record acknowledged on a majority of both. Absent from every
+    /// other assignment, and from a control plane that predates it.
+    #[serde(default)]
+    pub pending_set: Option<PendingSet>,
+}
+
+/// The set a cut-over is moving a shard to, and the generation that wrote it.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct PendingSet {
+    pub replicas: Vec<String>,
+    pub generation: u64,
 }
 
 impl ShardAssignment {

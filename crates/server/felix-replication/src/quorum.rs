@@ -1425,6 +1425,79 @@ pub(crate) fn held_at_generation(
     held.get(needed - 1).copied().unwrap_or(0)
 }
 
+/// The highest offset a majority of `voters` holds, as [`held_at_generation`]
+/// counts it: a voter with no cursor, or a halted one, holds nothing, and the
+/// leader counts its tail only while `leader_current`. `voters` includes the
+/// leader when it is one.
+///
+/// A change of replica set that is pending needs this over the set being
+/// left, beside the new set's own count (`HeldAtGen` under `JointFence` in
+/// `docs/formal/FelixShard.tla`). A voter this leader has no cursor for stays
+/// at nothing, so a set it cannot reach holds the acknowledgement back.
+pub(crate) fn held_in_set(
+    leader_tail: u64,
+    leader_current: bool,
+    local: &str,
+    followers: &[FollowerCursor],
+    voters: &[&str],
+) -> u64 {
+    let needed = voters.len() / 2 + 1;
+    let mut held: Vec<u64> = voters
+        .iter()
+        .map(|voter| {
+            if *voter == local {
+                return if leader_current { leader_tail } else { 0 };
+            }
+            followers
+                .iter()
+                .find(|follower| follower.node_id == *voter && follower.halted.is_none())
+                .map_or(0, |follower| follower.confirmed.min(leader_tail))
+        })
+        .collect();
+    held.sort_unstable_by(|a, b| b.cmp(a));
+    held.get(needed - 1).copied().unwrap_or(0)
+}
+
+/// What a leader may acknowledge while a set change is pending: the least of
+/// what the new set's majority holds (`new_set`) and what a majority of each
+/// reading of the set being left holds. `leaving` is the control plane's
+/// set, the leader included; `learner` is a destination still copying, which
+/// that set may or may not count, so both readings are needed.
+///
+/// An empty set being left is not known, and nothing is acknowledged.
+pub(crate) fn held_by_both(
+    new_set: u64,
+    leader_tail: u64,
+    leader_current: bool,
+    local: &str,
+    followers: &[FollowerCursor],
+    leaving: &[String],
+    learner: Option<&str>,
+) -> u64 {
+    if leaving.is_empty() {
+        return 0;
+    }
+    let all: Vec<&str> = leaving.iter().map(String::as_str).collect();
+    let mut held = new_set.min(held_in_set(
+        leader_tail,
+        leader_current,
+        local,
+        followers,
+        &all,
+    ));
+    if let Some(learner) = learner.filter(|learner| all.contains(learner)) {
+        let voters: Vec<&str> = all.iter().copied().filter(|v| *v != learner).collect();
+        held = held.min(held_in_set(
+            leader_tail,
+            leader_current,
+            local,
+            followers,
+            &voters,
+        ));
+    }
+    held
+}
+
 /// The most of the log a majority holds that this leader may count, given
 /// where its generation begins (`own_start`, when it counts that way).
 ///

@@ -83,6 +83,7 @@ async fn leading(replicas: &[&str], successor: Option<&str>, generation: u64) ->
             routing: Default::default(),
             incarnation: 0,
             fence_storage_ids: Default::default(),
+            pending_set: None,
         },
     )]
     .into_iter()

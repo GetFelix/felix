@@ -163,6 +163,11 @@ pub struct ShardReport {
     /// replaces the report its previous process made whatever that one's
     /// tail; its own position is in `offsets` under its node id.
     pub given_up: bool,
+    /// While a set change is pending, the generation that wrote the new set,
+    /// once this leader's generation-start record is acknowledged on a
+    /// majority of the set being left and of the new one. The control plane
+    /// takes the new set on a report that names it for this generation.
+    pub joint_start_acked: Option<u64>,
 }
 
 impl ShardReport {
@@ -170,6 +175,15 @@ impl ShardReport {
     pub(super) fn at_incarnation(self, incarnation: u64) -> Self {
         Self {
             incarnation,
+            ..self
+        }
+    }
+
+    /// This report, with the pending set's generation when the start record
+    /// is acknowledged on both majorities.
+    pub(super) fn with_joint_start(self, joint_start_acked: Option<u64>) -> Self {
+        Self {
+            joint_start_acked,
             ..self
         }
     }
@@ -229,6 +243,7 @@ pub(super) fn shard_report(
             })
             .collect(),
         given_up: false,
+        joint_start_acked: None,
         inherited_storage: followers
             .iter()
             .filter(|follower| follower.storage_id.is_none())
@@ -361,7 +376,7 @@ async fn send_reports(to: &ReportTo, reports: &[ShardReport]) -> Vec<bool> {
                 replica_incarnations: report.node_incarnations.iter().cloned().collect(),
                 given_up: report.given_up,
                 inherited_storage_ids: report.inherited_storage.iter().cloned().collect(),
-                joint_start_acked: None,
+                joint_start_acked: report.joint_start_acked,
                 elected: None,
             })
             .collect(),

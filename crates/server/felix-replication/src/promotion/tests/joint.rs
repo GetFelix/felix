@@ -27,6 +27,7 @@ fn swapped() -> Route {
         successor: None,
         incarnation: 0,
         fence_storage_ids: None,
+        pending: None,
     }
 }
 

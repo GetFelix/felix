@@ -3600,8 +3600,8 @@ is taken once. That is `Swap` and `CpFlip` in the model
 write that takes the set, like every assignment write, is a new generation,
 which the leader opens on the new set alone, while `CpFlip` keeps the
 generation. The model is to cover that before the election driver.
-No broker sends `joint_start_acked` yet (control-plane.md,
-[Moving a shard](control-plane.md#moving-a-shard)).
+A leader sends `joint_start_acked` once `joint_fence` is finalized (below;
+control-plane.md, [Moving a shard](control-plane.md#moving-a-shard)).
 
 Joint fences and the fenced next-generation open are built too, dormant
 behind `joint_fence`. No build reports that feature, so a fleet cannot
@@ -3647,8 +3647,45 @@ Without `joint_fence` finalized, the fence and what it sends are exactly what
 they were. The counter log of a cache shard and a stream's group logs are
 still fenced on the new set alone, as the model's counters are.
 
-Not built yet: acknowledging on both majorities while a change is pending,
-the pre-vote and the election driver.
+Not built yet: the pre-vote and the election driver, and shipping to a member
+only the set being left names (below).
+
+**Acknowledging while a change is pending.** Behind the same feature, a
+leader whose route carries a pending change acknowledges a record only when a
+majority of the new set holds it and a majority of the set being left does
+too (`HeldAtGen` under `JointFence`). The broker's watch reads the
+assignment's `pending_set`: the route names the pending set's followers, and
+carries the control plane's own set, the leader included, as the one being
+left. With the feature off the route's pending change is not read, and the
+acknowledgement is the one it was.
+
+- A member of the set being left that the leader has no cursor for, or has
+  halted, holds nothing, so a set the leader cannot reach keeps the mark
+  back. A set being left that is empty counts as unknown and acknowledges
+  nothing.
+- A pending assignment has no staged learner, so the set being left is
+  normally counted with every member as a voter. If the leader does have a
+  learner that set names, it is also counted without it.
+- With the route pending and the feature off, unknown or the broker not
+  electing, the leader acknowledges nothing: it cannot count both sets, and
+  the new set alone could lose a record if failover is placed from the old
+  one. A stream that does not acknowledge at quorum reports no joint start.
+- The count is the least of the two, so the generation-start record is
+  acknowledged on both majorities exactly when the mark passes it. The
+  leader's report then carries `joint_start_acked`, the pending set's
+  generation, beside the generation it measured at. The control plane takes
+  the set only from a report at its own generation naming its own pending
+  set, so a report from an older route flips nothing.
+- Once the control plane takes the set, the assignment is a new generation
+  with no pending change, and acknowledgements go back to the new set alone.
+  The model's `CpFlip` keeps the generation; here the next one is fenced
+  jointly again and opens on the new set.
+- A cache's counter log is counted on the new set alone, as the model's
+  counters are.
+- This leader ships to the new set's followers only. A majority of the set
+  being left that needs a member outside the new set therefore does not form,
+  and the change times out (`FELIX_SHARD_PENDING_SET_TIMEOUT_MS`) and is
+  abandoned. Shipping to such a member is the election driver's to add.
 
 > `a_cut_over_swapping_two_members_waits_for_the_old_majority`: the joint
 > fence. `a_joint_fence_never_counts_a_learner`: learners in the set being

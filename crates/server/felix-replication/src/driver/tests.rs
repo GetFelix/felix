@@ -14,6 +14,7 @@ mod halts;
 mod head_trim;
 mod identity;
 mod inherited;
+mod joint_acks;
 mod learner;
 mod quorum;
 mod reports;
@@ -194,6 +195,7 @@ fn draining_router(leader: &str, replicas: &[&str], generation: u64) -> Arc<Shar
             routing: Default::default(),
             incarnation: 0,
             fence_storage_ids: Default::default(),
+            pending: None,
         }],
         &nodes,
     );

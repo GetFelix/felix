@@ -51,6 +51,7 @@ impl RoutingTable {
                     routing: ShardRouting::Modulo,
                     incarnation: 0,
                     fence_storage_ids: BTreeMap::new(),
+                    pending: None,
                 }),
             nodes,
         )
@@ -73,6 +74,7 @@ impl RoutingTable {
             routing,
             incarnation,
             fence_storage_ids,
+            pending,
         } in assignments
         {
             // The count is the highest shard index placed plus one, not the
@@ -117,6 +119,7 @@ impl RoutingTable {
                     incarnation,
                     fence_storage_ids: (!fence_storage_ids.is_empty())
                         .then(|| Arc::new(fence_storage_ids)),
+                    pending: pending.map(Arc::new),
                 },
             );
         }
@@ -273,6 +276,22 @@ pub struct Route {
     /// assignment counts a replica's fence answer only from that copy. `None`
     /// on every other assignment, and from a control plane that sends none.
     pub fence_storage_ids: Option<Arc<BTreeMap<String, String>>>,
+    /// A set change the control plane has recorded and not yet taken. While
+    /// it is pending, `replicas` are the pending set's followers and this
+    /// names the set being left.
+    pub pending: Option<Arc<PendingChange>>,
+}
+
+/// A set change the control plane holds as pending (`pending_set` on the
+/// assignment): the new set is the route's, and the control plane's own set
+/// is the one being left until the leader reports its generation-start
+/// record acknowledged on a majority of both.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingChange {
+    /// The generation that wrote the pending set; a report names it.
+    pub generation: u64,
+    /// The control plane's set, the leader included, by node id.
+    pub leaving: Vec<String>,
 }
 
 /// The set the control plane named for a shard at the generation right
@@ -311,6 +330,8 @@ pub struct Placed {
     pub incarnation: u64,
     /// See [`Route::fence_storage_ids`]; empty for none.
     pub fence_storage_ids: BTreeMap<String, String>,
+    /// See [`Route::pending`].
+    pub pending: Option<PendingChange>,
 }
 
 /// How a stream was placed: how many shards it has and how keys map onto them.
