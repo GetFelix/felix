@@ -1097,10 +1097,10 @@ Tick ==
 (* its belief from the instant it sent, never from the instant it heard    *)
 (* back. A heartbeat can be lost.                                          *)
 
-\* The pieces checked under QuietView send none: a heartbeat there changes
-\* only what the view leaves out, so a state it leads to is one TLC already
-\* has (up to symmetry). Skipping it saves a quarter of the states a piece
-\* generates.
+\* The pieces checked under QuietView send none. Time stands still there, so
+\* every grant already set the expiries to L and a heartbeat renews nothing:
+\* it changes only hbOut and hbAt, which the view leaves out, and every state
+\* it leads to is one TLC already has (up to symmetry).
 SendHeartbeat(b) ==
     /\ ~SplitAtCutOver
     /\ bgen[b] > 0
