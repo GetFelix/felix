@@ -968,6 +968,9 @@ impl ReplicaHandler {
         // not a reason to make the new leader wait for the watch.
         match self.router.replica_role(&key, generation) {
             ReplicaRole::Follower | ReplicaRole::Behind { .. } => {}
+            // A joint fence also asks the voters of the set being left, which
+            // the new route no longer names. The set check below decides.
+            ReplicaRole::NotAReplica if self.votes_in_leaving(&request) => {}
             _ => {
                 if let Some(refusal) = self.check_role(correlation_id, &key, generation) {
                     return refusal;
@@ -1704,6 +1707,22 @@ impl ReplicaHandler {
     /// is registered, as before incarnations.
     fn expected_incarnation(&self, key: &felix_router::ShardKey, sent: Option<u64>) -> Option<u64> {
         crate::incarnation::registration_required(&self.broker, key.kind).then(|| sent.unwrap_or(0))
+    }
+
+    /// Whether `request` is a joint fence whose set being left lists this
+    /// broker as a voter.
+    fn votes_in_leaving(&self, request: &Fence) -> bool {
+        let local = self.router.local_node_id();
+        request
+            .election
+            .as_ref()
+            .and_then(|election| election.leaving.as_ref())
+            .is_some_and(|leaving| {
+                leaving
+                    .members
+                    .iter()
+                    .any(|member| member.node_id == local && !member.learner)
+            })
     }
 
     /// May this broker store anything for `key` at `generation`?
