@@ -510,6 +510,12 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     if stepped_down() {
         fence.deposed(mark_key, route.generation);
     }
+    // A set change the control plane has not taken yet: a record is held
+    // only when a majority of the set being left holds it too (rule 8).
+    let pending = route
+        .pending
+        .as_deref()
+        .filter(|_| electing && marks.fleet_supports(felix_common::fleet::JOINT_FENCE));
     let held_offset = |tail: u64, followers: &[FollowerCursor]| {
         if stepped_down() {
             return 0;
@@ -520,6 +526,18 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
             crate::quorum::held_at_generation(tail, current, followers, learner.as_deref())
         } else {
             quorum_offset_without(tail, followers, learner.as_deref())
+        };
+        let held = match pending {
+            None => held,
+            Some(change) => crate::quorum::held_by_both(
+                held,
+                tail,
+                !by_followers || log.accepted_generation() <= route.generation,
+                &route.leader.node_id,
+                followers,
+                &change.leaving,
+                learner.as_deref(),
+            ),
         };
         counted(held)
     };
@@ -544,6 +562,13 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         } else {
             promised.max(inherited.min(tail))
         }
+    };
+    // The pending set's generation, once this generation's start record is
+    // acknowledged: on both majorities, since `held_offset` counts both.
+    let joint_start = |tail: u64, followers: &[FollowerCursor]| {
+        let change = pending?;
+        (inherited != u64::MAX && acknowledged(tail, followers) > inherited)
+            .then_some(change.generation)
     };
     // The logs that ride the shard ride each follower's exchange too, so a
     // follower that does not answer holds up none of them: it is handed off
@@ -954,7 +979,8 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                         false,
                     )
                     .at_incarnation(incarnation)
-                    .serving_by_round(by_round),
+                    .serving_by_round(by_round)
+                    .with_joint_start(joint_start(tail, &counted)),
                     &aux.counters.followers,
                 ),
                 offset,
@@ -1099,7 +1125,8 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                         false,
                     )
                     .at_incarnation(incarnation)
-                    .serving_by_round(by_round),
+                    .serving_by_round(by_round)
+                    .with_joint_start(joint_start(tail, &counted)),
                     &aux.counters.followers,
                 ),
                 offset,
@@ -1297,7 +1324,8 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
             drained,
         )
         .at_incarnation(incarnation)
-        .serving_by_round(by_round),
+        .serving_by_round(by_round)
+        .with_joint_start(joint_start(tail, &counted)),
         &aux.counters.followers,
     );
     // A follower missing some of that state would lose it if it led, so it is

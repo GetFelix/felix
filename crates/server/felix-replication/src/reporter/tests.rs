@@ -76,6 +76,7 @@ fn report(stream: &str) -> ShardReport {
         node_incarnations: Vec::new(),
         given_up: false,
         inherited_storage: Vec::new(),
+        joint_start_acked: None,
     }
 }
 
@@ -471,5 +472,53 @@ async fn a_report_names_the_leaders_own_storage_identity() {
         StorageId::from_bytes([9; 16]).to_hex(),
         "{ids}"
     );
+    server.abort();
+}
+
+/// **The joint start travels with the generation it was measured at.** The
+/// control plane takes a pending set only from a report at the assignment's
+/// generation that names the set's own, so a report carries both from one
+/// pass and a pass without a pending change carries none.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_report_names_the_pending_set_it_started() {
+    let bodies: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&bodies);
+    let app = axum::Router::new().route(
+        "/v1/nodes/{node_id}/replica-status",
+        axum::routing::post(move |body: axum::Json<serde_json::Value>| {
+            let seen = Arc::clone(&seen);
+            async move {
+                seen.lock().push(body.0);
+                axum::http::StatusCode::NO_CONTENT
+            }
+        }),
+    );
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    listener.set_nonblocking(true).expect("nonblocking");
+    let addr = listener.local_addr().expect("addr");
+    let listener = tokio::net::TcpListener::from_std(listener).expect("adopt");
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, app.into_make_service()).await;
+    });
+    let to = ReportTo {
+        client: reqwest::Client::new(),
+        base_url: format!("http://{addr}"),
+        node_id: "broker-a".to_string(),
+        token: None,
+        incarnation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1)),
+        storage_id: None,
+    };
+    let started = report("s").with_joint_start(Some(5));
+
+    assert_eq!(
+        send_reports(&to, &[started, report("t")]).await,
+        vec![true, true]
+    );
+
+    let bodies = bodies.lock().clone();
+    let shards = &bodies[0]["shards"];
+    assert_eq!(shards[0]["generation"], 4);
+    assert_eq!(shards[0]["joint_start_acked"], 5, "{shards}");
+    assert!(shards[1].get("joint_start_acked").is_none(), "{shards}");
     server.abort();
 }

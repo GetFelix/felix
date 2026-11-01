@@ -628,13 +628,29 @@ pub fn routing_table_from(
         assignments.values().map(|assignment| felix_router::Placed {
             key: to_router_key(&assignment.key),
             leader: assignment.leader.clone(),
-            replicas: assignment.replicas.clone(),
+            // While a change is pending the route names the new set, as it
+            // did when a cut-over took the new set at once, and keeps the
+            // control plane's set beside it for the acknowledgements.
+            replicas: assignment.pending_set.as_ref().map_or_else(
+                || assignment.replicas.clone(),
+                |pending| pending.replicas.clone(),
+            ),
             generation: assignment.generation,
             draining: assignment.is_draining(),
             successor: assignment.successor.clone(),
             routing: assignment.routing,
             incarnation: assignment.incarnation,
             fence_storage_ids: assignment.fence_storage_ids.clone(),
+            pending: assignment
+                .pending_set
+                .as_ref()
+                .map(|pending| felix_router::PendingChange {
+                    generation: pending.generation,
+                    leaving: std::iter::once(&assignment.leader)
+                        .chain(&assignment.replicas)
+                        .cloned()
+                        .collect(),
+                }),
         }),
         nodes,
     )

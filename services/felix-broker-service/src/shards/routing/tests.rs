@@ -31,6 +31,7 @@ fn assignment(shard: u32, leader: &str, generation: u64) -> ShardAssignment {
         routing: Default::default(),
         incarnation: 0,
         fence_storage_ids: Default::default(),
+        pending_set: None,
     }
 }
 
@@ -666,4 +667,37 @@ async fn a_leader_in_an_unbridged_region_is_refused_by_name() {
         [("us-west-2".to_string(), "eu-west-1".to_string())],
     ));
     assert!(matches!(bridged, Dispatch::Forward { .. }), "{bridged:?}");
+}
+
+/// **A pending set change is routed as the new set, with the control plane's
+/// set kept beside it.** The leader ships to and fences the new followers, and
+/// counts the set being left (the assignment's own, the leader included) for
+/// its acknowledgements.
+#[test]
+fn a_pending_set_change_routes_the_new_set_and_keeps_the_one_being_left() {
+    use crate::shards::watch::PendingSet;
+
+    let mut pending = assignment(0, "broker-a", 6);
+    pending.replicas = vec!["broker-b".to_string(), "broker-c".to_string()];
+    pending.pending_set = Some(PendingSet {
+        replicas: vec!["broker-b".to_string(), "broker-d".to_string()],
+        generation: 6,
+    });
+    let owned: HashMap<ShardKey, ShardAssignment> = [(pending.key.clone(), pending)].into();
+    let nodes: HashMap<String, NodeRef> = ["a", "b", "c", "d"]
+        .into_iter()
+        .map(|id| node(&format!("broker-{id}"), 7001, true))
+        .map(|n| (n.node_id.clone(), n))
+        .collect();
+
+    let table = routing_table_from(&owned, &nodes);
+
+    let route = table
+        .get(&to_router_key(&key(0)))
+        .expect("the shard is routed");
+    let followers: Vec<&str> = route.replicas.iter().map(|n| n.node_id.as_str()).collect();
+    assert_eq!(followers, ["broker-b", "broker-d"]);
+    let change = route.pending.as_deref().expect("pending");
+    assert_eq!(change.generation, 6);
+    assert_eq!(change.leaving, ["broker-a", "broker-b", "broker-c"]);
 }

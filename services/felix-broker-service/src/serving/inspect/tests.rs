@@ -25,6 +25,7 @@ fn route(leader: &str, generation: u64) -> Route {
         successor: None,
         incarnation: 0,
         fence_storage_ids: None,
+        pending: None,
     }
 }
 

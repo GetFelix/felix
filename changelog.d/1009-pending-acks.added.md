@@ -1,0 +1,1 @@
+While a replica set change is pending, a leader acknowledges a record only when a majority of the new set and a majority of the set being left hold it, and reports its generation-start record as started so the control plane can take the new set (#1009). Dormant behind the `joint_fence` fleet feature, which no fleet can finalize yet.
