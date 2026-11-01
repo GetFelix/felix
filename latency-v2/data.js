@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793537033275,
+  "lastUpdate": 1793542084873,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -52074,6 +52074,72 @@ window.BENCHMARK_DATA = {
             "range": "116.91",
             "unit": "us",
             "extra": "trials: 5\nmedian: 416.00\nmean: 443.40\nstdev: 116.91\ncv: 26.37%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "25c594753cb9b60e7d0850b7f66c1f0bcfc56033",
+          "message": "build(deps): bump pyo3-build-config (#1728)\n\nBumps the out-of-workspace-crates group with 1 update in the /crates/sdk/felix-python directory: [pyo3-build-config](https://github.com/pyo3/pyo3).\n\n\nUpdates `pyo3-build-config` from 0.29.3 to 0.30.1\n- [Release notes](https://github.com/pyo3/pyo3/releases)\n- [Changelog](https://github.com/PyO3/pyo3/blob/v0.30.1/CHANGELOG.md)\n- [Commits](https://github.com/pyo3/pyo3/compare/v0.29.3...v0.30.1)\n\n---\nupdated-dependencies:\n- dependency-name: pyo3-build-config\n  dependency-version: 0.30.1\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: out-of-workspace-crates\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-11-01T06:03:50-08:00",
+          "tree_id": "d52339bdd1041b68c976c4729d170890cab2eabe",
+          "url": "https://github.com/GetFelix/felix/commit/25c594753cb9b60e7d0850b7f66c1f0bcfc56033"
+        },
+        "date": 1793542078803,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 140,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 140.00\nmean: 140.40\nstdev: 1.14\ncv: 0.81%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 200,
+            "range": "2.97",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 200.00\nmean: 200.60\nstdev: 2.97\ncv: 1.48%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 250,
+            "range": "75.38",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 250.00\nmean: 278.00\nstdev: 75.38\ncv: 27.11%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 190,
+            "range": "9.74",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 190.00\nmean: 194.60\nstdev: 9.74\ncv: 5.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 372,
+            "range": "147.68",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 372.00\nmean: 441.40\nstdev: 147.68\ncv: 33.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 519,
+            "range": "912.80",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 519.00\nmean: 1131.00\nstdev: 912.80\ncv: 80.71%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
