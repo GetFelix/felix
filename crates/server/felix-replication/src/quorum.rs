@@ -48,6 +48,8 @@ pub struct QuorumMarks {
     /// What the driver last saw of each shard's followers, read only to explain
     /// a timed-out wait. Set by the replication driver.
     status: std::sync::OnceLock<Arc<crate::status::ShardStatusBoard>>,
+    /// The storage identity of this broker's directory, set once it is known.
+    local_storage: std::sync::OnceLock<felix_storage::StorageId>,
     /// When each shard's timeout was last logged.
     timeout_logged: Mutex<HashMap<ShardKey, tokio::time::Instant>>,
 }
@@ -216,6 +218,16 @@ impl QuorumMarks {
         if self.incarnations.get().is_none() {
             let _ = self.incarnations.set(Incarnations(Arc::clone(broker)));
         }
+    }
+
+    /// Record this broker's storage identity, which a promotion checks its
+    /// kept set against. Only the first call counts.
+    pub fn set_local_storage(&self, storage: felix_storage::StorageId) {
+        let _ = self.local_storage.set(storage);
+    }
+
+    pub(crate) fn local_storage(&self) -> Option<felix_storage::StorageId> {
+        self.local_storage.get().copied()
     }
 
     /// Read follower positions for [`Self::log_timeout`] from `board` from here

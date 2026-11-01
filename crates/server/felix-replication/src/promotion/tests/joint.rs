@@ -179,7 +179,12 @@ async fn a_joint_fence_never_counts_a_learner() {
     let mut replicas = replicas_with(&["broker-x", "broker-z"]);
     replicas.get_mut("broker-b").reachable = false;
     let (leader, _dir) = leader_holding(4, &["a"]).await;
-    kept_before(&leader, &["broker-x", "broker-b", LEADER], &[LEADER]).await;
+    kept_before(
+        &leader,
+        &["broker-x", "broker-b", "broker-c"],
+        &["broker-c"],
+    )
+    .await;
 
     let outcome = fence(&replicas, &leader, true).await;
 
@@ -187,6 +192,61 @@ async fn a_joint_fence_never_counts_a_learner() {
         panic!("a learner counted toward the old set's majority: {outcome:?}");
     };
     assert!(why.contains("1 of 2 voters of the set being left"), "{why}");
+}
+
+/// [`fence`] under `joint_fence` on a broker whose directory holds `own`.
+async fn fence_holding(replicas: &Replicas, leader: &Arc<Broker>, own: StorageId) -> Outcome {
+    let addr_of = addr_of;
+    let joint = Joint::new(&addr_of, None).with_local_storage(Some(own));
+    fence_shard(
+        replicas,
+        leader,
+        LEADER,
+        &key(),
+        &swapped(),
+        false,
+        Some(&joint),
+    )
+    .await
+}
+
+/// **A wiped copy its kept set marks a learner does not open as leader.**
+/// The control plane named it leader, but the set it holds names another
+/// copy for it and it has not caught up (`~PromoteNonVoter` in
+/// `docs/formal/FelixShard.tla`). It refuses before writing anything, and the
+/// mark stays: opening would have kept the route's set over it and made it a
+/// voter again. A staged destination, a learner that holds the copy its set
+/// names, still leads.
+#[tokio::test]
+async fn a_learner_named_leader_refuses_and_keeps_its_mark() {
+    let replicas = replicas_with(&["broker-x", "broker-z"]);
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+    let old = StorageId::from_bytes([3; 16]);
+    let own = StorageId::from_bytes([7; 16]);
+    let members = ["broker-x", "broker-z", LEADER];
+    kept_naming(&leader, &members, &[LEADER], &[(LEADER, old)]).await;
+    let log = leader
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    let accepted = log.accepted_generation();
+
+    let outcome = fence_holding(&replicas, &leader, own).await;
+
+    let Outcome::Pending { why, .. } = &outcome else {
+        panic!("a wiped learner opened as leader: {outcome:?}");
+    };
+    assert!(why.contains("learner"), "{why}");
+    assert!(replicas.sent(Kind::ElectionFence).is_empty(), "fenced");
+    assert_eq!(log.member_is_learner(LEADER), Some(true), "mark cleared");
+    assert_eq!(log.set_generation(), 4, "wrote a set");
+    assert_eq!(log.accepted_generation(), accepted, "took a ballot");
+
+    // A staged destination holds the copy the set names.
+    let (staged, _dir) = leader_holding(4, &["a"]).await;
+    kept_naming(&staged, &members, &[LEADER], &[(LEADER, own)]).await;
+    let outcome = fence_holding(&replicas, &staged, own).await;
+    assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
 }
 
 /// **Without `joint_fence` the fence is the one it always was**, set change
