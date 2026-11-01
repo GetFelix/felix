@@ -12,6 +12,7 @@ use felix_broker::{Broker, DurableStorage};
 use felix_storage::log::FsyncMode;
 use felix_storage::{EphemeralCache, StorageId};
 
+use crate::cluster::membership::Registered;
 use crate::config::{BrokerConfig, DurableStorageConfig};
 
 /// Open durable storage, the cache, consumer groups and counters, and build
@@ -20,13 +21,14 @@ use crate::config::{BrokerConfig, DurableStorageConfig};
 ///
 /// Also returns the data directory's storage id, read before the broker
 /// registers so the control plane and peers only ever see the id of the data
-/// it serves, and whether this start rotated it: after a crash that may have
+/// it serves; whether this start rotated it: after a crash that may have
 /// lost records the broker acknowledged, or because `registered`, the
-/// control plane's incarnation for this node, is ahead of the one the
-/// directory recorded.
+/// control plane's record of this node, names a later incarnation than the
+/// one the directory recorded; and whether `registered` names another
+/// storage id (see [`start_run`]).
 pub(crate) fn open(
     config: &BrokerConfig,
-    registered: Option<u64>,
+    registered: Option<&Registered>,
 ) -> Result<(Broker, Option<DurableStorage>, StorageId, bool, bool)> {
     let durable_config = DurableStorageConfig::from_env()?;
     // Test-only: the cluster harness's power loss. Armed before any store
@@ -35,16 +37,8 @@ pub(crate) fn open(
     felix_storage::fault::arm_power_loss_from_env().context("arm the simulated power loss")?;
     // Before any store opens: a store's recovery is the first write of this
     // run, and the record that a run is under way must already be on disk.
-    let (storage_id, unclean, fresh) = match &durable_config {
-        Some(durable) => {
-            let begun = begin_run(&durable.root, &durable.log, registered)?;
-            // The id on disk was not read back as it was: a wiped or new
-            // directory, a corrupt file, or a rotation. Any of them may
-            // follow a loss of what the old id held.
-            let fresh =
-                begun.rotated || begun.origin != felix_storage::storage_identity::Origin::Loaded;
-            (begun.id, begun.rotated, fresh)
-        }
+    let (storage_id, unclean, replaced) = match &durable_config {
+        Some(durable) => start_run(&durable.root, &durable.log, registered)?,
         None => (storage_id(None)?, false, false),
     };
     let hold = retention_hold(config);
@@ -173,7 +167,26 @@ pub(crate) fn open(
         }
         None => broker,
     };
-    Ok((broker, durable_storage, storage_id, unclean, fresh))
+    Ok((broker, durable_storage, storage_id, unclean, replaced))
+}
+
+/// Start a run on `root` and say what it started under: the storage id,
+/// whether it was rotated, and whether the control plane last registered
+/// this node under another id. That last is the evidence of a wipe a copy
+/// cannot find in a set written since (#1331): what the node held under the
+/// old id is gone or set aside. A node the control plane never registered,
+/// or one registered before storage ids, held nothing under another id, so
+/// a new broker's copies vote however new its directory is.
+fn start_run(
+    root: &Path,
+    log: &felix_storage::log::LogConfig,
+    registered: Option<&Registered>,
+) -> Result<(StorageId, bool, bool)> {
+    let begun = begin_run(root, log, registered.map(|r| r.incarnation))?;
+    let replaced = registered
+        .and_then(|r| r.storage_id.as_deref())
+        .is_some_and(|prior| prior != begun.id.to_hex());
+    Ok((begun.id, begun.rotated, replaced))
 }
 
 /// The id kept under the durable root, or, without durable storage, a random

@@ -221,19 +221,22 @@ impl QuorumMarks {
     }
 
     /// Record this broker's storage identity, which a promotion checks its
-    /// kept set against. Only the first call counts.
-    /// `fresh` is whether it was minted at this start.
-    pub fn set_local_storage(&self, storage: felix_storage::StorageId, fresh: bool) {
-        let _ = self.local_storage.set((storage, fresh));
+    /// kept set against. Only the first call counts. `replaced` is whether
+    /// the control plane last registered this node under another one.
+    pub fn set_local_storage(&self, storage: felix_storage::StorageId, replaced: bool) {
+        let _ = self.local_storage.set((storage, replaced));
     }
 
     pub(crate) fn local_storage(&self) -> Option<felix_storage::StorageId> {
         self.local_storage.get().map(|(storage, _)| *storage)
     }
 
-    /// Whether the storage identity was minted at this start.
-    pub fn fresh_storage(&self) -> bool {
-        self.local_storage.get().is_some_and(|(_, fresh)| *fresh)
+    /// Whether the control plane last registered this node under another
+    /// storage identity.
+    pub fn replaced_storage(&self) -> bool {
+        self.local_storage
+            .get()
+            .is_some_and(|(_, replaced)| *replaced)
     }
 
     /// Read follower positions for [`Self::log_timeout`] from `board` from here

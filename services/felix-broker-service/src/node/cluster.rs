@@ -208,7 +208,7 @@ fn replica_handler(
         .with_stickiness(replication::suspicion::SuspicionConfig::from_env().suspect_after)
         .with_fleet(Arc::clone(quorum_marks))
         .with_local_storage(storage_id)
-        .with_fresh_storage(quorum_marks.fresh_storage());
+        .with_replaced_storage(quorum_marks.replaced_storage());
     let handler = match unclean {
         Some(unclean) => handler.with_unclean_start(unclean),
         None => handler,

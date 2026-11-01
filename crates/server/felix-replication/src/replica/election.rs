@@ -192,18 +192,18 @@ impl ReplicaHandler {
         members.any(|(node, storage)| node == local && storage.is_some_and(|named| named != own))
     }
 
-    /// A copy under a storage id minted at this start, whose log holds no set
-    /// yet, may have held this shard before the id changed: nothing it learns
-    /// can say, since a set written after the wipe names the new id or none.
-    /// A set at generation 1 is the shard's creation, which no copy held
-    /// before. The id is new when the directory had none (a wiped or new
-    /// directory, or an older build's) or when the run rotated it.
-    fn fresh_copy_of(&self, log: &felix_broker::StreamLog, generation: u64) -> bool {
-        self.fresh_storage && generation > 1 && log.replica_set().is_none()
+    /// A copy whose log holds no set yet, on a broker the control plane last
+    /// registered under another storage id, may have held this shard under
+    /// that id: nothing it learns can say, since a set written after the new
+    /// id registered names it. A set at generation 1 is the shard's creation,
+    /// which no copy held before. A broker new to the control plane holds no
+    /// such evidence, so its copies vote.
+    fn replaced_copy_of(&self, log: &felix_broker::StreamLog, generation: u64) -> bool {
+        self.replaced_storage && generation > 1 && log.replica_set().is_none()
     }
 
     fn names_other_in(&self, log: &felix_broker::StreamLog, set: &Membership) -> bool {
-        self.fresh_copy_of(log, set.generation)
+        self.replaced_copy_of(log, set.generation)
             || self.names_other_copy(
                 set.members
                     .iter()
@@ -212,7 +212,7 @@ impl ReplicaHandler {
     }
 
     fn names_other_in_view(&self, log: &felix_broker::StreamLog, set: &ReplicaSetView) -> bool {
-        self.fresh_copy_of(log, set.generation)
+        self.replaced_copy_of(log, set.generation)
             || self.names_other_copy(set.members.iter().map(|member| {
                 (
                     member.node_id.as_str(),

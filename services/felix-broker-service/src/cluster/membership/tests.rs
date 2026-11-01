@@ -850,7 +850,8 @@ async fn heartbeats_open_the_fleet_gate_and_never_close_it() {
 }
 
 /// A control plane that answers `GET /v1/nodes/{id}` with `status` until
-/// `failures` run out, then with the node at `incarnation` (404 when `None`).
+/// `failures` run out, then with the node at `incarnation` (404 when `None`),
+/// registered under [`LOOKUP_STORAGE_ID`].
 async fn serve_lookup(
     failures: usize,
     status: axum::http::StatusCode,
@@ -876,7 +877,11 @@ async fn serve_lookup(
                         Some(incarnation) if id == "broker-a" => Ok(Json(json!({
                             "node": {
                                 "node_id": id,
-                                "status": { "incarnation": incarnation, "lifecycle": "live" },
+                                "status": {
+                                    "incarnation": incarnation,
+                                    "lifecycle": "live",
+                                    "storage_id": LOOKUP_STORAGE_ID,
+                                },
                             },
                             "placement": { "eligible": true },
                         }))),
@@ -895,22 +900,28 @@ async fn serve_lookup(
     (format!("http://{addr}"), asked, stop, handle)
 }
 
-/// The startup check reads the node's current incarnation, and a node the
-/// control plane has never registered is no evidence either way.
+const LOOKUP_STORAGE_ID: &str = "0123456789abcdef0123456789abcdef";
+
+/// The startup check reads the node's current incarnation and the storage id
+/// it registered with, and a node the control plane has never registered is
+/// no evidence either way.
 #[tokio::test]
-async fn the_lookup_reads_the_registered_incarnation() {
+async fn the_lookup_reads_the_registration() {
     let ok = axum::http::StatusCode::OK;
     let (base_url, _, stop, handle) = serve_lookup(0, ok, Some(7)).await;
     let client = build_test_client().expect("client");
     let credential = crate::cluster::credential::NodeCredential::new("a-node-token");
     assert_eq!(
-        registered_incarnation(&client, &base_url, "broker-a", &credential)
+        registered(&client, &base_url, "broker-a", &credential)
             .await
             .expect("lookup"),
-        Some(7)
+        Some(Registered {
+            incarnation: 7,
+            storage_id: Some(LOOKUP_STORAGE_ID.to_string()),
+        })
     );
     assert_eq!(
-        registered_incarnation(&client, &base_url, "broker-z", &credential)
+        registered(&client, &base_url, "broker-z", &credential)
             .await
             .expect("lookup"),
         None
@@ -934,12 +945,12 @@ async fn the_startup_lookup_waits_for_an_answer() {
         let credential = crate::cluster::credential::NodeCredential::new("a-node-token");
         let answer = tokio::time::timeout(
             Duration::from_secs(20),
-            await_registered_incarnation(&client, &base_url, "broker-a", &credential),
+            await_registered(&client, &base_url, "broker-a", &credential),
         )
         .await
         .expect("answered once the control plane did")
         .expect("lookup");
-        assert_eq!(answer, Some(3), "{status}");
+        assert_eq!(answer.map(|r| r.incarnation), Some(3), "{status}");
         assert_eq!(*asked.lock().expect("lock"), 3, "{status}");
         let _ = stop.send(());
         let _ = handle.await;
@@ -953,7 +964,7 @@ async fn the_startup_lookup_waits_for_an_answer() {
     let credential = crate::cluster::credential::NodeCredential::new("a-node-token");
     let waiting = tokio::time::timeout(
         Duration::from_millis(1500),
-        await_registered_incarnation(&client, &format!("http://{addr}"), "broker-a", &credential),
+        await_registered(&client, &format!("http://{addr}"), "broker-a", &credential),
     )
     .await;
     assert!(waiting.is_err(), "returned without an answer: {waiting:?}");
@@ -968,7 +979,7 @@ async fn a_refused_startup_lookup_fails_the_start() {
     let credential = crate::cluster::credential::NodeCredential::new("a-node-token");
     let refused = tokio::time::timeout(
         Duration::from_secs(5),
-        await_registered_incarnation(&client, &base_url, "broker-a", &credential),
+        await_registered(&client, &base_url, "broker-a", &credential),
     )
     .await
     .expect("a refusal is final");

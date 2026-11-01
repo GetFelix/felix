@@ -272,15 +272,53 @@ async fn a_set_naming_its_storage_id_readmits_it_after_catch_up() {
     assert_eq!(log.member_is_learner(LOCAL), Some(false));
 }
 
-/// **A storage id minted at this start is a learner for a shard it may have
-/// held.** The wipe came before any set was heard, so the first set it learns
-/// names its new id: no evidence, only the id's age (`FreshIdLearner` in
+/// **A re-admitted copy keeps the ballot its catch-up took.** Before the
+/// wipe it may have promised any generation up to the one it caught up at,
+/// to a candidate it no longer knows of. Holding that leader's ballot, it
+/// promises none of them to anyone else once it votes again (`CatchUp` in
+/// `docs/formal/FelixShard.tla`).
+#[tokio::test]
+async fn a_readmitted_copy_keeps_the_ballot_its_catch_up_took() {
+    let (broker, _dir) = broker_with_storage().await;
+    let handler = handler(&broker, 6, OWN);
+    wiped_at_5(&handler).await;
+    let answer = handler.fence(SENDER, readmission(6, OWN)).await;
+    assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
+    let log = log_of(&broker).await;
+    assert_eq!(
+        log.accepted_generation(),
+        0,
+        "a learner's refusal promises nothing"
+    );
+
+    let answer = handler
+        .apply(SENDER, stamped(6, 0, &["a"]), felix_broker::LogKind::Stream)
+        .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    assert_eq!(log.member_is_learner(LOCAL), Some(false));
+    assert_eq!(log.accepted_generation(), 6);
+    assert_eq!(log.accepted_leader().as_deref(), Some("broker-a"));
+
+    let answer = handler
+        .fence(Some("broker-c"), fence_with(6, set(6, OWN), None, true))
+        .await;
+    assert_eq!(refusal(&answer).code, ErrorCode::FencedEpoch, "{answer:?}");
+    assert_eq!(log.accepted_leader().as_deref(), Some("broker-a"));
+}
+
+/// **A broker the control plane last registered under another storage id
+/// is a learner for a shard it may have held.** The wipe came before any set
+/// was heard, so the first set it learns names its new id: no evidence in the
+/// set, only in the registration (`ReplacedIdLearner` in
 /// `docs/formal/FelixShard.tla`). It refuses the fence, and is admitted once
 /// the start record of that set's generation reaches its log.
 #[tokio::test]
-async fn a_fresh_storage_id_is_a_learner() {
+async fn a_replaced_storage_id_is_a_learner() {
     let (broker, _dir) = broker_with_storage().await;
-    let handler = handler(&broker, 2, OWN).with_fresh_storage(true);
+    let handler = handler(&broker, 2, OWN).with_replaced_storage(true);
 
     let answer = handler
         .fence(SENDER, fence_with(2, set(2, OWN), None, false))
@@ -301,14 +339,30 @@ async fn a_fresh_storage_id_is_a_learner() {
 }
 
 /// A shard's creation is a set at generation 1, which no copy held before:
-/// a fresh storage id votes in it.
+/// a replaced storage id votes in it.
 #[tokio::test]
-async fn a_fresh_storage_id_votes_at_creation() {
+async fn a_replaced_storage_id_votes_at_creation() {
     let (broker, _dir) = broker_with_storage().await;
-    let handler = handler(&broker, 1, OWN).with_fresh_storage(true);
+    let handler = handler(&broker, 1, OWN).with_replaced_storage(true);
 
     let answer = handler
         .fence(SENDER, fence_with(1, set(1, OWN), None, false))
+        .await;
+    assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
+    let log = log_of(&broker).await;
+    assert_eq!(log.member_is_learner(LOCAL), Some(false));
+}
+
+/// **A broker new to the control plane votes.** Its storage id is as new as
+/// a wiped one's, but it held nothing under another id: a set past
+/// generation 1 naming it, as a swap that adds it writes, is answered.
+#[tokio::test]
+async fn a_new_brokers_copy_votes_past_creation() {
+    let (broker, _dir) = broker_with_storage().await;
+    let handler = handler(&broker, 2, OWN);
+
+    let answer = handler
+        .fence(SENDER, fence_with(2, set(2, OWN), None, false))
         .await;
     assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
     let log = log_of(&broker).await;
