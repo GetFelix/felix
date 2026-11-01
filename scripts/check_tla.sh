@@ -20,6 +20,9 @@
 # (`TLA_COVERAGE="TrimSet Promote"`) also print the count for each expression
 # in those FelixShard.tla definitions, which shows a branch was taken.
 #
+# `scripts/check_tla.sh --plan-heavy` prints which changed configurations a
+# pull request checks in jobs of their own (see `--plan-heavy` below).
+#
 # `scripts/check_tla.sh --simulate` runs the long random walks instead (`walks`
 # below): TLC's simulation mode, each configuration for `TLA_SIM_MINUTES`
 # (default 25) of traces up to `TLA_DEPTH` steps (default 300), from
@@ -37,6 +40,9 @@ cd "$(dirname "$0")/.."
 mode=check
 if [ "${1:-}" = "--simulate" ]; then
   mode=simulate
+  shift
+elif [ "${1:-}" = "--plan-heavy" ]; then
+  mode=plan-heavy
   shift
 fi
 
@@ -427,22 +433,45 @@ weight_of() {
   echo 1
 }
 
+# The configurations whose own .cfg changed against `TLA_CHANGED_BASE` (a
+# revision; CI passes the PR's base), space-separated.
+changed_cfgs=" "
+if [ -n "${TLA_CHANGED_BASE:-}" ]; then
+  while read -r f; do
+    f="${f##*/}"
+    changed_cfgs="$changed_cfgs${f%.cfg} "
+  done < <(git diff --name-only "$TLA_CHANGED_BASE" HEAD -- "$SPEC_DIR/*.cfg")
+fi
+
+# `--plan-heavy` prints the changed registered configurations weighing more
+# than 30 minutes as a JSON matrix, each with a job timeout of twice its
+# weight plus headroom. A pull request checks each of them in a job of its
+# own (ci.yml's `formal-heavy`), since they would not fit an hour beside the
+# rest.
+if [ "$mode" = plan-heavy ]; then
+  sep=""
+  printf '['
+  for entry in "${registered[@]}"; do
+    name="${entry%% *}"
+    weight="$(weight_of "$name")"
+    if [ "$weight" -gt 30 ] && [[ "$changed_cfgs" == *" $name "* ]]; then
+      timeout=$((weight * 2 + 15))
+      if [ "$timeout" -gt 360 ]; then timeout=360; fi
+      printf '%s{"cfg":"%s","timeout":%d}' "$sep" "$name" "$timeout"
+      sep=","
+    fi
+  done
+  echo ']'
+  exit 0
+fi
+
 # `TLA_QUICK=1` leaves out the registered configurations weighing more than
-# ten minutes, except those whose own .cfg changed against `TLA_CHANGED_BASE`
-# (a revision; CI passes the PR's base), which run if they weigh 30 minutes or
-# less. Heavier ones would not fit a pull request's hour beside the rest, and
-# run on main or by dispatch (ci.yml's `tla_configs`). A changed .tla does
-# not pull in its heavy configurations: FelixShard.tla is behind most of them.
-# Pull requests check that tier; the rest run when the spec changes on main.
-# Configurations named on the command line always run.
+# ten minutes, except changed ones of 30 minutes or less. A changed one over
+# 30 minutes is left to a job of its own (`--plan-heavy`). A changed .tla
+# does not pull in its heavy configurations: FelixShard.tla is behind most of
+# them. Pull requests check that tier; the rest run when the spec changes on
+# main. Configurations named on the command line always run.
 if [ -n "${TLA_QUICK:-}" ] && [ "$#" -eq 0 ]; then
-  changed_cfgs=" "
-  if [ -n "${TLA_CHANGED_BASE:-}" ]; then
-    while read -r f; do
-      f="${f##*/}"
-      changed_cfgs="$changed_cfgs${f%.cfg} "
-    done < <(git diff --name-only "$TLA_CHANGED_BASE" HEAD -- "$SPEC_DIR/*.cfg")
-  fi
   quick=()
   for entry in "${selected[@]}"; do
     weight="$(weight_of "${entry%% *}")"
@@ -452,7 +481,7 @@ if [ -n "${TLA_QUICK:-}" ] && [ "$#" -eq 0 ]; then
       if [ "$weight" -le 30 ]; then
         quick+=("$entry")
       else
-        echo "skipping changed ${entry%% *} (about $weight min): it runs on main or by dispatch"
+        echo "leaving changed ${entry%% *} (about $weight min) to a job of its own"
       fi
     fi
   done

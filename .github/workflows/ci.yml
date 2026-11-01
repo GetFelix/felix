@@ -1006,7 +1006,8 @@ jobs:
         run: python3 scripts/check_spec_pairing.py --base HEAD^1
 
   # A pull request checks the configurations of ten minutes or less
-  # (TLA_QUICK); a push to main or a manual run checks all of them, so a slow
+  # (TLA_QUICK), plus the ones it changes (`formal-heavy` takes those over 30
+  # minutes); a push to main or a manual run checks all of them, so a slow
   # configuration that breaks shows up on main rather than holding up every
   # spec change for an hour.
   formal:
@@ -1073,6 +1074,58 @@ jobs:
           path: target/tla/log/
           retention-days: 14
           if-no-files-found: ignore
+
+  # A pull request that changes a configuration of over 30 minutes checks it
+  # in a job of its own instead of leaving it to main: it would not fit the
+  # shards' hour beside the rest.
+  formal-heavy-plan:
+    needs: changes
+    if: needs.changes.outputs.formal == 'true' && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      - id: plan
+        env:
+          TLA_CHANGED_BASE: HEAD^1
+        run: echo "matrix=$(scripts/check_tla.sh --plan-heavy)" | tee -a "$GITHUB_OUTPUT"
+
+  formal-heavy:
+    needs: formal-heavy-plan
+    if: needs.formal-heavy-plan.outputs.matrix != '[]'
+    name: TLA+ model (${{ matrix.cfg }})
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.formal-heavy-plan.outputs.matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Scratch disk for TLC
+        run: |
+          mkdir -p "$RUNNER_TEMP/tlc"
+          echo "TLC_SCRATCH_DIR=$RUNNER_TEMP/tlc" >> "$GITHUB_ENV"
+
+      - name: Model-check
+        run: scripts/check_tla.sh "${{ matrix.cfg }}"
 
   # FelixShardFencedCrashUnprobed no longer finishes exhaustively in a hosted
   # runner's six hours (#1584), so it is walked here instead, with its twin,
@@ -1191,7 +1244,7 @@ jobs:
   ci-ok:
     name: CI ok
     if: always()
-    needs: [changes, images, compose, test, cluster, checks, docs-evidence, docs-site, chart, python, typescript, dotnet, spec-pairing, formal, formal-walk, fuzz]
+    needs: [changes, images, compose, test, cluster, checks, docs-evidence, docs-site, chart, python, typescript, dotnet, spec-pairing, formal, formal-heavy-plan, formal-heavy, formal-walk, fuzz]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
