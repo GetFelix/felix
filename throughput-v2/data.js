@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793509536342,
+  "lastUpdate": 1793537036041,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -40976,6 +40976,58 @@ window.BENCHMARK_DATA = {
             "range": "8027.32",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 955536.59\nmean: 956841.42\nstdev: 8027.32\ncv: 0.84%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3320c985eff5930fe075654ab65cb718c598e7a1",
+          "message": "feat(controlplane): adopt elected leaders, never reissue below them, 2xS hold (#1009 S7) (#1729)\n\n* feat(controlplane): adopt elected leaders, never reissue below them, hold suspicion promotion 2xS (#1009 S7)\n\nA broker's replica report can carry `elected`: the generation it opened at\nand the set it fenced, with that set's generation. Brokers do not send it\nyet (S9); absent, the report is byte-identical.\n\nOnce replica_election is finalized, the report handler adopts an elected\nleader whose report is above the assignment's generation. The write is\nconditional on the generation it read and lands at the elected generation\nitself, so every later write, from any writer, is above it. On the set the\ncontrol plane records (the pending set at its generation while one is\npending, with the leader also in the old set) the broker becomes the leader\nand a pending change stays pending. On any other set only the generation is\ntaken: a leader elected on the old set while a change is pending is\nrecorded, not adopted. Under Raft adoption is a new command at metadata\nlevel 21, refused before it reaches the log below it. Postgres needs no\nmigration.\n\nUnder replica_election, placement's promotion on the followers' word waits\nuntil the instance has seen each suspicion held for\nFELIX_SHARD_ELECTION_HOLD_MS (10 s, 2xS). Lease-lapse promotion is\nunchanged.\n\nELECTION_METADATA_LEVEL_READY is now true. replica_election stays\nunfinalizable while no broker offers ELECTION.\n\nSpec-Unaffected: implements CpAdopt with AdoptMatch as FelixShard.tla models it; ElectAdopt, ElectAdoptNoMatch and ElectAdoptPromote now cite the tests.\n\n* fix(controlplane): bound elected generations, keep election finalize off, record a joining leader (#1009 S7)\n\nRefuse adoption more than 16 generations past the stored one or above\ni64::MAX, issue generations with checked_add in every store, hold\nELECTION_METADATA_LEVEL_READY false until the election driver, and record\nonly (generation) when the elected leader is the joining copy.",
+          "timestamp": "2026-11-01T04:39:34-08:00",
+          "tree_id": "b45a22f7169603e385d09b993c128adc0d94ba11",
+          "url": "https://github.com/GetFelix/felix/commit/3320c985eff5930fe075654ab65cb718c598e7a1"
+        },
+        "date": 1793537035240,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 435461.49,
+            "range": "19284.18",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 435461.49\nmean: 442137.42\nstdev: 19284.18\ncv: 4.36%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 435461.49,
+            "range": "19284.18",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 435461.49\nmean: 442137.42\nstdev: 19284.18\ncv: 4.36%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 95948.05,
+            "range": "987.24",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 95948.05\nmean: 95733.12\nstdev: 987.24\ncv: 1.03%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 959480.46,
+            "range": "9872.42",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 959480.46\nmean: 957331.21\nstdev: 9872.42\ncv: 1.03%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
