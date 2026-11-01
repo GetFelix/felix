@@ -300,6 +300,8 @@ pub(super) async fn plan_pass(
     read.positions.set_progress(progressed);
     let fenced = progress.observe_fences(&read.existing, &read.positions);
     read.positions.set_fences(fenced);
+    let pending = progress.observe_pending(&read.existing, &read.positions);
+    read.positions.set_pending(pending);
     read.positions
         .set_give_ups(progress.give_ups(&read.existing));
     let plan = read.plan(policy);
@@ -444,6 +446,16 @@ pub(super) async fn apply_pass(
                         destination = ?successor,
                         leader = %written.leader,
                         "a fenced leader never reported drained; it serves the shard again",
+                    );
+                }
+                if matches!(step, super::MoveStep::PendingSetTimedOut) {
+                    metrics::counter!(SHARD_MOVES_TIMED_OUT_TOTAL).increment(1);
+                    tracing::warn!(
+                        kind = %key.kind,
+                        name = %key.stream,
+                        shard = key.shard,
+                        leader = %written.leader,
+                        "a pending replica set was never reported; the old set stays",
                     );
                 }
                 if let super::MoveStep::Stalled { successor } = step {

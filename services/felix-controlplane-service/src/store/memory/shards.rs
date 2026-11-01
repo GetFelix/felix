@@ -131,6 +131,10 @@ async fn write_shard_assignment(
         ),
     };
 
+    assignment
+        .check_pending_generation(state.records.get(&assignment.key), generation)
+        .map_err(invalid_shard)?;
+
     // Store-owned, so a caller cannot pin a generation and make its own
     // stale report look current.
     let stored = ShardAssignment {

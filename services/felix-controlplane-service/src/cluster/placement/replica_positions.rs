@@ -131,6 +131,9 @@ pub struct ReplicaPositions {
     /// When this instance first saw each shard fenced, by generation; see
     /// `progress`.
     fenced: HashMap<(ShardKey, u64), u64>,
+    /// When this instance first saw each shard's pending set, by the
+    /// generation that wrote it.
+    pending: HashMap<(ShardKey, u64), u64>,
     /// Moves given up at the fence in a row, by shard, and when the last was.
     give_ups: HashMap<ShardKey, (u32, u64)>,
     /// Each node as a report is judged against: its registered storage
@@ -175,6 +178,7 @@ impl ReplicaPositions {
             followers_decide: false,
             progressed: HashMap::new(),
             fenced: HashMap::new(),
+            pending: HashMap::new(),
             give_ups: HashMap::new(),
             nodes: HashMap::new(),
             assignments: HashMap::new(),
@@ -255,6 +259,11 @@ impl ReplicaPositions {
     /// Note when this instance first saw each shard fenced.
     pub(super) fn set_fences(&mut self, fenced: HashMap<(ShardKey, u64), u64>) {
         self.fenced = fenced;
+    }
+
+    /// Note when this instance first saw each shard's pending set.
+    pub(super) fn set_pending(&mut self, pending: HashMap<(ShardKey, u64), u64>) {
+        self.pending = pending;
     }
 
     /// Note the moves given up at the fence, by shard.
@@ -569,6 +578,10 @@ impl CaughtUp for ReplicaPositions {
 
     fn fence_give_ups(&self, key: &ShardKey) -> Option<(u32, u64)> {
         self.give_ups.get(key).copied()
+    }
+
+    fn pending_since_millis(&self, key: &ShardKey, generation: u64) -> Option<u64> {
+        self.pending.get(&(key.clone(), generation)).copied()
     }
 
     fn fenced_at_millis(&self, key: &ShardKey, generation: u64) -> Option<u64> {

@@ -815,6 +815,20 @@ async fn a_pending_set_is_persisted_until_the_next_write(store: &dyn ControlPlan
         })
         .await;
     assert!(matches!(same, Err(StoreError::Conflict(_))), "{same:?}");
+    // A set the write starts must name the generation the write lands at.
+    let skipped = store
+        .put_shard_assignment(ShardAssignment {
+            pending_set: Some(crate::model::PendingSet {
+                replicas: vec!["broker-y".to_string()],
+                generation: written.generation + 5,
+            }),
+            ..assignment(0, "broker-x")
+        })
+        .await;
+    assert!(
+        matches!(skipped, Err(StoreError::Conflict(_))),
+        "a pending set for another generation was stored: {skipped:?}"
+    );
     let held = store.delete_node("broker-y").await;
     assert!(
         matches!(held, Err(StoreError::Conflict(_))),

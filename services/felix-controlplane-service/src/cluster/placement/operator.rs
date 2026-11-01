@@ -104,8 +104,8 @@ pub enum Refused {
     NotStranded,
     /// The log was given up, but no node can take the shard.
     Unplaceable(Unplaceable),
-    /// A cut-over's set change is pending. It ends on the leader's report,
-    /// or a failover abandons it; neither a move nor a cancel can.
+    /// A cut-over's set change is pending. It ends on the leader's report, a
+    /// timeout or a failover; a cancel ends it, a move cannot.
     SetChangePending,
 }
 
@@ -326,7 +326,19 @@ pub fn cancel_move(catalog: &Catalog<'_>, key: &ShardKey) -> Result<OperatorStep
     let existing = assignment_of(catalog, key)?;
     let (replication_factor, _, _) = placeable_of(catalog, key).ok_or(Refused::UnknownShard)?;
     if existing.pending_set.is_some() {
-        return Err(Refused::SetChangePending);
+        // Back to the control plane's own set, which a pending change never
+        // left.
+        return Ok(OperatorStep {
+            step: MoveStep::PendingSetCancelled,
+            assignment: ShardAssignment {
+                pending_set: None,
+                generation: 0,
+                fence_storage_ids: Default::default(),
+                ..existing.clone()
+            },
+            expected_generation: existing.generation,
+            zones: None,
+        });
     }
     let (step, assignment) = if existing.state == ShardState::Draining {
         // A leader that is down cannot take the shard back; failover

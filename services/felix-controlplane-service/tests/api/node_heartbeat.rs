@@ -483,8 +483,8 @@ async fn follower_features_are_finalized_after_generation_start() {
 
 /// The election features are refused over the API while a serving broker does
 /// not offer `ELECTION`, `replica_election` is refused before `joint_fence`,
-/// and with everything else in place it goes through: this control plane has
-/// the metadata level it needs.
+/// and with everything else in place it is still refused for the metadata
+/// level, which does not exist yet.
 #[tokio::test]
 async fn election_features_are_refused_with_their_reason() {
     let store = store();
@@ -567,7 +567,8 @@ async fn election_features_are_refused_with_their_reason() {
     assert_eq!(read_json(response).await["would_enable"], false);
     refused("finalize joint_fence first", "replica_election").await;
 
-    // Offering ELECTION lets joint_fence through, and then replica_election.
+    // Offering ELECTION lets joint_fence through, and then replica_election
+    // meets the metadata level.
     let mut offered = all.to_vec();
     offered.push("peer_election");
     let response = app
@@ -582,14 +583,9 @@ async fn election_features_are_refused_with_their_reason() {
         .await
         .expect("request");
     assert_eq!(response.status(), StatusCode::OK);
-    let response = app
-        .clone()
-        .oneshot(finalize("replica_election", false))
-        .await
-        .expect("request");
-    assert_eq!(response.status(), StatusCode::OK);
+    refused("metadata level", "replica_election").await;
     assert!(
-        store
+        !store
             .enabled_fleet_features()
             .await
             .expect("enabled")

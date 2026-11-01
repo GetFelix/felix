@@ -3544,7 +3544,8 @@ plane's finalize gates for `joint_fence` and `replica_election` are in place:
 the `ELECTION` peer capability, and `replica_election` is refused until
 `joint_fence` and its other prerequisites are finalized, every serving broker
 offers `ELECTION`, and the control plane has the metadata level for the
-pending replica set (level 21 under Raft, migration 0038 under Postgres). No
+pending replica set and adoption (level 21 under Raft, migration 0038 under
+Postgres), which waits on adoption. No
 broker offers `ELECTION`, so both features stay unfinalizable and a new
 cluster does not start with them.
 
@@ -3553,13 +3554,17 @@ cut-over that changes the set of a shard whose replicas elect names the new
 leader, keeps the old set as the control plane's own, and records the new one
 as the assignment's `pending_set`, at the cut-over's generation. Nothing but a
 failover changes the shard while it is pending, and a failover places it from
-the old set, which abandons the change. Placement takes the pending set only
+the old set, which abandons the change. So does a timeout
+(`FELIX_SHARD_PENDING_SET_TIMEOUT_MS`), a consistency change that stops the
+shard electing, and an operator's cancel, each writing the old set back
+without the pending one. Placement takes the pending set only
 when the leader's report at the assignment's generation names its generation
 in `joint_start_acked`, with a write conditional on that generation, so it
 is taken once. That is `Swap` and `CpFlip` in the model
-(`FelixShardWalkElectSwap.cfg`), with one difference: the write that takes
-the set, like every assignment write, is a new generation, which the leader
-opens on the new set alone. Adoption shares the metadata level and is not
+(`FelixShardWalkElectSwap.cfg`), with one difference TLC does not check: the
+write that takes the set, like every assignment write, is a new generation,
+which the leader opens on the new set alone, while `CpFlip` keeps the
+generation. The model is to cover that before the election driver. Adoption shares the metadata level and is not
 built yet, and no broker sends `joint_start_acked` yet (control-plane.md,
 [Moving a shard](control-plane.md#moving-a-shard)).
 

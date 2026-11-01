@@ -309,10 +309,10 @@ fn a_failover_abandons_a_pending_change() {
     }
 }
 
-/// An operator can neither start a move nor cancel one while a change is
-/// pending: only the report or a failover ends it.
+/// An operator cannot start a move while a change is pending. A cancel ends
+/// the change instead, writing the old set back.
 #[test]
-fn an_operator_cannot_move_or_cancel_while_a_change_is_pending() {
+fn an_operator_cannot_move_but_can_cancel_while_a_change_is_pending() {
     let streams = vec![Stream {
         consistency: ConsistencyLevel::Quorum,
         ..replicated_stream("orders", 1, 3)
@@ -338,10 +338,12 @@ fn an_operator_cannot_move_or_cancel_while_a_change_is_pending() {
         start_move(&catalog, &shard_zero(), "broker-d"),
         Err(Refused::SetChangePending)
     );
-    assert_eq!(
-        cancel_move(&catalog, &shard_zero()),
-        Err(Refused::SetChangePending)
-    );
+    let cancelled = cancel_move(&catalog, &shard_zero()).expect("cancel");
+    assert_eq!(cancelled.step, MoveStep::PendingSetCancelled);
+    assert_eq!(cancelled.expected_generation, existing[0].generation);
+    assert_eq!(cancelled.assignment.pending_set, None);
+    assert_eq!(cancelled.assignment.leader, existing[0].leader);
+    assert_eq!(cancelled.assignment.replicas, existing[0].replicas);
 }
 
 /// Every copy caught up, and every leader drained, at any generation.
@@ -359,4 +361,244 @@ impl CaughtUp for Drained {
     fn reported_generation(&self, _key: &ShardKey) -> Option<u64> {
         Some(3)
     }
+}
+
+/// The pending-only member is not a candidate, even reporting furthest ahead:
+/// its copy is not the control plane's set.
+#[test]
+fn a_failover_does_not_promote_a_pending_only_member() {
+    struct Ahead;
+    impl CaughtUp for Ahead {
+        fn is_caught_up(&self, _key: &ShardKey, _node_id: &str) -> bool {
+            true
+        }
+
+        fn reported_generation(&self, _key: &ShardKey) -> Option<u64> {
+            Some(3)
+        }
+
+        fn reported_offset(&self, _key: &ShardKey, node_id: &str) -> Option<u64> {
+            Some(if node_id == "broker-d" { 1_000 } else { 10 })
+        }
+    }
+    let streams = vec![Stream {
+        consistency: ConsistencyLevel::Quorum,
+        ..replicated_stream("orders", 1, 3)
+    }];
+    let nodes = vec![
+        node("broker-a", NodeLifecycle::Live, None),
+        node("broker-b", NodeLifecycle::Down, None),
+        node("broker-c", NodeLifecycle::Live, None),
+        node("broker-d", NodeLifecycle::Live, None),
+    ];
+    let pending = ShardAssignment {
+        state: ShardState::Assigning,
+        pending_set: Some(PendingSet {
+            replicas: vec!["broker-c".to_string(), "broker-d".to_string()],
+            generation: 3,
+        }),
+        ..assigned("orders", "broker-b", &["broker-a", "broker-c"])
+    };
+    let plan = plan_with(
+        &streams,
+        &[],
+        &nodes,
+        &[pending],
+        &Ahead,
+        MovePolicy {
+            replica_election: true,
+            ..MovePolicy::default()
+        },
+    );
+    match &plan.shards[0].decision {
+        Decision::Place(leader, _) => assert_ne!(leader, "broker-d"),
+        other => panic!("expected a failover, got {other:?}"),
+    }
+}
+
+const NOW: u64 = 10_000_000_000;
+const MINUTE: u64 = 60_000;
+
+/// The report clock at `NOW`, the pending set first seen at `since`, and
+/// every copy level. The leader never reports the joint start.
+struct Silent {
+    since: Option<u64>,
+}
+
+impl CaughtUp for Silent {
+    fn is_caught_up(&self, _key: &ShardKey, _node_id: &str) -> bool {
+        true
+    }
+
+    fn reported_generation(&self, _key: &ShardKey) -> Option<u64> {
+        Some(4)
+    }
+
+    fn as_of_millis(&self) -> Option<u64> {
+        Some(NOW)
+    }
+
+    fn pending_since_millis(&self, _key: &ShardKey, generation: u64) -> Option<u64> {
+        self.since.filter(|_| generation == 3)
+    }
+}
+
+/// A pending change at generation 3 whose follower broker-c is gone.
+fn stuck() -> ShardAssignment {
+    ShardAssignment {
+        state: ShardState::Assigning,
+        generation: 3,
+        pending_set: Some(PendingSet {
+            replicas: vec!["broker-c".to_string(), "broker-d".to_string()],
+            generation: 3,
+        }),
+        ..assigned("orders", "broker-b", &["broker-a", "broker-c"])
+    }
+}
+
+fn decide_stuck(
+    consistency: ConsistencyLevel,
+    existing: ShardAssignment,
+    reports: &dyn CaughtUp,
+    policy: MovePolicy,
+) -> Decision {
+    let streams = [Stream {
+        consistency,
+        ..replicated_stream("orders", 1, 3)
+    }];
+    let nodes = vec![
+        node("broker-a", NodeLifecycle::Live, None),
+        node("broker-b", NodeLifecycle::Live, None),
+        // Gone for ten minutes, past the restore delay.
+        {
+            let mut gone = node("broker-c", NodeLifecycle::Down, None);
+            gone.status.last_heartbeat_at_millis = NOW - 10 * MINUTE;
+            gone
+        },
+        node("broker-d", NodeLifecycle::Live, None),
+        node("broker-e", NodeLifecycle::Live, None),
+    ];
+    plan_with(&streams, &[], &nodes, &[existing], reports, policy)
+        .shards
+        .remove(0)
+        .decision
+}
+
+fn electing() -> MovePolicy {
+    MovePolicy {
+        replica_election: true,
+        ..MovePolicy::default()
+    }
+}
+
+/// A change nobody reports waits out the timeout, and then the old set is
+/// written back without the pending one. Restore and top-up were held behind
+/// it and go on once it is gone.
+#[test]
+fn a_pending_set_that_is_never_reported_is_dropped_after_the_timeout() {
+    let timeout = MovePolicy::default()
+        .pending_set_timeout_millis
+        .expect("a default");
+    let quorum = || ConsistencyLevel::Quorum;
+
+    let young = Silent {
+        since: Some(NOW - timeout + MINUTE),
+    };
+    assert_eq!(
+        decide_stuck(quorum(), stuck(), &young, electing()),
+        Decision::Waiting(Blocked::SetChangePending)
+    );
+    // No history of it on this instance: it is not dropped for want of one.
+    assert_eq!(
+        decide_stuck(quorum(), stuck(), &Silent { since: None }, electing()),
+        Decision::Waiting(Blocked::SetChangePending)
+    );
+    let old = Silent {
+        since: Some(NOW - timeout - MINUTE),
+    };
+    assert_eq!(
+        decide_stuck(
+            quorum(),
+            stuck(),
+            &old,
+            MovePolicy {
+                pending_set_timeout_millis: None,
+                ..electing()
+            }
+        ),
+        Decision::Waiting(Blocked::SetChangePending)
+    );
+
+    let Decision::Move(MoveStep::PendingSetTimedOut, dropped) =
+        decide_stuck(quorum(), stuck(), &old, electing())
+    else {
+        panic!("expected the change to be dropped");
+    };
+    assert_eq!(dropped.pending_set, None);
+    assert_eq!(dropped.leader, stuck().leader);
+    assert_eq!(dropped.replicas, stuck().replicas);
+
+    // The lost follower is replaced now, not held behind the change.
+    let after = ShardAssignment {
+        generation: 4,
+        ..dropped
+    };
+    let restore = decide_stuck(quorum(), after, &Silent { since: None }, electing());
+    assert!(
+        matches!(restore, Decision::Move(MoveStep::Restore { .. }, _)),
+        "{restore:?}"
+    );
+}
+
+/// A shard whose consistency is no longer one its replicas elect on has a
+/// leader that will never report, so the change is dropped at once.
+#[test]
+fn a_pending_set_is_dropped_when_the_shard_stops_electing() {
+    let decision = decide_stuck(
+        ConsistencyLevel::Leader,
+        stuck(),
+        &Silent { since: Some(NOW) },
+        electing(),
+    );
+    let Decision::Move(MoveStep::PendingSetDropped, dropped) = decision else {
+        panic!("expected the change to be dropped, got {decision:?}");
+    };
+    assert_eq!(dropped.pending_set, None);
+    assert_eq!(dropped.replicas, stuck().replicas);
+}
+
+/// An instance dates a pending set from when it first saw it, keeps that
+/// across passes, and forgets it once the change ends.
+#[test]
+fn an_instance_dates_a_pending_set_from_when_it_first_saw_it() {
+    use super::super::progress::CopyProgress;
+    struct Clock(u64);
+    impl CaughtUp for Clock {
+        fn is_caught_up(&self, _key: &ShardKey, _node_id: &str) -> bool {
+            true
+        }
+
+        fn as_of_millis(&self) -> Option<u64> {
+            Some(self.0)
+        }
+    }
+    let mut progress = CopyProgress::default();
+    let key = (shard_zero(), 3);
+    assert_eq!(
+        progress.observe_pending(&[stuck()], &Clock(100)).get(&key),
+        Some(&100)
+    );
+    assert_eq!(
+        progress.observe_pending(&[stuck()], &Clock(900)).get(&key),
+        Some(&100)
+    );
+    let ended = ShardAssignment {
+        pending_set: None,
+        ..stuck()
+    };
+    assert!(progress.observe_pending(&[ended], &Clock(950)).is_empty());
+    assert_eq!(
+        progress.observe_pending(&[stuck()], &Clock(990)).get(&key),
+        Some(&990)
+    );
 }

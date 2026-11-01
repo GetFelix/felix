@@ -151,6 +151,13 @@ pub trait CaughtUp {
         None
     }
 
+    /// When this instance first saw `key` holding a pending set written at
+    /// `generation`, on the reports' clock. `None` when it has not watched it,
+    /// and then no pending set times out.
+    fn pending_since_millis(&self, _key: &ShardKey, _generation: u64) -> Option<u64> {
+        None
+    }
+
     fn halted(&self, _key: &ShardKey, _node_id: &str) -> Option<&HaltedCopy> {
         None
     }

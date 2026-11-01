@@ -98,6 +98,15 @@ pub enum MoveStep {
     /// majority of the old set and of the pending one: the pending set
     /// becomes the control plane's.
     TakePendingSet,
+    /// The leader never reported the joint start within
+    /// `MovePolicy::pending_set_timeout_millis`: the change is dropped and
+    /// the control plane's own set stays, at a new generation.
+    PendingSetTimedOut,
+    /// The shard no longer elects (its consistency changed), so a pending
+    /// set can never be reported: the change is dropped.
+    PendingSetDropped,
+    /// An operator cancelled the pending change.
+    PendingSetCancelled,
 }
 
 impl MoveStep {
@@ -122,6 +131,9 @@ impl MoveStep {
             Self::FenceTimedOut { .. } => "fence_timed_out",
             Self::Discard { .. } => "discard",
             Self::TakePendingSet => "take_pending_set",
+            Self::PendingSetTimedOut => "pending_set_timed_out",
+            Self::PendingSetDropped => "pending_set_dropped",
+            Self::PendingSetCancelled => "pending_set_cancelled",
         }
     }
 }
@@ -157,7 +169,8 @@ pub enum Blocked {
     /// store's clock.
     BackingOff { given_up: u32, until_millis: u64 },
     /// A cut-over's set change is pending: nothing else changes the set
-    /// until the leader reports the joint start, or a failover abandons it.
+    /// until the leader reports the joint start, or the change is dropped
+    /// (a timeout, a cancel, a failover).
     SetChangePending,
 }
 

@@ -124,7 +124,10 @@ impl MoveClock {
             | MoveStep::UndoFence { .. }
             | MoveStep::TrimFence
             | MoveStep::Trim { .. }
-            | MoveStep::TakePendingSet => None,
+            | MoveStep::TakePendingSet
+            | MoveStep::PendingSetTimedOut
+            | MoveStep::PendingSetDropped
+            | MoveStep::PendingSetCancelled => None,
         }
     }
 }

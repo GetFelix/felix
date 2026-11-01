@@ -198,16 +198,17 @@ where
     if needs_level && !metadata_level_ready {
         return Err(StoreError::Conflict(format!(
             "cannot finalize {feature}: needs the control-plane metadata level for the \
-             pending replica set, which this control plane does not have",
+             pending replica set and adoption, which is not yet implemented",
         )));
     }
     Ok(())
 }
 
 /// Whether this control plane has the metadata level `replica_election`
-/// needs: the pending replica set, at Raft level 21 and Postgres migration
-/// 0038. Adoption shares the level.
-pub(crate) const ELECTION_METADATA_LEVEL_READY: bool = true;
+/// needs. The pending replica set exists (Raft level 21, Postgres migration
+/// 0038), but adoption shares level 21 and is not built, so this stays false:
+/// the feature must not be finalizable before adoption.
+pub(crate) const ELECTION_METADATA_LEVEL_READY: bool = false;
 
 /// The features a cluster created on this release starts with. A finalize
 /// is one-way so that an upgraded fleet can still roll back before it, and a

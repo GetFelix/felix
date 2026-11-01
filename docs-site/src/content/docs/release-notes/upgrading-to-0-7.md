@@ -45,7 +45,9 @@ the leader reports it on both the old and the new set, which
 finalized, and no broker offers it yet.
 
 - With the Postgres backend, the control plane runs migration `0038` when it
-  starts. Nothing else is needed.
+  starts. Finish upgrading every control-plane instance before finalizing
+  `replica_election`: the control plane cannot see another instance's version,
+  and one that predates this drops a pending set when it writes the shard.
 - With the Raft backend, it needs every member at metadata level 21, and so
   does finalizing `replica_election`.
 

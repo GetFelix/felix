@@ -246,7 +246,7 @@ fn replica_election_is_refused_below_the_metadata_level() {
     let nodes = [offering_election("a", &["replica_election"])];
     let message = conflict(check_election(&nodes, "replica_election", false));
     assert!(
-        message.contains("metadata level") && message.contains("does not have"),
+        message.contains("metadata level") && message.contains("not yet implemented"),
         "{message}"
     );
     // joint_fence needs no metadata level.

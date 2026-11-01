@@ -38,6 +38,13 @@ pub const DEFAULT_MOVE_TIMEOUT_MILLIS: u64 = 30 * 60 * 1_000;
 /// its shard takes no writes until something ends the fence.
 pub const DEFAULT_FENCE_TIMEOUT_MILLIS: u64 = 2 * 60 * 1_000;
 
+/// How long a pending replica set may wait for the leader's joint-start
+/// report before it is dropped and the old set stays. The report follows the
+/// leader's start record reaching a majority of both sets, which takes
+/// seconds once the new members hold the log; a change still pending after
+/// this has lost the members that could finish it.
+pub(super) const DEFAULT_PENDING_SET_TIMEOUT_MILLIS: u64 = 10 * 60 * 1_000;
+
 /// The longest a shard waits to start a move after moves given up at the
 /// fence. Each give-up costs the shard its writes for the fence timeout, so
 /// the wait doubles from the timeout up to this.
@@ -81,6 +88,10 @@ pub struct MovePolicy {
     /// instance has watched it, before the move is given up and the leader
     /// takes the shard back at a new generation. `None` waits forever.
     pub fence_timeout_millis: Option<u64>,
+    /// How long a pending replica set may wait, as this instance has watched
+    /// it, for the leader to report the joint start before the change is
+    /// dropped. `None` waits forever.
+    pub pending_set_timeout_millis: Option<u64>,
     /// How long a follower's broker must have been down or gone, or its copy
     /// reported halted, before placement replaces the copy it held, restoring
     /// the replication factor.
@@ -122,6 +133,7 @@ impl Default for MovePolicy {
             fence_max_lag_records: DEFAULT_FENCE_MAX_LAG_RECORDS,
             timeout_millis: Some(DEFAULT_MOVE_TIMEOUT_MILLIS),
             fence_timeout_millis: Some(DEFAULT_FENCE_TIMEOUT_MILLIS),
+            pending_set_timeout_millis: Some(DEFAULT_PENDING_SET_TIMEOUT_MILLIS),
             restore_after_millis: Some(DEFAULT_RESTORE_AFTER_MILLIS),
             restore_stall_millis: Some(DEFAULT_RESTORE_STALL_MILLIS),
             settle_millis: Some(DEFAULT_PLACEMENT_SETTLE_MILLIS),
@@ -280,6 +292,19 @@ impl Moves {
         }
     }
 
+    /// Whether `key`'s pending set, written at `generation`, has waited past
+    /// the pending-set timeout, as this instance watched it.
+    fn pending_timed_out(&self, caught_up: &dyn CaughtUp, key: &ShardKey, generation: u64) -> bool {
+        match (
+            self.policy.pending_set_timeout_millis,
+            caught_up.pending_since_millis(key, generation),
+            caught_up.as_of_millis(),
+        ) {
+            (Some(timeout), Some(since), Some(now)) => now.saturating_sub(since) > timeout,
+            _ => false,
+        }
+    }
+
     /// When `key` may next start a move, if its last moves were given up at
     /// the fence: the fence timeout after the first, doubling with each one
     /// after, up to [`MAX_FENCE_BACKOFF_MILLIS`].
@@ -363,11 +388,33 @@ pub(super) fn move_step<'a>(
     // Kept off as a destination, as of any report still believed.
     let is_halted = |node: &str| caught_up.halted(key, node).is_some();
 
-    // A pending set change ends on the leader's word, or in a failover that
-    // abandons it. Nothing else changes either set meanwhile.
+    // A pending set change ends on the leader's word, a failover that
+    // abandons it, or one of the endings below. Nothing else changes either
+    // set meanwhile.
     if let Some(pending) = existing.pending_set.as_ref() {
+        // The set is dropped, not taken: it names a leader and followers that
+        // were never confirmed, and the control plane's own set is whole.
+        let dropped = |step: MoveStep| {
+            Decision::Move(
+                step,
+                ShardAssignment {
+                    pending_set: None,
+                    generation: 0,
+                    fence_storage_ids: Default::default(),
+                    ..existing.clone()
+                },
+            )
+        };
+        // A shard that no longer elects (its consistency changed) has a
+        // leader that will never report.
+        if !pending_sets {
+            return dropped(MoveStep::PendingSetDropped);
+        }
         if caught_up.joint_start_acked(key, existing.generation, leader) != Some(pending.generation)
         {
+            if moves.pending_timed_out(caught_up, key, pending.generation) {
+                return dropped(MoveStep::PendingSetTimedOut);
+            }
             return Decision::Waiting(Blocked::SetChangePending);
         }
         return Decision::Move(
@@ -1705,6 +1752,10 @@ impl CaughtUp for AtGeneration<'_> {
 
     fn fenced_at_millis(&self, key: &ShardKey, generation: u64) -> Option<u64> {
         self.inner.fenced_at_millis(key, generation)
+    }
+
+    fn pending_since_millis(&self, key: &ShardKey, generation: u64) -> Option<u64> {
+        self.inner.pending_since_millis(key, generation)
     }
 
     fn fence_give_ups(&self, key: &ShardKey) -> Option<(u32, u64)> {

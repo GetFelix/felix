@@ -43,6 +43,8 @@ pub enum ShardValidationError {
         "a pending set needs a generation, a set other than the current one, and no move in progress"
     )]
     InvalidPendingSet,
+    #[error("a pending set started by a write must name the generation that write lands at")]
+    PendingSetGeneration,
 }
 
 /// Where an assignment is between being decided and being served.
@@ -371,6 +373,25 @@ impl ShardAssignment {
             });
         }
         self.validate()
+    }
+
+    /// Checks a pending set this write starts (one `current` does not already
+    /// hold) names the generation the store gives the write. A store that
+    /// skipped generations would otherwise leave a set no report can match.
+    pub fn check_pending_generation(
+        &self,
+        current: Option<&ShardAssignment>,
+        written: u64,
+    ) -> Result<(), ShardValidationError> {
+        match &self.pending_set {
+            Some(pending)
+                if current.and_then(|c| c.pending_set.as_ref()) != Some(pending)
+                    && pending.generation != written =>
+            {
+                Err(ShardValidationError::PendingSetGeneration)
+            }
+            _ => Ok(()),
+        }
     }
 
     /// Every node in the control plane's set, leader first. Not the
