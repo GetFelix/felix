@@ -588,6 +588,15 @@ WipeLeads == FALSE
 Forgets == 1
 \* `OneNonVoter`: a wipe is refused while it would leave two brokers non-voters.
 OneNonVoter == FALSE
+\* `Creates`: the shard starts as it is created, its first leader fencing at
+\* generation 1 and no follower holding a promise or a set. A follower that
+\* was not wiped votes there with an empty log: it holds every acknowledged
+\* record, which is none. A wipe is still a wipe, whatever the generation.
+\* `CreateCountsEmpty`: a copy with no set file votes, wiped or not, as if
+\* an empty set could only mean a new shard. The wipe takes the set file too,
+\* so only evidence of the wipe tells the two apart.
+Creates == FALSE
+CreateCountsEmpty == FALSE
 \* `RefuseShortCopy`: a leader that gave its copy up in a crash answers no
 \* promotion fence from it until a newer leader has shipped to it, unless a
 \* set of two acknowledged what it may have lost (`AckedByTwo`):
@@ -627,6 +636,8 @@ ASSUME WipedNonVoter => /\ LosePromises /\ Elections > 0 /\ ~WipedWaitsForAdopt 
 ASSUME ReadmitCountsWiped \/ ReadmitBeforeCatchUp \/ PromoteNonVoter \/ WipeLeads \/ Forgets > 1
        => WipedNonVoter
 ASSUME WipedLearnsSet => WipedWaitsForAdopt \/ WipedNonVoter
+ASSUME CreateCountsEmpty => WipedNonVoter
+ASSUME Creates => Elections > 0 /\ SetCheck /\ Spares = {}
 
 \* Wipes and crashes on the fenced path, where the promoted leader checks the
 \* identities the report named. With `UnprobedStart` the first leader knows
@@ -900,6 +911,10 @@ WipeWaits(f) == WipedWaitsForAdopt /\ wipedAt[f] > 0 /\ gen <= wipedAt[f]
 \* Under `WipedNonVoter`, whether `f` is a wiped replica not yet re-admitted.
 NonVoter(f) == WipedNonVoter /\ wipedAt[f] > 0
 
+\* Whether `f` answers fences and takes batches as a voter. Only a wipe stops
+\* it; `CreateCountsEmpty` also lets a wiped copy with no set file vote.
+Votes(f) == ~NonVoter(f) \/ (CreateCountsEmpty /\ setGen[f] = 0)
+
 \* The credit given to a non-voter (`SetChangesJoint`, `AckedOnMajority`) is the
 \* one loss a record or set already survived, so it holds only while at most one
 \* distinct broker is a non-voter. A second wipe of the same broker is still
@@ -1048,20 +1063,24 @@ Init ==
     /\ heard = [b \in Brokers |-> NoReport]
     \* Under `Elections` the first leader starts as an elected one would, with
     \* its set's promise, so no candidate can take its generation from under it.
-    /\ promised = [b \in Brokers |-> IF b = leader \/ (Elections > 0 /\ b \notin Spares) THEN 1 ELSE 0]
-    /\ fencing = [b \in Brokers |-> FALSE]
+    \* With `Creates` it is still fencing its followers, which hold nothing.
+    /\ promised = [b \in Brokers |-> IF b = leader \/ (Elections > 0 /\ b \notin Spares /\ ~Creates)
+                                     THEN 1 ELSE 0]
+    /\ fencing = [b \in Brokers |-> Creates /\ b = leader]
     /\ answered = [b \in Brokers |-> {}]
     /\ confirmed = [b \in Brokers |-> [f \in Brokers |-> 0]]
     /\ out = Spares
-    /\ mine = [b \in Brokers |-> Brokers \ Spares]
+    /\ mine = [b \in Brokers |-> IF Creates /\ b /= leader THEN {} ELSE Brokers \ Spares]
     /\ joining = {}
     /\ leaving = {}
     /\ joinedAt = 0
     /\ CounterInit
     /\ ballot = [b \in Brokers |-> IF Ballots /\ promised[b] = 1 THEN {leader} ELSE {}]
-    /\ opened = IF TracksOpens THEN {<<1, leader>>} ELSE {}
-    \* The first assignment wrote the set at generation 1; a spare knows none.
-    /\ setGen = [b \in Brokers |-> IF SetCheck /\ b \notin Spares THEN 1 ELSE 0]
+    /\ opened = IF TracksOpens /\ ~Creates THEN {<<1, leader>>} ELSE {}
+    \* The first assignment wrote the set at generation 1; a spare knows none,
+    \* and with `Creates` neither does a follower until the fence reaches it.
+    /\ setGen = [b \in Brokers |-> IF SetCheck /\ b \notin Spares /\ (~Creates \/ b = leader)
+                                   THEN 1 ELSE 0]
     /\ oldSet = [b \in Brokers |-> {}]
     /\ ackGen = {}
     /\ installed = {}
@@ -1273,7 +1292,7 @@ Ship(b, f) ==
     /\ ~fencing[b]
     /\ WipeWaits(f) => IF Candidate(b) THEN WipedTakesBatches ELSE WipedTakesNamed
     /\ WipeFloor(f, b, bgen[b])
-    /\ ~NonVoter(f)
+    /\ Votes(f)
     /\ Promises => MayPromise(f, b, bgen[b])
     /\ IF Promises THEN Promise(f, b, bgen[b]) ELSE UNCHANGED << promised, ballot >>
     /\ SetCurrent(f, b)
@@ -1839,7 +1858,7 @@ AnswerFence(b, f) ==
     /\ WipeWaits(f) => ~Candidate(b) /\ WipedTakesNamed
     /\ WipeFloor(f, b, bgen[b])
     \* A non-voter answers only the fence of its own re-admission.
-    /\ NonVoter(f) => readmit = {<<f, bgen[b], b>>}
+    /\ ~Votes(f) => readmit = {<<f, bgen[b], b>>}
     /\ Promise(f, b, bgen[b])
     /\ SetCurrent(f, b)
     /\ LearnSet(f, b)
@@ -3056,6 +3075,10 @@ NoLeaderBesideNonVoter ==
     \A b \in Brokers : (<<bgen[b], b>> \in opened /\ bgen[b] > 0 /\ ~fencing[b]) =>
         ~\E w \in Brokers : NonVoter(w) /\ bgen[b] > wipedAt[w] /\ w \notin answered[b]
 NeverReadmitted == wipes > 0 => \E m \in Brokers : wipedAt[m] > 0
+\* Under `Creates`: a new shard opens without a copy wiped before it answered
+\* (FelixShardElectWipeNonVoterCreatesOpens.cfg).
+NoCreationBesideNonVoter ==
+    \A b, w \in Brokers : ~(<<1, b>> \in opened /\ NonVoter(w) /\ w \notin answered[b])
 NoFailoverBesideNonVoter ==
     (\E w \in Brokers : NonVoter(w)) =>
         ~(fencing[leader] /\ bgen[leader] = gen /\ \A r \in readmit : r[2] /= gen)
