@@ -175,6 +175,7 @@ async fn a_watched_fence_is_given_up_through_the_store() {
             move_reason: Some(MoveReason::Balance),
             incarnation: 0,
             fence_storage_ids: Default::default(),
+            pending_set: None,
         })
         .await
         .expect("fenced");

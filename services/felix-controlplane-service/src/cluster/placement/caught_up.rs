@@ -151,6 +151,13 @@ pub trait CaughtUp {
         None
     }
 
+    /// When this instance first saw `key` holding a pending set written at
+    /// `generation`, on the reports' clock. `None` when it has not watched it,
+    /// and then no pending set times out.
+    fn pending_since_millis(&self, _key: &ShardKey, _generation: u64) -> Option<u64> {
+        None
+    }
+
     fn halted(&self, _key: &ShardKey, _node_id: &str) -> Option<&HaltedCopy> {
         None
     }
@@ -175,6 +182,13 @@ pub trait CaughtUp {
     /// [`Self::halted`], where the halt still speaks for a member of the set
     /// at `generation`: reported at it, or carried into it from one of the
     /// generations just before and not yet contradicted.
+    /// The pending set generation `leader`'s report at `generation` says it
+    /// holds its start record acknowledged on both sets for. `None` without
+    /// such a report, which keeps the change pending.
+    fn joint_start_acked(&self, _key: &ShardKey, _generation: u64, _leader: &str) -> Option<u64> {
+        None
+    }
+
     fn halted_member(&self, key: &ShardKey, node_id: &str, generation: u64) -> Option<&HaltedCopy> {
         self.halted(key, node_id)
             .filter(|halt| halt.holds_at(generation))

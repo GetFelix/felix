@@ -11,6 +11,7 @@ mod lease;
 mod moves;
 mod operator;
 mod pacing;
+mod pending_set;
 mod reconciler;
 mod regions;
 mod rendezvous;
@@ -130,6 +131,7 @@ fn pinned(stream: &str, shard: u32, leader: &str) -> ShardAssignment {
         move_reason: None,
         incarnation: 0,
         fence_storage_ids: Default::default(),
+        pending_set: None,
     }
 }
 
@@ -152,5 +154,6 @@ fn assigned(stream: &str, leader: &str, replicas: &[&str]) -> ShardAssignment {
         move_reason: None,
         incarnation: 0,
         fence_storage_ids: Default::default(),
+        pending_set: None,
     }
 }

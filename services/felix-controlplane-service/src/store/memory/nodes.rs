@@ -152,7 +152,10 @@ pub(super) async fn delete_node(store: &InMemoryStore, node_id: &str) -> StoreRe
         .await
         .records
         .values()
-        .filter(|assignment| assignment.nodes().any(|node| node == node_id))
+        // A pending set's members too, or taking the set would name a node
+        // that is gone. Only level 21 entries write one, so a member that
+        // predates it never holds one to decide differently on.
+        .filter(|assignment| assignment.named_nodes().any(|node| node == node_id))
         .count();
     if held > 0 {
         return Err(StoreError::Conflict(format!(

@@ -322,7 +322,8 @@ pub(super) async fn delete_node(store: &PostgresStore, node_id: &str) -> StoreRe
     // only record of where that shard's data lives. Deliberately not a
     // foreign key, because a cascade is the behaviour being avoided.
     let held: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM shard_assignments WHERE leader = $1 OR replicas ? $1",
+        "SELECT count(*) FROM shard_assignments WHERE leader = $1 OR replicas ? $1
+             OR (pending_set_generation = generation AND pending_set->'replicas' ? $1)",
     )
     .bind(node_id)
     .fetch_one(&mut *tx)

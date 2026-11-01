@@ -402,6 +402,7 @@ async fn record_one(
             .filter(|(_, id)| crate::model::validate_storage_id(id).is_ok())
             .map(|(node, id)| (node.clone(), id.clone()))
             .collect(),
+        joint_start_acked: shard.joint_start_acked,
     };
     // The store checks leadership again as it writes: the checks above read
     // an assignment a promotion may have replaced since.

@@ -204,8 +204,10 @@ start with them. A broker that offers the `ELECTION` peer capability reports
 it as `peer_election`, which no build does yet. Finalizing `joint_fence` is
 refused while a serving broker lacks it; `replica_election` is also refused
 before `joint_fence` and its other prerequisites, and until the control plane
-has the metadata level for the pending replica set, which is not yet
-implemented. Like the prerequisites, these are checked when the operator asks.
+has the metadata level for the pending replica set (see
+[Moving a shard](#moving-a-shard)) and adoption. The pending set is built;
+adoption shares its level (21 under Raft) and is not, so the finalize stays
+refused. Like the prerequisites, these are checked when the operator asks.
 
 **Finalizing is one-way.** From then on a broker that registers without the
 feature is **refused with 409**, naming what it lacks; it logs the reason and
@@ -1096,6 +1098,7 @@ does not run placement (a Raft follower) waits for the leader's next tick.
 | `shard_move_fence_max_lag_records` | `FELIX_SHARD_MOVE_FENCE_MAX_LAG_RECORDS` | 1000 |
 | `shard_move_timeout_ms` | `FELIX_SHARD_MOVE_TIMEOUT_MS` | 1800000 (30 min); `0` never gives up |
 | `shard_fence_timeout_ms` | `FELIX_SHARD_FENCE_TIMEOUT_MS` | 120000 (2 min); `0` waits for a fenced leader forever |
+| `shard_pending_set_timeout_ms` | `FELIX_SHARD_PENDING_SET_TIMEOUT_MS` | 600000 (10 min); `0` waits for a pending replica set forever |
 | `shard_restore_after_ms` | `FELIX_SHARD_RESTORE_AFTER_MS` | 300000 (5 min); `0` never replaces a lost follower |
 | `shard_restore_stall_ms` | `FELIX_SHARD_RESTORE_STALL_MS` | 120000 (2 min); `0` waits for the move timeout |
 | `placement_settle_ms` | `FELIX_PLACEMENT_SETTLE_MS` | 10000 (10 s); `0` places new shards on whatever is live |
@@ -1128,6 +1131,55 @@ whichever instance runs the next pass:
    is named leader in a fresh `assigning` assignment. The old leader keeps a
    follower's seat if it is staying and the replication factor wants one;
    a draining node is dropped from the set.
+
+**A cut-over that changes the set, under `replica_election`.** Once
+`replica_election` is finalized, a shard whose replicas elect (a durable
+`Quorum` stream, or a `Quorum` cache with `fenced_caches`) does not take a
+changed set at the cut-over. The cut-over names the new leader at the next
+generation, keeps the old set as the control plane's own (`replicas` holds
+the old set less the new leader, the old leader included), and records the
+new set's followers and that generation as `pending_set`. While it is
+pending, placement changes nothing else about the shard: no move, follower
+replacement, top-up or trim starts, and an operator's move or cancel is
+refused (409 `set_change_pending`); an operator's cancel ends it. The change
+ends in one of these ways. The leader reports, at the assignment's generation, `joint_start_acked` naming
+the pending set's generation, which says its generation-start record is on a
+majority of the old set and of the new; placement then writes the pending
+set as `replicas` and clears it (`take_pending_set`), conditional on the
+generation it read. Or the leader is lost and a failover places the shard
+from the old set, which abandons the change. Or the change is dropped, with
+the old set written back and the pending set cleared at a new generation:
+the instance running placement has watched it pending for
+`shard_pending_set_timeout_ms` without the report (`pending_set_timed_out`,
+counted in `felix_shard_moves_timed_out_total`; both new members dying, or the
+leader never reporting, would otherwise hold the shard's set for good), the
+shard no longer elects, as when its consistency changes to `Leader`
+(`pending_set_dropped`), or an operator cancels it (`pending_set_cancelled`).
+The timeout clock is the instance's own and starts again when the lease
+changes hands. Follower replacement, top-up and trim wait only until then.
+A cut-over that keeps the set,
+and every cut-over without `replica_election`, writes what it always has,
+with no `pending_set`. Why the control plane waits:
+[replication-design.md](replication-design.md#electing-without-the-control-plane),
+rule 8 and decision 7.
+
+Under Raft the pending set and the joint start need metadata level 21. Below
+it a write carrying a pending set is refused with 409 before it reaches the
+log, rather than written as a cut-over that takes the new set at once, and a
+report's joint start is dropped, which keeps a change pending; finalizing
+`replica_election` itself needs level 21. Under Postgres both come with
+migration 0038 (`pending_set`, `joint_start_acked`), each with a marker
+(`pending_set_generation`, `joint_start_acked_at`): what a member that
+predates the columns leaves behind reads as none.
+
+**Postgres: finish the control-plane upgrade before finalizing
+`replica_election`.** The finalize check runs on the instance that receives
+it, and the store records no version for the other instances (only who holds
+the placement lease), so nothing can refuse it while an older instance runs.
+That instance does not read `pending_set`, and a write it makes drops the
+pending set, so a change reads as abandoned there while the leader goes on as
+if it were not. It is an operator precondition: every instance must run this
+release first.
 
 Two things start a move. A **draining node** (`POST /v1/nodes/{id}/drain`)
 gives up everything it leads, one shard per free move slot, preferring a
@@ -1278,7 +1330,7 @@ after the fence.
 
 | Metric | Meaning |
 | --- | --- |
-| `felix_shard_move_steps_total{step}` | move steps written: `stage`, `fence`, `cut_over`, `abandon`, `halted` (the destination halted), `timed_out`, `stalled` (a restore's copy stopped moving), `reseat`, `restore`, `seat`, and an operator's `cancel`, `retake` and `discard` |
+| `felix_shard_move_steps_total{step}` | move steps written: `stage`, `fence`, `cut_over`, `abandon`, `halted` (the destination halted), `timed_out`, `stalled` (a restore's copy stopped moving), `reseat`, `restore`, `seat`, `take_pending_set` (a pending replica set taken on the leader's report), `pending_set_timed_out`, `pending_set_dropped`, `pending_set_cancelled` (one dropped), and an operator's `cancel`, `retake` and `discard` |
 | `felix_shards_under_replicated` | shards with fewer copies on serving brokers than their replication factor; non-zero for longer than the restore delay plus a copy means no broker can take the copy, or placement is paused |
 | `felix_shard_replicas_missing` | the copies those shards are missing between them |
 | `felix_shard_replicas_halted` | copies whose leader reports it has stopped shipping to them; counted as missing, kept out of placement, and replaced after the restore delay |

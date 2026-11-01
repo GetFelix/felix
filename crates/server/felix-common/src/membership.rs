@@ -170,6 +170,13 @@ pub struct ShardReplicaStatus {
     /// none. Omitted when empty, and by brokers that predate it.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub inherited_storage_ids: BTreeMap<String, String>,
+    /// While a set change is pending, the generation of the assignment that
+    /// wrote the new set, once this leader's generation-start record is
+    /// acknowledged on a majority of the old set and of the new. The control
+    /// plane then takes the new set as its own. Omitted otherwise, and by
+    /// brokers that predate it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub joint_start_acked: Option<u64>,
 }
 
 fn is_zero(value: &u64) -> bool {

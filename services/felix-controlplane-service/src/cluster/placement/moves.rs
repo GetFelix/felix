@@ -13,7 +13,9 @@ use super::rendezvous::{choose_replicas, promote, score};
 use super::restore::{newcomer, replacing, restore, restore_step, short};
 use super::zones::{Domain, domain, domain_of, keep_spread};
 use super::{Blocked, CaughtUp, Decision, MoveStep};
-use crate::model::{HaltedCopy, MoveReason, Node, ShardAssignment, ShardKey, ShardState};
+use crate::model::{
+    HaltedCopy, MoveReason, Node, PendingSet, ShardAssignment, ShardKey, ShardState,
+};
 
 /// One at a time, like the broker's rebuild limit: a move is a full copy of
 /// a shard's log.
@@ -35,6 +37,13 @@ pub const DEFAULT_MOVE_TIMEOUT_MILLIS: u64 = 30 * 60 * 1_000;
 /// the destination is level; a leader still fenced after this is stuck, and
 /// its shard takes no writes until something ends the fence.
 pub const DEFAULT_FENCE_TIMEOUT_MILLIS: u64 = 2 * 60 * 1_000;
+
+/// How long a pending replica set may wait for the leader's joint-start
+/// report before it is dropped and the old set stays. The report follows the
+/// leader's start record reaching a majority of both sets, which takes
+/// seconds once the new members hold the log; a change still pending after
+/// this has lost the members that could finish it.
+pub(super) const DEFAULT_PENDING_SET_TIMEOUT_MILLIS: u64 = 10 * 60 * 1_000;
 
 /// The longest a shard waits to start a move after moves given up at the
 /// fence. Each give-up costs the shard its writes for the fence timeout, so
@@ -79,6 +88,10 @@ pub struct MovePolicy {
     /// instance has watched it, before the move is given up and the leader
     /// takes the shard back at a new generation. `None` waits forever.
     pub fence_timeout_millis: Option<u64>,
+    /// How long a pending replica set may wait, as this instance has watched
+    /// it, for the leader to report the joint start before the change is
+    /// dropped. `None` waits forever.
+    pub pending_set_timeout_millis: Option<u64>,
     /// How long a follower's broker must have been down or gone, or its copy
     /// reported halted, before placement replaces the copy it held, restoring
     /// the replication factor.
@@ -99,6 +112,13 @@ pub struct MovePolicy {
     /// go on, and an operator may still start one. Not configuration: each
     /// pass reads it from the store (`POST /v1/placement/pause`).
     pub paused: bool,
+    /// `replica_election` is finalized: a cut-over that changes a set its
+    /// replicas elect on records the new set as pending. Not configuration:
+    /// each pass reads it from the store.
+    pub replica_election: bool,
+    /// `fenced_caches` is finalized, so `Quorum` cache shards elect too. Read
+    /// from the store, as `replica_election` is.
+    pub fenced_caches: bool,
     /// Where a stream with a home region may have copies: that region, and
     /// any region the allowlist bridges it to (`FELIX_REGION_BRIDGES`). A
     /// stream without one is placed anywhere.
@@ -113,10 +133,13 @@ impl Default for MovePolicy {
             fence_max_lag_records: DEFAULT_FENCE_MAX_LAG_RECORDS,
             timeout_millis: Some(DEFAULT_MOVE_TIMEOUT_MILLIS),
             fence_timeout_millis: Some(DEFAULT_FENCE_TIMEOUT_MILLIS),
+            pending_set_timeout_millis: Some(DEFAULT_PENDING_SET_TIMEOUT_MILLIS),
             restore_after_millis: Some(DEFAULT_RESTORE_AFTER_MILLIS),
             restore_stall_millis: Some(DEFAULT_RESTORE_STALL_MILLIS),
             settle_millis: Some(DEFAULT_PLACEMENT_SETTLE_MILLIS),
             paused: false,
+            replica_election: false,
+            fenced_caches: false,
             regions: Arc::new(RegionRouter::new(String::new())),
         }
     }
@@ -269,6 +292,19 @@ impl Moves {
         }
     }
 
+    /// Whether `key`'s pending set, written at `generation`, has waited past
+    /// the pending-set timeout, as this instance watched it.
+    fn pending_timed_out(&self, caught_up: &dyn CaughtUp, key: &ShardKey, generation: u64) -> bool {
+        match (
+            self.policy.pending_set_timeout_millis,
+            caught_up.pending_since_millis(key, generation),
+            caught_up.as_of_millis(),
+        ) {
+            (Some(timeout), Some(since), Some(now)) => now.saturating_sub(since) > timeout,
+            _ => false,
+        }
+    }
+
     /// When `key` may next start a move, if its last moves were given up at
     /// the fence: the fence timeout after the first, doubling with each one
     /// after, up to [`MAX_FENCE_BACKOFF_MILLIS`].
@@ -326,6 +362,7 @@ pub(super) fn move_step<'a>(
     moves: &mut Moves,
     fenced: bool,
     is_lost: &dyn Fn(&str) -> bool,
+    pending_sets: bool,
 ) -> Decision {
     let leader = existing.leader.as_str();
     let leader_live = is_live(leader);
@@ -350,6 +387,47 @@ pub(super) fn move_step<'a>(
     };
     // Kept off as a destination, as of any report still believed.
     let is_halted = |node: &str| caught_up.halted(key, node).is_some();
+
+    // A pending set change ends on the leader's word, a failover that
+    // abandons it, or one of the endings below. Nothing else changes either
+    // set meanwhile.
+    if let Some(pending) = existing.pending_set.as_ref() {
+        // The set is dropped, not taken: it names a leader and followers that
+        // were never confirmed, and the control plane's own set is whole.
+        let dropped = |step: MoveStep| {
+            Decision::Move(
+                step,
+                ShardAssignment {
+                    pending_set: None,
+                    generation: 0,
+                    fence_storage_ids: Default::default(),
+                    ..existing.clone()
+                },
+            )
+        };
+        // A shard that no longer elects (its consistency changed) has a
+        // leader that will never report.
+        if !pending_sets {
+            return dropped(MoveStep::PendingSetDropped);
+        }
+        if caught_up.joint_start_acked(key, existing.generation, leader) != Some(pending.generation)
+        {
+            if moves.pending_timed_out(caught_up, key, pending.generation) {
+                return dropped(MoveStep::PendingSetTimedOut);
+            }
+            return Decision::Waiting(Blocked::SetChangePending);
+        }
+        return Decision::Move(
+            MoveStep::TakePendingSet,
+            ShardAssignment {
+                replicas: pending.replicas.clone(),
+                pending_set: None,
+                generation: 0,
+                fence_storage_ids: Default::default(),
+                ..existing.clone()
+            },
+        );
+    }
 
     if existing.state == ShardState::Draining {
         if existing.successor.is_none()
@@ -460,23 +538,29 @@ pub(super) fn move_step<'a>(
                 leaders.add(Owner::of(&existing.key), to);
             }
         }
+        let cut_over = ShardAssignment {
+            key: key.clone(),
+            leader: target.to_string(),
+            replicas,
+            generation: 0,
+            state: ShardState::Assigning,
+            successor: None,
+            joining: None,
+            move_started_at_millis: None,
+            move_reason: None,
+            incarnation: 0,
+            fence_storage_ids: Default::default(),
+            pending_set: None,
+        };
         return Decision::Move(
             MoveStep::CutOver {
                 from: leader.to_string(),
                 to: target.to_string(),
             },
-            ShardAssignment {
-                key: key.clone(),
-                leader: target.to_string(),
-                replicas,
-                generation: 0,
-                state: ShardState::Assigning,
-                successor: None,
-                joining: None,
-                move_started_at_millis: None,
-                move_reason: None,
-                incarnation: 0,
-                fence_storage_ids: Default::default(),
+            if pending_sets {
+                with_pending_set(existing, cut_over)
+            } else {
+                cut_over
             },
         );
     }
@@ -704,6 +788,32 @@ fn given_up(successor: &str, halted: Option<String>) -> MoveStep {
     }
 }
 
+/// A cut-over that changes the set, with the old set kept as the control
+/// plane's and the new one pending until the leader reports its start record
+/// acknowledged on a majority of both (`Swap` and `CpFlip` in
+/// docs/formal/FelixShard.tla). One that keeps the set is returned as it is.
+fn with_pending_set(existing: &ShardAssignment, cut_over: ShardAssignment) -> ShardAssignment {
+    let old: BTreeSet<&String> = existing.nodes().collect();
+    if cut_over.nodes().collect::<BTreeSet<_>>() == old {
+        return cut_over;
+    }
+    // The old leader stays in the control plane's set as a follower.
+    let replicas = existing
+        .nodes()
+        .filter(|node| **node != cut_over.leader)
+        .cloned()
+        .collect();
+    ShardAssignment {
+        replicas,
+        pending_set: Some(PendingSet {
+            replicas: cut_over.replicas.clone(),
+            // The cut-over is written over exactly this generation.
+            generation: existing.generation.saturating_add(1),
+        }),
+        ..cut_over
+    }
+}
+
 /// The first write of a move to `destination`, whose slot is already taken:
 /// stage it, or fence at once when it already holds the copy.
 pub(super) fn start(
@@ -727,6 +837,7 @@ pub(super) fn start(
         move_reason: Some(reason),
         incarnation: 0,
         fence_storage_ids: Default::default(),
+        pending_set: None,
     };
     if already_a_replica && moves.ready_to_fence(caught_up, &existing.key, destination) {
         // The copy is already there: straight to the fence.
@@ -1611,6 +1722,10 @@ impl CaughtUp for AtGeneration<'_> {
         self.inner.is_drained(key, generation)
     }
 
+    fn joint_start_acked(&self, key: &ShardKey, generation: u64, leader: &str) -> Option<u64> {
+        self.inner.joint_start_acked(key, generation, leader)
+    }
+
     fn lag_records(&self, key: &ShardKey, node_id: &str) -> Option<u64> {
         self.current(key)
             .then(|| self.inner.lag_records(key, node_id))
@@ -1637,6 +1752,10 @@ impl CaughtUp for AtGeneration<'_> {
 
     fn fenced_at_millis(&self, key: &ShardKey, generation: u64) -> Option<u64> {
         self.inner.fenced_at_millis(key, generation)
+    }
+
+    fn pending_since_millis(&self, key: &ShardKey, generation: u64) -> Option<u64> {
+        self.inner.pending_since_millis(key, generation)
     }
 
     fn fence_give_ups(&self, key: &ShardKey) -> Option<(u32, u64)> {

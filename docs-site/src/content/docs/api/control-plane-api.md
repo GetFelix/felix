@@ -412,7 +412,10 @@ A start is refused where placement would not make the move: 404
 `already_leader`, `at_capacity`, `already_moving`, `leader_unavailable` or
 `move_limit`. A cancel answers `cancel` before the fence and `retake` after
 it, when the leader that stopped serves again at a new generation; with no
-move in progress it is 409 `not_moving`.
+move in progress it is 409 `not_moving`. Under `replica_election`, a start is
+409 `set_change_pending` while a cut-over's change of replica set waits for
+the leader to report it on both sets; a cancel drops that change and keeps
+the old set (`pending_set_cancelled`).
 
 `GET /v1/shard-moves` lists each move's `step` (`staged`, `fenced`,
 `replacing`, `restoring`), `reason` (`drain`, `balance`, `operator`,

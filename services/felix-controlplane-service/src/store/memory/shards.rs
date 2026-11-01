@@ -90,7 +90,7 @@ async fn write_shard_assignment(
     // The guard is held until the write lands, so `delete_node` cannot remove
     // a node between this check and the write.
     let nodes = store.nodes.read().await;
-    for node_id in assignment.nodes() {
+    for node_id in assignment.named_nodes() {
         if !nodes.records.contains_key(node_id) {
             return Err(StoreError::NotFound(format!("node {node_id}")));
         }
@@ -130,6 +130,10 @@ async fn write_shard_assignment(
             crate::model::first_generation(incarnation, state.changes.next_seq, seq_generation),
         ),
     };
+
+    assignment
+        .check_pending_generation(state.records.get(&assignment.key), generation)
+        .map_err(invalid_shard)?;
 
     // Store-owned, so a caller cannot pin a generation and make its own
     // stale report look current.

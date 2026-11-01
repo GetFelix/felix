@@ -22,6 +22,9 @@ pub(super) struct CopyProgress {
     /// the fence. The store keeps no fence time, and the move's start time
     /// counts the copy before it.
     fences: HashMap<(ShardKey, u64), u64>,
+    /// Pending replica sets, by shard and the generation that wrote them:
+    /// when this instance first saw each.
+    pendings: HashMap<(ShardKey, u64), u64>,
     /// Moves given up at the fence in a row, by shard: the leader they left
     /// in place, how many, and when the last was. Forgotten once the shard
     /// has another leader, which a cut-over gives it.
@@ -125,6 +128,28 @@ impl CopyProgress {
             })
             .collect();
         self.fences.clone()
+    }
+
+    /// Note every pending set in `existing`, and answer when this instance
+    /// first saw each. Sets no longer pending are forgotten.
+    pub(super) fn observe_pending(
+        &mut self,
+        existing: &[ShardAssignment],
+        caught_up: &dyn CaughtUp,
+    ) -> HashMap<(ShardKey, u64), u64> {
+        let Some(now) = caught_up.as_of_millis() else {
+            return HashMap::new();
+        };
+        self.pendings = existing
+            .iter()
+            .filter_map(|assignment| {
+                let pending = assignment.pending_set.as_ref()?;
+                let id = (assignment.key.clone(), pending.generation);
+                let since = self.pendings.get(&id).copied().unwrap_or(now);
+                Some((id, since))
+            })
+            .collect();
+        self.pendings.clone()
     }
 
     /// Count the moves `plan` gives up at the fence, as of `now`. Counted

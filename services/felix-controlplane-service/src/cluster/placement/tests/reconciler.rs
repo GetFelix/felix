@@ -272,6 +272,7 @@ pub(super) async fn report(
                 leader: None,
                 node_incarnations: Default::default(),
                 follower_storage: Default::default(),
+                joint_start_acked: None,
             },
             &leader,
         )
@@ -312,6 +313,7 @@ async fn a_fence_planned_before_a_cut_over_is_not_written_after_it() {
             move_reason: None,
             incarnation: 0,
             fence_storage_ids: Default::default(),
+            pending_set: None,
         })
         .await
         .expect("staged move");
@@ -452,6 +454,7 @@ async fn a_promotion_planned_from_an_old_read_is_not_written_later() {
             move_reason: None,
             incarnation: 0,
             fence_storage_ids: Default::default(),
+            pending_set: None,
         })
         .await
         .expect("placed");
@@ -567,6 +570,7 @@ async fn failed_over(ids: &[(&str, &str)]) -> (InMemoryStore, ShardAssignment) {
                     .iter()
                     .map(|(node, id)| (node.to_string(), id.to_string()))
                     .collect(),
+                joint_start_acked: None,
             },
             "broker-a",
         )
@@ -681,6 +685,7 @@ async fn a_promotion_after_a_seat_names_only_the_set() {
                     .iter()
                     .map(|(node, id)| (node.to_string(), id.clone()))
                     .collect(),
+                joint_start_acked: None,
             },
             "broker-a",
         )

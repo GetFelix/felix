@@ -39,6 +39,12 @@ pub enum ShardValidationError {
     SuccessorNotAReplica(String),
     #[error("joining follower {0:?} is not in the replica set")]
     JoiningNotAReplica(String),
+    #[error(
+        "a pending set needs a generation, a set other than the current one, and no move in progress"
+    )]
+    InvalidPendingSet,
+    #[error("a pending set started by a write must name the generation that write lands at")]
+    PendingSetGeneration,
 }
 
 /// Where an assignment is between being decided and being served.
@@ -224,6 +230,25 @@ pub struct ShardAssignment {
     /// write that promotes a follower; empty on every other write.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub fence_storage_ids: BTreeMap<String, String>,
+    /// The set a cut-over is moving the shard to, while the change is
+    /// pending. `leader` and `replicas` stay the control plane's own set until
+    /// the leader reports its generation's start record acknowledged on a
+    /// majority of both (`docs/replication-design.md`, "Electing without the
+    /// control plane", rule 8). Written only under `replica_election`; under
+    /// Raft it needs metadata level 21.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_set: Option<PendingSet>,
+}
+
+/// A set change a cut-over has started and the control plane has not yet
+/// taken as its own.
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq, Eq)]
+pub struct PendingSet {
+    /// The new set's followers. Its leader is the assignment's leader.
+    pub replicas: Vec<String>,
+    /// The generation of the assignment that wrote the set. A leader's
+    /// report must name it for the control plane to take the set.
+    pub generation: u64,
 }
 
 fn is_zero_incarnation(value: &u64) -> bool {
@@ -315,6 +340,27 @@ impl ShardAssignment {
         {
             return Err(ShardValidationError::JoiningNotAReplica(joining.clone()));
         }
+        if let Some(pending) = &self.pending_set {
+            let mut seen = std::collections::BTreeSet::new();
+            for replica in &pending.replicas {
+                validate_node_id(replica).map_err(ShardValidationError::InvalidReplica)?;
+                if replica == &self.leader {
+                    return Err(ShardValidationError::LeaderIsAlsoReplica(replica.clone()));
+                }
+                if !seen.insert(replica) {
+                    return Err(ShardValidationError::DuplicateReplica(replica.clone()));
+                }
+            }
+            // Joint fences and acknowledgements need both sets whole, and a
+            // move in progress would change one of them under the other.
+            if pending.generation == 0
+                || self.successor.is_some()
+                || self.joining.is_some()
+                || seen == self.replicas.iter().collect()
+            {
+                return Err(ShardValidationError::InvalidPendingSet);
+            }
+        }
         Ok(())
     }
 
@@ -329,9 +375,39 @@ impl ShardAssignment {
         self.validate()
     }
 
-    /// Every node this assignment refers to, leader first.
+    /// Checks a pending set this write starts (one `current` does not already
+    /// hold) names the generation the store gives the write. A store that
+    /// skipped generations would otherwise leave a set no report can match.
+    pub fn check_pending_generation(
+        &self,
+        current: Option<&ShardAssignment>,
+        written: u64,
+    ) -> Result<(), ShardValidationError> {
+        match &self.pending_set {
+            Some(pending)
+                if current.and_then(|c| c.pending_set.as_ref()) != Some(pending)
+                    && pending.generation != written =>
+            {
+                Err(ShardValidationError::PendingSetGeneration)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Every node in the control plane's set, leader first. Not the
+    /// members of a pending set.
     pub fn nodes(&self) -> impl Iterator<Item = &String> {
         std::iter::once(&self.leader).chain(self.replicas.iter())
+    }
+
+    /// [`Self::nodes`], then a pending set's members not already in it.
+    pub fn named_nodes(&self) -> impl Iterator<Item = &String> {
+        let pending = self
+            .pending_set
+            .iter()
+            .flat_map(|pending| pending.replicas.iter())
+            .filter(|node| !self.nodes().any(|named| named == *node));
+        self.nodes().chain(pending)
     }
 }
 
@@ -445,6 +521,13 @@ pub struct ReplicaReport {
     /// named by none, as before.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub inherited_storage: BTreeMap<String, String>,
+    /// The generation of the pending set this leader leads on whose
+    /// generation-start record it holds acknowledged on a majority of the old
+    /// set and of the new. Placement takes the pending set as the control
+    /// plane's own on it. Absent from brokers that predate it and, under
+    /// Raft, until every member can apply it; the change then stays pending.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub joint_start_acked: Option<u64>,
 }
 
 /// A copy of a shard its leader has stopped shipping to.

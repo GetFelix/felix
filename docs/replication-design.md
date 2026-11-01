@@ -1063,9 +1063,10 @@ control plane.
   switch `FELIX_INTERNAL_ELECTION`; the pre-vote is declared and not sent.
 - *Control plane.* Adoption, the pending set a cut-over records beside the
   current one, and the flip to it after the joint fence are new store
-  writes, so under Raft they need the next free metadata level on every
-  member, and a Postgres control plane gets a migration. Below that the
-  control plane ignores election reports and goes on promoting on suspicion.
+  writes, so under Raft they need metadata level 21 on every member, and a
+  Postgres control plane gets migration 0038. Below that the control plane
+  ignores election reports and goes on promoting on suspicion. The pending
+  set and the flip are built; adoption is not.
 - *The fleet feature.* Finalizing `replica_election` is refused while a
   serving broker lacks `ELECTION`, the control plane is below that level, or
   the fleet does not fence every change of leader and every change of set:
@@ -3577,7 +3578,26 @@ while a serving broker does not report that it offers the `ELECTION` peer
 capability, and `replica_election` is refused until `joint_fence` and its
 other prerequisites are finalized, every serving broker offers `ELECTION`,
 and the control plane has the metadata level for the pending replica set and
-adoption. No broker offers `ELECTION`, so both features stay unfinalizable.
+adoption (which is not built, so the finalize stays refused). No broker offers `ELECTION`, so both features stay unfinalizable.
+
+The control plane's side of rule 8 is built. Under `replica_election`, a
+cut-over that changes the set of a shard whose replicas elect names the new
+leader, keeps the old set as the control plane's own, and records the new one
+as the assignment's `pending_set`, at the cut-over's generation. Nothing but a
+failover changes the shard while it is pending, and a failover places it from
+the old set, which abandons the change. So does a timeout
+(`FELIX_SHARD_PENDING_SET_TIMEOUT_MS`), a consistency change that stops the
+shard electing, and an operator's cancel, each writing the old set back
+without the pending one. Placement takes the pending set only
+when the leader's report at the assignment's generation names its generation
+in `joint_start_acked`, with a write conditional on that generation, so it
+is taken once. That is `Swap` and `CpFlip` in the model
+(`FelixShardWalkElectSwap.cfg`), with one difference TLC does not check: the
+write that takes the set, like every assignment write, is a new generation,
+which the leader opens on the new set alone, while `CpFlip` keeps the
+generation. The model is to cover that before the election driver.
+Adoption shares the metadata level and is not built yet, and no broker sends `joint_start_acked` yet (control-plane.md,
+[Moving a shard](control-plane.md#moving-a-shard)).
 
 Joint fences and the fenced next-generation open are built too, dormant
 behind `joint_fence`. No build reports that feature, so a fleet cannot
@@ -3614,9 +3634,8 @@ Without `joint_fence` finalized, the fence and what it sends are exactly what
 they were. The counter log of a cache shard and a stream's group logs are
 still fenced on the new set alone, as the model's counters are.
 
-Not built yet: the control plane's pending set and adoption, acknowledging on
-both majorities while a change is pending, the pre-vote and the election
-driver.
+Not built yet: the control plane's adoption, acknowledging on both majorities
+while a change is pending, the pre-vote and the election driver.
 
 > `a_cut_over_swapping_two_members_waits_for_the_old_majority`: the joint
 > fence. `a_joint_fence_never_counts_a_learner`: learners in the set being

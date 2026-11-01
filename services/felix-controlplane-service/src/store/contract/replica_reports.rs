@@ -397,6 +397,34 @@ pub(super) async fn inherited_storage_is_kept(store: &dyn ControlPlaneStore) {
     assert!(stored(store, shard).await.inherited_storage.is_empty());
 }
 
+/// The pending set generation a leader's joint start names rides its report,
+/// and a later report without it clears it.
+pub(super) async fn a_joint_start_is_kept(store: &dyn ControlPlaneStore) {
+    // Follows `inherited_storage_is_kept` on the same shard.
+    let shard = 3;
+    let at = generation(store, shard).await;
+    let mut sent = report(shard, at, &["broker-y"], 20_600);
+    sent.joint_start_acked = Some(at);
+    assert_eq!(
+        store
+            .record_replica_report(sent, LEADER)
+            .await
+            .expect("record"),
+        ReportWrite::Stored
+    );
+    assert_eq!(stored(store, shard).await.joint_start_acked, Some(at));
+
+    let without = report(shard, at, &["broker-y"], 20_700);
+    assert_eq!(
+        store
+            .record_replica_report(without, LEADER)
+            .await
+            .expect("record"),
+        ReportWrite::Stored
+    );
+    assert_eq!(stored(store, shard).await.joint_start_acked, None);
+}
+
 /// A leader's give-up rides its report, and a later report without it
 /// clears it.
 pub(super) async fn a_give_up_is_kept(store: &dyn ControlPlaneStore) {
@@ -456,6 +484,7 @@ fn report(shard: u32, generation: u64, caught_up: &[&str], at: u64) -> ReplicaRe
         node_incarnations: Default::default(),
         follower_storage: Default::default(),
         inherited_storage: Default::default(),
+        joint_start_acked: None,
     }
 }
 
