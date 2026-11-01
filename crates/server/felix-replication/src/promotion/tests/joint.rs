@@ -46,6 +46,16 @@ fn replicas_with(ids: &[&str]) -> Replicas {
 /// The leader's log keeps `members` as the set of generation 4, with the
 /// ones in `learners` listed but not voting.
 async fn kept_before(leader: &Broker, members: &[&str], learners: &[&str]) {
+    kept_naming(leader, members, learners, &[]).await;
+}
+
+/// [`kept_before`], naming the copy of each member in `copies`.
+async fn kept_naming(
+    leader: &Broker,
+    members: &[&str],
+    learners: &[&str],
+    copies: &[(&str, StorageId)],
+) {
     let log = leader
         .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
         .await
@@ -59,7 +69,10 @@ async fn kept_before(leader: &Broker, members: &[&str], learners: &[&str]) {
             .iter()
             .map(|node| Member {
                 node: node.to_string(),
-                storage: None,
+                storage: copies
+                    .iter()
+                    .find(|(named, _)| named == node)
+                    .map(|(_, copy)| *copy),
                 learner: learners.contains(node),
             })
             .collect(),
@@ -208,4 +221,35 @@ async fn a_member_without_election_fences_the_new_set_alone() {
             .iter()
             .all(|node| node != "broker-c")
     );
+}
+
+/// **An answer counts toward the set being left only from the copy that set
+/// names.** broker-b answers under another storage id, as a node id given to
+/// a new, empty disk would: it holds nothing the old set acknowledged, so with
+/// broker-c down the old set has no majority. From the copy it names, it does.
+#[tokio::test]
+async fn a_joint_fence_counts_the_old_set_only_from_the_copies_it_names() {
+    for (copy, opens) in [
+        (storage_of("broker-other"), false),
+        (storage_of("broker-b"), true),
+    ] {
+        let mut replicas = replicas_with(&["broker-x", "broker-z"]);
+        replicas.get_mut("broker-c").reachable = false;
+        let (leader, _dir) = leader_holding(4, &["a"]).await;
+        kept_naming(
+            &leader,
+            &["broker-x", "broker-b", "broker-c"],
+            &[],
+            &[("broker-b", copy)],
+        )
+        .await;
+
+        let outcome = fence(&replicas, &leader, true).await;
+
+        assert_eq!(
+            matches!(outcome, Outcome::Fenced { .. }),
+            opens,
+            "{outcome:?}"
+        );
+    }
 }
