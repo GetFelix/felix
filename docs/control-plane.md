@@ -200,7 +200,12 @@ broker with nothing enabled.
 after `generation_start`, `majority_ack`, `lease_free_reads` and the first.
 No build reports either yet, so a finalize of either is refused
 (`the_election_features_cannot_be_finalized_yet`), and a new cluster does not
-start with them.
+start with them. A broker that offers the `ELECTION` peer capability reports
+it as `peer_election`, which no build does yet. Finalizing `joint_fence` is
+refused while a serving broker lacks it; `replica_election` is also refused
+before `joint_fence` and its other prerequisites, and until the control plane
+has the metadata level for the pending replica set, which is not yet
+implemented. Like the prerequisites, these are checked when the operator asks.
 
 **Finalizing is one-way.** From then on a broker that registers without the
 feature is **refused with 409**, naming what it lacks; it logs the reason and

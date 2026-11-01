@@ -24,7 +24,7 @@ fn router_at(local: &str, leader: &str, replicas: &[&str], generation: u64) -> A
 }
 
 /// A broker with the stream registered as durable and `Quorum`.
-async fn quorum_broker() -> (Arc<Broker>, TempDir) {
+pub(super) async fn quorum_broker() -> (Arc<Broker>, TempDir) {
     let dir = tempfile::tempdir().expect("tempdir");
     let storage = DurableStorage::open(
         dir.path(),
@@ -60,7 +60,7 @@ async fn quorum_broker() -> (Arc<Broker>, TempDir) {
     (broker, dir)
 }
 
-async fn shard_log(broker: &Broker) -> felix_broker::StreamLog {
+pub(super) async fn shard_log(broker: &Broker) -> felix_broker::StreamLog {
     broker
         .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
         .await

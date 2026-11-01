@@ -790,7 +790,12 @@ It also does not cover elections: a candidate's generation is
 not in the control plane until it is adopted, so no view can back a promise
 made to one. The election driver needs its own guard before [electing
 without the control plane](#electing-without-the-control-plane) ships
-([#1331](https://github.com/GetFelix/felix/issues/1331)).
+([#1331](https://github.com/GetFelix/felix/issues/1331)). The adopted rule:
+a copy with a new storage id is a non-voting member until a joint-fenced set
+change re-admits it, and it votes again only once it holds the leader's log
+through that generation's start record; failover never promotes it. The
+model's `FelixShardElectWipe*.cfg` check it and the variants that fail
+(`docs/formal/README.md`, "A wiped voter in an election").
 
 The cost is a fence round trip or a few while a follower's watch catches up,
 and one control-plane read per answer, only for copies with no promise: a
@@ -3563,6 +3568,13 @@ production broker sends or reads a set yet. With it on:
   accepted a newer generation or keeps a newer set (rule 5), and a follower
   answering `StaleSet` deposes it like `FencedEpoch`. A promoted leader keeps
   its own set and fences with it.
+
+The control plane's finalize gates are in place too: `joint_fence` is refused
+while a serving broker does not report that it offers the `ELECTION` peer
+capability, and `replica_election` is refused until `joint_fence` and its
+other prerequisites are finalized, every serving broker offers `ELECTION`,
+and the control plane has the metadata level for the pending replica set and
+adoption. No broker offers `ELECTION`, so both features stay unfinalizable.
 
 Not built yet: joint fences and the fenced next-generation open, the control
 plane's pending set and adoption, the pre-vote and the election driver.

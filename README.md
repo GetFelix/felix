@@ -34,10 +34,10 @@ The [Quickstart](https://docs.getfelix.dev/getting-started/quickstart/) goes fur
     <img src="https://raw.githubusercontent.com/GetFelix/felix/badges/coverage.svg" alt="Coverage" />
   </a>
   <a href="https://github.com/GetFelix/felix/releases">
-    <img src="https://img.shields.io/github/v/release/GetFelix/felix?include_prereleases&sort=semver&label=release" alt="Latest release" />
+    <img src="https://img.shields.io/github/v/release/GetFelix/felix?sort=semver&label=release" alt="Latest release" />
   </a>
   <a href="https://crates.io/crates/felix-client">
-    <img src="https://img.shields.io/crates/v/felix-client?label=crates.io" alt="felix-client on crates.io" />
+    <img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fcrates.io%2Fapi%2Fv1%2Fcrates%2Ffelix-client&query=%24.crate.max_stable_version&prefix=v&label=crates.io&color=blue" alt="felix-client on crates.io" />
   </a>
   <a href="https://pypi.org/project/felix-client/">
     <img src="https://img.shields.io/pypi/v/felix-client?label=PyPI" alt="felix-client on PyPI" />
@@ -52,7 +52,10 @@ The [Quickstart](https://docs.getfelix.dev/getting-started/quickstart/) goes fur
     <img src="https://img.shields.io/badge/license-AGPL--3.0%20%2B%20Apache--2.0-blue.svg" alt="License: AGPL-3.0 + Apache-2.0 (split, see LICENSING.md)" />
   </a>
   <a href="https://www.rust-lang.org/">
-    <img src="https://img.shields.io/badge/rust-1.99.1-blue" alt="Rust 1.99.1" />
+    <img src="https://img.shields.io/badge/rust%20min-1.97-blue" alt="Minimum supported Rust 1.97" />
+  </a>
+  <a href="rust-toolchain.toml">
+    <img src="https://img.shields.io/badge/rust%20built%20with-1.99.1-blue" alt="Built and tested with Rust 1.99.1" />
   </a>
   <a href="https://docs.getfelix.dev">
     <img src="https://img.shields.io/badge/Documentation-8A2BE2" alt="Documentation" />

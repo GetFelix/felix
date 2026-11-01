@@ -163,6 +163,50 @@ pub(crate) fn check_prerequisites(
     )))
 }
 
+/// Refuse to enable `joint_fence` or `replica_election` unless every serving
+/// broker offers the `ELECTION` capability (reported as
+/// [`felix_common::fleet::PEER_ELECTION`]), and, for `replica_election`,
+/// `metadata_level_ready` says the control plane keeps the pending replica set
+/// and adoption. Any other feature passes.
+///
+/// Checked when the operator asks, like [`check_prerequisites`]: a Raft member
+/// applying the finalize must not decide differently from one on an older
+/// release. Prerequisites come first, so `replica_election` is refused for
+/// `joint_fence` before anything here.
+pub(crate) fn check_election<'a, I>(
+    nodes: I,
+    feature: &str,
+    metadata_level_ready: bool,
+) -> Result<(), StoreError>
+where
+    I: IntoIterator<Item = &'a Node>,
+{
+    use felix_common::fleet::{JOINT_FENCE, PEER_ELECTION, REPLICA_ELECTION};
+    let needs_level = feature == REPLICA_ELECTION.name();
+    if !needs_level && feature != JOINT_FENCE.name() {
+        return Ok(());
+    }
+    let lacking = lacking(nodes, PEER_ELECTION.name());
+    if !lacking.is_empty() {
+        return Err(StoreError::Conflict(format!(
+            "cannot finalize {feature}: serving broker(s) {} do not offer the ELECTION \
+             peer capability; upgrade them first",
+            lacking.join(", "),
+        )));
+    }
+    if needs_level && !metadata_level_ready {
+        return Err(StoreError::Conflict(format!(
+            "cannot finalize {feature}: needs a control-plane metadata level for the pending \
+             replica set and adoption, which is not yet implemented",
+        )));
+    }
+    Ok(())
+}
+
+/// Whether this control plane has the metadata level `replica_election`
+/// needs. False until the pending set and adoption exist.
+pub(crate) const ELECTION_METADATA_LEVEL_READY: bool = false;
+
 /// The features a cluster created on this release starts with. A finalize
 /// is one-way so that an upgraded fleet can still roll back before it, and a
 /// cluster that never ran an older build has nothing to roll back to. Each

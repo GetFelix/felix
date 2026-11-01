@@ -481,6 +481,118 @@ async fn follower_features_are_finalized_after_generation_start() {
     }
 }
 
+/// The election features are refused over the API while a serving broker does
+/// not offer `ELECTION`, `replica_election` is refused before `joint_fence`,
+/// and with everything else in place it is still refused for the metadata
+/// level, which does not exist yet.
+#[tokio::test]
+async fn election_features_are_refused_with_their_reason() {
+    let store = store();
+    store
+        .register_node(node("broker-a"))
+        .await
+        .expect("old run");
+    let keys = felix_controlplane_service::auth::keys::generate_signing_keys().expect("keys");
+    store
+        .set_tenant_signing_keys("t1", keys.clone())
+        .await
+        .expect("keys");
+    let token = felix_controlplane_service::auth::felix_token::mint_token_for(
+        &keys,
+        "t1",
+        "p:operator",
+        vec!["node.manage:cluster:*".to_string()],
+        Duration::from_secs(900),
+        felix_controlplane_service::auth::felix_token::CONTROLPLANE_AUDIENCE,
+    )
+    .expect("token");
+    let app = app_with(Arc::clone(&store)).await;
+    let register = |features: &[&str]| {
+        authed(
+            &token,
+            "POST",
+            "/v1/nodes",
+            serde_json::json!({
+                "node_id": "broker-a",
+                "advertise_addr": "10.0.0.4:7001",
+                "region": "local",
+                "features": features,
+            }),
+        )
+    };
+    let finalize = |feature: &str, dry_run: bool| {
+        let query = if dry_run { "?dry_run=true" } else { "" };
+        authed(
+            &token,
+            "POST",
+            &format!("/v1/fleet/features/{feature}/finalize{query}"),
+            serde_json::json!({}),
+        )
+    };
+    let refused = |reason: &'static str, feature: &'static str| {
+        let app = app.clone();
+        let request = finalize(feature, false);
+        async move {
+            let response = app.oneshot(request).await.expect("request");
+            assert_eq!(response.status(), StatusCode::CONFLICT, "{feature}");
+            let body = read_json(response).await.to_string();
+            assert!(body.contains(reason), "{feature}: {body}");
+        }
+    };
+    let all = [
+        "generation_start",
+        "majority_ack",
+        "lease_free_reads",
+        "joint_fence",
+        "replica_election",
+    ];
+
+    // Reports the features but not ELECTION.
+    let response = app.clone().oneshot(register(&all)).await.expect("request");
+    assert_eq!(response.status(), StatusCode::OK);
+    for feature in &all[..3] {
+        let response = app
+            .clone()
+            .oneshot(finalize(feature, false))
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::OK, "{feature}");
+    }
+    refused("ELECTION", "joint_fence").await;
+    let response = app
+        .clone()
+        .oneshot(finalize("joint_fence", true))
+        .await
+        .expect("request");
+    assert_eq!(read_json(response).await["would_enable"], false);
+    refused("finalize joint_fence first", "replica_election").await;
+
+    // Offering ELECTION lets joint_fence through, and then replica_election
+    // meets the metadata level.
+    let mut offered = all.to_vec();
+    offered.push("peer_election");
+    let response = app
+        .clone()
+        .oneshot(register(&offered))
+        .await
+        .expect("request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let response = app
+        .clone()
+        .oneshot(finalize("joint_fence", false))
+        .await
+        .expect("request");
+    assert_eq!(response.status(), StatusCode::OK);
+    refused("metadata level", "replica_election").await;
+    assert!(
+        !store
+            .enabled_fleet_features()
+            .await
+            .expect("enabled")
+            .contains("replica_election")
+    );
+}
+
 /// A storage identity is 32 lowercase hex digits. Anything else is refused
 /// with 400 rather than stored, since placement compares identities as
 /// strings and a second spelling of one would read as a wiped disk. A good
