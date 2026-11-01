@@ -1298,7 +1298,12 @@ asks the control plane for its node's current incarnation (`GET
 /v1/nodes/{node_id}`, which needs `node.view:cluster:*`, the permission its
 catalog feeds already need) before any store opens. If the control plane is
 ahead of the record, the node registered at least once that this directory
-never saw, and the start writes a new id before the `running` record.
+never saw, and the start writes a new id before the `running` record. The same
+answer carries the storage id the node last registered with. When it names
+another id than the one this start runs under, the copies the node held are
+gone or set aside, and the broker treats its copies of older shards as
+learners (`docs/replication-design.md`, "A copy that lost its storage does not
+vote").
 
 - **Unreachable control plane:** the broker opens nothing and announces no id
   until it answers, asking again with backoff up to 5 seconds. A stop while
