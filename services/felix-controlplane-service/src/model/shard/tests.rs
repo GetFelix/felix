@@ -20,6 +20,7 @@ fn assignment() -> ShardAssignment {
         move_reason: None,
         incarnation: 0,
         fence_storage_ids: Default::default(),
+        pending_set: None,
     }
 }
 
@@ -254,6 +255,7 @@ fn report_at(generation: u64, at: u64) -> ReplicaReport {
         leader: None,
         node_incarnations: Default::default(),
         follower_storage: Default::default(),
+        joint_start_acked: None,
     }
 }
 
@@ -345,4 +347,65 @@ fn a_halt_that_clears_is_not_carried() {
 fn a_report_with_nothing_halted_omits_the_field() {
     let json = serde_json::to_string(&report_at(3, 100)).expect("write");
     assert!(!json.contains("halted"), "{json}");
+}
+
+/// A pending set is a different set under the same leader, written at a
+/// generation, with no move in progress beside it. It is not part of the
+/// control plane's set, and serializes only when present.
+#[test]
+fn a_pending_set_must_be_another_set_with_nothing_else_moving() {
+    let pending = |replicas: &[&str], generation: u64| {
+        Some(PendingSet {
+            replicas: replicas.iter().map(|r| r.to_string()).collect(),
+            generation,
+        })
+    };
+    let mut a = assignment();
+    a.pending_set = pending(&["broker-c", "broker-d"], 8);
+    assert_eq!(a.validate(), Ok(()));
+    assert_eq!(
+        a.nodes().collect::<Vec<_>>(),
+        ["broker-a", "broker-b", "broker-c"]
+    );
+    assert_eq!(
+        a.named_nodes().collect::<Vec<_>>(),
+        ["broker-a", "broker-b", "broker-c", "broker-d"]
+    );
+    let json = serde_json::to_value(&a).expect("json");
+    assert_eq!(json["pending_set"]["generation"], 8);
+    assert!(
+        serde_json::to_value(assignment())
+            .expect("json")
+            .get("pending_set")
+            .is_none()
+    );
+
+    for (replicas, generation, why) in [
+        (&["broker-c", "broker-b"][..], 8, "the same set"),
+        (&["broker-c"][..], 0, "no generation"),
+    ] {
+        a.pending_set = pending(replicas, generation);
+        assert_eq!(
+            a.validate(),
+            Err(ShardValidationError::InvalidPendingSet),
+            "{why}"
+        );
+    }
+    a.pending_set = pending(&["broker-a"], 8);
+    assert_eq!(
+        a.validate(),
+        Err(ShardValidationError::LeaderIsAlsoReplica(
+            "broker-a".to_string()
+        ))
+    );
+    a.pending_set = pending(&["broker-d", "broker-d"], 8);
+    assert_eq!(
+        a.validate(),
+        Err(ShardValidationError::DuplicateReplica(
+            "broker-d".to_string()
+        ))
+    );
+    a.pending_set = pending(&["broker-d"], 8);
+    a.successor = Some("broker-b".to_string());
+    assert_eq!(a.validate(), Err(ShardValidationError::InvalidPendingSet));
 }

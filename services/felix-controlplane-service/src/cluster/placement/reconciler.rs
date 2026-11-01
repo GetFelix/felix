@@ -191,6 +191,8 @@ pub struct PlacementRead {
     pub positions: ReplicaPositions,
     /// Whether placement's own moves are paused.
     pub paused: bool,
+    /// The fleet features finalized when this was read.
+    pub enabled: std::collections::BTreeSet<String>,
 }
 
 impl PlacementRead {
@@ -235,13 +237,20 @@ impl PlacementRead {
             existing,
             positions,
             paused,
+            enabled,
         })
     }
 
-    /// `policy`, paused if placement is.
+    /// `policy`, paused if placement is, with the features it acts on.
     pub fn policy(&self, policy: MovePolicy) -> MovePolicy {
         MovePolicy {
             paused: self.paused,
+            replica_election: self
+                .enabled
+                .contains(felix_common::fleet::REPLICA_ELECTION.name()),
+            fenced_caches: self
+                .enabled
+                .contains(felix_common::fleet::FENCED_CACHES.name()),
             ..policy
         }
     }
@@ -291,6 +300,8 @@ pub(super) async fn plan_pass(
     read.positions.set_progress(progressed);
     let fenced = progress.observe_fences(&read.existing, &read.positions);
     read.positions.set_fences(fenced);
+    let pending = progress.observe_pending(&read.existing, &read.positions);
+    read.positions.set_pending(pending);
     read.positions
         .set_give_ups(progress.give_ups(&read.existing));
     let plan = read.plan(policy);
@@ -435,6 +446,16 @@ pub(super) async fn apply_pass(
                         destination = ?successor,
                         leader = %written.leader,
                         "a fenced leader never reported drained; it serves the shard again",
+                    );
+                }
+                if matches!(step, super::MoveStep::PendingSetTimedOut) {
+                    metrics::counter!(SHARD_MOVES_TIMED_OUT_TOTAL).increment(1);
+                    tracing::warn!(
+                        kind = %key.kind,
+                        name = %key.stream,
+                        shard = key.shard,
+                        leader = %written.leader,
+                        "a pending replica set was never reported; the old set stays",
                     );
                 }
                 if let super::MoveStep::Stalled { successor } = step {

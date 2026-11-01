@@ -26,7 +26,7 @@ pub use node::{
 };
 pub(crate) use shard::first_generation;
 pub use shard::{
-    HaltedCopy, MoveReason, ReplicaReport, ShardAssignment, ShardAssignmentChange,
+    HaltedCopy, MoveReason, PendingSet, ReplicaReport, ShardAssignment, ShardAssignmentChange,
     ShardAssignmentChangeOp, ShardKey, ShardKind, ShardState, ShardValidationError,
 };
 pub(crate) use stream::default_replication_factor;

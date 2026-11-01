@@ -181,6 +181,10 @@ fn assignment() -> ShardAssignment {
         move_reason: Some(MoveReason::Drain),
         incarnation: 7,
         fence_storage_ids: any_map(s("0123456789abcdef0123456789abcdef")),
+        pending_set: Some(crate::model::PendingSet {
+            replicas: vec![s("d")],
+            generation: 1,
+        }),
     }
 }
 
@@ -207,6 +211,7 @@ fn report() -> ReplicaReport {
         node_incarnations: any_map(1),
         follower_storage: any_map(s("0123456789abcdef0123456789abcdef")),
         inherited_storage: any_map(s("0123456789abcdef0123456789abcdef")),
+        joint_start_acked: Some(1),
     }
 }
 

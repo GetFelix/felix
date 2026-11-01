@@ -167,6 +167,14 @@ follower bootstrapped or rebuilt at the leader's base is missing only records
 a majority already held (see "Retention and the quorum mark" in
 `docs/replication-design.md`).
 
+Not modelled either: the generation the control plane writes at the flip. In
+the code, taking a pending set is an ordinary assignment write, a new
+generation naming the new leader, which the leader then opens on the new set
+alone; `CpFlip` keeps `gen`. The control plane's tests cover the write
+(`pending_set.rs`), but TLC does not check the bump, so the model does not
+show that a leader opening that generation is fenced like any other. To be
+modelled before the election driver.
+
 Nor is a replication factor changed during a move. One raised while a restore
 is seat-fenced leaves the set short, and `seat_after_fence` then seats the
 newcomer as a top-up instead of undoing it; that case is a unit test only.

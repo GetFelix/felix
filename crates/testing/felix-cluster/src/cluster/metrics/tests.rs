@@ -35,6 +35,7 @@ fn report(leader_offset: u64, caught_up: &[&str], offsets: &[(&str, u64)]) -> Re
         leader: None,
         node_incarnations: Default::default(),
         follower_storage: Default::default(),
+        joint_start_acked: None,
     }
 }
 

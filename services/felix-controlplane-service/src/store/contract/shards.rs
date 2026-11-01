@@ -51,6 +51,7 @@ pub(crate) fn assignment(shard: u32, leader: &str) -> ShardAssignment {
         move_reason: None,
         incarnation: 0,
         fence_storage_ids: Default::default(),
+        pending_set: None,
     }
 }
 
@@ -161,11 +162,13 @@ pub(crate) async fn run_shard_contract(store: Arc<dyn ControlPlaneStore>) {
     replica_reports::follower_storage_is_kept(store).await;
     replica_reports::a_give_up_is_kept(store).await;
     replica_reports::inherited_storage_is_kept(store).await;
+    replica_reports::a_joint_start_is_kept(store).await;
     a_conditional_write_lands_only_at_the_expected_generation(store).await;
     a_fence_planned_before_a_cut_over_is_refused_after_it(store).await;
     a_consistency_change_fences_placement(store).await;
     why_a_move_started_is_persisted(store).await;
     fence_storage_ids_are_persisted_until_the_next_write(store).await;
+    a_pending_set_is_persisted_until_the_next_write(store).await;
     pausing_moves_is_persisted(store).await;
 }
 
@@ -192,6 +195,7 @@ fn cache_assignment(shard: u32, leader: &str) -> ShardAssignment {
         move_reason: None,
         incarnation: 0,
         fence_storage_ids: Default::default(),
+        pending_set: None,
     }
 }
 
@@ -304,6 +308,7 @@ pub(crate) async fn an_assignment_racing_a_recreate_names_the_stream_it_landed_o
         move_reason: None,
         incarnation: 0,
         fence_storage_ids: Default::default(),
+        pending_set: None,
     };
     store.create_stream(stream(1)).await.expect("create");
     for round in 0..50u64 {
@@ -740,6 +745,107 @@ async fn fence_storage_ids_are_persisted_until_the_next_write(store: &dyn Contro
     assert!(next.fence_storage_ids.is_empty());
     let read = store.get_shard_assignment(&key(0)).await.expect("get");
     assert!(read.fence_storage_ids.is_empty());
+}
+
+/// A cut-over's pending set is read back with its assignment, through the
+/// snapshot and the change feed too, and the next write that carries none
+/// leaves none behind. One naming an unknown node, or the set it would
+/// replace, is refused.
+async fn a_pending_set_is_persisted_until_the_next_write(store: &dyn ControlPlaneStore) {
+    clear(store).await;
+    let current = store
+        .put_shard_assignment(assignment(0, "broker-x"))
+        .await
+        .expect("assign");
+    let pending = crate::model::PendingSet {
+        replicas: vec!["broker-y".to_string()],
+        generation: current.generation + 1,
+    };
+    let since = store
+        .shard_assignment_snapshot()
+        .await
+        .expect("snapshot")
+        .next_seq;
+    let written = store
+        .put_shard_assignment(ShardAssignment {
+            pending_set: Some(pending.clone()),
+            ..assignment(0, "broker-x")
+        })
+        .await
+        .expect("cut over");
+    assert_eq!(written.pending_set.as_ref(), Some(&pending));
+    let read = store.get_shard_assignment(&key(0)).await.expect("get");
+    assert_eq!(read.pending_set.as_ref(), Some(&pending));
+    assert!(read.replicas.is_empty(), "the set stays the old one");
+    let listed = store.list_shard_assignments().await.expect("list");
+    assert_eq!(listed[0].pending_set.as_ref(), Some(&pending));
+    let snapshot = store.shard_assignment_snapshot().await.expect("snapshot");
+    assert_eq!(snapshot.items[0].pending_set.as_ref(), Some(&pending));
+    let changes = store
+        .shard_assignment_changes(since)
+        .await
+        .expect("changes");
+    let changed = changes
+        .items
+        .last()
+        .and_then(|change| change.assignment.as_ref())
+        .expect("the change");
+    assert_eq!(changed.pending_set.as_ref(), Some(&pending));
+
+    let unknown = store
+        .put_shard_assignment(ShardAssignment {
+            pending_set: Some(crate::model::PendingSet {
+                replicas: vec!["broker-nobody".to_string()],
+                generation: 1,
+            }),
+            ..assignment(0, "broker-x")
+        })
+        .await;
+    assert!(
+        matches!(unknown, Err(StoreError::NotFound(_))),
+        "{unknown:?}"
+    );
+    let same = store
+        .put_shard_assignment(ShardAssignment {
+            pending_set: Some(crate::model::PendingSet {
+                replicas: Vec::new(),
+                generation: 1,
+            }),
+            ..assignment(0, "broker-x")
+        })
+        .await;
+    assert!(matches!(same, Err(StoreError::Conflict(_))), "{same:?}");
+    // A set the write starts must name the generation the write lands at.
+    let skipped = store
+        .put_shard_assignment(ShardAssignment {
+            pending_set: Some(crate::model::PendingSet {
+                replicas: vec!["broker-y".to_string()],
+                generation: written.generation + 5,
+            }),
+            ..assignment(0, "broker-x")
+        })
+        .await;
+    assert!(
+        matches!(skipped, Err(StoreError::Conflict(_))),
+        "a pending set for another generation was stored: {skipped:?}"
+    );
+    let held = store.delete_node("broker-y").await;
+    assert!(
+        matches!(held, Err(StoreError::Conflict(_))),
+        "a node in a pending set was deleted: {held:?}"
+    );
+
+    let taken = store
+        .put_shard_assignment(ShardAssignment {
+            replicas: pending.replicas.clone(),
+            ..assignment(0, "broker-x")
+        })
+        .await
+        .expect("take the set");
+    assert_eq!(taken.pending_set, None);
+    let read = store.get_shard_assignment(&key(0)).await.expect("get");
+    assert_eq!(read.pending_set, None);
+    assert_eq!(read.replicas, pending.replicas);
 }
 
 /// Moves start unpaused, and pausing and resuming are read back by the next
@@ -1341,6 +1447,7 @@ async fn deleting_a_stream_or_cache_takes_its_shard_assignments_with_it(
         move_reason: None,
         incarnation: 0,
         fence_storage_ids: Default::default(),
+        pending_set: None,
     };
     for shard in 0..2 {
         store
@@ -1384,6 +1491,7 @@ async fn deleting_a_stream_or_cache_takes_its_shard_assignments_with_it(
         leader: None,
         node_incarnations: Default::default(),
         follower_storage: Default::default(),
+        joint_start_acked: None,
     };
     store
         .record_replica_report(doomed_report.clone(), "broker-x")
@@ -1523,6 +1631,7 @@ async fn a_cascading_delete_takes_shard_assignments_and_reports(store: &dyn Cont
                         leader: None,
                         node_incarnations: Default::default(),
                         follower_storage: Default::default(),
+                        joint_start_acked: None,
                     },
                     "broker-x",
                 )
@@ -1614,6 +1723,7 @@ pub(crate) async fn an_assignment_names_the_incarnation_it_was_written_for(
         // Ignored: the store reads the stream's.
         incarnation: 99,
         fence_storage_ids: Default::default(),
+        pending_set: None,
     };
     let key = StreamKey {
         tenant_id: TENANT.to_string(),
@@ -1724,6 +1834,7 @@ pub(crate) async fn a_recreated_stream_never_repeats_a_generation(store: &dyn Co
         move_reason: None,
         incarnation: 0,
         fence_storage_ids: Default::default(),
+        pending_set: None,
     };
     let key = StreamKey {
         tenant_id: TENANT.to_string(),

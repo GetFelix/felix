@@ -1576,6 +1576,7 @@ async fn an_instance_before_incarnations_assigns_the_live_incarnation() -> anyho
         move_reason: None,
         incarnation: 0,
         fence_storage_ids: Default::default(),
+        pending_set: None,
     };
     // Its write path: the row with no incarnation, then the change.
     let mut tx = pool.begin().await?;
@@ -1778,6 +1779,7 @@ async fn an_instance_before_cache_incarnations_assigns_the_live_incarnation() ->
         move_reason: None,
         incarnation: 0,
         fence_storage_ids: Default::default(),
+        pending_set: None,
     };
     let mut tx = pool.begin().await?;
     sqlx::query(
@@ -1853,6 +1855,7 @@ async fn an_instance_before_cache_incarnations_keeps_the_incarnation_on_update()
         move_reason: None,
         incarnation: 0,
         fence_storage_ids: Default::default(),
+        pending_set: None,
     };
     let held = store.put_shard_assignment(first.clone()).await?;
     assert_eq!(held.incarnation, created.incarnation);
@@ -1973,6 +1976,7 @@ async fn an_older_members_report_does_not_keep_by_round() -> anyhow::Result<()> 
         node_incarnations: Default::default(),
         follower_storage: Default::default(),
         inherited_storage: Default::default(),
+        joint_start_acked: None,
     };
     store
         .record_replica_report(report.clone(), "broker-x")
@@ -2081,6 +2085,7 @@ async fn an_older_members_write_does_not_keep_a_storage_id() -> anyhow::Result<(
         node_incarnations: [("broker-y".to_string(), 3)].into(),
         follower_storage: [("broker-y".to_string(), id.clone())].into(),
         inherited_storage: [("broker-z".to_string(), id.clone())].into(),
+        joint_start_acked: Some(generation),
     };
     store
         .record_replica_report(report.clone(), "broker-x")
@@ -2094,6 +2099,7 @@ async fn an_older_members_write_does_not_keep_a_storage_id() -> anyhow::Result<(
     };
     assert_eq!(held().await.follower_storage, report.follower_storage);
     assert_eq!(held().await.inherited_storage, report.inherited_storage);
+    assert_eq!(held().await.joint_start_acked, Some(generation));
     assert_eq!(held().await.leader, report.leader);
     assert_eq!(held().await.node_incarnations, report.node_incarnations);
 
@@ -2108,6 +2114,8 @@ async fn an_older_members_write_does_not_keep_a_storage_id() -> anyhow::Result<(
     assert!(after.follower_storage.is_empty(), "{after:?}");
     // Nor the identities it inherited (0037).
     assert!(after.inherited_storage.is_empty(), "{after:?}");
+    // Nor the joint start (0038).
+    assert_eq!(after.joint_start_acked, None, "{after:?}");
     assert_eq!(after.leader, None, "{after:?}");
     assert!(after.node_incarnations.is_empty(), "{after:?}");
 
@@ -2122,5 +2130,27 @@ async fn an_older_members_write_does_not_keep_a_storage_id() -> anyhow::Result<(
         )
         .await?;
     assert_eq!(held().await.follower_storage, report.follower_storage);
+
+    // A pending set is read only at the generation that wrote it (0038): an
+    // older member's update leaves it behind, and it reads as abandoned.
+    let pending = crate::model::PendingSet {
+        replicas: vec!["broker-y".to_string()],
+        generation: generation + 1,
+    };
+    let written = store
+        .put_shard_assignment(crate::model::ShardAssignment {
+            pending_set: Some(pending.clone()),
+            ..assignment(0, "broker-x")
+        })
+        .await?;
+    assert_eq!(written.pending_set.as_ref(), Some(&pending));
+    assert_eq!(
+        store.get_shard_assignment(&key(0)).await?.pending_set,
+        Some(pending)
+    );
+    sqlx::query("UPDATE shard_assignments SET generation = generation + 1 WHERE shard = 0")
+        .execute(&pool)
+        .await?;
+    assert_eq!(store.get_shard_assignment(&key(0)).await?.pending_set, None);
     Ok(())
 }

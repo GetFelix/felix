@@ -761,6 +761,7 @@ the field itself, on every member alike, or refuses the command:
 | create and delete `names`, snapshot `deleted_stream_names` and `deleted_cache_names` | 18 | deletes record no names and a deleted name is created again before the finalize, on every member, as before #1447 |
 | stream patch `fence` | 19 | a change of consistency or durability does not advance the placement token, on every member, as before #1253 |
 | replica report `inherited_storage`, and in the snapshot | 20 | the report is proposed without it, so a failover names a follower its leader had not reached by no identity, on every member, as before #1574 |
+| assignment `pending_set`, replica report `joint_start_acked`, both in the snapshot, finalizing `replica_election` | 21 | a write carrying a pending set is refused with 409 before it reaches the log, never sent as a cut-over that takes the new set at once; the report is proposed without the joint start, which keeps a change pending on every member; the finalize is refused |
 
 **A member refuses what it would drop.** From level 3 on, a member that
 decodes an entry carrying a non-empty field it does not know answers

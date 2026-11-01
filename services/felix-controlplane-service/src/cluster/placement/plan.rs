@@ -316,6 +316,7 @@ fn plan_once(
         .map(|node| (node.node_id.as_str(), &node.spec.region))
         .collect();
     let unpaced_max = policy.fence_max_lag_records;
+    let (replica_election, fenced_caches) = (policy.replica_election, policy.fenced_caches);
     let mut moves = Moves::counting(existing, policy, &|assignment| {
         let replication_factor = placeable_of
             .get(owner_of(&assignment.key).as_str())
@@ -439,6 +440,9 @@ fn plan_once(
                 &mut moves,
                 fenced,
                 &is_lost,
+                // The shards whose replicas elect (replication-design.md,
+                // "Which shards").
+                replica_election && fenced && (key.kind == ShardKind::Stream || fenced_caches),
             );
             shards.push(ShardPlan { key, decision });
             note_spread(&mut unspread, shards.last(), &current, &eligible);
@@ -684,6 +688,7 @@ pub fn assignment_for(key: &ShardKey, leader: &str, replicas: Vec<String>) -> Sh
         move_reason: None,
         incarnation: 0,
         fence_storage_ids: Default::default(),
+        pending_set: None,
     }
 }
 

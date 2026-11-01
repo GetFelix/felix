@@ -39,6 +39,18 @@ soon after the first no longer leaves the shard closed (#1574).
   brokers, and see [Rollback](/deployment/upgrades/#rollback) for the limit on
   going back once level 20 entries are written.
 
+The control plane can now keep a cut-over's new replica set pending until
+the leader reports it on both the old and the new set, which
+`replica_election` needs (#1009). Nothing uses it until that feature is
+finalized, and no broker offers it yet.
+
+- With the Postgres backend, the control plane runs migration `0038` when it
+  starts. Finish upgrading every control-plane instance before finalizing
+  `replica_election`: the control plane cannot see another instance's version,
+  and one that predates this drops a pending set when it writes the shard.
+- With the Raft backend, it needs every member at metadata level 21, and so
+  does finalizing `replica_election`.
+
 ## Clients
 
 The Rust client is renamed (first change below). The Python, TypeScript, C and

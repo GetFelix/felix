@@ -78,6 +78,10 @@ const PATCH_FENCE_LEVEL: u16 = 19;
 /// The metadata level whose members store the identities a replica report
 /// inherits from its leader's promotion (#1574).
 const INHERITED_STORAGE_LEVEL: u16 = 20;
+
+/// The metadata level whose members store a cut-over's pending set and the
+/// joint start a report names, and finalize `replica_election` (#1009).
+const PENDING_SET_LEVEL: u16 = 21;
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
@@ -814,6 +818,9 @@ impl ControlPlaneStore for RaftStore {
         expected_generation: Option<u64>,
         fence: u64,
     ) -> StoreResult<AssignmentWrite> {
+        // A pending set is never dropped, unlike the fence ids: without it a
+        // cut-over takes the new set at once. Its level refuses the write
+        // below 21 instead.
         self.drop_unstorable_fence_ids(&mut assignment).await;
         let level = self.group_level().await;
         match self
@@ -927,6 +934,11 @@ impl ControlPlaneStore for RaftStore {
             && self.group_level().await < INHERITED_STORAGE_LEVEL
         {
             report.inherited_storage.clear();
+        }
+        // Without it the pending set stays pending, which is the safe side.
+        // Dropped first.
+        if report.joint_start_acked.is_some() && self.group_level().await < PENDING_SET_LEVEL {
+            report.joint_start_acked = None;
         }
         // The API's own check still stands for a group that cannot apply
         // the field.
