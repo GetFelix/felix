@@ -581,6 +581,17 @@ impl CaughtUp for ReplicaPositions {
             .copied()
     }
 
+    // Not held to freshness: once acknowledged on both majorities, the start
+    // record stays so.
+    fn joint_start_acked(&self, key: &ShardKey, generation: u64, leader: &str) -> Option<u64> {
+        self.reports
+            .get(key)
+            .filter(|report| {
+                report.generation == generation && report.leader.as_deref() == Some(leader)
+            })
+            .and_then(|report| report.joint_start_acked)
+    }
+
     fn is_drained(&self, key: &ShardKey, generation: u64) -> bool {
         // The held report may predate the fence, when the leader was still
         // writing.

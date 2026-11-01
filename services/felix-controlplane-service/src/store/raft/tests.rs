@@ -761,6 +761,7 @@ async fn shard_renewal_waits_for_every_member() {
                     move_reason: None,
                     incarnation: 0,
                     fence_storage_ids: Default::default(),
+                    pending_set: None,
                 })
                 .await
                 .expect("assign");
@@ -844,6 +845,7 @@ async fn deletes_take_shard_state_only_once_every_member_does() {
                     move_reason: None,
                     incarnation: 0,
                     fence_storage_ids: Default::default(),
+                    pending_set: None,
                 })
                 .await
                 .expect("assign");
@@ -867,6 +869,7 @@ async fn deletes_take_shard_state_only_once_every_member_does() {
                         leader: None,
                         node_incarnations: Default::default(),
                         follower_storage: Default::default(),
+                        joint_start_acked: None,
                     },
                     "broker-x",
                 )
@@ -1036,6 +1039,7 @@ async fn halted_copies_wait_for_every_member_and_the_report_does_not() {
             move_reason: None,
             incarnation: 0,
             fence_storage_ids: Default::default(),
+            pending_set: None,
         })
         .await
         .expect("assign");
@@ -1065,6 +1069,7 @@ async fn halted_copies_wait_for_every_member_and_the_report_does_not() {
         leader: None,
         node_incarnations: Default::default(),
         follower_storage: Default::default(),
+        joint_start_acked: None,
     };
     let held = || async {
         store
@@ -1144,6 +1149,7 @@ async fn fence_storage_ids_wait_for_every_member() {
         move_reason: None,
         incarnation: 0,
         fence_storage_ids: [("broker-y".to_string(), "b".repeat(32))].into(),
+        pending_set: None,
     };
 
     let written = store
@@ -1218,6 +1224,7 @@ async fn by_round_waits_for_every_member_and_the_rest_of_the_report_does_not() {
             move_reason: None,
             incarnation: 0,
             fence_storage_ids: Default::default(),
+            pending_set: None,
         })
         .await
         .expect("assign");
@@ -1247,6 +1254,7 @@ async fn by_round_waits_for_every_member_and_the_rest_of_the_report_does_not() {
         leader: None,
         node_incarnations: Default::default(),
         follower_storage: Default::default(),
+        joint_start_acked: None,
     };
     let held = || async {
         store
@@ -1289,6 +1297,176 @@ async fn by_round_waits_for_every_member_and_the_rest_of_the_report_does_not() {
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+/// A member before level 21 would refuse an entry carrying a cut-over's
+/// pending set, and the shard's set would differ between members. So while
+/// one is in the group the write is refused before it reaches the log, and is
+/// not sent as a cut-over that takes the new set at once; a report's joint
+/// start is dropped, which keeps a change pending on every member; and
+/// `replica_election` cannot be finalized. Once every member has the level
+/// all three go through, and a member below it can no longer join.
+#[tokio::test]
+async fn pending_sets_wait_for_every_member() {
+    use crate::model::{
+        PendingSet, ReplicaReport, ShardAssignment, ShardKey, ShardKind, ShardState,
+    };
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), 20).await;
+    let applied = || store.handle.status().last_applied_index;
+    store
+        .create_stream(routed_stream("orders", Default::default()))
+        .await
+        .expect("stream");
+    let election = felix_common::fleet::REPLICA_ELECTION.name();
+    for (node_id, port) in [("broker-x", 7101), ("broker-y", 7102), ("broker-z", 7103)] {
+        store
+            .register_node(crate::store::contract::nodes::with_features(
+                crate::store::contract::nodes::node(node_id, port),
+                &[election],
+            ))
+            .await
+            .expect("register");
+    }
+    let key = ShardKey {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "orders".to_string(),
+        shard: 0,
+        kind: ShardKind::Stream,
+    };
+    let assigned = store
+        .put_shard_assignment(ShardAssignment {
+            key: key.clone(),
+            leader: "broker-x".to_string(),
+            replicas: vec!["broker-y".to_string()],
+            generation: 0,
+            state: ShardState::Active,
+            successor: None,
+            joining: None,
+            move_started_at_millis: None,
+            move_reason: None,
+            incarnation: 0,
+            fence_storage_ids: Default::default(),
+            pending_set: None,
+        })
+        .await
+        .expect("assign");
+    let cut_over = ShardAssignment {
+        pending_set: Some(PendingSet {
+            replicas: vec!["broker-z".to_string()],
+            generation: assigned.generation + 1,
+        }),
+        ..assigned.clone()
+    };
+    let write = || async {
+        store
+            .put_shard_assignment_if(
+                cut_over.clone(),
+                Some(assigned.generation),
+                store.placement_token().await.expect("token"),
+            )
+            .await
+    };
+    let report = ReplicaReport {
+        key: key.clone(),
+        generation: assigned.generation,
+        caught_up: ["broker-y".to_string()].into(),
+        offsets: [("broker-y".to_string(), 3)].into(),
+        reported_at_millis: 1,
+        drained: false,
+        leader_offset: Some(3),
+        halted: Default::default(),
+        counter_offsets: Default::default(),
+        stream_incarnation: None,
+        by_round: false,
+        leader_incarnation: None,
+        follower_storage: Default::default(),
+        leader: None,
+        node_incarnations: Default::default(),
+        given_up: false,
+        inherited_storage: Default::default(),
+        joint_start_acked: Some(assigned.generation),
+    };
+    let held = || async {
+        store
+            .list_replica_reports()
+            .await
+            .expect("reports")
+            .into_iter()
+            .find(|held| held.key == key)
+            .expect("the report was recorded")
+    };
+
+    let before = applied();
+    let refused = write().await;
+    assert!(
+        matches!(&refused, Err(StoreError::Conflict(message)) if message.contains("metadata version 21")),
+        "a pending set was proposed past a member that would refuse it: {refused:?}"
+    );
+    let refused = store.finalize_fleet_feature(election).await;
+    assert!(
+        matches!(&refused, Err(StoreError::Conflict(_))),
+        "replica_election was finalized past a member below its level: {refused:?}"
+    );
+    assert_eq!(applied(), before, "a refused entry reached the log");
+    assert_eq!(
+        store.get_shard_assignment(&key).await.expect("get"),
+        assigned,
+        "the shard's set changed"
+    );
+    assert_eq!(
+        store
+            .record_replica_report(report.clone(), "broker-x")
+            .await
+            .expect("recorded without the joint start"),
+        crate::store::ReportWrite::Stored
+    );
+    assert_eq!(held().await.joint_start_acked, None);
+
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let written = loop {
+        match write().await {
+            Ok(crate::store::AssignmentWrite::Written(written)) => break written,
+            other => assert!(
+                std::time::Instant::now() < deadline,
+                "still refused after every member reported the level: {other:?}"
+            ),
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert_eq!(written.pending_set, cut_over.pending_set);
+    store
+        .record_replica_report(
+            ReplicaReport {
+                generation: written.generation,
+                joint_start_acked: Some(written.generation),
+                ..report
+            },
+            "broker-x",
+        )
+        .await
+        .expect("record");
+    assert_eq!(held().await.joint_start_acked, Some(written.generation));
+    assert!(
+        store
+            .finalize_fleet_feature(election)
+            .await
+            .expect("finalize")
+            .contains(election)
+    );
+
+    // The log now holds level 21 entries, which a member below would refuse.
+    let old = stub_member(Arc::new(std::sync::atomic::AtomicU16::new(20))).await;
+    let refused = store.handle.add_learner_without_waiting(3, old).await;
+    assert!(
+        matches!(&refused, Err(err) if err.to_string().contains("the group is at 21")),
+        "a member below level 21 joined: {refused:?}"
+    );
 }
 
 /// A member before level 20 would drop the identities a report inherits from
@@ -1334,6 +1512,7 @@ async fn inherited_storage_waits_for_every_member() {
             move_reason: None,
             incarnation: 0,
             fence_storage_ids: Default::default(),
+            pending_set: None,
         })
         .await
         .expect("assign");
@@ -1355,6 +1534,7 @@ async fn inherited_storage_waits_for_every_member() {
         leader: None,
         node_incarnations: Default::default(),
         follower_storage: [("broker-y".to_string(), id.clone())].into(),
+        joint_start_acked: None,
     };
     let held = || async {
         store
@@ -1458,6 +1638,7 @@ async fn storage_ids_wait_for_every_member() {
             move_reason: None,
             incarnation: 0,
             fence_storage_ids: Default::default(),
+            pending_set: None,
         })
         .await
         .expect("assign");
@@ -1479,6 +1660,7 @@ async fn storage_ids_wait_for_every_member() {
         leader: Some("broker-x".to_string()),
         node_incarnations: [("broker-y".to_string(), 1)].into(),
         follower_storage: [("broker-y".to_string(), id.clone())].into(),
+        joint_start_acked: None,
     };
     let held = || async {
         store
@@ -1776,6 +1958,7 @@ async fn confirmed_shard_assignments_are_read_on_the_leader() {
             move_reason: None,
             incarnation: 0,
             fence_storage_ids: Default::default(),
+            pending_set: None,
         })
         .await
         .expect("assign");

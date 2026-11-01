@@ -610,6 +610,7 @@ fn last_report() -> crate::model::ReplicaReport {
             ("broker-b".to_string(), B_STORAGE.to_string()),
             ("broker-c".to_string(), C_STORAGE.to_string()),
         ]),
+        joint_start_acked: None,
     }
 }
 

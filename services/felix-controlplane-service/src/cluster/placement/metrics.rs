@@ -123,7 +123,8 @@ impl MoveClock {
             | MoveStep::SeatFence { .. }
             | MoveStep::UndoFence { .. }
             | MoveStep::TrimFence
-            | MoveStep::Trim { .. } => None,
+            | MoveStep::Trim { .. }
+            | MoveStep::TakePendingSet => None,
         }
     }
 }

@@ -513,6 +513,7 @@ async fn a_shard_write_holds_its_cache_until_it_lands() {
                     move_reason: None,
                     incarnation: 0,
                     fence_storage_ids: Default::default(),
+                    pending_set: None,
                 })
                 .await
                 .expect("assign")

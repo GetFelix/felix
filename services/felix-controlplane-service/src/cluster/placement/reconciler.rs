@@ -191,6 +191,8 @@ pub struct PlacementRead {
     pub positions: ReplicaPositions,
     /// Whether placement's own moves are paused.
     pub paused: bool,
+    /// The fleet features finalized when this was read.
+    pub enabled: std::collections::BTreeSet<String>,
 }
 
 impl PlacementRead {
@@ -235,13 +237,20 @@ impl PlacementRead {
             existing,
             positions,
             paused,
+            enabled,
         })
     }
 
-    /// `policy`, paused if placement is.
+    /// `policy`, paused if placement is, with the features it acts on.
     pub fn policy(&self, policy: MovePolicy) -> MovePolicy {
         MovePolicy {
             paused: self.paused,
+            replica_election: self
+                .enabled
+                .contains(felix_common::fleet::REPLICA_ELECTION.name()),
+            fenced_caches: self
+                .enabled
+                .contains(felix_common::fleet::FENCED_CACHES.name()),
             ..policy
         }
     }

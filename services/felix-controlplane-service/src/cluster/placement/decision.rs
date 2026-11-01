@@ -94,6 +94,10 @@ pub enum MoveStep {
     /// An operator gave up the log of a shard whose only copies are out of
     /// reach: `to` leads it afresh, and whatever `from` held is lost.
     Discard { from: String, to: String },
+    /// The leader reported its generation's start record acknowledged on a
+    /// majority of the old set and of the pending one: the pending set
+    /// becomes the control plane's.
+    TakePendingSet,
 }
 
 impl MoveStep {
@@ -117,6 +121,7 @@ impl MoveStep {
             Self::Retake { .. } => "retake",
             Self::FenceTimedOut { .. } => "fence_timed_out",
             Self::Discard { .. } => "discard",
+            Self::TakePendingSet => "take_pending_set",
         }
     }
 }
@@ -151,6 +156,9 @@ pub enum Blocked {
     /// were given up at the fence: the next starts at `until_millis`, on the
     /// store's clock.
     BackingOff { given_up: u32, until_millis: u64 },
+    /// A cut-over's set change is pending: nothing else changes the set
+    /// until the leader reports the joint start, or a failover abandons it.
+    SetChangePending,
 }
 
 impl std::fmt::Display for Blocked {
@@ -182,6 +190,10 @@ impl std::fmt::Display for Blocked {
                 f,
                 "the last {given_up} moves of this shard were given up at the fence; \
                  the next starts at {until_millis}"
+            ),
+            Self::SetChangePending => write!(
+                f,
+                "waiting for the leader to report its start acknowledged on both the old and the new replica set"
             ),
         }
     }

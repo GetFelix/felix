@@ -508,6 +508,7 @@ fn a_report_body_is_the_shape_the_control_plane_parses() {
             replica_incarnations: Default::default(),
             replica_storage_ids: Default::default(),
             inherited_storage_ids: Default::default(),
+            joint_start_acked: None,
         }],
     };
 

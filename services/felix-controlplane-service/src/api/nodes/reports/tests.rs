@@ -24,6 +24,7 @@ fn assignment(state: ShardState, successor: Option<&str>) -> ShardAssignment {
         move_reason: None,
         incarnation: 0,
         fence_storage_ids: Default::default(),
+        pending_set: None,
     }
 }
 
@@ -37,6 +38,7 @@ fn status(
 ) -> felix_common::membership::ShardReplicaStatus {
     felix_common::membership::ShardReplicaStatus {
         inherited_storage_ids: Default::default(),
+        joint_start_acked: None,
         given_up: false,
         replica_counter_offsets: Vec::new(),
         tenant_id: "t1".to_string(),
@@ -146,6 +148,7 @@ async fn a_drained_report_cuts_over_without_waiting_for_the_interval() {
             move_reason: None,
             incarnation: 0,
             fence_storage_ids: Default::default(),
+            pending_set: None,
         })
         .await
         .expect("fenced move");
@@ -275,6 +278,7 @@ async fn led_by_x(store: &crate::store::memory::InMemoryStore, generation_bumps:
         move_reason: None,
         incarnation: 0,
         fence_storage_ids: Default::default(),
+        pending_set: None,
     };
     for _ in 0..=generation_bumps {
         assignment = store

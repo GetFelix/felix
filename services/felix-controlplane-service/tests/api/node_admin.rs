@@ -447,6 +447,7 @@ async fn seed_shards(store: &InMemoryStore) {
                 move_reason: None,
                 incarnation: 0,
                 fence_storage_ids: Default::default(),
+                pending_set: None,
             })
             .await
             .expect("assign");
@@ -572,6 +573,7 @@ async fn shard_assignments_carry_the_streams_routing() {
                 move_reason: None,
                 incarnation: 0,
                 fence_storage_ids: Default::default(),
+                pending_set: None,
             })
             .await
             .expect("assign");

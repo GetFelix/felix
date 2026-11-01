@@ -104,6 +104,9 @@ pub enum Refused {
     NotStranded,
     /// The log was given up, but no node can take the shard.
     Unplaceable(Unplaceable),
+    /// A cut-over's set change is pending. It ends on the leader's report,
+    /// or a failover abandons it; neither a move nor a cancel can.
+    SetChangePending,
 }
 
 impl Refused {
@@ -123,6 +126,7 @@ impl Refused {
             Self::NotMoving => "not_moving",
             Self::NotStranded => "not_stranded",
             Self::Unplaceable(_) => "unplaceable",
+            Self::SetChangePending => "set_change_pending",
         }
     }
 }
@@ -164,6 +168,10 @@ impl std::fmt::Display for Refused {
                 "this shard is not waiting on a lost log: its leader is serving, or a replica can take over"
             ),
             Self::Unplaceable(why) => write!(f, "{why}"),
+            Self::SetChangePending => write!(
+                f,
+                "a cut-over's replica set change is pending until the leader reports it on both sets"
+            ),
         }
     }
 }
@@ -209,6 +217,9 @@ pub fn start_move(
             node: destination.to_string(),
             reason: halt.reason.clone(),
         });
+    }
+    if existing.pending_set.is_some() {
+        return Err(Refused::SetChangePending);
     }
     if moving(existing) {
         return Err(Refused::Moving);
@@ -314,6 +325,9 @@ fn zone_impact(
 pub fn cancel_move(catalog: &Catalog<'_>, key: &ShardKey) -> Result<OperatorStep, Refused> {
     let existing = assignment_of(catalog, key)?;
     let (replication_factor, _, _) = placeable_of(catalog, key).ok_or(Refused::UnknownShard)?;
+    if existing.pending_set.is_some() {
+        return Err(Refused::SetChangePending);
+    }
     let (step, assignment) = if existing.state == ShardState::Draining {
         // A leader that is down cannot take the shard back; failover
         // promotes a replica that holds the log instead.

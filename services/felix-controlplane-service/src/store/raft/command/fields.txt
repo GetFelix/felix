@@ -376,6 +376,7 @@
 4 import_state.state.replica_reports[].halted.*.since_millis
 20 import_state.state.replica_reports[].inherited_storage
 20 import_state.state.replica_reports[].inherited_storage.*
+21 import_state.state.replica_reports[].joint_start_acked
 3 import_state.state.replica_reports[].key
 3 import_state.state.replica_reports[].key.kind
 3 import_state.state.replica_reports[].key.namespace
@@ -396,6 +397,9 @@
 0 import_state.state.shard_changes.items[].assignment
 16 import_state.state.shard_changes.items[].assignment.fence_storage_ids
 16 import_state.state.shard_changes.items[].assignment.fence_storage_ids.*
+21 import_state.state.shard_changes.items[].assignment.pending_set
+21 import_state.state.shard_changes.items[].assignment.pending_set.generation
+21 import_state.state.shard_changes.items[].assignment.pending_set.replicas
 0 import_state.state.shard_changes.items[].assignment.generation
 10 import_state.state.shard_changes.items[].assignment.incarnation
 0 import_state.state.shard_changes.items[].assignment.joining
@@ -422,6 +426,9 @@
 0 import_state.state.shards
 16 import_state.state.shards[][].fence_storage_ids
 16 import_state.state.shards[][].fence_storage_ids.*
+21 import_state.state.shards[][].pending_set
+21 import_state.state.shards[][].pending_set.generation
+21 import_state.state.shards[][].pending_set.replicas
 0 import_state.state.shards[][].generation
 10 import_state.state.shards[][].incarnation
 0 import_state.state.shards[][].joining
@@ -564,6 +571,9 @@
 0 put_shard_assignment.assignment
 16 put_shard_assignment.assignment.fence_storage_ids
 16 put_shard_assignment.assignment.fence_storage_ids.*
+21 put_shard_assignment.assignment.pending_set
+21 put_shard_assignment.assignment.pending_set.generation
+21 put_shard_assignment.assignment.pending_set.replicas
 0 put_shard_assignment.assignment.generation
 10 put_shard_assignment.assignment.incarnation
 0 put_shard_assignment.assignment.joining
@@ -583,6 +593,9 @@
 0 put_shard_assignment_fenced.assignment
 16 put_shard_assignment_fenced.assignment.fence_storage_ids
 16 put_shard_assignment_fenced.assignment.fence_storage_ids.*
+21 put_shard_assignment_fenced.assignment.pending_set
+21 put_shard_assignment_fenced.assignment.pending_set.generation
+21 put_shard_assignment_fenced.assignment.pending_set.replicas
 0 put_shard_assignment_fenced.assignment.generation
 10 put_shard_assignment_fenced.assignment.incarnation
 0 put_shard_assignment_fenced.assignment.joining
@@ -604,6 +617,9 @@
 0 put_shard_assignment_if.assignment
 16 put_shard_assignment_if.assignment.fence_storage_ids
 16 put_shard_assignment_if.assignment.fence_storage_ids.*
+21 put_shard_assignment_if.assignment.pending_set
+21 put_shard_assignment_if.assignment.pending_set.generation
+21 put_shard_assignment_if.assignment.pending_set.replicas
 0 put_shard_assignment_if.assignment.generation
 10 put_shard_assignment_if.assignment.incarnation
 0 put_shard_assignment_if.assignment.joining
@@ -643,6 +659,7 @@
 4 record_replica_report.report.halted.*.since_millis
 20 record_replica_report.report.inherited_storage
 20 record_replica_report.report.inherited_storage.*
+21 record_replica_report.report.joint_start_acked
 0 record_replica_report.report.key
 0 record_replica_report.report.key.kind
 0 record_replica_report.report.key.namespace
@@ -949,6 +966,7 @@
 4 snapshot.state.replica_reports[].halted.*.since_millis
 20 snapshot.state.replica_reports[].inherited_storage
 20 snapshot.state.replica_reports[].inherited_storage.*
+21 snapshot.state.replica_reports[].joint_start_acked
 3 snapshot.state.replica_reports[].key
 3 snapshot.state.replica_reports[].key.kind
 3 snapshot.state.replica_reports[].key.namespace
@@ -969,6 +987,9 @@
 0 snapshot.state.shard_changes.items[].assignment
 16 snapshot.state.shard_changes.items[].assignment.fence_storage_ids
 16 snapshot.state.shard_changes.items[].assignment.fence_storage_ids.*
+21 snapshot.state.shard_changes.items[].assignment.pending_set
+21 snapshot.state.shard_changes.items[].assignment.pending_set.generation
+21 snapshot.state.shard_changes.items[].assignment.pending_set.replicas
 0 snapshot.state.shard_changes.items[].assignment.generation
 10 snapshot.state.shard_changes.items[].assignment.incarnation
 0 snapshot.state.shard_changes.items[].assignment.joining
@@ -995,6 +1016,9 @@
 0 snapshot.state.shards
 16 snapshot.state.shards[][].fence_storage_ids
 16 snapshot.state.shards[][].fence_storage_ids.*
+21 snapshot.state.shards[][].pending_set
+21 snapshot.state.shards[][].pending_set.generation
+21 snapshot.state.shards[][].pending_set.replicas
 0 snapshot.state.shards[][].generation
 10 snapshot.state.shards[][].incarnation
 0 snapshot.state.shards[][].joining

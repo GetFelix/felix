@@ -56,7 +56,7 @@ pub const COMMAND_VERSION: u16 = 1;
 /// it the next level and raises this, so nothing proposes it until every
 /// member runs that release. New fields get their level in `fields.txt`.
 /// Never lower it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 20;
+pub const METADATA_VERSION: u16 = 21;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -482,6 +482,13 @@ impl MetaCommand {
                 if feature == felix_common::fleet::CACHE_INCARNATIONS.name() =>
             {
                 14
+            }
+            // Finalizing replica election lets placement write pending sets,
+            // which members before level 21 would refuse.
+            Self::FinalizeFleetFeature { feature }
+                if feature == felix_common::fleet::REPLICA_ELECTION.name() =>
+            {
+                21
             }
             Self::RegisterNodeInFleet { .. } | Self::FinalizeFleetFeature { .. } => 2,
             Self::CreateResources { .. } => 5,
