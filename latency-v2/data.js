@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793494102522,
+  "lastUpdate": 1793496706989,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -51810,6 +51810,72 @@ window.BENCHMARK_DATA = {
             "range": "409.27",
             "unit": "us",
             "extra": "trials: 5\nmedian: 292.00\nmean: 470.40\nstdev: 409.27\ncv: 87.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a3eb4a77b1427fa8144468bb66b6579275c37a79",
+          "message": "fix(replication): a promoted leader refuses reads until it counts a record (#1718) (#1722)\n\n* fix(replication): a promoted leader stays settling until it counts a record (#1718)\n\nA replication pass with no majority still sends its report, and published\nthe mark it counted with it. On a promoted Quorum leader whose followers\nheld nothing of its generation yet, that was zero, which created the\ngeneration's mark at 0 and ended Settling. A stream_read of the inherited\nrecords then came back as an empty page with no error, and a Latest\nsubscribe would start at offset 0. A zero mark over a log that holds\nrecords is now withheld, so readers get not_ready until a majority holds\na record of the generation.\n\nSpec-Unaffected: no acknowledgement moves. A zero mark releases no write, and the change only decides whether readers see Settling or Committed(0). FelixShardReads does not model the mark a read stops at (its header says so); the per-generation start of the mark is worth adding there as a read-completeness property.\n\n* fix(replication): count a log emptied by a trim as having nothing to settle (#1718)\n\nSpec-Unaffected: the change only decides whether readers see Settling or Committed(0) on a log with no records.",
+          "timestamp": "2026-10-31T18:27:58-07:00",
+          "tree_id": "919e8b82dc0a80e71011b62463da751f75e87973",
+          "url": "https://github.com/GetFelix/felix/commit/a3eb4a77b1427fa8144468bb66b6579275c37a79"
+        },
+        "date": 1793496701485,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 95,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 95.00\nmean: 94.60\nstdev: 0.55\ncv: 0.58%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 128,
+            "range": "2.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 128.00\nmean: 129.60\nstdev: 2.30\ncv: 1.78%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 173,
+            "range": "18.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 173.00\nmean: 178.20\nstdev: 18.10\ncv: 10.16%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 133,
+            "range": "9.47",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 133.00\nmean: 136.20\nstdev: 9.47\ncv: 6.95%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 260,
+            "range": "76.03",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 260.00\nmean: 290.20\nstdev: 76.03\ncv: 26.20%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 360,
+            "range": "400.75",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 360.00\nmean: 537.80\nstdev: 400.75\ncv: 74.52%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
