@@ -27,7 +27,7 @@ use crate::config::{BrokerConfig, DurableStorageConfig};
 pub(crate) fn open(
     config: &BrokerConfig,
     registered: Option<u64>,
-) -> Result<(Broker, Option<DurableStorage>, StorageId, bool)> {
+) -> Result<(Broker, Option<DurableStorage>, StorageId, bool, bool)> {
     let durable_config = DurableStorageConfig::from_env()?;
     // Test-only: the cluster harness's power loss. Armed before any store
     // opens, since the model takes what is already on disk as durable.
@@ -35,12 +35,17 @@ pub(crate) fn open(
     felix_storage::fault::arm_power_loss_from_env().context("arm the simulated power loss")?;
     // Before any store opens: a store's recovery is the first write of this
     // run, and the record that a run is under way must already be on disk.
-    let (storage_id, unclean) = match &durable_config {
+    let (storage_id, unclean, fresh) = match &durable_config {
         Some(durable) => {
             let begun = begin_run(&durable.root, &durable.log, registered)?;
-            (begun.id, begun.rotated)
+            // The id on disk was not read back as it was: a wiped or new
+            // directory, a corrupt file, or a rotation. Any of them may
+            // follow a loss of what the old id held.
+            let fresh =
+                begun.rotated || begun.origin != felix_storage::storage_identity::Origin::Loaded;
+            (begun.id, begun.rotated, fresh)
         }
-        None => (storage_id(None)?, false),
+        None => (storage_id(None)?, false, false),
     };
     let hold = retention_hold(config);
     let durable_storage = match &durable_config {
@@ -168,7 +173,7 @@ pub(crate) fn open(
         }
         None => broker,
     };
-    Ok((broker, durable_storage, storage_id, unclean))
+    Ok((broker, durable_storage, storage_id, unclean, fresh))
 }
 
 /// The id kept under the durable root, or, without durable storage, a random

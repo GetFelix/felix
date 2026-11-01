@@ -18,6 +18,7 @@ mod election;
 mod fence;
 mod groups;
 mod incarnation;
+mod non_voting;
 mod trim;
 
 const TENANT: &str = "t1";

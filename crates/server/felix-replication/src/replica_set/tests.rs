@@ -29,8 +29,52 @@ fn route() -> Route {
             ),
             ("b".to_string(), String::new()),
         ]))),
+        member_storage_ids: None,
         pending: None,
     }
+}
+
+/// The set names the registered ids on a route that carries them, whatever
+/// the failover's ids say, and falls back to the failover's only without any.
+#[test]
+fn the_set_names_each_members_registered_storage_id() {
+    let mut route = route();
+    route.member_storage_ids = Some(Arc::new(BTreeMap::from([
+        (
+            "a".to_string(),
+            "02020202020202020202020202020202".to_string(),
+        ),
+        (
+            "b".to_string(),
+            "03030303030303030303030303030303".to_string(),
+        ),
+        (
+            "c".to_string(),
+            "04040404040404040404040404040404".to_string(),
+        ),
+    ])));
+    let ids: Vec<_> = view(&route, None)
+        .members
+        .iter()
+        .map(|member| member.storage_id)
+        .collect();
+    assert_eq!(ids, vec![Some([2; 16]), Some([3; 16]), Some([4; 16])]);
+
+    let set = felix_router::PlacedSet {
+        leader: "a".to_string(),
+        replicas: vec!["b".to_string()],
+        successor: None,
+        storage_ids: BTreeMap::new(),
+        member_storage_ids: BTreeMap::from([(
+            "b".to_string(),
+            "03030303030303030303030303030303".to_string(),
+        )]),
+    };
+    let kept = placed(&set, 3);
+    assert_eq!(
+        kept.members[1].storage,
+        Some(StorageId::from_bytes([3; 16]))
+    );
 }
 
 #[test]

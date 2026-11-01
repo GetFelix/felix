@@ -19,6 +19,7 @@ use std::collections::BTreeSet;
 use std::net::SocketAddr;
 
 use felix_router::{NodeRef, PriorSet, Route};
+use felix_storage::StorageId;
 use felix_storage::disk_log::{Membership, ReplicaSet};
 use felix_wire::internal::{PeerCapabilities, ReplicaSetView, SetMember};
 
@@ -33,6 +34,7 @@ use crate::peer::PeerRequester;
 pub struct Joint<'a> {
     addr_of: &'a (dyn Fn(&str) -> Option<SocketAddr> + Sync),
     prior: Option<PriorSet>,
+    local_storage: Option<StorageId>,
 }
 
 impl<'a> Joint<'a> {
@@ -40,7 +42,33 @@ impl<'a> Joint<'a> {
         addr_of: &'a (dyn Fn(&str) -> Option<SocketAddr> + Sync),
         prior: Option<PriorSet>,
     ) -> Self {
-        Self { addr_of, prior }
+        Self {
+            addr_of,
+            prior,
+            local_storage: None,
+        }
+    }
+
+    /// This broker's storage identity, so a promotion can tell a copy a set
+    /// named another id for (a wipe) from one staged as a learner.
+    pub fn with_local_storage(mut self, storage: Option<StorageId>) -> Self {
+        self.local_storage = storage;
+        self
+    }
+
+    /// Whether `log` keeps `local` as a learner of a set that names another
+    /// copy for it: it lost what it held and has not caught up since.
+    pub(super) fn is_wiped_learner(&self, log: &felix_broker::StreamLog, local: &str) -> bool {
+        let Some(own) = self.local_storage else {
+            return false;
+        };
+        log.replica_set().is_some_and(|kept| {
+            kept.current.members.iter().any(|member| {
+                member.node == local
+                    && member.learner
+                    && member.storage.is_some_and(|named| named != own)
+            })
+        })
     }
 }
 

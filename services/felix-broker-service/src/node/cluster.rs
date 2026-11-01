@@ -149,6 +149,7 @@ pub(super) fn bind_peer_listener(
                             broker,
                             router,
                             quorum_marks,
+                            storage_id,
                             unclean,
                             controlplane.map(|(client, base_url, credential)| {
                                 crate::shards::ControlPlaneRoutes::new(
@@ -197,6 +198,7 @@ fn replica_handler(
     broker: &Arc<Broker>,
     router: &Arc<ShardRouter>,
     quorum_marks: &Arc<QuorumMarks>,
+    storage_id: felix_storage::StorageId,
     unclean: Option<Arc<replication::unclean::UncleanStart>>,
     confirmed: Option<crate::shards::ControlPlaneRoutes>,
 ) -> replication::ReplicaHandler {
@@ -204,7 +206,9 @@ fn replica_handler(
     // its leader, so the two windows agree.
     let handler = replication::ReplicaHandler::new(Arc::clone(broker), Arc::clone(router))
         .with_stickiness(replication::suspicion::SuspicionConfig::from_env().suspect_after)
-        .with_fleet(Arc::clone(quorum_marks));
+        .with_fleet(Arc::clone(quorum_marks))
+        .with_local_storage(storage_id)
+        .with_fresh_storage(quorum_marks.fresh_storage());
     let handler = match unclean {
         Some(unclean) => handler.with_unclean_start(unclean),
         None => handler,

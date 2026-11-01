@@ -246,6 +246,7 @@ fn assignment(shard: u32, leader: &str) -> ShardAssignment {
         move_reason: None,
         incarnation: 0,
         fence_storage_ids: Default::default(),
+        member_storage_ids: Default::default(),
         pending_set: None,
     }
 }

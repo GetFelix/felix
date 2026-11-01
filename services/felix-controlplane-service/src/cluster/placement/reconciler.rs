@@ -125,6 +125,9 @@ pub(super) struct PlannedPass {
     /// For each placement that promotes a follower, the storage identities
     /// the report it was decided on named, read from the same positions.
     fence_storage: HashMap<ShardKey, BTreeMap<String, String>>,
+    /// The storage identity each node had registered when the pass read,
+    /// named on every assignment it writes (#1009 S8).
+    registered: BTreeMap<String, String>,
     /// No node has registered, so there is nothing to place onto yet. The
     /// development stack runs this way: its broker serves its own shards.
     no_nodes: bool,
@@ -280,6 +283,14 @@ impl PlacementRead {
     }
 }
 
+/// The storage identity each node registered with, by node id.
+pub(super) fn registered_storage(nodes: &[Node]) -> BTreeMap<String, String> {
+    nodes
+        .iter()
+        .filter_map(|node| Some((node.node_id.clone(), node.status.storage_id.clone()?)))
+        .collect()
+}
+
 /// Read the catalog and plan against it. `None` when it could not be read.
 pub(super) async fn plan_pass(
     store: &dyn crate::store::ControlPlaneStore,
@@ -309,6 +320,7 @@ pub(super) async fn plan_pass(
     let plan = read.plan(policy);
     progress.note_give_ups(&plan, read.positions.as_of_millis());
     let no_nodes = read.nodes.is_empty();
+    let registered = registered_storage(&read.nodes);
     let existing = read.existing;
     let positions = read.positions;
     let read = existing
@@ -363,6 +375,7 @@ pub(super) async fn plan_pass(
         staged,
         unseeded,
         fence_storage,
+        registered,
         no_nodes,
     })
 }
@@ -391,8 +404,10 @@ pub(super) async fn apply_pass(
     // another instance may have moved the shard on since, and a step planned
     // from the old state must not undo a newer one.
     for (key, step, assignment) in plan.moves() {
+        let mut assignment = assignment.clone();
+        assignment.name_member_storage(&pass.registered);
         match store
-            .put_shard_assignment_if(assignment.clone(), pass.read.get(key).copied(), fence)
+            .put_shard_assignment_if(assignment, pass.read.get(key).copied(), fence)
             .await
         {
             Ok(AssignmentWrite::Fenced { token }) => {
@@ -535,6 +550,7 @@ pub(super) async fn apply_pass(
         if let Some(ids) = pass.fence_storage.get(key) {
             placed.fence_storage_ids = ids.clone();
         }
+        placed.name_member_storage(&pass.registered);
         match store
             .put_shard_assignment_if(placed, pass.read.get(key).copied(), fence)
             .await

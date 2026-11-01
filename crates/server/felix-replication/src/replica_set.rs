@@ -2,7 +2,10 @@
 //! need: on the wire for a fence, and on disk for a log.
 //!
 //! The members are the route's leader and replicas. Storage ids come from
-//! `Route::fence_storage_ids` when the assignment carries them.
+//! `Route::member_storage_ids`, or `Route::fence_storage_ids` from a control
+//! plane that sends no member ids.
+
+use std::collections::BTreeMap;
 
 use felix_router::Route;
 use felix_storage::StorageId;
@@ -59,11 +62,12 @@ fn members<'a>(
     route: &'a Route,
     staged: Option<&'a str>,
 ) -> impl Iterator<Item = (&'a str, Option<[u8; 16]>, bool)> + 'a {
-    let storage = |node: &str| {
-        route
-            .fence_storage_ids
-            .as_deref()
-            .and_then(|ids| ids.get(node))
+    let ids = named_ids(
+        route.member_storage_ids.as_deref(),
+        route.fence_storage_ids.as_deref(),
+    );
+    let storage = move |node: &str| {
+        ids.and_then(|ids| ids.get(node))
             .and_then(|hex| from_hex(hex))
     };
     std::iter::once(&route.leader)
@@ -85,15 +89,23 @@ pub(crate) fn placed(set: &felix_router::PlacedSet, generation: u64) -> Membersh
             .chain(&set.replicas)
             .map(|node| Member {
                 node: node.clone(),
-                storage: set
-                    .storage_ids
-                    .get(node)
+                storage: named_ids(Some(&set.member_storage_ids), Some(&set.storage_ids))
+                    .and_then(|ids| ids.get(node))
                     .and_then(|hex| from_hex(hex))
                     .map(StorageId::from_bytes),
                 learner: set.successor.as_ref() == Some(node) && *node != set.leader,
             })
             .collect(),
     }
+}
+
+/// The ids that name the set's members: the registered ones, or the failover's
+/// when an older control plane sends none.
+fn named_ids<'a>(
+    member: Option<&'a BTreeMap<String, String>>,
+    fence: Option<&'a BTreeMap<String, String>>,
+) -> Option<&'a BTreeMap<String, String>> {
+    member.filter(|ids| !ids.is_empty()).or(fence)
 }
 
 /// A storage id as a route names it, 32 hex digits, or `None` for an empty

@@ -256,6 +256,11 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardElectWipeNonVoterFailover.cfg` | `FelixShardElectWipeNonVoter.cfg` with a one-tick lease and time to 1, so control-plane failover is reachable, and adoption up to generation 2 (at 3 it passed 136M distinct states unfinished); failover never names a non-voter | pass, the same invariants (46.9M distinct states, depth 37, 10 min on twelve workers; runs nightly, not per PR, see below) |
 | `FelixShardElectWipeNonVoterFailoverWipesLeader.cfg` | the same where a leader or candidate can be wiped (`WipeLeads`) | pass, the same invariants (53.2M distinct states, depth 37, 11 min on twelve workers; runs nightly, not per PR, see below) |
 | `FelixShardElectWipeNonVoterPromotes.cfg` | `FelixShardElectWipeNonVoterFailover.cfg` with failover free to name a non-voter (`PromoteNonVoter`) | violate `OneLeaderPerGeneration`: the non-voter forgot its promise to a candidate and is promoted at that generation |
+| `FelixShardElectWipeNonVoterCreates.cfg` | `FelixShardElectWipeNonVoter.cfg` starting as the shard is created (`Creates`): the first leader fences at generation 1, no follower holds a promise or a set, and a follower not wiped votes with an empty log; adoption only up to generation 2 (at 3 it passed 137M distinct states unfinished in two hours) | pass, the same invariants |
+| `FelixShardElectWipeNonVoterCreateCountsEmpty.cfg` | the same, where a copy with no set file votes, wiped or not (`CreateCountsEmpty`) | violate `OneLeaderPerGeneration`: the wiped copy forgot its promise of generation 2 and gives it to a second leader |
+| `FelixShardElectWipeNonVoterCreatesOpens.cfg` | `FelixShardElectWipeNonVoterCreates.cfg` with no write, checking a witness | violate `NoCreationBesideNonVoter`: the new shard opens while a copy wiped before it answered is a non-voter |
+| `FelixShardElectWipeNonVoterEvidenceOnly.cfg` | `FelixShardElectWipeNonVoterFailover.cfg` with only the evidence the code sees in a set (`FreshIdLearner` off): a copy is a learner once a set names its old storage id | violate `AckedHeldByLeader`: a follower wiped before it hears a set naming its old id answers the fence of a failover that names its new one, with an empty log |
+| `FelixShardElectWipeNonVoterCreatesReadmits.cfg` | `FelixShardElectWipeNonVoterCreates.cfg` at the same bound, checking a witness | violate `NoFailoverAfterReadmit`: the wiped copy is re-admitted, the write is acknowledged at the re-admission's generation, and a leader opens above it |
 | `FelixShardElectWipeNonVoterElects.cfg` | `FelixShardElectWipeNonVoter.cfg`, checking a witness | violate `NoLeaderBesideNonVoter`: a leader at a generation taken after the wipe opens without the non-voter |
 | `FelixShardElectWipeNonVoterReadmits.cfg` | the same | violate `NeverReadmitted`: the re-admission completes after the catch-up |
 | `FelixShardElectWipeNonVoterFailsOver.cfg` | `FelixShardElectWipeNonVoterFailover.cfg`, checking a witness | violate `NoFailoverBesideNonVoter`: the control plane fails over while a wiped replica is a non-voter |
@@ -1037,11 +1042,35 @@ plane holds failed:
   candidate b, is wiped and forgets it, and the control plane, which has not
   heard of 2, promotes c at 2 beside b. The lost promise is as much the
   reason as the lost log.
+- A new shard (`Creates`, `FelixShardElectWipeNonVoterCreates.cfg`) starts
+  with its first leader fencing at generation 1 and no follower holding a
+  promise or a set. A follower that was not wiped answers with an empty log
+  and counts, and that passes: it holds every acknowledged record, which is
+  none. Treating a missing set file as a new shard instead
+  (`FelixShardElectWipeNonVoterCreateCountsEmpty.cfg`, `CreateCountsEmpty`)
+  finds two leaders at one generation: b opens at 2 on {b, c}, c is wiped
+  and loses its promise with its set file, and the creating leader a stands at
+  2 and opens on {a, c}. Only evidence of the wipe tells a new copy from a wiped one; the broker
+  uses the storage id the control plane recorded for the copy. A witness
+  shows a new shard opening beside a copy wiped before it answered
+  (`FelixShardElectWipeNonVoterCreatesOpens.cfg`).
+- The non-voter is the copy that keeps the learner mark, as the broker
+  does, not a ghost of every wipe. Every control-plane write names each
+  member's registered storage id, so a set written before the wipe names the
+  old one (`NamesOther`), and learning it marks the copy. That alone is not
+  enough (`FelixShardElectWipeNonVoterEvidenceOnly.cfg`): c is wiped before it
+  hears any set, the control plane fails over to b naming c's new id, and c
+  answers b's fence with an empty log. So a copy whose storage id was minted
+  at this start is a learner for every shard it held (`FreshIdLearner`).
+  Any later set naming the new id re-admits it once it holds that set's
+  generation-start record from the confirmed leader.
 - Witnesses show the checked paths are reached: a leader at a generation
   taken after the wipe opens without the non-voter
   (`FelixShardElectWipeNonVoterElects.cfg`), the re-admission completes
   (`FelixShardElectWipeNonVoterReadmits.cfg`), and the control plane fails
-  over beside a non-voter (`FelixShardElectWipeNonVoterFailsOver.cfg`).
+  over beside a non-voter (`FelixShardElectWipeNonVoterFailsOver.cfg`). At the creation bound the re-admission, a
+  write after it and a later leader are all reached
+  (`FelixShardElectWipeNonVoterCreatesReadmits.cfg`).
 
 Two invariants count a non-voter differently. A real wipe loses records,
 so a write acknowledged on {a, b} is on a alone once b is wiped, and

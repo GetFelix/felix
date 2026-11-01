@@ -221,6 +221,20 @@ pub async fn fence_shard<R: PeerRequester>(
             // The counter log carries no set, and is fenced on the new set
             // alone, as the model's `Counters` are.
             let set = set.as_ref().filter(|_| kind != LogKind::Counters);
+            // A copy its kept set marks a learner for another copy's storage id lost
+            // what it held; a staged destination is a learner too, and may lead. Leading
+            // would also replace that set with the route's and clear the mark.
+            if set.is_some()
+                && joint.is_some_and(|joint| joint.is_wiped_learner(&log, local_node_id))
+            {
+                return Err(Outcome::pending(
+                    format!(
+                        "this broker is a learner of its kept replica set and cannot lead generation {}",
+                        route.generation
+                    ),
+                    Vec::new(),
+                ));
+            }
             // Under `joint_fence` a fence whose set being left is unknown
             // stays pending rather than fence the new set alone.
             let under_joint = match (joint, set) {

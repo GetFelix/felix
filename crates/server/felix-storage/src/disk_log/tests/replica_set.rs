@@ -140,3 +140,27 @@ async fn a_shard_without_a_set_does_not_scan_for_temporaries() {
     assert_eq!(log.replica_set(), None);
     assert!(leftover.exists());
 }
+
+/// Admitting a learner is written before it returns, so a restart cannot
+/// bring the mark back, and it changes only that member at the same generation.
+#[tokio::test]
+async fn admitting_a_learner_is_durable_and_touches_only_it() {
+    let dir = tempdir().expect("tempdir");
+    let mut set = set_at(4);
+    set.current.members[1].learner = true;
+    {
+        let log = open(&dir, FsyncMode::OnCommit);
+        log.accept_set(set.clone()).await.expect("accept");
+        assert_eq!(log.member_is_learner("b"), Some(true));
+        assert!(
+            !log.admit_member("a").await.expect("admit"),
+            "a is no learner"
+        );
+        assert!(log.admit_member("b").await.expect("admit"));
+        assert!(!log.admit_member("b").await.expect("admit"), "once");
+        assert!(!log.admit_member("z").await.expect("admit"), "not a member");
+    }
+    let log = open(&dir, FsyncMode::OnCommit);
+    assert_eq!(log.replica_set(), Some(set_at(4)));
+    assert_eq!(log.set_generation(), 4);
+}

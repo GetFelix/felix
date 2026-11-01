@@ -11,8 +11,11 @@
 
 use std::time::Instant;
 
-use felix_storage::disk_log::{ReplicaSet, SetCheck};
-use felix_wire::internal::{ErrorCode, FenceElection, InternalMessage, ReplicaSetView};
+use felix_storage::disk_log::{Membership, ReplicaSet, SetCheck};
+use felix_wire::internal::{
+    ErrorCode, Fence, FenceElection, InternalMessage, PreVote, PreVoteAnswer, PreVoteRefusal,
+    ReplicaSetView,
+};
 
 use super::{ReplicaHandler, refused};
 use crate::peer::metrics;
@@ -102,7 +105,7 @@ impl ReplicaHandler {
                 .as_ref()
                 .map(crate::replica_set::membership),
         };
-        keep(correlation_id, key, log, set).await
+        keep(correlation_id, key, log, self.mark_local(log, set)).await
     }
 
     /// Check a batch stamped with the generation of the sender's set, after
@@ -152,13 +155,254 @@ impl ReplicaHandler {
                 ),
             ));
         };
-        keep(
+        let set = crate::replica_set::kept(route, None);
+        if let Some(refusal) = self.refuse_undecided(correlation_id, key, log, &set.current) {
+            return Some(refusal);
+        }
+        let was_learner = self.is_learner(log);
+        if let Some(refusal) = keep(correlation_id, key, log, self.mark_local(log, set)).await {
+            return Some(refusal);
+        }
+        // Marked by this batch: it was checked as a voter's, so it is refused
+        // and comes again to be checked as a learner's.
+        (!was_learner && self.is_learner(log)).then(|| undecided(correlation_id, key))
+    }
+
+    /// Whether this copy's log lists it as a learner: a set named another
+    /// storage id for it, so it lost what that copy promised and held, and it
+    /// has not caught up since. Read whatever the gate says, so a gate that
+    /// reads off for a moment cannot turn a wiped copy back into a voter.
+    pub(super) fn is_learner(&self, log: &felix_broker::StreamLog) -> bool {
+        log.member_is_learner(self.router.local_node_id()) == Some(true)
+    }
+
+    /// Whether `set` names this broker with a storage id other than its own:
+    /// the evidence of a wipe (#1331). A set naming none, or no set at all, is
+    /// no evidence, so a new shard's copies and copies written before sets
+    /// existed vote (`Creates` and `CreateCountsEmpty` in
+    /// `docs/formal/FelixShard.tla`).
+    fn names_other_copy<'a>(
+        &self,
+        mut members: impl Iterator<Item = (&'a str, Option<felix_storage::StorageId>)>,
+    ) -> bool {
+        let local = self.router.local_node_id();
+        let Some(own) = self.local_storage else {
+            return false;
+        };
+        members.any(|(node, storage)| node == local && storage.is_some_and(|named| named != own))
+    }
+
+    /// A copy under a storage id minted at this start, whose log holds no set
+    /// yet, may have held this shard before the id changed: nothing it learns
+    /// can say, since a set written after the wipe names the new id or none.
+    /// A set at generation 1 is the shard's creation, which no copy held
+    /// before. The id is new when the directory had none (a wiped or new
+    /// directory, or an older build's) or when the run rotated it.
+    fn fresh_copy_of(&self, log: &felix_broker::StreamLog, generation: u64) -> bool {
+        self.fresh_storage && generation > 1 && log.replica_set().is_none()
+    }
+
+    fn names_other_in(&self, log: &felix_broker::StreamLog, set: &Membership) -> bool {
+        self.fresh_copy_of(log, set.generation)
+            || self.names_other_copy(
+                set.members
+                    .iter()
+                    .map(|member| (member.node.as_str(), member.storage)),
+            )
+    }
+
+    fn names_other_in_view(&self, log: &felix_broker::StreamLog, set: &ReplicaSetView) -> bool {
+        self.fresh_copy_of(log, set.generation)
+            || self.names_other_copy(set.members.iter().map(|member| {
+                (
+                    member.node_id.as_str(),
+                    member.storage_id.map(felix_storage::StorageId::from_bytes),
+                )
+            }))
+    }
+
+    /// The set as this copy keeps it: a learner stays one, and under
+    /// `joint_fence` a set naming another storage id for this copy makes it
+    /// one. Only [`Self::admit_when_caught_up`] ends the mark.
+    fn mark_local(&self, log: &felix_broker::StreamLog, mut set: ReplicaSet) -> ReplicaSet {
+        let local = self.router.local_node_id();
+        let learner = self.is_learner(log)
+            || (self.joint_gate() == Some(true) && self.names_other_in(log, &set.current));
+        for member in set.current.members.iter_mut().filter(|m| m.node == local) {
+            member.learner |= learner;
+        }
+        set
+    }
+
+    /// Refuse, retryably, a set that names another storage id for this copy
+    /// while the `joint_fence` gate is unread: whether that makes it a
+    /// learner is the gate's answer. Copies with no such evidence answer as
+    /// they would, so a broker restarting with its data serves before it
+    /// registers.
+    fn refuse_undecided(
+        &self,
+        correlation_id: u64,
+        key: &felix_router::ShardKey,
+        log: &felix_broker::StreamLog,
+        set: &Membership,
+    ) -> Option<InternalMessage> {
+        (self.joint_gate().is_none() && !self.is_learner(log) && self.names_other_in(log, set))
+            .then(|| undecided(correlation_id, key))
+    }
+
+    /// Refuse a fence from a learner, after learning the set the fence
+    /// carries. It promises nothing: its answer would count toward a
+    /// majority it may hold none of the acknowledged records for. That
+    /// includes the fence of the set change that re-admits it, so no leader
+    /// counts it before it catches up. `AnswerFence`'s `NonVoter` guard and
+    /// `WipedLearnSet`.
+    pub(super) async fn refuse_non_voter_fence(
+        &self,
+        correlation_id: u64,
+        key: &felix_router::ShardKey,
+        log: &felix_broker::StreamLog,
+        request: &Fence,
+    ) -> Option<InternalMessage> {
+        let learner = self.is_learner(log);
+        let evidence = request
+            .election
+            .as_ref()
+            .is_some_and(|election| self.names_other_in_view(log, &election.set));
+        match self.joint_gate() {
+            _ if !learner && !evidence => return None,
+            None if !learner => return Some(undecided(correlation_id, key)),
+            Some(false) if !learner => return None,
+            _ => {}
+        }
+        // A set from a sender running ahead of itself is refused by the set
+        // check; learning it would mask that.
+        if let Some(election) = &request.election
+            && election.set.generation <= request.shard.generation
+        {
+            let set = ReplicaSet {
+                current: crate::replica_set::membership(&election.set),
+                leaving: election
+                    .leaving
+                    .as_ref()
+                    .map(crate::replica_set::membership),
+            };
+            if let Err(err) = log.accept_set(self.mark_local(log, set)).await {
+                tracing::warn!(error = %err, "could not keep the set a fence carried");
+            }
+        }
+        tracing::warn!(
+            stream = %key.stream,
+            shard = key.shard,
+            generation = request.shard.generation,
+            "refusing a fence: this copy is not a voter until it catches up with a set naming it",
+        );
+        metrics::record_replicated(metrics::OUTCOME_REFUSED);
+        Some(refused(
             correlation_id,
-            key,
-            log,
-            crate::replica_set::kept(route, None),
-        )
-        .await
+            ErrorCode::Unauthorized,
+            0,
+            "this broker does not vote until a set change re-admits it".to_string(),
+        ))
+    }
+
+    /// Count this copy as a voter once its kept set names it under the
+    /// storage id it holds now and its log holds the generation-start record
+    /// of that set's generation. `Readmitted` in `docs/formal/FelixShard.tla`.
+    ///
+    /// Only the control plane can name this id, and only after the wipe, so
+    /// the leader at that generation fenced after it, and opened without this
+    /// copy, which refuses every fence while a learner. A learner takes
+    /// batches only from the leader the control plane confirms at their
+    /// generation, so the record is that leader's, and every record a
+    /// majority acknowledged precedes it. A newer set naming it again moves
+    /// the target, so a leader lost before the copy caught up does not
+    /// strand it. Run after a batch is stored.
+    pub(super) async fn admit_when_caught_up(&self, log: &felix_broker::StreamLog) {
+        if !self.is_learner(log) {
+            return;
+        }
+        let Some(own) = self.local_storage else {
+            return;
+        };
+        let Some(set) = log.replica_set() else {
+            return;
+        };
+        let local = self.router.local_node_id();
+        let named = set
+            .current
+            .members
+            .iter()
+            .any(|member| member.node == local && member.storage == Some(own));
+        if !named {
+            return;
+        }
+        let Ok(tail) = log.tail_offset().await else {
+            return;
+        };
+        let held = log
+            .generations()
+            .iter()
+            .any(|epoch| epoch.generation == set.current.generation && epoch.start_offset < tail);
+        if !held {
+            return;
+        }
+        match log.admit_member(local).await {
+            Ok(true) => tracing::info!(
+                generation = set.current.generation,
+                "re-admitted: caught up through the start of the set's generation",
+            ),
+            Ok(false) => {}
+            Err(err) => tracing::warn!(error = %err, "could not record this copy's re-admission"),
+        }
+    }
+
+    /// Answer a pre-vote. Writes nothing, so it is safe for a copy that does
+    /// not vote: that one answers `NotVoting`, which no asker counts.
+    pub async fn pre_vote(&self, request: PreVote) -> InternalMessage {
+        let correlation_id = request.correlation_id;
+        let log_kind = super::log_kind(request.log);
+        let key = super::shard_key(&request.shard, log_kind);
+        let answer = |refusal: Option<PreVoteRefusal>| {
+            InternalMessage::PreVoteAnswer(PreVoteAnswer {
+                correlation_id,
+                refusal,
+            })
+        };
+        let Some(log) = self
+            .broker
+            .shard_log_for(
+                log_kind,
+                &key.tenant_id,
+                &key.namespace,
+                &key.stream,
+                key.shard,
+                None,
+                self.expected_incarnation(&key, request.shard.incarnation),
+            )
+            .await
+        else {
+            return answer(Some(PreVoteRefusal::UnknownShard));
+        };
+        if self.is_learner(&log) {
+            return answer(Some(PreVoteRefusal::NotVoting));
+        }
+        if request.set_generation < log.set_generation() {
+            return answer(Some(PreVoteRefusal::StaleSet));
+        }
+        if log.accepted_generation() >= request.shard.generation {
+            return answer(Some(PreVoteRefusal::StaleGeneration));
+        }
+        if self.heard_leader_within(&key) {
+            return answer(Some(PreVoteRefusal::LeaderReachable));
+        }
+        let Ok(end) = log.tail_offset().await else {
+            return answer(Some(PreVoteRefusal::UnknownShard));
+        };
+        let mine = (super::last_generation(&log.generations(), end), end);
+        if mine > (request.last_generation, request.log_end) {
+            return answer(Some(PreVoteRefusal::LogBehind));
+        }
+        answer(None)
     }
 
     /// Note that this replica heard its leader for `key`, for the stickiness
@@ -174,6 +418,23 @@ impl ReplicaHandler {
             .get(key)
             .is_some_and(|heard| heard.elapsed() < self.stickiness)
     }
+}
+
+/// The answer while the `joint_fence` gate is unread and the request needs
+/// it: retryable, and nothing is written.
+fn undecided(correlation_id: u64, key: &felix_router::ShardKey) -> InternalMessage {
+    tracing::debug!(
+        stream = %key.stream,
+        shard = key.shard,
+        "refusing until this broker has registered and knows whether joint_fence is enabled",
+    );
+    metrics::record_replicated(metrics::OUTCOME_REFUSED);
+    refused(
+        correlation_id,
+        ErrorCode::Unavailable,
+        0,
+        "this broker has not yet learned the fleet's features".to_string(),
+    )
 }
 
 /// Refuse a set older than the one this log counts, naming the newer one.

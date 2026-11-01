@@ -186,6 +186,53 @@ impl DiskLog {
     }
 }
 
+impl DiskLog {
+    /// Whether the kept set lists `node` as a learner: `None` with no set or
+    /// no such member. Allocation-free, for the replication hot path.
+    pub fn member_is_learner(&self, node: &str) -> Option<bool> {
+        self.inner
+            .replica_set
+            .read()
+            .as_ref()?
+            .current
+            .members
+            .iter()
+            .find(|member| member.node == node)
+            .map(|member| member.learner)
+    }
+
+    /// Count `node` as a voter in the set already kept, at the same
+    /// generation, persisting first. `false` when it was not a learner there.
+    ///
+    /// The one way a learner mark ends: a replica re-admitted by a set
+    /// change stays out of every majority until it has caught up, and only
+    /// the caller knows when.
+    pub async fn admit_member(&self, node: &str) -> Result<bool> {
+        let inner = Arc::clone(&self.inner);
+        let node = node.to_string();
+        tokio::task::spawn_blocking(move || {
+            let _persisted = inner.replica_persisted.lock();
+            let Some(mut set) = inner.replica_set.read().clone() else {
+                return Ok(false);
+            };
+            let Some(member) = set
+                .current
+                .members
+                .iter_mut()
+                .find(|member| member.node == node && member.learner)
+            else {
+                return Ok(false);
+            };
+            member.learner = false;
+            store(&inner.dir, &set)?;
+            *inner.replica_set.write() = Some(set);
+            Ok(true)
+        })
+        .await
+        .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
+    }
+}
+
 /// What a set at `generation` is against the one kept at `known`, or `None`
 /// when it is newer and needs a write. Zero is no set, so a set at generation
 /// zero is never kept.

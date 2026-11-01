@@ -588,6 +588,21 @@ WipeLeads == FALSE
 Forgets == 1
 \* `OneNonVoter`: a wipe is refused while it would leave two brokers non-voters.
 OneNonVoter == FALSE
+\* `Creates`: the shard starts as it is created, its first leader fencing at
+\* generation 1 and no follower holding a promise or a set. A follower that
+\* was not wiped votes there with an empty log: it holds every acknowledged
+\* record, which is none. A wipe is still a wipe, whatever the generation.
+\* `CreateCountsEmpty`: a copy with no set file votes, wiped or not, as if
+\* an empty set could only mean a new shard. The wipe takes the set file too,
+\* so only evidence of the wipe tells the two apart.
+Creates == FALSE
+CreateCountsEmpty == FALSE
+\* `FreshIdLearner`: a copy whose storage id was minted at this start is a
+\* learner for every shard it held before, the code's fallback when no set
+\* it learns yet names its old id. Without it the only evidence is a set
+\* naming another id for it (`NamesOther`), and a copy that first hears a
+\* set written after its wipe votes with an empty log.
+FreshIdLearner == TRUE
 \* `RefuseShortCopy`: a leader that gave its copy up in a crash answers no
 \* promotion fence from it until a newer leader has shipped to it, unless a
 \* set of two acknowledged what it may have lost (`AckedByTwo`):
@@ -627,6 +642,8 @@ ASSUME WipedNonVoter => /\ LosePromises /\ Elections > 0 /\ ~WipedWaitsForAdopt 
 ASSUME ReadmitCountsWiped \/ ReadmitBeforeCatchUp \/ PromoteNonVoter \/ WipeLeads \/ Forgets > 1
        => WipedNonVoter
 ASSUME WipedLearnsSet => WipedWaitsForAdopt \/ WipedNonVoter
+ASSUME CreateCountsEmpty => WipedNonVoter
+ASSUME Creates => Elections > 0 /\ SetCheck /\ Spares = {}
 
 \* Wipes and crashes on the fenced path, where the promoted leader checks the
 \* identities the report named. With `UnprobedStart` the first leader knows
@@ -732,8 +749,9 @@ VARIABLES
     gaveUp,     \* under `RefuseShortCopy`, the generation each broker gave its copy up at: 0 for none
     fenceIds,   \* under `RefuseShortCopy`, per leader, the members its promotion's fence ids name
     named,      \* under `RefuseShortCopy`, the members the last report the control plane stored named
-    wipedAt,    \* per broker, 0 for never wiped or re-admitted; else under `WipedWaitsForAdopt` the control plane's generation at the wipe, under `WipedNonVoter` the highest generation any broker had promised then
-    readmit     \* under `WipedNonVoter`, a pending re-admission: {} or {<<wiped broker, generation, leader>>}
+    wipedAt,    \* per broker, 0 for never wiped or re-admitted; else the control plane's generation at the wipe
+    readmit,    \* under `WipedNonVoter`, a pending re-admission: {} or {<<wiped broker, generation, leader>>}
+    learner     \* under `WipedNonVoter`, the learner mark each copy keeps in its set file
 
 \* The counter log's state, which only a cache shard's actions change.
 counterVars == << clog, chwm, cconfirmed, canswered, cacked >>
@@ -748,7 +766,7 @@ setVars == << setGen, oldSet, installed, nextVars >>
 idVars == << sid, seen, seenInc, wipes, checked, registered, inc, restarting, expect, inherited,
              leftDirty, gaveUp, fenceIds >>
 \* A wiped replica's guard, and a re-admission the control plane has pending.
-wipeVars == << wipedAt, readmit >>
+wipeVars == << wipedAt, readmit, learner >>
 \* All of them but `expect`, `inherited` and the promoted leader's `seen`
 \* and `seenInc`, which a promotion sets.
 decideIdVars == << sid, wipes, checked, registered, inc, restarting, leftDirty, gaveUp, wipeVars >>
@@ -897,15 +915,30 @@ Candidate(b) == ~(leader = b /\ bgen[b] = gen)
 \* candidate. `gen` is the linearizable read; a planner's view can be older.
 WipeWaits(f) == WipedWaitsForAdopt /\ wipedAt[f] > 0 /\ gen <= wipedAt[f]
 
-\* Under `WipedNonVoter`, whether `f` is a wiped replica not yet re-admitted.
-NonVoter(f) == WipedNonVoter /\ wipedAt[f] > 0
+\* Under `WipedNonVoter`, whether `f` lost its storage and is not yet
+\* re-admitted. A ghost: no broker knows it.
+Wiped(f) == WipedNonVoter /\ wipedAt[f] > 0
+
+\* Whether `f` keeps the learner mark: the code's non-voter.
+NonVoter(f) == WipedNonVoter /\ learner[f]
+
+\* What the code can see of a wipe: `b`'s set names another storage id for
+\* `f`. Every control-plane write names each member's registered id, so a
+\* set written at or below the control plane's generation at the wipe names
+\* the old one. Registering at once is the least evidence the code can get.
+NamesOther(f, b) == Wiped(f) /\ 0 < setGen[b] /\ setGen[b] <= wipedAt[f]
+
+\* Whether `f` answers `b`'s fence or takes its batch as a voter: no mark,
+\* and `b`'s set names no other copy for it. `CreateCountsEmpty` also lets a
+\* wiped copy with no set file vote.
+Votes(f, b) == (~NonVoter(f) /\ ~NamesOther(f, b)) \/ (CreateCountsEmpty /\ setGen[f] = 0)
 
 \* The credit given to a non-voter (`SetChangesJoint`, `AckedOnMajority`) is the
 \* one loss a record or set already survived, so it holds only while at most one
 \* distinct broker is a non-voter. A second wipe of the same broker is still
 \* one failure; two distinct brokers wiped at once is two, beyond what a set
 \* of three tolerates, and the plain checks apply.
-NonVoterCredit == Cardinality({ m \in Brokers : NonVoter(m) }) <= 1
+NonVoterCredit == Cardinality({ m \in Brokers : Wiped(m) }) <= 1
 
 \* Under `WipedAboveAdopted`, whether a wiped `f` that holds no promise at
 \* the control plane's generation may promise `b` generation `g`: only above
@@ -1017,6 +1050,7 @@ IdInit ==
     /\ named = {}
     /\ wipedAt = [b \in Brokers |-> 0]
     /\ readmit = {}
+    /\ learner = [b \in Brokers |-> FALSE]
 
 Init ==
     /\ now = 0
@@ -1048,20 +1082,24 @@ Init ==
     /\ heard = [b \in Brokers |-> NoReport]
     \* Under `Elections` the first leader starts as an elected one would, with
     \* its set's promise, so no candidate can take its generation from under it.
-    /\ promised = [b \in Brokers |-> IF b = leader \/ (Elections > 0 /\ b \notin Spares) THEN 1 ELSE 0]
-    /\ fencing = [b \in Brokers |-> FALSE]
+    \* With `Creates` it is still fencing its followers, which hold nothing.
+    /\ promised = [b \in Brokers |-> IF b = leader \/ (Elections > 0 /\ b \notin Spares /\ ~Creates)
+                                     THEN 1 ELSE 0]
+    /\ fencing = [b \in Brokers |-> Creates /\ b = leader]
     /\ answered = [b \in Brokers |-> {}]
     /\ confirmed = [b \in Brokers |-> [f \in Brokers |-> 0]]
     /\ out = Spares
-    /\ mine = [b \in Brokers |-> Brokers \ Spares]
+    /\ mine = [b \in Brokers |-> IF Creates /\ b /= leader THEN {} ELSE Brokers \ Spares]
     /\ joining = {}
     /\ leaving = {}
     /\ joinedAt = 0
     /\ CounterInit
     /\ ballot = [b \in Brokers |-> IF Ballots /\ promised[b] = 1 THEN {leader} ELSE {}]
-    /\ opened = IF TracksOpens THEN {<<1, leader>>} ELSE {}
-    \* The first assignment wrote the set at generation 1; a spare knows none.
-    /\ setGen = [b \in Brokers |-> IF SetCheck /\ b \notin Spares THEN 1 ELSE 0]
+    /\ opened = IF TracksOpens /\ ~Creates THEN {<<1, leader>>} ELSE {}
+    \* The first assignment wrote the set at generation 1; a spare knows none,
+    \* and with `Creates` neither does a follower until the fence reaches it.
+    /\ setGen = [b \in Brokers |-> IF SetCheck /\ b \notin Spares /\ (~Creates \/ b = leader)
+                                   THEN 1 ELSE 0]
     /\ oldSet = [b \in Brokers |-> {}]
     /\ ackGen = {}
     /\ installed = {}
@@ -1273,7 +1311,7 @@ Ship(b, f) ==
     /\ ~fencing[b]
     /\ WipeWaits(f) => IF Candidate(b) THEN WipedTakesBatches ELSE WipedTakesNamed
     /\ WipeFloor(f, b, bgen[b])
-    /\ ~NonVoter(f)
+    /\ Votes(f, b)
     /\ Promises => MayPromise(f, b, bgen[b])
     /\ IF Promises THEN Promise(f, b, bgen[b]) ELSE UNCHANGED << promised, ballot >>
     /\ SetCurrent(f, b)
@@ -1839,7 +1877,7 @@ AnswerFence(b, f) ==
     /\ WipeWaits(f) => ~Candidate(b) /\ WipedTakesNamed
     /\ WipeFloor(f, b, bgen[b])
     \* A non-voter answers only the fence of its own re-admission.
-    /\ NonVoter(f) => readmit = {<<f, bgen[b], b>>}
+    /\ ~Votes(f, b) => readmit = {<<f, bgen[b], b>>}
     /\ Promise(f, b, bgen[b])
     /\ SetCurrent(f, b)
     /\ LearnSet(f, b)
@@ -2744,10 +2782,11 @@ Forget(f) ==
             /\ pending' = [pending EXCEPT ![f] = 0]
        ELSE /\ bgen[f] = 0
             /\ UNCHANGED << bgen, fencing, queued, pending >>
+    \* A fresh storage id is a learner from the start under `FreshIdLearner`;
+    \* otherwise the mark went with the set file, and only `NamesOther` sets it.
+    /\ learner' = IF WipedNonVoter THEN [learner EXCEPT ![f] = FreshIdLearner] ELSE learner
     /\ wipedAt' =
-          CASE WipedNonVoter ->
-                 [wipedAt EXCEPT ![f] = CHOOSE p \in { promised[m] : m \in Brokers } :
-                                          \A m \in Brokers : promised[m] <= p]
+          CASE WipedNonVoter -> [wipedAt EXCEPT ![f] = gen]
             [] WipedWaitsForAdopt ->
                  [wipedAt EXCEPT ![f] = IF WipeBoundOracle /\ promised[f] > gen THEN promised[f] ELSE gen]
             [] OTHER -> wipedAt
@@ -2760,14 +2799,19 @@ Forget(f) ==
 
 \* Under `WipedLearnsSet`, a wiped replica the guard holds back still learns
 \* the newer set a candidate's fence carries. It promises nothing, and the
-\* candidate does not count it.
+\* candidate does not count it. Under `WipedNonVoter` a set naming another
+\* id for it marks it a learner, from a fence or a batch, as
+\* `refuse_non_voter_fence` and `mark_local` in
+\* crates/server/felix-replication/src/replica/election.rs do.
 WipedLearnSet(b, f) ==
     /\ WipedLearnsSet
-    /\ fencing[b] /\ bgen[b] > 0 /\ f /= b
+    /\ fencing[b] \/ WipedNonVoter
+    /\ bgen[b] > 0 /\ f /= b
     /\ f \in FenceMembers(b)
-    /\ IF WipedNonVoter THEN NonVoter(f) ELSE Candidate(b) /\ WipeWaits(f)
+    /\ IF WipedNonVoter THEN NonVoter(f) \/ NamesOther(f, b) ELSE Candidate(b) /\ WipeWaits(f)
     /\ setGen[f] < setGen[b]
     /\ LearnSet(f, b)
+    /\ learner' = IF WipedNonVoter THEN [learner EXCEPT ![f] = TRUE] ELSE learner
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << placeVars, promised, fencing, answered, confirmed, ballot, opened, installed,
@@ -2782,7 +2826,7 @@ WipedLearnSet(b, f) ==
 \* and only up to `Adopt`, which bounds every generation here. A pending
 \* re-admission the control plane has moved past is started again.
 Readmit(w) ==
-    /\ WipedNonVoter /\ wipedAt[w] > 0
+    /\ NonVoter(w)
     /\ \A r \in readmit : r[2] < gen
     /\ leader /= w /\ bgen[leader] = gen /\ ~fencing[leader] /\ <<gen, leader>> \in opened
     /\ gen + 1 <= Adopt
@@ -2805,22 +2849,26 @@ Readmit(w) ==
                     staleCommit >>
     /\ UNCHANGED << placeVars, mine, opened, installed, nextVars, ackGen >>
 
-\* The re-admission completes: `w` holds the log of the leader that opened
-\* at the re-admission's generation, through that generation's start
-\* record, as a Raft learner is caught up before it is promoted. Every
-\* record acknowledged at that generation or below is in that prefix, so a
-\* majority that counts `w` from here cannot elect past one.
-\* `ReadmitBeforeCatchUp` skips the catch-up.
+\* The re-admission completes: `w`'s kept set names its new id (it was
+\* written after the wipe, by `Readmit` or any later control-plane write) and
+\* `w` holds the generation-start record of that set's generation, copied
+\* from the leader the control plane confirms (`CatchUp`), as a Raft learner
+\* is caught up before it is promoted. That leader fenced without `w`, which
+\* answers no fence but its own re-admission's, so every record a majority
+\* acknowledged precedes the record. `admit_when_caught_up` in
+\* crates/server/felix-replication/src/replica/election.rs.
+\* `ReadmitBeforeCatchUp` skips the catch-up: the set's leader opening is
+\* enough.
 Readmitted(w) ==
-    /\ \E r \in readmit :
-          LET b == r[3]
-              g == r[2]
-          IN /\ r[1] = w
-             /\ bgen[b] = g /\ ~fencing[b] /\ <<g, b>> \in opened
-             /\ ReadmitBeforeCatchUp
-                \/ \E k \in 1..Len(log[b]) : log[b][k] = Start(g) /\ HoldsPrefix(w, b, k)
+    /\ NonVoter(w)
+    /\ LET g == setGen[w]
+       IN /\ g > wipedAt[w]
+          /\ IF ReadmitBeforeCatchUp
+             THEN \E b \in Brokers : <<g, b>> \in opened
+             ELSE \E k \in 1..Len(log[w]) : log[w][k] = Start(g)
     /\ wipedAt' = [wipedAt EXCEPT ![w] = 0]
-    /\ readmit' = {}
+    /\ learner' = [learner EXCEPT ![w] = FALSE]
+    /\ readmit' = { r \in readmit : r[1] /= w }
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, fenceVars >>
@@ -2831,6 +2879,8 @@ Readmitted(w) ==
 CatchUp(b, f) ==
     /\ NonVoter(f) /\ f /= b
     /\ bgen[b] > 0 /\ ~fencing[b]
+    \* Only from the leader the control plane confirms at its generation.
+    /\ b = leader /\ bgen[b] = gen
     /\ log[f] /= log[b]
     /\ Len(log[b]) >= hwm[f] /\ SubSeq(log[f], 1, hwm[f]) = SubSeq(log[b], 1, hwm[f])
     /\ log' = [log EXCEPT ![f] = log[b]]
@@ -2924,7 +2974,7 @@ Next ==
             \/ LearnHwm(b, f) /\ UNCHANGED quietVars
             \/ AnswerFence(b, f) /\ UNCHANGED quietVars
             \/ RefuseStaleSet(b, f) /\ UNCHANGED quietVars
-            \/ WipedLearnSet(b, f) /\ UNCHANGED quietVars
+            \/ WipedLearnSet(b, f) /\ UNCHANGED << counterVars, heard, idVars, named, wipedAt, readmit >>
             \/ CatchUp(b, f) /\ UNCHANGED quietVars
             \/ ShipCounter(b, f) /\ UNCHANGED loudVars
             \/ AnswerCounterFence(b, f) /\ UNCHANGED loudVars
@@ -2932,7 +2982,7 @@ Next ==
             \/ Answer(b, f) /\ UNCHANGED << counterVars, heard, named >>
         \/ Wipe(b) /\ UNCHANGED << counterVars, heard, named >>
         \/ Forget(b) /\ UNCHANGED << counterVars, heard, named, readmit >>
-        \/ Readmit(b) /\ UNCHANGED << counterVars, heard, idVars, named, wipedAt >>
+        \/ Readmit(b) /\ UNCHANGED << counterVars, heard, idVars, named, wipedAt, learner >>
         \/ Readmitted(b) /\ UNCHANGED << counterVars, heard, idVars, named >>
         \/ Crash(b) /\ UNCHANGED << counterVars, named >>
         \/ CleanStop(b) /\ UNCHANGED << counterVars, heard, named >>
@@ -3056,6 +3106,17 @@ NoLeaderBesideNonVoter ==
     \A b \in Brokers : (<<bgen[b], b>> \in opened /\ bgen[b] > 0 /\ ~fencing[b]) =>
         ~\E w \in Brokers : NonVoter(w) /\ bgen[b] > wipedAt[w] /\ w \notin answered[b]
 NeverReadmitted == wipes > 0 => \E m \in Brokers : wipedAt[m] > 0
+\* Under `Creates`: a new shard opens without a copy wiped before it answered
+\* (FelixShardElectWipeNonVoterCreatesOpens.cfg).
+NoCreationBesideNonVoter ==
+    \A b, w \in Brokers : ~(<<1, b>> \in opened /\ NonVoter(w) /\ w \notin answered[b])
+\* Under `Creates`: the wiped copy re-admitted, a write acknowledged at the
+\* re-admission's generation or later, then a leader opening above it
+\* (FelixShardElectWipeNonVoterCreatesReadmits.cfg). With `Adopt = 2` the
+\* only control-plane write after a wipe is the re-admission at 2.
+NoFailoverAfterReadmit ==
+    ~(/\ wipes > 0 /\ \A m \in Brokers : ~Wiped(m)
+      /\ \E r \in ackGen : \E o \in opened : r[2] >= 2 /\ o[1] > r[2])
 NoFailoverBesideNonVoter ==
     (\E w \in Brokers : NonVoter(w)) =>
         ~(fencing[leader] /\ bgen[leader] = gen /\ \A r \in readmit : r[2] /= gen)
@@ -3089,7 +3150,7 @@ NoTruncationBelowHwm ==
 AckedOnMajority ==
     Quorum =>
         \A id \in acked :
-            LET holders == { b \in Counted : (NonVoterCredit /\ NonVoter(b)) \/ \E i \in 1..Len(log[b]) : log[b][i].id = id }
+            LET holders == { b \in Counted : (NonVoterCredit /\ Wiped(b)) \/ \E i \in 1..Len(log[b]) : log[b][i].id = id }
             IN \/ Cardinality(holders) * 2 > Cardinality(Counted)
                \/ Cardinality(Counted) = 4 /\ Cardinality(holders) = 2
 
@@ -3169,7 +3230,7 @@ TypeOK ==
     /\ inherited \in [Brokers -> SUBSET Brokers]
     /\ leftDirty \in [Brokers -> Nat]
     /\ gaveUp \in [Brokers -> Nat] /\ fenceIds \in [Brokers -> SUBSET Brokers] /\ named \subseteq Brokers
-    /\ wipedAt \in [Brokers -> Nat]
+    /\ wipedAt \in [Brokers -> Nat] /\ learner \in [Brokers -> BOOLEAN]
     /\ \A r \in readmit : r[1] \in Brokers /\ r[2] \in Nat /\ r[3] \in Brokers
     /\ wipes \in 0..(IF LosePromises THEN Forgets ELSE Wipes)
 
