@@ -873,8 +873,9 @@ replica the new leader fenced: `after_a_cut_over_the_drained_leader_is_refused`,
 
 **Status: design, partly built and dormant.** This is the last step of
 issue #1009. The model checks it (below). The replica's set checks exist
-behind a test switch (see "What is implemented so far"); nothing in the
-broker elects yet, and the rest describes the change to come. Today a leader that dies while the
+behind a test switch, and joint fences behind `joint_fence`, which no fleet
+can finalize yet (see "What is implemented so far"); nothing in the broker
+elects yet, and the rest describes the change to come. Today a leader that dies while the
 control plane is down is not replaced until the control plane is back.
 
 **Which shards.** The ones failover on the followers' word already covers: a
@@ -1071,8 +1072,8 @@ control plane.
   the fleet does not fence every change of leader and every change of set:
   cut-overs and hand-backs fenced (the fence on every change, which ships
   today), and set changes, including the next generation a leader opens for
-  a replacement, fenced jointly (which does not yet). Only after it do
-  followers stand.
+  a replacement, fenced jointly (built, behind `joint_fence`). Only after it
+  do followers stand.
 
 The work lands in this order: the set file in storage (with the old set),
 the `ELECTION` capability, the replica's checks, joint fences on every set
@@ -1087,8 +1088,11 @@ them.
 **The model.** `SetCheck`, `JointFence`, `Adopt`, `AdoptMatch`, `Swaps` and
 `PreVote` in `docs/formal/FelixShard.tla` (`docs/formal/README.md`, "The set
 check: electing on the current set"). `FelixShardElectSwap.cfg` changes the
-set at a cut-over by more than one member with the joint fence; it has not
-completed a run yet and runs nightly;
+set at a cut-over by more than one member with the joint fence. It is too
+big for one run, so it is checked in pieces split by how the cut-over went
+(`FelixShardElectSwap{Keep,Drop}{0,1,2}{,Stood}.cfg`, with `Drop0Stood` and
+`Drop1Stood` each split in four). Each passes in seconds to about 3 hours on a four-core runner,
+and the ones over 45 minutes run nightly;
 `FelixShardElectSwapNoJoint.cfg` without it loses a record.
 `FelixShardElectStaleSet.cfg` without the set check finds a replica that left
 opening on the old set. `FelixShardElectAdopt.cfg` replaces a follower under
@@ -3580,9 +3584,6 @@ offers `ELECTION`, and the control plane holds its own flag back until the
 election driver (#1009 S9) turns it on, with joint fences, two-majority acks
 and the wiped-voter guard in, so both features stay unfinalizable.
 
-Not built yet: joint fences and the fenced next-generation open, the pre-vote
-and the election driver.
-
 The control plane's side of rule 8 is built. Under `replica_election`, a
 cut-over that changes the set of a shard whose replicas elect names the new
 leader, keeps the old set as the control plane's own, and records the new one
@@ -3601,6 +3602,73 @@ which the leader opens on the new set alone, while `CpFlip` keeps the
 generation. The model is to cover that before the election driver.
 No broker sends `joint_start_acked` yet (control-plane.md,
 [Moving a shard](control-plane.md#moving-a-shard)).
+
+Joint fences and the fenced next-generation open are built too, dormant
+behind `joint_fence`. No build reports that feature, so a fleet cannot
+finalize it; the cluster test reports it through `FELIX_TEST_FLEET_FEATURES`.
+Once it is finalized on a broker that offers `ELECTION`:
+
+- The generation right after one a broker serves is fenced before it serves,
+  like every other change of leader. A candidate may have been elected to
+  that generation while the control plane was away, and a replica that
+  promised it refuses this broker. Writes are held through the fence, as at
+  a promotion.
+- A leader fences both its route's set and the set it is leaving when their
+  voters differ, carrying the new set with the old one, and opens only on a
+  majority of each. That covers a move's cut-over, a replacement's join and
+  seat, a top-up and a grow. The set being left is the control plane's set
+  at the generation right before the route's, as the model's `Swap` takes it.
+  The broker learns it from the assignment its watch saw at that generation,
+  from the set the leader before shipped with at it, or from what this
+  leader kept beside its own set. When none of those knows it (the watch
+  started from a snapshot, or skipped that generation, and the log keeps an
+  older set), the fence stays pending rather than fence the new set alone.
+  Only a shard's first assignment, on a log that keeps no set, has nothing
+  to leave. A member of the old set that no route names any more is reached
+  at the address the node catalog gives, and answers even though its own
+  routing view leaves it out.
+- Each member of the set being left is counted as a voter and, where it was
+  a move's staged destination, also not: replicas may keep the set either
+  way, and the fence needs a majority of each reading.
+- The leader keeps the set it left beside its own, even when the voters are
+  the same, so a fence tried again at that generation, after a restart too,
+  knows it. Every replica that took a joint fence keeps both. A leader that
+  keeps its set while shipping keeps the old one beside it the same way, and
+  keeps nothing when it does not know it. A set kept at the route's
+  generation without the one it leaves (kept before the feature was
+  finalized) is not read as no change.
+- An answer counts toward the set being left only from the copy that set
+  names by storage id, where it names one: a node id given to a new, empty
+  disk holds nothing the old set acknowledged.
+- A member that does not offer `ELECTION`, or whose capabilities or address
+  cannot be learned, is not asked, so it counts as not answering.
+
+Without `joint_fence` finalized, the fence and what it sends are exactly what
+they were. The counter log of a cache shard and a stream's group logs are
+still fenced on the new set alone, as the model's counters are.
+
+Not built yet: acknowledging on both majorities while a change is pending,
+the pre-vote and the election driver.
+
+> `a_cut_over_swapping_two_members_waits_for_the_old_majority`: the joint
+> fence. `a_joint_fence_never_counts_a_learner`: learners in the set being
+> left. `a_joint_fence_counts_the_old_set_only_from_the_copies_it_names`: the
+> copy check. `a_member_the_new_route_leaves_out_still_answers_a_joint_fence`:
+> a voter of the set being left answers though its routing view no longer
+> names it. `under_joint_fence_a_shipping_leader_keeps_the_set_it_leaves`:
+> the set being left survives a ship pass before the fence.
+> `a_leader_whose_log_kept_no_set_still_fences_the_old_majority`: the set
+> being left comes from the control plane's assignment.
+> `an_unknown_set_before_keeps_the_fence_pending`,
+> `a_set_kept_without_the_one_it_leaves_is_not_read_as_no_change` and
+> `under_joint_fence_a_shipping_leader_keeps_no_set_when_the_one_before_is_unknown`:
+> an unknown set being left fails closed.
+> `a_member_without_election_counts_as_not_answering`: such a member cannot
+> count. `without_joint_fence_a_set_change_fences_the_new_set_alone`: the
+> fence is unchanged when the feature is off.
+> `under_joint_fence_the_next_generation_is_refused_by_a_replica_that_promised_it`:
+> the fenced next-generation open. `a_two_member_swap_waits_for_the_old_majority`
+> (felix-cluster, `failures`): the same swap between broker processes.
 
 The control plane's side of rule 10 is built too (control-plane.md,
 [Adopting an elected leader](control-plane.md#adopting-an-elected-leader)). A

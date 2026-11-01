@@ -211,6 +211,7 @@ impl Change {
             &to_router_key(&key),
             &route,
             true,
+            None,
         )
         .await;
         assert!(
@@ -367,6 +368,106 @@ async fn after_a_new_generation_of_a_served_shard_the_leader_between_is_refused(
 #[tokio::test]
 async fn the_next_generation_of_a_served_shard_serves_at_once() {
     let mut change = Change::new();
+    change
+        .deliver(led("broker-a", &["broker-b", "broker-c"], 2))
+        .await;
+
+    let next = led("broker-a", &["broker-b", "broker-c"], 3);
+    let action = change.own.observe(&key(0), Some(&next));
+    assert!(
+        matches!(
+            action,
+            Action::Open {
+                generation: 3,
+                fence: false,
+                ..
+            }
+        ),
+        "{action:?}"
+    );
+    assert_eq!(change.own.opened(&key(0), 3), Opened::Activated);
+}
+
+/// **Under `joint_fence`, the next generation of a shard this broker serves
+/// is fenced too, and a replica that promised it to someone else refuses
+/// it.** broker-b stood for generation 3 and broker-c promised it. When the
+/// control plane, not having heard, hands this broker generation 3, opening
+/// at once would make two leaders of one generation; fenced, broker-c refuses
+/// and the shard stays closed.
+#[tokio::test]
+async fn under_joint_fence_the_next_generation_is_refused_by_a_replica_that_promised_it() {
+    let mut change = Change::new();
+    let fleet = Arc::new(felix_common::fleet::FleetGate::new([
+        felix_common::fleet::JOINT_FENCE.name(),
+    ]));
+    fleet.observe([felix_common::fleet::JOINT_FENCE.name()]);
+    change.own.fence_next_generations(fleet);
+    change
+        .deliver(led("broker-a", &["broker-b", "broker-c"], 2))
+        .await;
+    assert!(change.own.may_serve_at(&key(0), 2));
+    let candidate = felix_wire::internal::Fence {
+        correlation_id: 1,
+        shard: batch(3, 0, &[]).shard,
+        log: felix_wire::internal::ReplicaLog::Stream,
+        election: None,
+    };
+    let answer = handler(&change.replicas["broker-c"], "broker-c", "broker-a", 2)
+        .fence(Some("broker-b"), candidate)
+        .await;
+    assert!(
+        matches!(answer, InternalMessage::FenceOk(_)),
+        "broker-c did not promise generation 3 to broker-b: {answer:?}"
+    );
+
+    let next = led("broker-a", &["broker-b", "broker-c"], 3);
+    let key = next.key.clone();
+    let action = change.own.observe(&key, Some(&next));
+    change.assignments.insert(key.clone(), next);
+    assert!(
+        matches!(
+            action,
+            Action::Open {
+                generation: 3,
+                fence: true,
+                ..
+            }
+        ),
+        "the next generation opened unfenced: {action:?}"
+    );
+    assert_eq!(change.own.opened(&key, 3), Opened::Fencing);
+    let route = routing_table_from(&change.assignments, &nodes())
+        .get(&to_router_key(&key))
+        .expect("route")
+        .clone();
+    let outcome = promotion::fence_shard(
+        &change,
+        &change.leader,
+        LOCAL,
+        &to_router_key(&key),
+        &route,
+        false,
+        None,
+    )
+    .await;
+
+    assert!(
+        matches!(&outcome, Outcome::Pending { why, .. } if why.contains("broker-c")),
+        "{outcome:?}"
+    );
+    assert!(!change.own.may_serve_at(&key, 3));
+}
+
+/// **Without `joint_fence` the next generation still opens at once**, even
+/// for a broker that would fence it once the feature is finalized.
+#[tokio::test]
+async fn before_joint_fence_is_finalized_the_next_generation_serves_at_once() {
+    let mut change = Change::new();
+    change
+        .own
+        .fence_next_generations(Arc::new(felix_common::fleet::FleetGate::new([
+            felix_common::fleet::JOINT_FENCE.name(),
+        ])));
     change
         .deliver(led("broker-a", &["broker-b", "broker-c"], 2))
         .await;

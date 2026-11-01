@@ -44,6 +44,12 @@ use crate::metrics;
 use crate::peer::{PeerError, PeerRequester};
 use crate::replica::last_generation;
 
+mod joint;
+
+pub use joint::Joint;
+use joint::JointSets;
+pub(crate) use joint::set_before;
+
 /// How much one catch-up read asks a replica for.
 const FETCH_BYTES: u32 = 1024 * 1024;
 
@@ -117,6 +123,11 @@ impl Outcome {
 /// and the shard waits for a majority that has. That is the rule once the
 /// followers decide acknowledgements, since an older leader then no longer
 /// stops writing when its lease lapses.
+///
+/// With `joint`, given once the fleet has finalized `joint_fence`, a leader
+/// whose set changed fences the set it leaves as well and needs a majority of
+/// each (see [`Joint`]). Without it, or when no set changed, the fence is the
+/// one it always was.
 pub async fn fence_shard<R: PeerRequester>(
     requester: &R,
     broker: &Arc<Broker>,
@@ -124,6 +135,7 @@ pub async fn fence_shard<R: PeerRequester>(
     key: &ShardKey,
     route: &Route,
     lease_fallback: bool,
+    joint: Option<&Joint<'_>>,
 ) -> Outcome {
     let replicas: Vec<_> = route
         .replicas
@@ -206,22 +218,54 @@ pub async fn fence_shard<R: PeerRequester>(
                 }
                 return Err(Outcome::pending(lacking, Vec::new()));
             };
+            // The counter log carries no set, and is fenced on the new set
+            // alone, as the model's `Counters` are.
+            let set = set.as_ref().filter(|_| kind != LogKind::Counters);
+            // Under `joint_fence` a fence whose set being left is unknown
+            // stays pending rather than fence the new set alone.
+            let under_joint = match (joint, set) {
+                (Some(joint), Some(set)) => {
+                    match joint::sets(requester, &log, local_node_id, route, set, joint).await {
+                        Ok(fenced) => Some(fenced),
+                        Err(why) => return Err(Outcome::pending(why, Vec::new())),
+                    }
+                }
+                _ => None,
+            };
+            let joint = under_joint
+                .as_ref()
+                .and_then(|fenced| fenced.joint.as_ref());
+            let asked: Vec<&felix_router::NodeRef>;
+            let fenced_on = match joint {
+                Some(joint) => {
+                    asked = joint.asked.iter().collect();
+                    &asked
+                }
+                None => &replicas,
+            };
             let fenced = fence_log(
                 requester,
                 broker,
                 key,
                 &shard,
-                &replicas,
+                fenced_on,
                 kind,
                 &log,
                 lease_fallback,
                 reported_ids,
-                set.as_ref().filter(|_| kind != LogKind::Counters),
+                set,
+                joint,
             )
             .await;
             caught_up_from = caught_up_from.or(fenced?);
-            if set.is_some() && kind != LogKind::Counters {
-                keep_own_set(&log, local_node_id, route).await?;
+            if set.is_some() {
+                keep_own_set(
+                    &log,
+                    local_node_id,
+                    route,
+                    under_joint.as_ref().map(|fenced| &fenced.before),
+                )
+                .await?;
             }
         }
         Ok(caught_up_from)
@@ -261,6 +305,9 @@ pub async fn fence_shard<R: PeerRequester>(
 /// Fence one of the shard's logs on a majority, and take the log of the
 /// answer furthest ahead if it is ahead of this broker's. `Ok` names the
 /// replica it was taken from, if one was; `Err` is the outcome to stop at.
+///
+/// A joint fence asks `replicas`, every member of both sets, carries the set
+/// being left, and needs a majority of each set's voters.
 #[allow(clippy::too_many_arguments)]
 async fn fence_log<R: PeerRequester>(
     requester: &R,
@@ -273,6 +320,7 @@ async fn fence_log<R: PeerRequester>(
     lease_fallback: bool,
     reported_ids: Option<&BTreeMap<String, String>>,
     set: Option<&ReplicaSetView>,
+    joint: Option<&JointSets>,
 ) -> Result<Option<String>, Outcome> {
     // Answers until a majority, this broker included, has taken the fence.
     // Later answers are not waited for: the model opens on the first majority.
@@ -283,6 +331,10 @@ async fn fence_log<R: PeerRequester>(
     let took = |answered: &[(String, std::net::SocketAddr, FenceOk)]| {
         answered.iter().map(|(node, _, _)| node.clone()).collect()
     };
+    let settled = |answered: &[(String, std::net::SocketAddr, FenceOk)]| match joint {
+        None => answered.len() + 1 >= needed,
+        Some(joint) => joint.has_majorities(answered.iter().map(|(node, _, _)| node.as_str())),
+    };
     // Answers from a copy the report did not name: they took the promise,
     // which still refuses the old leader, but count for nothing here.
     let mut other_copies = 0;
@@ -292,34 +344,44 @@ async fn fence_log<R: PeerRequester>(
     let mut asks = futures::stream::FuturesUnordered::new();
     for replica in replicas {
         // Only to a replica that offered `ELECTION`; any other is sent the
-        // fence it always was.
-        let election = set
-            .filter(|_| {
-                requester
-                    .recorded_capabilities(&replica.node_id)
-                    .is_some_and(|offered| offered.contains(PeerCapabilities::ELECTION))
-            })
-            .map(|set| FenceElection {
+        // fence it always was. A joint fence asks only replicas that did.
+        let election = match joint {
+            Some(joint) => set.map(|set| FenceElection {
                 candidate: false,
                 set: set.clone(),
-                leaving: None,
-            });
+                leaving: Some(joint.leaving.clone()),
+            }),
+            None => set
+                .filter(|_| {
+                    requester
+                        .recorded_capabilities(&replica.node_id)
+                        .is_some_and(|offered| offered.contains(PeerCapabilities::ELECTION))
+                })
+                .map(|set| FenceElection {
+                    candidate: false,
+                    set: set.clone(),
+                    leaving: None,
+                }),
+        };
         asks.push(ask_fence(
             requester,
             replica.node_id.clone(),
             replica.advertise_addr,
             shard.clone(),
             crate::ship::replica_log(kind),
-            reported_ids.is_some(),
+            reported_ids.is_some() || joint.is_some_and(JointSets::names_copies),
             election,
         ));
     }
-    while answered.len() + 1 < needed {
+    while !settled(&answered) {
         let Some((node_id, addr, answer, identity)) = asks.next().await else {
             break;
         };
         match answer {
-            Ok(InternalMessage::FenceOk(_)) if !reported_copy(reported_ids, &node_id, identity) => {
+            Ok(InternalMessage::FenceOk(_))
+                if !reported_copy(reported_ids, &node_id, identity)
+                    || joint.is_some_and(|joint| !joint.same_copy(&node_id, identity)) =>
+            {
                 other_copies += 1;
                 uncounted(key, kind, &node_id, reported_ids, identity);
             }
@@ -362,13 +424,19 @@ async fn fence_log<R: PeerRequester>(
         }
     }
     drop(asks);
-    if answered.len() + 1 < needed {
-        let mut why = format!(
-            "{} of {} replicas took the fence on the {kind:?} log, {} needed with this broker",
-            answered.len(),
-            replicas.len(),
-            needed - 1
-        );
+    if !settled(&answered) {
+        let mut why = match joint {
+            None => format!(
+                "{} of {} replicas took the fence on the {kind:?} log, {} needed with this broker",
+                answered.len(),
+                replicas.len(),
+                needed - 1
+            ),
+            Some(joint) => format!(
+                "on the {kind:?} log, {}",
+                joint.shortfall(answered.iter().map(|(node, _, _)| node.as_str()))
+            ),
+        };
         if other_copies > 0 {
             why.push_str(&format!(
                 "; {other_copies} answered from another copy than the failover's report named"
@@ -745,10 +813,14 @@ async fn drop_superseded(
 /// shard opens: the ballot first, as the open of a log expects, so a set is
 /// never on disk ahead of the generation it belongs to. The open takes the
 /// same ballot again, which is then a no-op.
+///
+/// Under `joint_fence` the set before is kept beside it, even when it has
+/// the same voters, so a fence tried again at this generation knows it.
 async fn keep_own_set(
     log: &felix_broker::StreamLog,
     local_node_id: &str,
     route: &Route,
+    leaving: Option<&felix_storage::disk_log::Membership>,
 ) -> Result<(), Outcome> {
     match log
         .accept_generation(route.generation, Some(local_node_id))
@@ -774,7 +846,9 @@ async fn keep_own_set(
             ));
         }
     }
-    match log.accept_set(crate::replica_set::kept(route, None)).await {
+    let mut set = crate::replica_set::kept(route, None);
+    set.leaving = leaving.cloned();
+    match log.accept_set(set).await {
         Ok(felix_storage::disk_log::SetCheck::Stale { known }) => Err(Outcome::pending(
             format!("this broker counts the set of generation {known}, newer than this one"),
             Vec::new(),

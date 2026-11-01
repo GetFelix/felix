@@ -1,6 +1,6 @@
 //! Resolving a shard against the current table: here, elsewhere, or not at all.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -26,8 +26,9 @@ pub struct ShardRouter {
 pub struct Routes {
     table: Arc<RoutingTable>,
     /// Node ids this router has been told about, so an assignment naming one
-    /// it has never seen is reported as unknown rather than not live.
-    known_nodes: HashSet<String>,
+    /// it has never seen is reported as unknown rather than not live, with
+    /// where each is reached.
+    known_nodes: HashMap<String, SocketAddr>,
 }
 
 impl Routes {
@@ -65,7 +66,10 @@ impl ShardRouter {
     pub fn publish(&self, table: RoutingTable, nodes: &HashMap<String, NodeRef>) -> Arc<Routes> {
         let routes = Arc::new(Routes {
             table: Arc::new(table),
-            known_nodes: nodes.keys().cloned().collect(),
+            known_nodes: nodes
+                .iter()
+                .map(|(id, node)| (id.clone(), node.advertise_addr))
+                .collect(),
         });
         self.routes.store(Arc::clone(&routes));
         routes
@@ -75,6 +79,19 @@ impl ShardRouter {
     /// against one consistent snapshot.
     pub fn snapshot(&self) -> Arc<RoutingTable> {
         Arc::clone(&self.routes.load().table)
+    }
+
+    /// Where `node_id` is reached, if the last publish knew it, whether or not
+    /// any route names it: a set being left can name a broker that no longer
+    /// holds anything.
+    pub fn node_addr(&self, node_id: &str) -> Option<SocketAddr> {
+        self.routes.load().known_nodes.get(node_id).copied()
+    }
+
+    /// The control plane's set right before `key`'s current route, if this
+    /// broker saw it. See [`RoutingTable::prior_set`].
+    pub fn prior_set(&self, key: &ShardKey) -> Option<crate::PriorSet> {
+        self.routes.load().table.prior_set(key).cloned()
     }
 
     /// The current routes, to resolve against later with [`Self::resolve_with`].
@@ -176,7 +193,7 @@ impl ShardRouter {
             };
         }
 
-        if !routes.known_nodes.contains(&route.leader.node_id) {
+        if !routes.known_nodes.contains_key(&route.leader.node_id) {
             return Resolution::Unavailable(Unavailable::LeaderUnknown {
                 node_id: route.leader.node_id.clone(),
             });

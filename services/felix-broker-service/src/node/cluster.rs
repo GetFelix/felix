@@ -148,6 +148,7 @@ pub(super) fn bind_peer_listener(
                         replica_handler(
                             broker,
                             router,
+                            quorum_marks,
                             unclean,
                             controlplane.map(|(client, base_url, credential)| {
                                 crate::shards::ControlPlaneRoutes::new(
@@ -195,13 +196,15 @@ pub(super) fn bind_peer_listener(
 fn replica_handler(
     broker: &Arc<Broker>,
     router: &Arc<ShardRouter>,
+    quorum_marks: &Arc<QuorumMarks>,
     unclean: Option<Arc<replication::unclean::UncleanStart>>,
     confirmed: Option<crate::shards::ControlPlaneRoutes>,
 ) -> replication::ReplicaHandler {
     // A replica refuses a candidate for as long as it would take to suspect
     // its leader, so the two windows agree.
     let handler = replication::ReplicaHandler::new(Arc::clone(broker), Arc::clone(router))
-        .with_stickiness(replication::suspicion::SuspicionConfig::from_env().suspect_after);
+        .with_stickiness(replication::suspicion::SuspicionConfig::from_env().suspect_after)
+        .with_fleet(Arc::clone(quorum_marks));
     let handler = match unclean {
         Some(unclean) => handler.with_unclean_start(unclean),
         None => handler,
@@ -290,6 +293,11 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
                 (Some(pool), Some(storage)) if pool.offers_fence() => match lifecycle.try_lock() {
                     Ok(mut guard) => {
                         guard.fence_promotions();
+                        // A broker that checks sets fences the next
+                        // generation too, once `joint_fence` is finalized.
+                        if replication::peer::PeerRequester::offers_election(pool.as_ref()) {
+                            guard.fence_next_generations(Arc::clone(fleet));
+                        }
                         Arc::new(shard_lifecycle::promotion::LifecycleGate::new(
                             Arc::clone(lifecycle),
                             Arc::clone(ingress),
@@ -358,6 +366,7 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
                     client_endpoints: Some(Arc::clone(client_endpoints)),
                     assignments_changed,
                     routes_changed: Arc::clone(&routes_changed),
+                    joint_fence: Some(Arc::clone(fleet)),
                 },
                 Some(shard_routing::CatalogSource {
                     client: membership_client.clone(),

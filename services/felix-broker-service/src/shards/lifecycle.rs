@@ -169,6 +169,9 @@ pub struct ShardLifecycle {
     /// Whether a shard this broker starts leading waits for the fence
     /// before it serves. Set when a replication driver is there to fence it.
     fence_promotions: bool,
+    /// Set for a broker that checks replica sets: once this fleet finalizes
+    /// `joint_fence`, the generation right after one it serves is fenced too.
+    joint_fence: Option<Arc<felix_common::fleet::FleetGate>>,
     /// Shards opening to be fenced, which go to `Fencing` once open.
     promoting: std::collections::HashSet<ShardKey>,
     /// Opens held back until the catalog registers the shard's stream at the
@@ -193,6 +196,7 @@ impl ShardLifecycle {
             headed: HashMap::new(),
             held: std::collections::HashSet::new(),
             fence_promotions: false,
+            joint_fence: None,
             promoting: std::collections::HashSet::new(),
             awaiting_registration: HashMap::new(),
         }
@@ -205,6 +209,14 @@ impl ShardLifecycle {
     /// serves opens at once. For a broker whose replication driver fences.
     pub fn fence_promotions(&mut self) {
         self.fence_promotions = true;
+    }
+
+    /// Once `fleet` has finalized `joint_fence`, fence the generation right
+    /// after one this broker serves as well, rather than opening it at once.
+    /// For a broker that offers `ELECTION`, whose replication driver then
+    /// fences a changed set jointly.
+    pub fn fence_next_generations(&mut self, fleet: Arc<felix_common::fleet::FleetGate>) {
+        self.joint_fence = Some(fleet);
     }
 
     /// The fence for `key` is done at `generation`, or the shard opens on
@@ -703,6 +715,15 @@ impl ShardLifecycle {
                     && !shard.draining
                     && generation == shard.generation + 1
             });
+        // Under `joint_fence` the next generation is fenced too, since a
+        // candidate may have been elected to it (`RegenerateSet` in the
+        // model). A set it changes is then fenced jointly, which is what
+        // closes the shard for one round trip at each replacement step.
+        let joint = self
+            .joint_fence
+            .as_ref()
+            .is_some_and(|fleet| fleet.supports(felix_common::fleet::JOINT_FENCE));
+        let continues = continues && !joint;
         // Every other generation this broker starts leading at is fenced, not
         // only a promotion (`FenceEveryChange` in the model). A cut-over, a
         // hand-back or a later generation of a shard it serves is still a

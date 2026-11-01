@@ -232,6 +232,17 @@ expectations=(
   "FelixShardElectAdopt pass"
   "FelixShardElectAdoptPromote pass"
   "FelixShardElectSwapNoJoint violates AckedHeldByLeader"
+  "FelixShardElectSwapKeep1 pass"
+  "FelixShardElectSwapKeep2 pass"
+  "FelixShardElectSwapDrop0 pass"
+  "FelixShardElectSwapDrop1 pass"
+  "FelixShardElectSwapDrop2 pass"
+  "FelixShardElectSwapDrop0StoodOneDest pass"
+  "FelixShardElectSwapDrop0StoodOneOther pass"
+  "FelixShardElectSwapDrop0StoodSeveralOther pass"
+  "FelixShardElectSwapDrop1StoodOneDest pass"
+  "FelixShardElectSwapDrop1StoodOneOther pass"
+  "FelixShardElectSwapDrop1StoodSeveralOther pass"
   "FelixShardElectPreVote pass"
   "FelixShardElectNoBallotAcks violates AckedHeldByLeader"
   "FelixShardElectStepDown pass"
@@ -325,8 +336,12 @@ if [ "$#" -gt 0 ]; then
   done
 fi
 
-# FelixShardElectSwap is not registered: it has never finished a run, and
-# the nightly exhaustive job (tla-walk.yml) checks it by name instead.
+# FelixShardElectSwap is not registered: it does not finish in one run, so
+# it is checked in pieces split at the cut-over. The eleven that take under 45
+# minutes are registered above; FelixShardElectSwapKeep0, the four
+# FelixShardElectSwap{Keep0,Keep1,Keep2,Drop2}Stood and
+# FelixShardElectSwapDrop{0,1}StoodSeveralDest run in the nightly exhaustive
+# job (tla-walk.yml).
 # So are FelixShardElectWipeNonVoter{Twice,Failover,FailoverWipesLeader,
 # WipesLeader}: each runs well over an hour on a four-core runner. Their
 # violating twins and witnesses stay registered.
@@ -392,6 +407,16 @@ weights=(
   "FelixShardSuspicionWipeUnbacked 2"
   "FelixShardElectWipeOracle 5"
   "FelixShardElectWipeNonVoter 20"
+  "FelixShardElectSwapKeep1 27"
+  "FelixShardElectSwapKeep2 6"
+  "FelixShardElectSwapDrop0 43"
+  "FelixShardElectSwapDrop1 17"
+  "FelixShardElectSwapDrop2 5"
+  "FelixShardElectSwapDrop0StoodOneDest 39"
+  "FelixShardElectSwapDrop0StoodOneOther 13"
+  "FelixShardElectSwapDrop0StoodSeveralOther 1"
+  "FelixShardElectSwapDrop1StoodOneDest 12"
+  "FelixShardElectSwapDrop1StoodOneOther 3"
 )
 
 weight_of() {
@@ -404,7 +429,9 @@ weight_of() {
 
 # `TLA_QUICK=1` leaves out the registered configurations weighing more than
 # ten minutes, except those whose own .cfg changed against `TLA_CHANGED_BASE`
-# (a revision; CI passes the PR's base), which always run. A changed .tla does
+# (a revision; CI passes the PR's base), which run if they weigh 30 minutes or
+# less. Heavier ones would not fit a pull request's hour beside the rest, and
+# run on main or by dispatch (ci.yml's `tla_configs`). A changed .tla does
 # not pull in its heavy configurations: FelixShard.tla is behind most of them.
 # Pull requests check that tier; the rest run when the spec changes on main.
 # Configurations named on the command line always run.
@@ -418,8 +445,15 @@ if [ -n "${TLA_QUICK:-}" ] && [ "$#" -eq 0 ]; then
   fi
   quick=()
   for entry in "${selected[@]}"; do
-    if [ "$(weight_of "${entry%% *}")" -le 10 ] || [[ "$changed_cfgs" == *" ${entry%% *} "* ]]; then
+    weight="$(weight_of "${entry%% *}")"
+    if [ "$weight" -le 10 ]; then
       quick+=("$entry")
+    elif [[ "$changed_cfgs" == *" ${entry%% *} "* ]]; then
+      if [ "$weight" -le 30 ]; then
+        quick+=("$entry")
+      else
+        echo "skipping changed ${entry%% *} (about $weight min): it runs on main or by dispatch"
+      fi
     fi
   done
   selected=(${quick[@]+"${quick[@]}"})

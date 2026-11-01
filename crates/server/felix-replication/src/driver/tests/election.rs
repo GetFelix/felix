@@ -171,3 +171,91 @@ async fn a_stamped_batch_reaches_only_a_follower_that_offered_election() {
     );
     assert_eq!(stream_log(&broker).await.set_generation(), 0);
 }
+
+/// **Under `joint_fence`, a leader that keeps a changed set while shipping
+/// keeps the set it leaves beside it**, so a fence that runs afterwards still
+/// fences that set. Without the feature it keeps the new set alone, as before.
+#[tokio::test]
+async fn under_joint_fence_a_shipping_leader_keeps_the_set_it_leaves() {
+    use felix_common::fleet::{FleetGate, GENERATION_START, JOINT_FENCE, MAJORITY_ACK};
+    use felix_storage::disk_log::{Member, Membership, ReplicaSet};
+
+    for joint in [true, false] {
+        let (broker, _dir) = quorum_leader(3, 4).await;
+        let log = stream_log(&broker).await;
+        log.accept_generation(3, Some(LOCAL)).await.expect("ballot");
+        let before = Membership {
+            generation: 3,
+            members: [LOCAL, "broker-b", "broker-d"]
+                .map(|node| Member {
+                    node: node.to_string(),
+                    storage: None,
+                    learner: false,
+                })
+                .to_vec(),
+        };
+        log.accept_set(ReplicaSet {
+            current: before,
+            leaving: None,
+        })
+        .await
+        .expect("the set before");
+        log.accept_generation(4, Some(LOCAL)).await.expect("ballot");
+        let names: Vec<&str> = [GENERATION_START, MAJORITY_ACK]
+            .iter()
+            .chain(joint.then_some(&JOINT_FENCE))
+            .map(|feature| feature.name())
+            .collect();
+        let fleet = FleetGate::new(names.clone());
+        fleet.observe(names);
+        let marks = QuorumMarks::with_fleet(Arc::new(fleet));
+
+        pass(&Followers::new(true, &["broker-b"]), &broker, &marks).await;
+
+        let kept = stream_log(&broker).await.replica_set().expect("kept");
+        assert_eq!(kept.current.generation, 4);
+        assert_eq!(
+            kept.leaving.map(|old| old.generation),
+            joint.then_some(3),
+            "joint: {joint}"
+        );
+    }
+}
+
+/// **Under `joint_fence`, a shipping leader that does not know the set it
+/// leaves keeps nothing.** Its log keeps the set of generation 2, not the one
+/// right before 4, and its watch never saw generation 3: keeping the new set
+/// would hide the old one from the fence, which then stays pending instead.
+#[tokio::test]
+async fn under_joint_fence_a_shipping_leader_keeps_no_set_when_the_one_before_is_unknown() {
+    use felix_common::fleet::{FleetGate, GENERATION_START, JOINT_FENCE, MAJORITY_ACK};
+    use felix_storage::disk_log::{Member, Membership, ReplicaSet};
+
+    let (broker, _dir) = quorum_leader(3, 4).await;
+    let log = stream_log(&broker).await;
+    log.accept_generation(2, Some(LOCAL)).await.expect("ballot");
+    log.accept_set(ReplicaSet {
+        current: Membership {
+            generation: 2,
+            members: [LOCAL, "broker-b", "broker-d"]
+                .map(|node| Member {
+                    node: node.to_string(),
+                    storage: None,
+                    learner: false,
+                })
+                .to_vec(),
+        },
+        leaving: None,
+    })
+    .await
+    .expect("an older set");
+    log.accept_generation(4, Some(LOCAL)).await.expect("ballot");
+    let names = [GENERATION_START, MAJORITY_ACK, JOINT_FENCE].map(|feature| feature.name());
+    let fleet = FleetGate::new(names);
+    fleet.observe(names);
+    let marks = QuorumMarks::with_fleet(Arc::new(fleet));
+
+    pass(&Followers::new(true, &["broker-b"]), &broker, &marks).await;
+
+    assert_eq!(stream_log(&broker).await.set_generation(), 2);
+}

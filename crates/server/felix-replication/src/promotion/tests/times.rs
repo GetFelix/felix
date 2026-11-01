@@ -224,7 +224,7 @@ async fn a_tail_taken_from_a_replica_keeps_its_times() {
     replicas.get_mut("broker-c").reachable = false;
     let (leader, _dir) = timed_leader(4, &["a"]).await;
 
-    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route(), true).await;
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route(), true, None).await;
 
     assert_eq!(
         outcome,

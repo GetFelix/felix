@@ -256,7 +256,16 @@ async fn the_group_logs_furthest_ahead_are_taken_too() {
     replicas.get_mut("broker-c").reachable = false;
     let (leader, _dir) = group_leader().await;
 
-    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route_of_size(3), true).await;
+    let outcome = fence_shard(
+        &replicas,
+        &leader,
+        LEADER,
+        &key(),
+        &route_of_size(3),
+        true,
+        None,
+    )
+    .await;
 
     assert_eq!(
         outcome,
@@ -288,7 +297,7 @@ async fn a_group_answer_from_another_copy_does_not_count() {
             .collect(),
     ));
 
-    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route, true).await;
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route, true, None).await;
 
     assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
     assert_eq!(serves(&leader, "workers").await, (None, Vec::new()));
@@ -316,7 +325,16 @@ async fn a_replica_counts_once_it_took_both_group_fences() {
     replicas.get_mut("broker-e").reachable = false;
     let (leader, _dir) = group_leader().await;
 
-    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route_of_size(5), true).await;
+    let outcome = fence_shard(
+        &replicas,
+        &leader,
+        LEADER,
+        &key(),
+        &route_of_size(5),
+        true,
+        None,
+    )
+    .await;
 
     assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
     assert_eq!(serves(&leader, "workers").await, (None, Vec::new()));
@@ -360,7 +378,16 @@ async fn a_cursor_is_checked_against_its_dead_letters_generation() {
     )
     .await;
 
-    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route_of_size(3), true).await;
+    let outcome = fence_shard(
+        &replicas,
+        &leader,
+        LEADER,
+        &key(),
+        &route_of_size(3),
+        true,
+        None,
+    )
+    .await;
 
     assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
     assert_eq!(serves(&leader, "workers").await, (Some(0), Vec::new()));
@@ -411,7 +438,16 @@ async fn an_own_further_cursor_is_kept_while_it_stands() {
     )
     .await;
 
-    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route_of_size(3), true).await;
+    let outcome = fence_shard(
+        &replicas,
+        &leader,
+        LEADER,
+        &key(),
+        &route_of_size(3),
+        true,
+        None,
+    )
+    .await;
 
     assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
     assert_eq!(serves(&leader, "workers").await, (Some(3), vec![1]));
@@ -434,7 +470,16 @@ async fn a_group_only_this_broker_had_is_kept() {
     )
     .await;
 
-    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route_of_size(3), true).await;
+    let outcome = fence_shard(
+        &replicas,
+        &leader,
+        LEADER,
+        &key(),
+        &route_of_size(3),
+        true,
+        None,
+    )
+    .await;
 
     assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
     assert_eq!(serves(&leader, "solo").await, (Some(5), Vec::new()));
@@ -478,7 +523,16 @@ async fn a_newer_shorter_pair_is_kept_over_an_older_longer_one() {
     )
     .await;
 
-    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route_of_size(3), true).await;
+    let outcome = fence_shard(
+        &replicas,
+        &leader,
+        LEADER,
+        &key(),
+        &route_of_size(3),
+        true,
+        None,
+    )
+    .await;
 
     assert_eq!(
         outcome,
@@ -499,7 +553,16 @@ async fn without_the_group_fence_the_group_logs_stay_as_they_are() {
     replicas.get_mut("broker-c").reachable = false;
     let (leader, _dir) = group_leader().await;
 
-    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route_of_size(3), false).await;
+    let outcome = fence_shard(
+        &replicas,
+        &leader,
+        LEADER,
+        &key(),
+        &route_of_size(3),
+        false,
+        None,
+    )
+    .await;
 
     assert_eq!(
         outcome,
@@ -527,7 +590,16 @@ async fn a_replica_without_consumer_groups_counts_as_empty() {
     replicas.get_mut("broker-c").reachable = false;
     let (leader, _dir) = group_leader().await;
 
-    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route_of_size(3), true).await;
+    let outcome = fence_shard(
+        &replicas,
+        &leader,
+        LEADER,
+        &key(),
+        &route_of_size(3),
+        true,
+        None,
+    )
+    .await;
 
     assert_eq!(
         outcome,

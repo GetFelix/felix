@@ -137,14 +137,19 @@ jobs:
     name: Check ${{ matrix.config }}
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    # FelixShardElectSwap has never finished a run, so the limit is the most a
-    # hosted runner allows.
+    # The limit is the most a hosted runner allows.
     timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix:
         config:
-          - FelixShardElectSwap
+          - FelixShardElectSwapKeep0
+          - FelixShardElectSwapKeep0Stood
+          - FelixShardElectSwapKeep1Stood
+          - FelixShardElectSwapKeep2Stood
+          - FelixShardElectSwapDrop0StoodSeveralDest
+          - FelixShardElectSwapDrop1StoodSeveralDest
+          - FelixShardElectSwapDrop2Stood
           - FelixShardElectWipeNonVoterWipesLeader
           - FelixShardElectWipeNonVoterTwice
           - FelixShardElectWipeNonVoterFailover

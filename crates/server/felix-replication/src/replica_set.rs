@@ -75,6 +75,27 @@ fn members<'a>(
         })
 }
 
+/// The set an assignment the watch saw named, at `generation`, as a log
+/// keeps it. A move's destination is marked a learner, as the leader that
+/// staged it counted it.
+pub(crate) fn placed(set: &felix_router::PlacedSet, generation: u64) -> Membership {
+    Membership {
+        generation,
+        members: std::iter::once(&set.leader)
+            .chain(&set.replicas)
+            .map(|node| Member {
+                node: node.clone(),
+                storage: set
+                    .storage_ids
+                    .get(node)
+                    .and_then(|hex| from_hex(hex))
+                    .map(StorageId::from_bytes),
+                learner: set.successor.as_ref() == Some(node) && *node != set.leader,
+            })
+            .collect(),
+    }
+}
+
 /// A storage id as a route names it, 32 hex digits, or `None` for an empty
 /// one: placement names a member it could not vouch for that way.
 fn from_hex(hex: &str) -> Option<[u8; 16]> {

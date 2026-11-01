@@ -44,7 +44,7 @@ async fn a_fence_answer_from_another_storage_id_does_not_count() {
     let (leader, _dir) = leader_holding(4, &["a"]).await;
     let route = route_naming_every_copy();
 
-    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route, false).await;
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route, false, None).await;
 
     let Outcome::Pending { took, why } = outcome else {
         panic!("opened on a copy the report did not name: {outcome:?}");
@@ -55,7 +55,7 @@ async fn a_fence_answer_from_another_storage_id_does_not_count() {
     assert_eq!(accepted(&replicas.get("broker-b").broker).await, PROMOTED);
 
     replicas.get_mut("broker-c").reachable = true;
-    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route, false).await;
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route, false, None).await;
 
     assert_eq!(
         outcome,
@@ -81,6 +81,7 @@ async fn a_fence_answer_without_a_storage_id_does_not_count() {
         &key(),
         &route_naming_every_copy(),
         false,
+        None,
     )
     .await;
 
@@ -104,7 +105,7 @@ async fn a_replica_named_without_an_identity_does_not_count() {
         .into(),
     ));
 
-    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route, false).await;
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route, false, None).await;
 
     assert!(matches!(outcome, Outcome::Pending { .. }), "{outcome:?}");
 }
@@ -122,7 +123,7 @@ async fn a_replica_outside_the_old_set_counts() {
         [("broker-c".to_string(), storage_of("broker-c").to_hex())].into(),
     ));
 
-    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route, false).await;
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route, false, None).await;
 
     assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
 }
@@ -145,7 +146,7 @@ async fn an_unnamed_replica_without_a_storage_id_counts() {
         [("broker-c".to_string(), storage_of("broker-c").to_hex())].into(),
     ));
 
-    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route, false).await;
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route, false, None).await;
 
     assert_eq!(
         outcome,
@@ -174,6 +175,7 @@ async fn a_fence_answer_from_the_reported_storage_id_counts() {
         &key(),
         &route_naming_every_copy(),
         false,
+        None,
     )
     .await;
 
@@ -195,7 +197,7 @@ async fn a_fence_without_reported_ids_counts_every_answer() {
     replicas.get_mut("broker-c").reachable = false;
     let (leader, _dir) = leader_holding(4, &["a"]).await;
 
-    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route(), false).await;
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route(), false, None).await;
 
     assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
 }

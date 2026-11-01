@@ -66,6 +66,7 @@ async fn the_counter_log_furthest_ahead_is_taken_too() {
         &key_of(ShardKind::Cache),
         &route_of(ShardKind::Cache),
         true,
+        None,
     )
     .await;
 
@@ -123,6 +124,7 @@ async fn a_superseded_put_is_gone_from_the_index() {
         &key_of(ShardKind::Cache),
         &route_of(ShardKind::Cache),
         true,
+        None,
     )
     .await;
 
@@ -154,6 +156,7 @@ async fn a_replica_without_the_cache_fence_keeps_a_cache_shard_on_the_lease() {
         &key_of(ShardKind::Cache),
         &route_of(ShardKind::Cache),
         true,
+        None,
     )
     .await;
 
@@ -182,6 +185,7 @@ async fn without_the_lease_fallback_a_cache_shard_waits_for_a_majority() {
         &key_of(ShardKind::Cache),
         &route_of(ShardKind::Cache),
         false,
+        None,
     )
     .await;
 
@@ -212,6 +216,7 @@ async fn a_cache_log_that_fails_to_open_keeps_the_shard_closed() {
         &key_of(ShardKind::Cache),
         &route_of(ShardKind::Cache),
         false,
+        None,
     )
     .await;
 
@@ -233,6 +238,7 @@ async fn a_cache_log_that_fails_to_open_falls_back_to_the_lease() {
         &key_of(ShardKind::Cache),
         &route_of(ShardKind::Cache),
         true,
+        None,
     )
     .await;
 
@@ -254,6 +260,7 @@ async fn a_counter_log_that_fails_to_open_keeps_the_shard_closed() {
         &key_of(ShardKind::Cache),
         &route_of(ShardKind::Cache),
         false,
+        None,
     )
     .await;
 
@@ -274,6 +281,7 @@ async fn a_cache_kept_in_memory_opens_on_the_lease() {
         &key_of(ShardKind::Cache),
         &route_of(ShardKind::Cache),
         false,
+        None,
     )
     .await;
 

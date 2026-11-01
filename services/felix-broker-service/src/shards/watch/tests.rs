@@ -406,3 +406,58 @@ async fn an_answer_from_behind_the_checkpoint_rolls_nothing_back() {
         "an answer from behind the checkpoint replaced the broker's ownership",
     );
 }
+
+/// The set the watch says came right before shard 0's current assignment.
+fn prior_leader(owned: &ShardOwnership) -> Option<Option<String>> {
+    owned
+        .priors()
+        .get(&crate::shards::routing::to_router_key(&key(0)))
+        .map(|prior| prior.before.as_ref().map(|set| set.leader.clone()))
+}
+
+/// **The set before a route is known only from the step right before it.**
+/// A joint fence leaves that set, so a generation the watch skipped, or a
+/// snapshot it did not see the step into, leaves it unknown rather than
+/// guessed from an older one.
+#[test]
+fn the_set_before_is_known_only_from_the_generation_right_before() {
+    let mut owned = ShardOwnership::default();
+    owned.apply(&key(0), Some(assignment(0, "broker-a", 4)));
+    owned.apply(&key(0), Some(assignment(0, "broker-b", 5)));
+    assert_eq!(prior_leader(&owned), Some(Some("broker-a".into())));
+
+    // The same snapshot again keeps it; a later one it skipped into drops it.
+    owned.reset(vec![assignment(0, "broker-b", 5)]);
+    assert_eq!(prior_leader(&owned), Some(Some("broker-a".into())));
+    owned.reset(vec![assignment(0, "broker-c", 7)]);
+    assert_eq!(prior_leader(&owned), None);
+
+    owned.apply(&key(0), Some(assignment(0, "broker-a", 9)));
+    assert_eq!(prior_leader(&owned), None);
+}
+
+/// **A first assignment has nothing before it**, unless the same incarnation
+/// carries on from a deleted stream's logs.
+#[test]
+fn a_first_assignment_has_no_set_before() {
+    let mut first = assignment(0, "broker-a", 12);
+    first.incarnation = 3;
+    let mut owned = ShardOwnership::default();
+    owned.assign_afresh(&key(0), first.clone());
+    assert_eq!(prior_leader(&owned), Some(None));
+
+    let mut again = first;
+    again.generation = 20;
+    owned.assign_afresh(&key(0), again);
+    assert_eq!(prior_leader(&owned), None);
+}
+
+/// **A recreate at incarnation 0 is never first**, even when this broker no
+/// longer holds the deleted stream's assignment (a restart or snapshot between
+/// the delete and the recreate). Its logs carry on from the deleted stream's.
+#[test]
+fn an_incarnation_zero_assignment_is_never_first() {
+    let mut owned = ShardOwnership::default();
+    owned.assign_afresh(&key(0), assignment(0, "broker-a", 0));
+    assert_eq!(prior_leader(&owned), None);
+}
