@@ -148,15 +148,16 @@ async fn a_new_set_majority_alone_does_not_acknowledge() {
     assert_eq!(started, None);
 }
 
-/// **Without the joint-fence feature the pending change is not read at all**:
-/// the new set's majority acknowledges, as it did before.
+/// **A pending change a leader cannot count acknowledges nothing.** The route
+/// names the new set, so without the joint-fence feature the new set's
+/// majority must not acknowledge: failover could be placed from the old set.
 #[tokio::test]
-async fn without_joint_fence_a_pending_change_acknowledges_on_the_new_set_alone() {
+async fn without_joint_fence_a_pending_change_acknowledges_nothing() {
     let router = route(&["broker-c", "broker-d"], Some(OLD));
 
     let (mark, started) = pass(&["broker-d"], &router, &marks(false)).await;
 
-    assert_eq!(mark, 3);
+    assert_eq!(mark, 0);
     assert_eq!(started, None);
 }
 
@@ -181,4 +182,27 @@ async fn an_unknown_set_being_left_acknowledges_nothing() {
 
     assert_eq!(mark, 0);
     assert_eq!(started, None);
+}
+
+/// **A stream that does not acknowledge at quorum reports no joint start**,
+/// whatever its tail: nothing there says a majority holds the record.
+#[tokio::test]
+async fn a_stream_not_acknowledging_at_quorum_reports_no_joint_start() {
+    let (broker, _dir) = super::leader_led_from(3, 4, 0).await;
+    let router = route(&["broker-c", "broker-d"], Some(OLD));
+    let pass = replicate_once(
+        &Answers { ok: &["broker-c"] },
+        &broker,
+        &router,
+        &marks(true),
+        None,
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+    )
+    .await;
+
+    assert!(!pass.reports.is_empty());
+    assert!(pass.reports.iter().all(|r| r.joint_start_acked.is_none()));
 }

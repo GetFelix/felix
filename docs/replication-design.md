@@ -3663,8 +3663,13 @@ acknowledgement is the one it was.
   halted, holds nothing, so a set the leader cannot reach keeps the mark
   back. A set being left that is empty counts as unknown and acknowledges
   nothing.
-- A learner the set being left names is counted both ways, as the joint
-  fence counts it.
+- A pending assignment has no staged learner, so the set being left is
+  normally counted with every member as a voter. If the leader does have a
+  learner that set names, it is also counted without it.
+- With the route pending and the feature off, unknown or the broker not
+  electing, the leader acknowledges nothing: it cannot count both sets, and
+  the new set alone could lose a record if failover is placed from the old
+  one. A stream that does not acknowledge at quorum reports no joint start.
 - The count is the least of the two, so the generation-start record is
   acknowledged on both majorities exactly when the mark passes it. The
   leader's report then carries `joint_start_acked`, the pending set's

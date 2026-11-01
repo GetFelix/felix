@@ -516,8 +516,11 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         .pending
         .as_deref()
         .filter(|_| electing && marks.fleet_supports(felix_common::fleet::JOINT_FENCE));
+    // The route names the new set whatever the gate says, so a leader that
+    // cannot count both sets acknowledges nothing rather than the new set alone.
+    let unreadable = route.pending.is_some() && pending.is_none();
     let held_offset = |tail: u64, followers: &[FollowerCursor]| {
-        if stepped_down() {
+        if unreadable || stepped_down() {
             return 0;
         }
         let held = if by_followers {
@@ -567,7 +570,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     // acknowledged: on both majorities, since `held_offset` counts both.
     let joint_start = |tail: u64, followers: &[FollowerCursor]| {
         let change = pending?;
-        (inherited != u64::MAX && acknowledged(tail, followers) > inherited)
+        (acks_at_quorum && inherited != u64::MAX && held_offset(tail, followers) > inherited)
             .then_some(change.generation)
     };
     // The logs that ride the shard ride each follower's exchange too, so a
