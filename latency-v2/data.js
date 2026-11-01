@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793496706989,
+  "lastUpdate": 1793499874279,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -51876,6 +51876,72 @@ window.BENCHMARK_DATA = {
             "range": "400.75",
             "unit": "us",
             "extra": "trials: 5\nmedian: 360.00\nmean: 537.80\nstdev: 400.75\ncv: 74.52%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7b9167b74c2fe04a32dc6474ee1a524e6f4458a1",
+          "message": "feat(replication): replica set checks, dormant behind ELECTION (#1009 S3) (#1719)\n\n* feat(storage): accept a newer replica set and reconcile it at open (#1009 S3)\n\nDiskLog now keeps the replica set it counts: loaded at open, raised by\naccept_set only when the new set is newer, and written under the ballot's\nwriter lock so writes to one shard stay in generation order. The set\ngeneration is also an atomic so a stamped batch checks it without a lock.\n\nThe ballot is written before the set, so a set newer than the accepted\ngeneration at open is a write that order rules out. The open raises the\naccepted generation to it with no leader named, which only refuses more.\n\n* feat(wire): add the StaleSet error code (#1009 S3)\n\nA replica that counts a newer replica set than a fence or batch names\nrefuses it with StaleSet, and puts the generation it knows in\nexpected_offset. Not retryable: the newer set does not go away. Only\nsent in answer to a fence or batch that carries a set, so only to peers\nthat offered ELECTION; an older peer never sees code 12. A forwarded\nwrite that meets it reports the shard fenced, like FencedEpoch.\n\nSpec-Unaffected: the code names the refusal FelixShard.tla already models as RefuseStaleSet; no protocol step changes here.\n\n* feat(replication): FELIX_INTERNAL_ELECTION test switch for ELECTION (#1009 S3)\n\nA broker offers the ELECTION capability only when FELIX_INTERNAL_ELECTION\nis true and the fence is on. Off by default, so no broker offers it and\nnothing changes on the wire. It is a test switch until the\nreplica_election fleet feature ships; the env var reference and the\ninternal protocol doc say so.\n\nSpec-Unaffected: a capability switch, off by default; no protocol step changes.\n\n* feat(replication): replica set checks on fences and batches (#1009 S3)\n\nRule 4 of electing without the control plane, on the replica side. Only\nfences and batches that carry a set are checked, and only peers that\noffered ELECTION are sent those, so every other exchange is unchanged.\n\nA fence carrying a set is refused StaleSet, naming the newer generation,\nwhen this replica counts a newer set; refused Unauthorized when this\nbroker does not vote in it (outside it, or a learner, #1331); and, from a\ncandidate, refused Unavailable while this replica still heard its leader\nwithin the stickiness window (the suspicion window by default). None of\nthese writes a ballot. Otherwise the ballot is taken, then the set is\nwritten to disk, then the fence is answered.\n\nA batch stamped with an older set generation is refused StaleSet. One\nstamped with a newer generation learns the set from the routing view when\nthe route has that generation, and is refused StaleRoute otherwise: a\nfence carries any set the routing view does not.\n\nSpec-Unaffected: implements RefuseStaleSet, SetCurrent/LearnSet and the set half of AnswerFence as FelixShard.tla already models them (FelixShardElectStaleSet.cfg, FelixShardElectAdopt.cfg); the spec is unchanged.\n\n* feat(replication): leaders keep and stamp their set, and step down on a newer one (#1009 S3)\n\nThe leader's side of electing without the control plane, all behind\nFELIX_INTERNAL_ELECTION and the peers' ELECTION offer.\n\nWith the switch on, a leader keeps the route's set (leader and replicas,\nless a staged copy) at the route's generation before it ships at it, and\nstamps its stream or cache batches with that generation for followers\nthat offered ELECTION. A promoted leader sends its fence with the set to\nreplicas that offered ELECTION, and takes its own ballot and keeps the\nset before the shard opens. Leadership, reclaim and group-log fences stay\nplain.\n\nRule 5: once every follower offered ELECTION, a leader whose log accepted\na newer generation, or counts a newer set, counts nothing more: the mark\nstays where it was published and the shard is marked deposed. A\ncandidate may have been elected on its answer. Until every follower\noffers ELECTION the ack path is as before.\n\nA follower or replica answering StaleSet is treated like FencedEpoch.\n\nSpec-Unaffected: implements step-down (rule 5), set stamping and SetCurrent as FelixShard.tla already models them (FelixShardElectStaleSet.cfg, FelixShardElectAdopt.cfg); the spec is unchanged.\n\n* perf(wire): stamp and incarnate a batch without copying its body (#1009 S3)\n\nEncode reserves the header and both envelopes in front of the body and\nfills only what the message needs, then advances past the unused front, so\nwrapping a records batch no longer copies it into a second buffer. Decode\nunwraps an envelope by decoding the inner body straight from a slice of\nthe received frame instead of rebuilding a header and copying the body.\nFrame bytes are unchanged.\n\nencode now caps the inner body at MAX_INNER_BODY_BYTES (MAX_BODY_BYTES\nminus the 36 envelope bytes), so a body it accepts never becomes\nFrameTooLarge once stamped and incarnated. The replication batch budget\nasserts at compile time that it fits under that cap even after a read\novershoots by one record.\n\nSpec-Unaffected: codec layout and copies only\n\n* docs: the replica's set checks, built and dormant (#1009 S3)\n\nWhat is implemented so far, the wire answers, and the spec configs that\nmodel the set check now cite the tests that pin it.\n\nSpec-Unaffected: docs and evidence citations only\n\n* test(cluster): a replica that left the set cannot win a fence (#1009 S3)\n\nFour brokers with FELIX_INTERNAL_ELECTION on, an RF 3 Quorum stream. A\nfollower is drained and the spare seated in its place, the new set takes\nwrites at the new generation, and the drained broker is killed. The test\nthen speaks as that broker over the peer transport, with the certificate\nthe harness issued it, and sends each live broker a candidate fence at a\nnewer generation carrying the set it last knew. Every one answers\nStaleSet naming the newer set, so it has no majority, and the shard still\ntakes a write afterwards.\n\nWith the stale-set check in check_fence_set disabled, the first broker\nasked answers Unavailable instead and the test fails.\n\nSpec-Unaffected: test only\n\n* fix(replication): S3 review: counter mark steps down, one set per generation (#1009 S3)\n\nSpec-Unaffected: tightens the dormant set checks the ElectAdopt and ElectStaleSet configs model\n\n* refactor(replication): a route's set no longer takes who is copying (#1009 S3)\n\nSpec-Unaffected: signature only\n\n* docs: staged successors are learners in every route set (#1009 S3)\n\nSpec-Unaffected: docs only\n\n* fix(replication): S3 review: sets never run ahead of their generation, learner only when staged, no open-time scan (#1009 S3)\n\nSpec-Unaffected: the replica refuses more inputs and marks fewer learners; no transition changes",
+          "timestamp": "2026-11-01T02:17:51Z",
+          "tree_id": "c52fed2f97a4e4a2b7720d8f28caf1469cad3bf8",
+          "url": "https://github.com/GetFelix/felix/commit/7b9167b74c2fe04a32dc6474ee1a524e6f4458a1"
+        },
+        "date": 1793499867597,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 148,
+            "range": "1.82",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 148.00\nmean: 148.40\nstdev: 1.82\ncv: 1.22%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 214,
+            "range": "4.49",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 214.00\nmean: 212.20\nstdev: 4.49\ncv: 2.12%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 263,
+            "range": "12.70",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 263.00\nmean: 257.20\nstdev: 12.70\ncv: 4.94%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 196,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 196.00\nmean: 195.60\nstdev: 0.89\ncv: 0.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 374,
+            "range": "10.02",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 374.00\nmean: 378.00\nstdev: 10.02\ncv: 2.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 469,
+            "range": "39.18",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 469.00\nmean: 492.80\nstdev: 39.18\ncv: 7.95%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
