@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793545810986,
+  "lastUpdate": 1793547700990,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -52206,6 +52206,72 @@ window.BENCHMARK_DATA = {
             "range": "789.51",
             "unit": "us",
             "extra": "trials: 5\nmedian: 534.00\nmean: 896.00\nstdev: 789.51\ncv: 88.12%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "47fcbad5ba668ef57244454d3beba0c4ddcfd1d9",
+          "message": "feat(replication): joint fences on set changes, fenced next-generation open (#1009 S5) (#1726)\n\n* feat(replication): joint fences on set changes, fenced next-generation open (#1009 S5)\n\nUnder joint_fence, a leader whose route names different voters than the\nset its log last kept fences both sets, carrying the set it leaves, and\nopens only on a majority of each set's voters; learners never count. The\ngeneration right after one a broker serves is fenced too (#1069), since a\ncandidate may have been elected to it.\n\nDormant: no build reports joint_fence, so no fleet can finalize it, and a\nmember known not to offer ELECTION turns the joint fence off for its shard.\nWithout it the fence and what it sends are unchanged.\n\nSpec-Unaffected: the code implements JointFence, FenceMembers and RegenerateSet as FelixShard.tla already models them; the cfg edits are Evidence comments.\n\n* docs(changelog): joint fences (#1009 S5)\n\n* fix(replication): keep the set being left while shipping, check old-set copies (#1009 S5)\n\nFrom review: a ship pass between the open and the fence, or an open made\nbefore joint_fence was finalized, kept the new set without the old one, and\na member of the set being left counted from any copy.\n\nSpec-Unaffected: closes gaps in the code against JointFence as modelled.\n\n* spec(formal): check FelixShardElectSwap in twelve pieces split at the cut-over (#1009)\n\nA ghost records how the first cut-over went (whether the new set keeps the\nold leader, writes admitted before it, whether a replica had stood past the\ncontrol plane's generation), and each piece is a CONSTRAINT on it. A VIEW\ndrops what no step reads again where time stands still: a heartbeat in\nflight, and a broker's cursors and fence answers while it does not lead.\nBoth are off for every other configuration.\n\n* test(cluster): start the two-member swap from a kept set (#1009 S5)\n\nA set at generation 0 is never kept, so the swap from the first placement\nhad no set to leave and fenced the new set alone.\n\nSpec-Unaffected: test change.\n\n* fix(replication): a voter of the set being left answers a joint fence (#1009 S5)\n\nThe cluster test found an old follower refusing the joint fence as not a\nreplica, because its routing view already had the new set.\n\nSpec-Unaffected: AnswerFence lets any FenceMembers member answer; this brings the replica in line.\n\n* docs(replication): a voter of the set being left answers a joint fence (#1009 S5)\n\n* spec(formal): register the ElectSwap pieces and record their results (#1009)\n\nThe five pieces under 45 minutes are registered per push; Keep0 and the six\nStood pieces replace FelixShardElectSwap in the nightly exhaustive job.\n\n* spec(formal): split FelixShardElectSwapDrop0Stood in four (#1009)\n\nIt did not finish in six hours. The four pieces split its cut-overs by how\nmany replicas had promised past the control plane's generation (one, or two\nor more) and whether the destination was one of them.\n\n* docs(formal): ElectSwap piece results, Drop0Stood pieces nightly (#1009)\n\n* docs(formal): Drop0Stood piece results; the three under 45 minutes run per push (#1009)\n\n* docs: ElectSwap piece times start at seconds (#1009)\n\n* spec(formal): split Drop1Stood in four, pin QuietView's conditions (#1009)\n\nFelixShardElectSwapDrop1Stood took 5 h 15 min, near the six-hour job limit.\nIt is split by PieceStoodCounts and PieceDestStood as Drop0Stood was; the\nfour pieces together take every cut-over the one did. An ASSUME on\nSplitAtCutOver pins what QuietView relies on (MaxTime = 0, no handoff, no\nreclaim, no wipe, no crash), since TLC cannot check a VIEW.\n\nSpec-Unaffected: no action or invariant changes; a new ASSUME every existing piece meets, and the pieces split one check.\n\n* fix(replication): take the set being left from the control plane's record, fail closed (#1009)\n\nA joint fence read the set it leaves from the leader's own log, so a leader\nwhose log kept no set (a destination that missed the staging batches) fenced\nthe new set alone, and a set kept at the route's generation without the one\nit leaves read as no change. The set being left is now the control plane's\nset at the generation right before the route's, as Swap takes it: from the\nassignment the broker's watch saw at that generation, from the set the\nleader before shipped with at it, or from what this leader kept beside its\nown. When none knows it the fence stays pending.\n\nA member that does not offer ELECTION is no longer a reason to drop the\njoint fence: it is not asked and counts as not answering. A voter of the set\nbeing left answers once no route names it only under joint_fence.\n\nSpec-Unaffected: the code now takes the set being left from the control plane's set as Swap does (oldSet' = CpSet); staying pending when that set is unknown only removes behaviours.\n\n* spec(formal): Drop1Stood piece results; the three under 45 minutes run per push (#1009)\n\nSpec-Unaffected: piece timings and registration only.\n\n* ci(formal): a changed config over 30 minutes is left out of a pull request's hour (#1009)\n\nThe ElectSwap pieces are new on this branch, so every registered one ran in\nthe pull request's TLA tier, and Drop0 (43 min) and Drop0StoodOneDest (39 min)\nbeside the rest overran the 60-minute job. They still run on main and by\ndispatch.\n\nSpec-Unaffected: CI selection only.\n\n* fix(broker): incarnation 0 is never a first assignment; build priors only under joint_fence (#1009)\n\nSpec-Unaffected: failing closed removes behaviours, and priors are read only under the gate as before.",
+          "timestamp": "2026-11-01T07:38:35-08:00",
+          "tree_id": "96c387393025c878973650f9cb2096716ad7af37",
+          "url": "https://github.com/GetFelix/felix/commit/47fcbad5ba668ef57244454d3beba0c4ddcfd1d9"
+        },
+        "date": 1793547696049,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 63,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 63.00\nmean: 63.20\nstdev: 0.84\ncv: 1.32%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 87,
+            "range": "56.02",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 87.00\nmean: 117.80\nstdev: 56.02\ncv: 47.55%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 123,
+            "range": "107.24",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 123.00\nmean: 191.40\nstdev: 107.24\ncv: 56.03%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 80,
+            "range": "2.17",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 80.00\nmean: 80.80\nstdev: 2.17\ncv: 2.68%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 188,
+            "range": "16.81",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 188.00\nmean: 198.00\nstdev: 16.81\ncv: 8.49%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 817,
+            "range": "313.91",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 817.00\nmean: 677.60\nstdev: 313.91\ncv: 46.33%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
