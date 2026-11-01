@@ -651,11 +651,19 @@ ASSUME NameByInheritance => /\ FencedIds /\ UnprobedStart /\ ~Reclaims /\ Electi
 \* and adds no states. A piece takes the cut-overs that keep the old leader
 \* in the new set or not (`PieceKeeps`), that come after `PieceWrites`
 \* writes were admitted, and after a replica stood for a generation past the
-\* control plane's or not (`PieceStood`).
+\* control plane's or not (`PieceStood`). A piece that big can be split
+\* again by how many had promised past it (`PieceStoodCounts`) and whether
+\* the destination itself had stood (`PieceDestStood`).
 SplitAtCutOver == FALSE
 PieceKeeps == TRUE
 PieceWrites == 0
 PieceStood == FALSE
+PieceStoodCounts == Nat
+PieceDestStood == BOOLEAN
+OneStood == {1}
+SeveralStood == 2..Cardinality(Brokers)
+JustYes == {TRUE}
+JustNo == {FALSE}
 
 VARIABLES
     now,        \* real time
@@ -2416,20 +2424,28 @@ CpAdopt(v, b, views) ==
 \* What a cut-over found, for `SplitAtCutOver`: whether the new set keeps the
 \* old leader, how many writes had been admitted, and how many replicas had
 \* promised a generation past the control plane's, which only an election
-\* does. Only counts, so it names no broker and SYMMETRY still holds.
-CutOverTag(keeps) ==
-    << IF keeps THEN 1 ELSE 0, writes, Cardinality({ m \in Brokers : promised[m] > gen }) >>
+\* does, and whether the destination `f` was one of them. Recorded only for
+\* a piece that splits on it, so the other pieces keep their state counts.
+\* It names no broker, so SYMMETRY still holds.
+CutOverTag(keeps, f) ==
+    << IF keeps THEN 1 ELSE 0, writes, Cardinality({ m \in Brokers : promised[m] > gen }),
+       PieceDestStood /= BOOLEAN /\ promised[f] > gen >>
 
 \* A piece of a split check: no cut-over yet, or one that went as the piece
 \* says. Every tag has exactly one piece with each `PieceKeeps`,
 \* `PieceWrites` in 0..MaxWrites and `PieceStood`, so those pieces together
-\* reach every state the unsplit configuration does.
+\* reach every state the unsplit configuration does. A piece with
+\* `PieceStood` split by `OneStood` and `SeveralStood`, each with `JustYes`
+\* and `JustNo`, is likewise covered by the four, since at most every broker
+\* promised past the control plane.
 CutOverPiece ==
     \/ cutOver = <<>>
     \/ LET t == cutOver[1] IN
        /\ (t[1] = 1) = PieceKeeps
        /\ t[2] = PieceWrites
        /\ (t[3] > 0) = PieceStood
+       /\ t[3] \in (IF PieceStood THEN PieceStoodCounts ELSE {0})
+       /\ t[4] \in PieceDestStood
 
 \* A cut-over that changes several members of the set at once, as
 \* `replicas_after_cut_over` in services/felix-controlplane-service/src/
@@ -2467,7 +2483,7 @@ Swap(v, f, views) ==
          /\ cpNext' = S
          /\ log' = [m \in Brokers |-> IF m \in S \ CpSet THEN log[f] ELSE log[m]]
          /\ cutOver' = IF SplitAtCutOver /\ cutOver = <<>>
-                       THEN <<CutOverTag(leader \in S)>> ELSE cutOver
+                       THEN <<CutOverTag(leader \in S, f)>> ELSE cutOver
     /\ cpNextGen' = gen + 1
     /\ setGen' = [setGen EXCEPT ![f] = gen + 1]
     /\ oldSet' = [oldSet EXCEPT ![f] = CpSet]
