@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793537036041,
+  "lastUpdate": 1793542088138,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -41028,6 +41028,58 @@ window.BENCHMARK_DATA = {
             "range": "9872.42",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 959480.46\nmean: 957331.21\nstdev: 9872.42\ncv: 1.03%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "25c594753cb9b60e7d0850b7f66c1f0bcfc56033",
+          "message": "build(deps): bump pyo3-build-config (#1728)\n\nBumps the out-of-workspace-crates group with 1 update in the /crates/sdk/felix-python directory: [pyo3-build-config](https://github.com/pyo3/pyo3).\n\n\nUpdates `pyo3-build-config` from 0.29.3 to 0.30.1\n- [Release notes](https://github.com/pyo3/pyo3/releases)\n- [Changelog](https://github.com/PyO3/pyo3/blob/v0.30.1/CHANGELOG.md)\n- [Commits](https://github.com/pyo3/pyo3/compare/v0.29.3...v0.30.1)\n\n---\nupdated-dependencies:\n- dependency-name: pyo3-build-config\n  dependency-version: 0.30.1\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: out-of-workspace-crates\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-11-01T06:03:50-08:00",
+          "tree_id": "d52339bdd1041b68c976c4729d170890cab2eabe",
+          "url": "https://github.com/GetFelix/felix/commit/25c594753cb9b60e7d0850b7f66c1f0bcfc56033"
+        },
+        "date": 1793542087586,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 371437.4,
+            "range": "14495.03",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 371437.40\nmean: 368428.50\nstdev: 14495.03\ncv: 3.93%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 371437.4,
+            "range": "14495.03",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 371437.40\nmean: 368428.50\nstdev: 14495.03\ncv: 3.93%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 83124.84,
+            "range": "239.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 83124.84\nmean: 83201.45\nstdev: 239.31\ncv: 0.29%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 831248.43,
+            "range": "2393.08",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 831248.43\nmean: 832014.53\nstdev: 2393.08\ncv: 0.29%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
