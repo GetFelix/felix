@@ -192,21 +192,33 @@ impl ReplicaHandler {
         members.any(|(node, storage)| node == local && storage.is_some_and(|named| named != own))
     }
 
-    fn names_other_in(&self, set: &Membership) -> bool {
-        self.names_other_copy(
-            set.members
-                .iter()
-                .map(|member| (member.node.as_str(), member.storage)),
-        )
+    /// A copy under a storage id minted at this start, whose log holds no set
+    /// yet, may have held this shard before the id changed: nothing it learns
+    /// can say, since a set written after the wipe names the new id or none.
+    /// A set at generation 1 is the shard's creation, which no copy held
+    /// before. The id is new when the directory had none (a wiped or new
+    /// directory, or an older build's) or when the run rotated it.
+    fn fresh_copy_of(&self, log: &felix_broker::StreamLog, generation: u64) -> bool {
+        self.fresh_storage && generation > 1 && log.replica_set().is_none()
     }
 
-    fn names_other_in_view(&self, set: &ReplicaSetView) -> bool {
-        self.names_other_copy(set.members.iter().map(|member| {
-            (
-                member.node_id.as_str(),
-                member.storage_id.map(felix_storage::StorageId::from_bytes),
+    fn names_other_in(&self, log: &felix_broker::StreamLog, set: &Membership) -> bool {
+        self.fresh_copy_of(log, set.generation)
+            || self.names_other_copy(
+                set.members
+                    .iter()
+                    .map(|member| (member.node.as_str(), member.storage)),
             )
-        }))
+    }
+
+    fn names_other_in_view(&self, log: &felix_broker::StreamLog, set: &ReplicaSetView) -> bool {
+        self.fresh_copy_of(log, set.generation)
+            || self.names_other_copy(set.members.iter().map(|member| {
+                (
+                    member.node_id.as_str(),
+                    member.storage_id.map(felix_storage::StorageId::from_bytes),
+                )
+            }))
     }
 
     /// The set as this copy keeps it: a learner stays one, and under
@@ -215,7 +227,7 @@ impl ReplicaHandler {
     fn mark_local(&self, log: &felix_broker::StreamLog, mut set: ReplicaSet) -> ReplicaSet {
         let local = self.router.local_node_id();
         let learner = self.is_learner(log)
-            || (self.joint_gate() == Some(true) && self.names_other_in(&set.current));
+            || (self.joint_gate() == Some(true) && self.names_other_in(log, &set.current));
         for member in set.current.members.iter_mut().filter(|m| m.node == local) {
             member.learner |= learner;
         }
@@ -234,7 +246,7 @@ impl ReplicaHandler {
         log: &felix_broker::StreamLog,
         set: &Membership,
     ) -> Option<InternalMessage> {
-        (self.joint_gate().is_none() && !self.is_learner(log) && self.names_other_in(set))
+        (self.joint_gate().is_none() && !self.is_learner(log) && self.names_other_in(log, set))
             .then(|| undecided(correlation_id, key))
     }
 
@@ -255,7 +267,7 @@ impl ReplicaHandler {
         let evidence = request
             .election
             .as_ref()
-            .is_some_and(|election| self.names_other_in_view(&election.set));
+            .is_some_and(|election| self.names_other_in_view(log, &election.set));
         match self.joint_gate() {
             _ if !learner && !evidence => return None,
             None if !learner => return Some(undecided(correlation_id, key)),

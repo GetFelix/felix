@@ -272,6 +272,49 @@ async fn a_set_naming_its_storage_id_readmits_it_after_catch_up() {
     assert_eq!(log.member_is_learner(LOCAL), Some(false));
 }
 
+/// **A storage id minted at this start is a learner for a shard it may have
+/// held.** The wipe came before any set was heard, so the first set it learns
+/// names its new id: no evidence, only the id's age (`FreshIdLearner` in
+/// `docs/formal/FelixShard.tla`). It refuses the fence, and is admitted once
+/// the start record of that set's generation reaches its log.
+#[tokio::test]
+async fn a_fresh_storage_id_is_a_learner() {
+    let (broker, _dir) = broker_with_storage().await;
+    let handler = handler(&broker, 2, OWN).with_fresh_storage(true);
+
+    let answer = handler
+        .fence(SENDER, fence_with(2, set(2, OWN), None, false))
+        .await;
+    assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
+    let log = log_of(&broker).await;
+    assert_eq!(log.set_generation(), 2, "the set was not learned");
+    assert_eq!(log.member_is_learner(LOCAL), Some(true));
+
+    let answer = handler
+        .apply(SENDER, stamped(2, 0, &["a"]), felix_broker::LogKind::Stream)
+        .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    assert_eq!(log.member_is_learner(LOCAL), Some(false));
+}
+
+/// A shard's creation is a set at generation 1, which no copy held before:
+/// a fresh storage id votes in it.
+#[tokio::test]
+async fn a_fresh_storage_id_votes_at_creation() {
+    let (broker, _dir) = broker_with_storage().await;
+    let handler = handler(&broker, 1, OWN).with_fresh_storage(true);
+
+    let answer = handler
+        .fence(SENDER, fence_with(1, set(1, OWN), None, false))
+        .await;
+    assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
+    let log = log_of(&broker).await;
+    assert_eq!(log.member_is_learner(LOCAL), Some(false));
+}
+
 /// **A learner whose re-admitting leader is lost is re-admitted by the next
 /// one.** The set naming it at 6 was learned, its leader never shipped, and
 /// generation 7 comes with a plain fence: the copy catches up with 7 instead.

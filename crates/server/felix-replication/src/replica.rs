@@ -69,6 +69,8 @@ pub struct ReplicaHandler {
     /// This broker's data directory identity, to tell a set written for this
     /// copy from one written for a copy that was wiped. See `election.rs`.
     local_storage: Option<felix_storage::StorageId>,
+    /// Whether that identity was minted at this start. See `election.rs`.
+    fresh_storage: bool,
     /// Run after an incarnation check passes, to change the catalog between
     /// the check and the open.
     #[cfg(test)]
@@ -129,6 +131,7 @@ impl ReplicaHandler {
             stickiness: crate::suspicion::DEFAULT_SUSPECT_AFTER,
             fleet: None,
             local_storage: None,
+            fresh_storage: false,
             #[cfg(test)]
             incarnation_checked: parking_lot::Mutex::new(None),
         }
@@ -163,6 +166,14 @@ impl ReplicaHandler {
     /// for this broker contradicts: that copy was wiped (#1331).
     pub fn with_local_storage(mut self, storage: felix_storage::StorageId) -> Self {
         self.local_storage = Some(storage);
+        self
+    }
+
+    /// Say this broker's storage identity was minted at this start, so every
+    /// shard log it creates without a kept set is a learner of a set past
+    /// generation 1 (`FreshIdLearner` in `docs/formal/FelixShard.tla`).
+    pub fn with_fresh_storage(mut self, fresh: bool) -> Self {
+        self.fresh_storage = fresh;
         self
     }
 

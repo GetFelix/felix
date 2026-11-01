@@ -49,7 +49,7 @@ pub struct QuorumMarks {
     /// a timed-out wait. Set by the replication driver.
     status: std::sync::OnceLock<Arc<crate::status::ShardStatusBoard>>,
     /// The storage identity of this broker's directory, set once it is known.
-    local_storage: std::sync::OnceLock<felix_storage::StorageId>,
+    local_storage: std::sync::OnceLock<(felix_storage::StorageId, bool)>,
     /// When each shard's timeout was last logged.
     timeout_logged: Mutex<HashMap<ShardKey, tokio::time::Instant>>,
 }
@@ -222,12 +222,18 @@ impl QuorumMarks {
 
     /// Record this broker's storage identity, which a promotion checks its
     /// kept set against. Only the first call counts.
-    pub fn set_local_storage(&self, storage: felix_storage::StorageId) {
-        let _ = self.local_storage.set(storage);
+    /// `fresh` is whether it was minted at this start.
+    pub fn set_local_storage(&self, storage: felix_storage::StorageId, fresh: bool) {
+        let _ = self.local_storage.set((storage, fresh));
     }
 
     pub(crate) fn local_storage(&self) -> Option<felix_storage::StorageId> {
-        self.local_storage.get().copied()
+        self.local_storage.get().map(|(storage, _)| *storage)
+    }
+
+    /// Whether the storage identity was minted at this start.
+    pub fn fresh_storage(&self) -> bool {
+        self.local_storage.get().is_some_and(|(_, fresh)| *fresh)
     }
 
     /// Read follower positions for [`Self::log_timeout`] from `board` from here

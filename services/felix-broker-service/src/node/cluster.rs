@@ -204,11 +204,11 @@ fn replica_handler(
 ) -> replication::ReplicaHandler {
     // A replica refuses a candidate for as long as it would take to suspect
     // its leader, so the two windows agree.
-    quorum_marks.set_local_storage(storage_id);
     let handler = replication::ReplicaHandler::new(Arc::clone(broker), Arc::clone(router))
         .with_stickiness(replication::suspicion::SuspicionConfig::from_env().suspect_after)
         .with_fleet(Arc::clone(quorum_marks))
-        .with_local_storage(storage_id);
+        .with_local_storage(storage_id)
+        .with_fresh_storage(quorum_marks.fresh_storage());
     let handler = match unclean {
         Some(unclean) => handler.with_unclean_start(unclean),
         None => handler,
