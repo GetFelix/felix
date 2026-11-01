@@ -888,11 +888,17 @@ A lease token is a Felix token with a few differences:
 - `perms` are the expanded templates. A lease claim
   (`"lease": {"cache": "prod/leases", "key": "w7", "version": 1}`) is added
   for logs and debugging. Brokers do not authorize with it.
-- `iat` is the caller's token's `iat`. Revoking the caller's principal
-  therefore revokes every lease token minted from its token.
+- `iat` is the caller's token's `iat`, or the mint time if that is earlier.
+  Revoking the caller's principal therefore revokes every lease token minted
+  from its token.
 - `exp` is the earliest of: when the written entry expires (rounded down to
   the second), the caller's token's `exp`, and the broker's maximum,
-  `FELIX_LEASE_TOKEN_MAX_TTL_SECONDS` (300 by default). A key written with no
+  `FELIX_LEASE_TOKEN_MAX_TTL_SECONDS` (300 by default). Every broker must use
+  the same value, since the broker that verifies a token also refuses one that
+  lives longer than its own maximum. While a change rolls out, lower it on
+  every broker before the minting brokers start using it, or raise it on the
+  verifying brokers first; otherwise a token minted under the larger value is
+  refused by a broker still on the smaller one. A key written with no
   TTL still gets a short-lived token. If that time is already past, the write
   stays applied and the answer carries `lease_refused` instead of a token.
 - The caller's token is the one its cache stream authenticated with, which on
@@ -931,8 +937,9 @@ public keys. With them, every broker host holds one signing key that works for
 every tenant. A broker mints only what the caller's own token's templates
 name, so grants still come from control-plane RBAC, but a stolen key file can
 sign tokens directly. Verification limits what such a token can do. A broker
-accepts a lease token only when it has a `lease` claim, was not issued in the
-future, lives no longer than `FELIX_LEASE_TOKEN_MAX_TTL_SECONDS`, and grants
+accepts a lease token only when it has a `lease` claim, an `iat` (the
+caller's issue time, capped at the mint time) no later than now, a lifetime
+no longer than its own `FELIX_LEASE_TOKEN_MAX_TTL_SECONDS`, and grants
 nothing but publish or subscribe on exact streams, or read or write on exact
 cache keys, in its own tenant: no `*`, no template, no management action.
 With the key, an attacker can still write any stream or cache key of any
@@ -975,9 +982,10 @@ token is never logged. `felix_lease_tokens_issued_total` counts mints, and
 
 ### Known limit
 
-A principal with `cache.read` and `cache.write` on the lease cache can take a
-live lease from its holder. It reads the key's version and writes at that
-version with `cache_put_if_lease`, which applies and returns a token at once.
+A principal that can write the lease cache (`cache.write` on it) can take a
+live lease from its holder. It learns the key's version, from a refused
+`cache_put_if` if it cannot read the cache, and writes at that version with
+`cache_put_if_lease`, which applies and returns a token at once.
 It can also delete the entry with `cache_delete_if` and claim the key fresh.
 The holder sees either, because its next renewal fails, and its own token
 still expires on time.

@@ -651,9 +651,8 @@ caller's principal also revokes its lease tokens. Each mint is logged at
 The lease key is a signing key for every tenant, held by every broker, so
 protect the file. Brokers accept only tokens shaped like the ones they mint:
 short-lived, with exact stream or cache key data grants and nothing wider.
-A principal with read and write access to the lease cache can take a live
-lease, by writing at the version it read or by deleting the entry and
-claiming it; the holder notices when its next renewal fails. Lease tokens are
+A principal that can write the lease cache can take a live lease, by writing
+at the key's current version or by deleting the entry and claiming it; the holder notices when its next renewal fails. Lease tokens are
 in the Rust client only so far.
 See
 [docs/auth.md](https://github.com/GetFelix/felix/blob/main/docs/auth.md#lease-tokens)

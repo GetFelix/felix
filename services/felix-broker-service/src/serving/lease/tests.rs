@@ -253,3 +253,18 @@ fn claims_no_broker_would_mint_are_refused_even_when_signed() {
         .verify(&TenantId::new("t1"), &key)
         .expect("an exact cache key is what a template mints");
 }
+
+/// A control plane whose clock runs ahead issues caller tokens dated in the
+/// future; the lease token minted from one must still verify here.
+#[test]
+fn a_caller_token_from_a_clock_ahead_still_mints_a_token_that_verifies() {
+    let tokens = tokens();
+    let mut caller = caller(&[TEMPLATE]);
+    caller.issued_at = now() + 120;
+    let mint = LeaseMint::plan(&tokens, &caller, "prod", "leases", "w7").expect("plan");
+    let (token, _) = minted(mint.mint(1, None));
+    let claims = tokens
+        .verify(&TenantId::new("t1"), &token)
+        .expect("verifies");
+    assert!(claims.iat <= now());
+}

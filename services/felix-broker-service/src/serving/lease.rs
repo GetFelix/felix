@@ -52,6 +52,13 @@ pub struct LeaseTokens {
 }
 
 impl LeaseTokens {
+    /// Read `FELIX_LEASE_TOKEN_KEY_FILE` and
+    /// `FELIX_LEASE_TOKEN_MAX_TTL_SECONDS`. `None` without a key file: the
+    /// broker then neither mints nor accepts lease tokens.
+    ///
+    /// # Errors
+    /// An unreadable or malformed key file, or a TTL that is not a positive
+    /// whole number of seconds.
     pub fn from_env() -> Result<Option<Self>> {
         let Some(path) = std::env::var(KEY_FILE_ENV)
             .ok()
@@ -299,8 +306,10 @@ impl LeaseMint {
             tid: self.tenant_id.clone(),
             exp,
             // The caller's, so revoking the caller's principal also revokes
-            // every lease token minted from its token.
-            iat: self.issued_at,
+            // every lease token minted from its token. Capped at now, since a
+            // control-plane clock ahead of this one would otherwise mint a
+            // token verification refuses as issued in the future.
+            iat: self.issued_at.min(now),
             jti: Some(uuid::Uuid::new_v4().simple().to_string()),
             perms: self.perms.clone(),
             act: None,
