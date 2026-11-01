@@ -3594,7 +3594,8 @@ Once it is finalized on a broker that offers `ELECTION`:
   and seat, a top-up and a grow. The set being left is the one the leader's
   log kept, from its previous leader's batches or from its own last fence, so
   the control plane is not asked. A member of it that no route names any
-  more is reached at the address the node catalog gives.
+  more is reached at the address the node catalog gives, and answers even
+  though its own routing view leaves it out.
 - The leader keeps the new set with the one it left beside it, and so does
   every replica that took the fence, so a fence tried again at that
   generation is joint too. A leader that keeps a changed set while shipping
@@ -3618,7 +3619,9 @@ driver.
 > `a_cut_over_swapping_two_members_waits_for_the_old_majority`: the joint
 > fence. `a_joint_fence_never_counts_a_learner`: learners in the set being
 > left. `a_joint_fence_counts_the_old_set_only_from_the_copies_it_names`: the
-> copy check. `under_joint_fence_a_shipping_leader_keeps_the_set_it_leaves`:
+> copy check. `a_member_the_new_route_leaves_out_still_answers_a_joint_fence`:
+> a voter of the set being left answers though its routing view no longer
+> names it. `under_joint_fence_a_shipping_leader_keeps_the_set_it_leaves`:
 > the set being left survives a ship pass before the fence. `without_joint_fence_a_set_change_fences_the_new_set_alone` and
 > `a_member_without_election_fences_the_new_set_alone`: the fence is
 > unchanged when it does not apply.
