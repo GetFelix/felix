@@ -257,7 +257,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardElectWipeNonVoterFailoverWipesLeader.cfg` | the same where a leader or candidate can be wiped (`WipeLeads`) | pass, the same invariants (53.2M distinct states, depth 37, 11 min on twelve workers; runs nightly, not per PR, see below) |
 | `FelixShardElectWipeNonVoterPromotes.cfg` | `FelixShardElectWipeNonVoterFailover.cfg` with failover free to name a non-voter (`PromoteNonVoter`) | violate `OneLeaderPerGeneration`: the non-voter forgot its promise to a candidate and is promoted at that generation |
 | `FelixShardElectWipeNonVoterCreates.cfg` | `FelixShardElectWipeNonVoter.cfg` starting as the shard is created (`Creates`): the first leader fences at generation 1, no follower holds a promise or a set, and a follower not wiped votes with an empty log | pass, the same invariants |
-| `FelixShardElectWipeNonVoterCreateCountsEmpty.cfg` | the same, where a copy with no set file votes, wiped or not (`CreateCountsEmpty`) | violate `AckedHeldByLeader`: the wiped copy votes with an empty log for a leader without write 1 |
+| `FelixShardElectWipeNonVoterCreateCountsEmpty.cfg` | the same, where a copy with no set file votes, wiped or not (`CreateCountsEmpty`) | violate `OneLeaderPerGeneration`: the wiped copy forgot its promise of generation 2 and gives it to a second leader |
 | `FelixShardElectWipeNonVoterCreatesOpens.cfg` | `FelixShardElectWipeNonVoterCreates.cfg` with no write, checking a witness | violate `NoCreationBesideNonVoter`: the new shard opens while a copy wiped before it answered is a non-voter |
 | `FelixShardElectWipeNonVoterElects.cfg` | `FelixShardElectWipeNonVoter.cfg`, checking a witness | violate `NoLeaderBesideNonVoter`: a leader at a generation taken after the wipe opens without the non-voter |
 | `FelixShardElectWipeNonVoterReadmits.cfg` | the same | violate `NeverReadmitted`: the re-admission completes after the catch-up |
@@ -1046,9 +1046,9 @@ plane holds failed:
   and counts, and that passes: it holds every acknowledged record, which is
   none. Treating a missing set file as a new shard instead
   (`FelixShardElectWipeNonVoterCreateCountsEmpty.cfg`, `CreateCountsEmpty`)
-  loses a write: write 1 is acknowledged on {a, b}, b is wiped and loses its
-  set file with its log, c stands at 2, b answers, and c opens without write
-  1. Only evidence of the wipe tells a new copy from a wiped one; the broker
+  finds two leaders at one generation: b opens at 2 on {b, c}, c is wiped
+  and loses its promise with its set file, and the creating leader a stands at
+  2 and opens on {a, c}. Only evidence of the wipe tells a new copy from a wiped one; the broker
   uses the storage id the control plane recorded for the copy. A witness
   shows a new shard opening beside a copy wiped before it answered
   (`FelixShardElectWipeNonVoterCreatesOpens.cfg`).

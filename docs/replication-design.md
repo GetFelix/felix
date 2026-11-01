@@ -807,8 +807,8 @@ a new shard's copies, which hold no set and no promise, vote at creation (they
 hold every acknowledged record, which is none), and a copy written before sets
 existed stays a voter when the fleet finalizes. The model shows why the
 evidence has to be the storage id: a wipe takes the set file too, and treating
-a missing set as a new shard loses a write
-(`FelixShardElectWipeNonVoterCreateCountsEmpty.cfg`). A learner:
+a missing set as a new shard lets a wiped copy promise one generation to two
+leaders (`FelixShardElectWipeNonVoterCreateCountsEmpty.cfg`). A learner:
 
 - refuses every fence, a candidate's and its own re-admission's included,
   after learning the set the fence carried (`Unauthorized`, no ballot taken),

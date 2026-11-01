@@ -269,7 +269,7 @@ expectations=(
   "FelixShardElectWipeNonVoterFailsOver violates NoFailoverBesideNonVoter"
   "FelixShardElectWipeNonVoterPromotes violates OneLeaderPerGeneration"
   "FelixShardElectWipeNonVoterCreates pass"
-  "FelixShardElectWipeNonVoterCreateCountsEmpty violates AckedHeldByLeader"
+  "FelixShardElectWipeNonVoterCreateCountsEmpty violates OneLeaderPerGeneration"
   "FelixShardElectWipeNonVoterCreatesOpens violates NoCreationBesideNonVoter"
   "FelixGroups pass"
   "FelixGroupsNoCheck violates NoSkip"
