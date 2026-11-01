@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793547704552,
+  "lastUpdate": 1793558841170,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -41184,6 +41184,58 @@ window.BENCHMARK_DATA = {
             "range": "70763.96",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1589026.72\nmean: 1591161.97\nstdev: 70763.96\ncv: 4.45%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0cdbac84a51d7e73f960b5f3b80124634cd0af5f",
+          "message": "feat(replication): leader acks on both majorities while a set change is pending (#1009 S6b) (#1732)\n\n* feat(replication): leader acks on both majorities while a set change is pending (#1009 S6b)\n\nWhile a route carries a pending change, a record is held only when a\nmajority of the new set and of the set being left hold it, and the leader\nreports the pending set's generation in joint_start_acked once its\ngeneration-start record is held that way. The broker's watch now reads the\nassignment's pending_set: the route names the pending followers and keeps\nthe control plane's set beside it. Gated on joint_fence; with it off the\nack path is unchanged.\n\nSpec-Unaffected: the code implements HeldAtGen under JointFence as\nFelixShard.tla models it; the broker reads the pending set the model's Swap\nrecords, and an unknown set being left only withholds acknowledgements.\n\n* fix(replication): a pending change acks nothing when it cannot be counted, no joint start without quorum acks (#1009 S6b)\n\nSpec-Unaffected: both only withhold acknowledgements and reports.",
+          "timestamp": "2026-11-01T10:44:03-08:00",
+          "tree_id": "7c9225892c336afc4ef5398f5abe25b30eb684ca",
+          "url": "https://github.com/GetFelix/felix/commit/0cdbac84a51d7e73f960b5f3b80124634cd0af5f"
+        },
+        "date": 1793558840550,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 703872.46,
+            "range": "29710.44",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 703872.46\nmean: 693798.65\nstdev: 29710.44\ncv: 4.28%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 703872.46,
+            "range": "29710.44",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 703872.46\nmean: 693798.65\nstdev: 29710.44\ncv: 4.28%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 167963.4,
+            "range": "3437.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 167963.40\nmean: 166801.34\nstdev: 3437.56\ncv: 2.06%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1679634.01,
+            "range": "34375.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1679634.01\nmean: 1668013.42\nstdev: 34375.58\ncv: 2.06%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
