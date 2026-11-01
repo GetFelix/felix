@@ -67,3 +67,24 @@ async fn forbidden_wrote_nothing() -> Result<()> {
 
     Ok(())
 }
+
+/// **An answer that says nothing about the write is unknown too.** Neither an
+/// error without a code nor a stray message tells the writer it is safe.
+#[tokio::test]
+#[serial_test::serial]
+async fn an_uncoded_error_or_a_stray_answer_is_unknown() -> Result<()> {
+    let uncoded = Message::Error {
+        message: "boom".into(),
+        retry: None,
+        code: None,
+        detail: None,
+    };
+    let (_broker, cluster) = cluster_answering(uncoded).await?;
+    let err = publish_if(&cluster).await.unwrap_err();
+    assert!(outcome_unknown(&err), "{err:#}");
+
+    let (_broker, cluster) = cluster_answering(Message::CacheOk { request_id: 0 }).await?;
+    let err = publish_if(&cluster).await.unwrap_err();
+    assert!(outcome_unknown(&err), "{err:#}");
+    Ok(())
+}

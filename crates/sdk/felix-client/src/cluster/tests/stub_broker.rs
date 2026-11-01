@@ -540,6 +540,8 @@ async fn serve_stream(
                     .push(("publish_if", shard, payloads));
                 let answer = match script(request_id) {
                     refusal @ (Message::NotLeader { .. } | Message::Error { .. }) => refusal,
+                    // An answer that is not a publish's.
+                    stray @ Message::CacheOk { .. } => stray,
                     // The stream goes away with the request taken and no answer.
                     Message::Ok => return Err(anyhow::anyhow!("stub drops the stream")),
                     _ => Message::PublishOk {

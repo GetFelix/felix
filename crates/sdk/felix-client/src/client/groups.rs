@@ -17,7 +17,7 @@ use felix_wire::{Message, StartPosition};
 use super::Connection;
 use crate::NotLeaderError;
 use crate::connection::OpenedStream;
-use crate::frame_io::{read_message_with_limit, write_message};
+use crate::frame_io::{read_message_with_limit, write_frame_parts, write_message};
 
 /// A member of a consumer group that names itself when it polls. See
 /// [`Connection::group_poll_as`].
@@ -699,9 +699,14 @@ impl Connection {
             lease: _lease,
             ..
         } = self.open_event_stream().await?;
-        write_message(&mut send, message)
+        let what = operation.trim_end_matches(" refused");
+        // An encode failure sent nothing, so only the write can be lost.
+        let frame = message
+            .encode()
+            .with_context(|| format!("encode {what} request"))?;
+        write_frame_parts(&mut send, &frame)
             .await
-            .with_context(|| format!("send {} request", operation.trim_end_matches(" refused")))
+            .with_context(|| format!("send {what} request"))
             .map_err(lost)?;
         let mut scratch = BytesMut::with_capacity(64 * 1024);
         let answer =
@@ -715,9 +720,13 @@ impl Connection {
                 code,
                 retry,
                 detail,
-            }) => Err(crate::error::refused(
-                operation, message, code, retry, detail,
-            )),
+            }) => {
+                let uncoded = code.is_none();
+                let refusal = crate::error::refused(operation, message, code, retry, detail);
+                // A coded refusal says what it was; an uncoded one says
+                // nothing about whether the write landed.
+                Err(if uncoded { lost(refusal) } else { refusal })
+            }
             // Typed, so a caller can follow it: only the shard's leader holds
             // its groups, and this names which broker that is.
             Some(Message::NotLeader {
@@ -736,9 +745,9 @@ impl Connection {
                 if let Some(id) = group_response_id(&other)
                     && id != request_id
                 {
-                    return Err(anyhow::anyhow!(
+                    return Err(lost(anyhow::anyhow!(
                         "group answer carried request id {id}, expected {request_id}",
-                    ));
+                    )));
                 }
                 Ok(other)
             }

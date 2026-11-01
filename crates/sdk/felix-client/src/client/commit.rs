@@ -156,7 +156,7 @@ impl Connection {
             expected_offset,
             shard,
         };
-        self.group_round_trip(message, request_id, "commit refused")
+        self.write_round_trip(message, request_id, "commit refused")
             .await
     }
 
@@ -173,7 +173,8 @@ impl Connection {
     ///
     /// Not all or nothing on a `Quorum` stream: after an error whose outcome
     /// is unknown, any prefix of `payloads` may exist. Such an error is an
-    /// [`crate::AckLost`] (the transport failed after the send) or a
+    /// [`crate::AckLost`] (anything that went wrong after the send, short of a
+    /// coded refusal) or a
     /// [`crate::BrokerError`] with [`felix_wire::RetryClass::OutcomeUnknown`];
     /// [`crate::outcome_unknown`] tells them from a refusal that wrote
     /// nothing. A batch that must be all or nothing goes through
@@ -423,9 +424,14 @@ fn conditional_answer(request: &str, answer: Message) -> Result<ConditionalWrite
     }
 }
 
+/// An answer that belongs to no write this client sent. The request went
+/// out, so whether it landed is unknown.
 fn unexpected(request: &str, answer: &Message) -> anyhow::Error {
-    anyhow::anyhow!(
-        "unexpected answer to {request}: {:?}",
-        std::mem::discriminant(answer)
-    )
+    crate::AckLost {
+        reason: format!(
+            "unexpected answer to {request}: {:?}",
+            std::mem::discriminant(answer)
+        ),
+    }
+    .into()
 }
