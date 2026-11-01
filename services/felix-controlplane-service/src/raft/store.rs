@@ -157,7 +157,18 @@ fn write_meta<T: serde::Serialize>(
         let mut table = txn.open_table(META).map_err(write_err)?;
         table.insert(key, bytes.as_slice()).map_err(write_err)?;
     }
-    txn.commit().map_err(write_err)?;
+    {
+        let t0 = std::time::Instant::now();
+        txn.commit().map_err(write_err)?;
+        let el = t0.elapsed();
+        if el > std::time::Duration::from_millis(30) {
+            tracing::warn!(
+                elapsed_ms = el.as_millis() as u64,
+                line = line!(),
+                "DIAG slow raft store commit"
+            );
+        }
+    }
     Ok(())
 }
 
@@ -261,7 +272,18 @@ impl RaftLogStorage<TypeConfig> for LogStore {
                     .map_err(write_err)?;
             }
         }
-        txn.commit().map_err(write_err)?;
+        {
+            let t0 = std::time::Instant::now();
+            txn.commit().map_err(write_err)?;
+            let el = t0.elapsed();
+            if el > std::time::Duration::from_millis(30) {
+                tracing::warn!(
+                    elapsed_ms = el.as_millis() as u64,
+                    line = line!(),
+                    "DIAG slow raft store commit"
+                );
+            }
+        }
         // Only after the durable commit: this callback is openraft's "these
         // entries survive a crash" signal, and everything downstream
         // (commit, apply, acknowledgements) leans on it being true.
@@ -286,7 +308,18 @@ impl RaftLogStorage<TypeConfig> for LogStore {
                 table.remove(index).map_err(write_err)?;
             }
         }
-        txn.commit().map_err(write_err)?;
+        {
+            let t0 = std::time::Instant::now();
+            txn.commit().map_err(write_err)?;
+            let el = t0.elapsed();
+            if el > std::time::Duration::from_millis(30) {
+                tracing::warn!(
+                    elapsed_ms = el.as_millis() as u64,
+                    line = line!(),
+                    "DIAG slow raft store commit"
+                );
+            }
+        }
         Ok(())
     }
 
@@ -311,7 +344,18 @@ impl RaftLogStorage<TypeConfig> for LogStore {
                 table.remove(index).map_err(write_err)?;
             }
         }
-        txn.commit().map_err(write_err)?;
+        {
+            let t0 = std::time::Instant::now();
+            txn.commit().map_err(write_err)?;
+            let el = t0.elapsed();
+            if el > std::time::Duration::from_millis(30) {
+                tracing::warn!(
+                    elapsed_ms = el.as_millis() as u64,
+                    line = line!(),
+                    "DIAG slow raft store commit"
+                );
+            }
+        }
         Ok(())
     }
 }
@@ -381,7 +425,18 @@ impl StateMachineStore {
                 .insert(KEY_SNAPSHOT_DATA, data_bytes.as_slice())
                 .map_err(write_err)?;
         }
-        txn.commit().map_err(write_err)?;
+        {
+            let t0 = std::time::Instant::now();
+            txn.commit().map_err(write_err)?;
+            let el = t0.elapsed();
+            if el > std::time::Duration::from_millis(30) {
+                tracing::warn!(
+                    elapsed_ms = el.as_millis() as u64,
+                    line = line!(),
+                    "DIAG slow raft store commit"
+                );
+            }
+        }
         Ok(())
     }
 }

@@ -1,0 +1,62 @@
+name: Loop raft_hold (#1705)
+
+on:
+  push:
+    branches: ["ci-1705-loop"]
+
+permissions:
+  contents: read
+
+jobs:
+  loop:
+    strategy:
+      fail-fast: false
+      matrix:
+        load: [quiet, cpu, io]
+        floor: ["10", "0"]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.99.1"
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: loop-1705
+      - name: Build
+        run: |
+          cargo test -p felix-controlplane-service --test raft_hold --no-run 2>&1 | tail -3
+          bin=$(cargo test -p felix-controlplane-service --test raft_hold --no-run --message-format=json 2>/dev/null | jq -r 'select(.profile.test == true and .target.name == "raft_hold") | .executable')
+          echo "BIN=$bin" >> "$GITHUB_ENV"
+      - name: Loop
+        env:
+          DIAG_FLOOR: ${{ matrix.floor }}
+        run: |
+          set +e
+          sudo apt-get install -y -qq stress-ng >/dev/null 2>&1
+          case "${{ matrix.load }}" in
+            cpu) stress-ng --cpu "$(nproc)" --quiet & ;;
+            io) stress-ng --hdd 2 --hdd-bytes 256M --iomix 2 --quiet & ;;
+          esac
+          mkdir -p fails
+          pass=0; fail=0
+          end=$((SECONDS + 40*60))
+          for i in $(seq 1 200); do
+            [ $SECONDS -ge $end ] && break
+            if "$BIN" > out.txt 2>&1; then pass=$((pass+1)); else fail=$((fail+1)); cp out.txt "fails/iter-$i.txt"; fi
+          done
+          echo "load=${{ matrix.load }} floor=${{ matrix.floor }} pass=$pass fail=$fail" | tee summary.txt
+          echo "### load=${{ matrix.load }} floor=${{ matrix.floor }}: pass=$pass fail=$fail" >> "$GITHUB_STEP_SUMMARY"
+          for f in fails/*.txt; do [ -f "$f" ] && grep -h "panicked\|left:\|right:" "$f" >> "$GITHUB_STEP_SUMMARY"; done
+          exit 0
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: loop-${{ matrix.load }}-floor${{ matrix.floor }}
+          path: |
+            summary.txt
+            fails/
+          if-no-files-found: ignore
