@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793499874279,
+  "lastUpdate": 1793509533499,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -51942,6 +51942,72 @@ window.BENCHMARK_DATA = {
             "range": "39.18",
             "unit": "us",
             "extra": "trials: 5\nmedian: 469.00\nmean: 492.80\nstdev: 39.18\ncv: 7.95%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "78e7a17d4686f803573826797649facb081def65",
+          "message": "feat(controlplane): pending replica set and its flip on the joint start (#1009 S6a) (#1724)\n\n* feat(controlplane): pending replica set and its flip on the joint start (#1009 S6a)\n\nUnder replica_election, a cut-over that changes the replica set of a shard\nwhose replicas elect keeps the old set as the control plane's own and records\nthe new one as the assignment's pending_set, at the cut-over's generation.\nWhile it is pending placement changes nothing else about the shard, and an\noperator's move or cancel is refused (409 set_change_pending). A failover\nplaces the shard from the old set, which abandons the change. Placement takes\nthe pending set only when the leader's report at the assignment's generation\nnames its generation in joint_start_acked, conditional on that generation.\nThis is Swap and CpFlip in FelixShard.tla (decision 7 in\nreplication-design.md).\n\nThe pending set and the report field are metadata level 21 under Raft: below\nit the pending write is refused before it reaches the log, the report is\nproposed without the joint start, and finalizing replica_election is refused.\nPostgres gets migration 0038 with generation markers, so what an older\ninstance leaves behind reads as none. Without replica_election a cut-over\nwrites exactly what it did before.\n\nELECTION_METADATA_LEVEL_READY is now true.\n\nSpec-Unaffected: implements the control plane's side of Swap and CpFlip as FelixShard.tla already models them; WalkElectSwap.cfg now cites the tests.\n\n* fix(controlplane): end a stuck pending replica set, keep election finalize gated (#1009 S6a)\n\nA pending set now ends on a timeout (FELIX_SHARD_PENDING_SET_TIMEOUT_MS), when the shard stops electing, or on an operator cancel, writing the old set back at a new generation. The store verifies a new pending set names the generation it is written at. replica_election stays unfinalizable until adoption exists.",
+          "timestamp": "2026-10-31T22:01:15-07:00",
+          "tree_id": "b9eadd0963c371b5fe6351633cae98bb02583622",
+          "url": "https://github.com/GetFelix/felix/commit/78e7a17d4686f803573826797649facb081def65"
+        },
+        "date": 1793509526061,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 112,
+            "range": "7.16",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 112.00\nmean: 114.60\nstdev: 7.16\ncv: 6.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 159,
+            "range": "94.24",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 159.00\nmean: 201.20\nstdev: 94.24\ncv: 46.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 278,
+            "range": "82.46",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 278.00\nmean: 284.40\nstdev: 82.46\ncv: 29.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 145,
+            "range": "2.97",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 145.00\nmean: 145.40\nstdev: 2.97\ncv: 2.04%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 292,
+            "range": "65.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 292.00\nmean: 317.20\nstdev: 65.45\ncv: 20.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 403,
+            "range": "349.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 403.00\nmean: 559.80\nstdev: 349.45\ncv: 62.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
