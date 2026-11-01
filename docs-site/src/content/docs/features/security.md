@@ -585,8 +585,11 @@ It grants only what the caller's *lease templates* name for that key.
 Lease tokens are for nodes that share one identity, such as the workers of a
 scheduler. Without them, any node that may write one workload's output may
 write every workload's output. With them, a node's own token holds only the
-lease cache and the templates, and it can write a workload's output only while
-it holds that workload's lease.
+lease cache and the templates, so it cannot write a workload's output without
+holding that workload's lease. That stops a stale or slow node from writing
+after another node took over, and taking a lease is visible to its holder.
+A compromised node that can write the lease cache can still take a lease, but
+it can write only for the leases it takes, and their holders notice.
 
 To use them:
 
@@ -645,9 +648,13 @@ keep writing over a stream it opened before it lost the lease. Revoking the
 caller's principal also revokes its lease tokens. Each mint is logged at
 `info` without the token, and counted in `felix_lease_tokens_issued_total`.
 
-One gap remains: a principal with `cache.write` on the lease cache can delete
-another node's lease with `cache_delete_if` and claim it. The holder notices,
-since its next renewal fails. Lease tokens are in the Rust client only so far.
+The lease key is a signing key for every tenant, held by every broker, so
+protect the file. Brokers accept only tokens shaped like the ones they mint:
+short-lived, with exact stream or cache key data grants and nothing wider.
+A principal with read and write access to the lease cache can take a live
+lease, by writing at the version it read or by deleting the entry and
+claiming it; the holder notices when its next renewal fails. Lease tokens are
+in the Rust client only so far.
 See
 [docs/auth.md](https://github.com/GetFelix/felix/blob/main/docs/auth.md#lease-tokens)
 for the template grammar, key rotation and the wire details.

@@ -201,3 +201,55 @@ fn the_mint_is_refused_before_the_write() {
         );
     }
 }
+
+/// What a leaked key can sign is bounded by what verification accepts: only
+/// the shape a broker mints.
+#[test]
+fn claims_no_broker_would_mint_are_refused_even_when_signed() {
+    let tokens = tokens();
+    let caller = caller(&[TEMPLATE]);
+    let (token, _) = minted(plan(&caller, "w7").unwrap().mint(1, None));
+    let good = tokens.verify(&TenantId::new("t1"), &token).expect("verify");
+    let now = now();
+    let forged = |edit: &dyn Fn(&mut FelixClaims)| {
+        let mut claims = good.clone();
+        edit(&mut claims);
+        tokens.sign(claims).expect("sign")
+    };
+    let cases: Vec<(&str, String)> = vec![
+        ("no lease claim", forged(&|c| c.lease = None)),
+        ("future iat", forged(&|c| c.iat = now + 60)),
+        ("long life", forged(&|c| c.exp = now + 3_600)),
+        (
+            "wildcard",
+            forged(&|c| c.perms = vec!["stream.publish:stream:t1/prod/*".into()]),
+        ),
+        ("template", forged(&|c| c.perms = vec![TEMPLATE.into()])),
+        (
+            "manage",
+            forged(&|c| c.perms = vec!["stream.manage:stream:t1/prod/s".into()]),
+        ),
+        (
+            "other tenant",
+            forged(&|c| c.perms = vec!["stream.publish:stream:t2/prod/s".into()]),
+        ),
+        (
+            "whole cache",
+            forged(&|c| c.perms = vec!["cache.write:cache:t1/prod/c".into()]),
+        ),
+        (
+            "cluster",
+            forged(&|c| c.perms = vec!["node.view:cluster:*".into()]),
+        ),
+    ];
+    for (what, token) in cases {
+        assert!(
+            tokens.verify(&TenantId::new("t1"), &token).is_err(),
+            "{what}"
+        );
+    }
+    let key = forged(&|c| c.perms = vec!["cache.write:cache:t1/prod/c/wl.w7".into()]);
+    tokens
+        .verify(&TenantId::new("t1"), &key)
+        .expect("an exact cache key is what a template mints");
+}

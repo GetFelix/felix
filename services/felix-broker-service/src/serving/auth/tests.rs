@@ -381,3 +381,27 @@ async fn a_control_plane_that_never_answers_times_out() -> Result<()> {
     assert!(result.is_err());
     Ok(())
 }
+
+/// A lease token skips the JWKS fetch, so its tenant id gets the same check
+/// before any key is touched: the id is the client's, and nothing it names
+/// may be kept.
+#[tokio::test]
+async fn a_lease_token_for_an_implausible_tenant_is_refused_before_verifying() {
+    let lease = crate::serving::lease::LeaseTokens::from_keys(
+        &base64::engine::general_purpose::STANDARD.encode([4u8; 32]),
+        crate::serving::lease::DEFAULT_MAX_TTL,
+    )
+    .expect("keys");
+    let auth =
+        BrokerAuth::new("http://127.0.0.1:1".to_string()).with_lease_tokens(Some(Arc::new(lease)));
+    let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"EdDSA","kid":"lease-junk"}"#);
+    let junk = format!("{header}.e30.c2ln");
+    for tenant in ["x".repeat(TENANT_ID_MAX_BYTES + 1), "..".to_string()] {
+        let err = auth
+            .authenticate(&tenant, &junk)
+            .await
+            .err()
+            .expect("refused");
+        assert!(err.to_string().contains("invalid tenant id"), "{err:#}");
+    }
+}

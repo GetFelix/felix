@@ -795,10 +795,15 @@ name for that key. A *lease template* is an RBAC object with one `{cache}`
 slot, such as `stream:acme/prod/wl.{leases}.out`: for whoever holds key `w7`
 of cache `acme/prod/leases`, it names `stream:acme/prod/wl.w7.out`.
 
-This lets many nodes share one identity without each being able to write
-every workload's output. A node's own token holds the lease cache and the
-templates. It gets a token for a workload's output only by winning that
-workload's lease, and the token stops working soon after the lease is lost.
+This is for many nodes that share one identity. A node's own token holds the
+lease cache and the templates, not the outputs. So a node cannot write a
+workload's output without holding that workload's lease, and its token for the
+output stops working soon after the lease is lost. That stops a stale or slow
+node from writing after another node has taken over, and taking a lease is
+visible to its holder, whose next renewal fails. It does not stop a
+compromised node that can write the lease cache from taking a lease; it only
+limits that node to writing for the leases it takes, where the holder can see
+it. See [Known limit](#known-limit).
 
 ### Using lease tokens
 
@@ -890,9 +895,13 @@ A lease token is a Felix token with a few differences:
   `FELIX_LEASE_TOKEN_MAX_TTL_SECONDS` (300 by default). A key written with no
   TTL still gets a short-lived token. If that time is already past, the write
   stays applied and the answer carries `lease_refused` instead of a token.
-  The caller's token is the one its stream authenticated with, which on a
-  long-lived connection may have expired, so a client that claims leases for
-  a long time claims over a stream opened with a fresh token.
+- The caller's token is the one its cache stream authenticated with, which on
+  a long-lived connection may have expired. When this broker owns the key, the
+  write applies and comes back with `lease_refused`. When it forwards the write,
+  the owner checks the token again: within its 60 seconds of clock leeway the
+  result is the same, and after that the owner refuses with `unauthorized`
+  and writes nothing. Either way, a client that claims leases for a long time
+  should claim over a stream opened with a fresh token.
 - Verification allows 2 seconds of clock skew, not the 60 seconds allowed for
   control-plane tokens.
 
@@ -913,13 +922,22 @@ lines and lines starting with `#` are ignored. Every broker needs the same
 file, since any broker may own a lease key and any broker may serve the
 output. The file is read once at startup, and a malformed file stops the
 broker with an error that names the line but not its contents. Keep the file
-as secret as a tenant signing key: whoever has it can mint lease tokens.
+secret: whoever has it can mint lease tokens.
 Without the file, the broker does not advertise
 `FEATURE_LEASE_TOKEN`, refuses to mint, and refuses lease tokens.
 
-Brokers already see every bearer token they serve, so holding a signing key
-gives them no new power. Grants still come only from control-plane RBAC: a
-broker mints only what the caller's own token's templates name.
+This changes what a broker host holds. Before lease tokens, brokers held only
+public keys. With them, every broker host holds one signing key that works for
+every tenant. A broker mints only what the caller's own token's templates
+name, so grants still come from control-plane RBAC, but a stolen key file can
+sign tokens directly. Verification limits what such a token can do. A broker
+accepts a lease token only when it has a `lease` claim, was not issued in the
+future, lives no longer than `FELIX_LEASE_TOKEN_MAX_TTL_SECONDS`, and grants
+nothing but publish or subscribe on exact streams, or read or write on exact
+cache keys, in its own tenant: no `*`, no template, no management action.
+With the key, an attacker can still write any stream or cache key of any
+tenant for a few minutes at a time, so protect the file like a tenant
+signing key and rotate it if it leaks.
 
 To rotate the key without refusing any token:
 
@@ -957,13 +975,18 @@ token is never logged. `felix_lease_tokens_issued_total` counts mints, and
 
 ### Known limit
 
-A principal with `cache.write` on the lease cache can still end another
-holder's lease: it reads the key's version and calls `cache_delete_if`, then
-claims the key itself. The holder sees this, because its next renewal fails,
-and its token still expires on time. Making deletes holder-only would need
-the cache to record who wrote each entry. Lease tokens narrow what a node can
-write without a lease; they do not stop a node with lease-cache access from
-taking one.
+A principal with `cache.read` and `cache.write` on the lease cache can take a
+live lease from its holder. It reads the key's version and writes at that
+version with `cache_put_if_lease`, which applies and returns a token at once.
+It can also delete the entry with `cache_delete_if` and claim the key fresh.
+The holder sees either, because its next renewal fails, and its own token
+still expires on time.
+
+So lease tokens stop a node that is behind or stuck from writing after it lost
+its lease, and they bound a compromised node to the leases it takes, which
+their holders notice. They do not stop that node from taking a lease. Nodes
+that share one identity look the same to the cache, so recording who wrote an
+entry would not tell them apart either.
 
 Only the Rust client asks for lease tokens so far. The Python, TypeScript and
 C# clients will follow.

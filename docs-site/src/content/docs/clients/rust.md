@@ -1451,9 +1451,11 @@ lease or delegated token, holds no template naming this cache, or the key
 cannot be part of a name. An applied write whose token would already be
 expired comes back with `token_refused` set; the write stands. That happens
 when the token the cache stream authenticated with has expired, since a lease
-token never outlives it: a connection authenticates its cache stream once, so
-on a long-lived connection claim through a handle opened with a fresh token
-(`with_identity`). Streams opened with a lease token end when it expires, so
+token never outlives it. If the key lives on another broker, the claim can
+instead fail with `unauthorized` and write nothing, once that token is more
+than a minute past its expiry. A connection authenticates its cache stream
+once, so on a long-lived connection claim through a handle opened with a
+fresh token (`with_identity`). Streams opened with a lease token end when it expires, so
 switch handles on each renewal.
 `LeaseToken` leaves the token out of its `Debug` output. `Connection` has the
 same call.

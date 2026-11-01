@@ -138,6 +138,9 @@ impl BrokerAuth {
         // whose kid points at the wrong set only fails.
         let lease_token = is_lease_token(token);
         let claims = if lease_token {
+            // The JWKS path checks this before any lookup; the lease path
+            // must too, since the tenant id is the client's.
+            check_tenant_id(tenant_id)?;
             let lease = self.lease.as_ref().ok_or_else(|| {
                 AuthzError::Key("this broker does not accept lease tokens".to_string())
             })?;

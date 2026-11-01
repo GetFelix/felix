@@ -13,12 +13,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, bail};
 use base64::Engine;
 use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
+use ed25519_dalek::pkcs8::EncodePrivateKey;
 use felix_authz::{
-    AuthzError, AuthzResult, CacheScope, FelixClaims, FelixTokenIssuer, FelixTokenVerifier, Jwks,
-    LeaseClaim, Namespace, TenantId, TenantKeyStore, TenantSigningKey, TenantVerificationKey,
+    Action, AuthzError, AuthzResult, CacheScope, FelixClaims, LeaseClaim, Namespace,
+    PermissionPattern, TenantId, is_lease_template,
 };
 use felix_wire::internal::ForwardLease;
-use jsonwebtoken::Algorithm;
+use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation};
 
 use crate::serving::auth::AuthContext;
 
@@ -34,23 +35,23 @@ pub(crate) const LEEWAY_SECS: i64 = 2;
 /// says otherwise.
 pub const DEFAULT_MAX_TTL: Duration = Duration::from_secs(300);
 const KEY_FILE_ENV: &str = "FELIX_LEASE_TOKEN_KEY_FILE";
+const AUDIENCE: &str = "felix-broker";
 const MAX_TTL_ENV: &str = "FELIX_LEASE_TOKEN_MAX_TTL_SECONDS";
 
 /// Mints and verifies lease tokens with the shared lease key.
+///
+/// The derived `jsonwebtoken` keys are built once from the key file and never
+/// cached per tenant: the tenant of an `Auth` is the client's, and a cache
+/// keyed by it would grow with every junk frame.
 pub struct LeaseTokens {
-    signer: FelixTokenIssuer,
-    verifier: FelixTokenVerifier,
+    /// The first key's `kid` and encoding key.
+    signing: (String, EncodingKey),
+    /// Every key's `kid` and decoding key, in file order.
+    verifying: Vec<(String, DecodingKey)>,
     max_ttl: Duration,
 }
 
 impl LeaseTokens {
-    /// Read `FELIX_LEASE_TOKEN_KEY_FILE` and
-    /// `FELIX_LEASE_TOKEN_MAX_TTL_SECONDS`. `None` without a key file: the
-    /// broker then neither mints nor accepts lease tokens.
-    ///
-    /// # Errors
-    /// An unreadable or malformed key file, or a TTL that is not a positive
-    /// whole number of seconds.
     pub fn from_env() -> Result<Option<Self>> {
         let Some(path) = std::env::var(KEY_FILE_ENV)
             .ok()
@@ -99,34 +100,98 @@ impl LeaseTokens {
                 .with_context(|| format!("line {} is not a base64 32-byte seed", index + 1))?;
             keys.push(LeaseKey::from_seed(seed));
         }
-        let Some(signing) = keys.first().cloned() else {
+        let Some(first) = keys.first() else {
             bail!("no lease token key");
         };
-        let store = Arc::new(LeaseKeyStore { signing, keys });
+        let signing = (first.kid.clone(), first.encoding_key()?);
+        let verifying = keys
+            .iter()
+            .map(|key| Ok((key.kid.clone(), key.decoding_key()?)))
+            .collect::<Result<_>>()?;
         Ok(Self {
-            signer: FelixTokenIssuer::new(
-                LEASE_ISSUER,
-                "felix-broker",
-                max_ttl,
-                Arc::clone(&store) as Arc<dyn TenantKeyStore>,
-            ),
-            verifier: FelixTokenVerifier::new(
-                LEASE_ISSUER,
-                "felix-broker",
-                LEEWAY_SECS.unsigned_abs(),
-                store,
-            ),
+            signing,
+            verifying,
             max_ttl,
         })
     }
 
-    /// Verify a lease token for `tenant_id`.
+    /// Verify a lease token for `tenant_id`, and check that its claims are
+    /// what a broker mints and nothing more, so a token signed with a leaked
+    /// key still cannot carry a wildcard, a template, a non-data action, a
+    /// long life or another tenant.
     ///
     /// # Errors
-    /// A bad signature, issuer, audience or tenant, or an expired token.
+    /// A bad signature, issuer, audience or tenant, an expired token, or
+    /// claims no broker would mint.
     pub(crate) fn verify(&self, tenant_id: &TenantId, token: &str) -> AuthzResult<FelixClaims> {
-        self.verifier.verify(tenant_id, token)
+        let kid = jsonwebtoken::decode_header(token)?.kid;
+        let (_, key) = self
+            .verifying
+            .iter()
+            .find(|(known, _)| Some(known) == kid.as_ref())
+            .ok_or_else(|| AuthzError::Key("unknown lease key".to_string()))?;
+        let mut validation = Validation::new(Algorithm::EdDSA);
+        validation.set_audience(&[AUDIENCE]);
+        validation.set_issuer(&[LEASE_ISSUER]);
+        validation.leeway = LEEWAY_SECS.unsigned_abs();
+        let claims = jsonwebtoken::decode::<FelixClaims>(token, key, &validation)?.claims;
+        if claims.tid != tenant_id.as_str() {
+            return Err(AuthzError::TenantMismatch {
+                expected: tenant_id.to_string(),
+                actual: claims.tid,
+            });
+        }
+        check_minted_shape(&claims, self.max_ttl)?;
+        Ok(claims)
     }
+
+    /// Sign `claims` as a lease token. Treat the result as a secret.
+    fn sign(&self, mut claims: FelixClaims) -> AuthzResult<String> {
+        claims.iss = LEASE_ISSUER.to_string();
+        claims.aud = AUDIENCE.to_string();
+        let mut header = Header::new(Algorithm::EdDSA);
+        header.kid = Some(self.signing.0.clone());
+        Ok(jsonwebtoken::encode(&header, &claims, &self.signing.1)?)
+    }
+}
+
+/// Refuse claims a broker would never mint: no lease claim, issued in the
+/// future, living longer than the maximum, or a permission that is not an
+/// exact stream or cache key data grant in the token's own tenant.
+fn check_minted_shape(claims: &FelixClaims, max_ttl: Duration) -> AuthzResult<()> {
+    let refuse = |why: &str| Err(AuthzError::Key(format!("not a lease token: {why}")));
+    if claims.lease.is_none() {
+        return refuse("no lease claim");
+    }
+    let now = secs(SystemTime::now());
+    if claims.iat > now.saturating_add(LEEWAY_SECS) {
+        return refuse("issued in the future");
+    }
+    if claims.exp.saturating_sub(now) > secs_of(max_ttl).saturating_add(LEEWAY_SECS) {
+        return refuse("lives longer than a lease token may");
+    }
+    for perm in &claims.perms {
+        let pattern = PermissionPattern::parse(perm)?;
+        let resource = pattern.resource_pattern.as_str();
+        let (kind, segments) = match pattern.action {
+            Action::StreamPublish | Action::StreamSubscribe => ("stream:", 3),
+            Action::CacheRead | Action::CacheWrite => ("cache:", 4),
+            _ => return refuse("a permission that is not data access"),
+        };
+        let Some(rest) = resource.strip_prefix(kind) else {
+            return refuse("a permission on the wrong kind of object");
+        };
+        let parts: Vec<&str> = rest.split('/').collect();
+        if parts.len() != segments
+            || parts[0] != claims.tid
+            || parts.iter().any(|part| part.is_empty())
+            || resource.contains('*')
+            || is_lease_template(resource)
+        {
+            return refuse("a permission that is not one exact stream or cache key");
+        }
+    }
+    Ok(())
 }
 
 /// Whether `token` names a lease key in its header. A token whose header does
@@ -245,11 +310,7 @@ impl LeaseMint {
                 version,
             }),
         };
-        match self
-            .tokens
-            .signer
-            .sign(&TenantId::new(&self.tenant_id), claims)
-        {
+        match self.tokens.sign(claims) {
             Ok(token) => {
                 tracing::info!(
                     tenant_id = %self.tenant_id,
@@ -332,40 +393,19 @@ impl LeaseKey {
             public_key,
         }
     }
-}
 
-/// The lease keys as `felix_authz` asks for them: the same keys for every
-/// tenant, since the tenant is a claim checked on its own.
-struct LeaseKeyStore {
-    signing: LeaseKey,
-    keys: Vec<LeaseKey>,
-}
-
-impl TenantKeyStore for LeaseKeyStore {
-    fn current_signing_key(&self, _tenant_id: &TenantId) -> AuthzResult<TenantSigningKey> {
-        Ok(TenantSigningKey {
-            kid: self.signing.kid.clone(),
-            alg: Algorithm::EdDSA,
-            private_key: self.signing.seed,
-            public_key: self.signing.public_key,
-        })
+    fn encoding_key(&self) -> Result<EncodingKey> {
+        // jsonwebtoken wants PKCS8 DER; it is built in memory only.
+        let der = ed25519_dalek::SigningKey::from_bytes(&self.seed)
+            .to_pkcs8_der()
+            .map_err(|err| anyhow::anyhow!("encode a lease key: {err}"))?;
+        Ok(EncodingKey::from_ed_der(der.as_bytes()))
     }
 
-    fn verification_keys(&self, _tenant_id: &TenantId) -> AuthzResult<Vec<TenantVerificationKey>> {
-        Ok(self
-            .keys
-            .iter()
-            .map(|key| TenantVerificationKey {
-                kid: key.kid.clone(),
-                alg: Algorithm::EdDSA,
-                public_key: key.public_key,
-            })
-            .collect())
-    }
-
-    fn jwks(&self, tenant_id: &TenantId) -> AuthzResult<Jwks> {
-        // Brokers verify lease tokens themselves; nothing publishes the keys.
-        Err(AuthzError::MissingJwks(tenant_id.to_string()))
+    fn decoding_key(&self) -> Result<DecodingKey> {
+        Ok(DecodingKey::from_ed_components(
+            &URL_SAFE_NO_PAD.encode(self.public_key),
+        )?)
     }
 }
 
