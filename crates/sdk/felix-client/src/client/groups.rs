@@ -661,6 +661,38 @@ impl Connection {
         request_id: u64,
         operation: &'static str,
     ) -> Result<Message> {
+        self.exchange(message, request_id, operation, false).await
+    }
+
+    /// [`Self::group_round_trip`] for a write: once the request is on its
+    /// way, a transport failure is an [`crate::AckLost`], because the broker
+    /// may have applied it.
+    pub(super) async fn write_round_trip(
+        &self,
+        message: Message,
+        request_id: u64,
+        operation: &'static str,
+    ) -> Result<Message> {
+        self.exchange(message, request_id, operation, true).await
+    }
+
+    async fn exchange(
+        &self,
+        message: Message,
+        request_id: u64,
+        operation: &'static str,
+        lost_means_unknown: bool,
+    ) -> Result<Message> {
+        let lost = |err: anyhow::Error| -> anyhow::Error {
+            if lost_means_unknown {
+                crate::AckLost {
+                    reason: format!("{err:#}"),
+                }
+                .into()
+            } else {
+                err
+            }
+        };
         let OpenedStream {
             mut send,
             mut recv,
@@ -669,11 +701,13 @@ impl Connection {
         } = self.open_event_stream().await?;
         write_message(&mut send, message)
             .await
-            .with_context(|| format!("send {} request", operation.trim_end_matches(" refused")))?;
+            .with_context(|| format!("send {} request", operation.trim_end_matches(" refused")))
+            .map_err(lost)?;
         let mut scratch = BytesMut::with_capacity(64 * 1024);
         let answer =
             read_message_with_limit(&mut recv, &mut scratch, self.runtime_config.max_frame_bytes)
-                .await?;
+                .await
+                .map_err(lost)?;
         let _ = send.finish();
         match answer {
             Some(Message::Error {
@@ -708,7 +742,7 @@ impl Connection {
                 }
                 Ok(other)
             }
-            None => Err(anyhow::anyhow!("the broker closed the group stream")),
+            None => Err(lost(anyhow::anyhow!("the broker closed the group stream"))),
         }
     }
 

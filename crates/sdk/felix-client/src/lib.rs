@@ -88,7 +88,7 @@ pub use commit::{CommitError, CommitOp, CommitReceipt, StateValue};
 pub use config::{ClientConfig, ClientSubQueuePolicy};
 pub use error::{
     AckLost, AuthError, AuthErrorKind, BrokerError, NotLeaderError, PublishRefused,
-    SubscribeCursorError, SubscriptionLagged, SubscriptionLost,
+    SubscribeCursorError, SubscriptionLagged, SubscriptionLost, outcome_unknown,
 };
 pub use publish::{Handed, IdempotentProducer, PublishSharding, Publisher};
 pub use subscribe::{Event, ShardMoved, Subscription};

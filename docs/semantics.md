@@ -270,6 +270,16 @@ tail, which may be stale; see "Consistency" above and "Where the guarantees
 stop". A write to a broker that does not lead the shard is not forwarded: it
 is answered `not_leader`.
 
+**A multi-record `publish_if` is not all or nothing on a `Quorum` stream.**
+The batch is appended record by record, so after an error whose outcome is
+unknown (the connection dropped after the send, the broker gave up waiting for
+a majority, the leader was lost mid-ship) any prefix of it may exist. A refusal,
+a validation error, `offset_mismatch` and `forbidden` wrote nothing. The Rust
+client tells the two apart with `felix_client::outcome_unknown`; the bindings
+raise their outcome-unknown error for the first kind. After an unknown outcome,
+re-read from the expected offset to see how much landed. A batch that must be
+all or nothing uses `commit`.
+
 **A lost answer cannot be retried blindly.** The retry is refused by the write
 it repeats, which looks the same as losing to a rival. The writer reads the
 shard at its expected offset to see whose batch is there.

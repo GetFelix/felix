@@ -171,9 +171,17 @@ impl Connection {
     /// leader change wrote. Written, the answer is the batch's first offset
     /// once it is durable (on a `Quorum` stream, on a majority).
     ///
+    /// Not all or nothing on a `Quorum` stream: after an error whose outcome
+    /// is unknown, any prefix of `payloads` may exist. Such an error is an
+    /// [`crate::AckLost`] (the transport failed after the send) or a
+    /// [`crate::BrokerError`] with [`felix_wire::RetryClass::OutcomeUnknown`];
+    /// [`crate::outcome_unknown`] tells them from a refusal that wrote
+    /// nothing. A batch that must be all or nothing goes through
+    /// [`Self::commit`].
+    ///
     /// An answer lost in transit cannot be retried blindly: the retry would
-    /// be refused by the write it is retrying. Read the shard at
-    /// `expected_offset` to learn whether it landed.
+    /// be refused by the write it is retrying. Read the shard from
+    /// `expected_offset` to learn how much of the batch landed.
     ///
     /// Bound to this broker: a shard led elsewhere is refused with a
     /// [`crate::NotLeaderError`], which a [`crate::Client`] follows.
@@ -259,7 +267,7 @@ impl Connection {
             request_id,
         };
         match self
-            .group_round_trip(message, request_id, "publish_if refused")
+            .write_round_trip(message, request_id, "publish_if refused")
             .await?
         {
             Message::PublishOk {
