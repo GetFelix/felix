@@ -197,3 +197,84 @@ fn the_election_features_cannot_be_finalized_yet() {
         .is_ok()
     );
 }
+
+fn offering_election(id: &str, features: &[&str]) -> Node {
+    let mut reported = features.to_vec();
+    reported.push("peer_election");
+    at(id, NodeLifecycle::Live, &reported)
+}
+
+fn conflict(result: Result<(), StoreError>) -> String {
+    match result {
+        Err(StoreError::Conflict(message)) => message,
+        other => panic!("expected a conflict, got {other:?}"),
+    }
+}
+
+#[test]
+fn joint_fence_is_refused_while_a_serving_broker_lacks_election() {
+    let nodes = [
+        offering_election("a", &["joint_fence"]),
+        at("b", NodeLifecycle::Live, &["joint_fence"]),
+        // Down brokers do not count.
+        at("c", NodeLifecycle::Down, &[]),
+    ];
+    let message = conflict(check_election(&nodes, "joint_fence", false));
+    assert!(
+        message.contains("broker(s) b do not offer the ELECTION"),
+        "{message}"
+    );
+    assert!(check_election(&nodes[..1], "joint_fence", false).is_ok());
+}
+
+#[test]
+fn replica_election_is_refused_while_a_serving_broker_lacks_election() {
+    let nodes = [
+        offering_election("a", &["replica_election"]),
+        at("b", NodeLifecycle::Draining, &["replica_election"]),
+    ];
+    let message = conflict(check_election(&nodes, "replica_election", true));
+    assert!(
+        message.contains("broker(s) b do not offer the ELECTION"),
+        "{message}"
+    );
+    assert!(check_election(&nodes[..1], "replica_election", true).is_ok());
+}
+
+#[test]
+fn replica_election_is_refused_below_the_metadata_level() {
+    let nodes = [offering_election("a", &["replica_election"])];
+    let message = conflict(check_election(&nodes, "replica_election", false));
+    assert!(
+        message.contains("metadata level") && message.contains("not yet implemented"),
+        "{message}"
+    );
+    // joint_fence needs no metadata level.
+    assert!(check_election(&nodes, "joint_fence", false).is_ok());
+}
+
+#[test]
+fn replica_election_is_refused_until_joint_fence_and_the_rest_are_finalized() {
+    let all = ["generation_start", "majority_ack", "lease_free_reads"];
+    let message = conflict(check_prerequisites(&set(&all), "replica_election"));
+    assert!(message.contains("joint_fence"), "{message}");
+    for missing in all {
+        let have: Vec<&str> = all
+            .iter()
+            .copied()
+            .filter(|name| *name != missing)
+            .chain(["joint_fence"])
+            .collect();
+        let message = conflict(check_prerequisites(&set(&have), "replica_election"));
+        assert!(message.contains(missing), "{message}");
+    }
+    let mut ready = all.to_vec();
+    ready.push("joint_fence");
+    assert!(check_prerequisites(&set(&ready), "replica_election").is_ok());
+}
+
+#[test]
+fn other_features_pass_the_election_check() {
+    let nodes = [at("a", NodeLifecycle::Live, &["majority_ack"])];
+    assert!(check_election(&nodes, "majority_ack", false).is_ok());
+}

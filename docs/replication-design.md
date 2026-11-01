@@ -3537,6 +3537,16 @@ successor does not hold.
 The steps, their triggers and the policy that bounds them are in
 [control-plane.md](control-plane.md#moving-a-shard).
 
+Electing without the control plane is only partly built. The control
+plane's finalize gates for `joint_fence` and `replica_election` are in place:
+`joint_fence` is refused while a serving broker does not report that it offers
+the `ELECTION` peer capability, and `replica_election` is refused until
+`joint_fence` and its other prerequisites are finalized, every serving broker
+offers `ELECTION`, and the control plane has the metadata level for the
+pending replica set and adoption, which does not exist yet. No broker offers
+`ELECTION`, so both features stay unfinalizable and a new cluster does not
+start with them.
+
 ## What this does to the other M5 issues
 
 - **#111 (fenced leadership)**: this is now specific: the epoch is the

@@ -106,11 +106,18 @@ pub(crate) async fn finalize_fleet_feature(
         crate::cluster::fleet::missing_prerequisites(&already, &feature)
     };
 
+    let election = crate::cluster::fleet::check_election(
+        &nodes,
+        &feature,
+        crate::cluster::fleet::ELECTION_METADATA_LEVEL_READY,
+    );
+
     if query.dry_run {
         let enabled = already.contains(&feature);
         let would_enable = enabled
             || (requires.is_empty()
-                && crate::cluster::fleet::check_finalize(&nodes, &feature).is_ok());
+                && crate::cluster::fleet::check_finalize(&nodes, &feature).is_ok()
+                && election.is_ok());
         return Ok(Json(FleetFinalizeResponse {
             feature,
             dry_run: true,
@@ -127,6 +134,12 @@ pub(crate) async fn finalize_fleet_feature(
         StoreError::Conflict(ref message) => api_conflict("conflict", message),
         ref other => api_internal("finalize a fleet feature", other),
     })?;
+    if !already.contains(&feature) {
+        election.map_err(|err| match err {
+            StoreError::Conflict(ref message) => api_conflict("conflict", message),
+            ref other => api_internal("finalize a fleet feature", other),
+        })?;
+    }
     let enabled = state
         .store
         .finalize_fleet_feature(&feature)
