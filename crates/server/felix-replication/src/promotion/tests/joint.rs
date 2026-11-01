@@ -253,3 +253,38 @@ async fn a_joint_fence_counts_the_old_set_only_from_the_copies_it_names() {
         );
     }
 }
+
+/// **A voter of the set being left answers a joint fence even once its
+/// routing view no longer names it.** broker-b has already seen the new
+/// route, which leaves it out; it still takes the fence, so the old set's
+/// majority can be reached.
+#[tokio::test]
+async fn a_member_the_new_route_leaves_out_still_answers_a_joint_fence() {
+    let mut replicas = replicas_with(&["broker-x", "broker-z"]);
+    replicas.get_mut("broker-c").reachable = false;
+    let router = Arc::new(ShardRouter::new(
+        "broker-b",
+        "us-west-2",
+        RegionRouter::new("us-west-2".to_string()),
+    ));
+    router.publish(
+        RoutingTable::build(
+            [(
+                key(),
+                LEADER.to_string(),
+                vec!["broker-x".to_string(), "broker-z".to_string()],
+                PROMOTED,
+            )],
+            &nodes(),
+        ),
+        &nodes(),
+    );
+    let b = replicas.get_mut("broker-b");
+    b.handler = ReplicaHandler::new(Arc::clone(&b.broker), router);
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+    kept_before(&leader, &["broker-x", "broker-b", "broker-c"], &[]).await;
+
+    let outcome = fence(&replicas, &leader, true).await;
+
+    assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
+}
