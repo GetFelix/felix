@@ -1064,6 +1064,16 @@ jobs:
         # Word splitting is wanted: the input is a list of names.
         run: scripts/check_tla.sh $TLA_CONFIGS
 
+      # TLC's whole output, coverage report included, for a manual coverage run.
+      - name: Upload TLC output
+        if: always() && inputs.tla_coverage != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: tla-log-${{ matrix.shard }}
+          path: target/tla/log/
+          retention-days: 14
+          if-no-files-found: ignore
+
   # FelixShardFencedCrashUnprobed no longer finishes exhaustively in a hosted
   # runner's six hours (#1584), so it is walked here instead, with its twin,
   # at the nightly walks' budget (tla-walk.yml). Sampling, not proof.
