@@ -1463,9 +1463,10 @@ refuses a leader older than one it accepted.
 TLC reads only the spec, so the `formal` job in `.github/workflows/ci.yml`
 runs only when `docs/formal/`, `scripts/check_tla.sh` or that workflow
 changes. A pull request checks the registered configurations that take ten
-minutes or less (`TLA_QUICK=1`), plus any whose own `.cfg` it changes: one of
-30 minutes or less goes in with the rest, and a heavier one gets a job of its
-own (`formal-heavy`, planned by `scripts/check_tla.sh --plan-heavy`). A push
+minutes or less (`TLA_QUICK=1`), plus any whose own `.cfg` it changes. A
+changed configuration of 30 minutes or less runs in the seven shards with the
+quick ones. A heavier one runs in a job of its own (`formal-heavy`): the
+`formal-heavy-plan` job lists them with `scripts/check_tla.sh --plan-heavy`. A push
 to main checks every registered configuration. The shards are seven jobs,
 filled by each configuration's measured time. A slow configuration that a
 change to the `.tla` alone breaks therefore shows up on main, not on the pull

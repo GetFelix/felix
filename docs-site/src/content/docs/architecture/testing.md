@@ -223,8 +223,10 @@ start record or the read round, and exist to show that piece is load-bearing.
 If one of them stopped finding its violation, the check would fail.
 
 CI runs TLC when the spec changes (`task tla:check`; it needs Java, Docker or
-Podman): a pull request checks the configurations of ten minutes or less, and
-main checks all of them, about an hour across seven four-core runners. Model
+Podman): a pull request checks the configurations of ten minutes or less and
+the ones whose `.cfg` it changes, each changed one over 30 minutes on a runner
+of its own. Main checks all of them, about an hour across seven four-core
+runners. Model
 checking shows the spec is consistent, not that it still describes the code,
 so CI also runs
 `scripts/check_spec_pairing.py` on every pull request that changes code: a change to code the model covers must change

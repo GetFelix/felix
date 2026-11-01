@@ -357,6 +357,8 @@ fi
 # run); anything not listed is taken as one. Shards are filled longest first, each
 # configuration going to the least loaded, so one long run does not land on
 # top of others and push a job past its hour.
+# A configuration missing here weighs one, so it is never left to
+# `--plan-heavy`: give a new heavy one its weight.
 weights=(
   "FelixShardFencedAckMoveShort 31"
   "FelixShardWipeStripped 10"
@@ -437,10 +439,14 @@ weight_of() {
 # revision; CI passes the PR's base), space-separated.
 changed_cfgs=" "
 if [ -n "${TLA_CHANGED_BASE:-}" ]; then
+  # Captured first so a base that does not resolve fails the run: an empty
+  # list would quietly leave a changed configuration unchecked.
+  changed_files="$(git diff --name-only "$TLA_CHANGED_BASE" HEAD -- "$SPEC_DIR/*.cfg")"
   while read -r f; do
+    [ -n "$f" ] || continue
     f="${f##*/}"
     changed_cfgs="$changed_cfgs${f%.cfg} "
-  done < <(git diff --name-only "$TLA_CHANGED_BASE" HEAD -- "$SPEC_DIR/*.cfg")
+  done <<<"$changed_files"
 fi
 
 # `--plan-heavy` prints the changed registered configurations weighing more

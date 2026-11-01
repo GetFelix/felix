@@ -1101,6 +1101,7 @@ jobs:
     needs: formal-heavy-plan
     if: needs.formal-heavy-plan.outputs.matrix != '[]'
     name: TLA+ model (${{ matrix.cfg }})
+    # The free four-core runner the weights were measured on.
     runs-on: ubuntu-latest
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
