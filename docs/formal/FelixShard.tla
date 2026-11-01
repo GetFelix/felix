@@ -513,6 +513,8 @@ ASSUME Wipes > 0 => /\ ~Counters /\ ~Handoff /\ ~Cancel
 \* and identities never repeat.
 Yes == TRUE
 No == FALSE
+Zero == 0
+One == 1
 Two == 2
 StripIds == FALSE
 StampIncarnations == TRUE
@@ -643,6 +645,18 @@ UnprobedStart == FALSE
 \* is named by no promotion, and `expect` is not kept for one.
 ASSUME NameByInheritance => /\ FencedIds /\ UnprobedStart /\ ~Reclaims /\ Elections = 0
 
+\* `SplitAtCutOver`: the ghost `cutOver` records the first `Swap`, so that a
+\* configuration too big for one run can be checked in pieces, each a
+\* CONSTRAINT on how its cut-over went (`CutOverPiece`). Off, it stays empty
+\* and adds no states. A piece takes the cut-overs that keep the old leader
+\* in the new set or not (`PieceKeeps`), that come after `PieceWrites`
+\* writes were admitted, and after a replica stood for a generation past the
+\* control plane's or not (`PieceStood`).
+SplitAtCutOver == FALSE
+PieceKeeps == TRUE
+PieceWrites == 0
+PieceStood == FALSE
+
 VARIABLES
     now,        \* real time
     clock,      \* each broker's monotonic clock
@@ -693,6 +707,7 @@ VARIABLES
     installed,  \* history, under `SetCheck`: each <<set's generation, set, previous set>> a set change opened
     cpNext,     \* under `Swaps`, the set a cut-over is moving to while the old one is still the control plane's: {} when none
     cpNextGen,  \* the generation that set was written at
+    cutOver,    \* ghost, under `SplitAtCutOver`: <<>>, or what the first cut-over found (CutOverTag)
     sid,        \* each broker's storage identity, which a wipe changes
     seen,       \* per leader, the identity it last learned for each follower
     seenInc,    \* per leader, the incarnation it last learned for each follower: inc + 1, or 0 for none
@@ -714,8 +729,8 @@ VARIABLES
 counterVars == << clog, chwm, cconfirmed, canswered, cacked >>
 
 \* The set each broker knows, beside `mine`, and a set change's old set; the
-\* control plane's pending set change.
-nextVars == << cpNext, cpNextGen >>
+\* control plane's pending set change, and the ghost that a cut-over sets.
+nextVars == << cpNext, cpNextGen, cutOver >>
 setVars == << setGen, oldSet, installed, nextVars >>
 
 \* Storage identities and registrations: only a wipe, a crash, a leader
@@ -733,6 +748,22 @@ vars == << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
            draining, successor, stopped, moves, ver, cpView, staged, heard,
            promised, fencing, answered, confirmed, out, mine, joining, leaving, joinedAt,
            counterVars, ballot, opened, setVars, ackGen, idVars, named, wipeVars >>
+
+\* A VIEW for a configuration where time stands still (`MaxTime = 0`) and no
+\* leader is reclaimed: it leaves out what no step reads again. A heartbeat
+\* then renews nothing, so whether one is in flight changes nothing else. A
+\* broker's cursors and the fence answers it collected are read only while
+\* it leads, and reset when it next leads. TLC checks one state of each group
+\* that differs only in those, and reaches the same states otherwise.
+QuietView ==
+    << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
+       log, hwm, halted, queued, pending, acked, writes, staleCommit,
+       draining, successor, stopped, moves, ver, cpView, staged, heard,
+       promised, fencing,
+       [b \in Brokers |-> IF bgen[b] > 0 THEN answered[b] ELSE {}],
+       [b \in Brokers |-> IF bgen[b] > 0 THEN confirmed[b] ELSE [m \in Brokers |-> 0]],
+       out, mine, joining, leaving, joinedAt,
+       counterVars, ballot, opened, setVars, ackGen, idVars, named, wipeVars >>
 
 \* Placement's state, which only the control plane's decisions change, but
 \* `mine`, which a follower also learns under `SetCheck`.
@@ -1022,6 +1053,7 @@ Init ==
     /\ installed = {}
     /\ cpNext = {}
     /\ cpNextGen = 0
+    /\ cutOver = <<>>
     /\ IdInit
 
 -----------------------------------------------------------------------------
@@ -1669,7 +1701,7 @@ Promote(v, f, views) ==
     \* A failover writes the control plane's set at the new generation, which
     \* abandons a cut-over's pending change.
     /\ cpNext' = {} /\ cpNextGen' = 0
-    /\ UNCHANGED << installed, ackGen >>
+    /\ UNCHANGED << installed, ackGen, cutOver >>
     /\ joining' = {}
     /\ joinedAt' = 0
     \* The new leader persists its generation itself first; with
@@ -2372,7 +2404,7 @@ CpAdopt(v, b, views) ==
             /\ draining' = FALSE
             \* Without `AdoptMatch` the adopted set replaces a pending one.
             /\ (IF AdoptMatch THEN UNCHANGED nextVars
-                ELSE cpNext' = {} /\ cpNextGen' = 0)
+                ELSE cpNext' = {} /\ cpNextGen' = 0 /\ UNCHANGED cutOver)
        ELSE UNCHANGED << leader, cpExpiry, report, draining, nextVars >>
     /\ UNCHANGED << now, clock, inflight, bgen, bexpiry, hbOut, hbAt, log, hwm, halted,
                     queued, pending, acked, writes, staleCommit >>
@@ -2380,6 +2412,24 @@ CpAdopt(v, b, views) ==
                     joining, leaving, joinedAt >>
     /\ UNCHANGED << promised, fencing, answered, confirmed, ballot, opened, setGen, oldSet,
                     installed, ackGen >>
+
+\* What a cut-over found, for `SplitAtCutOver`: whether the new set keeps the
+\* old leader, how many writes had been admitted, and how many replicas had
+\* promised a generation past the control plane's, which only an election
+\* does. Only counts, so it names no broker and SYMMETRY still holds.
+CutOverTag(keeps) ==
+    << IF keeps THEN 1 ELSE 0, writes, Cardinality({ m \in Brokers : promised[m] > gen }) >>
+
+\* A piece of a split check: no cut-over yet, or one that went as the piece
+\* says. Every tag has exactly one piece with each `PieceKeeps`,
+\* `PieceWrites` in 0..MaxWrites and `PieceStood`, so those pieces together
+\* reach every state the unsplit configuration does.
+CutOverPiece ==
+    \/ cutOver = <<>>
+    \/ LET t == cutOver[1] IN
+       /\ (t[1] = 1) = PieceKeeps
+       /\ t[2] = PieceWrites
+       /\ (t[3] > 0) = PieceStood
 
 \* A cut-over that changes several members of the set at once, as
 \* `replicas_after_cut_over` in services/felix-controlplane-service/src/
@@ -2416,6 +2466,8 @@ Swap(v, f, views) ==
          /\ mine' = [mine EXCEPT ![f] = S]
          /\ cpNext' = S
          /\ log' = [m \in Brokers |-> IF m \in S \ CpSet THEN log[f] ELSE log[m]]
+         /\ cutOver' = IF SplitAtCutOver /\ cutOver = <<>>
+                       THEN <<CutOverTag(leader \in S)>> ELSE cutOver
     /\ cpNextGen' = gen + 1
     /\ setGen' = [setGen EXCEPT ![f] = gen + 1]
     /\ oldSet' = [oldSet EXCEPT ![f] = CpSet]
@@ -2455,7 +2507,7 @@ CpFlip ==
         /\ bgen[l] > 0 /\ ~fencing[l]
         /\ \E i \in 1..hwm[l] : i <= Len(log[l]) /\ log[l][i] = Start(bgen[l])
     /\ out' = (out \cup CpSet) \ cpNext
-    /\ cpNext' = {} /\ cpNextGen' = 0
+    /\ cpNext' = {} /\ cpNextGen' = 0 /\ UNCHANGED cutOver
     /\ ver' = ver + 1
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit,
@@ -3085,6 +3137,7 @@ TypeOK ==
     /\ setGen \in [Brokers -> Nat]
     /\ oldSet \in [Brokers -> SUBSET Brokers]
     /\ cpNext \subseteq Brokers /\ cpNextGen \in Nat
+    /\ Len(cutOver) <= (IF SplitAtCutOver THEN 1 ELSE 0)
     /\ \A a \in ackGen : a[1] \in 1..MaxWrites /\ a[2] \in Nat
     /\ sid \in [Brokers -> Nat] /\ seen \in [Brokers -> [Brokers -> Nat]]
     /\ seenInc \in [Brokers -> [Brokers -> Nat]]

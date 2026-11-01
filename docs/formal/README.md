@@ -217,7 +217,8 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardElectStaleSet.cfg` | `FelixShardElect.cfg` with a follower replacement, as in `FelixShardFencedAckSeat.cfg`, and one generation of elections past the control plane's | violate `AckedHeldByLeader`: the replica that left stands on the set it started in, and opens without a record the new set acknowledged |
 | `FelixShardElectAdopt.cfg` | `FelixShardElectStaleSet.cfg` with the set check, the joint fence, and the control plane adopting elected leaders up to generation 2 (`Adopt = 2`, which also bounds the generations replicas stand for) and replacing followers under them | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm`, `AdoptedMatchesOpened`, `SetChangesJoint` (not yet measured) |
 | `FelixShardElectAdoptTwoWrites.cfg` | the same with two writes | pass, the same invariants (nightly) |
-| `FelixShardElectSwap.cfg` | `FelixShardElectStaleSet.cfg` with a cut-over that changes the set by more than one member at once (`Swaps = 1`), fenced jointly, the set check, one generation of elections, two writes | pass, the same invariants (has not completed a run: it hit the 150-minute job limit on main; runs nightly, see below) |
+| `FelixShardElectSwap.cfg` | `FelixShardElectStaleSet.cfg` with a cut-over that changes the set by more than one member at once (`Swaps = 1`), fenced jointly, the set check, one generation of elections, two writes | pass, the same invariants, checked in the twelve pieces below: one run did not finish in six hours |
+| `FelixShardElectSwap{Keep,Drop}{0,1,2}{,Stood}.cfg` | `FelixShardElectSwap.cfg` split by how its cut-over went: the new set keeps or drops the old leader, 0, 1 or 2 writes were admitted before it, and a replica had stood past the control plane's generation or not (`SplitAtCutOver`, `CutOverPiece`). Each also checks everything before its cut-over, so together they reach every state the whole does. `QuietView` merges states that differ only in what no step reads again | pass, the same invariants. On a four-core CI runner: `Keep2` 2.46M distinct, 5 min; `Drop2` 1.45M, 5 min; `Drop1` 7.17M, 17 min; `Keep1` 9.23M, 27 min; `Drop0` 17.9M, 43 min; `Keep0` 17.7M, 53 min (nightly); the six `Stood` pieces were still running after 55 min (nightly) |
 | `FelixShardElectSwapNoJoint.cfg` | the same without the joint configuration: the cut-over fences, ships and acknowledges on the new set alone | violate `AckedHeldByLeader`: a replica left on the old set stands at the new leader's generation, opens on a majority of the old set the new leader never fenced, and acknowledges a record the new leader does not hold |
 | `FelixShardElectPreVote.cfg` | `FelixShardElect.cfg` with pre-vote and stickiness (`PreVote`), time to 2 so leases lapse and elections follow, two writes, the set check | pass, the same invariants (not yet measured) |
 | `FelixShardElectNoBallotAcks.cfg` | `FelixShardElect.cfg` without ballots, two generations of elections and two writes, the set check on so the first leader can follow a candidate | violate `AckedHeldByLeader`, checked per generation |
@@ -659,8 +660,10 @@ the next, but a move's cut-over does not: `replicas_after_cut_over` keeps
 some of the staying replicas and tops the set up from brokers outside it, so
 {X, b, c} can become {Y, X, Z}. `Swap` models that cut-over, the destination
 leading on a set that differs from the old one by more than one member.
-`FelixShardElectSwap.cfg` is the same check with the joint fence; it has
-not completed a run yet (it runs nightly), and
+`FelixShardElectSwap.cfg` is the same check with the joint fence. It is
+too big for one run, so it is checked in twelve pieces, one for each way
+the cut-over can go (`FelixShardElectSwap{Keep,Drop}{0,1,2}{,Stood}.cfg`),
+and
 `FelixShardElectSwapNoJoint.cfg`, fencing the new set alone, finds a
 replica left on the old set standing at the new leader's generation, opening
 on a majority of the old set that the new leader never fenced, and
@@ -1460,15 +1463,15 @@ workflow's dispatch (`tla_configs`) when the change is risky.
 Whether a code change still matches the spec is a separate, quick check on
 every pull request that touches code (`scripts/check_spec_pairing.py`).
 
-Eight configurations are too big for that hour, and run nightly instead, each in
+Some configurations are too big for that hour, and run nightly instead, each in
 its own job with a six-hour limit (the `exhaustive` job in
-`.github/workflows/tla-walk.yml`): `FelixShardElectSwap.cfg`,
+`.github/workflows/tla-walk.yml`): `FelixShardElectSwapKeep0.cfg` and the six
+`FelixShardElectSwap*Stood.cfg` pieces of `FelixShardElectSwap.cfg`,
 `FelixShardElectHandoff.cfg`,
 `FelixShardElectAdoptTwoWrites.cfg`,
 `FelixShardFencedAckTwoPromotions.cfg`, `FelixShardFencedAckSeatLonger.cfg`,
 `FelixShardFencedAckMove.cfg`, `FelixShardFencedAckStagedMove.cfg` and
-`FelixShardFencedAckMoveCancel.cfg`. Each must pass; `FelixShardElectSwap.cfg`
-has not yet finished a run. A smaller sibling of each
+`FelixShardFencedAckMoveCancel.cfg`. Each must pass. A smaller sibling of each
 runs per push. A failure shows the same way a failed walk does, as a failed
 run of that nightly workflow. Either set can also be run on a branch through
 the dispatch of either workflow.
