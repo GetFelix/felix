@@ -17,7 +17,7 @@ use felix_wire::{Message, StartPosition};
 use super::Connection;
 use crate::NotLeaderError;
 use crate::connection::OpenedStream;
-use crate::frame_io::{read_message_with_limit, write_message};
+use crate::frame_io::{read_message_with_limit, write_frame_parts};
 
 /// A member of a consumer group that names itself when it polls. See
 /// [`Connection::group_poll_as`].
@@ -661,19 +661,58 @@ impl Connection {
         request_id: u64,
         operation: &'static str,
     ) -> Result<Message> {
+        self.exchange(message, request_id, operation, false).await
+    }
+
+    /// [`Self::group_round_trip`] for a write: once the request is on its
+    /// way, a transport failure is an [`crate::AckLost`], because the broker
+    /// may have applied it.
+    pub(super) async fn write_round_trip(
+        &self,
+        message: Message,
+        request_id: u64,
+        operation: &'static str,
+    ) -> Result<Message> {
+        self.exchange(message, request_id, operation, true).await
+    }
+
+    async fn exchange(
+        &self,
+        message: Message,
+        request_id: u64,
+        operation: &'static str,
+        lost_means_unknown: bool,
+    ) -> Result<Message> {
+        let lost = |err: anyhow::Error| -> anyhow::Error {
+            if lost_means_unknown {
+                crate::AckLost {
+                    reason: format!("{err:#}"),
+                }
+                .into()
+            } else {
+                err
+            }
+        };
         let OpenedStream {
             mut send,
             mut recv,
             lease: _lease,
             ..
         } = self.open_event_stream().await?;
-        write_message(&mut send, message)
+        let what = operation.trim_end_matches(" refused");
+        // An encode failure sent nothing, so only the write can be lost.
+        let frame = message
+            .encode()
+            .with_context(|| format!("encode {what} request"))?;
+        write_frame_parts(&mut send, &frame)
             .await
-            .with_context(|| format!("send {} request", operation.trim_end_matches(" refused")))?;
+            .with_context(|| format!("send {what} request"))
+            .map_err(lost)?;
         let mut scratch = BytesMut::with_capacity(64 * 1024);
         let answer =
             read_message_with_limit(&mut recv, &mut scratch, self.runtime_config.max_frame_bytes)
-                .await?;
+                .await
+                .map_err(lost)?;
         let _ = send.finish();
         match answer {
             Some(Message::Error {
@@ -681,9 +720,13 @@ impl Connection {
                 code,
                 retry,
                 detail,
-            }) => Err(crate::error::refused(
-                operation, message, code, retry, detail,
-            )),
+            }) => {
+                let uncoded = code.is_none();
+                let refusal = crate::error::refused(operation, message, code, retry, detail);
+                // A coded refusal says what it was; an uncoded one says
+                // nothing about whether the write landed.
+                Err(if uncoded { lost(refusal) } else { refusal })
+            }
             // Typed, so a caller can follow it: only the shard's leader holds
             // its groups, and this names which broker that is.
             Some(Message::NotLeader {
@@ -702,13 +745,13 @@ impl Connection {
                 if let Some(id) = group_response_id(&other)
                     && id != request_id
                 {
-                    return Err(anyhow::anyhow!(
+                    return Err(lost(anyhow::anyhow!(
                         "group answer carried request id {id}, expected {request_id}",
-                    ));
+                    )));
                 }
                 Ok(other)
             }
-            None => Err(anyhow::anyhow!("the broker closed the group stream")),
+            None => Err(lost(anyhow::anyhow!("the broker closed the group stream"))),
         }
     }
 

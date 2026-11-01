@@ -122,6 +122,11 @@ match client
 }
 ```
 
+`publish_if` takes the same check but is not atomic across its records: on a
+`Quorum` stream an error with an unknown outcome leaves any prefix of the batch
+in the log, so re-read from the expected offset. A batch that must be all or
+nothing uses `commit`.
+
 The check is the one `publish_if` makes, at the point the broker assigns the
 offset, so it is atomic with the write. It counts every record on the shard,
 plain publishes and a new leader's generation-start record included, which is

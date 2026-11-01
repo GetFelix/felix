@@ -203,6 +203,22 @@ pub struct AckLost {
     pub reason: String,
 }
 
+/// Whether a failed write may still have been applied.
+///
+/// True for an [`AckLost`] and for a [`BrokerError`] whose retry class is
+/// `outcome_unknown`. False for everything else a write can fail with
+/// (validation, [`crate::PublishRefused`], `forbidden`, an unsupported broker,
+/// a `not_leader`), none of which wrote anything. After a `true` on a
+/// multi-record `publish_if`, any prefix of the batch may exist.
+pub fn outcome_unknown(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause.is::<AckLost>()
+            || cause
+                .downcast_ref::<BrokerError>()
+                .is_some_and(|broker| broker.retry == RetryClass::OutcomeUnknown)
+    })
+}
+
 /// A durable-stream subscription fell behind and records were dropped,
 /// by the broker's queue for it or by this client's own.
 ///
@@ -295,3 +311,6 @@ pub(crate) fn refused(
         None => anyhow::anyhow!("{context}: {message}"),
     }
 }
+
+#[cfg(test)]
+mod tests;
