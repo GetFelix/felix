@@ -707,9 +707,13 @@ pub fn spawn_feed(
                 _ = assignments_changed.notified() => true,
             };
 
-            let (assignments, renewals) = {
+            let (assignments, renewals, priors) = {
                 let owned = ownership.read().await;
-                (owned.assignments().clone(), owned.renewals().clone())
+                (
+                    owned.assignments().clone(),
+                    owned.renewals().clone(),
+                    owned.priors(),
+                )
             };
 
             // Read on every refresh rather than once, so a refreshed token is
@@ -759,7 +763,7 @@ pub fn spawn_feed(
             // owner of a shard it has not opened.
             let servable = lifecycle.lock().await.servable();
             ingress.publish(
-                routing_table_from(&assignments, &catalog),
+                routing_table_from(&assignments, &catalog).with_priors(priors),
                 &catalog,
                 servable,
             );

@@ -61,6 +61,8 @@ pub struct ReplicaHandler {
     heard: parking_lot::Mutex<HashMap<felix_router::ShardKey, Instant>>,
     /// How long after hearing its leader this replica refuses a candidate.
     stickiness: Duration,
+    /// Which cross-broker features the fleet has; `None` reads all as off.
+    fleet: Option<Arc<crate::quorum::QuorumMarks>>,
     /// Run after an incarnation check passes, to change the catalog between
     /// the check and the open.
     #[cfg(test)]
@@ -118,6 +120,7 @@ impl ReplicaHandler {
             confirmed: None,
             heard: parking_lot::Mutex::new(HashMap::new()),
             stickiness: crate::suspicion::DEFAULT_SUSPECT_AFTER,
+            fleet: None,
             #[cfg(test)]
             incarnation_checked: parking_lot::Mutex::new(None),
         }
@@ -138,6 +141,13 @@ impl ReplicaHandler {
         confirmed: Arc<dyn crate::confirmed::ConfirmedRoutes>,
     ) -> Self {
         self.confirmed = Some(confirmed);
+        self
+    }
+
+    /// Read fleet features from `marks`: under `joint_fence` a voter of the
+    /// set a joint fence leaves answers it once no route names it.
+    pub fn with_fleet(mut self, marks: Arc<crate::quorum::QuorumMarks>) -> Self {
+        self.fleet = Some(marks);
         self
     }
 
@@ -970,7 +980,7 @@ impl ReplicaHandler {
             ReplicaRole::Follower | ReplicaRole::Behind { .. } => {}
             // A joint fence also asks the voters of the set being left, which
             // the new route no longer names. The set check below decides.
-            ReplicaRole::NotAReplica if self.votes_in_leaving(&request) => {}
+            ReplicaRole::NotAReplica if self.joint_fence() && self.votes_in_leaving(&request) => {}
             _ => {
                 if let Some(refusal) = self.check_role(correlation_id, &key, generation) {
                     return refusal;
@@ -1707,6 +1717,12 @@ impl ReplicaHandler {
     /// is registered, as before incarnations.
     fn expected_incarnation(&self, key: &felix_router::ShardKey, sent: Option<u64>) -> Option<u64> {
         crate::incarnation::registration_required(&self.broker, key.kind).then(|| sent.unwrap_or(0))
+    }
+
+    fn joint_fence(&self) -> bool {
+        self.fleet
+            .as_ref()
+            .is_some_and(|marks| marks.fleet_supports(felix_common::fleet::JOINT_FENCE))
     }
 
     /// Whether `request` is a joint fence whose set being left lists this

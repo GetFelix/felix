@@ -616,6 +616,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
     ) -> PassFuture<'a> {
         let cx = self.cx;
         let scan = self.scan;
+        let prior = cx.router.prior_set(&key);
         Box::pin(async move {
             let pass = replicate_shard(
                 cx.requester,
@@ -631,6 +632,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                 aux,
                 &busy,
                 Stragglers::HandOff { next },
+                prior,
             )
             .await;
             (scan, pass)

@@ -462,3 +462,20 @@ fn keys_resolve_with_each_streams_own_mapping() {
         "an unplaced stream routes to shard 0"
     );
 }
+
+/// **A prior set describes the route it was recorded for only.** One recorded
+/// before generation 5 says nothing once the table routes generation 6.
+#[test]
+fn a_prior_set_answers_only_for_its_route_generation() {
+    let nodes = HashMap::from([("a".to_string(), node("a", 7001, "r", true))]);
+    let prior = PriorSet {
+        generation: 5,
+        before: None,
+    };
+    for (generation, known) in [(5, true), (6, false)] {
+        let table =
+            RoutingTable::build([(key(0), "a".to_string(), Vec::new(), generation)], &nodes)
+                .with_priors(HashMap::from([(key(0), prior.clone())]));
+        assert_eq!(table.prior_set(&key(0)).is_some(), known, "{generation}");
+    }
+}

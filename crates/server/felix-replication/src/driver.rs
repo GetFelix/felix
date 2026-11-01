@@ -466,6 +466,7 @@ pub async fn replicate_once_with<R: PeerRequester + Sync>(
     let no_one = HashSet::new();
     let passes: Vec<ShardPass> =
         futures::stream::iter(work.into_iter().map(|(key, route, entry, aux)| {
+            let prior = router.prior_set(&key);
             replicate_shard(
                 requester,
                 broker,
@@ -480,6 +481,7 @@ pub async fn replicate_once_with<R: PeerRequester + Sync>(
                 aux,
                 &no_one,
                 Stragglers::Await,
+                prior,
             )
         }))
         .buffer_unordered(SHARD_CONCURRENCY)
@@ -562,7 +564,7 @@ async fn fence_one<R: PeerRequester>(
     let addr_of = |node_id: &str| router.node_addr(node_id);
     let joint = marks
         .fleet_supports(felix_common::fleet::JOINT_FENCE)
-        .then(|| promotion::Joint::new(&addr_of));
+        .then(|| promotion::Joint::new(&addr_of, router.prior_set(&key)));
     let outcome = promotion::fence_shard(
         requester,
         broker,

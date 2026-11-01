@@ -18,6 +18,9 @@ pub struct RoutingTable {
     /// publish needs it before it can resolve a routing key to a shard, and
     /// that is the hottest question the router is asked.
     placements: HashMap<String, StreamPlacement>,
+    /// What came before each route, where the watch saw it. See
+    /// [`RoutingTable::prior_set`].
+    priors: HashMap<ShardKey, PriorSet>,
 }
 
 impl RoutingTable {
@@ -117,7 +120,30 @@ impl RoutingTable {
                 },
             );
         }
-        Self { routes, placements }
+        Self {
+            routes,
+            placements,
+            priors: HashMap::new(),
+        }
+    }
+
+    /// This table with what came before each route, as the shard watch saw
+    /// the control plane's assignments change.
+    pub fn with_priors(mut self, priors: HashMap<ShardKey, PriorSet>) -> Self {
+        self.priors = priors;
+        self
+    }
+
+    /// The control plane's set right before `key`'s route, if this broker
+    /// saw it: the assignment at the route's generation minus one, or that
+    /// the route is the shard's first assignment. `None` when the route's
+    /// generation does not match, or this broker never saw the step (a
+    /// snapshot after a restart or a gap in the change feed).
+    pub fn prior_set(&self, key: &ShardKey) -> Option<&PriorSet> {
+        let route = self.routes.get(key)?;
+        self.priors
+            .get(key)
+            .filter(|prior| prior.generation == route.generation)
     }
 
     /// How many shards this stream was placed with, for routing.
@@ -247,6 +273,27 @@ pub struct Route {
     /// assignment counts a replica's fence answer only from that copy. `None`
     /// on every other assignment, and from a control plane that sends none.
     pub fence_storage_ids: Option<Arc<BTreeMap<String, String>>>,
+}
+
+/// The set the control plane named for a shard at the generation right
+/// before `generation`, as the watch saw the assignment change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PriorSet {
+    /// The generation of the route this came before.
+    pub generation: u64,
+    /// `None` when the assignment at `generation` was the shard's first.
+    pub before: Option<Arc<PlacedSet>>,
+}
+
+/// One assignment's set, by node id, whether or not the catalog knows each.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlacedSet {
+    pub leader: String,
+    pub replicas: Vec<String>,
+    /// A move's destination, which the leader may have counted as a learner.
+    pub successor: Option<String>,
+    /// See [`Route::fence_storage_ids`]; empty for none.
+    pub storage_ids: BTreeMap<String, String>,
 }
 
 /// One assignment as the table takes it.

@@ -120,6 +120,9 @@ pub struct ShardOwnership {
     /// How many times each shard was assigned afresh at an incarnation this
     /// broker already held it at. See [`Self::renewals`].
     renewals: HashMap<ShardKey, u64>,
+    /// The set each shard had right before its current assignment, where this
+    /// broker saw that step. A joint fence takes the set it leaves from here.
+    priors: HashMap<ShardKey, felix_router::PriorSet>,
 }
 
 impl ShardOwnership {
@@ -143,10 +146,15 @@ impl ShardOwnership {
                     mm::record_stale_change();
                     return false;
                 }
+                let prior = prior_of(self.assignments.get(key), &next);
+                self.set_prior(key, prior);
                 self.assignments.insert(key.clone(), next);
                 true
             }
-            None => self.assignments.remove(key).is_some(),
+            None => {
+                self.priors.remove(key);
+                self.assignments.remove(key).is_some()
+            }
         }
     }
 
@@ -169,8 +177,26 @@ impl ShardOwnership {
                 *self.renewals.entry(key.clone()).or_default() += 1;
             }
         }
+        // The control plane had no assignment: nothing came before this one,
+        // unless the same incarnation's logs carry on from a deleted stream.
+        let first = self
+            .assignments
+            .get(key)
+            .is_none_or(|current| next.incarnation > current.incarnation);
+        let prior = first.then_some(felix_router::PriorSet {
+            generation: next.generation,
+            before: None,
+        });
+        self.set_prior(key, prior);
         self.assignments.insert(key.clone(), next);
         true
+    }
+
+    fn set_prior(&mut self, key: &ShardKey, prior: Option<felix_router::PriorSet>) {
+        match prior {
+            Some(prior) => self.priors.insert(key.clone(), prior),
+            None => self.priors.remove(key),
+        };
     }
 
     /// Apply a page of changes in order. Returns whether anything changed.
@@ -192,10 +218,32 @@ impl ShardOwnership {
     /// plane, and reopening on that would serve a generation a newer leader
     /// has written past.
     pub fn reset(&mut self, items: Vec<ShardAssignment>) {
+        let mut priors = HashMap::new();
+        for next in &items {
+            let current = self.assignments.get(&next.key);
+            let prior = match current {
+                // The same assignment again: what came before it still did.
+                Some(current) if current == next => self.priors.get(&next.key).cloned(),
+                _ => prior_of(current, next),
+            };
+            if let Some(prior) = prior {
+                priors.insert(next.key.clone(), prior);
+            }
+        }
+        self.priors = priors;
         self.assignments = items
             .into_iter()
             .map(|assignment| (assignment.key.clone(), assignment))
             .collect();
+    }
+
+    /// The set each shard had right before its current assignment, where this
+    /// broker saw it, keyed for the routing table.
+    pub(crate) fn priors(&self) -> HashMap<felix_router::ShardKey, felix_router::PriorSet> {
+        self.priors
+            .iter()
+            .map(|(key, prior)| (crate::shards::routing::to_router_key(key), prior.clone()))
+            .collect()
     }
 
     /// How many times each shard was assigned afresh at the incarnation this
@@ -229,6 +277,27 @@ impl ShardOwnership {
     pub fn is_empty(&self) -> bool {
         self.assignments.is_empty()
     }
+}
+
+/// What came before `next`, when `current` is the assignment right before it:
+/// the same incarnation one generation down. Every assignment write raises
+/// the generation by one, so that is the control plane's set just before.
+fn prior_of(
+    current: Option<&ShardAssignment>,
+    next: &ShardAssignment,
+) -> Option<felix_router::PriorSet> {
+    let current = current?;
+    (current.incarnation == next.incarnation
+        && current.generation.checked_add(1) == Some(next.generation))
+    .then(|| felix_router::PriorSet {
+        generation: next.generation,
+        before: Some(std::sync::Arc::new(felix_router::PlacedSet {
+            leader: current.leader.clone(),
+            replicas: current.replicas.clone(),
+            successor: current.successor.clone(),
+            storage_ids: current.fence_storage_ids.clone(),
+        })),
+    })
 }
 
 /// Why the broker must take a fresh snapshot rather than keep polling.

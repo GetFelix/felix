@@ -10,6 +10,6 @@ mod shard;
 
 pub use region::{BridgeSpecError, RegionRouter, parse_bridges};
 pub use shard::{
-    NodeRef, Placed, ReplicaRole, Resolution, Route, Routes, RoutingTable, ShardKey, ShardKind,
-    ShardRouter, StreamPlacement, Unavailable,
+    NodeRef, Placed, PlacedSet, PriorSet, ReplicaRole, Resolution, Route, Routes, RoutingTable,
+    ShardKey, ShardKind, ShardRouter, StreamPlacement, Unavailable,
 };

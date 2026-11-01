@@ -221,3 +221,41 @@ async fn under_joint_fence_a_shipping_leader_keeps_the_set_it_leaves() {
         );
     }
 }
+
+/// **Under `joint_fence`, a shipping leader that does not know the set it
+/// leaves keeps nothing.** Its log keeps the set of generation 2, not the one
+/// right before 4, and its watch never saw generation 3: keeping the new set
+/// would hide the old one from the fence, which then stays pending instead.
+#[tokio::test]
+async fn under_joint_fence_a_shipping_leader_keeps_no_set_when_the_one_before_is_unknown() {
+    use felix_common::fleet::{FleetGate, GENERATION_START, JOINT_FENCE, MAJORITY_ACK};
+    use felix_storage::disk_log::{Member, Membership, ReplicaSet};
+
+    let (broker, _dir) = quorum_leader(3, 4).await;
+    let log = stream_log(&broker).await;
+    log.accept_generation(2, Some(LOCAL)).await.expect("ballot");
+    log.accept_set(ReplicaSet {
+        current: Membership {
+            generation: 2,
+            members: [LOCAL, "broker-b", "broker-d"]
+                .map(|node| Member {
+                    node: node.to_string(),
+                    storage: None,
+                    learner: false,
+                })
+                .to_vec(),
+        },
+        leaving: None,
+    })
+    .await
+    .expect("an older set");
+    log.accept_generation(4, Some(LOCAL)).await.expect("ballot");
+    let names = [GENERATION_START, MAJORITY_ACK, JOINT_FENCE].map(|feature| feature.name());
+    let fleet = FleetGate::new(names);
+    fleet.observe(names);
+    let marks = QuorumMarks::with_fleet(Arc::new(fleet));
+
+    pass(&Followers::new(true, &["broker-b"]), &broker, &marks).await;
+
+    assert_eq!(stream_log(&broker).await.set_generation(), 2);
+}

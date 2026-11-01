@@ -48,6 +48,7 @@ mod joint;
 
 pub use joint::Joint;
 use joint::JointSets;
+pub(crate) use joint::set_before;
 
 /// How much one catch-up read asks a replica for.
 const FETCH_BYTES: u32 = 1024 * 1024;
@@ -220,14 +221,22 @@ pub async fn fence_shard<R: PeerRequester>(
             // The counter log carries no set, and is fenced on the new set
             // alone, as the model's `Counters` are.
             let set = set.as_ref().filter(|_| kind != LogKind::Counters);
-            let joint = match (joint, set) {
+            // Under `joint_fence` a fence whose set being left is unknown
+            // stays pending rather than fence the new set alone.
+            let under_joint = match (joint, set) {
                 (Some(joint), Some(set)) => {
-                    joint::sets(requester, &log, local_node_id, route, set, joint).await
+                    match joint::sets(requester, &log, local_node_id, route, set, joint).await {
+                        Ok(fenced) => Some(fenced),
+                        Err(why) => return Err(Outcome::pending(why, Vec::new())),
+                    }
                 }
                 _ => None,
             };
+            let joint = under_joint
+                .as_ref()
+                .and_then(|fenced| fenced.joint.as_ref());
             let asked: Vec<&felix_router::NodeRef>;
-            let fenced_on = match &joint {
+            let fenced_on = match joint {
                 Some(joint) => {
                     asked = joint.asked.iter().collect();
                     &asked
@@ -245,7 +254,7 @@ pub async fn fence_shard<R: PeerRequester>(
                 lease_fallback,
                 reported_ids,
                 set,
-                joint.as_ref(),
+                joint,
             )
             .await;
             caught_up_from = caught_up_from.or(fenced?);
@@ -254,7 +263,7 @@ pub async fn fence_shard<R: PeerRequester>(
                     &log,
                     local_node_id,
                     route,
-                    joint.as_ref().map(|joint| &joint.leaving),
+                    under_joint.as_ref().map(|fenced| &fenced.before),
                 )
                 .await?;
             }
@@ -805,13 +814,13 @@ async fn drop_superseded(
 /// never on disk ahead of the generation it belongs to. The open takes the
 /// same ballot again, which is then a no-op.
 ///
-/// After a joint fence the set being left is kept beside it, so a fence
-/// tried again at this generation is joint as well.
+/// Under `joint_fence` the set before is kept beside it, even when it has
+/// the same voters, so a fence tried again at this generation knows it.
 async fn keep_own_set(
     log: &felix_broker::StreamLog,
     local_node_id: &str,
     route: &Route,
-    leaving: Option<&ReplicaSetView>,
+    leaving: Option<&felix_storage::disk_log::Membership>,
 ) -> Result<(), Outcome> {
     match log
         .accept_generation(route.generation, Some(local_node_id))
@@ -838,7 +847,7 @@ async fn keep_own_set(
         }
     }
     let mut set = crate::replica_set::kept(route, None);
-    set.leaving = leaving.map(crate::replica_set::membership);
+    set.leaving = leaving.cloned();
     match log.accept_set(set).await {
         Ok(felix_storage::disk_log::SetCheck::Stale { known }) => Err(Outcome::pending(
             format!("this broker counts the set of generation {known}, newer than this one"),

@@ -88,6 +88,12 @@ impl ShardRouter {
         self.routes.load().known_nodes.get(node_id).copied()
     }
 
+    /// The control plane's set right before `key`'s current route, if this
+    /// broker saw it. See [`RoutingTable::prior_set`].
+    pub fn prior_set(&self, key: &ShardKey) -> Option<crate::PriorSet> {
+        self.routes.load().table.prior_set(key).cloned()
+    }
+
     /// The current routes, to resolve against later with [`Self::resolve_with`].
     pub fn routes(&self) -> Arc<Routes> {
         self.routes.load_full()

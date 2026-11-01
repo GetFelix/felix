@@ -288,6 +288,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     mut aux: AuxCursors,
     busy: &HashSet<String>,
     stragglers: Stragglers,
+    prior: Option<felix_router::PriorSet>,
 ) -> ShardPass<'a> {
     marks.track_incarnations(broker);
     let route = &route;
@@ -455,20 +456,26 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     let electing = requester.offers_election();
     // The ballot at this generation is on disk from the open; keeping the set
     // before it would put the set ahead of the ballot, so skip the pass.
-    // Under `joint_fence` a changed set is kept with the one it leaves, so a
-    // fence that runs after this (between the open and the fence) still
-    // knows the set being left.
-    if electing
+    // Under `joint_fence` the set before is kept beside it, as a fence keeps
+    // it, so a fence that runs after this still knows the set being left. A
+    // set before that is not known here is left for the fence, which then
+    // stays pending, rather than kept without it.
+    let kept = (electing
         && log.set_generation() < route.generation
-        && log.accepted_generation() >= route.generation
-        && let Err(err) = log
-            .accept_set(kept_with_leaving(
+        && log.accepted_generation() >= route.generation)
+        .then(|| {
+            kept_with_leaving(
                 &log,
                 route,
                 entry.learner.as_deref(),
-                marks.fleet_supports(felix_common::fleet::JOINT_FENCE),
-            ))
-            .await
+                marks
+                    .fleet_supports(felix_common::fleet::JOINT_FENCE)
+                    .then_some(prior.as_ref()),
+            )
+        })
+        .flatten();
+    if let Some(kept) = kept
+        && let Err(err) = log.accept_set(kept).await
     {
         tracing::warn!(
             stream = %key.stream,
@@ -2403,27 +2410,26 @@ async fn release_readers(broker: &Broker, key: &ShardKey) {
     }
 }
 
-/// The route's set as this leader keeps it. Under `joint`, the set it kept
-/// before rides along as the one being left when its voters differ, as a
-/// joint fence would keep it.
+/// The route's set as this leader keeps it. Under `joint_fence` (`joint`
+/// is `Some`, with what the watch saw before the route) the set before rides
+/// along as the one being left, and `None` keeps nothing when that set is
+/// not known here.
 fn kept_with_leaving(
     log: &felix_broker::StreamLog,
     route: &felix_router::Route,
     learner: Option<&str>,
-    joint: bool,
-) -> felix_storage::disk_log::ReplicaSet {
+    joint: Option<Option<&felix_router::PriorSet>>,
+) -> Option<felix_storage::disk_log::ReplicaSet> {
     let mut set = crate::replica_set::kept(route, learner);
-    if joint && let Some(before) = log.replica_set() {
-        let voters = |members: &[felix_storage::disk_log::Member]| {
-            members
-                .iter()
-                .filter(|member| !member.learner)
-                .map(|member| member.node.clone())
-                .collect::<std::collections::BTreeSet<_>>()
-        };
-        if voters(&before.current.members) != voters(&set.current.members) {
-            set.leaving = Some(before.current);
-        }
+    if let Some(prior) = joint {
+        set.leaving = Some(
+            crate::promotion::set_before(log.replica_set().as_ref(), route, prior)
+                .ok()?
+                .unwrap_or(felix_storage::disk_log::Membership {
+                    generation: route.generation.saturating_sub(1),
+                    members: Vec::new(),
+                }),
+        );
     }
-    set
+    Some(set)
 }

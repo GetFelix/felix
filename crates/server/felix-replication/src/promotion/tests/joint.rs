@@ -2,6 +2,7 @@
 //! leaves as well as of the new one. `JointFence` in
 //! `docs/formal/FelixShard.tla`.
 
+use felix_router::{PlacedSet, PriorSet};
 use felix_storage::disk_log::{Member, Membership, ReplicaSet};
 
 use super::*;
@@ -86,8 +87,18 @@ async fn kept_naming(
 }
 
 async fn fence(replicas: &Replicas, leader: &Arc<Broker>, joint: bool) -> Outcome {
+    fence_after(replicas, leader, joint, None).await
+}
+
+/// [`fence`], with what the watch saw right before the route.
+async fn fence_after(
+    replicas: &Replicas,
+    leader: &Arc<Broker>,
+    joint: bool,
+    prior: Option<PriorSet>,
+) -> Outcome {
     let addr_of = addr_of;
-    let joint = joint.then(|| Joint::new(&addr_of));
+    let joint = joint.then(|| Joint::new(&addr_of, prior));
     fence_shard(
         replicas,
         leader,
@@ -202,10 +213,12 @@ async fn without_joint_fence_a_set_change_fences_the_new_set_alone() {
     assert_eq!(kept.leaving, None);
 }
 
-/// **A member known not to check sets turns the joint fence off**: the
-/// shard is fenced on its new set as it always was.
+/// **A member that does not check sets counts as not answering.** broker-c
+/// lacks `ELECTION`, so it is not asked; with broker-b down, broker-x alone
+/// is not a majority of the set being left, and the shard stays closed
+/// rather than fall back to a fence on the new set.
 #[tokio::test]
-async fn a_member_without_election_fences_the_new_set_alone() {
+async fn a_member_without_election_counts_as_not_answering() {
     let mut replicas = replicas_with(&["broker-x", "broker-z"]);
     replicas.get_mut("broker-b").reachable = false;
     replicas.get_mut("broker-c").capabilities = REQUIRED;
@@ -214,13 +227,123 @@ async fn a_member_without_election_fences_the_new_set_alone() {
 
     let outcome = fence(&replicas, &leader, true).await;
 
-    assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
+    let Outcome::Pending { why, .. } = &outcome else {
+        panic!("opened without a majority of the set being left: {outcome:?}");
+    };
+    assert!(why.contains("1 of 3 voters of the set being left"), "{why}");
     assert!(
         replicas
             .sent(Kind::ElectionFence)
             .iter()
             .all(|node| node != "broker-c")
     );
+}
+
+/// The control plane's set at generation 4, {broker-x, broker-b, broker-c},
+/// as the watch saw it right before the route at `PROMOTED`.
+fn prior_xbc() -> PriorSet {
+    PriorSet {
+        generation: PROMOTED,
+        before: Some(Arc::new(PlacedSet {
+            leader: "broker-x".into(),
+            replicas: vec!["broker-b".into(), "broker-c".into()],
+            successor: None,
+            storage_ids: Default::default(),
+        })),
+    }
+}
+
+/// **The set being left is the control plane's, not whatever the leader's
+/// log kept.** broker-a never got a batch stamped with the set it leaves, so
+/// its log keeps none, but the watch saw the assignment at generation 4. With
+/// broker-b and broker-c down the shard stays closed; once broker-b answers
+/// it opens, keeping the old set beside its own.
+#[tokio::test]
+async fn a_leader_whose_log_kept_no_set_still_fences_the_old_majority() {
+    let mut replicas = replicas_with(&["broker-x", "broker-z"]);
+    replicas.get_mut("broker-b").reachable = false;
+    replicas.get_mut("broker-c").reachable = false;
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+
+    let outcome = fence_after(&replicas, &leader, true, Some(prior_xbc())).await;
+
+    let Outcome::Pending { why, .. } = &outcome else {
+        panic!("opened on a majority of the new set alone: {outcome:?}");
+    };
+    assert!(why.contains("1 of 3 voters of the set being left"), "{why}");
+
+    replicas.get_mut("broker-b").reachable = true;
+    let outcome = fence_after(&replicas, &leader, true, Some(prior_xbc())).await;
+
+    assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
+    let own = leader
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log")
+        .replica_set()
+        .expect("the leader kept its set");
+    assert_eq!(own.leaving.map(|old| old.generation), Some(4));
+}
+
+/// **A set before that is not known keeps the shard closed.** Neither the
+/// watch nor the leader's log knows the set at generation 4, so the fence
+/// does not fall back to the new set alone. A first assignment, with nothing
+/// before it, fences the new set.
+#[tokio::test]
+async fn an_unknown_set_before_keeps_the_fence_pending() {
+    let replicas = replicas_with(&["broker-x", "broker-z"]);
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+
+    let outcome = fence_after(&replicas, &leader, true, None).await;
+
+    let Outcome::Pending { why, .. } = &outcome else {
+        panic!("fenced the new set alone: {outcome:?}");
+    };
+    assert!(why.contains("is not known here"), "{why}");
+
+    let first = PriorSet {
+        generation: PROMOTED,
+        before: None,
+    };
+    let outcome = fence_after(&replicas, &leader, true, Some(first)).await;
+
+    assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
+}
+
+/// **A set kept at the route's generation without the one it leaves is not
+/// taken as no change.** A ship pass that read `joint_fence` as off kept the
+/// new set alone; the fence, reading it on, takes the set being left from the
+/// control plane's record, and without that record stays pending.
+#[tokio::test]
+async fn a_set_kept_without_the_one_it_leaves_is_not_read_as_no_change() {
+    for prior in [Some(prior_xbc()), None] {
+        let mut replicas = replicas_with(&["broker-x", "broker-z"]);
+        replicas.get_mut("broker-b").reachable = false;
+        replicas.get_mut("broker-c").reachable = false;
+        let (leader, _dir) = leader_holding(4, &["a"]).await;
+        let log = leader
+            .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+            .await
+            .expect("log");
+        log.accept_generation(PROMOTED, Some(LEADER))
+            .await
+            .expect("ballot");
+        log.accept_set(crate::replica_set::kept(&swapped(), None))
+            .await
+            .expect("keep the new set alone");
+
+        let outcome = fence_after(&replicas, &leader, true, prior.clone()).await;
+
+        let Outcome::Pending { why, .. } = &outcome else {
+            panic!("read a set kept alone as no change: {outcome:?}");
+        };
+        let expected = if prior.is_some() {
+            "1 of 3 voters of the set being left"
+        } else {
+            "is not known here"
+        };
+        assert!(why.contains(expected), "{why}");
+    }
 }
 
 /// **An answer counts toward the set being left only from the copy that set
@@ -279,12 +402,31 @@ async fn a_member_the_new_route_leaves_out_still_answers_a_joint_fence() {
         ),
         &nodes(),
     );
-    let b = replicas.get_mut("broker-b");
-    b.handler = ReplicaHandler::new(Arc::clone(&b.broker), router);
-    let (leader, _dir) = leader_holding(4, &["a"]).await;
-    kept_before(&leader, &["broker-x", "broker-b", "broker-c"], &[]).await;
+    // Only once its fleet has finalized `joint_fence`: before that a broker
+    // no route names refuses as it always did.
+    for finalized in [false, true] {
+        let b = replicas.get_mut("broker-b");
+        b.handler = ReplicaHandler::new(Arc::clone(&b.broker), Arc::clone(&router))
+            .with_fleet(Arc::new(joint_fence_marks(finalized)));
+        let (leader, _dir) = leader_holding(4, &["a"]).await;
+        kept_before(&leader, &["broker-x", "broker-b", "broker-c"], &[]).await;
 
-    let outcome = fence(&replicas, &leader, true).await;
+        let outcome = fence(&replicas, &leader, true).await;
 
-    assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
+        assert_eq!(
+            matches!(outcome, Outcome::Fenced { .. }),
+            finalized,
+            "{outcome:?}"
+        );
+    }
+}
+
+/// Marks for a fleet that has finalized `joint_fence`, or has not.
+fn joint_fence_marks(finalized: bool) -> crate::quorum::QuorumMarks {
+    use felix_common::fleet::{FleetGate, JOINT_FENCE};
+    let fleet = FleetGate::new([JOINT_FENCE.name()]);
+    if finalized {
+        fleet.observe([JOINT_FENCE.name()]);
+    }
+    crate::quorum::QuorumMarks::with_fleet(Arc::new(fleet))
 }

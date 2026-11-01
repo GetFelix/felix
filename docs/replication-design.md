@@ -3610,26 +3610,35 @@ Once it is finalized on a broker that offers `ELECTION`:
   that generation while the control plane was away, and a replica that
   promised it refuses this broker. Writes are held through the fence, as at
   a promotion.
-- A leader whose route names different voters than the set its own log last
-  kept fences both sets, carrying the new set with the one it is leaving,
-  and opens only on a majority of each set's voters. A learner is never
-  counted, in either set. That covers a move's cut-over, a replacement's join
-  and seat, a top-up and a grow. The set being left is the one the leader's
-  log kept, from its previous leader's batches or from its own last fence, so
-  the control plane is not asked. A member of it that no route names any
-  more is reached at the address the node catalog gives, and answers even
-  though its own routing view leaves it out.
-- The leader keeps the new set with the one it left beside it, and so does
-  every replica that took the fence, so a fence tried again at that
-  generation is joint too. A leader that keeps a changed set while shipping
-  (between the open and the fence, or after an open made before the feature
-  was finalized) keeps the old one beside it the same way.
+- A leader fences both its route's set and the set it is leaving when their
+  voters differ, carrying the new set with the old one, and opens only on a
+  majority of each. That covers a move's cut-over, a replacement's join and
+  seat, a top-up and a grow. The set being left is the control plane's set
+  at the generation right before the route's, as the model's `Swap` takes it.
+  The broker learns it from the assignment its watch saw at that generation,
+  from the set the leader before shipped with at it, or from what this
+  leader kept beside its own set. When none of those knows it (the watch
+  started from a snapshot, or skipped that generation, and the log keeps an
+  older set), the fence stays pending rather than fence the new set alone.
+  Only a shard's first assignment, on a log that keeps no set, has nothing
+  to leave. A member of the old set that no route names any more is reached
+  at the address the node catalog gives, and answers even though its own
+  routing view leaves it out.
+- Each member of the set being left is counted as a voter and, where it was
+  a move's staged destination, also not: replicas may keep the set either
+  way, and the fence needs a majority of each reading.
+- The leader keeps the set it left beside its own, even when the voters are
+  the same, so a fence tried again at that generation, after a restart too,
+  knows it. Every replica that took a joint fence keeps both. A leader that
+  keeps its set while shipping keeps the old one beside it the same way, and
+  keeps nothing when it does not know it. A set kept at the route's
+  generation without the one it leaves (kept before the feature was
+  finalized) is not read as no change.
 - An answer counts toward the set being left only from the copy that set
   names by storage id, where it names one: a node id given to a new, empty
   disk holds nothing the old set acknowledged.
-- A member known not to offer `ELECTION` turns the joint fence off for that
-  shard, which is then fenced on its new set as before. One whose
-  capabilities cannot be learned is not asked, so it cannot count.
+- A member that does not offer `ELECTION`, or whose capabilities or address
+  cannot be learned, is not asked, so it counts as not answering.
 
 Without `joint_fence` finalized, the fence and what it sends are exactly what
 they were. The counter log of a cache shard and a stream's group logs are
@@ -3644,9 +3653,16 @@ while a change is pending, the pre-vote and the election driver.
 > copy check. `a_member_the_new_route_leaves_out_still_answers_a_joint_fence`:
 > a voter of the set being left answers though its routing view no longer
 > names it. `under_joint_fence_a_shipping_leader_keeps_the_set_it_leaves`:
-> the set being left survives a ship pass before the fence. `without_joint_fence_a_set_change_fences_the_new_set_alone` and
-> `a_member_without_election_fences_the_new_set_alone`: the fence is
-> unchanged when it does not apply.
+> the set being left survives a ship pass before the fence.
+> `a_leader_whose_log_kept_no_set_still_fences_the_old_majority`: the set
+> being left comes from the control plane's assignment.
+> `an_unknown_set_before_keeps_the_fence_pending`,
+> `a_set_kept_without_the_one_it_leaves_is_not_read_as_no_change` and
+> `under_joint_fence_a_shipping_leader_keeps_no_set_when_the_one_before_is_unknown`:
+> an unknown set being left fails closed.
+> `a_member_without_election_counts_as_not_answering`: such a member cannot
+> count. `without_joint_fence_a_set_change_fences_the_new_set_alone`: the
+> fence is unchanged when the feature is off.
 > `under_joint_fence_the_next_generation_is_refused_by_a_replica_that_promised_it`:
 > the fenced next-generation open. `a_two_member_swap_waits_for_the_old_majority`
 > (felix-cluster, `failures`): the same swap between broker processes.
