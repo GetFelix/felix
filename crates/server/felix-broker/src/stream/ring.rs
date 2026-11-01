@@ -65,6 +65,8 @@ impl Ring {
         self.entries.front()
     }
 
+    // Only the debug-build sequence check reads it.
+    #[cfg(debug_assertions)]
     pub(crate) fn back(&self) -> Option<&LogEntry> {
         self.entries.back()
     }

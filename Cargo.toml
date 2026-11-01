@@ -87,7 +87,7 @@ version = "0.7.0-preview.2"
 license = "AGPL-3.0-only"
 rust-version = "1.97"
 repository = "https://github.com/GetFelix/felix"
-homepage = "https://github.com/GetFelix/felix"
+homepage = "https://getfelix.dev"
 readme = "README.md"
 
 [workspace.lints.rust]
