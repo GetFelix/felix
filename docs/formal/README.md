@@ -1124,10 +1124,17 @@ What is not checked:
   (`NonVoterCredit`). A second wipe of the same broker is one failure; two
   distinct brokers wiped, including `WipeLeads` with `Forgets = 2`, exceed
   what three replicas tolerate and are not checked.
-- #1009 S8. In the code, the caught-up report that ends non-voting must be
-  tied to the copy's current storage id. Otherwise a report sent before a
-  second wipe could re-admit an empty copy; the model reads the logs directly
-  and cannot show this.
+- Control-plane re-admission (#1737). When the control plane re-admits from
+  a caught-up report, the report must be tied to the copy's current storage
+  id. Otherwise a report sent before a second wipe could re-admit an empty
+  copy; the model reads the logs directly and cannot show this.
+- Three brokers. The set that re-admits a copy is fenced by both other
+  copies, so its generation is at least any the copy promised before its
+  wipe, including a candidate's above the control plane's. With five, a
+  fence needs three of them, and that no longer follows; it is not checked.
+- The creation configurations reach generation 3 only after the re-admission
+  (`ThreeOnceReadmitted`), so a wipe beside an election at 3 is checked only
+  in `FelixShardElectWipeNonVoter.cfg`, which starts past creation.
 - Cache shards. The counter log is left out (`Counters = FALSE`).
 
 ### The round that makes a read linearizable

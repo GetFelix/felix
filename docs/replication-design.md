@@ -929,9 +929,9 @@ Not covered yet, and needed before elections (#1009 S9):
   written, and a copy wiped after promising one cannot know it. With three
   copies that is safe: the set that re-admits it was fenced by both other
   copies, so its generation is at least any the wiped copy promised, and
-  the catch-up's ballot is at that generation or a later one. With more copies the fence needs only
-  a majority, so how a candidate picks its generation is part of the
-  election design.
+  the catch-up's ballot is at that generation or a later one. With more
+  copies the fence needs only a majority, so how a candidate picks its
+  generation is part of the election design.
 
 The model checks the rule and the variants that fail in
 `FelixShardElectWipe*.cfg` (`docs/formal/README.md`, "A wiped voter in an
