@@ -304,7 +304,7 @@ impl ClientError {
                 Some(Internal::StaleRoute) => {
                     Self::new(ErrorCode::ShardUnavailable, message).with_reason(reason::STALE)
                 }
-                Some(Internal::FencedEpoch) => {
+                Some(Internal::FencedEpoch | Internal::StaleSet) => {
                     Self::new(ErrorCode::ShardUnavailable, message).with_reason(reason::FENCED)
                 }
                 Some(Internal::Unavailable) => {

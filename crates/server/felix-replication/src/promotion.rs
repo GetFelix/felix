@@ -35,8 +35,8 @@ use felix_broker::{Broker, LogKind};
 use felix_router::{Route, ShardKey, ShardKind};
 use felix_storage::StorageId;
 use felix_wire::internal::{
-    ErrorCode, Fence, FenceOk, InternalMessage, PeerCapabilities, ReplicaLog, ReplicateFetch,
-    ShardRef,
+    ErrorCode, Fence, FenceElection, FenceOk, InternalMessage, PeerCapabilities, ReplicaLog,
+    ReplicaSetView, ReplicateFetch, ShardRef,
 };
 use futures::StreamExt;
 
@@ -158,6 +158,10 @@ pub async fn fence_shard<R: PeerRequester>(
 
     let shard = crate::incarnation::shard_ref(broker, key, route.generation);
     let reported_ids = route.fence_storage_ids.as_deref();
+    // The set this leader counts, for replicas that check sets.
+    let set = requester
+        .offers_election()
+        .then(|| crate::replica_set::view(route, None));
     let own_logs = async {
         let mut caught_up_from = None;
         for &kind in logs {
@@ -212,9 +216,13 @@ pub async fn fence_shard<R: PeerRequester>(
                 &log,
                 lease_fallback,
                 reported_ids,
+                set.as_ref().filter(|_| kind != LogKind::Counters),
             )
             .await;
             caught_up_from = caught_up_from.or(fenced?);
+            if set.is_some() && kind != LogKind::Counters {
+                keep_own_set(&log, local_node_id, route).await?;
+            }
         }
         Ok(caught_up_from)
     };
@@ -264,6 +272,7 @@ async fn fence_log<R: PeerRequester>(
     log: &felix_broker::StreamLog,
     lease_fallback: bool,
     reported_ids: Option<&BTreeMap<String, String>>,
+    set: Option<&ReplicaSetView>,
 ) -> Result<Option<String>, Outcome> {
     // Answers until a majority, this broker included, has taken the fence.
     // Later answers are not waited for: the model opens on the first majority.
@@ -282,6 +291,19 @@ async fn fence_log<R: PeerRequester>(
     let mut refusals: Vec<String> = Vec::new();
     let mut asks = futures::stream::FuturesUnordered::new();
     for replica in replicas {
+        // Only to a replica that offered `ELECTION`; any other is sent the
+        // fence it always was.
+        let election = set
+            .filter(|_| {
+                requester
+                    .recorded_capabilities(&replica.node_id)
+                    .is_some_and(|offered| offered.contains(PeerCapabilities::ELECTION))
+            })
+            .map(|set| FenceElection {
+                candidate: false,
+                set: set.clone(),
+                leaving: None,
+            });
         asks.push(ask_fence(
             requester,
             replica.node_id.clone(),
@@ -289,6 +311,7 @@ async fn fence_log<R: PeerRequester>(
             shard.clone(),
             crate::ship::replica_log(kind),
             reported_ids.is_some(),
+            election,
         ));
     }
     while answered.len() + 1 < needed {
@@ -305,6 +328,13 @@ async fn fence_log<R: PeerRequester>(
                 // A replica has taken a newer leader: this promotion is over.
                 return Err(Outcome::pending(
                     format!("{node_id} has accepted a newer generation: {}", err.detail),
+                    took(&answered),
+                ));
+            }
+            Ok(InternalMessage::ReplicateError(err)) if err.code == ErrorCode::StaleSet => {
+                // A replica counts a newer set, so a newer assignment exists.
+                return Err(Outcome::pending(
+                    format!("{node_id} counts a newer replica set: {}", err.detail),
                     took(&answered),
                 ));
             }
@@ -442,6 +472,7 @@ async fn fence_groups<R: PeerRequester>(
                     shard.clone(),
                     ReplicaLog::GroupDeadLetters,
                     reported_ids.is_some(),
+                    None,
                 ),
                 ask_fence(
                     requester,
@@ -450,6 +481,7 @@ async fn fence_groups<R: PeerRequester>(
                     shard.clone(),
                     ReplicaLog::GroupCursors,
                     reported_ids.is_some(),
+                    None,
                 ),
             );
             // Both answers from the copy the report named, or neither counts.
@@ -709,6 +741,52 @@ async fn drop_superseded(
     Ok(())
 }
 
+/// Take this leader's ballot and keep the set it fenced with, before the
+/// shard opens: the ballot first, as the open of a log expects, so a set is
+/// never on disk ahead of the generation it belongs to. The open takes the
+/// same ballot again, which is then a no-op.
+async fn keep_own_set(
+    log: &felix_broker::StreamLog,
+    local_node_id: &str,
+    route: &Route,
+) -> Result<(), Outcome> {
+    match log
+        .accept_generation(route.generation, Some(local_node_id))
+        .await
+    {
+        Ok(
+            felix_storage::disk_log::GenerationCheck::Current
+            | felix_storage::disk_log::GenerationCheck::Raised,
+        ) => {}
+        Ok(other) => {
+            return Err(Outcome::pending(
+                format!(
+                    "this broker cannot lead generation {}: {other:?}",
+                    route.generation
+                ),
+                Vec::new(),
+            ));
+        }
+        Err(err) => {
+            return Err(Outcome::pending(
+                format!("could not persist this leader's ballot: {err}"),
+                Vec::new(),
+            ));
+        }
+    }
+    match log.accept_set(crate::replica_set::kept(route, None)).await {
+        Ok(felix_storage::disk_log::SetCheck::Stale { known }) => Err(Outcome::pending(
+            format!("this broker counts the set of generation {known}, newer than this one"),
+            Vec::new(),
+        )),
+        Ok(_) => Ok(()),
+        Err(err) => Err(Outcome::pending(
+            format!("could not keep this leader's replica set: {err}"),
+            Vec::new(),
+        )),
+    }
+}
+
 /// A replica's answer to a fence, and with `identified` the storage identity
 /// the connection it came over gave in its handshake.
 async fn ask_fence<R: PeerRequester>(
@@ -718,6 +796,7 @@ async fn ask_fence<R: PeerRequester>(
     shard: ShardRef,
     log: ReplicaLog,
     identified: bool,
+    election: Option<FenceElection>,
 ) -> (
     String,
     std::net::SocketAddr,
@@ -728,7 +807,7 @@ async fn ask_fence<R: PeerRequester>(
         correlation_id: 0,
         shard,
         log,
-        election: None,
+        election,
     });
     if !identified {
         let answer = requester.request(&node_id, addr, request).await;

@@ -13,7 +13,9 @@ const STREAM: &str = "orders";
 const HOLDER: &[u8] = b"holder-1";
 
 /// What `node` reads from `from`, retried until it serves: a promoted broker
-/// is named leader before it has opened the shard.
+/// is named leader before it has opened the shard, and refuses reads as
+/// `not_ready` until a majority holds a record of its generation. An empty
+/// page is taken as the answer, never retried: it would hide #1718.
 async fn read_until_served(
     cluster: &Cluster,
     node: &str,

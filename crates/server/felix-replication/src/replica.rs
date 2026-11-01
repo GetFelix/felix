@@ -15,8 +15,11 @@
 //! The order matters. Position is only meaningful once the sender is
 //! established as the current leader: applying first and checking after would
 //! let a fenced leader's bytes reach the disk, and records are never rewritten.
+mod election;
+
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use felix_broker::Broker;
 use felix_broker::replication::{self, Divergence};
@@ -53,6 +56,11 @@ pub struct ReplicaHandler {
     /// Confirmed reads of the control plane's assignments, for a copy with
     /// no promise. Without it the routing view answers alone.
     confirmed: Option<Arc<dyn crate::confirmed::ConfirmedRoutes>>,
+    /// When this replica last heard each shard's leader, from a batch or
+    /// fence that carried a set. See [`Self::with_stickiness`].
+    heard: parking_lot::Mutex<HashMap<felix_router::ShardKey, Instant>>,
+    /// How long after hearing its leader this replica refuses a candidate.
+    stickiness: Duration,
     /// Run after an incarnation check passes, to change the catalog between
     /// the check and the open.
     #[cfg(test)]
@@ -108,6 +116,8 @@ impl ReplicaHandler {
             mismatched: parking_lot::Mutex::new(HashMap::new()),
             unclean: None,
             confirmed: None,
+            heard: parking_lot::Mutex::new(HashMap::new()),
+            stickiness: crate::suspicion::DEFAULT_SUSPECT_AFTER,
             #[cfg(test)]
             incarnation_checked: parking_lot::Mutex::new(None),
         }
@@ -128,6 +138,14 @@ impl ReplicaHandler {
         confirmed: Arc<dyn crate::confirmed::ConfirmedRoutes>,
     ) -> Self {
         self.confirmed = Some(confirmed);
+        self
+    }
+
+    /// Refuse a candidate's fence for this long after hearing the shard's
+    /// leader. The suspicion window: a replica that would not yet name its
+    /// leader as gone does not help replace it either.
+    pub fn with_stickiness(mut self, stickiness: Duration) -> Self {
+        self.stickiness = stickiness;
         self
     }
 
@@ -598,6 +616,13 @@ impl ReplicaHandler {
         {
             return refusal;
         }
+        if let Some(stamped) = batch.set_generation
+            && let Some(refusal) = self
+                .check_batch_set(correlation_id, &key, &log, stamped, batch.shard.generation)
+                .await
+        {
+            return refusal;
+        }
 
         // Held like the leader's copy: this one counts toward the mark, and if
         // it led, it would be the copy a client was promised. Before the first
@@ -782,6 +807,9 @@ impl ReplicaHandler {
                 )
             }
             Ok(Ok(applied)) => {
+                if batch.set_generation.is_some() {
+                    self.heard_leader(&key);
+                }
                 if let Some(unclean) = &self.unclean
                     && matches!(
                         log_kind,
@@ -1079,8 +1107,22 @@ impl ReplicaHandler {
         // A fence at the generation already accepted changes nothing here: it
         // is the leader confirming it still leads, once per read round. From
         // any other node it is refused below, by the ballot.
+        if let Some(election) = &request.election
+            && let Some(refusal) =
+                self.check_fence_set(correlation_id, &key, &log, election, generation)
+        {
+            return refusal;
+        }
         let confirming = log.accepted_generation() == generation;
         if let Some(refusal) = accept_sender(&log, correlation_id, &key, generation, sender).await {
+            return refusal;
+        }
+        // After the ballot, as the open expects, and before the answer.
+        if let Some(election) = &request.election
+            && let Some(refusal) = self
+                .keep_fence_set(correlation_id, &key, &log, election)
+                .await
+        {
             return refusal;
         }
         // Read after the generation is on disk: a batch from the old leader
@@ -1104,6 +1146,9 @@ impl ReplicaHandler {
                 "fenced by a promoted leader; older leaders are refused from here on",
             );
             metrics::record_replicated(metrics::OUTCOME_FENCE_TAKEN);
+        }
+        if request.election.as_ref().is_some_and(|e| !e.candidate) {
+            self.heard_leader(&key);
         }
         InternalMessage::FenceOk(FenceOk {
             correlation_id,

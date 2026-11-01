@@ -30,6 +30,10 @@ use crate::{
 /// batch, not the distance it is behind.
 pub(super) const MAX_BATCH_BYTES: usize = 1024 * 1024;
 
+// A read can overshoot the budget by one record, and the batch still has to
+// fit once stamped and incarnated.
+const _: () = assert!(2 * MAX_BATCH_BYTES <= felix_wire::internal::MAX_INNER_BODY_BYTES as usize);
+
 /// How long one exchange ships to a destination that is still copying.
 ///
 /// The driver hands an exchange still under way back from the pass, so the
@@ -446,7 +450,55 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     {
         fence.deposed(mark_key, route.generation);
     }
+    // The leader keeps its own set before shipping at it, so a fence or
+    // batch from an older set is refused here too once this broker follows.
+    let electing = requester.offers_election();
+    // The ballot at this generation is on disk from the open; keeping the set
+    // before it would put the set ahead of the ballot, so skip the pass.
+    if electing
+        && log.set_generation() < route.generation
+        && log.accepted_generation() >= route.generation
+        && let Err(err) = log
+            .accept_set(crate::replica_set::kept(route, entry.learner.as_deref()))
+            .await
+    {
+        tracing::warn!(
+            stream = %key.stream,
+            shard = key.shard,
+            error = %err,
+            "could not keep this leader's replica set",
+        );
+    }
+    // Rule 5 of electing without the control plane: once this broker has
+    // answered a newer fence or batch, or counts a newer set, a candidate may
+    // have been elected on its answer, and records its followers confirmed
+    // here may not be in the new leader's log. So it counts nothing more.
+    // Only once every follower offered `ELECTION`; until then the control
+    // plane alone replaces leaders, and the ack path is as it was.
+    // A follower with no recorded capabilities counts as not offering it, so
+    // election stays dormant until every follower has negotiated `ELECTION`.
+    let election_active = electing
+        && route
+            .replicas
+            .iter()
+            .filter(|replica| replica.node_id != route.leader.node_id)
+            .all(|replica| {
+                requester
+                    .recorded_capabilities(&replica.node_id)
+                    .is_some_and(|offered| offered.contains(PeerCapabilities::ELECTION))
+            });
+    let stepped_down = || {
+        election_active
+            && (log.accepted_generation() > route.generation
+                || log.set_generation() > route.generation)
+    };
+    if stepped_down() {
+        fence.deposed(mark_key, route.generation);
+    }
     let held_offset = |tail: u64, followers: &[FollowerCursor]| {
+        if stepped_down() {
+            return 0;
+        }
         let held = if by_followers {
             // Read after the tail, which `held_at_generation` relies on.
             let current = log.accepted_generation() <= route.generation;
@@ -472,7 +524,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         // the floor, a new leader whose followers have not answered yet names
         // all of them. Acknowledging by the followers, the promoted leader
         // fences a majority and takes the furthest log instead.
-        if by_followers {
+        if by_followers || stepped_down() {
             promised
         } else {
             promised.max(inherited.min(tail))
@@ -548,6 +600,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 &followers,
                 learner.as_deref(),
                 by_followers,
+                election_active,
             )
             .await
         }
@@ -602,7 +655,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     // would only repeat the question.
     let quiesced_now = route.draining && fence.quiesced(mark_key);
     let counter_tail = match &counter_log {
-        Some(log) if acks_at_quorum && leading => log.tail_offset().await.ok(),
+        Some(log) if acks_at_quorum && leading && !stepped_down() => log.tail_offset().await.ok(),
         _ => None,
     };
     let would_raise = |node: &str,
@@ -1521,9 +1574,19 @@ async fn counter_level(
     followers: &[FollowerCursor],
     learner: Option<&str>,
     by_followers: bool,
+    election_active: bool,
 ) -> Option<CounterLevel> {
     let tail = log.tail_offset().await.ok()?;
-    let majority = if by_followers {
+    // Rule 5, as for the shard's own mark: a newer ballot or set means the
+    // counter mark may not advance past what is already published.
+    let stepped_down = election_active
+        && [cache_log, log].iter().any(|held| {
+            held.accepted_generation() > route.generation
+                || held.set_generation() > route.generation
+        });
+    let majority = if stepped_down {
+        0
+    } else if by_followers {
         // Read after the tail. A newer leader fences the cache log before the
         // counter log, and once either has answered it, what this broker
         // writes next is in no fence answer.
@@ -1557,7 +1620,7 @@ async fn counter_level(
     // start, all of them. Acknowledging by the followers, the promoted leader
     // fences a majority and takes the furthest counter log instead.
     let inherited = start.map_or(tail, |start| start.min(tail));
-    let floor = if by_followers {
+    let floor = if by_followers || stepped_down {
         acknowledged
     } else {
         acknowledged.max(inherited)
@@ -2081,6 +2144,10 @@ impl<R: PeerRequester> PeerRequester for Witness<'_, R> {
         self.inner.recorded_capabilities(node_id)
     }
 
+    fn offers_election(&self) -> bool {
+        self.inner.offers_election()
+    }
+
     async fn identity(
         &self,
         node_id: &str,
@@ -2233,8 +2300,9 @@ pub(crate) fn watch_key(key: &ShardKey) -> crate::ShardKey {
 /// With `by_followers` the followers already decided the mark: it moves at
 /// once, and the report goes out behind it for placement alone.
 ///
-/// Returns whether the mark moved. A caller with nothing waiting on the mark
-/// can ignore it; a caller on the quorum path cannot.
+/// Returns `false` only when the pass belongs to a replaced incarnation. A
+/// zero mark can still be withheld from readers (see below) while this
+/// returns `true`.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn publish_mark(
     broker: &Broker,
@@ -2262,9 +2330,25 @@ pub(super) async fn publish_mark(
             log.note_commit_offset(offset);
         }
     };
+    // A zero mark over a log with records in it would end `Settling` with
+    // nothing counted: a read is answered with an empty page, and a `Latest`
+    // subscribe starts at offset 0. Withheld, readers are refused as not ready
+    // until a majority holds something. The report still goes out. Only
+    // records at or above the physical base count: a log emptied by retention
+    // or a head trim has nothing for a majority to hold, and no start record
+    // is written for it, so withholding there would never end.
+    let withheld = match held_log {
+        Some(log) if offset == 0 => log
+            .tail_offset()
+            .await
+            .map_or(true, |tail| tail > log.physical_base()),
+        _ => false,
+    };
     if by_followers {
         note_committed();
-        marks.publish_by_followers_at(&watch_key(key), incarnation, generation, offset);
+        if !withheld {
+            marks.publish_by_followers_at(&watch_key(key), incarnation, generation, offset);
+        }
         release_readers(broker, key).await;
         if let Some(reporter) = reporter {
             reporter.submit(report.clone());
@@ -2279,7 +2363,9 @@ pub(super) async fn publish_mark(
     };
     if reported {
         note_committed();
-        marks.publish_at(&watch_key(key), incarnation, generation, offset);
+        if !withheld {
+            marks.publish_at(&watch_key(key), incarnation, generation, offset);
+        }
         release_readers(broker, key).await;
     } else {
         metrics::record_mark_withheld();

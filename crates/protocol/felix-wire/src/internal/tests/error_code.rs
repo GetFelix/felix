@@ -38,6 +38,10 @@ fn a_gap_is_retryable_and_a_conflict_is_not() {
         !ErrorCode::FencedEpoch.is_retryable(),
         "the fence does not lift",
     );
+    assert!(
+        !ErrorCode::StaleSet.is_retryable(),
+        "the newer set does not go away",
+    );
 }
 
 /// Every code survives the wire as itself. A code that decoded as a neighbour
@@ -55,6 +59,8 @@ fn every_error_code_round_trips() {
         ErrorCode::LogGap,
         ErrorCode::LogConflict,
         ErrorCode::FencedEpoch,
+        ErrorCode::UnsupportedKind,
+        ErrorCode::StaleSet,
     ] {
         assert_eq!(ErrorCode::from_u16(code as u16).expect("known"), code);
     }
