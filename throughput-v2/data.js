@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793499878735,
+  "lastUpdate": 1793509536342,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -40924,6 +40924,58 @@ window.BENCHMARK_DATA = {
             "range": "43731.62",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 824191.58\nmean: 803955.06\nstdev: 43731.62\ncv: 5.44%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "78e7a17d4686f803573826797649facb081def65",
+          "message": "feat(controlplane): pending replica set and its flip on the joint start (#1009 S6a) (#1724)\n\n* feat(controlplane): pending replica set and its flip on the joint start (#1009 S6a)\n\nUnder replica_election, a cut-over that changes the replica set of a shard\nwhose replicas elect keeps the old set as the control plane's own and records\nthe new one as the assignment's pending_set, at the cut-over's generation.\nWhile it is pending placement changes nothing else about the shard, and an\noperator's move or cancel is refused (409 set_change_pending). A failover\nplaces the shard from the old set, which abandons the change. Placement takes\nthe pending set only when the leader's report at the assignment's generation\nnames its generation in joint_start_acked, conditional on that generation.\nThis is Swap and CpFlip in FelixShard.tla (decision 7 in\nreplication-design.md).\n\nThe pending set and the report field are metadata level 21 under Raft: below\nit the pending write is refused before it reaches the log, the report is\nproposed without the joint start, and finalizing replica_election is refused.\nPostgres gets migration 0038 with generation markers, so what an older\ninstance leaves behind reads as none. Without replica_election a cut-over\nwrites exactly what it did before.\n\nELECTION_METADATA_LEVEL_READY is now true.\n\nSpec-Unaffected: implements the control plane's side of Swap and CpFlip as FelixShard.tla already models them; WalkElectSwap.cfg now cites the tests.\n\n* fix(controlplane): end a stuck pending replica set, keep election finalize gated (#1009 S6a)\n\nA pending set now ends on a timeout (FELIX_SHARD_PENDING_SET_TIMEOUT_MS), when the shard stops electing, or on an operator cancel, writing the old set back at a new generation. The store verifies a new pending set names the generation it is written at. replica_election stays unfinalizable until adoption exists.",
+          "timestamp": "2026-10-31T22:01:15-07:00",
+          "tree_id": "b9eadd0963c371b5fe6351633cae98bb02583622",
+          "url": "https://github.com/GetFelix/felix/commit/78e7a17d4686f803573826797649facb081def65"
+        },
+        "date": 1793509535506,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 418989.21,
+            "range": "21398.55",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 418989.21\nmean: 414888.99\nstdev: 21398.55\ncv: 5.16%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 418989.21,
+            "range": "21398.55",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 418989.21\nmean: 414888.99\nstdev: 21398.55\ncv: 5.16%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 95553.66,
+            "range": "802.73",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 95553.66\nmean: 95684.14\nstdev: 802.73\ncv: 0.84%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 955536.59,
+            "range": "8027.32",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 955536.59\nmean: 956841.42\nstdev: 8027.32\ncv: 0.84%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
