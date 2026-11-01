@@ -2155,6 +2155,36 @@ async fn an_older_members_write_does_not_keep_a_storage_id() -> anyhow::Result<(
         .execute(&pool)
         .await?;
     assert_eq!(store.get_shard_assignment(&key(0)).await?.pending_set, None);
+
+    // So are the members' storage ids (0039): read back as written, and left
+    // behind by an older member's update, which must not name a wiped copy
+    // by its old id at the new generation.
+    let members: std::collections::BTreeMap<String, String> =
+        [("broker-x".to_string(), id.clone())].into();
+    let written = store
+        .put_shard_assignment(crate::model::ShardAssignment {
+            member_storage_ids: members.clone(),
+            ..assignment(0, "broker-x")
+        })
+        .await?;
+    assert_eq!(written.member_storage_ids, members);
+    assert_eq!(
+        store
+            .get_shard_assignment(&key(0))
+            .await?
+            .member_storage_ids,
+        members
+    );
+    sqlx::query("UPDATE shard_assignments SET generation = generation + 1 WHERE shard = 0")
+        .execute(&pool)
+        .await?;
+    assert!(
+        store
+            .get_shard_assignment(&key(0))
+            .await?
+            .member_storage_ids
+            .is_empty()
+    );
     // The last generation is refused rather than repeated, or bound negative.
     sqlx::query("UPDATE shard_assignments SET generation = $1 WHERE shard = 0")
         .bind(i64::MAX)
