@@ -331,9 +331,10 @@ if [ "$#" -gt 0 ]; then
 fi
 
 # FelixShardElectSwap is not registered: it does not finish in one run, so
-# it is checked in twelve pieces split at the cut-over. The five that take
-# under 45 minutes are registered above; FelixShardElectSwapKeep0 and the six
-# FelixShardElectSwap*Stood run in the nightly exhaustive job (tla-walk.yml).
+# it is checked in pieces split at the cut-over. The five that take under 45
+# minutes are registered above; FelixShardElectSwapKeep0 and the
+# FelixShardElectSwap*Stood* pieces run in the nightly exhaustive job
+# (tla-walk.yml).
 # So are FelixShardElectWipeNonVoter{Twice,Failover,FailoverWipesLeader,
 # WipesLeader}: each runs well over an hour on a four-core runner. Their
 # violating twins and witnesses stay registered.

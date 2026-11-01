@@ -1089,9 +1089,10 @@ them.
 `PreVote` in `docs/formal/FelixShard.tla` (`docs/formal/README.md`, "The set
 check: electing on the current set"). `FelixShardElectSwap.cfg` changes the
 set at a cut-over by more than one member with the joint fence. It is too
-big for one run, so it is checked in twelve pieces split by how the cut-over
-went (`FelixShardElectSwap{Keep,Drop}{0,1,2}{,Stood}.cfg`); six pass in 5 to
-53 minutes each on a four-core runner, and the rest run nightly;
+big for one run, so it is checked in pieces split by how the cut-over went
+(`FelixShardElectSwap{Keep,Drop}{0,1,2}{,Stood}.cfg`, with `Drop0Stood` split
+in four). Each passes in 5 minutes to about 5 hours on a four-core runner,
+and the ones over 45 minutes run nightly;
 `FelixShardElectSwapNoJoint.cfg` without it loses a record.
 `FelixShardElectStaleSet.cfg` without the set check finds a replica that left
 opening on the old set. `FelixShardElectAdopt.cfg` replaces a follower under
