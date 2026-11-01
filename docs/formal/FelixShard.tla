@@ -655,6 +655,8 @@ ASSUME NameByInheritance => /\ FencedIds /\ UnprobedStart /\ ~Reclaims /\ Electi
 \* again by how many had promised past it (`PieceStoodCounts`) and whether
 \* the destination itself had stood (`PieceDestStood`).
 SplitAtCutOver == FALSE
+\* The pieces check under QuietView, which is sound only under these.
+ASSUME SplitAtCutOver => /\ MaxTime = 0 /\ ~Handoff /\ ~Reclaims /\ Wipes = 0 /\ ~CrashLoses
 PieceKeeps == TRUE
 PieceWrites == 0
 PieceStood == FALSE
@@ -757,12 +759,16 @@ vars == << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
            promised, fencing, answered, confirmed, out, mine, joining, leaving, joinedAt,
            counterVars, ballot, opened, setVars, ackGen, idVars, named, wipeVars >>
 
-\* A VIEW for a configuration where time stands still (`MaxTime = 0`) and no
-\* leader is reclaimed: it leaves out what no step reads again. A heartbeat
-\* then renews nothing, so whether one is in flight changes nothing else. A
-\* broker's cursors and the fence answers it collected are read only while
-\* it leads, and reset when it next leads. TLC checks one state of each group
-\* that differs only in those, and reaches the same states otherwise.
+\* A VIEW for a configuration where time stands still (`MaxTime = 0`), there
+\* is no handoff (`~Handoff`), no leader is reclaimed (`~Reclaims`), and
+\* nothing is wiped or crashes (`Wipes = 0`, `~CrashLoses`): it leaves out
+\* what no step reads again. A heartbeat then renews nothing, so whether one
+\* is in flight changes nothing else. A broker's cursors and the fence
+\* answers it collected are read only while it leads, and reset when it next
+\* leads. TLC checks one state of each group that differs only in those, and
+\* reaches the same states otherwise. TLC cannot assume anything about a
+\* VIEW, so every configuration using it sets `SplitAtCutOver`, which
+\* assumes these.
 QuietView ==
     << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
        log, hwm, halted, queued, pending, acked, writes, staleCommit,

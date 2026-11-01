@@ -410,6 +410,7 @@ weights=(
   "FelixShardElectSwapDrop2 5"
   "FelixShardElectSwapDrop0StoodOneDest 39"
   "FelixShardElectSwapDrop0StoodOneOther 13"
+  "FelixShardElectSwapDrop0StoodSeveralOther 1"
 )
 
 weight_of() {

@@ -148,7 +148,10 @@ jobs:
           - FelixShardElectSwapKeep1Stood
           - FelixShardElectSwapKeep2Stood
           - FelixShardElectSwapDrop0StoodSeveralDest
-          - FelixShardElectSwapDrop1Stood
+          - FelixShardElectSwapDrop1StoodOneDest
+          - FelixShardElectSwapDrop1StoodOneOther
+          - FelixShardElectSwapDrop1StoodSeveralDest
+          - FelixShardElectSwapDrop1StoodSeveralOther
           - FelixShardElectSwapDrop2Stood
           - FelixShardElectWipeNonVoterWipesLeader
           - FelixShardElectWipeNonVoterTwice
