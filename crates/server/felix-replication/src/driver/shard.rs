@@ -455,15 +455,19 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     let electing = requester.offers_election();
     // The ballot at this generation is on disk from the open; keeping the set
     // before it would put the set ahead of the ballot, so skip the pass.
-    // Under `joint_fence` every new generation is fenced, and the fence keeps
-    // the set with the one it leaves; keeping it here first, in the moment
-    // between the open and the fence, would lose the set being left.
+    // Under `joint_fence` a changed set is kept with the one it leaves, so a
+    // fence that runs after this (between the open and the fence) still
+    // knows the set being left.
     if electing
-        && !marks.fleet_supports(felix_common::fleet::JOINT_FENCE)
         && log.set_generation() < route.generation
         && log.accepted_generation() >= route.generation
         && let Err(err) = log
-            .accept_set(crate::replica_set::kept(route, entry.learner.as_deref()))
+            .accept_set(kept_with_leaving(
+                &log,
+                route,
+                entry.learner.as_deref(),
+                marks.fleet_supports(felix_common::fleet::JOINT_FENCE),
+            ))
             .await
     {
         tracing::warn!(
@@ -2397,4 +2401,29 @@ async fn release_readers(broker: &Broker, key: &ShardKey) {
         handle.release_committed();
         handle.appended().notify_waiters();
     }
+}
+
+/// The route's set as this leader keeps it. Under `joint`, the set it kept
+/// before rides along as the one being left when its voters differ, as a
+/// joint fence would keep it.
+fn kept_with_leaving(
+    log: &felix_broker::StreamLog,
+    route: &felix_router::Route,
+    learner: Option<&str>,
+    joint: bool,
+) -> felix_storage::disk_log::ReplicaSet {
+    let mut set = crate::replica_set::kept(route, learner);
+    if joint && let Some(before) = log.replica_set() {
+        let voters = |members: &[felix_storage::disk_log::Member]| {
+            members
+                .iter()
+                .filter(|member| !member.learner)
+                .map(|member| member.node.clone())
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        if voters(&before.current.members) != voters(&set.current.members) {
+            set.leaving = Some(before.current);
+        }
+    }
+    set
 }

@@ -3597,9 +3597,12 @@ Once it is finalized on a broker that offers `ELECTION`:
   more is reached at the address the node catalog gives.
 - The leader keeps the new set with the one it left beside it, and so does
   every replica that took the fence, so a fence tried again at that
-  generation is joint too. Under `joint_fence` a leader keeps its set only
-  through a fence, never while shipping, which would otherwise record the
-  new set without the old one between the open and the fence.
+  generation is joint too. A leader that keeps a changed set while shipping
+  (between the open and the fence, or after an open made before the feature
+  was finalized) keeps the old one beside it the same way.
+- An answer counts toward the set being left only from the copy that set
+  names by storage id, where it names one: a node id given to a new, empty
+  disk holds nothing the old set acknowledged.
 - A member known not to offer `ELECTION` turns the joint fence off for that
   shard, which is then fenced on its new set as before. One whose
   capabilities cannot be learned is not asked, so it cannot count.
@@ -3614,7 +3617,9 @@ driver.
 
 > `a_cut_over_swapping_two_members_waits_for_the_old_majority`: the joint
 > fence. `a_joint_fence_never_counts_a_learner`: learners in the set being
-> left. `without_joint_fence_a_set_change_fences_the_new_set_alone` and
+> left. `a_joint_fence_counts_the_old_set_only_from_the_copies_it_names`: the
+> copy check. `under_joint_fence_a_shipping_leader_keeps_the_set_it_leaves`:
+> the set being left survives a ship pass before the fence. `without_joint_fence_a_set_change_fences_the_new_set_alone` and
 > `a_member_without_election_fences_the_new_set_alone`: the fence is
 > unchanged when it does not apply.
 > `under_joint_fence_the_next_generation_is_refused_by_a_replica_that_promised_it`:

@@ -360,7 +360,7 @@ async fn fence_log<R: PeerRequester>(
             replica.advertise_addr,
             shard.clone(),
             crate::ship::replica_log(kind),
-            reported_ids.is_some(),
+            reported_ids.is_some() || joint.is_some_and(JointSets::names_copies),
             election,
         ));
     }
@@ -369,7 +369,10 @@ async fn fence_log<R: PeerRequester>(
             break;
         };
         match answer {
-            Ok(InternalMessage::FenceOk(_)) if !reported_copy(reported_ids, &node_id, identity) => {
+            Ok(InternalMessage::FenceOk(_))
+                if !reported_copy(reported_ids, &node_id, identity)
+                    || joint.is_some_and(|joint| !joint.same_copy(&node_id, identity)) =>
+            {
                 other_copies += 1;
                 uncounted(key, kind, &node_id, reported_ids, identity);
             }

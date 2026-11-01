@@ -43,11 +43,32 @@ pub(super) struct JointSets {
     pub(super) leaving: ReplicaSetView,
     old_voters: BTreeSet<String>,
     new_voters: BTreeSet<String>,
+    /// The copy the set being left names for a member, where it names one.
+    copies: std::collections::BTreeMap<String, felix_storage::StorageId>,
     votes_in_old: bool,
     votes_in_new: bool,
 }
 
 impl JointSets {
+    /// Whether an answer from `node_id`, whose handshake gave `identity`, is
+    /// from the copy the set being left names. A node id given to a new,
+    /// empty copy holds nothing the old set acknowledged.
+    pub(super) fn same_copy(
+        &self,
+        node_id: &str,
+        identity: Option<felix_storage::StorageId>,
+    ) -> bool {
+        self.copies
+            .get(node_id)
+            .is_none_or(|named| identity.as_ref() == Some(named))
+    }
+
+    /// Whether any member of the set being left is named by its copy, so
+    /// answers must say which copy they come from.
+    pub(super) fn names_copies(&self) -> bool {
+        !self.copies.is_empty()
+    }
+
     /// Whether `answered`, with this broker, is a majority of the voters of
     /// both sets. A learner is never a voter, so it never counts.
     pub(super) fn has_majorities<'n>(&self, answered: impl Iterator<Item = &'n str>) -> bool {
@@ -130,7 +151,8 @@ pub(super) async fn sets<R: PeerRequester>(
             .iter()
             .map(|member| (member.node_id.as_str(), member.learner)),
     );
-    if old_voters == new_voters {
+    // An empty set being left is no change to fence across, as in the model.
+    if old_voters.is_empty() || old_voters == new_voters {
         return None;
     }
 
@@ -171,6 +193,11 @@ pub(super) async fn sets<R: PeerRequester>(
         votes_in_old: old_voters.contains(local_node_id),
         votes_in_new: new_voters.contains(local_node_id),
         leaving: view(&leaving),
+        copies: leaving
+            .members
+            .iter()
+            .filter_map(|member| Some((member.node.clone(), member.storage?)))
+            .collect(),
         old_voters,
         new_voters,
     })
