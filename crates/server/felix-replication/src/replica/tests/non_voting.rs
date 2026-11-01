@@ -1,6 +1,7 @@
 //! A copy that lost its storage votes in nothing until a set change
-//! re-admits it (#1331): `NonVoter`, `Readmit` and `Readmitted` in
-//! `docs/formal/FelixShard.tla`.
+//! re-admits it (#1331): `NonVoter`, `Readmit`, `Readmitted` and `Creates` in
+//! `docs/formal/FelixShard.tla`. Only a set naming another storage id for the
+//! copy is evidence of the wipe.
 use std::time::Duration;
 
 use felix_common::fleet::{FleetGate, JOINT_FENCE};
@@ -18,11 +19,10 @@ use crate::quorum::QuorumMarks;
 const OWN: [u8; 16] = [7; 16];
 const OLD: [u8; 16] = [3; 16];
 
+/// The gate as a registration's answer left it.
 fn marks(joint: bool) -> Arc<QuorumMarks> {
     let fleet = FleetGate::new([JOINT_FENCE.name()]);
-    if joint {
-        fleet.observe([JOINT_FENCE.name()]);
-    }
+    fleet.restart(joint.then_some(JOINT_FENCE.name()));
     Arc::new(QuorumMarks::with_fleet(Arc::new(fleet)))
 }
 
@@ -57,11 +57,19 @@ impl crate::confirmed::ConfirmedRoutes for ConfirmedAs {
 
 /// A set at `generation` that names this broker under `storage`.
 fn set(generation: u64, storage: [u8; 16]) -> ReplicaSetView {
+    named(generation, Some(storage))
+}
+
+/// A set at `generation`, naming this broker's storage as `storage` and the
+/// others' only when it names this one's: the control plane names them all
+/// on a failover and none elsewhere.
+fn named(generation: u64, storage: Option<[u8; 16]>) -> ReplicaSetView {
     let member = |node: &str, id: [u8; 16]| SetMember {
         node_id: node.to_string(),
-        storage_id: Some(id),
+        storage_id: storage.map(|_| id),
         learner: false,
     };
+    let storage = storage.unwrap_or_default();
     ReplicaSetView {
         generation,
         members: vec![
@@ -239,29 +247,20 @@ async fn a_readmission_for_another_storage_id_does_not_readmit() {
     assert_eq!(log.member_is_learner(LOCAL), Some(true));
 }
 
-/// **The matching joint-fenced change re-admits it, once it has caught up.**
-/// The fence is answered but the copy still does not vote; the start of the
-/// set's generation reaching its log ends that.
+/// **A set naming its storage id re-admits it, once it has caught up.** The
+/// fence carrying it is refused, so no leader counts the copy before then;
+/// the start of the set's generation reaching its log ends the wait.
 #[tokio::test]
-async fn a_joint_fenced_change_for_its_storage_id_readmits_it_after_catch_up() {
+async fn a_set_naming_its_storage_id_readmits_it_after_catch_up() {
     let (broker, _dir) = broker_with_storage().await;
     let handler = handler(&broker, 6, OWN);
     wiped_at_5(&handler).await;
 
     let answer = handler.fence(SENDER, readmission(6, OWN)).await;
-    assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
-    let log = log_of(&broker).await;
-    assert_eq!(log.accepted_generation(), 6);
-    assert_eq!(
-        log.member_is_learner(LOCAL),
-        Some(true),
-        "voting before catch-up"
-    );
-    // Still no vote for a candidate.
-    let answer = handler
-        .fence(SENDER, fence_with(7, set(6, OWN), None, true))
-        .await;
     assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
+    let log = log_of(&broker).await;
+    assert_eq!(log.set_generation(), 6, "the set was not learned");
+    assert_eq!(log.member_is_learner(LOCAL), Some(true));
 
     let answer = handler
         .apply(SENDER, stamped(6, 0, &["a"]), felix_broker::LogKind::Stream)
@@ -271,6 +270,182 @@ async fn a_joint_fenced_change_for_its_storage_id_readmits_it_after_catch_up() {
         "{answer:?}"
     );
     assert_eq!(log.member_is_learner(LOCAL), Some(false));
+}
+
+/// **A learner whose re-admitting leader is lost is re-admitted by the next
+/// one.** The set naming it at 6 was learned, its leader never shipped, and
+/// generation 7 comes with a plain fence: the copy catches up with 7 instead.
+#[tokio::test]
+async fn a_stranded_learner_is_readmitted() {
+    let (broker, _dir) = broker_with_storage().await;
+    let at_6 = handler(&broker, 6, OWN);
+    wiped_at_5(&at_6).await;
+    let answer = at_6.fence(SENDER, readmission(6, OWN)).await;
+    assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
+
+    let handler = handler(&broker, 7, OWN);
+    let answer = handler
+        .fence(SENDER, fence_with(7, set(7, OWN), None, false))
+        .await;
+    assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
+    let log = log_of(&broker).await;
+    assert_eq!(log.set_generation(), 7);
+
+    let answer = handler
+        .apply(SENDER, stamped(7, 0, &["a"]), felix_broker::LogKind::Stream)
+        .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    assert_eq!(log.member_is_learner(LOCAL), Some(false), "stranded");
+}
+
+/// **A new shard opens under the gate.** Its copies hold no set and no
+/// promise, and the creating fence names no storage ids: that is no evidence
+/// of a wipe, so they vote and take the first batch.
+#[tokio::test]
+async fn a_new_shard_opens_under_the_gate() {
+    let (broker, _dir) = broker_with_storage().await;
+    let handler = handler(&broker, 1, OWN);
+
+    let answer = handler
+        .fence(SENDER, fence_with(1, named(1, None), None, false))
+        .await;
+    assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
+    let log = log_of(&broker).await;
+    assert_eq!(log.member_is_learner(LOCAL), Some(false));
+    let answer = handler
+        .apply(SENDER, stamped(1, 0, &["a"]), felix_broker::LogKind::Stream)
+        .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+}
+
+/// **A copy from before sets stays a voter at finalize.** It holds records
+/// and a ballot but no set file; plain fences, the read round's confirming
+/// one, and a set naming no storage ids are all answered.
+#[tokio::test]
+async fn a_pre_set_copy_stays_a_voter_at_finalize() {
+    let (broker, _dir) = broker_with_storage().await;
+    let before = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5))
+        .with_fleet(marks(false))
+        .with_local_storage(StorageId::from_bytes(OWN));
+    let answer = before
+        .apply(SENDER, batch(5, 0, &["a"]), felix_broker::LogKind::Stream)
+        .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    let log = log_of(&broker).await;
+    assert!(log.replica_set().is_none());
+
+    let plain = |generation| Fence {
+        election: None,
+        ..fence_with(generation, named(generation, None), None, false)
+    };
+    // The read round's confirming fence, then the next failover's.
+    for generation in [5, 6] {
+        let answer = handler(&broker, generation, OWN)
+            .fence(SENDER, plain(generation))
+            .await;
+        assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
+    }
+    let answer = handler(&broker, 7, OWN)
+        .fence(SENDER, fence_with(7, named(7, None), None, false))
+        .await;
+    assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
+    assert_eq!(log.member_is_learner(LOCAL), Some(false));
+}
+
+/// **Before the gate is read, a wiped copy refuses** what the gate decides,
+/// retryably and writing nothing. A copy with no evidence of a wipe answers,
+/// so a broker restarting with its data serves before it registers.
+#[tokio::test]
+async fn a_wiped_copy_refuses_before_the_gate_is_adopted() {
+    let (broker, _dir) = broker_with_storage().await;
+    let fleet = Arc::new(FleetGate::new([JOINT_FENCE.name()]));
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 6))
+        .with_fleet(Arc::new(QuorumMarks::with_fleet(Arc::clone(&fleet))))
+        .with_local_storage(StorageId::from_bytes(OWN))
+        .with_stickiness(Duration::ZERO)
+        .with_confirmed_routes(ConfirmedAs::new(Confirmed::Assigned {
+            generation: 6,
+            leader: "broker-a".to_string(),
+        }) as _);
+
+    let answer = handler
+        .fence(SENDER, fence_with(6, set(5, OLD), None, false))
+        .await;
+    assert_eq!(refusal(&answer).code, ErrorCode::Unavailable);
+    let log = log_of(&broker).await;
+    assert_eq!(log.set_generation(), 0, "wrote before the gate was read");
+    assert_eq!(log.accepted_generation(), 0);
+
+    let answer = handler
+        .fence(SENDER, fence_with(6, named(5, None), None, false))
+        .await;
+    assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
+
+    fleet.restart([JOINT_FENCE.name()]);
+    let answer = handler
+        .fence(SENDER, fence_with(7, set(6, OLD), None, false))
+        .await;
+    assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
+    assert_eq!(log.member_is_learner(LOCAL), Some(true));
+}
+
+/// A learner asks the control plane once for a run of batches at one
+/// generation, not once per batch.
+#[tokio::test]
+async fn a_learner_reuses_a_confirmed_read() {
+    let (broker, _dir) = broker_with_storage().await;
+    let reads = Arc::new(CountingConfirmed::default());
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 6))
+        .with_fleet(marks(true))
+        .with_local_storage(StorageId::from_bytes([9; 16]))
+        .with_confirmed_routes(Arc::clone(&reads) as _);
+    wiped_at_5(&handler).await;
+
+    let before = reads.count();
+    for (offset, value) in [(0, "a"), (2, "b")] {
+        let answer = handler
+            .apply(
+                SENDER,
+                stamped(6, offset, &[value, value]),
+                felix_broker::LogKind::Stream,
+            )
+            .await;
+        assert!(
+            matches!(answer, InternalMessage::ReplicateOk(_)),
+            "{answer:?}"
+        );
+    }
+    assert_eq!(reads.count() - before, 1);
+}
+
+/// The control plane confirming broker-a at 6, counting the reads.
+#[derive(Default)]
+struct CountingConfirmed(std::sync::atomic::AtomicUsize);
+
+impl CountingConfirmed {
+    fn count(&self) -> usize {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::confirmed::ConfirmedRoutes for CountingConfirmed {
+    async fn confirmed(&self, _key: &felix_router::ShardKey) -> Confirmed {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Confirmed::Assigned {
+            generation: 6,
+            leader: "broker-a".to_string(),
+        }
+    }
 }
 
 /// A learner takes records only from the leader the control plane confirms,
@@ -329,15 +504,16 @@ async fn a_copy_with_no_promise_refuses_a_generation_newer_than_the_control_plan
     assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
 }
 
-/// The same for a routing view that has not reached the fence's generation.
+/// A routing view behind the fence's generation is usual for a fence, so
+/// it does not refuse a copy with no promise: the confirmed read decides,
+/// and here the control plane already confirms 6.
 #[tokio::test]
-async fn a_copy_with_no_promise_refuses_a_generation_newer_than_its_view() {
+async fn a_view_behind_the_fence_leaves_the_confirmed_read_to_decide() {
     let (broker, _dir) = broker_with_storage().await;
     let plain = Fence {
         election: None,
         ..fence_with(6, set(5, OWN), None, false)
     };
-    // The control plane already confirms 6, so only the view is behind.
     let confirmed = ConfirmedAs::new(Confirmed::Assigned {
         generation: 6,
         leader: "broker-a".to_string(),
@@ -345,13 +521,7 @@ async fn a_copy_with_no_promise_refuses_a_generation_newer_than_its_view() {
     let on = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5))
         .with_fleet(marks(true))
         .with_confirmed_routes(Arc::clone(&confirmed) as _);
-    let answer = on.fence(SENDER, plain.clone()).await;
-    assert_eq!(refusal(&answer).code, ErrorCode::StaleRoute);
-
-    let off = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5))
-        .with_fleet(marks(false))
-        .with_confirmed_routes(confirmed as _);
-    let answer = off.fence(SENDER, plain).await;
+    let answer = on.fence(SENDER, plain).await;
     assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
 }
 

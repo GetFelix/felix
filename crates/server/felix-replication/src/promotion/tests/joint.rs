@@ -403,8 +403,8 @@ async fn a_member_the_new_route_leaves_out_still_answers_a_joint_fence() {
         ),
         &nodes(),
     );
-    // A voter of the set being left keeps that set, as one that took the
-    // leader's batches would; one with no set votes in nothing (#1331).
+    // broker-b holds a promise, as a voter that took the leader's batches
+    // does: under `joint_fence` one with none and no confirmed read is refused.
     kept_before(
         &replicas.get_mut("broker-b").broker,
         &["broker-x", "broker-b", "broker-c"],
@@ -434,8 +434,7 @@ async fn a_member_the_new_route_leaves_out_still_answers_a_joint_fence() {
 fn joint_fence_marks(finalized: bool) -> crate::quorum::QuorumMarks {
     use felix_common::fleet::{FleetGate, JOINT_FENCE};
     let fleet = FleetGate::new([JOINT_FENCE.name()]);
-    if finalized {
-        fleet.observe([JOINT_FENCE.name()]);
-    }
+    // As a registration answers, so the gate is read.
+    fleet.restart(finalized.then_some(JOINT_FENCE.name()));
     crate::quorum::QuorumMarks::with_fleet(Arc::new(fleet))
 }

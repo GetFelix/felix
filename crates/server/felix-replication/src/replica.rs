@@ -59,6 +59,9 @@ pub struct ReplicaHandler {
     /// When this replica last heard each shard's leader, from a batch or
     /// fence that carried a set. See [`Self::with_stickiness`].
     heard: parking_lot::Mutex<HashMap<felix_router::ShardKey, Instant>>,
+    /// Confirmed leaders, so a learner does not ask the control plane for
+    /// every batch.
+    confirmed_cache: crate::confirmed::ConfirmedCache,
     /// How long after hearing its leader this replica refuses a candidate.
     stickiness: Duration,
     /// Which cross-broker features the fleet has; `None` reads all as off.
@@ -122,6 +125,7 @@ impl ReplicaHandler {
             unclean: None,
             confirmed: None,
             heard: parking_lot::Mutex::new(HashMap::new()),
+            confirmed_cache: Default::default(),
             stickiness: crate::suspicion::DEFAULT_SUSPECT_AFTER,
             fleet: None,
             local_storage: None,
@@ -155,8 +159,8 @@ impl ReplicaHandler {
         self
     }
 
-    /// Name this broker's storage identity. Under `joint_fence`, a copy that
-    /// cannot say which directory it holds votes in no set.
+    /// Name this broker's storage identity, which a set naming another one
+    /// for this broker contradicts: that copy was wiped (#1331).
     pub fn with_local_storage(mut self, storage: felix_storage::StorageId) -> Self {
         self.local_storage = Some(storage);
         self
@@ -1628,12 +1632,9 @@ impl ReplicaHandler {
                 )),
                 _ => None,
             },
-            // A leader the view has not reached may be an elected one the
-            // control plane never heard of, which no promise here can have
-            // been made to (#1331).
-            Some(route) if route.generation < generation && self.joint_fence() => {
-                Some(unbacked(correlation_id, key, generation))
-            }
+            // A view behind the sender is usual for a fence; the confirmed
+            // read below decides, refusing a generation newer than the control
+            // plane's under `joint_fence`.
             Some(_) => None,
         };
         if viewed.is_some() {
@@ -1664,7 +1665,8 @@ impl ReplicaHandler {
         // so a copy with no promise, or one not yet re-admitted, cannot take
         // an unconfirmed leader on the strength of an assignment it has not
         // seen (#1331).
-        let elections = self.joint_fence();
+        // Unread, the gate may be on: refuse as if it were.
+        let elections = self.joint_gate() != Some(false);
         let learner = self.is_learner(log);
         if crate::unclean::held(log) && !learner {
             return None;
@@ -1672,7 +1674,28 @@ impl ReplicaHandler {
         let Some(confirmed) = self.confirmed.as_ref() else {
             return elections.then(|| unbacked(correlation_id, key, generation));
         };
-        match confirmed.confirmed(key).await {
+        if let Some(leader) = self.confirmed_cache.lookup(key, generation) {
+            return match sender {
+                Some(sender) if sender != leader => Some(promised_elsewhere(
+                    correlation_id,
+                    key,
+                    generation,
+                    &leader,
+                    Some(sender),
+                )),
+                _ => None,
+            };
+        }
+        let answer = confirmed.confirmed(key).await;
+        if let Confirmed::Assigned {
+            generation: assigned,
+            leader,
+        } = &answer
+            && *assigned == generation
+        {
+            self.confirmed_cache.keep(key, generation, leader);
+        }
+        match answer {
             Confirmed::NotServed if elections => Some(unbacked(correlation_id, key, generation)),
             Confirmed::NotServed => None,
             // A missing answer backs nothing. Retryable, and nothing is
@@ -1758,9 +1781,17 @@ impl ReplicaHandler {
     }
 
     fn joint_fence(&self) -> bool {
-        self.fleet
-            .as_ref()
-            .is_some_and(|marks| marks.fleet_supports(felix_common::fleet::JOINT_FENCE))
+        self.joint_gate() == Some(true)
+    }
+
+    /// Whether the fleet has `joint_fence`, or `None` while this broker has
+    /// not yet taken a registration's answer. The peer listener is bound
+    /// before registration, so the gate can be unread while requests arrive.
+    fn joint_gate(&self) -> Option<bool> {
+        match &self.fleet {
+            Some(marks) => marks.fleet_decides(felix_common::fleet::JOINT_FENCE),
+            None => Some(false),
+        }
     }
 
     /// Whether `request` is a joint fence whose set being left lists this

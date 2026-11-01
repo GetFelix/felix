@@ -201,19 +201,6 @@ impl DiskLog {
             .map(|member| member.learner)
     }
 
-    /// How the kept set lists `node`, or `None` with no set or no such member.
-    pub fn set_member(&self, node: &str) -> Option<Member> {
-        self.inner
-            .replica_set
-            .read()
-            .as_ref()?
-            .current
-            .members
-            .iter()
-            .find(|member| member.node == node)
-            .cloned()
-    }
-
     /// Count `node` as a voter in the set already kept, at the same
     /// generation, persisting first. `false` when it was not a learner there.
     ///

@@ -798,35 +798,58 @@ model's `FelixShardElectWipe*.cfg` check it and the variants that fail
 (`docs/formal/README.md`, "A wiped voter in an election").
 
 The broker enforces it under `joint_fence`, and answers as before without it.
-A copy is a voter only while the set its log keeps lists it as one. A set it
-learns lists it as a learner, written to the `replica-set` file, unless the
-log already kept it as a voter and the set names no other storage id for it;
-so a wiped copy (no set, or a set written for its old directory) and a copy
-that cannot name its own storage id are non-voting, and a restart keeps that.
-A non-voting copy:
+A copy becomes a learner only on evidence of a wipe: a set it learns, from a
+fence or from the route a batch is stamped with, names another storage id for
+it. The mark is written to the `replica-set` file, so a restart keeps it, and
+a set learned later keeps it whatever that set says. No set file, a set that
+names no storage id for the copy, or a fence without a set is no evidence. So
+a new shard's copies, which hold no set and no promise, vote at creation (they
+hold every acknowledged record, which is none), and a copy written before sets
+existed stays a voter when the fleet finalizes. The model shows why the
+evidence has to be the storage id: a wipe takes the set file too, and treating
+a missing set as a new shard loses a write
+(`FelixShardElectWipeNonVoterCreateCountsEmpty.cfg`). A learner:
 
-- refuses a fence, a candidate's included, but learns the set it carried
-  (`Unauthorized`, no ballot taken); it answers a pre-vote with `NotVoting`;
+- refuses every fence, a candidate's and its own re-admission's included,
+  after learning the set the fence carried (`Unauthorized`, no ballot taken),
+  so no majority counts it before it has caught up; it answers a pre-vote
+  with `NotVoting`;
 - takes records only from the leader the control plane confirms at that
   generation, so an elected leader the control plane never saw gets no
-  acknowledgement from it;
-- answers the fence of its own re-admission: a joint fence from a leader, in a
-  set newer than the one it keeps, naming it a voter under the storage id it
-  holds now. It then stays a learner until a batch leaves its log holding the
-  generation-start record of that set, and only then is written as a voter.
+  acknowledgement from it. The confirmed leader is reused for 500 ms at the
+  same generation rather than read for every batch;
+- is written as a voter once its kept set names it under the storage id it
+  holds now and a batch leaves its log holding the generation-start record of
+  that set's generation.
 
-A set naming another storage id never re-admits the copy, which is the binding
-a caught-up report needs: the report is for the identity the control plane
-read (`Identity::Match` in placement, and the leader starts a follower's
-cursors over when its storage id changes), and the change it leads to names
-that identity. After a second wipe the copy's id is another one and the
-change is refused. The same rule closes the arms that read "newer than the
-control plane, so never promised": under `joint_fence` a copy with no promise
-refuses a generation the control plane or its routing view has not reached.
+Only the control plane names the new storage id, and only after the wipe, so
+the leader at that generation fenced after it, without the learner. That
+binds the re-admission to the copy's current identity: after a second wipe
+the set names an id the directory no longer has. If that leader is lost
+before the copy catches up, the next set naming it moves the target to its
+generation, so the copy is not stranded (`a_stranded_learner_is_readmitted`).
+This is the model's `Readmit` started again at a later generation.
 
-Not covered here: the leader still counts a re-admitted copy's acknowledgements
-until the control plane marks it a learner in the set, and a shard created
-under `joint_fence` has no voters until a set change re-admits its copies.
+Whether a set naming another storage id makes the copy a learner is the
+`joint_fence` gate's answer, and the gate is unread until the broker
+registers, while the peer listener is already up. Until then such a request
+is refused as `Unavailable` and nothing is written. Everything else answers as
+before, so a broker that restarts with its data serves before it registers. A
+learner mark already on disk holds whatever the gate reads, and the arms that
+read "newer than the control plane, so never promised" refuse while the gate
+is unread. Under `joint_fence` a copy with no promise refuses a generation the
+control plane has not reached; a routing view that lags the fence is left to
+the confirmed read.
+
+Not covered yet, and needed before elections (#1009 S9):
+
+- The leader counts a learner's acknowledgements. That is safe while only the
+  control plane names leaders; once a leader can be elected without it, the
+  leader must leave a learner's acknowledgements out.
+- Evidence needs the control plane to name the copy's storage id. It does so
+  on failover; on creation, moves and other writes it names none, and a copy
+  wiped then votes. Under elections every set the control plane writes should
+  name each member's registered id.
 
 The cost is a fence round trip or a few while a follower's watch catches up,
 and one control-plane read per answer, only for copies with no promise: a
@@ -862,7 +885,11 @@ For non-voting copies (`replica/tests/non_voting.rs`):
 `a_wiped_copy_answers_a_pre_vote_without_voting`,
 `a_restart_keeps_a_wiped_copy_non_voting`,
 `a_readmission_for_another_storage_id_does_not_readmit`,
-`a_joint_fenced_change_for_its_storage_id_readmits_it_after_catch_up`,
+`a_set_naming_its_storage_id_readmits_it_after_catch_up`,
+`a_stranded_learner_is_readmitted`, `a_new_shard_opens_under_the_gate`,
+`a_pre_set_copy_stays_a_voter_at_finalize`,
+`a_wiped_copy_refuses_before_the_gate_is_adopted`,
+`a_learner_reuses_a_confirmed_read`,
 `a_wiped_copy_refuses_records_from_an_unconfirmed_leader`, and
 `with_the_gate_off_a_copy_with_no_set_answers_as_before`.
 

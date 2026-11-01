@@ -151,7 +151,7 @@ async fn admitting_a_learner_is_durable_and_touches_only_it() {
     {
         let log = open(&dir, FsyncMode::OnCommit);
         log.accept_set(set.clone()).await.expect("accept");
-        assert_eq!(log.set_member("b").map(|m| m.learner), Some(true));
+        assert_eq!(log.member_is_learner("b"), Some(true));
         assert!(
             !log.admit_member("a").await.expect("admit"),
             "a is no learner"

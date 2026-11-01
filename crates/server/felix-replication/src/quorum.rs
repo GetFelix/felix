@@ -141,6 +141,17 @@ impl QuorumMarks {
             .is_some_and(|fleet| fleet.supports(feature))
     }
 
+    /// Whether the fleet has enabled `feature`, or `None` while this broker
+    /// has not yet taken a registration's answer, when a feature missing
+    /// from the gate may still be enabled. False without a fleet.
+    pub(crate) fn fleet_decides(&self, feature: felix_common::fleet::FleetFeature) -> Option<bool> {
+        let Some(fleet) = &self.fleet else {
+            return Some(false);
+        };
+        let view = fleet.view();
+        view.adopted().then(|| view.supports(feature))
+    }
+
     /// Let `Quorum` reads confirm leadership with `check` once the fleet has
     /// finalized `lease_free_reads`, unless `by_lease` keeps them on the
     /// lease. Only the first call counts.

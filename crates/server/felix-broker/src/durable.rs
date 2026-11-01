@@ -790,11 +790,6 @@ impl StreamLog {
         self.log.member_is_learner(node)
     }
 
-    /// How the kept set lists `node`. See `DiskLog::set_member`.
-    pub fn set_member(&self, node: &str) -> Option<felix_storage::disk_log::Member> {
-        self.log.set_member(node)
-    }
-
     /// Count `node` as a voter in the kept set. See `DiskLog::admit_member`.
     pub async fn admit_member(&self, node: &str) -> Result<bool> {
         self.log.admit_member(node).await.map_err(BrokerError::from)
