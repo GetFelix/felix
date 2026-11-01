@@ -924,6 +924,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 ttl_ms,
                 condition,
                 request_id,
+                lease_token,
             } => {
                 cache::cache_conditional(
                     &cx,
@@ -947,6 +948,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                                 }
                             },
                         },
+                        lease_token,
                     },
                 )
                 .await?
@@ -969,6 +971,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                         key,
                         request_id,
                         request: crate::serving::forward::CacheRequest::DeleteIf { version },
+                        lease_token: false,
                     },
                 )
                 .await?

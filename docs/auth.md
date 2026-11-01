@@ -119,6 +119,9 @@ Objects:
   [Granting cache keys](security/rbac.md#granting-cache-keys).
 - Cluster: `cluster:*` (see [Cluster scope](#cluster-scope))
 - Node: `node:{node_id}`, one broker
+- Lease templates: a stream or cache key object with one `{cache}` slot, such
+  as `stream:{tenant_id}/{namespace}/wl.{leases}.out`. A template grants
+  nothing directly. See [Lease tokens](#lease-tokens).
 
 Actions:
 - `rbac.view`, `rbac.policy.manage`, `rbac.assignment.manage`
@@ -565,7 +568,8 @@ config.token_provider = Some(Arc::new(RefreshingToken::with_initial(
 
 The broker checks the token when a stream opens, so a stream that is already
 open keeps working after the token expires. A revocation does end it; see
-[Revoking a principal](#revoking-a-principal). Forwarded publishes are also
+[Revoking a principal](#revoking-a-principal). A lease token is the exception:
+every stream it opened ends when it expires (see [Lease tokens](#lease-tokens)). Forwarded publishes are also
 checked again. When a broker forwards a publish to the shard owner, the owner
 checks the token the publish stream opened with and rejects it once it has
 expired or been revoked.
@@ -776,6 +780,193 @@ with it. Under subject binding its `sub` matches the gateway's certificate.
 
 A delegating gateway's principal therefore needs `token.delegate` and no
 broker grant.
+
+## Lease tokens
+
+A *lease* is a cache key that one client holds at a time. The client takes it
+with a conditional write (`cache_put_if` with `absent`), keeps it by
+rewriting it at the version it holds before its TTL runs out, and loses it when
+the entry expires or someone else's write wins. The client whose write made the
+current version is the *holder*.
+
+A *lease token* is a short-lived broker token that a broker mints for the
+holder when its write wins. It grants only what the caller's lease templates
+name for that key. A *lease template* is an RBAC object with one `{cache}`
+slot, such as `stream:acme/prod/wl.{leases}.out`: for whoever holds key `w7`
+of cache `acme/prod/leases`, it names `stream:acme/prod/wl.w7.out`.
+
+This lets many nodes share one identity without each being able to write
+every workload's output. A node's own token holds the lease cache and the
+templates. It gets a token for a workload's output only by winning that
+workload's lease, and the token stops working soon after the lease is lost.
+
+### Using lease tokens
+
+1. Give every broker the same lease key file and restart them:
+
+   ```sh
+   # One base64 Ed25519 seed per line. The first signs, every line verifies.
+   openssl rand -base64 32 > lease-keys
+   export FELIX_LEASE_TOKEN_KEY_FILE=$PWD/lease-keys
+   ```
+
+2. Grant the nodes the lease cache and templates for the outputs. The
+   templates are ordinary policy rules:
+
+   ```sh
+   felixctl rbac policy add role:node cache:acme/prod/leases cache.write
+   felixctl rbac policy add role:node cache:acme/prod/leases cache.read
+   felixctl rbac policy add role:node 'stream:acme/prod/wl.{leases}.out' stream.publish
+   ```
+
+3. Claim the lease with `cache_put_if_lease` (Rust client). If the write
+   applies, the answer carries the token. Publish with it on its own handle
+   (`with_identity_token`).
+
+4. Renew with `cache_put_if_lease` at the version you hold, and switch to the
+   fresh token it returns. A renewal that does not apply means the lease is
+   gone: stop using the old token.
+
+The [Rust client page](../docs-site/src/content/docs/clients/rust.md#leases-and-lease-tokens)
+has the code.
+
+```mermaid
+sequenceDiagram
+    participant N as Node
+    participant L as Owner of the lease key
+    participant O as Broker for wl.w7.out
+    N->>L: cache_put_if leases/w7, absent, ttl 30s, lease_token
+    L->>L: templates name cache leases? key valid? then write
+    L-->>N: applied, version 1, lease token (exp = now + 30s)
+    N->>O: Auth with the lease token, publish to wl.w7.out
+    O->>O: verify with the lease key, check perms
+    O-->>N: ok
+    N->>L: cache_put_if leases/w7, version 1, lease_token
+    L-->>N: applied, version 2, fresh lease token
+    Note over N,O: the node stops renewing, or another write wins
+    O-->>N: exp passes: the stream ends with code revoked
+```
+
+### How a mint works
+
+The broker that owns the key's shard applies the write and mints the token. A
+broker that does not own it forwards the write to the owner as its own peer
+message kind, so an owner that predates lease tokens refuses it instead of
+writing without minting. The owner, before writing anything, refuses the mint
+when:
+
+- the caller's token is itself a lease token, or a delegated token (one with
+  `act`),
+- the caller holds no template whose slot names this cache, or
+- the key cannot be part of a name. The key must follow the name rules for
+  streams and caches (letters, digits, `-`, `_` and `.`, starting with a letter
+  or digit, at most 128 characters), and so must every name it expands to. A
+  key with `*`, `/` or `:` would otherwise widen or reshape the grant.
+
+A refused mint is an error and writes nothing. The write itself still needs
+`cache.write` on the key, as any conditional put does.
+
+Winning the write is the holder check. Only the write that made the newest
+version gets a token, so a node whose lease was taken over fails its renewal
+and gets nothing. The control plane is not on this path: claiming a lease
+works while the control plane is down.
+
+### The token
+
+A lease token is a Felix token with a few differences:
+
+- `iss` is `felix-lease`, and it is signed with the lease key, not a tenant
+  key. Its header `kid` starts with `lease-`, which is how a broker routes it
+  to the lease key. A broker without the key refuses lease tokens.
+- `sub` is the caller's, so subject binding and the record of who published
+  work as before.
+- `perms` are the expanded templates. A lease claim
+  (`"lease": {"cache": "prod/leases", "key": "w7", "version": 1}`) is added
+  for logs and debugging. Brokers do not authorize with it.
+- `iat` is the caller's token's `iat`. Revoking the caller's principal
+  therefore revokes every lease token minted from its token.
+- `exp` is the earliest of: when the written entry expires (rounded down to
+  the second), the caller's token's `exp`, and the broker's maximum,
+  `FELIX_LEASE_TOKEN_MAX_TTL_SECONDS` (300 by default). A key written with no
+  TTL still gets a short-lived token. If that time is already past, the write
+  stays applied and the answer carries `lease_refused` instead of a token.
+  The caller's token is the one its stream authenticated with, which on a
+  long-lived connection may have expired, so a client that claims leases for
+  a long time claims over a stream opened with a fresh token.
+- Verification allows 2 seconds of clock skew, not the 60 seconds allowed for
+  control-plane tokens.
+
+### Session end
+
+Other tokens are checked when a stream opens, and an open stream outlives
+the token. A lease token's streams do not: every stream it opened, on every
+listener, ends 2 seconds after its `exp`, the same way a revocation ends it
+(code `revoked`). Otherwise a node could keep writing over an open stream
+long after it lost the lease. The Kafka listener checks the same end time at
+each request and closes the connection after it.
+
+### The lease key
+
+`FELIX_LEASE_TOKEN_KEY_FILE` names a file with one base64 32-byte Ed25519
+seed per line, in standard or URL-safe base64, with or without padding. Blank
+lines and lines starting with `#` are ignored. Every broker needs the same
+file, since any broker may own a lease key and any broker may serve the
+output. The file is read once at startup, and a malformed file stops the
+broker with an error that names the line but not its contents. Keep the file
+as secret as a tenant signing key: whoever has it can mint lease tokens.
+Without the file, the broker does not advertise
+`FEATURE_LEASE_TOKEN`, refuses to mint, and refuses lease tokens.
+
+Brokers already see every bearer token they serve, so holding a signing key
+gives them no new power. Grants still come only from control-plane RBAC: a
+broker mints only what the caller's own token's templates name.
+
+To rotate the key without refusing any token:
+
+1. Add the new seed as the last line (`openssl rand -base64 32 >> lease-keys`)
+   on every broker and restart them. Every broker now verifies both.
+2. Move the new seed to the first line on every broker and restart. Brokers
+   now sign with it.
+3. After the old key's tokens have expired (the maximum TTL), remove the old
+   line and restart.
+
+### Templates
+
+A template's object is `stream:{tenant}/{namespace}/{prefix}{cache}{suffix}`
+or `cache:{tenant}/{namespace}/{cache}/{prefix}{cache}{suffix}` with the slot
+written as `{cache}`: exactly one slot, in the last segment, naming a cache in
+the template's own tenant and namespace. The tenant, namespace and cache
+around it are literal, and no part may hold `*`. A stream template takes
+`stream.publish` or `stream.subscribe`; a cache key template takes
+`cache.read` or `cache.write`. The control plane refuses any other template.
+
+A template is never a grant. Names cannot contain `{` or `}`, so on a broker
+that predates templates it matches nothing, and current brokers skip it. On
+the control plane it never satisfies a check, token exchange may pass it
+through but never makes one from a wider grant, and `/token/delegate` leaves
+templates out of the delegated token.
+
+### Audit
+
+The owner logs one `lease token issued` line per mint at `info`, with the
+tenant, subject, cache, key, version, `exp` and the granted permissions. The
+token is never logged. `felix_lease_tokens_issued_total` counts mints, and
+`felix_lease_token_refusals_total` counts refusals by `reason`
+(`lease_token`, `delegated`, `no_template`, `invalid_key`, `expired`,
+`signing`).
+
+### Known limit
+
+A principal with `cache.write` on the lease cache can still end another
+holder's lease: it reads the key's version and calls `cache_delete_if`, then
+claims the key itself. The holder sees this, because its next renewal fails,
+and its token still expires on time. Making deletes holder-only would need
+the cache to record who wrote each entry. Lease tokens narrow what a node can
+write without a lease; they do not stop a node with lease-cache access from
+taking one.
+
+Only the Rust client asks for lease tokens so far. The Python, TypeScript and
+C# clients will follow.
 
 ## Bootstrap Mode (Day-0)
 

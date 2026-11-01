@@ -710,7 +710,7 @@ one that did not.
 { "type": "cache_put_if", "tenant_id": "<string>", "namespace": "<string>",
   "cache": "<string>", "key": "<string>", "value": "<base64>",
   "ttl_ms": <u64|absent>, "condition": "absent" | { "version": <u64> },
-  "request_id": <u64> }
+  "request_id": <u64>, "lease_token": <bool|absent> }
 ```
 
 Sent only to a broker that advertised `FEATURE_CACHE_CONDITIONAL`. Stores the
@@ -741,6 +741,14 @@ This is a new request rather than a field on `cache_put` because a broker that
 predates it ignores unknown fields, and would make the write unconditionally
 and report success.
 
+`lease_token: true` asks the broker to mint a lease token if the write
+applies. It is sent only to a broker that advertised `FEATURE_LEASE_TOKEN`, and
+left out otherwise, so the frame is the one an older broker reads. Before
+writing anything, the broker refuses the request with `forbidden` when the
+connection's token is a lease or delegated token, holds no lease template
+naming this cache, or `key` cannot be part of a name. See
+[Lease tokens](auth.md#lease-tokens).
+
 ### CacheDeleteIf
 ```
 { "type": "cache_delete_if", "tenant_id": "<string>", "namespace": "<string>",
@@ -755,13 +763,21 @@ lease without removing one someone else has since taken.
 ### CacheConditionResult (server -> client)
 ```
 { "type": "cache_condition_result", "applied": <bool>,
-  "version": <u64|absent>, "request_id": <u64> }
+  "version": <u64|absent>, "request_id": <u64>,
+  "lease_token": { "token": "<jwt>", "expires_at": <unix seconds> } | absent,
+  "lease_refused": "<string|absent>" }
 ```
 
 `applied` says whether the write was made; a refusal is an answer, not an
 error. After an applied `cache_put_if`, `version` is the version it wrote.
 Otherwise it is the key's current version, and absent when the key has no live
 entry (including after an applied `cache_delete_if`).
+
+The lease fields answer only a `cache_put_if` that asked for a token. After
+an applied write, `lease_token` is the token and when it expires. When the
+token would already be expired (the caller's own token, or the entry's TTL,
+ends now), `lease_refused` says so instead; the write still stands. A write
+that did not apply carries neither. Both are left out of every other answer.
 
 A broker that cannot route the request answers `error` as for any cache
 request. A conditional write is never retried for the client after an
@@ -1998,6 +2014,7 @@ Bits in the extended word (see [Extended feature word](#extended-feature-word)):
 | `0x4` | `FEATURE_PUBLISH_WIDTH` | The broker takes `publish_width` and refuses a keyed batch routed by a width the stream does not have with `stale_width`. See [PublishWidth](#publishwidth) |
 | `0x8` | `FEATURE_EXPLICIT_SHARD` | The broker honours `shard` on `publish`, `publish_batch`, `publish_idempotent`, `publish_if`, `commit` and `state_get`. See [Named shards](#named-shards) |
 | `0x10` | `FEATURE_HEAD_TRIM` | From a broker: it answers `trim_before`, though it refuses every trim with `feature_not_enabled` until its fleet finalizes `head_trim`. From a client: it reads `trim_headers` on `subscribe_cursor_error`. See [TrimBefore](#trimbefore) |
+| `0x20` | `FEATURE_LEASE_TOKEN` | The broker mints a lease token on a `cache_put_if` with `lease_token: true`. Advertised only by a broker configured with a lease key (`FELIX_LEASE_TOKEN_KEY_FILE`). See [CachePutIf](#cacheputif) |
 
 Features are advertised in **both** directions. A client offers its own in the
 `auth` it already sends:
@@ -2086,7 +2103,8 @@ ignores.
 
 `FEATURE_INSPECT` is the first feature in the second word,
 `FEATURE_STREAM_DELETED` the second, `FEATURE_PUBLISH_WIDTH` the third,
-`FEATURE_EXPLICIT_SHARD` the fourth and `FEATURE_HEAD_TRIM` the fifth. The Rust constants are
+`FEATURE_EXPLICIT_SHARD` the fourth, `FEATURE_HEAD_TRIM` the fifth and
+`FEATURE_LEASE_TOKEN` the sixth. The Rust constants are
 `FEATURE_EXTENDED` and `KNOWN_FEATURES_HI` in `felix-wire`, with
 `offer_features`, `answer_features` and `peer_features_hi` applying the rules
 above.

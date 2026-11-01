@@ -11,7 +11,7 @@ use felix_wire::Message;
 use tokio::sync::oneshot;
 
 use super::Connection;
-use crate::cache::{CacheConditionResult, CacheRequest, CacheWorker, VersionedValue};
+use crate::cache::{CacheConditionResult, CacheRequest, CacheWorker, LeaseWrite, VersionedValue};
 use felix_wire::CacheCondition;
 
 impl Connection {
@@ -236,6 +236,56 @@ impl Connection {
                 ttl_ms,
                 condition,
                 request_id,
+                lease_token: false,
+            },
+            request_id,
+        )
+        .await
+        .map(|answer| answer.result)
+    }
+
+    /// [`Self::cache_put_if`] on a lease cache, asking for a lease token if
+    /// the write applies.
+    ///
+    /// Winning the write is what makes the caller the lease's holder, so only
+    /// an applied write gets a token, granting what the caller's lease
+    /// templates name for `key`. A renewal (a put at the held version) gets a
+    /// fresh one. The token lasts as long as the entry's TTL, capped by the
+    /// broker and by the caller's own token. Present it with
+    /// [`Self::with_identity_token`]; streams opened with it end when it
+    /// expires.
+    ///
+    /// Fails without writing anything when the broker did not advertise
+    /// [`felix_wire::FEATURE_LEASE_TOKEN`], or when it refuses the mint: the
+    /// caller's token is itself a lease or delegated token, holds no template
+    /// naming this cache, or `key` cannot be part of a name.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn cache_put_if_lease(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        key: &str,
+        value: Bytes,
+        ttl_ms: Option<u64>,
+        condition: CacheCondition,
+    ) -> Result<LeaseWrite> {
+        self.require_conditional()?;
+        if !felix_wire::supports_feature(self.server_features_hi, felix_wire::FEATURE_LEASE_TOKEN) {
+            return Err(anyhow::anyhow!("this broker does not mint lease tokens"));
+        }
+        let request_id = self.cache_request_counter.fetch_add(1, Ordering::Relaxed);
+        self.conditional(
+            Message::CachePutIf {
+                tenant_id: tenant_id.to_string(),
+                namespace: namespace.to_string(),
+                cache: cache.to_string(),
+                key: key.to_string(),
+                value,
+                ttl_ms,
+                condition,
+                request_id,
+                lease_token: true,
             },
             request_id,
         )
@@ -267,6 +317,7 @@ impl Connection {
             request_id,
         )
         .await
+        .map(|answer| answer.result)
     }
 
     fn require_conditional(&self) -> Result<()> {
@@ -281,7 +332,7 @@ impl Connection {
         Ok(())
     }
 
-    async fn conditional(&self, message: Message, request_id: u64) -> Result<CacheConditionResult> {
+    async fn conditional(&self, message: Message, request_id: u64) -> Result<LeaseWrite> {
         let (response_tx, response_rx) = oneshot::channel();
         self.enqueue_cache(CacheRequest::Conditional {
             request_id,

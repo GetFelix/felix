@@ -197,6 +197,9 @@ async fn a_watch_ends_when_its_credential_is_revoked() -> Result<()> {
         subject: "alice".to_string(),
         actor: None,
         publisher: None,
+        issued_at: 0,
+        expires_at: i64::MAX,
+        lease_token: false,
         revocable: crate::serving::revocation::Revocable::new(
             Arc::clone(&revocations),
             TENANT.to_string(),

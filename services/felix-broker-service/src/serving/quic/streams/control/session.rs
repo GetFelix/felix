@@ -245,9 +245,14 @@ pub(super) async fn authenticate(
                 ..
             } = &mut response
             {
+                // Only with a lease key: without one every mint is refused.
+                let lease = match auth.lease_tokens() {
+                    Some(_) => felix_wire::FEATURE_LEASE_TOKEN,
+                    None => 0,
+                };
                 (*features, *server_features_hi) = felix_wire::answer_features(
                     *features,
-                    SERVED_FEATURES_HI,
+                    SERVED_FEATURES_HI | lease,
                     session.peer_features,
                 );
             }

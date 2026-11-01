@@ -1041,3 +1041,31 @@ async fn a_refresh_that_cannot_mint_does_not_spend_the_token() {
         .expect("stored");
     assert!(!stored.used, "spent by a refresh that answered 500");
 }
+
+#[tokio::test]
+async fn a_delegated_token_never_carries_lease_templates() {
+    let fixture = fixture().await;
+    let subject = mint_token_may_act(
+        &fixture.keys,
+        "t1",
+        "p:alice",
+        vec![
+            ALICE_FEED.to_string(),
+            "stream.publish:stream:t1/ns/wl.{leases}.out".to_string(),
+        ],
+        Duration::from_secs(120),
+        BROKER_AUDIENCE,
+        Some("p:test"),
+    )
+    .expect("token");
+    let response = delegate(
+        &fixture,
+        "t1",
+        caller(&fixture.keys, &["token.delegate:tenant:t1"]),
+        request(subject),
+    )
+    .await
+    .expect("delegated");
+    let claims = verify_token(&fixture.keys, "t1", &response.access_token, 0).expect("verify");
+    assert_eq!(claims.perms, vec![ALICE_FEED.to_string()]);
+}

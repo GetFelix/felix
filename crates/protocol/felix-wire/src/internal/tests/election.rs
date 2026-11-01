@@ -126,7 +126,6 @@ fn the_new_kind_discriminants_are_fixed() {
     assert_eq!(Kind::SetStamped as u16, 42);
     assert_eq!(Kind::PreVote as u16, 43);
     assert_eq!(Kind::PreVoteAnswer as u16, 44);
-    assert!(Kind::from_u16(45).is_err());
 }
 
 #[test]

@@ -209,6 +209,42 @@ pub struct ForwardCacheOutcome {
     pub version: Option<u64>,
 }
 
+/// The owner's answer to a [`Kind::LeaseForwardCacheOp`].
+///
+/// [`Kind::LeaseForwardCacheOp`]: super::Kind::LeaseForwardCacheOp
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeaseForwardCacheOk {
+    pub correlation_id: u64,
+    pub outcome: ForwardCacheOutcome,
+    pub lease: ForwardLease,
+}
+
+/// What became of the lease token a forwarded put asked for.
+#[derive(Clone, PartialEq, Eq)]
+pub enum ForwardLease {
+    /// The write did not apply, so there is nothing to mint.
+    NotMinted,
+    /// A bearer token for the holder, and when it expires in seconds since
+    /// the Unix epoch.
+    Minted { token: String, expires_at: u64 },
+    /// The write applied but no token could be minted, and why.
+    Refused(String),
+}
+
+impl std::fmt::Debug for ForwardLease {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotMinted => f.write_str("NotMinted"),
+            Self::Minted { expires_at, .. } => f
+                .debug_struct("Minted")
+                .field("token", &"<redacted>")
+                .field("expires_at", expires_at)
+                .finish(),
+            Self::Refused(detail) => f.debug_tuple("Refused").field(detail).finish(),
+        }
+    }
+}
+
 /// The owner could not apply the operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForwardCacheError {

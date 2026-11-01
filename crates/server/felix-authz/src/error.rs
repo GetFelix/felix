@@ -22,6 +22,10 @@ pub enum AuthzError {
     TenantMismatch { expected: String, actual: String },
     #[error("jwks not available for tenant {0}")]
     MissingJwks(String),
+    #[error("invalid lease template: {0}")]
+    InvalidLeaseTemplate(String),
+    #[error("lease key cannot name a resource: {0}")]
+    InvalidLeaseKey(String),
 }
 
 pub type AuthzResult<T> = Result<T, AuthzError>;

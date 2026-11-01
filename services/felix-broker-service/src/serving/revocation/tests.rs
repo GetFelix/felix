@@ -61,3 +61,35 @@ async fn a_waiter_wakes_for_its_own_revocation_only() {
         .expect("woken")
         .expect("joined");
 }
+
+#[test]
+fn a_token_with_an_end_is_revoked_once_it_passes() {
+    let revocations = Arc::new(Revocations::default());
+    let now = now_secs();
+    assert!(
+        token(&revocations, "alice", None, 10)
+            .ending_at(now - 1)
+            .is_revoked()
+    );
+    assert!(
+        !token(&revocations, "alice", None, 10)
+            .ending_at(now + 60)
+            .is_revoked()
+    );
+    assert!(!token(&revocations, "alice", None, 10).is_revoked());
+}
+
+/// What every open stream of a lease token waits on: it must wake at the end
+/// time with no revocation at all.
+#[tokio::test(start_paused = true)]
+async fn a_waiter_wakes_when_its_token_ends() {
+    let revocations = Arc::new(Revocations::default());
+    let lease = token(&revocations, "alice", None, 10).ending_at(now_secs() + 30);
+    let waiting = tokio::spawn(async move { lease.revoked().await });
+    tokio::time::sleep(Duration::from_secs(20)).await;
+    assert!(!waiting.is_finished(), "ended early");
+    tokio::time::timeout(Duration::from_secs(15), waiting)
+        .await
+        .expect("woken at the end time")
+        .expect("joined");
+}

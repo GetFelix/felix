@@ -573,6 +573,85 @@ next refresh and opens its streams again. Tokens for the control plane's own
 API are not revoked; they expire with the access TTL. See
 [docs/auth.md](https://github.com/GetFelix/felix/blob/main/docs/auth.md#revoking-a-principal).
 
+### Lease tokens
+
+A *lease* is a cache key that one client holds at a time: it takes the key
+with a conditional write, keeps it by rewriting it before its TTL runs out,
+and loses it when the entry expires or another write wins. The client whose
+write made the current version is the *holder*. A *lease token* is a
+short-lived broker token that a broker hands the holder when its write wins.
+It grants only what the caller's *lease templates* name for that key.
+
+Lease tokens are for nodes that share one identity, such as the workers of a
+scheduler. Without them, any node that may write one workload's output may
+write every workload's output. With them, a node's own token holds only the
+lease cache and the templates, and it can write a workload's output only while
+it holds that workload's lease.
+
+To use them:
+
+1. Give every broker the same key file:
+
+   ```bash
+   openssl rand -base64 32 > lease-keys
+   export FELIX_LEASE_TOKEN_KEY_FILE="$PWD/lease-keys"
+   ```
+
+2. Grant the nodes the lease cache and a template for the outputs. The
+   `{leases}` slot stands for the key of cache `acme/prod/leases`:
+
+   ```bash
+   felixctl rbac policy add role:node cache:acme/prod/leases cache.write
+   felixctl rbac policy add role:node cache:acme/prod/leases cache.read
+   felixctl rbac policy add role:node 'stream:acme/prod/wl.{leases}.out' stream.publish
+   ```
+
+3. Claim the lease with a conditional put that asks for a token, publish with
+   the token, and renew at the version you hold before the TTL runs out. Each
+   renewal returns a fresh token. See
+   [Leases and lease tokens](/clients/rust/#leases-and-lease-tokens) for the
+   Rust code.
+
+```mermaid
+sequenceDiagram
+    participant N as Node
+    participant L as Owner of the lease key
+    participant O as Broker for wl.w7.out
+    N->>L: cache_put_if leases/w7, absent, ttl 30s, lease_token
+    L->>L: templates name cache leases? key valid? then write
+    L-->>N: applied, version 1, lease token (exp = now + 30s)
+    N->>O: Auth with the lease token, publish to wl.w7.out
+    O->>O: verify with the lease key, check perms
+    O-->>N: ok
+    N->>L: cache_put_if leases/w7, version 1, lease_token
+    L-->>N: applied, version 2, fresh lease token
+    Note over N,O: the node stops renewing, or another write wins
+    O-->>N: exp passes: the stream ends with code revoked
+```
+
+Winning the write is the holder check: only the write that made the newest
+version gets a token, so a node that lost its lease fails to renew and gets
+nothing. The broker that owns the key mints the token with the shared key,
+without asking the control plane, so a lease can be claimed while the control
+plane is down. Grants still come only from RBAC: a broker mints only what the
+caller's own token's templates name, and refuses before writing when the
+caller holds none, uses a lease or delegated token, or names a key that cannot
+be part of a stream or key name.
+
+The token lasts as long as the lease entry, but no longer than the caller's
+own token or `FELIX_LEASE_TOKEN_MAX_TTL_SECONDS` (300 s by default). Unlike
+other tokens, a lease token's open streams end at its expiry, so a node cannot
+keep writing over a stream it opened before it lost the lease. Revoking the
+caller's principal also revokes its lease tokens. Each mint is logged at
+`info` without the token, and counted in `felix_lease_tokens_issued_total`.
+
+One gap remains: a principal with `cache.write` on the lease cache can delete
+another node's lease with `cache_delete_if` and claim it. The holder notices,
+since its next renewal fails. Lease tokens are in the Rust client only so far.
+See
+[docs/auth.md](https://github.com/GetFelix/felix/blob/main/docs/auth.md#lease-tokens)
+for the template grammar, key rotation and the wire details.
+
 ## Not built
 
 - **Encryption at rest.** Durable log segments are plaintext on disk. If the

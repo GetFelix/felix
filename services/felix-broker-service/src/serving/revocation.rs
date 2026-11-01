@@ -5,8 +5,12 @@
 //! [`Revocable`] for the token it authenticated with and waits on
 //! [`Revocable::revoked`] beside its own work. `docs/auth.md` ("Revoking a
 //! principal") describes the whole path.
+//!
+//! A lease token also ends what it opened at its `exp`, unlike any other
+//! token, or an open stream would outlive the lease (see "Lease tokens").
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use parking_lot::RwLock;
 use tokio::sync::watch;
@@ -82,6 +86,9 @@ pub struct Revocable {
     subject: String,
     actor: Option<String>,
     issued_at: i64,
+    /// When the token's sessions end on their own, in seconds since the
+    /// epoch, leeway included. Only a lease token has one.
+    ends_at: Option<i64>,
 }
 
 impl Revocable {
@@ -98,29 +105,57 @@ impl Revocable {
             subject,
             actor,
             issued_at,
+            ends_at: None,
         }
     }
 
-    pub fn is_revoked(&self) -> bool {
-        self.revocations.revokes(
-            &self.tenant_id,
-            &self.subject,
-            self.actor.as_deref(),
-            self.issued_at,
-        )
+    /// End every session of this token at `ends_at` (seconds since the
+    /// epoch), as if it were revoked then.
+    pub(crate) fn ending_at(mut self, ends_at: i64) -> Self {
+        self.ends_at = Some(ends_at);
+        self
     }
 
-    /// Resolves once this token is revoked; never, if it is not.
+    pub fn is_revoked(&self) -> bool {
+        self.has_ended()
+            || self.revocations.revokes(
+                &self.tenant_id,
+                &self.subject,
+                self.actor.as_deref(),
+                self.issued_at,
+            )
+    }
+
+    /// Whether this token's own end time has passed.
+    pub fn has_ended(&self) -> bool {
+        self.ends_at.is_some_and(|ends_at| now_secs() >= ends_at)
+    }
+
+    /// Resolves once this token is revoked or reaches its end time; never,
+    /// if neither happens.
     pub async fn revoked(&self) {
         // Subscribed before the first check, so a revocation landing between
         // the check and the wait still wakes it.
         let mut changed = self.revocations.changed.subscribe();
+        let ended = async {
+            match self.ends_at {
+                Some(ends_at) => tokio::time::sleep(until(ends_at)).await,
+                None => std::future::pending().await,
+            }
+        };
+        tokio::pin!(ended);
         loop {
             if self.is_revoked() {
                 return;
             }
-            if changed.changed().await.is_err() {
-                std::future::pending::<()>().await;
+            tokio::select! {
+                () = &mut ended => return,
+                changed = changed.changed() => {
+                    if changed.is_err() {
+                        (&mut ended).await;
+                        return;
+                    }
+                }
             }
         }
     }
@@ -137,6 +172,21 @@ impl std::fmt::Display for Revoked {
 }
 
 impl std::error::Error for Revoked {}
+
+fn now_secs() -> i64 {
+    since_epoch().as_secs().try_into().unwrap_or(i64::MAX)
+}
+
+/// How long until `at` (seconds since the epoch); zero once it has passed.
+fn until(at: i64) -> Duration {
+    Duration::from_secs(u64::try_from(at).unwrap_or(0)).saturating_sub(since_epoch())
+}
+
+fn since_epoch() -> Duration {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+}
 
 #[cfg(test)]
 mod tests;

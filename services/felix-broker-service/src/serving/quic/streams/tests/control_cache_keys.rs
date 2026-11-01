@@ -69,6 +69,7 @@ fn requests(key: &str) -> Vec<(&'static str, Action, Message)> {
                 ttl_ms: None,
                 condition: CacheCondition::Absent,
                 request_id: 1,
+                lease_token: false,
             },
         ),
         (
