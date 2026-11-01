@@ -1090,8 +1090,8 @@ them.
 check: electing on the current set"). `FelixShardElectSwap.cfg` changes the
 set at a cut-over by more than one member with the joint fence. It is too
 big for one run, so it is checked in pieces split by how the cut-over went
-(`FelixShardElectSwap{Keep,Drop}{0,1,2}{,Stood}.cfg`, with `Drop0Stood` split
-in four). Each passes in seconds to about 5 hours on a four-core runner,
+(`FelixShardElectSwap{Keep,Drop}{0,1,2}{,Stood}.cfg`, with `Drop0Stood` and
+`Drop1Stood` each split in four). Each passes in seconds to about 3 hours on a four-core runner,
 and the ones over 45 minutes run nightly;
 `FelixShardElectSwapNoJoint.cfg` without it loses a record.
 `FelixShardElectStaleSet.cfg` without the set check finds a replica that left

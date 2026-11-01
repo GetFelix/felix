@@ -240,6 +240,9 @@ expectations=(
   "FelixShardElectSwapDrop0StoodOneDest pass"
   "FelixShardElectSwapDrop0StoodOneOther pass"
   "FelixShardElectSwapDrop0StoodSeveralOther pass"
+  "FelixShardElectSwapDrop1StoodOneDest pass"
+  "FelixShardElectSwapDrop1StoodOneOther pass"
+  "FelixShardElectSwapDrop1StoodSeveralOther pass"
   "FelixShardElectPreVote pass"
   "FelixShardElectNoBallotAcks violates AckedHeldByLeader"
   "FelixShardElectStepDown pass"
@@ -334,10 +337,11 @@ if [ "$#" -gt 0 ]; then
 fi
 
 # FelixShardElectSwap is not registered: it does not finish in one run, so
-# it is checked in pieces split at the cut-over. The eight that take under 45
-# minutes are registered above; FelixShardElectSwapKeep0, the five
-# FelixShardElectSwap*Stood and FelixShardElectSwapDrop0StoodSeveralDest run
-# in the nightly exhaustive job (tla-walk.yml).
+# it is checked in pieces split at the cut-over. The eleven that take under 45
+# minutes are registered above; FelixShardElectSwapKeep0, the four
+# FelixShardElectSwap{Keep0,Keep1,Keep2,Drop2}Stood and
+# FelixShardElectSwapDrop{0,1}StoodSeveralDest run in the nightly exhaustive
+# job (tla-walk.yml).
 # So are FelixShardElectWipeNonVoter{Twice,Failover,FailoverWipesLeader,
 # WipesLeader}: each runs well over an hour on a four-core runner. Their
 # violating twins and witnesses stay registered.
@@ -411,6 +415,8 @@ weights=(
   "FelixShardElectSwapDrop0StoodOneDest 39"
   "FelixShardElectSwapDrop0StoodOneOther 13"
   "FelixShardElectSwapDrop0StoodSeveralOther 1"
+  "FelixShardElectSwapDrop1StoodOneDest 12"
+  "FelixShardElectSwapDrop1StoodOneOther 3"
 )
 
 weight_of() {
