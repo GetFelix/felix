@@ -22,7 +22,7 @@ const ELECTION: [&str; 5] = [
 /// of three copies, and a shard fenced for a move from a to b with c the
 /// other follower. a is draining, so the cut-over drops it and tops the set
 /// up with d: {a, b, c} becomes {b, c, d}.
-async fn fenced_move(finalize: bool) -> (InMemoryStore, ShardAssignment) {
+pub(super) async fn fenced_move(finalize: bool) -> (InMemoryStore, ShardAssignment) {
     let store = InMemoryStore::new(StoreConfig {
         changes_limit: 1000,
         change_retention_max_rows: Some(1000),
@@ -81,7 +81,7 @@ async fn fenced_move(finalize: bool) -> (InMemoryStore, ShardAssignment) {
 }
 
 /// What `leader` reports at `assignment`'s generation, as the API stamps it.
-async fn report(
+pub(super) async fn report(
     store: &InMemoryStore,
     assignment: &ShardAssignment,
     drained: bool,
@@ -127,7 +127,7 @@ async fn report(
     assert_eq!(written, crate::store::ReportWrite::Stored);
 }
 
-async fn pass(store: &InMemoryStore) -> ShardAssignment {
+pub(super) async fn pass(store: &InMemoryStore) -> ShardAssignment {
     reconcile_once(store, &Default::default(), MovePolicy::default()).await;
     store
         .get_shard_assignment(&shard_zero())

@@ -474,6 +474,16 @@ fn commands() -> Vec<MetaCommand> {
             expected_generation: Some(1),
             fence: 1,
         },
+        MetaCommand::AdoptElectedLeader {
+            key: shard_key(),
+            expected_generation: 1,
+            elected: crate::model::ElectedLeader {
+                leader: s("b"),
+                generation: 2,
+                replicas: vec![s("c")],
+                set_generation: 1,
+            },
+        },
         MetaCommand::TakePlacementLease { holder: s("h") },
         MetaCommand::DeleteShardAssignment { key: shard_key() },
         MetaCommand::RecordReplicaReport {
@@ -652,6 +662,7 @@ fn op_of(command: &MetaCommand) -> &'static str {
         MetaCommand::PutShardAssignment { .. } => "put_shard_assignment",
         MetaCommand::PutShardAssignmentIf { .. } => "put_shard_assignment_if",
         MetaCommand::PutShardAssignmentFenced { .. } => "put_shard_assignment_fenced",
+        MetaCommand::AdoptElectedLeader { .. } => "adopt_elected_leader",
         MetaCommand::TakePlacementLease { .. } => "take_placement_lease",
         MetaCommand::DeleteShardAssignment { .. } => "delete_shard_assignment",
         MetaCommand::RecordReplicaReport { .. } => "record_replica_report",

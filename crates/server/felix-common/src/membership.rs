@@ -177,6 +177,29 @@ pub struct ShardReplicaStatus {
     /// brokers that predate it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub joint_start_acked: Option<u64>,
+    /// Set by a leader that elected itself rather than being named by the
+    /// control plane: the generation it opened at and the set it fenced.
+    /// `generation` is then that generation too. The control plane adopts it
+    /// as the shard's leader when the set is the one it records. Omitted by
+    /// a leader the control plane named, and by brokers that predate it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elected: Option<ElectedLeadership>,
+}
+
+/// A leadership a broker won by election (`docs/replication-design.md`,
+/// "Electing without the control plane", rule 10).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(ToSchema))]
+pub struct ElectedLeadership {
+    /// The node that opened. Always the reporting broker.
+    pub leader: String,
+    /// The generation it opened at, above any the control plane named.
+    pub generation: u64,
+    /// The followers of the set it fenced, itself left out.
+    pub replicas: Vec<String>,
+    /// The generation that set was written at: the pending set's while a
+    /// set change is pending.
+    pub set_generation: u64,
 }
 
 fn is_zero(value: &u64) -> bool {

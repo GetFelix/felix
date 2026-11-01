@@ -1064,8 +1064,8 @@ control plane.
   current one, and the flip to it after the joint fence are new store
   writes, so under Raft they need metadata level 21 on every member, and a
   Postgres control plane gets migration 0038. Below that the control plane
-  ignores election reports and goes on promoting on suspicion. The pending
-  set and the flip are built; adoption is not.
+  ignores election reports and goes on promoting on suspicion. All three are
+  built.
 - *The fleet feature.* Finalizing `replica_election` is refused while a
   serving broker lacks `ELECTION`, the control plane is below that level, or
   the fleet does not fence every change of leader and every change of set:
@@ -3575,10 +3575,13 @@ while a serving broker does not report that it offers the `ELECTION` peer
 capability, and `replica_election` is refused until `joint_fence` and its
 other prerequisites are finalized, every serving broker offers `ELECTION`,
 and the control plane has the metadata level for the pending replica set and
-adoption (which is not built, so the finalize stays refused). No broker offers `ELECTION`, so both features stay unfinalizable.
+adoption (level 21 under Raft, which every member must report). No broker
+offers `ELECTION`, and the control plane holds its own flag back until the
+election driver (#1009 S9) turns it on, with joint fences, two-majority acks
+and the wiped-voter guard in, so both features stay unfinalizable.
 
-Not built yet: joint fences and the fenced next-generation open, the control
-plane's adoption, the pre-vote and the election driver.
+Not built yet: joint fences and the fenced next-generation open, the pre-vote
+and the election driver.
 
 The control plane's side of rule 8 is built. Under `replica_election`, a
 cut-over that changes the set of a shard whose replicas elect names the new
@@ -3596,8 +3599,50 @@ is taken once. That is `Swap` and `CpFlip` in the model
 write that takes the set, like every assignment write, is a new generation,
 which the leader opens on the new set alone, while `CpFlip` keeps the
 generation. The model is to cover that before the election driver.
-Adoption shares the metadata level and is not built yet, and no broker sends `joint_start_acked` yet (control-plane.md,
+No broker sends `joint_start_acked` yet (control-plane.md,
 [Moving a shard](control-plane.md#moving-a-shard)).
+
+The control plane's side of rule 10 is built too (control-plane.md,
+[Adopting an elected leader](control-plane.md#adopting-an-elected-leader)). A
+broker's replica report may carry `elected`: the generation it opened at, and
+the set it fenced with that set's generation. Once `replica_election` is
+finalized, a report from that leader at that generation, above the
+assignment's, is adopted by a write conditional on the generation the report
+handler read, at the elected generation itself. On the set the control plane
+records (the pending set at its generation, while one is pending) the broker
+becomes the leader and a pending change stays pending under it. On any other
+set only the generation is taken, and the leader stays the control plane's.
+Every writer (placement, failover, moves, the pending set's flip, its timeout
+and its cancel) then issues the next generation above it, because the store
+gives each write the one after the stored generation. A pending set's leader
+must also be in the old set, which is the control plane's while the change is
+pending, so one elected on the new set from outside the old one is recorded
+and not adopted; the change then ends on its timeout or a failover. This is
+stricter than the model, which would adopt there, and the difference is not
+modelled. Recorded has a liveness cost: while the old leader stays live, the
+shard waits for the pending timeout (10 min) or a lease lapse, and with no
+pending set it has no bound until the election driver; see the S9 liveness
+issue. An election more than 16 generations past the control plane's is
+refused, and a joining follower elected leader is recorded only. Placement's
+promotion on the followers' word waits 2×S under `replica_election`
+(`FELIX_SHARD_ELECTION_HOLD_MS`, 10 s), and promotion on a lapsed lease is
+unchanged. No broker sends `elected` yet.
+
+When only the generation is taken, the control plane names its own leader at
+a generation another broker opened. That leader cannot open there: its fence
+at that generation meets the majority that promised it to the elected one.
+This is the model's `CpAdopt` with `AdoptMatch`, which checks it.
+
+> `a_leader_elected_on_the_set_is_adopted_at_its_generation` (store contract):
+> adoption at the elected generation. `a_planner_on_an_older_read_loses_to_adoption`:
+> the write is conditional like any other.
+> `an_election_on_the_old_set_is_recorded_not_adopted`: an old-set leader
+> while a change is pending. `taking_a_pending_set_after_an_adoption_issues_above_it`,
+> `a_pending_timeout_after_an_adoption_issues_above_it`,
+> `a_failover_after_an_adoption_issues_above_it` and
+> `every_write_after_an_adoption_issues_above_it`: never at or below an
+> elected generation. `under_replica_election_the_followers_word_is_held_for_twice_s`:
+> the hold. `adoption_waits_for_every_member`: level 21 under Raft.
 
 > `a_fence_on_an_older_set_is_refused_and_names_the_newer`,
 > `a_batch_stamped_with_an_older_set_is_refused`: the set check.

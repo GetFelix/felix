@@ -202,6 +202,12 @@ fn shard_moves_from_env() -> crate::cluster::placement::MovePolicy {
             Some(millis) => Some(millis),
             None => defaults.pending_set_timeout_millis,
         },
+        // Zero promotes on the followers' word as soon as without elections.
+        election_hold_millis: match parse("FELIX_SHARD_ELECTION_HOLD_MS") {
+            Some(0) => None,
+            Some(millis) => Some(millis),
+            None => defaults.election_hold_millis,
+        },
         // Zero never replaces a lost follower.
         restore_after_millis: match parse("FELIX_SHARD_RESTORE_AFTER_MS") {
             Some(0) => None,

@@ -626,6 +626,15 @@ impl ControlPlaneStore for InMemoryStore {
             .await
     }
 
+    async fn adopt_elected_leader(
+        &self,
+        key: &ShardKey,
+        expected_generation: u64,
+        elected: crate::model::ElectedLeader,
+    ) -> StoreResult<crate::store::AssignmentWrite> {
+        shards::adopt_elected_leader(self, key, expected_generation, &elected).await
+    }
+
     async fn get_shard_assignment(&self, key: &ShardKey) -> StoreResult<ShardAssignment> {
         shards::get_shard_assignment(self, key).await
     }

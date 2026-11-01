@@ -384,6 +384,15 @@ impl MetadataStateMachine {
                 .await
                 .map(assignment_written)
                 .map_err(Into::into),
+            MetaCommand::AdoptElectedLeader {
+                key,
+                expected_generation,
+                elected,
+            } => store
+                .adopt_elected_leader(&key, expected_generation, elected)
+                .await
+                .map(assignment_written)
+                .map_err(Into::into),
             MetaCommand::TakePlacementLease { holder } => {
                 let lease = store.take_placement_lease(&holder).await;
                 Ok(MetaResponse::PlacementLease {
