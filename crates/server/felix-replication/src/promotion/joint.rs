@@ -100,6 +100,10 @@ pub(super) async fn sets<R: PeerRequester>(
     joint: &Joint<'_>,
 ) -> Option<JointSets> {
     let stored = log.replica_set()?;
+    // REVERT EVIDENCE: no joint fence.
+    if stored.current.generation > 0 {
+        return None;
+    }
     let leaving = if stored.current.generation < route.generation {
         stored.current
     } else if stored.current.generation == route.generation {
