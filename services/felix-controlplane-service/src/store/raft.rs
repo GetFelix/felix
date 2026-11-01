@@ -844,6 +844,34 @@ impl ControlPlaneStore for RaftStore {
         }
     }
 
+    async fn adopt_elected_leader(
+        &self,
+        key: &ShardKey,
+        expected_generation: u64,
+        elected: crate::model::ElectedLeader,
+    ) -> StoreResult<AssignmentWrite> {
+        // Refused below level 21, before it reaches the log: the generation
+        // stays the one every member holds, and the election is not adopted.
+        let level = self.group_level().await;
+        match self
+            .propose_at(
+                level,
+                MetaCommand::AdoptElectedLeader {
+                    key: key.clone(),
+                    expected_generation,
+                    elected,
+                },
+            )
+            .await?
+        {
+            MetaResponse::Assignment { assignment } => Ok(AssignmentWrite::Written(assignment)),
+            MetaResponse::StaleAssignment { current_generation } => Ok(AssignmentWrite::Stale {
+                current: current_generation,
+            }),
+            _ => Err(unexpected_shape("assignment")),
+        }
+    }
+
     async fn get_shard_assignment(&self, key: &ShardKey) -> StoreResult<ShardAssignment> {
         self.local().get_shard_assignment(key).await
     }

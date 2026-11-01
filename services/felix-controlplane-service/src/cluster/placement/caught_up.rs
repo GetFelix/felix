@@ -179,6 +179,13 @@ pub trait CaughtUp {
         false
     }
 
+    /// Since when, on the reports' clock, this instance has seen `follower`
+    /// suspect `leader` without a break. `None` when it has not watched it,
+    /// and then a held suspicion promotes nobody.
+    fn suspected_since_millis(&self, _follower: &str, _leader: &str) -> Option<u64> {
+        None
+    }
+
     /// [`Self::halted`], where the halt still speaks for a member of the set
     /// at `generation`: reported at it, or carried into it from one of the
     /// generations just before and not yet contradicted.

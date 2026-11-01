@@ -1,8 +1,8 @@
 //! Shard assignments, and what leaders report about their replicas.
 use super::InMemoryStore;
 use crate::model::{
-    CacheKey, ReplicaReport, ShardAssignment, ShardAssignmentChange, ShardAssignmentChangeOp,
-    ShardKey, ShardKind, StreamKey,
+    CacheKey, ElectedLeader, ReplicaReport, ShardAssignment, ShardAssignmentChange,
+    ShardAssignmentChangeOp, ShardKey, ShardKind, StreamKey,
 };
 use crate::store::{
     AssignmentWrite, ChangeSet, PlacementLease, ReportWrite, Snapshot, StoreError, StoreResult,
@@ -14,7 +14,7 @@ pub(super) async fn put_shard_assignment(
     assignment: ShardAssignment,
     seq_generation: bool,
 ) -> StoreResult<ShardAssignment> {
-    match write_shard_assignment(store, assignment, None, None, seq_generation).await? {
+    match write_shard_assignment(store, assignment, None, None, seq_generation, None).await? {
         AssignmentWrite::Written(stored) => Ok(stored),
         AssignmentWrite::Stale { .. } | AssignmentWrite::Fenced { .. } => {
             unreachable!("an unconditional write is never stale")
@@ -37,18 +37,53 @@ pub(super) async fn put_shard_assignment_if(
         Some(expected_generation),
         fence,
         seq_generation,
+        None,
+    )
+    .await
+}
+
+/// [`crate::store::ControlPlaneStore::adopt_elected_leader`]. Deterministic,
+/// as a Raft apply must be: the decision is made from the assignment this
+/// store holds, and the write is conditional on it.
+pub(super) async fn adopt_elected_leader(
+    store: &InMemoryStore,
+    key: &ShardKey,
+    expected_generation: u64,
+    elected: &ElectedLeader,
+) -> StoreResult<AssignmentWrite> {
+    let current = get_shard_assignment(store, key).await?;
+    if current.generation != expected_generation {
+        return Ok(AssignmentWrite::Stale {
+            current: Some(current.generation),
+        });
+    }
+    let Some(adopted) = current.adopting(elected) else {
+        return Ok(AssignmentWrite::Stale {
+            current: Some(current.generation),
+        });
+    };
+    write_shard_assignment(
+        store,
+        adopted,
+        Some(Some(expected_generation)),
+        None,
+        false,
+        Some(elected.generation),
     )
     .await
 }
 
 /// `expected`: `None` writes unconditionally, `Some(generation)` only over
 /// that generation (`Some(None)`: only where there is no assignment).
+/// `elected`: an adoption's generation, written in place of the next one;
+/// only over an assignment below it.
 async fn write_shard_assignment(
     store: &InMemoryStore,
     assignment: ShardAssignment,
     expected: Option<Option<u64>>,
     fence: Option<u64>,
     seq_generation: bool,
+    elected: Option<u64>,
 ) -> StoreResult<AssignmentWrite> {
     assignment.validate().map_err(invalid_shard)?;
 
@@ -120,11 +155,22 @@ async fn write_shard_assignment(
                     },
                 ));
             }
-            (
-                ShardAssignmentChangeOp::Updated,
-                existing.generation.saturating_add(1),
-            )
+            let generation = match elected {
+                Some(elected) if elected <= existing.generation => {
+                    return Ok(AssignmentWrite::Stale { current });
+                }
+                Some(elected) => {
+                    crate::model::check_elected_generation(existing.generation, elected)
+                        .map_err(StoreError::Conflict)?;
+                    elected
+                }
+                None => crate::model::next_generation(existing.generation)
+                    .map_err(StoreError::Conflict)?,
+            };
+            (ShardAssignmentChangeOp::Updated, generation)
         }
+        // Only an assignment can be adopted.
+        None if elected.is_some() => return Ok(AssignmentWrite::Stale { current }),
         None => (
             ShardAssignmentChangeOp::Assigned,
             crate::model::first_generation(incarnation, state.changes.next_seq, seq_generation),

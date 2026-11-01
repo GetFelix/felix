@@ -280,8 +280,9 @@ impl ShardOwnership {
 }
 
 /// What came before `next`, when `current` is the assignment right before it:
-/// the same incarnation one generation down. Every assignment write raises
-/// the generation by one, so that is the control plane's set just before.
+/// the same incarnation one generation down. A write raises the generation by
+/// one, except an adoption, which lands at the elected generation: the set
+/// before that one is left unknown here.
 fn prior_of(
     current: Option<&ShardAssignment>,
     next: &ShardAssignment,

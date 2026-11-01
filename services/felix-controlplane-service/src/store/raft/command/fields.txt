@@ -5,6 +5,19 @@
 # array element and `*` any key of a map. A level, once released, is frozen:
 # a new path goes in at a new level, never an existing one.
 
+21 adopt_elected_leader
+21 adopt_elected_leader.elected
+21 adopt_elected_leader.elected.generation
+21 adopt_elected_leader.elected.leader
+21 adopt_elected_leader.elected.replicas
+21 adopt_elected_leader.elected.set_generation
+21 adopt_elected_leader.expected_generation
+21 adopt_elected_leader.key
+21 adopt_elected_leader.key.kind
+21 adopt_elected_leader.key.namespace
+21 adopt_elected_leader.key.shard
+21 adopt_elected_leader.key.stream
+21 adopt_elected_leader.key.tenant_id
 1 activate_signing_key
 1 activate_signing_key.kid
 1 activate_signing_key.tenant_id

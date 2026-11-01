@@ -43,6 +43,11 @@ pub const DEFAULT_FENCE_TIMEOUT_MILLIS: u64 = 2 * 60 * 1_000;
 /// leader's start record reaching a majority of both sets, which takes
 /// seconds once the new members hold the log; a change still pending after
 /// this has lost the members that could finish it.
+/// Twice the brokers' default suspicion window
+/// (`FELIX_LEADER_SUSPECT_AFTER_MS`, 5 s): an election takes about S plus a
+/// few round trips, and most split votes resolve within a second S.
+pub(super) const DEFAULT_ELECTION_HOLD_MILLIS: u64 = 10_000;
+
 pub(super) const DEFAULT_PENDING_SET_TIMEOUT_MILLIS: u64 = 10 * 60 * 1_000;
 
 /// The longest a shard waits to start a move after moves given up at the
@@ -92,6 +97,11 @@ pub struct MovePolicy {
     /// it, for the leader to report the joint start before the change is
     /// dropped. `None` waits forever.
     pub pending_set_timeout_millis: Option<u64>,
+    /// Under `replica_election`, how long a follower must have suspected a
+    /// shard's leader, as this instance watched it, before placement
+    /// promotes on its word: twice the brokers' suspicion window S, so the
+    /// fallback does not race an election. `None` holds nothing.
+    pub election_hold_millis: Option<u64>,
     /// How long a follower's broker must have been down or gone, or its copy
     /// reported halted, before placement replaces the copy it held, restoring
     /// the replication factor.
@@ -134,6 +144,7 @@ impl Default for MovePolicy {
             timeout_millis: Some(DEFAULT_MOVE_TIMEOUT_MILLIS),
             fence_timeout_millis: Some(DEFAULT_FENCE_TIMEOUT_MILLIS),
             pending_set_timeout_millis: Some(DEFAULT_PENDING_SET_TIMEOUT_MILLIS),
+            election_hold_millis: Some(DEFAULT_ELECTION_HOLD_MILLIS),
             restore_after_millis: Some(DEFAULT_RESTORE_AFTER_MILLIS),
             restore_stall_millis: Some(DEFAULT_RESTORE_STALL_MILLIS),
             settle_millis: Some(DEFAULT_PLACEMENT_SETTLE_MILLIS),

@@ -2152,5 +2152,19 @@ async fn an_older_members_write_does_not_keep_a_storage_id() -> anyhow::Result<(
         .execute(&pool)
         .await?;
     assert_eq!(store.get_shard_assignment(&key(0)).await?.pending_set, None);
+    // The last generation is refused rather than repeated, or bound negative.
+    sqlx::query("UPDATE shard_assignments SET generation = $1 WHERE shard = 0")
+        .bind(i64::MAX)
+        .execute(&pool)
+        .await?;
+    let refused = store.put_shard_assignment(assignment(0, "broker-x")).await;
+    assert!(
+        matches!(refused, Err(crate::store::StoreError::Conflict(_))),
+        "{refused:?}"
+    );
+    assert_eq!(
+        store.get_shard_assignment(&key(0)).await?.generation,
+        i64::MAX as u64
+    );
     Ok(())
 }

@@ -409,3 +409,140 @@ fn a_pending_set_must_be_another_set_with_nothing_else_moving() {
     a.successor = Some("broker-b".to_string());
     assert_eq!(a.validate(), Err(ShardValidationError::InvalidPendingSet));
 }
+
+fn elected(leader: &str, replicas: &[&str], generation: u64, set_generation: u64) -> ElectedLeader {
+    ElectedLeader {
+        leader: leader.to_string(),
+        generation,
+        replicas: replicas.iter().map(|node| node.to_string()).collect(),
+        set_generation,
+    }
+}
+
+/// A leader elected on the set the control plane records becomes its leader
+/// at the elected generation.
+#[test]
+fn adopting_a_leader_elected_on_the_set_names_it() {
+    let adopted = assignment()
+        .adopting(&elected("broker-b", &["broker-a", "broker-c"], 9, 7))
+        .expect("adopted");
+    assert_eq!(adopted.leader, "broker-b");
+    assert_eq!(adopted.generation, 9);
+    assert_eq!(adopted.replicas, vec!["broker-a", "broker-c"]);
+}
+
+/// A joining follower elected leader is recorded only: the copy it replaces
+/// is not named, so the set cannot be settled, and the replacement goes on.
+#[test]
+fn a_joining_copy_elected_leader_is_recorded_not_adopted() {
+    let replacing = ShardAssignment {
+        replicas: vec![
+            "broker-b".to_string(),
+            "broker-c".to_string(),
+            "broker-d".to_string(),
+        ],
+        joining: Some("broker-d".to_string()),
+        move_started_at_millis: Some(5),
+        move_reason: Some(MoveReason::Drain),
+        ..assignment()
+    };
+    let recorded = replacing
+        .adopting(&elected(
+            "broker-d",
+            &["broker-a", "broker-b", "broker-c"],
+            9,
+            7,
+        ))
+        .expect("recorded");
+    assert_eq!(recorded.generation, 9);
+    assert_eq!(
+        ShardAssignment {
+            generation: replacing.generation,
+            ..recorded
+        },
+        replacing
+    );
+}
+
+/// A follower elected while another is joining leaves the replacement going,
+/// its move fields kept.
+#[test]
+fn a_follower_elected_while_another_joins_keeps_the_replacement() {
+    let replacing = ShardAssignment {
+        replicas: vec![
+            "broker-b".to_string(),
+            "broker-c".to_string(),
+            "broker-d".to_string(),
+        ],
+        joining: Some("broker-d".to_string()),
+        move_started_at_millis: Some(5),
+        move_reason: Some(MoveReason::Drain),
+        ..assignment()
+    };
+    let adopted = replacing
+        .adopting(&elected(
+            "broker-b",
+            &["broker-a", "broker-c", "broker-d"],
+            9,
+            7,
+        ))
+        .expect("adopted");
+    assert_eq!(adopted.leader, "broker-b");
+    assert_eq!(adopted.joining.as_deref(), Some("broker-d"));
+    assert_eq!(adopted.move_reason, Some(MoveReason::Drain));
+    assert_eq!(adopted.move_started_at_millis, Some(5));
+    assert_eq!(adopted.validate(), Ok(()));
+}
+
+/// A drain of the leader ends when another leader is adopted: it is
+/// `Assigning` again with the move fields cleared.
+#[test]
+fn adopting_over_a_draining_leader_ends_the_move() {
+    let draining = ShardAssignment {
+        state: ShardState::Draining,
+        successor: Some("broker-b".to_string()),
+        move_started_at_millis: Some(5),
+        move_reason: Some(MoveReason::Drain),
+        ..assignment()
+    };
+    let adopted = draining
+        .adopting(&elected("broker-c", &["broker-a", "broker-b"], 9, 7))
+        .expect("adopted");
+    assert_eq!(adopted.state, ShardState::Assigning);
+    assert_eq!(adopted.successor, None);
+    assert_eq!(adopted.move_started_at_millis, None);
+    assert_eq!(adopted.move_reason, None);
+    assert_eq!(adopted.validate(), Ok(()));
+}
+
+/// A pending set's leader that is in the new set but not the old one cannot
+/// be named while the old set is the control plane's: only the generation is
+/// taken.
+#[test]
+fn a_pending_sets_leader_outside_the_old_set_is_recorded() {
+    let pending = ShardAssignment {
+        pending_set: Some(PendingSet {
+            replicas: vec!["broker-b".to_string(), "broker-d".to_string()],
+            generation: 8,
+        }),
+        ..assignment()
+    };
+    let recorded = pending
+        .adopting(&elected("broker-d", &["broker-a", "broker-b"], 12, 8))
+        .expect("recorded");
+    assert_eq!(recorded.generation, 12);
+    assert_eq!(recorded.leader, "broker-a");
+    assert_eq!(recorded.replicas, pending.replicas);
+    assert_eq!(recorded.pending_set, pending.pending_set);
+}
+
+/// The window and the top of the range.
+#[test]
+fn elected_and_issued_generations_are_bounded() {
+    assert_eq!(next_generation(7), Ok(8));
+    assert!(next_generation(i64::MAX as u64).is_err());
+    assert!(next_generation(u64::MAX).is_err());
+    assert!(check_elected_generation(7, 7 + ELECTION_GENERATION_WINDOW).is_ok());
+    assert!(check_elected_generation(7, 8 + ELECTION_GENERATION_WINDOW).is_err());
+    assert!(check_elected_generation(i64::MAX as u64 - 1, i64::MAX as u64 + 1).is_err());
+}

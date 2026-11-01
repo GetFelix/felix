@@ -2705,3 +2705,93 @@ async fn a_consistency_change_fences_placement_once_every_member_is_at_19() {
     assert_eq!(store.placement_token().await.expect("token"), before + 1);
     assert_eq!(store.machine.levels_used(), super::PATCH_FENCE_LEVEL);
 }
+
+/// An adoption writes a generation the store did not pick, which a member
+/// before level 21 cannot apply. So while one is in the group the adoption
+/// is refused before it reaches the log, and every member keeps the
+/// generation and leader it had: the elected leader's report is then judged
+/// as any other from a broker the control plane did not name. Once every
+/// member has the level it goes through, at the elected generation.
+#[tokio::test]
+async fn adoption_waits_for_every_member() {
+    use crate::model::{ElectedLeader, ShardAssignment, ShardKey, ShardKind, ShardState};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), 20).await;
+    let applied = || store.handle.status().last_applied_index;
+    store
+        .create_stream(routed_stream("orders", Default::default()))
+        .await
+        .expect("stream");
+    for (node_id, port) in [("broker-x", 7111), ("broker-y", 7112), ("broker-z", 7113)] {
+        store
+            .register_node(crate::store::contract::nodes::node(node_id, port))
+            .await
+            .expect("register");
+    }
+    let key = ShardKey {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "orders".to_string(),
+        shard: 0,
+        kind: ShardKind::Stream,
+    };
+    let assigned = store
+        .put_shard_assignment(ShardAssignment {
+            key: key.clone(),
+            leader: "broker-x".to_string(),
+            replicas: vec!["broker-y".to_string(), "broker-z".to_string()],
+            generation: 0,
+            state: ShardState::Assigning,
+            successor: None,
+            joining: None,
+            move_started_at_millis: None,
+            move_reason: None,
+            incarnation: 0,
+            fence_storage_ids: Default::default(),
+            pending_set: None,
+        })
+        .await
+        .expect("assign");
+    let elected = ElectedLeader {
+        leader: "broker-y".to_string(),
+        generation: assigned.generation + 3,
+        replicas: vec!["broker-x".to_string(), "broker-z".to_string()],
+        set_generation: assigned.generation,
+    };
+    let adopt = || store.adopt_elected_leader(&key, assigned.generation, elected.clone());
+
+    let before = applied();
+    let refused = adopt().await;
+    assert!(
+        matches!(&refused, Err(StoreError::Conflict(message)) if message.contains("metadata version 21")),
+        "an adoption was proposed past a member that would refuse it: {refused:?}"
+    );
+    assert_eq!(applied(), before, "a refused entry reached the log");
+    assert_eq!(
+        store.get_shard_assignment(&key).await.expect("get"),
+        assigned,
+        "the generation or leader changed below level 21"
+    );
+
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let adopted = loop {
+        match adopt().await {
+            Ok(crate::store::AssignmentWrite::Written(written)) => break written,
+            other => assert!(
+                std::time::Instant::now() < deadline,
+                "still refused after every member reported the level: {other:?}"
+            ),
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert_eq!(adopted.leader, "broker-y");
+    assert_eq!(adopted.generation, elected.generation);
+    assert_eq!(
+        store.get_shard_assignment(&key).await.expect("get"),
+        adopted
+    );
+}

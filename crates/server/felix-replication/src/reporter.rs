@@ -362,6 +362,7 @@ async fn send_reports(to: &ReportTo, reports: &[ShardReport]) -> Vec<bool> {
                 given_up: report.given_up,
                 inherited_storage_ids: report.inherited_storage.iter().cloned().collect(),
                 joint_start_acked: None,
+                elected: None,
             })
             .collect(),
     };

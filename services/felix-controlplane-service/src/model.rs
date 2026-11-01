@@ -8,6 +8,8 @@ mod incarnation;
 mod namespace;
 mod node;
 mod shard;
+#[cfg(test)]
+pub(crate) use shard::ELECTION_GENERATION_WINDOW;
 mod stream;
 mod tenant;
 
@@ -24,11 +26,12 @@ pub use node::{
     Node, NodeCapacity, NodeChange, NodeChangeOp, NodeLifecycle, NodePatchRequest, NodeSpec,
     NodeStatus, NodeSuspicion, NodeValidationError,
 };
-pub(crate) use shard::first_generation;
 pub use shard::{
-    HaltedCopy, MoveReason, PendingSet, ReplicaReport, ShardAssignment, ShardAssignmentChange,
-    ShardAssignmentChangeOp, ShardKey, ShardKind, ShardState, ShardValidationError,
+    ElectedLeader, HaltedCopy, MoveReason, PendingSet, ReplicaReport, ShardAssignment,
+    ShardAssignmentChange, ShardAssignmentChangeOp, ShardKey, ShardKind, ShardState,
+    ShardValidationError,
 };
+pub(crate) use shard::{check_elected_generation, first_generation, next_generation};
 pub(crate) use stream::default_replication_factor;
 pub(crate) use stream::deleted_stream_payload;
 pub use stream::{

@@ -134,6 +134,9 @@ pub struct ReplicaPositions {
     /// When this instance first saw each shard's pending set, by the
     /// generation that wrote it.
     pending: HashMap<(ShardKey, u64), u64>,
+    /// When this instance first saw each fresh suspicion, by follower and
+    /// the leader it suspects.
+    suspected_since: HashMap<(String, String), u64>,
     /// Moves given up at the fence in a row, by shard, and when the last was.
     give_ups: HashMap<ShardKey, (u32, u64)>,
     /// Each node as a report is judged against: its registered storage
@@ -179,6 +182,7 @@ impl ReplicaPositions {
             progressed: HashMap::new(),
             fenced: HashMap::new(),
             pending: HashMap::new(),
+            suspected_since: HashMap::new(),
             give_ups: HashMap::new(),
             nodes: HashMap::new(),
             assignments: HashMap::new(),
@@ -259,6 +263,22 @@ impl ReplicaPositions {
     /// Note when this instance first saw each shard fenced.
     pub(super) fn set_fences(&mut self, fenced: HashMap<(ShardKey, u64), u64>) {
         self.fenced = fenced;
+    }
+
+    /// Every fresh suspicion, as the follower that holds it and the leader
+    /// it names.
+    pub(super) fn suspicions(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.suspicions.values().flat_map(|suspicion| {
+            suspicion
+                .suspects
+                .iter()
+                .map(|leader| (suspicion.node_id.as_str(), leader.as_str()))
+        })
+    }
+
+    /// Note when this instance first saw each fresh suspicion.
+    pub(super) fn set_suspected_since(&mut self, since: HashMap<(String, String), u64>) {
+        self.suspected_since = since;
     }
 
     /// Note when this instance first saw each shard's pending set.
@@ -582,6 +602,12 @@ impl CaughtUp for ReplicaPositions {
 
     fn pending_since_millis(&self, key: &ShardKey, generation: u64) -> Option<u64> {
         self.pending.get(&(key.clone(), generation)).copied()
+    }
+
+    fn suspected_since_millis(&self, follower: &str, leader: &str) -> Option<u64> {
+        self.suspected_since
+            .get(&(follower.to_string(), leader.to_string()))
+            .copied()
     }
 
     fn fenced_at_millis(&self, key: &ShardKey, generation: u64) -> Option<u64> {

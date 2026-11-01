@@ -121,3 +121,137 @@ fn a_shard_that_is_moving_is_left_to_the_move() {
         Decision::Place(..)
     ));
 }
+
+/// Followers that have suspected the leader since `since`, at `now`.
+struct HeldSince {
+    said: Said,
+    since: Option<u64>,
+    now: u64,
+}
+
+impl CaughtUp for HeldSince {
+    fn is_caught_up(&self, key: &ShardKey, node_id: &str) -> bool {
+        self.said.is_caught_up(key, node_id)
+    }
+
+    fn suspects(&self, key: &ShardKey, generation: u64, follower: &str, leader: &str) -> bool {
+        self.said.suspects(key, generation, follower, leader)
+    }
+
+    fn suspected_since_millis(&self, _follower: &str, _leader: &str) -> Option<u64> {
+        self.since
+    }
+
+    fn as_of_millis(&self) -> Option<u64> {
+        Some(self.now)
+    }
+}
+
+/// **Under `replica_election` the followers' word waits 2×S**, as this
+/// instance watched it, so placement does not race the replicas' own
+/// election; it is the fallback. Without the feature it acts at once.
+#[test]
+fn under_replica_election_the_followers_word_is_held_for_twice_s() {
+    let hold = MovePolicy::default()
+        .election_hold_millis
+        .expect("a default");
+    assert_eq!(hold, 10_000, "2×S at the brokers' default S of 5 s");
+    let existing = vec![assigned("orders", "broker-a", &["broker-b", "broker-c"])];
+    let nodes = live(&["broker-a", "broker-b", "broker-c"]);
+    let held = |since: Option<u64>| HeldSince {
+        said: said(
+            &["broker-b"],
+            &[("broker-b", "broker-a"), ("broker-c", "broker-a")],
+        ),
+        since,
+        now: 100_000,
+    };
+    let electing = MovePolicy {
+        replica_election: true,
+        ..MovePolicy::default()
+    };
+    let decide = |caught_up: &HeldSince, policy: MovePolicy| {
+        plan_with(
+            &[quorum_stream()],
+            &[],
+            &nodes,
+            &existing,
+            caught_up,
+            policy,
+        )
+        .shards
+        .remove(0)
+        .decision
+    };
+    let promoted = |decision: &Decision| matches!(decision, Decision::Place(leader, _) if leader == "broker-b");
+
+    let young = held(Some(100_000 - hold + 1));
+    assert!(
+        !promoted(&decide(&young, electing.clone())),
+        "promoted inside 2×S"
+    );
+    // Never watched by this instance: no evidence it has lasted.
+    assert!(!promoted(&decide(&held(None), electing.clone())));
+    assert!(promoted(&decide(
+        &held(Some(100_000 - hold)),
+        electing.clone()
+    )));
+    // Without the feature, or with the hold off, nothing waits.
+    assert!(promoted(&decide(&young, MovePolicy::default())));
+    assert!(promoted(&decide(
+        &young,
+        MovePolicy {
+            election_hold_millis: None,
+            ..electing
+        }
+    )));
+}
+
+/// An instance dates a suspicion from when it first saw it, and starts
+/// again once it lapses.
+#[test]
+fn an_instance_dates_a_suspicion_from_when_it_first_saw_it() {
+    use super::super::progress::CopyProgress;
+    use crate::model::NodeSuspicion;
+    let liveness = crate::config::NodeLivenessConfig::default();
+    let at = |now: u64, suspects: &[&str]| {
+        let suspicions = if suspects.is_empty() {
+            Vec::new()
+        } else {
+            vec![NodeSuspicion {
+                node_id: "broker-b".to_string(),
+                incarnation: 1,
+                suspects: suspects.iter().map(|s| s.to_string()).collect(),
+                reported_at_millis: now,
+            }]
+        };
+        crate::cluster::placement::ReplicaPositions::new(Vec::new(), &liveness, now)
+            .with_suspicions(
+                suspicions,
+                Default::default(),
+                &liveness,
+                &Default::default(),
+            )
+    };
+    let id = ("broker-b".to_string(), "broker-a".to_string());
+    let mut progress = CopyProgress::default();
+    assert_eq!(
+        progress
+            .observe_suspicions(&at(100, &["broker-a"]))
+            .get(&id),
+        Some(&100)
+    );
+    assert_eq!(
+        progress
+            .observe_suspicions(&at(900, &["broker-a"]))
+            .get(&id),
+        Some(&100)
+    );
+    assert!(progress.observe_suspicions(&at(950, &[])).is_empty());
+    assert_eq!(
+        progress
+            .observe_suspicions(&at(990, &["broker-a"]))
+            .get(&id),
+        Some(&990)
+    );
+}

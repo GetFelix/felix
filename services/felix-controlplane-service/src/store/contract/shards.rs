@@ -170,6 +170,7 @@ pub(crate) async fn run_shard_contract(store: Arc<dyn ControlPlaneStore>) {
     fence_storage_ids_are_persisted_until_the_next_write(store).await;
     a_pending_set_is_persisted_until_the_next_write(store).await;
     pausing_moves_is_persisted(store).await;
+    super::adoption::run(store).await;
 }
 
 fn cache_key(shard: u32) -> ShardKey {

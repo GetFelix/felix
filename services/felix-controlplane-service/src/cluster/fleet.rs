@@ -166,7 +166,8 @@ pub(crate) fn check_prerequisites(
 /// Refuse to enable `joint_fence` or `replica_election` unless every serving
 /// broker offers the `ELECTION` capability (reported as
 /// [`felix_common::fleet::PEER_ELECTION`]), and, for `replica_election`,
-/// `metadata_level_ready` says the control plane keeps the pending replica set.
+/// `metadata_level_ready` says the control plane keeps the pending replica set
+/// and adopts elected leaders.
 /// Any other feature passes. Under Raft the finalize also needs every member
 /// at metadata level 21, which the store checks as it proposes.
 ///
@@ -198,16 +199,16 @@ where
     if needs_level && !metadata_level_ready {
         return Err(StoreError::Conflict(format!(
             "cannot finalize {feature}: needs the control-plane metadata level for the \
-             pending replica set and adoption, which is not yet implemented",
+             pending replica set and adoption, which this control plane does not have",
         )));
     }
     Ok(())
 }
 
-/// Whether this control plane has the metadata level `replica_election`
-/// needs. The pending replica set exists (Raft level 21, Postgres migration
-/// 0038), but adoption shares level 21 and is not built, so this stays false:
-/// the feature must not be finalizable before adoption.
+/// Whether `replica_election` may be finalized. The metadata it needs (the
+/// pending replica set and adoption) is in, but the election driver (#1009
+/// S9) flips this only once joint fences (S5), two-majority acks (S6b) and
+/// the wiped-voter guard (S8) are in too.
 pub(crate) const ELECTION_METADATA_LEVEL_READY: bool = false;
 
 /// The features a cluster created on this release starts with. A finalize
