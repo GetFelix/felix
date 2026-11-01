@@ -597,12 +597,14 @@ OneNonVoter == FALSE
 \* so only evidence of the wipe tells the two apart.
 Creates == FALSE
 CreateCountsEmpty == FALSE
-\* `FreshIdLearner`: a copy whose storage id was minted at this start is a
-\* learner for every shard it held before, the code's fallback when no set
-\* it learns yet names its old id. Without it the only evidence is a set
-\* naming another id for it (`NamesOther`), and a copy that first hears a
-\* set written after its wipe votes with an empty log.
-FreshIdLearner == TRUE
+\* `ReplacedIdLearner`: a broker the control plane last registered under
+\* another storage id is a learner for every shard it held before, the
+\* code's fallback when no set it learns yet names its old id. Every broker
+\* here was registered before its wipe; a broker new to the control plane
+\* held nothing and votes. Without it the only evidence is a set naming
+\* another id for it (`NamesOther`), and a copy that first hears a set
+\* written after its wipe votes with no promise and an empty log.
+ReplacedIdLearner == TRUE
 \* `RefuseShortCopy`: a leader that gave its copy up in a crash answers no
 \* promotion fence from it until a newer leader has shipped to it, unless a
 \* set of two acknowledged what it may have lost (`AckedByTwo`):
@@ -1876,8 +1878,10 @@ AnswerFence(b, f) ==
     /\ PreVote /\ Candidate(b) => ~Hears(f)
     /\ WipeWaits(f) => ~Candidate(b) /\ WipedTakesNamed
     /\ WipeFloor(f, b, bgen[b])
-    \* A non-voter answers only the fence of its own re-admission.
-    /\ ~Votes(f, b) => readmit = {<<f, bgen[b], b>>}
+    \* A non-voter answers no fence, its re-admission's included, as
+    \* `refuse_non_voter_fence` does. `ReadmitCountsWiped` lets it answer
+    \* that one.
+    /\ ~Votes(f, b) => ReadmitCountsWiped /\ readmit = {<<f, bgen[b], b>>}
     /\ Promise(f, b, bgen[b])
     /\ SetCurrent(f, b)
     /\ LearnSet(f, b)
@@ -2782,9 +2786,10 @@ Forget(f) ==
             /\ pending' = [pending EXCEPT ![f] = 0]
        ELSE /\ bgen[f] = 0
             /\ UNCHANGED << bgen, fencing, queued, pending >>
-    \* A fresh storage id is a learner from the start under `FreshIdLearner`;
-    \* otherwise the mark went with the set file, and only `NamesOther` sets it.
-    /\ learner' = IF WipedNonVoter THEN [learner EXCEPT ![f] = FreshIdLearner] ELSE learner
+    \* A replaced storage id is a learner from the start under
+    \* `ReplacedIdLearner`; otherwise the mark went with the set file, and
+    \* only `NamesOther` sets it.
+    /\ learner' = IF WipedNonVoter THEN [learner EXCEPT ![f] = ReplacedIdLearner] ELSE learner
     /\ wipedAt' =
           CASE WipedNonVoter -> [wipedAt EXCEPT ![f] = gen]
             [] WipedWaitsForAdopt ->
@@ -2857,14 +2862,14 @@ Readmit(w) ==
 \* answers no fence but its own re-admission's, so every record a majority
 \* acknowledged precedes the record. `admit_when_caught_up` in
 \* crates/server/felix-replication/src/replica/election.rs.
-\* `ReadmitBeforeCatchUp` skips the catch-up: the set's leader opening is
-\* enough.
+\* `ReadmitBeforeCatchUp` skips the catch-up: the confirmed leader having
+\* opened at that generation or a later one is enough.
 Readmitted(w) ==
     /\ NonVoter(w)
     /\ LET g == setGen[w]
        IN /\ g > wipedAt[w]
           /\ IF ReadmitBeforeCatchUp
-             THEN \E b \in Brokers : <<g, b>> \in opened
+             THEN gen >= g /\ <<gen, leader>> \in opened
              ELSE \E k \in 1..Len(log[w]) : log[w][k] = Start(g)
     /\ wipedAt' = [wipedAt EXCEPT ![w] = 0]
     /\ learner' = [learner EXCEPT ![w] = FALSE]
@@ -2874,8 +2879,8 @@ Readmitted(w) ==
     /\ UNCHANGED << handoffVars, fenceVars >>
 
 \* Under `WipedNonVoter`, a wiped replica copies a leader's log to catch up,
-\* replacing its own, but never below its mark. It promises nothing and the
-\* leader counts nothing from it.
+\* replacing its own, but never below its mark. The leader counts nothing
+\* from it.
 CatchUp(b, f) ==
     /\ NonVoter(f) /\ f /= b
     /\ bgen[b] > 0 /\ ~fencing[b]
@@ -2884,9 +2889,15 @@ CatchUp(b, f) ==
     /\ log[f] /= log[b]
     /\ Len(log[b]) >= hwm[f] /\ SubSeq(log[f], 1, hwm[f]) = SubSeq(log[b], 1, hwm[f])
     /\ log' = [log EXCEPT ![f] = log[b]]
+    \* The batch takes the ballot, as every batch does (`accept_sender`):
+    \* once re-admitted the copy never promises that generation, or one
+    \* below it, to another leader. Before its wipe it may have promised
+    \* any of them.
+    /\ MayPromise(f, b, bgen[b])
+    /\ Promise(f, b, bgen[b])
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, hwm, halted, queued, pending, acked, writes, staleCommit >>
-    /\ UNCHANGED << handoffVars, fenceVars >>
+    /\ UNCHANGED << handoffVars, fencing, answered, confirmed, opened, setVars, ackGen >>
 
 \* The incarnation `f`'s handshake gives: none before it has registered.
 \* Registering closes the connections opened before it, so a leader learns
@@ -3112,11 +3123,16 @@ NoCreationBesideNonVoter ==
     \A b, w \in Brokers : ~(<<1, b>> \in opened /\ NonVoter(w) /\ w \notin answered[b])
 \* Under `Creates`: the wiped copy re-admitted, a write acknowledged at the
 \* re-admission's generation or later, then a leader opening above it
-\* (FelixShardElectWipeNonVoterCreatesReadmits.cfg). With `Adopt = 2` the
-\* only control-plane write after a wipe is the re-admission at 2.
+\* (FelixShardElectWipeNonVoterCreatesReadmits.cfg).
 NoFailoverAfterReadmit ==
     ~(/\ wipes > 0 /\ \A m \in Brokers : ~Wiped(m)
       /\ \E r \in ackGen : \E o \in opened : r[2] >= 2 /\ o[1] > r[2])
+\* A state constraint for the creation configurations at `Adopt = 3`: no
+\* broker promises generation 3 until the wiped copy is re-admitted. What
+\* comes before re-admission is checked as at `Adopt = 2`, which is all that
+\* finishes, and the generation after it is still reached.
+ThreeOnceReadmitted ==
+    \A b \in Brokers : promised[b] <= 2 \/ (wipes > 0 /\ \A m \in Brokers : ~Wiped(m))
 NoFailoverBesideNonVoter ==
     (\E w \in Brokers : NonVoter(w)) =>
         ~(fencing[leader] /\ bgen[leader] = gen /\ \A r \in readmit : r[2] /= gen)
