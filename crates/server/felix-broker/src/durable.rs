@@ -765,6 +765,25 @@ impl StreamLog {
             .map_err(BrokerError::from)
     }
 
+    /// The generation of the replica set this copy counts, zero for none.
+    pub fn set_generation(&self) -> u64 {
+        self.log.set_generation()
+    }
+
+    /// The replica set this copy counts, if it has kept one.
+    pub fn replica_set(&self) -> Option<felix_storage::disk_log::ReplicaSet> {
+        self.log.replica_set()
+    }
+
+    /// Count `set` if it is newer than the one kept; a raised set is on disk
+    /// on return. Persist the ballot first. See `DiskLog::accept_set`.
+    pub async fn accept_set(
+        &self,
+        set: felix_storage::disk_log::ReplicaSet,
+    ) -> Result<felix_storage::disk_log::SetCheck> {
+        self.log.accept_set(set).await.map_err(BrokerError::from)
+    }
+
     /// Whether the accepted generation was given up. See `DiskLog::gave_up`.
     pub fn gave_up(&self) -> bool {
         self.log.gave_up()

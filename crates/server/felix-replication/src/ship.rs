@@ -274,7 +274,7 @@ async fn ship_batch<R: PeerRequester>(
         publishers,
         // Sent only on a labelled batch; see `ReplicateRecords::times`.
         times,
-        set_generation: None,
+        set_generation: stamp_set(requester, offered, log_kind, shard.generation),
     };
     carry_marks(&mut batch, log_kind, cursor.legacy_frames);
     // Which log this is belongs in the message kind, not in the shard
@@ -428,7 +428,9 @@ pub fn read_answer(answer: &InternalMessage) -> Progress {
                 offset: err.expected_offset,
             },
             ErrorCode::LogConflict => Progress::Halted(Halt::Diverged),
-            ErrorCode::FencedEpoch => Progress::Halted(Halt::Fenced),
+            // A follower that counts a newer set has seen this leader
+            // replaced, as surely as one that took a newer generation.
+            ErrorCode::FencedEpoch | ErrorCode::StaleSet => Progress::Halted(Halt::Fenced),
             // Everything else is this moment rather than this pairing: the
             // follower is behind, busy, or could not read the frame.
             _ => Progress::Retry,
@@ -538,6 +540,25 @@ pub(super) fn replica_log(log_kind: felix_broker::LogKind) -> ReplicaLog {
         felix_broker::LogKind::GroupDeadLetters => ReplicaLog::GroupDeadLetters,
         felix_broker::LogKind::Counters => ReplicaLog::Counters,
     }
+}
+
+/// The set generation to stamp a batch with: the leader's generation, which
+/// is its set's, when this broker and the follower both offered `ELECTION`.
+/// Only on the shard's own log, which keeps the set; the logs that ride it do
+/// not. The switch is checked first, so with it off this is one bool.
+fn stamp_set<R: PeerRequester>(
+    requester: &R,
+    offered: Option<PeerCapabilities>,
+    log_kind: felix_broker::LogKind,
+    generation: u64,
+) -> Option<u64> {
+    (requester.offers_election()
+        && matches!(
+            log_kind,
+            felix_broker::LogKind::Stream | felix_broker::LogKind::Cache
+        )
+        && offered.is_some_and(|offered| offered.contains(PeerCapabilities::ELECTION)))
+    .then_some(generation)
 }
 
 fn request_holds_trim(request: &InternalMessage) -> bool {

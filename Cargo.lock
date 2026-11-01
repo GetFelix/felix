@@ -1196,6 +1196,7 @@ dependencies = [
  "felix-common",
  "felix-conformance",
  "felix-controlplane-service",
+ "felix-replication",
  "felix-storage",
  "felix-transport",
  "felix-wire",

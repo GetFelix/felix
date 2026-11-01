@@ -21,6 +21,11 @@ fn each_answer_means_one_thing() {
         read_answer(&refused(ErrorCode::FencedEpoch, 0)),
         Progress::Halted(Halt::Fenced),
     );
+    // A follower counting a newer set has seen this leader replaced.
+    assert_eq!(
+        read_answer(&refused(ErrorCode::StaleSet, 7)),
+        Progress::Halted(Halt::Fenced),
+    );
 }
 
 /// Everything else is this moment rather than this pairing.

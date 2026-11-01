@@ -15,6 +15,7 @@ mod power_loss;
 mod producers;
 mod provider;
 mod publisher;
+mod replica_set;
 mod replica_state;
 mod reservation;
 mod restore;

@@ -41,6 +41,12 @@ pub enum ErrorCode {
     /// it. Not retryable against this peer, and not an error in the request:
     /// the feature simply is not there yet on the other side.
     UnsupportedKind = 11,
+    /// The responder counts a newer replica set than the one the sender named;
+    /// its generation is in `ReplicateError.expected_offset`. The sender's
+    /// view of the shard is out of date, so it must not lead or stand at it.
+    /// Not retryable. Sent only in answer to a fence or batch that carries a
+    /// set, so only to a peer that offered `ELECTION`.
+    StaleSet = 12,
 }
 
 impl ErrorCode {
@@ -58,6 +64,7 @@ impl ErrorCode {
             9 => Ok(ErrorCode::LogConflict),
             10 => Ok(ErrorCode::FencedEpoch),
             11 => Ok(ErrorCode::UnsupportedKind),
+            12 => Ok(ErrorCode::StaleSet),
             other => Err(Error::UnknownInternalErrorCode(other)),
         }
     }

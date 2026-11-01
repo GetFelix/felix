@@ -14,7 +14,8 @@
 //! * `replica_state` — the highest generation accepted, and the commit offset.
 //! * `ballot`    — which leader that generation was accepted from, and
 //!   accepting one.
-//! * `set`       — the replicas this one counts, and the set it is leaving.
+//! * `set`       — the replicas this one counts, the set it is leaving, and
+//!   accepting a newer one.
 //! * `producers` — each idempotent producer's place, derived from the records.
 //! * `append`    — the append path, and the rollover it may have to start.
 //! * `flush`     — making the active segment durable.
@@ -61,14 +62,13 @@ pub(crate) mod replica_state;
 mod retention;
 mod sealed;
 mod segments;
-// Nothing reads the replica-set file yet; the replica's set checks will.
-#[allow(dead_code)]
 mod set;
 mod sync;
 
 pub use producers::ProducerSequence;
 pub use provider::DiskLogProvider;
 pub use segments::RetentionOutcome;
+pub use set::{Member, Membership, ReplicaSet};
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -122,6 +122,17 @@ pub enum GenerationCheck {
     /// The generation already accepted, from another leader. Two nodes claim
     /// one generation, and this replica answered the other.
     Promised { leader: String },
+}
+
+/// What [`DiskLog::accept_set`] found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetCheck {
+    /// The set already kept.
+    Current,
+    /// Newer than the set kept before; it is now on disk.
+    Raised,
+    /// Older than the set kept, whose generation is `known`.
+    Stale { known: u64 },
 }
 
 /// A durable, segmented, append-only log for one shard.
@@ -858,7 +869,9 @@ impl DiskLog {
             replica.hold_at_commit = hold;
             replica_state::store(&dir, &replica)?;
         }
-        let (accepted_generation, accepted_leader) = ballot::reconcile(&dir, &replica)?;
+        let (replica_set, (accepted_generation, accepted_leader)) =
+            set::reconcile(&dir, &label, ballot::reconcile(&dir, &replica)?)?;
+        let set_generation = replica_set.as_ref().map_or(0, |set| set.current.generation);
         let epochs_dir = dir.clone();
         let segments = SegmentSet::new(
             dir,
@@ -911,6 +924,8 @@ impl DiskLog {
             epochs: Mutex::new(epochs),
             accepted_generation: AtomicU64::new(accepted_generation),
             ballot: RwLock::new((accepted_generation, accepted_leader)),
+            set_generation: AtomicU64::new(set_generation),
+            replica_set: RwLock::new(replica_set),
             commit_offset: AtomicU64::new(replica.commit_offset),
             commit_persisted: AtomicU64::new(replica.commit_offset),
             // Set before retention starts below, so a sweep after a restart
@@ -1289,6 +1304,11 @@ struct LogInner {
     /// was named. Read together on every replicated batch, so a raise is seen
     /// with its own leader. Written only under `replica_persisted`.
     ballot: RwLock<(u64, Option<Arc<str>>)>,
+    /// The generation of `replica_set`, zero for none, read without a lock on
+    /// every stamped batch. Raised only after the set is on disk.
+    set_generation: AtomicU64,
+    /// The replica set this log counts. Written only under `replica_persisted`.
+    replica_set: RwLock<Option<ReplicaSet>>,
     /// One past the last record known committed. Raised in memory at once and
     /// written through or behind with the log's fsync mode; see
     /// [`DiskLog::advance_commit_offset`].

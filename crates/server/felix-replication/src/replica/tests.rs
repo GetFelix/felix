@@ -14,6 +14,7 @@ use tempfile::TempDir;
 
 use super::*;
 
+mod election;
 mod fence;
 mod groups;
 mod incarnation;

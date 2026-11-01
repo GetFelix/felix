@@ -768,7 +768,8 @@ offered `ELECTION`; the pool refuses to send one to a peer that did not
 (`PeerError::Unsupported`), and a peer that predates them answers
 `UnsupportedKind`. Without the capability every existing message is what it
 was, byte for byte (`every_message_that_predates_election_encodes_as_it_did`).
-No broker offers `ELECTION` or sends these kinds yet. The semantics are in
+No broker offers `ELECTION` unless it runs with the test switch
+`FELIX_INTERNAL_ELECTION=true` (and the fence on). The semantics are in
 `docs/replication-design.md`, "Electing without the control plane".
 
 `ElectionFence` (kind 41) is `Fence` followed by the election fields: a
@@ -787,6 +788,19 @@ the sender counts (`u64`), the inner kind and the inner body. It goes outside
 an `Incarnated` envelope when a batch has both, never inside, and never around
 anything but a records kind. A batch with no set generation is sent as it
 always was.
+
+Both envelopes together add 36 bytes, so the body inside them is limited to
+`MAX_INNER_BODY_BYTES` (`MAX_BODY_BYTES` less 36): a batch built under its
+budget never becomes `FrameTooLarge` once it is wrapped. Neither envelope
+copies the body on encode or decode.
+
+A replica answers an `ElectionFence` or a `SetStamped` batch whose set
+generation is older than the one it keeps with `ReplicateError` code
+`StaleSet` (12), with the newer generation in `expected_offset`. It refuses an
+`ElectionFence` whose set does not list it as a voter with `Unauthorized`, and
+a candidate's fence while it still hears its leader with `Unavailable`. It
+writes the set to disk before it answers. A leader treats `StaleSet` as
+`FencedEpoch`: it has been deposed.
 
 `PreVote` (kind 43) asks a replica whether it would vote for the sender,
 before the sender raises its generation. It carries the shard (with
@@ -895,6 +909,7 @@ Typed, because they need different responses:
 | `LogConflict` | a replication batch disagrees with stored bytes | do not retry; the logs have diverged |
 | `FencedEpoch` | the sender named an epoch older than the responder's | do not retry; it is no longer the leader |
 | `UnsupportedKind` | the responder predates the kind that was sent | do not retry with that kind; a forwarder falls back to the legacy forward kind once |
+| `StaleSet` | the responder counts a newer replica set than the sender's fence or batch named; its generation is in `expected_offset`. Sent only to a peer that offered `ELECTION` | do not retry; stop leading or standing at that set |
 
 `ReplicateBootstrap` is kind 10, `ReplicateRebuild` kind 24,
 `ReplicateMarkedRecords` kind 25, `ReplicateCommittedRecords` kind 26,

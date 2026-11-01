@@ -871,9 +871,10 @@ replica the new leader fenced: `after_a_cut_over_the_drained_leader_is_refused`,
 
 ### Electing without the control plane
 
-**Status: design, not built.** This is the last step of issue #1009. The
-model checks it (below); nothing in the broker elects yet, and everything
-here describes the change to come. Today a leader that dies while the
+**Status: design, partly built and dormant.** This is the last step of
+issue #1009. The model checks it (below). The replica's set checks exist
+behind a test switch (see "What is implemented so far"); nothing in the
+broker elects yet, and the rest describes the change to come. Today a leader that dies while the
 control plane is down is not replaced until the control plane is back.
 
 **Which shards.** The ones failover on the followers' word already covers: a
@@ -1057,7 +1058,8 @@ control plane.
   generation) are new kinds sent only to a peer that offered it, and a
   missing set generation means what it means today: no check
   (`docs/internal-protocol.md`, "Electing without the control plane"). The
-  kinds are declared and decoded; nothing offers or sends them yet.
+  fence and the stamped batch are sent and checked only under the test
+  switch `FELIX_INTERNAL_ELECTION`; the pre-vote is declared and not sent.
 - *Control plane.* Adoption, the pending set a cut-over records beside the
   current one, and the flip to it after the joint fence are new store
   writes, so under Raft they need the next free metadata level on every
@@ -3537,15 +3539,58 @@ successor does not hold.
 The steps, their triggers and the policy that bounds them are in
 [control-plane.md](control-plane.md#moving-a-shard).
 
-Electing without the control plane is only partly built. The control
-plane's finalize gates for `joint_fence` and `replica_election` are in place:
-`joint_fence` is refused while a serving broker does not report that it offers
-the `ELECTION` peer capability, and `replica_election` is refused until
-`joint_fence` and its other prerequisites are finalized, every serving broker
-offers `ELECTION`, and the control plane has the metadata level for the
-pending replica set and adoption, which does not exist yet. No broker offers
-`ELECTION`, so both features stay unfinalizable and a new cluster does not
-start with them.
+The replica's half of electing without the control plane is built and
+dormant (#1009). It runs only between brokers that offer `ELECTION`, which a
+broker does only with the test switch `FELIX_INTERNAL_ELECTION` on, so no
+production broker sends or reads a set yet. With it on:
+
+- A replica keeps the set it answers at in the `replica-set` file, written
+  after the ballot and before the answer, so a restart cannot forget a set it
+  promised on. A set newer than the ballot at open (a write order the code
+  rules out) raises the accepted generation, which only refuses more.
+- A fence or a batch carrying an older set generation than the one kept is
+  refused with `StaleSet`, naming the newer generation, and nothing is
+  persisted for it. A batch whose set is newer than the one kept learns the
+  members from the routing view at that generation, or is refused as
+  retryable until a fence carries the set.
+- A fence whose set lists this replica only as a learner, or not at all, is
+  refused: a learner never votes. A move's staged successor is listed as a
+  learner only in the set the leader keeps while shipping, where it is left
+  out of the quorum; a successor that already replicated the stream keeps
+  voting, and every other set built from a route lists no learner.
+- A fence whose set is newer than its own generation is refused as
+  `Unauthorized` and keeps nothing, and a batch whose stamp is not its own
+  generation is refused as `StaleRoute`: a leader stamps its route generation,
+  and neither refusal deposes it the way `StaleSet` would.
+- A candidate's fence is refused while the replica heard its leader within
+  `FELIX_LEADER_SUSPECT_AFTER_MS`.
+- A leader whose followers all offered `ELECTION` stops counting once its log
+  accepted a newer generation or keeps a newer set (rule 5), and a follower
+  answering `StaleSet` deposes it like `FencedEpoch`. A promoted leader keeps
+  its own set and fences with it.
+
+The control plane's finalize gates are in place too: `joint_fence` is refused
+while a serving broker does not report that it offers the `ELECTION` peer
+capability, and `replica_election` is refused until `joint_fence` and its
+other prerequisites are finalized, every serving broker offers `ELECTION`,
+and the control plane has the metadata level for the pending replica set and
+adoption. No broker offers `ELECTION`, so both features stay unfinalizable.
+
+Not built yet: joint fences and the fenced next-generation open, the control
+plane's pending set and adoption, the pre-vote and the election driver.
+
+> `a_fence_on_an_older_set_is_refused_and_names_the_newer`,
+> `a_batch_stamped_with_an_older_set_is_refused`: the set check.
+> `the_set_is_on_disk_before_the_fence_is_answered`: the set is persisted
+> before the answer. `a_replica_that_hears_its_leader_refuses_a_candidate`:
+> stickiness. `a_replica_that_does_not_vote_in_the_set_refuses_the_fence`:
+> learners do not vote. `a_leader_that_answers_a_newer_fence_stops_counting`:
+> rule 5. `a_set_newer_than_the_ballot_raises_the_accepted_generation_at_open`:
+> the order at open. `a_fence_carrying_a_set_ahead_of_its_generation_is_refused`
+> and `a_batch_stamped_with_another_generation_than_its_own_is_refused`: the
+> set never runs ahead of the generation. `a_replica_that_left_the_set_cannot_win_a_fence`
+> (felix-cluster): a follower drained out of the set stands on its old set
+> and every live replica refuses it with `StaleSet`.
 
 ## What this does to the other M5 issues
 
