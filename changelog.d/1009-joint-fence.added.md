@@ -1,0 +1,1 @@
+Joint fences, dormant behind the `joint_fence` fleet feature, which no fleet can finalize yet: a leader whose replica set changed fences a majority of the set it leaves as well as of the new one before it serves, never counting a learner, and the generation right after one a broker serves is fenced too (#1009).
