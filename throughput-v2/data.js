@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793542088138,
+  "lastUpdate": 1793545813538,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -41080,6 +41080,58 @@ window.BENCHMARK_DATA = {
             "range": "2393.08",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 831248.43\nmean: 832014.53\nstdev: 2393.08\ncv: 0.29%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "dfe621eca8a41a6515093de3c9c1bd0457a90d7e",
+          "message": "feat(client): type publish_if outcome, document multi-record contract (#1630) (#1731)\n\n* feat(client): type a publish_if error as written-nothing or outcome unknown (#1630)\n\n* fix(client): any failure after a write is sent is an unknown outcome, commit included (#1630)\n\n* fix(client): drop an unused import (#1630)",
+          "timestamp": "2026-11-01T07:05:50-08:00",
+          "tree_id": "1c8874d96b8e3c6443df9874dbd1b34c1da06ffb",
+          "url": "https://github.com/GetFelix/felix/commit/dfe621eca8a41a6515093de3c9c1bd0457a90d7e"
+        },
+        "date": 1793545812954,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 368312.67,
+            "range": "11108.07",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 368312.67\nmean: 362962.36\nstdev: 11108.07\ncv: 3.06%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 368312.67,
+            "range": "11108.07",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 368312.67\nmean: 362962.36\nstdev: 11108.07\ncv: 3.06%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82738.79,
+            "range": "802.33",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82738.79\nmean: 82544.01\nstdev: 802.33\ncv: 0.97%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 827387.93,
+            "range": "8023.34",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 827387.93\nmean: 825440.10\nstdev: 8023.34\ncv: 0.97%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
