@@ -447,7 +447,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                 .collect();
             self.fences.push(Box::pin(async move {
                 let (key, generation, outcome) =
-                    fence_one(cx.requester, cx.broker, local, key, route, cx.marks).await;
+                    fence_one(cx.requester, cx.broker, cx.router, key, route, cx.marks).await;
                 let (took, why) = match &outcome {
                     Outcome::Pending { why, took } => (Some(took.clone()), Some(why.clone())),
                     Outcome::Fenced { .. } | Outcome::Lease { .. } => (None, None),

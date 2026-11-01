@@ -15,6 +15,7 @@ mod followers_word;
 mod fsync;
 mod halted;
 mod head_trim;
+mod joint_fence;
 mod kafka_produce;
 mod lease_free_reads;
 mod lease_free_sessions;

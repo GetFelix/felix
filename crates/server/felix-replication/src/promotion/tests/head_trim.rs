@@ -49,7 +49,7 @@ async fn a_trim_in_a_taken_tail_is_stored_as_a_trim() {
         .expect("log");
     log.hold_retention_at_commit(true).await.expect("hold");
 
-    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route(), true).await;
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route(), true, None).await;
 
     assert_eq!(
         outcome,

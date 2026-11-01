@@ -452,15 +452,7 @@ pub async fn replicate_once_with<R: PeerRequester + Sync>(
         reports.push(report);
     }
 
-    let fencing = open_promoted(
-        requester,
-        broker,
-        router.local_node_id(),
-        gate,
-        promoted,
-        marks,
-    )
-    .await;
+    let fencing = open_promoted(requester, broker, router, gate, promoted, marks).await;
 
     // Shards at the same time, not one after another.
     //
@@ -540,7 +532,7 @@ pub async fn replicate_once_with<R: PeerRequester + Sync>(
 async fn fence_one<R: PeerRequester>(
     requester: &R,
     broker: &Arc<Broker>,
-    local_node_id: &str,
+    router: &ShardRouter,
     key: ShardKey,
     route: felix_router::Route,
     marks: &QuorumMarks,
@@ -566,13 +558,19 @@ async fn fence_one<R: PeerRequester>(
         felix_router::ShardKind::Cache => marks.caches_ack_by_followers(),
     };
     let incarnation = crate::incarnation::of(broker, &key);
+    // A member of the set being left may be named by no route any more.
+    let addr_of = |node_id: &str| router.node_addr(node_id);
+    let joint = marks
+        .fleet_supports(felix_common::fleet::JOINT_FENCE)
+        .then(|| promotion::Joint::new(&addr_of));
     let outcome = promotion::fence_shard(
         requester,
         broker,
-        local_node_id,
+        router.local_node_id(),
         &key,
         &route,
         lease_fallback,
+        joint.as_ref(),
     )
     .await;
     // A fence taken on another incarnation's logs, which a recreate at the
@@ -593,7 +591,7 @@ async fn fence_one<R: PeerRequester>(
 async fn open_promoted<R: PeerRequester>(
     requester: &R,
     broker: &Arc<Broker>,
-    local_node_id: &str,
+    router: &ShardRouter,
     gate: &dyn PromotionGate,
     promoted: Vec<(ShardKey, felix_router::Route)>,
     marks: &QuorumMarks,
@@ -601,7 +599,7 @@ async fn open_promoted<R: PeerRequester>(
     let outcomes: Vec<(ShardKey, u64, Outcome)> = futures::stream::iter(
         promoted
             .into_iter()
-            .map(|(key, route)| fence_one(requester, broker, local_node_id, key, route, marks)),
+            .map(|(key, route)| fence_one(requester, broker, router, key, route, marks)),
     )
     .buffer_unordered(SHARD_CONCURRENCY)
     .collect()

@@ -802,6 +802,11 @@ a candidate's fence while it still hears its leader with `Unavailable`. It
 writes the set to disk before it answers. A leader treats `StaleSet` as
 `FencedEpoch`: it has been deposed.
 
+A leader sends the set it is leaving only in a joint fence, once the fleet
+has finalized `joint_fence` and its set changed: the fence then goes to every
+member of both sets, and a voter of either set may answer it. A member listed
+only in the set being left keeps both sets, as every member does.
+
 `PreVote` (kind 43) asks a replica whether it would vote for the sender,
 before the sender raises its generation. It carries the shard (with
 `shard.generation` the generation the sender would stand at), the log, the

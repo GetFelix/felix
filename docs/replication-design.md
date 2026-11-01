@@ -873,8 +873,9 @@ replica the new leader fenced: `after_a_cut_over_the_drained_leader_is_refused`,
 
 **Status: design, partly built and dormant.** This is the last step of
 issue #1009. The model checks it (below). The replica's set checks exist
-behind a test switch (see "What is implemented so far"); nothing in the
-broker elects yet, and the rest describes the change to come. Today a leader that dies while the
+behind a test switch, and joint fences behind `joint_fence`, which no fleet
+can finalize yet (see "What is implemented so far"); nothing in the broker
+elects yet, and the rest describes the change to come. Today a leader that dies while the
 control plane is down is not replaced until the control plane is back.
 
 **Which shards.** The ones failover on the followers' word already covers: a
@@ -1070,8 +1071,8 @@ control plane.
   the fleet does not fence every change of leader and every change of set:
   cut-overs and hand-backs fenced (the fence on every change, which ships
   today), and set changes, including the next generation a leader opens for
-  a replacement, fenced jointly (which does not yet). Only after it do
-  followers stand.
+  a replacement, fenced jointly (built, behind `joint_fence`). Only after it
+  do followers stand.
 
 The work lands in this order: the set file in storage (with the old set),
 the `ELECTION` capability, the replica's checks, joint fences on every set
@@ -3576,9 +3577,49 @@ other prerequisites are finalized, every serving broker offers `ELECTION`,
 and the control plane has the metadata level for the pending replica set and
 adoption. No broker offers `ELECTION`, so both features stay unfinalizable.
 
-Not built yet: joint fences and the fenced next-generation open, the control
-plane's pending set and adoption, the pre-vote and the election driver.
+Joint fences and the fenced next-generation open are built too, dormant
+behind `joint_fence`. No build reports that feature, so a fleet cannot
+finalize it; the cluster test reports it through `FELIX_TEST_FLEET_FEATURES`.
+Once it is finalized on a broker that offers `ELECTION`:
 
+- The generation right after one a broker serves is fenced before it serves,
+  like every other change of leader. A candidate may have been elected to
+  that generation while the control plane was away, and a replica that
+  promised it refuses this broker. Writes are held through the fence, as at
+  a promotion.
+- A leader whose route names different voters than the set its own log last
+  kept fences both sets, carrying the new set with the one it is leaving,
+  and opens only on a majority of each set's voters. A learner is never
+  counted, in either set. That covers a move's cut-over, a replacement's join
+  and seat, a top-up and a grow. The set being left is the one the leader's
+  log kept, from its previous leader's batches or from its own last fence, so
+  the control plane is not asked. A member of it that no route names any
+  more is reached at the address the node catalog gives.
+- The leader keeps the new set with the one it left beside it, and so does
+  every replica that took the fence, so a fence tried again at that
+  generation is joint too. Under `joint_fence` a leader keeps its set only
+  through a fence, never while shipping, which would otherwise record the
+  new set without the old one between the open and the fence.
+- A member known not to offer `ELECTION` turns the joint fence off for that
+  shard, which is then fenced on its new set as before. One whose
+  capabilities cannot be learned is not asked, so it cannot count.
+
+Without `joint_fence` finalized, the fence and what it sends are exactly what
+they were. The counter log of a cache shard and a stream's group logs are
+still fenced on the new set alone, as the model's counters are.
+
+Not built yet: the control plane's pending set and adoption, acknowledging on
+both majorities while a change is pending, the pre-vote and the election
+driver.
+
+> `a_cut_over_swapping_two_members_waits_for_the_old_majority`: the joint
+> fence. `a_joint_fence_never_counts_a_learner`: learners in the set being
+> left. `without_joint_fence_a_set_change_fences_the_new_set_alone` and
+> `a_member_without_election_fences_the_new_set_alone`: the fence is
+> unchanged when it does not apply.
+> `under_joint_fence_the_next_generation_is_refused_by_a_replica_that_promised_it`:
+> the fenced next-generation open. `a_two_member_swap_waits_for_the_old_majority`
+> (felix-cluster, `failures`): the same swap between broker processes.
 > `a_fence_on_an_older_set_is_refused_and_names_the_newer`,
 > `a_batch_stamped_with_an_older_set_is_refused`: the set check.
 > `the_set_is_on_disk_before_the_fence_is_answered`: the set is persisted

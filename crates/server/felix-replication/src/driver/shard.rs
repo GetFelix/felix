@@ -455,7 +455,11 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     let electing = requester.offers_election();
     // The ballot at this generation is on disk from the open; keeping the set
     // before it would put the set ahead of the ballot, so skip the pass.
+    // Under `joint_fence` every new generation is fenced, and the fence keeps
+    // the set with the one it leaves; keeping it here first, in the moment
+    // between the open and the fence, would lose the set being left.
     if electing
+        && !marks.fleet_supports(felix_common::fleet::JOINT_FENCE)
         && log.set_generation() < route.generation
         && log.accepted_generation() >= route.generation
         && let Err(err) = log

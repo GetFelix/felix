@@ -290,6 +290,11 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
                 (Some(pool), Some(storage)) if pool.offers_fence() => match lifecycle.try_lock() {
                     Ok(mut guard) => {
                         guard.fence_promotions();
+                        // A broker that checks sets fences the next
+                        // generation too, once `joint_fence` is finalized.
+                        if replication::peer::PeerRequester::offers_election(pool.as_ref()) {
+                            guard.fence_next_generations(Arc::clone(fleet));
+                        }
                         Arc::new(shard_lifecycle::promotion::LifecycleGate::new(
                             Arc::clone(lifecycle),
                             Arc::clone(ingress),
