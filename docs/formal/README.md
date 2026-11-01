@@ -260,6 +260,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardElectWipeNonVoterCreateCountsEmpty.cfg` | the same, where a copy with no set file votes, wiped or not (`CreateCountsEmpty`) | violate `OneLeaderPerGeneration`: the wiped copy forgot its promise of generation 2 and gives it to a second leader |
 | `FelixShardElectWipeNonVoterCreatesOpens.cfg` | `FelixShardElectWipeNonVoterCreates.cfg` with no write, checking a witness | violate `NoCreationBesideNonVoter`: the new shard opens while a copy wiped before it answered is a non-voter |
 | `FelixShardElectWipeNonVoterEvidenceOnly.cfg` | `FelixShardElectWipeNonVoterFailover.cfg` with only the evidence the code sees in a set (`FreshIdLearner` off): a copy is a learner once a set names its old storage id | violate `AckedHeldByLeader`: a follower wiped before it hears a set naming its old id answers the fence of a failover that names its new one, with an empty log |
+| `FelixShardElectWipeNonVoterCreatesReadmits.cfg` | `FelixShardElectWipeNonVoterCreates.cfg` at the same bound, checking a witness | violate `NoFailoverAfterReadmit`: the wiped copy is re-admitted, the write is acknowledged at the re-admission's generation, and a leader opens above it |
 | `FelixShardElectWipeNonVoterElects.cfg` | `FelixShardElectWipeNonVoter.cfg`, checking a witness | violate `NoLeaderBesideNonVoter`: a leader at a generation taken after the wipe opens without the non-voter |
 | `FelixShardElectWipeNonVoterReadmits.cfg` | the same | violate `NeverReadmitted`: the re-admission completes after the catch-up |
 | `FelixShardElectWipeNonVoterFailsOver.cfg` | `FelixShardElectWipeNonVoterFailover.cfg`, checking a witness | violate `NoFailoverBesideNonVoter`: the control plane fails over while a wiped replica is a non-voter |
@@ -1067,7 +1068,9 @@ plane holds failed:
   taken after the wipe opens without the non-voter
   (`FelixShardElectWipeNonVoterElects.cfg`), the re-admission completes
   (`FelixShardElectWipeNonVoterReadmits.cfg`), and the control plane fails
-  over beside a non-voter (`FelixShardElectWipeNonVoterFailsOver.cfg`).
+  over beside a non-voter (`FelixShardElectWipeNonVoterFailsOver.cfg`). At the creation bound the re-admission, a
+  write after it and a later leader are all reached
+  (`FelixShardElectWipeNonVoterCreatesReadmits.cfg`).
 
 Two invariants count a non-voter differently. A real wipe loses records,
 so a write acknowledged on {a, b} is on a alone once b is wiped, and

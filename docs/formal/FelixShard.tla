@@ -3110,6 +3110,13 @@ NeverReadmitted == wipes > 0 => \E m \in Brokers : wipedAt[m] > 0
 \* (FelixShardElectWipeNonVoterCreatesOpens.cfg).
 NoCreationBesideNonVoter ==
     \A b, w \in Brokers : ~(<<1, b>> \in opened /\ NonVoter(w) /\ w \notin answered[b])
+\* Under `Creates`: the wiped copy re-admitted, a write acknowledged at the
+\* re-admission's generation or later, then a leader opening above it
+\* (FelixShardElectWipeNonVoterCreatesReadmits.cfg). With `Adopt = 2` the
+\* only control-plane write after a wipe is the re-admission at 2.
+NoFailoverAfterReadmit ==
+    ~(/\ wipes > 0 /\ \A m \in Brokers : ~Wiped(m)
+      /\ \E r \in ackGen : \E o \in opened : r[2] >= 2 /\ o[1] > r[2])
 NoFailoverBesideNonVoter ==
     (\E w \in Brokers : NonVoter(w)) =>
         ~(fencing[leader] /\ bgen[leader] = gen /\ \A r \in readmit : r[2] /= gen)
