@@ -403,6 +403,14 @@ async fn a_member_the_new_route_leaves_out_still_answers_a_joint_fence() {
         ),
         &nodes(),
     );
+    // A voter of the set being left keeps that set, as one that took the
+    // leader's batches would; one with no set votes in nothing (#1331).
+    kept_before(
+        &replicas.get_mut("broker-b").broker,
+        &["broker-x", "broker-b", "broker-c"],
+        &[],
+    )
+    .await;
     // Only once its fleet has finalized `joint_fence`: before that a broker
     // no route names refuses as it always did.
     for finalized in [false, true] {

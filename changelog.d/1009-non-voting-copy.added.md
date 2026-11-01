@@ -1,0 +1,1 @@
+A copy that lost its storage votes in no set until a joint-fenced set change re-admits it, and takes records only from the leader the control plane confirms (#1009, #1331). Dormant behind the `joint_fence` fleet feature, which no fleet can finalize yet.

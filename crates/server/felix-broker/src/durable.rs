@@ -784,6 +784,22 @@ impl StreamLog {
         self.log.accept_set(set).await.map_err(BrokerError::from)
     }
 
+    /// Whether the kept set lists `node` as a learner. See
+    /// `DiskLog::member_is_learner`.
+    pub fn member_is_learner(&self, node: &str) -> Option<bool> {
+        self.log.member_is_learner(node)
+    }
+
+    /// How the kept set lists `node`. See `DiskLog::set_member`.
+    pub fn set_member(&self, node: &str) -> Option<felix_storage::disk_log::Member> {
+        self.log.set_member(node)
+    }
+
+    /// Count `node` as a voter in the kept set. See `DiskLog::admit_member`.
+    pub async fn admit_member(&self, node: &str) -> Result<bool> {
+        self.log.admit_member(node).await.map_err(BrokerError::from)
+    }
+
     /// Whether the accepted generation was given up. See `DiskLog::gave_up`.
     pub fn gave_up(&self) -> bool {
         self.log.gave_up()

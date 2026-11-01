@@ -797,6 +797,37 @@ through that generation's start record; failover never promotes it. The
 model's `FelixShardElectWipe*.cfg` check it and the variants that fail
 (`docs/formal/README.md`, "A wiped voter in an election").
 
+The broker enforces it under `joint_fence`, and answers as before without it.
+A copy is a voter only while the set its log keeps lists it as one. A set it
+learns lists it as a learner, written to the `replica-set` file, unless the
+log already kept it as a voter and the set names no other storage id for it;
+so a wiped copy (no set, or a set written for its old directory) and a copy
+that cannot name its own storage id are non-voting, and a restart keeps that.
+A non-voting copy:
+
+- refuses a fence, a candidate's included, but learns the set it carried
+  (`Unauthorized`, no ballot taken); it answers a pre-vote with `NotVoting`;
+- takes records only from the leader the control plane confirms at that
+  generation, so an elected leader the control plane never saw gets no
+  acknowledgement from it;
+- answers the fence of its own re-admission: a joint fence from a leader, in a
+  set newer than the one it keeps, naming it a voter under the storage id it
+  holds now. It then stays a learner until a batch leaves its log holding the
+  generation-start record of that set, and only then is written as a voter.
+
+A set naming another storage id never re-admits the copy, which is the binding
+a caught-up report needs: the report is for the identity the control plane
+read (`Identity::Match` in placement, and the leader starts a follower's
+cursors over when its storage id changes), and the change it leads to names
+that identity. After a second wipe the copy's id is another one and the
+change is refused. The same rule closes the arms that read "newer than the
+control plane, so never promised": under `joint_fence` a copy with no promise
+refuses a generation the control plane or its routing view has not reached.
+
+Not covered here: the leader still counts a re-admitted copy's acknowledgements
+until the control plane marks it a learner in the set, and a shard created
+under `joint_fence` has no voters until a set change re-admits its copies.
+
 The cost is a fence round trip or a few while a follower's watch catches up,
 and one control-plane read per answer, only for copies with no promise: a
 wiped one, or a new shard's first fence. With one replica of a
@@ -826,6 +857,14 @@ deposed leader's batches), and
 `a_wiped_follower_takes_the_fence_but_does_not_count` (cluster: under its new
 identity the wiped copy does not make the successor's majority, which waits
 for the old leader; see [Fencing a promotion](#fencing-a-promotion)).
+For non-voting copies (`replica/tests/non_voting.rs`):
+`a_wiped_copy_refuses_a_fence_and_a_vote`,
+`a_wiped_copy_answers_a_pre_vote_without_voting`,
+`a_restart_keeps_a_wiped_copy_non_voting`,
+`a_readmission_for_another_storage_id_does_not_readmit`,
+`a_joint_fenced_change_for_its_storage_id_readmits_it_after_catch_up`,
+`a_wiped_copy_refuses_records_from_an_unconfirmed_leader`, and
+`with_the_gate_off_a_copy_with_no_set_answers_as_before`.
 
 ### Every change of leader
 
