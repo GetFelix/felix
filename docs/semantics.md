@@ -421,11 +421,14 @@ throughput rather than correctness.
   then, and releases held batches in offset order. `Latest` and the cursor
   tail are the mark; resumed history waits for it. A leader that stops serving
   the shard drops what it held, and its subscribers resume on the next leader.
-  A leader that just took the shard has no mark until a majority holds a
-  record of its own generation. Until then a `stream_read` or a `Latest`
+  A leader that just took the shard whose log holds records has no mark until
+  a majority holds a record of its own generation (on a fleet without
+  `generation_start`, until a majority holds anything). A log with nothing in
+  it, such as one emptied by retention or a head trim, has its mark at once.
+  Until then a `stream_read` or a `Latest`
   subscribe is refused with `shard_unavailable` and reason `not_ready`, which
-  is retryable, rather than answered as if the shard were empty: an empty
-  page always means the reader is at the mark.
+  is retryable, rather than answered as if the shard were empty: once the shard is
+  ready, an empty page means the reader is at the mark.
   A `Leader` stream's readers see everything durable on the leader, as before,
   with no added latency. If a failed flush poisons a `Leader` stream's log,
   its readers stop at the last durable offset from then on: the batch whose

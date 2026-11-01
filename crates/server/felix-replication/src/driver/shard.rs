@@ -2233,8 +2233,9 @@ pub(crate) fn watch_key(key: &ShardKey) -> crate::ShardKey {
 /// With `by_followers` the followers already decided the mark: it moves at
 /// once, and the report goes out behind it for placement alone.
 ///
-/// Returns whether the mark moved. A caller with nothing waiting on the mark
-/// can ignore it; a caller on the quorum path cannot.
+/// Returns `false` only when the pass belongs to a replaced incarnation. A
+/// zero mark can still be withheld from readers (see below) while this
+/// returns `true`.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn publish_mark(
     broker: &Broker,
@@ -2265,9 +2266,15 @@ pub(super) async fn publish_mark(
     // A zero mark over a log with records in it would end `Settling` with
     // nothing counted: a read is answered with an empty page, and a `Latest`
     // subscribe starts at offset 0. Withheld, readers are refused as not ready
-    // until a majority holds something. The report still goes out.
+    // until a majority holds something. The report still goes out. Only
+    // records at or above the physical base count: a log emptied by retention
+    // or a head trim has nothing for a majority to hold, and no start record
+    // is written for it, so withholding there would never end.
     let withheld = match held_log {
-        Some(log) if offset == 0 => log.tail_offset().await.map_or(true, |tail| tail > 0),
+        Some(log) if offset == 0 => log
+            .tail_offset()
+            .await
+            .map_or(true, |tail| tail > log.physical_base()),
         _ => false,
     };
     if by_followers {

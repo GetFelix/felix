@@ -999,3 +999,61 @@ async fn a_promotion_waits_for_the_fleet_view_before_the_lease() {
     let outcome = fence(QuorumMarks::new()).await;
     assert!(matches!(outcome, Outcome::Lease { .. }), "{outcome:?}");
 }
+
+/// Followers that already hold exactly `.0` and answer any request with it.
+struct HoldAt(u64);
+
+impl PeerRequester for HoldAt {
+    async fn request(
+        &self,
+        _node_id: &str,
+        _addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        Ok(InternalMessage::ReplicateOk(ReplicateOk {
+            correlation_id: message.correlation_id(),
+            durable_offset: self.0,
+        }))
+    }
+}
+
+/// **A leader opening on a log emptied by a trim gets its mark and serves an
+/// empty read at the tail.** The log has a base and a tail but no records,
+/// and no start record is written for it, so withholding the zero mark there
+/// would leave the shard settling until a client wrote.
+#[tokio::test]
+async fn a_leader_on_an_emptied_log_is_not_left_settling() {
+    let (broker, _dir) = super::head_trim::quorum_broker().await;
+    let log = super::head_trim::shard_log(&broker).await;
+    log.rebuild_at(5).await.expect("empty at 5");
+    log.record_generation(4, 5).expect("generation");
+    assert_eq!(
+        (log.physical_base(), log.tail_offset().await.expect("tail")),
+        (5, 5)
+    );
+
+    let marks = Arc::new(finalized_marks());
+    broker.set_read_bounds(Arc::new(crate::quorum::CommittedReads::new(
+        marks.clone(),
+        Arc::new(LedAt(4)),
+    )));
+    let router = router(LOCAL, &["broker-b", "broker-c"], 4);
+    let followers = HoldAt(5);
+    replicate_once(
+        &followers,
+        &broker,
+        &router,
+        &marks,
+        None,
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+    )
+    .await;
+    let page = broker
+        .read_range(TENANT, NAMESPACE, STREAM, 0, 5, None, 100, 1 << 20)
+        .await
+        .expect("an emptied log is served, not settling");
+    assert!(page.records.is_empty());
+}
