@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793494105029,
+  "lastUpdate": 1793496710316,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -40820,6 +40820,58 @@ window.BENCHMARK_DATA = {
             "range": "51976.94",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1662368.55\nmean: 1647773.84\nstdev: 51976.94\ncv: 3.15%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a3eb4a77b1427fa8144468bb66b6579275c37a79",
+          "message": "fix(replication): a promoted leader refuses reads until it counts a record (#1718) (#1722)\n\n* fix(replication): a promoted leader stays settling until it counts a record (#1718)\n\nA replication pass with no majority still sends its report, and published\nthe mark it counted with it. On a promoted Quorum leader whose followers\nheld nothing of its generation yet, that was zero, which created the\ngeneration's mark at 0 and ended Settling. A stream_read of the inherited\nrecords then came back as an empty page with no error, and a Latest\nsubscribe would start at offset 0. A zero mark over a log that holds\nrecords is now withheld, so readers get not_ready until a majority holds\na record of the generation.\n\nSpec-Unaffected: no acknowledgement moves. A zero mark releases no write, and the change only decides whether readers see Settling or Committed(0). FelixShardReads does not model the mark a read stops at (its header says so); the per-generation start of the mark is worth adding there as a read-completeness property.\n\n* fix(replication): count a log emptied by a trim as having nothing to settle (#1718)\n\nSpec-Unaffected: the change only decides whether readers see Settling or Committed(0) on a log with no records.",
+          "timestamp": "2026-10-31T18:27:58-07:00",
+          "tree_id": "919e8b82dc0a80e71011b62463da751f75e87973",
+          "url": "https://github.com/GetFelix/felix/commit/a3eb4a77b1427fa8144468bb66b6579275c37a79"
+        },
+        "date": 1793496709641,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 537559.76,
+            "range": "28750.90",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 537559.76\nmean: 536368.57\nstdev: 28750.90\ncv: 5.36%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 537559.76,
+            "range": "28750.90",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 537559.76\nmean: 536368.57\nstdev: 28750.90\ncv: 5.36%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 119418.57,
+            "range": "1304.18",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 119418.57\nmean: 119294.59\nstdev: 1304.18\ncv: 1.09%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1194185.73,
+            "range": "13041.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1194185.73\nmean: 1192945.86\nstdev: 13041.79\ncv: 1.09%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
