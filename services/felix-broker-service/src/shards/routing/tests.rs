@@ -406,6 +406,7 @@ mod feed {
                 ingress,
                 assignments_changed: Arc::default(),
                 routes_changed: Arc::default(),
+                joint_fence: None,
             },
             router,
         )

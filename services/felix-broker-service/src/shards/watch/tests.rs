@@ -451,3 +451,13 @@ fn a_first_assignment_has_no_set_before() {
     owned.assign_afresh(&key(0), again);
     assert_eq!(prior_leader(&owned), None);
 }
+
+/// **A recreate at incarnation 0 is never first**, even when this broker no
+/// longer holds the deleted stream's assignment (a restart or snapshot between
+/// the delete and the recreate). Its logs carry on from the deleted stream's.
+#[test]
+fn an_incarnation_zero_assignment_is_never_first() {
+    let mut owned = ShardOwnership::default();
+    owned.assign_afresh(&key(0), assignment(0, "broker-a", 0));
+    assert_eq!(prior_leader(&owned), None);
+}

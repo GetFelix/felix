@@ -657,6 +657,9 @@ pub struct FeedState {
     /// Notified by the feed after it acts on a change, so replication ships a
     /// newly fenced or newly led shard without waiting for its own tick.
     pub routes_changed: Arc<tokio::sync::Notify>,
+    /// Priors are read only once `joint_fence` is finalized here, so they are
+    /// built only then.
+    pub joint_fence: Option<Arc<felix_common::fleet::FleetGate>>,
 }
 
 /// What the feed needs to read the node catalog.
@@ -695,6 +698,7 @@ pub fn spawn_feed(
         client_endpoints,
         assignments_changed,
         routes_changed,
+        joint_fence,
     } = state;
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(interval);
@@ -707,12 +711,19 @@ pub fn spawn_feed(
                 _ = assignments_changed.notified() => true,
             };
 
+            let joint = joint_fence
+                .as_ref()
+                .is_some_and(|fleet| fleet.supports(felix_common::fleet::JOINT_FENCE));
             let (assignments, renewals, priors) = {
                 let owned = ownership.read().await;
                 (
                     owned.assignments().clone(),
                     owned.renewals().clone(),
-                    owned.priors(),
+                    if joint {
+                        owned.priors()
+                    } else {
+                        HashMap::new()
+                    },
                 )
             };
 

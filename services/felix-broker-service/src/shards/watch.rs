@@ -179,10 +179,13 @@ impl ShardOwnership {
         }
         // The control plane had no assignment: nothing came before this one,
         // unless the same incarnation's logs carry on from a deleted stream.
-        let first = self
-            .assignments
-            .get(key)
-            .is_none_or(|current| next.incarnation > current.incarnation);
+        // Incarnation 0 can always be such a recreate (a restart or snapshot
+        // may have dropped the deleted one), so it is never first.
+        let first = next.incarnation > 0
+            && self
+                .assignments
+                .get(key)
+                .is_none_or(|current| next.incarnation > current.incarnation);
         let prior = first.then_some(felix_router::PriorSet {
             generation: next.generation,
             before: None,

@@ -366,6 +366,7 @@ pub(super) fn spawn_shard_tasks(deps: ShardTaskDeps<'_>) -> Option<ShardTasks> {
                     client_endpoints: Some(Arc::clone(client_endpoints)),
                     assignments_changed,
                     routes_changed: Arc::clone(&routes_changed),
+                    joint_fence: Some(Arc::clone(fleet)),
                 },
                 Some(shard_routing::CatalogSource {
                     client: membership_client.clone(),
