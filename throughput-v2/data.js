@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793489748174,
+  "lastUpdate": 1793494105029,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -40768,6 +40768,58 @@ window.BENCHMARK_DATA = {
             "range": "8102.27",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 939106.34\nmean: 936770.74\nstdev: 8102.27\ncv: 0.86%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4f2131e0bd1b07799e1ce1fba31ca4e96693feb6",
+          "message": "feat(controlplane): finalize gates for joint_fence and replica_election (#1009 S4) (#1723)\n\nFinalizing joint_fence needs every serving broker to report the ELECTION\npeer capability (peer_election, false in every build today).\nreplica_election also needs joint_fence and the other prerequisites\nfinalized, and a control-plane metadata level that does not exist yet.\nBoth stay out of IMPLEMENTED and NEW_CLUSTER and remain unfinalizable.\n\nSpec-Unaffected: control-plane finalize gates; no protocol step changes",
+          "timestamp": "2026-11-01T00:43:37Z",
+          "tree_id": "b43068761bdfcd33915703192354373bbd3b45a3",
+          "url": "https://github.com/GetFelix/felix/commit/4f2131e0bd1b07799e1ce1fba31ca4e96693feb6"
+        },
+        "date": 1793494104368,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 721158.04,
+            "range": "30446.82",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 721158.04\nmean: 701459.73\nstdev: 30446.82\ncv: 4.34%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 721158.04,
+            "range": "30446.82",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 721158.04\nmean: 701459.73\nstdev: 30446.82\ncv: 4.34%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 166236.85,
+            "range": "5197.70",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 166236.85\nmean: 164777.38\nstdev: 5197.70\ncv: 3.15%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1662368.55,
+            "range": "51976.94",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1662368.55\nmean: 1647773.84\nstdev: 51976.94\ncv: 3.15%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
