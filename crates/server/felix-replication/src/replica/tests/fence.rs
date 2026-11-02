@@ -1602,3 +1602,81 @@ async fn one_confirmed_read_answers_every_request_for_a_shard() {
     taken(&settled(|| handler.fence(SENDER, fence(5))).await);
     assert_eq!(current.asked(), 1);
 }
+
+/// What the confirmed check costs per request, for the pull request's
+/// numbers: `cargo test -p felix-replication --release --lib
+/// confirmed_check_cost -- --ignored --nocapture`.
+#[tokio::test]
+#[ignore = "a timing report, not a check"]
+async fn confirmed_check_cost() {
+    const CHECKS: u32 = 1_000_000;
+    const BATCHES: u64 = 2_000;
+    let (broker, _dir) = broker_with_storage().await;
+    let current = ConfirmedAs::new(crate::confirmed::Confirmed::Assigned {
+        generation: 5,
+        leader: "broker-a".to_string(),
+    });
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5))
+        .with_confirmed_routes(Arc::clone(&current) as _);
+    let log = broker
+        .shard_log_for(
+            felix_broker::LogKind::Stream,
+            TENANT,
+            NAMESPACE,
+            STREAM,
+            0,
+            None,
+            None,
+        )
+        .await
+        .expect("log");
+
+    // A copy with no promise, answered from a held read.
+    assert!(reading(
+        &handler
+            .refuse_unconfirmed(9, &key(), &log, 5, SENDER, None)
+            .expect("reading")
+    ));
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let started = std::time::Instant::now();
+    for _ in 0..CHECKS {
+        assert!(
+            handler
+                .refuse_unconfirmed(9, &key(), &log, 5, SENDER, None)
+                .is_none()
+        );
+    }
+    let fresh_copy = started.elapsed() / CHECKS;
+
+    // A copy that holds a promise.
+    taken(&handler.fence(SENDER, fence(5)).await);
+    let started = std::time::Instant::now();
+    for _ in 0..CHECKS {
+        assert!(
+            handler
+                .refuse_unconfirmed(9, &key(), &log, 5, SENDER, None)
+                .is_none()
+        );
+    }
+    let promised_copy = started.elapsed() / CHECKS;
+
+    let started = std::time::Instant::now();
+    for batch_no in 0..BATCHES {
+        let answer = handler
+            .apply(
+                SENDER,
+                batch(5, batch_no, &["a"]),
+                felix_broker::LogKind::Stream,
+            )
+            .await;
+        assert!(
+            matches!(answer, InternalMessage::ReplicateOk(_)),
+            "{answer:?}"
+        );
+    }
+    let apply = started.elapsed() / BATCHES as u32;
+    eprintln!(
+        "confirmed check: fresh copy {fresh_copy:?}, promised copy {promised_copy:?}; \
+         batch apply (promised, 1 record) {apply:?}"
+    );
+}

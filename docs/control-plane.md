@@ -1682,9 +1682,9 @@ write acknowledged before the request. 503 means no leader confirmed it in
 time, 501 that the Raft leader predates it. A broker asks here only for a
 copy with no election promise on disk, before it takes a leader
 ([#1332](https://github.com/GetFelix/felix/issues/1332)). It asks from a
-background task, one per shard at a time, never while a peer request waits,
-and refreshes the answer every 5 s while the shard's leader keeps asking
-(every 250 ms under elections)
+background task, one read per shard at a time and at most 16 at once, never
+while a peer request waits. A new shard's copy usually costs one read;
+a learner under elections is refreshed every 250 ms while it takes batches
 ([#1791](https://github.com/GetFelix/felix/issues/1791)). An adopted
 leader is the assignment's leader at the elected generation, so this is
 also the read that tells a broker whether the control plane has adopted an

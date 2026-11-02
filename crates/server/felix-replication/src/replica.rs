@@ -260,9 +260,14 @@ impl ReplicaHandler {
                 "this broker has no log for that shard".to_string(),
             );
         };
-        if let Some(refusal) =
-            self.refuse_unconfirmed(correlation_id, &key, &log, request.shard.generation, sender)
-        {
+        if let Some(refusal) = self.refuse_unconfirmed(
+            correlation_id,
+            &key,
+            &log,
+            request.shard.generation,
+            sender,
+            request.shard.incarnation,
+        ) {
             return refusal;
         }
         if let Some(refusal) =
@@ -481,9 +486,14 @@ impl ReplicaHandler {
             );
         };
 
-        if let Some(refusal) =
-            self.refuse_unconfirmed(correlation_id, &key, &log, request.shard.generation, sender)
-        {
+        if let Some(refusal) = self.refuse_unconfirmed(
+            correlation_id,
+            &key,
+            &log,
+            request.shard.generation,
+            sender,
+            request.shard.incarnation,
+        ) {
             return refusal;
         }
         if let Some(refusal) =
@@ -640,9 +650,14 @@ impl ReplicaHandler {
             );
         };
 
-        if let Some(refusal) =
-            self.refuse_unconfirmed(correlation_id, &key, &log, batch.shard.generation, sender)
-        {
+        if let Some(refusal) = self.refuse_unconfirmed(
+            correlation_id,
+            &key,
+            &log,
+            batch.shard.generation,
+            sender,
+            batch.shard.incarnation,
+        ) {
             return refusal;
         }
         if let Some(refusal) =
@@ -1649,7 +1664,7 @@ impl ReplicaHandler {
         if viewed.is_some() {
             return viewed;
         }
-        self.refuse_unconfirmed(correlation_id, key, log, generation, sender)
+        self.refuse_unconfirmed(correlation_id, key, log, generation, sender, sent)
     }
 
     /// Refuse a leader for a copy with no promise on disk unless the control
@@ -1671,8 +1686,11 @@ impl ReplicaHandler {
         log: &felix_broker::StreamLog,
         generation: u64,
         sender: Option<&str>,
+        sent: Option<u64>,
     ) -> Option<InternalMessage> {
-        use crate::confirmed::Confirmed;
+        if crate::unclean::held(log) && !self.is_learner(log) {
+            return None;
+        }
         // Under `joint_fence` a candidate's generation is in no assignment,
         // so a copy with no promise, or one not yet re-admitted, cannot take
         // an unconfirmed leader on the strength of an assignment it has not
@@ -1680,10 +1698,6 @@ impl ReplicaHandler {
         // Unread, the gate may be on: refuse as if it were. Off, or on a
         // build that does not mark wiped copies, the read answers as before.
         let elections = self.non_voting_gate() != Some(false);
-        let learner = self.is_learner(log);
-        if crate::unclean::held(log) && !learner {
-            return None;
-        }
         let Some(confirmed) = self.confirmed.as_ref() else {
             return elections.then(|| unbacked(correlation_id, key, generation));
         };
@@ -1693,64 +1707,12 @@ impl ReplicaHandler {
         } else {
             crate::confirmed::FRESH
         };
-        let incarnation = crate::incarnation::of(&self.broker, key);
-        let Some(answer) = self
-            .confirmed_reads
-            .answer(confirmed, key, incarnation, fresh)
-        else {
-            return Some(reading_confirmed(correlation_id, key, generation));
-        };
-        match answer {
-            Confirmed::NotServed if elections => Some(unbacked(correlation_id, key, generation)),
-            Confirmed::NotServed => None,
-            // A missing answer backs nothing. Retryable, and nothing is
-            // written, so the copy answers once the control plane does.
-            Confirmed::Unavailable | Confirmed::Unassigned => {
-                Some(unbacked(correlation_id, key, generation))
-            }
-            Confirmed::Assigned {
-                generation: assigned,
-                ..
-            } if assigned > generation => {
-                tracing::warn!(
-                    stream = %key.stream,
-                    shard = key.shard,
-                    assigned,
-                    sender_generation = generation,
-                    "refusing a leader the control plane has replaced",
-                );
-                metrics::record_replicated(metrics::OUTCOME_FENCED);
-                Some(refused(
-                    correlation_id,
-                    ErrorCode::FencedEpoch,
-                    0,
-                    format!(
-                        "the control plane assigned generation {assigned}, the sender is at \
-                         {generation}"
-                    ),
-                ))
-            }
-            Confirmed::Assigned {
-                generation: assigned,
-                leader,
-            } if assigned == generation => match sender {
-                Some(sender) if sender != leader => Some(promised_elsewhere(
-                    correlation_id,
-                    key,
-                    generation,
-                    &leader,
-                    Some(sender),
-                )),
-                _ => None,
-            },
-            // Newer than the control plane. Without elections no copy can
-            // have promised it before a wipe; with them one may have, to a
-            // candidate the control plane never saw.
-            Confirmed::Assigned { .. } if elections => {
-                Some(unbacked(correlation_id, key, generation))
-            }
-            Confirmed::Assigned { .. } => None,
-        }
+        let decided =
+            self.confirmed_reads
+                .decide(confirmed, key, sent.unwrap_or(0), fresh, |answer| {
+                    confirmed_refusal(correlation_id, key, generation, sender, elections, answer)
+                });
+        decided.unwrap_or_else(|| Some(reading_confirmed(correlation_id, key, generation)))
     }
 
     /// Refuse a request for a shard at an incarnation this broker does
@@ -1900,6 +1862,68 @@ fn unbacked(correlation_id: u64, key: &felix_router::ShardKey, generation: u64) 
         0,
         "this copy holds no promise and the routing view does not have the shard yet".to_string(),
     )
+}
+
+/// What a confirmed answer says to a leader at `generation` for a copy with
+/// no promise: `None` takes it. Only ever refuses more than the routing view.
+fn confirmed_refusal(
+    correlation_id: u64,
+    key: &felix_router::ShardKey,
+    generation: u64,
+    sender: Option<&str>,
+    elections: bool,
+    answer: &crate::confirmed::Confirmed,
+) -> Option<InternalMessage> {
+    use crate::confirmed::Confirmed;
+    match answer {
+        Confirmed::NotServed if elections => Some(unbacked(correlation_id, key, generation)),
+        Confirmed::NotServed => None,
+        // Never held (`ConfirmedReads` drops them); a missing answer would
+        // back nothing.
+        Confirmed::Unavailable | Confirmed::Unassigned => {
+            Some(unbacked(correlation_id, key, generation))
+        }
+        Confirmed::Assigned {
+            generation: assigned,
+            ..
+        } if *assigned > generation => {
+            tracing::warn!(
+                stream = %key.stream,
+                shard = key.shard,
+                assigned,
+                sender_generation = generation,
+                "refusing a leader the control plane has replaced",
+            );
+            metrics::record_replicated(metrics::OUTCOME_FENCED);
+            Some(refused(
+                correlation_id,
+                ErrorCode::FencedEpoch,
+                0,
+                format!(
+                    "the control plane assigned generation {assigned}, the sender is at \
+                         {generation}"
+                ),
+            ))
+        }
+        Confirmed::Assigned {
+            generation: assigned,
+            leader,
+        } if *assigned == generation => match sender {
+            Some(sender) if sender != leader.as_str() => Some(promised_elsewhere(
+                correlation_id,
+                key,
+                generation,
+                leader,
+                Some(sender),
+            )),
+            _ => None,
+        },
+        // Newer than the control plane. Without elections no copy can
+        // have promised it before a wipe; with them one may have, to a
+        // candidate the control plane never saw.
+        Confirmed::Assigned { .. } if elections => Some(unbacked(correlation_id, key, generation)),
+        Confirmed::Assigned { .. } => None,
+    }
 }
 
 /// Refuse while the control plane's confirmed assignment is being read off

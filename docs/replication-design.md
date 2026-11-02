@@ -788,13 +788,18 @@ hold up every other shard's fence or batch queued behind it, and a bulk
 create puts one in front of each new shard's first fence. Instead a
 background task reads for the shard, one per shard at a time, and the copy
 decides from the last answer it holds. With no fresh answer it refuses with
-`StaleRoute`, retryably, and the leader's retry finds the answer. The task
-keeps reading while requests for the shard keep coming (for 5 s after the
-last one, longer than a leader waits between fence attempts), so a fresh
-answer is ready for each retry
+`StaleRoute`, retryably, and the leader's retry finds the answer
 (`ConfirmedReads` in `crates/server/felix-replication/src/confirmed.rs`).
-A failed read or an unassigned shard clears the answer, so the copy
-refuses until a read names a leader again.
+Looking the answer up costs a lock-free map load and a few atomics, with
+no lock and no allocation; a copy that holds a promise skips it entirely.
+At most 16 reads run at once across all shards, so a bulk create does not
+hit the control plane with hundreds at the same moment.
+
+The task refreshes the answer halfway through its life, and only while
+the shard is still being asked about, so a new shard's copy costs one
+read. A failed read or an unassigned shard clears the answer and is not
+retried on its own: the next request starts another read, so a shard
+nobody can answer costs one read per request, as before.
 
 How fresh an answer must be depends on elections. Without them an answer
 is used for 10 s. That is safe because the answers live in memory: every
@@ -819,9 +824,9 @@ re-admitted; see [A copy that lost its storage does not
 vote](#a-copy-that-lost-its-storage-does-not-vote).
 
 The cost is a fence round trip or a few while a follower's watch catches up
-or its confirmed read comes back, and a control-plane read per shard every
-5 s (250 ms under elections) while its leader keeps asking, only for copies
-with no promise: a wiped one, or a new shard's first
+or its confirmed read comes back (a new shard opens one fence retry, about
+200 ms, later than with a read on the lane), and about one control-plane
+read per copy with no promise: a wiped one, or a new shard's first
 fence. With one replica of a
 set of three wiped the other two make the majority anyway. With a majority
 wiped at once their votes wait for their views; once they have them they
@@ -949,9 +954,10 @@ from a broker that predates storage ids is evidence.
   fence is refused for as long as the copy is marked wiped, which outlasts
   its re-admission (below).
 - It takes records only from the leader the control plane confirms at that
-  generation. The confirmed leader is reused for 500 ms at the same
-  generation rather than read for every batch, and read in the background
-  (above). Taking a batch records that
+  generation. The confirmed answer is read in the background (above) and
+  used for 500 ms under elections, 10 s without, rather than read for every
+  batch. Under elections it is refreshed every 250 ms while batches keep
+  coming, and for 5 s after, so a fence retried after backoff finds it. Taking a batch records that
   leader's ballot, as it does for any follower.
 - It is never promoted. A broker whose kept set marks it a wiped learner,
   or a learner under another storage id, refuses to open as leader before it
