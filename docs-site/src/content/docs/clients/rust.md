@@ -320,8 +320,9 @@ Two concurrent refreshes of one token both succeed within the control plane's
 reuse grace window (`FELIX_REFRESH_REUSE_GRACE_SECONDS`), but the older result
 is a replay once the window ends.
 
-A handle opens one publish stream and one cache stream and no connections, so
-the gateway's connection count stays the same however many users it serves.
+A handle opens streams on the gateway's connections, never connections of its
+own: one publish stream, and one cache stream on its first cache request. The
+gateway's pools bound its connection count however many users it serves.
 One user's token expiring stops only that user's new streams, and revoking the
 user ends only that user's open ones.
 Dropping a handle closes its streams. The gateway's own token only opens the

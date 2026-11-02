@@ -61,10 +61,37 @@ let cfg = ClientConfig::from_env_or_yaml(quinn, Some("client.yml"))?;
 
 ## Options
 
+### How many connections a `Connection` holds
+
+`Connection::connect` keeps one pool per kind of traffic. The pool sizes below
+are ceilings. A pool opens a connection only when a stream needs one, one
+stream per connection until the pool is full; after that, new streams share the
+least-loaded connection.
+
+| Pool | Opened | Default |
+|---|---|---|
+| Publish | At connect: `publish_conn_pool` connections carry the publish streams | 4 |
+| Event | One per subscription (or other request stream), up to `event_conn_pool` | 0 to 8 |
+| Cache | All of `cache_conn_pool` on the first cache request | 0 or 8 |
+
+So with the defaults, a client that only publishes holds 4 connections to its
+broker (5 once it publishes by key, since it asks the stream's width over the
+event pool), a client with one subscription holds 5, and a client using all
+three holds up to 20. `Connection::connection_count` reports the current number.
+
+This matters for the broker's per-address cap (`FELIX_MAX_CONNECTIONS_PER_IP`,
+default 512), which counts every connection from one host. At 5 connections per
+subscriber, about 100 default subscribers fit behind one address; at 20, about 25.
+Clients sharing a host or a NAT address can lower `publish_conn_pool` (a
+subscriber publishing little loses nothing with `1`) or use one `Connection`
+with several subscriptions instead of many connections. A `Client` holds one
+connection per broker, more only under heavy stream load (see "Cluster Client
+Connections").
+
 ### Publish Parallelism
 
 - `publish_conn_pool` (env: `FELIX_PUB_CONN_POOL`)
-  - Number of QUIC connections for publish lanes.
+  - Number of QUIC connections for publish lanes, all opened at connect.
 - `publish_streams_per_conn` (env: `FELIX_PUB_STREAMS_PER_CONN`)
   - Number of bidirectional publish streams per connection.
 - `publish_chunk_bytes` (env: `FELIX_PUBLISH_CHUNK_BYTES`)
@@ -124,14 +151,16 @@ let cfg = ClientConfig::from_env_or_yaml(quinn, Some("client.yml"))?;
 ### Cache Parallelism
 
 - `cache_conn_pool` (env: `FELIX_CACHE_CONN_POOL`)
-  - QUIC connection pool size for cache operations.
+  - Most QUIC connections for cache operations. All of them, with their
+    streams, open on the client's first cache request.
 - `cache_streams_per_conn` (env: `FELIX_CACHE_STREAMS_PER_CONN`)
   - Streams per cache connection.
 
 ### Event (Subscribe) Parallelism
 
 - `event_conn_pool` (env: `FELIX_EVENT_CONN_POOL`)
-  - QUIC connection pool size for subscription event streams.
+  - Most QUIC connections for subscriptions and their event streams. Each new
+    subscription opens one until the pool is full, then shares the least-loaded.
 - `client_sub_queue_capacity` (env: `FELIX_CLIENT_SUB_QUEUE_CAPACITY`)
   - Per-subscription delivery queue depth. Default: `256`.
 - `client_sub_queue_policy` (env: `FELIX_CLIENT_SUB_QUEUE_POLICY`)
