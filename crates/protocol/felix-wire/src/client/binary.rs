@@ -11,13 +11,15 @@ mod publish_ack;
 pub use acked_publish::{
     AckedPublishBatch, ProducerSequence, decode_acked_publish_batch,
     encode_acked_publish_batch_bytes, encode_acked_publish_batch_bytes_keyed,
-    encode_idempotent_publish_batch_bytes, peek_acked_publish_prefix,
+    encode_idempotent_publish_batch_bytes, encode_publish_batch_bytes_with_headers,
+    peek_acked_publish_prefix,
 };
 pub use event_batch::{
     EncodedEventBatchParts, EventBatch, EventBatchMeta, MAX_PUBLISHER_BYTES, SharedEventBatch,
     decode_event_batch, decode_shared_event_batch, encode_event_batch_bytes,
     encode_event_batch_bytes_with_meta, encode_event_batch_bytes_with_offset,
-    encode_event_batch_bytes_with_skip, encode_event_batch_parts, encode_shared_event_batch_bytes,
+    encode_event_batch_bytes_with_skip, encode_event_batch_parts,
+    encode_event_batch_parts_with_meta, encode_shared_event_batch_bytes,
     encode_shared_event_batch_bytes_with_meta, encode_shared_event_batch_bytes_with_offset,
     encode_shared_event_batch_bytes_with_skip, peek_event_batch_base_offset,
 };
@@ -34,6 +36,10 @@ pub use publish_ack::{
     encode_publish_ack_bytes_owned,
 };
 
+use bytes::{Buf, Bytes};
+
+use crate::client::flags::{FLAG_EXTENDED, KNOWN_EXT_FLAGS};
+use crate::client::record_headers::RecordHeaders;
 use crate::error::{Error, Result};
 
 // Every payload in a batch is encoded as a 4-byte length prefix followed by its
@@ -55,4 +61,68 @@ fn checked_payload_count(count: usize, remaining: usize) -> Result<usize> {
         return Err(Error::Incomplete);
     }
     Ok(count)
+}
+
+const EXTENSION_LEN: usize = 4;
+
+// The extension word a `FLAG_EXTENDED` frame starts with, consumed from `buf`.
+// Zero when the frame is not extended. A word of zero or with a bit this
+// version does not know is refused: it would be read as a layout it is not.
+fn take_extension(flags: u16, buf: &mut Bytes) -> Result<u32> {
+    if flags & FLAG_EXTENDED == 0 {
+        return Ok(0);
+    }
+    if buf.remaining() < EXTENSION_LEN {
+        return Err(Error::Incomplete);
+    }
+    let ext = buf.get_u32();
+    if ext == 0 || ext & !KNOWN_EXT_FLAGS != 0 {
+        return Err(Error::UnknownExtension(ext));
+    }
+    Ok(ext)
+}
+
+// For a frame kind with no extension word: reading on would take the word for
+// the start of its own layout.
+pub(super) fn reject_extension(flags: u16) -> Result<()> {
+    if flags & FLAG_EXTENDED != 0 {
+        return Err(Error::UnknownFlags(flags));
+    }
+    Ok(())
+}
+
+// A record's block as the frame carries it: `u32 len`, then the block. A
+// length of zero is a record with none.
+fn take_record_block(buf: &mut Bytes) -> Result<Option<Bytes>> {
+    if buf.remaining() < PAYLOAD_LEN_PREFIX {
+        return Err(Error::Incomplete);
+    }
+    let len = buf.get_u32() as usize;
+    if buf.remaining() < len {
+        return Err(Error::Incomplete);
+    }
+    if len == 0 {
+        return Ok(None);
+    }
+    let block = buf.split_to(len);
+    RecordHeaders::validate(&block)?;
+    Ok(Some(block))
+}
+
+// The blocks to write for `count` records, or `None` when no record has one,
+// in which case the frame is the plain one.
+fn present_blocks(
+    blocks: Option<&[Option<Bytes>]>,
+    count: usize,
+) -> Result<Option<&[Option<Bytes>]>> {
+    let Some(blocks) = blocks else {
+        return Ok(None);
+    };
+    if blocks.len() != count {
+        return Err(Error::Incomplete);
+    }
+    if blocks.iter().flatten().any(Bytes::is_empty) {
+        return Err(Error::InvalidRecordHeaders("empty block"));
+    }
+    Ok(blocks.iter().any(Option::is_some).then_some(blocks))
 }

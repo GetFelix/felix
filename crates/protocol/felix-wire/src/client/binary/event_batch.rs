@@ -1,12 +1,13 @@
 //! Binary event batches, the broker's delivery frames: one per subscriber, or
 //! shared, encoded once for every subscriber of a stream.
 
-use bytes::{Buf, Bytes, BytesMut};
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 
-use super::checked_payload_count;
+use super::{checked_payload_count, present_blocks, take_extension, take_record_block};
 use crate::client::flags::{
-    FLAG_BINARY_EVENT_BATCH, FLAG_BINARY_EVENT_BATCH_SHARED, FLAG_EVENT_BATCH_OFFSETS,
-    FLAG_EVENT_BATCH_PUBLISHER, FLAG_EVENT_BATCH_SKIPPED, FLAG_EVENT_BATCH_TIMESTAMPS,
+    EXT_RECORD_HEADERS, FLAG_BINARY_EVENT_BATCH, FLAG_BINARY_EVENT_BATCH_SHARED,
+    FLAG_EVENT_BATCH_OFFSETS, FLAG_EVENT_BATCH_PUBLISHER, FLAG_EVENT_BATCH_SKIPPED,
+    FLAG_EVENT_BATCH_TIMESTAMPS, FLAG_EXTENDED,
 };
 use crate::client::frame::{Frame, FrameHeader};
 use crate::error::{Error, Result};
@@ -29,6 +30,11 @@ pub struct EventBatch {
     /// Unix epoch, from `FLAG_EVENT_BATCH_TIMESTAMPS`. One per payload, or
     /// `None` when the frame does not carry them.
     pub timestamps: Option<Vec<u64>>,
+    /// Each payload's record headers block, raw and already validated, from
+    /// `EXT_RECORD_HEADERS`. One per payload (`None` for a record with none),
+    /// or `None` when the frame does not carry the extension. Parse a block
+    /// with [`RecordHeaders::decode`](crate::RecordHeaders::decode).
+    pub record_headers: Option<Vec<Option<Bytes>>>,
 }
 
 /// Parsed representation of a shared event batch frame. It names no
@@ -44,6 +50,8 @@ pub struct SharedEventBatch {
     pub publisher: Option<Bytes>,
     /// See [`EventBatch::timestamps`].
     pub timestamps: Option<Vec<u64>>,
+    /// See [`EventBatch::record_headers`].
+    pub record_headers: Option<Vec<Option<Bytes>>>,
 }
 
 /// What an event batch says about its events besides their payloads. Each
@@ -64,6 +72,11 @@ pub struct EventBatchMeta<'a> {
     /// (`FLAG_EVENT_BATCH_TIMESTAMPS`). Must hold one per payload; any other
     /// length fails the encode with [`Error::Incomplete`].
     pub timestamps: Option<&'a [u64]>,
+    /// Each payload's record headers block (`EXT_RECORD_HEADERS`), `None` for a
+    /// record with none. Must hold one per payload; any other length fails the
+    /// encode with [`Error::Incomplete`], and a block must not be empty. The
+    /// extension goes on the frame only when at least one entry is `Some`.
+    pub record_headers: Option<&'a [Option<Bytes>]>,
 }
 
 /// An event batch as segments, so a writer can send each payload's existing
@@ -160,40 +173,46 @@ pub fn encode_event_batch_parts(
     subscription_id: u64,
     payloads: &[Bytes],
 ) -> Result<EncodedEventBatchParts> {
-    let mut payload_len = 8usize + 4;
-    for payload in payloads {
-        let len = u32::try_from(payload.len()).map_err(|_| Error::FrameTooLarge)?;
-        payload_len = payload_len
-            .checked_add(4 + len as usize)
-            .ok_or(Error::FrameTooLarge)?;
-    }
-    if payload_len > u32::MAX as usize {
-        return Err(Error::FrameTooLarge);
-    }
+    encode_event_batch_parts_with_meta(subscription_id, payloads, EventBatchMeta::default())
+}
 
-    // Segment 0 is the frame header + fixed event-batch prefix. Remaining segments
-    // alternate between [payload_len_prefix, payload_bytes] so writers can stream
-    // payload Bytes directly without copying into a contiguous buffer.
-    let mut frame_prefix = [0u8; FrameHeader::LEN + 12];
-    let header = FrameHeader::new(FLAG_BINARY_EVENT_BATCH, payload_len as u32);
-    let mut header_bytes = [0u8; FrameHeader::LEN];
-    header.encode_into(&mut header_bytes);
-    frame_prefix[..FrameHeader::LEN].copy_from_slice(&header_bytes);
-    frame_prefix[FrameHeader::LEN..FrameHeader::LEN + 8]
-        .copy_from_slice(&subscription_id.to_be_bytes());
-    frame_prefix[FrameHeader::LEN + 8..FrameHeader::LEN + 12]
-        .copy_from_slice(&(payloads.len() as u32).to_be_bytes());
-
+/// [`encode_event_batch_bytes_with_meta`] as segments. Each payload and each
+/// record headers block is its own segment, so a writer can send the [`Bytes`]
+/// it already holds.
+pub fn encode_event_batch_parts_with_meta(
+    subscription_id: u64,
+    payloads: &[Bytes],
+    meta: EventBatchMeta<'_>,
+) -> Result<EncodedEventBatchParts> {
+    let plan = plan_batch(Some(subscription_id), payloads, meta)?;
+    // Segment 0 is the frame header and the fixed prefix. The rest are each
+    // entry's small fields, its block when it has one, and the payload.
+    let mut prefix = BytesMut::with_capacity(plan.prefix_len(Some(subscription_id), meta));
+    plan.put_prefix(&mut prefix, Some(subscription_id), payloads.len(), meta);
     let mut segments = Vec::with_capacity(1 + (payloads.len() * 2));
-    segments.push(Bytes::copy_from_slice(&frame_prefix));
-    for payload in payloads {
-        let len = u32::try_from(payload.len()).map_err(|_| Error::FrameTooLarge)?;
-        segments.push(Bytes::copy_from_slice(&len.to_be_bytes()));
+    segments.push(prefix.freeze());
+    for (index, payload) in payloads.iter().enumerate() {
+        let mut head = BytesMut::with_capacity(8 + 4 + 4);
+        if let Some(timestamps) = meta.timestamps {
+            head.put_u64(timestamps[index]);
+        }
+        if let Some(blocks) = plan.blocks {
+            match &blocks[index] {
+                Some(block) => {
+                    head.put_u32(block.len() as u32);
+                    segments.push(head.split().freeze());
+                    segments.push(block.clone());
+                }
+                None => head.put_u32(0),
+            }
+        }
+        head.put_u32(payload.len() as u32);
+        segments.push(head.freeze());
         segments.push(payload.clone());
     }
 
     Ok(EncodedEventBatchParts {
-        frame_len: FrameHeader::LEN + payload_len,
+        frame_len: FrameHeader::LEN + plan.payload_len,
         segments,
     })
 }
@@ -265,15 +284,25 @@ pub fn encode_shared_event_batch_bytes_with_meta(
     encode_meta_batch(None, payloads, meta)
 }
 
-/// An event batch: per-subscriber when `subscription_id` is set, shared
-/// otherwise. The optional fields follow the subscription id in a fixed
-/// order: offset, skip count, publisher. Timestamps go one before each
-/// payload's length.
-fn encode_meta_batch(
+/// What an event batch's meta puts on its frame, worked out once so the
+/// contiguous and the segmented encoders agree.
+struct BatchPlan<'a> {
+    flags: u16,
+    skipped_before: u64,
+    /// The blocks to write, when any record has one.
+    blocks: Option<&'a [Option<Bytes>]>,
+    /// Length of the frame's payload, header excluded.
+    payload_len: usize,
+}
+
+/// Check `meta` against `payloads` and size the frame. The optional fields
+/// follow the subscription id in a fixed order: offset, skip count, publisher.
+/// Timestamps, then blocks, go before each payload's length.
+fn plan_batch<'a>(
     subscription_id: Option<u64>,
     payloads: &[Bytes],
-    meta: EventBatchMeta<'_>,
-) -> Result<Bytes> {
+    meta: EventBatchMeta<'a>,
+) -> Result<BatchPlan<'a>> {
     let (mut flags, mut payload_len) = match subscription_id {
         Some(_) => (FLAG_BINARY_EVENT_BATCH, 8usize + 4),
         None => (FLAG_BINARY_EVENT_BATCH_SHARED, 4usize),
@@ -303,6 +332,18 @@ fn encode_meta_batch(
             .checked_add(8 * payloads.len())
             .ok_or(Error::FrameTooLarge)?;
     }
+    let blocks = present_blocks(meta.record_headers, payloads.len())?;
+    if let Some(blocks) = blocks {
+        flags |= FLAG_EXTENDED;
+        payload_len += EXTENSION_LEN;
+        for block in blocks {
+            let len = block.as_ref().map_or(0, Bytes::len);
+            u32::try_from(len).map_err(|_| Error::FrameTooLarge)?;
+            payload_len = payload_len
+                .checked_add(4 + len)
+                .ok_or(Error::FrameTooLarge)?;
+        }
+    }
     for payload in payloads {
         let len = u32::try_from(payload.len()).map_err(|_| Error::FrameTooLarge)?;
         payload_len = payload_len
@@ -312,33 +353,86 @@ fn encode_meta_batch(
     if payload_len > u32::MAX as usize {
         return Err(Error::FrameTooLarge);
     }
+    Ok(BatchPlan {
+        flags,
+        skipped_before,
+        blocks,
+        payload_len,
+    })
+}
 
-    let mut buf = BytesMut::with_capacity(FrameHeader::LEN + payload_len);
-    FrameHeader::new(flags, payload_len as u32).encode(&mut buf);
-    if let Some(subscription_id) = subscription_id {
-        buf.extend_from_slice(&subscription_id.to_be_bytes());
+impl BatchPlan<'_> {
+    /// Bytes from the frame header through the payload count.
+    fn prefix_len(&self, subscription_id: Option<u64>, meta: EventBatchMeta<'_>) -> usize {
+        FrameHeader::LEN
+            + if self.blocks.is_some() {
+                EXTENSION_LEN
+            } else {
+                0
+            }
+            + if subscription_id.is_some() { 8 } else { 0 }
+            + if meta.base_offset.is_some() { 8 } else { 0 }
+            + if self.skipped_before > 0 { 8 } else { 0 }
+            + meta.publisher.map_or(0, |publisher| 1 + publisher.len())
+            + 4
     }
-    if let Some(base_offset) = meta.base_offset {
-        buf.extend_from_slice(&base_offset.to_be_bytes());
+
+    /// The frame header, extension word, subscription id, optional fields and
+    /// payload count.
+    fn put_prefix(
+        &self,
+        buf: &mut BytesMut,
+        subscription_id: Option<u64>,
+        count: usize,
+        meta: EventBatchMeta<'_>,
+    ) {
+        FrameHeader::new(self.flags, self.payload_len as u32).encode(buf);
+        if self.blocks.is_some() {
+            buf.put_u32(EXT_RECORD_HEADERS);
+        }
+        if let Some(subscription_id) = subscription_id {
+            buf.put_u64(subscription_id);
+        }
+        if let Some(base_offset) = meta.base_offset {
+            buf.put_u64(base_offset);
+        }
+        if self.skipped_before > 0 {
+            buf.put_u64(self.skipped_before);
+        }
+        if let Some(publisher) = meta.publisher {
+            buf.put_u8(publisher.len() as u8);
+            buf.extend_from_slice(publisher);
+        }
+        buf.put_u32(count as u32);
     }
-    if skipped_before > 0 {
-        buf.extend_from_slice(&skipped_before.to_be_bytes());
-    }
-    if let Some(publisher) = meta.publisher {
-        buf.extend_from_slice(&[publisher.len() as u8]);
-        buf.extend_from_slice(publisher);
-    }
-    buf.extend_from_slice(&(payloads.len() as u32).to_be_bytes());
+}
+
+/// An event batch: per-subscriber when `subscription_id` is set, shared
+/// otherwise.
+fn encode_meta_batch(
+    subscription_id: Option<u64>,
+    payloads: &[Bytes],
+    meta: EventBatchMeta<'_>,
+) -> Result<Bytes> {
+    let plan = plan_batch(subscription_id, payloads, meta)?;
+    let mut buf = BytesMut::with_capacity(FrameHeader::LEN + plan.payload_len);
+    plan.put_prefix(&mut buf, subscription_id, payloads.len(), meta);
     for (index, payload) in payloads.iter().enumerate() {
         if let Some(timestamps) = meta.timestamps {
-            buf.extend_from_slice(&timestamps[index].to_be_bytes());
+            buf.put_u64(timestamps[index]);
         }
-        let len = u32::try_from(payload.len()).map_err(|_| Error::FrameTooLarge)?;
-        buf.extend_from_slice(&len.to_be_bytes());
+        if let Some(blocks) = plan.blocks {
+            let block = blocks[index].as_deref().unwrap_or_default();
+            buf.put_u32(block.len() as u32);
+            buf.extend_from_slice(block);
+        }
+        buf.put_u32(payload.len() as u32);
         buf.extend_from_slice(payload);
     }
     Ok(buf.freeze())
 }
+
+const EXTENSION_LEN: usize = 4;
 
 /// The longest publisher an event batch carries: its length is one byte.
 pub const MAX_PUBLISHER_BYTES: usize = u8::MAX as usize;
@@ -365,21 +459,32 @@ fn meta_fields(flags: u16) -> Result<MetaFields> {
     Ok(fields)
 }
 
-/// The payloads after a batch's count, each preceded by its timestamp when
-/// `timestamped`.
-fn take_payloads(buf: &mut Bytes, timestamped: bool) -> Result<(Vec<Bytes>, Option<Vec<u64>>)> {
+/// What the payloads of a batch carry besides their bodies.
+struct TakenPayloads {
+    payloads: Vec<Bytes>,
+    timestamps: Option<Vec<u64>>,
+    record_headers: Option<Vec<Option<Bytes>>>,
+}
+
+/// The payloads after a batch's count. Each is preceded by its timestamp when
+/// `timestamped`, and by its record headers block when `with_headers`.
+fn take_payloads(buf: &mut Bytes, timestamped: bool, with_headers: bool) -> Result<TakenPayloads> {
     if buf.remaining() < 4 {
         return Err(Error::Incomplete);
     }
     let count = checked_payload_count(buf.get_u32() as usize, buf.remaining())?;
     let mut payloads = Vec::with_capacity(count);
     let mut timestamps = timestamped.then(|| Vec::with_capacity(count));
+    let mut record_headers = with_headers.then(|| Vec::with_capacity(count));
     for _ in 0..count {
         if let Some(timestamps) = timestamps.as_mut() {
             if buf.remaining() < 8 {
                 return Err(Error::Incomplete);
             }
             timestamps.push(buf.get_u64());
+        }
+        if let Some(record_headers) = record_headers.as_mut() {
+            record_headers.push(take_record_block(buf)?);
         }
         if buf.remaining() < 4 {
             return Err(Error::Incomplete);
@@ -390,7 +495,11 @@ fn take_payloads(buf: &mut Bytes, timestamped: bool) -> Result<(Vec<Bytes>, Opti
         }
         payloads.push(buf.copy_to_bytes(len));
     }
-    Ok((payloads, timestamps))
+    Ok(TakenPayloads {
+        payloads,
+        timestamps,
+        record_headers,
+    })
 }
 
 /// Read the publisher a batch carries when `present`, after its fixed fields.
@@ -412,6 +521,7 @@ fn take_publisher(buf: &mut Bytes, present: bool) -> Result<Option<Bytes>> {
 pub fn decode_event_batch(frame: &Frame) -> Result<EventBatch> {
     let mut buf = frame.payload.clone();
     let fields = meta_fields(frame.header.flags)?;
+    let ext = take_extension(frame.header.flags, &mut buf)?;
     let fixed = 8 + if fields.offsets { 8 } else { 0 } + if fields.skip { 8 } else { 0 };
     if buf.remaining() < fixed {
         return Err(Error::Incomplete);
@@ -420,14 +530,15 @@ pub fn decode_event_batch(frame: &Frame) -> Result<EventBatch> {
     let base_offset = fields.offsets.then(|| buf.get_u64());
     let skipped_before = if fields.skip { buf.get_u64() } else { 0 };
     let publisher = take_publisher(&mut buf, fields.publisher)?;
-    let (payloads, timestamps) = take_payloads(&mut buf, fields.timestamps)?;
+    let taken = take_payloads(&mut buf, fields.timestamps, ext & EXT_RECORD_HEADERS != 0)?;
     Ok(EventBatch {
         subscription_id,
-        payloads,
+        payloads: taken.payloads,
         base_offset,
         skipped_before,
         publisher,
-        timestamps,
+        timestamps: taken.timestamps,
+        record_headers: taken.record_headers,
     })
 }
 
@@ -435,6 +546,7 @@ pub fn decode_event_batch(frame: &Frame) -> Result<EventBatch> {
 pub fn decode_shared_event_batch(frame: &Frame) -> Result<SharedEventBatch> {
     let mut buf = frame.payload.clone();
     let fields = meta_fields(frame.header.flags)?;
+    let ext = take_extension(frame.header.flags, &mut buf)?;
     let fixed = if fields.offsets { 8 } else { 0 } + if fields.skip { 8 } else { 0 };
     if buf.remaining() < fixed {
         return Err(Error::Incomplete);
@@ -442,13 +554,14 @@ pub fn decode_shared_event_batch(frame: &Frame) -> Result<SharedEventBatch> {
     let base_offset = fields.offsets.then(|| buf.get_u64());
     let skipped_before = if fields.skip { buf.get_u64() } else { 0 };
     let publisher = take_publisher(&mut buf, fields.publisher)?;
-    let (payloads, timestamps) = take_payloads(&mut buf, fields.timestamps)?;
+    let taken = take_payloads(&mut buf, fields.timestamps, ext & EXT_RECORD_HEADERS != 0)?;
     Ok(SharedEventBatch {
-        payloads,
+        payloads: taken.payloads,
         base_offset,
         skipped_before,
         publisher,
-        timestamps,
+        timestamps: taken.timestamps,
+        record_headers: taken.record_headers,
     })
 }
 
@@ -468,6 +581,12 @@ pub fn peek_event_batch_base_offset(frame: &Frame) -> Option<u64> {
         8
     } else {
         return None;
+    };
+    // An extended frame leads with its extension word.
+    let at = if flags & FLAG_EXTENDED != 0 {
+        at + EXTENSION_LEN
+    } else {
+        at
     };
     let field = frame.payload.get(at..at + 8)?;
     Some(u64::from_be_bytes(field.try_into().ok()?))

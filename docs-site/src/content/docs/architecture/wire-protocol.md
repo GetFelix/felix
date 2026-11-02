@@ -121,13 +121,20 @@ Bit field for optional features:
 | 12  | 0x1000 | A successful ack ends with the offset of the batch's first record; offered by a client, it also adds `offset` to `publish_ok` (modifier on bit 4) |
 | 13  | 0x2000 | Event batch carries the principal that published its events (modifier on bits 1/2) |
 | 14  | 0x4000 | Each event in the batch is preceded by its record's append time (modifier on bits 1/2) |
-| 15  | -      | Reserved (must be 0) |
+| 15  | 0x8000 | The payload starts with a `u32` extension word (modifier on bits 0, 1 and 2) |
 
 Receivers must **reject** a frame carrying a flag bit they do not recognise, rather
 than ignoring the bit. These bits select how the payload is parsed, so ignoring an
 unknown one means misparsing the body instead of failing cleanly. Bit 3 is the
 cautionary example: it prefixes the publish-batch body with a `request_id`, so a
 receiver that masked it off would read that prefix as a `tenant_len`.
+
+Bit 15 is the last flag bit, so it opens a second word rather than selecting
+one more layout. The word's first bit puts a block holding a record's key and
+headers in front of each record of a publish or event batch. It is negotiated
+with `client_flags_ext` on `auth` and `server_flags_ext` on `auth_ok`, and no
+broker or client sends it yet. The block layout and the rules are in
+`docs/protocol.md`, under "Extended frames and record headers".
 
 **length (u32, big-endian)**
 

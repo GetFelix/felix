@@ -10,7 +10,8 @@
 //! # Module layout
 //! - The client protocol: [`Frame`] and its header flags, the feature bits,
 //!   the [`Message`] enum and its JSON codec, the hand-rolled [`text`] writer
-//!   for the publish-batch hot path, and the [`binary`] batch codec. All but
+//!   for the publish-batch hot path, the [`binary`] batch codec, and the
+//!   [`RecordHeaders`] block a record's key and headers travel in. All but
 //!   `text` and `binary` are re-exported at the crate root.
 //! - [`internal`]: the protocol brokers speak to each other.
 //! - [`routing`]: which shard a routing key belongs to.
@@ -39,12 +40,13 @@ pub use client::features::{
     supports_feature,
 };
 pub use client::flags::{
-    FLAG_BINARY_EVENT_BATCH, FLAG_BINARY_EVENT_BATCH_SHARED, FLAG_BINARY_PUBLISH_ACK,
-    FLAG_BINARY_PUBLISH_ACK_CODE, FLAG_BINARY_PUBLISH_ACK_DETAIL, FLAG_BINARY_PUBLISH_ACK_OFFSET,
-    FLAG_BINARY_PUBLISH_ACK_OWNER, FLAG_BINARY_PUBLISH_ACKED, FLAG_BINARY_PUBLISH_BATCH,
-    FLAG_BINARY_PUBLISH_IDEMPOTENT, FLAG_BINARY_PUBLISH_KEYED, FLAG_EVENT_BATCH_OFFSETS,
-    FLAG_EVENT_BATCH_PUBLISHER, FLAG_EVENT_BATCH_SKIPPED, FLAG_EVENT_BATCH_TIMESTAMPS, KNOWN_FLAGS,
-    ORIGINAL_V1_FLAGS, has_unknown_flags, supports,
+    EXT_RECORD_HEADERS, FLAG_BINARY_EVENT_BATCH, FLAG_BINARY_EVENT_BATCH_SHARED,
+    FLAG_BINARY_PUBLISH_ACK, FLAG_BINARY_PUBLISH_ACK_CODE, FLAG_BINARY_PUBLISH_ACK_DETAIL,
+    FLAG_BINARY_PUBLISH_ACK_OFFSET, FLAG_BINARY_PUBLISH_ACK_OWNER, FLAG_BINARY_PUBLISH_ACKED,
+    FLAG_BINARY_PUBLISH_BATCH, FLAG_BINARY_PUBLISH_IDEMPOTENT, FLAG_BINARY_PUBLISH_KEYED,
+    FLAG_EVENT_BATCH_OFFSETS, FLAG_EVENT_BATCH_PUBLISHER, FLAG_EVENT_BATCH_SKIPPED,
+    FLAG_EVENT_BATCH_TIMESTAMPS, FLAG_EXTENDED, KNOWN_EXT_FLAGS, KNOWN_FLAGS, ORIGINAL_V1_FLAGS,
+    answer_flags, has_unknown_flags, offer_flags, peer_flags_ext, supports,
 };
 pub use client::frame::{CLIENT_ALPN, Frame, FrameHeader, MAGIC, VERSION};
 pub use client::message::{
@@ -53,5 +55,6 @@ pub use client::message::{
     PublishRefusalReason, ShardInspection, ShardKind, ShardOwner, StartPosition, StateChange,
     StreamRecord, SubscriptionCursor, SubscriptionFilter, UnknownRequest,
 };
+pub use client::record_headers::RecordHeaders;
 pub use client::{binary, text};
 pub use error::{Error, Result};

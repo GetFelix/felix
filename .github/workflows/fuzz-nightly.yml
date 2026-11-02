@@ -58,6 +58,7 @@ jobs:
           - { target: internal_message, dir: crates/protocol/felix-wire/fuzz }
           - { target: binary_payload, dir: crates/protocol/felix-wire/fuzz }
           - { target: client_message, dir: crates/protocol/felix-wire/fuzz }
+          - { target: record_headers, dir: crates/protocol/felix-wire/fuzz }
           - { target: mqtt_packet, dir: crates/protocol/felix-mqtt-wire/fuzz }
           - { target: kafka_records, dir: crates/server/felix-kafka/fuzz }
           - { target: kafka_request, dir: crates/server/felix-kafka/fuzz }

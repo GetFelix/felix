@@ -73,7 +73,7 @@ pub(super) async fn run_uni_loop<S: FrameSource + ?Sized>(
         };
         // Flags select the body's layout, and a uni stream has no way to
         // answer, so a bit this version does not know ends the stream.
-        if felix_wire::has_unknown_flags(frame.header.flags) {
+        if crate::serving::quic::codec::refuses_flags(frame.header.flags) {
             anyhow::bail!("unsupported frame flags {:#06x}", frame.header.flags);
         }
 
@@ -118,6 +118,7 @@ pub(super) async fn run_uni_loop<S: FrameSource + ?Sized>(
                 client_flags: _,
                 client_features: _,
                 client_features_hi: _,
+                client_flags_ext: _,
             } => {
                 if auth_ctx.is_some() {
                     tracing::debug!("closing uni stream after duplicate auth");

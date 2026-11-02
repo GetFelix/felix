@@ -154,6 +154,7 @@ async fn subscribe(
             client_flags: None,
             client_features,
             client_features_hi,
+            client_flags_ext: None,
         },
     )
     .await?;
