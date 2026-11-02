@@ -36,6 +36,8 @@ fn the_prefix_boundary_is_the_bytes() {
     assert_eq!(resolved(&mounts, "t", "plant"), None);
     assert_eq!(resolved(&mounts, "t", "plants/x"), None);
     assert_eq!(resolved(&mounts, "t", "Plant/x"), None);
+    // The prefix has to be the start, not just somewhere in the topic.
+    assert_eq!(resolved(&mounts, "t", "other/plant/x"), None);
     // A prefix without a trailing slash is a plain byte prefix.
     mounts.set(&key("t", "ns", "bare"), Some("bare"));
     assert_eq!(resolved(&mounts, "t", "barely/x"), pair("ns", "bare"));
