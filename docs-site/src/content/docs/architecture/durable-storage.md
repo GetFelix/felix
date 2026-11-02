@@ -25,7 +25,7 @@ stream to change it between ephemeral and durable; this explicitly invalidates
 old handles and prevents durable offsets from diverging from existing in-memory
 cursors.
 
-## Ordering: append, then fanout, then ack
+## Ordering: append, then ack and fanout
 
 ```mermaid
 flowchart LR
@@ -80,8 +80,8 @@ sequenceDiagram
     end
 
     L-->>B: offsets assigned
-    B->>S: fanout
     B-->>C: ack
+    B->>S: fanout
 ```
 
 The append comes first on purpose. A record delivered to subscribers and

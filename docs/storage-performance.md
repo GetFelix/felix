@@ -268,9 +268,10 @@ waiter task in between and no timer per publish.
 
 ```mermaid
 graph LR
-    A["commit task<br/><i>flush done, fanned out</i>"] --> B["writer queue"]
+    A["commit task<br/><i>flush done, in the replay ring</i>"] --> B["writer queue"]
     B --> C["writer<br/><i>takes everything queued</i>"]
     C --> D["one QUIC write"]
+    A --> E["fanout<br/><i>after the answer</i>"]
 ```
 
 - The writer takes every answer already queued and sends them in one write.
@@ -278,9 +279,16 @@ graph LR
 - The ack timeout is one deadline queue per control stream, swept on a coarse
   tick while anything is owed. A publish that outlives it is answered with
   `Unacknowledged`, and its late result is discarded.
-- An answer is never sent before `complete_publish` returns, so it never
-  precedes durability under the stream's fsync mode. A pipelining client still
-  gets its answers in request order (`AckOrder`).
+- An answer is sent once the batch is durable under the stream's fsync mode
+  and in the replay ring, and before the batch is fanned out
+  (`complete_publish_answering`). A `Quorum` publish is answered after its
+  quorum wait instead. A pipelining client still gets its answers in request
+  order (`AckOrder`).
+- Answering first keeps subscribers off the publisher's round trip. Fanout
+  wakes one feeder task per subscriber, and each of those drives a lane, a
+  connection writer and a QUIC send. Answered after the fanout, the ack waited
+  for the subscriber loop and then queued for a worker thread behind those
+  tasks.
 
 To compare before and after, run `scripts/perf/azure/nats/nats-latency.sh`
 with `LAT_PAIRS="oncommit inmem"` on both builds. The `inmem`

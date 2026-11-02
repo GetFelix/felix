@@ -77,6 +77,16 @@ struct Delivery {
     closed: Vec<u64>,
 }
 
+impl Delivery {
+    /// First and last offset, inclusive, and contiguous by construction: a
+    /// batch consumes one run of offsets.
+    fn offsets(&self) -> Option<(u64, u64)> {
+        let item_count = self.envelope.len() as u64;
+        self.first_offset
+            .map(|first| (first, first + item_count - 1))
+    }
+}
+
 impl Completion {
     pub(super) fn new(
         claimed: ClaimedPublish,
@@ -134,23 +144,42 @@ impl Completion {
     /// Drive the batch to the end, from wherever it stopped. Safe to call
     /// again after a cancelled call: a stage already done is not redone.
     async fn run(&mut self) -> Result<PublishOutcome> {
+        match self.settle().await? {
+            Some(done) => Ok(done),
+            None => self.deliver().await,
+        }
+    }
+
+    /// Everything before the fanout. `Some` is the batch's whole outcome (it
+    /// is empty, held or a trim); `None` means it is durable and in the ring,
+    /// and only the fanout is left.
+    async fn settle(&mut self) -> Result<Option<PublishOutcome>> {
         if self.payloads.is_empty() {
-            return Ok(PublishOutcome {
+            return Ok(Some(PublishOutcome {
                 subscribers: 0,
                 offsets: None,
-            });
+            }));
         }
         if self.delivery.is_none() {
             self.commit().await?;
             if let Some(held) = self.hold()? {
-                return Ok(held);
+                return Ok(Some(held));
             }
             if let Some(floor) = self.trim {
-                return self.apply_trim(floor);
+                return self.apply_trim(floor).map(Some);
             }
             self.append()?;
         }
-        self.deliver().await
+        Ok(None)
+    }
+
+    /// The outcome of a batch in the ring that no subscriber has yet.
+    fn appended_outcome(&self) -> PublishOutcome {
+        let delivery = self.delivery.as_ref().expect("appended");
+        PublishOutcome {
+            subscribers: 0,
+            offsets: delivery.offsets(),
+        }
     }
 
     /// Hold the batch back from readers if the stream's committed mark has
@@ -228,14 +257,9 @@ impl Completion {
             self.handle.state.remove_subscribers(&delivery.closed);
             delivery.closed.clear();
         }
-        let item_count = delivery.envelope.len();
         Ok(PublishOutcome {
             subscribers: delivery.sent,
-            // Inclusive, and contiguous by construction: a batch consumes one
-            // run of offsets.
-            offsets: delivery
-                .first_offset
-                .map(|first| (first, first + item_count as u64 - 1)),
+            offsets: delivery.offsets(),
         })
     }
 
@@ -341,12 +365,19 @@ impl Completion {
         let delivery = self.delivery.as_mut().expect("appended before fanout");
         let item_count = delivery.envelope.len();
         let bytes = delivery.envelope.payload_bytes();
+        // Every subscriber's depth is reserved in one step, and what was not
+        // sent is given back after the pass: per-subscriber updates of these
+        // shared counters put a contended atomic per subscriber on the
+        // publisher's path.
+        let reserved = delivery.senders.len().saturating_sub(delivery.next) * item_count;
+        stream_state.reserve_queue_depth(reserved);
+        let sent_before = delivery.sent;
         while let Some(subscriber) = delivery.senders.get(delivery.next) {
             match stream_state.subscriber_queue_policy {
                 SubQueuePolicy::Block => match subscriber.sender.try_reserve() {
                     Ok(permit) => match subscriber.bytes.try_hold(bytes) {
                         Ok(held) => {
-                            enqueue(stream_state, permit, &delivery.envelope, held);
+                            send(stream_state, permit, &delivery.envelope, held);
                             delivery.sent += item_count;
                         }
                         Err(_) => delivery.full.push(delivery.next),
@@ -362,7 +393,7 @@ impl Completion {
                     match subscriber.sender.try_reserve() {
                         Ok(permit) => match subscriber.bytes.try_hold(bytes) {
                             Ok(held) => {
-                                enqueue(stream_state, permit, &delivery.envelope, held);
+                                send(stream_state, permit, &delivery.envelope, held);
                                 delivery.sent += item_count;
                             }
                             // Dropping the permit gives the entry back.
@@ -386,6 +417,8 @@ impl Completion {
             }
             delivery.next += 1;
         }
+        let sent = delivery.sent - sent_before;
+        stream_state.settle_queue_depth(reserved - sent, sent, sent / item_count);
         if !delivery.full.is_empty() {
             wait_for_full(stream_state, delivery).await;
         }
@@ -451,8 +484,17 @@ fn enqueue(
     envelope: &DeliveryEnvelope,
     held: HeldBytes,
 ) {
-    metrics::counter!("felix_sub_shared_batch_handles_total").increment(1);
     stream_state.increment_queue_depth(envelope.len());
+    send(stream_state, permit, envelope, held);
+}
+
+/// Queue the batch for one subscriber whose depth is already counted.
+fn send(
+    stream_state: &StreamState,
+    permit: tokio::sync::mpsc::Permit<'_, QueuedDelivery>,
+    envelope: &DeliveryEnvelope,
+    held: HeldBytes,
+) {
     permit.send(QueuedDelivery::new(
         envelope.clone(),
         Arc::clone(&stream_state.queued_items),
@@ -553,6 +595,27 @@ impl Finisher {
         // by the next reader of the log.
         self.0 = None;
         outcome
+    }
+
+    /// [`Self::run`], telling `answer` the outcome once the batch is durable
+    /// and in the ring, before the fanout rather than after it. The outcome
+    /// counts no subscribers.
+    pub(super) async fn run_answering(mut self, answer: impl FnOnce(Result<PublishOutcome>)) {
+        let completion = self.0.as_mut().expect("armed until run");
+        match completion.settle().await {
+            Ok(None) => answer(Ok(completion.appended_outcome())),
+            Ok(Some(outcome)) => {
+                self.0 = None;
+                return answer(Ok(outcome));
+            }
+            Err(err) => {
+                self.0 = None;
+                return answer(Err(err));
+            }
+        }
+        // Dropped from here on, the fanout finishes on a task of its own.
+        let _ = completion.deliver().await;
+        self.0 = None;
     }
 }
 

@@ -332,6 +332,35 @@ impl Broker {
         self.complete_claimed(claimed, None).await
     }
 
+    /// [`Self::complete_publish`], telling `answer` the outcome as soon as
+    /// the batch is durable and in the replay ring, before it is handed to
+    /// subscribers.
+    ///
+    /// The publisher's answer then neither waits for nor queues behind the
+    /// work of waking every subscriber. Delivery order is unchanged: the batch
+    /// keeps its commit turn until its fanout is done, and a later batch
+    /// waits for that. The outcome `answer` is given counts no subscribers.
+    pub async fn complete_publish_answering(
+        &self,
+        claimed: ClaimedPublish,
+        answer: impl FnOnce(Result<PublishOutcome>),
+    ) {
+        let send_start = t_now_if(claimed.sample);
+        completion::Finisher::new(completion::Completion::new(
+            claimed,
+            None,
+            self.log_capacity,
+            Arc::clone(&self.appended),
+        ))
+        .run_answering(answer)
+        .await;
+        if let Some(start) = send_start {
+            let send_ns = start.elapsed().as_nanos() as u64;
+            timings::record_send_ns(send_ns);
+            t_histogram!("broker_publish_send_ns").record(send_ns as f64);
+        }
+    }
+
     /// [`Self::complete_publish`], telling `trim_applied` once a trim's floor
     /// reaches the ring, which on a `Quorum` stream is after the answer. It is
     /// dropped untold if a reset superseded the trim first.

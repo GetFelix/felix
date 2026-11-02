@@ -20,6 +20,7 @@ fn capture_lane_bounded(egress: usize) -> (Arc<WriterLaneManager>, mpsc::Receive
         lane_queue_capacity: 1024,
         lane_queue_policy: felix_broker::SubQueuePolicy::Block,
         lane_queue_highwater: vec![AtomicUsize::new(0)],
+        lane_queue_len: vec![metrics::gauge!("felix_sub_lane_queue_len")],
         connection_writers: DashMap::new(),
         subscriber_connections: DashMap::new(),
         connection_queue_capacity: 1024,
