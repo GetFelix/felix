@@ -18,7 +18,7 @@ async fn the_first_record_with_headers_rolls_the_log_and_survives_a_restart() {
         timestamp_micros: 1,
         mark: RecordMark::None,
         publisher: Some(Bytes::from_static(b"alice")),
-        headers: Some(headers.clone()),
+        headers: Some(Box::new(headers.clone())),
     }])
     .await
     .expect("append");
@@ -37,7 +37,7 @@ async fn the_first_record_with_headers_rolls_the_log_and_survives_a_restart() {
         .expect("read")
         .records
         .into_iter()
-        .map(|record| (record.payload, record.headers))
+        .map(|record| (record.payload, record.headers.map(|headers| *headers)))
         .collect();
     assert_eq!(
         read,
@@ -66,7 +66,7 @@ async fn an_oversized_record_with_headers_does_not_roll_the_log() {
             timestamp_micros: 1,
             mark: RecordMark::None,
             publisher: None,
-            headers: Some(Bytes::new()),
+            headers: Some(Box::new(Bytes::new())),
         }])
         .await
         .expect_err("too large");

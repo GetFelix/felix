@@ -81,8 +81,9 @@ pub struct AppendRecord {
     pub publisher: Option<Bytes>,
     /// The record's key and headers, already encoded. Storage keeps the bytes
     /// as given. A record with them needs storage format v8, so a log moves
-    /// onto it only when it writes one.
-    pub headers: Option<Bytes>,
+    /// onto it only when it writes one. Boxed so a record without them is
+    /// no larger than before: records are moved one by one on every append.
+    pub headers: Option<Box<Bytes>>,
 }
 
 /// Which idempotent producer's batch a record belongs to, if any.
@@ -245,7 +246,8 @@ pub struct LogRecord {
     /// The principal that published the record, when it was stored with one.
     pub publisher: Option<Bytes>,
     /// The record's encoded key and headers, when it was stored with them.
-    pub headers: Option<Bytes>,
+    /// Boxed for the same reason as [`AppendRecord::headers`].
+    pub headers: Option<Box<Bytes>>,
 }
 
 /// One leadership generation, and the offset its first record took.

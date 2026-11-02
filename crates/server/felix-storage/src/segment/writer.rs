@@ -330,7 +330,7 @@ impl SegmentWriter {
             acc + record_len(
                 body_len(
                     record.payload.len(),
-                    record.headers.as_deref(),
+                    record.headers.as_deref().map(|headers| &headers[..]),
                     record.publisher.as_deref(),
                 ),
                 &record.mark,
@@ -383,7 +383,7 @@ impl SegmentWriter {
                 offset,
                 record.timestamp_micros,
                 &record.payload,
-                record.headers.as_deref(),
+                record.headers.as_deref().map(|headers| &headers[..]),
                 record.publisher.as_deref(),
                 &record.mark,
             );
@@ -742,7 +742,7 @@ pub struct ResumeState {
 pub(crate) fn check_sizes(records: &[AppendRecord]) -> Result<()> {
     for record in records {
         let publisher = record.publisher.as_deref();
-        let headers = record.headers.as_deref();
+        let headers = record.headers.as_deref().map(|headers| &headers[..]);
         if !body_fits(
             body_len(record.payload.len(), headers, publisher),
             headers.is_some(),
