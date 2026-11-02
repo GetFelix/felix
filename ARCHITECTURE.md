@@ -32,7 +32,7 @@ The workspace is grouped by role. [`crates/README.md`](crates/README.md) has a t
 crate; this section says what is inside the important ones.
 
 ```
-crates/protocol/   how peers talk            felix-wire, felix-transport
+crates/protocol/   how peers talk            felix-wire, felix-transport, felix-mqtt-wire
 crates/server/     what the services use     felix-broker, felix-storage, felix-router,
                                              felix-replication, felix-authz, felix-common
 crates/sdk/        what applications link    felix-client, felix-python, felix-typescript
@@ -40,7 +40,7 @@ crates/testing/    exercising Felix          felix-cluster, felix-conformance, f
 services/          the two deployables       felix-broker-service, felix-controlplane-service
 ```
 
-Dependencies point one way. `felix-wire` and `felix-transport` depend on nothing else here. The
+Dependencies point one way. `felix-wire`, `felix-transport` and `felix-mqtt-wire` depend on nothing else here. The
 client depends only on those two, which is what keeps it Apache-2.0 and small; it is also all
 that is published to crates.io. Nothing on the server side uses the client at run time;
 brokers forward to each other over their own protocol (`felix-wire`'s `internal`). The broker

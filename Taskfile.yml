@@ -543,6 +543,13 @@ tasks:
           mkdir -p corpus/{{.ITEM}} &&
           cargo +nightly fuzz run {{.ITEM}} corpus/{{.ITEM}} seeds/{{.ITEM}}
           -- -max_total_time={{.SECONDS}}
+      # The MQTT packet decoder: bytes from any device that can reach the listener.
+      - for: ["mqtt_packet"]
+        cmd: >
+          cd crates/protocol/felix-mqtt-wire/fuzz &&
+          mkdir -p corpus/{{.ITEM}} &&
+          cargo +nightly fuzz run {{.ITEM}} corpus/{{.ITEM}} seeds/{{.ITEM}}
+          -- -max_total_time={{.SECONDS}}
       # The Kafka listener's record-batch decoder: bytes from any Kafka client.
       - for: ["kafka_records", "kafka_request"]
         cmd: >

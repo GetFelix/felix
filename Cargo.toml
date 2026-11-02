@@ -7,6 +7,8 @@ members = [
   # How peers talk: the frame codec and the QUIC layer under it.
   "crates/protocol/felix-wire",
   "crates/protocol/felix-transport",
+  # The MQTT 3.1.1 and 5.0 packet codec under the broker's MQTT listener.
+  "crates/protocol/felix-mqtt-wire",
   # The libraries the services are built from.
   "crates/server/felix-common",
   "crates/server/felix-authz",

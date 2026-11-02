@@ -1,0 +1,21 @@
+[package]
+name = "felix-mqtt-wire"
+version.workspace = true
+edition.workspace = true
+license = "Apache-2.0"
+rust-version.workspace = true
+description = "MQTT 3.1.1 and 5.0 packet codec with decode-time limits"
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["felix", "mqtt", "protocol", "codec"]
+categories = ["network-programming", "encoding"]
+# Internal to the Felix repository until its API has met real devices.
+publish = false
+
+[dependencies]
+bytes = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true
