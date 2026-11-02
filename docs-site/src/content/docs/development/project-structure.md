@@ -56,7 +56,7 @@ published to crates.io.
 - `felix-transport`: the QUIC layer. Endpoints, connection and stream lifetime,
   and transport tuning shared by client and broker.
 - `felix-mqtt-wire`: the MQTT 3.1.1 and 5.0 packet codec, with its limits
-  enforced while decoding. It is internal and no listener uses it yet.
+  enforced while decoding. It is internal to the repository.
 
 **Server**
 

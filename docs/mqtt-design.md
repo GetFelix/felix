@@ -113,7 +113,8 @@ That left two real options: Felix owns a small codec, or it vendors `rumqttc`'s
 roughly 2,000 lines plus tests. The
 codec decodes into `bytes::Bytes` without copying the payload, has a fuzz target
 from its first commit, and is cross-checked against encodings produced by
-`rumqttc` and the mosquitto clients, kept as golden vectors.
+`rumqttc`, kept as golden vectors. The mosquitto clients and Paho check it from
+the other side in the conformance runs of the later slices.
 
 ### Crate layout
 
@@ -664,7 +665,7 @@ and `delivered_throughput` counts deliveries.
 ## Safety plan
 
 - **Fuzzing from the first commit.** Targets for the packet decoder at both
-  versions (any bytes, never a panic, allocation bounded by the limits), the
+  versions (any bytes, never a panic, every list bounded by the limits), the
   record header encoding in storage and on the wire, topic and filter parsing, and the session record. A property
   test checks the trie's matches against a direct implementation of the
   specification's matching rules.

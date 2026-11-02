@@ -7,10 +7,9 @@ pub(crate) const MAX_VARINT: u32 = 268_435_455;
 /// Longest string or binary field the format can express (a two byte prefix).
 pub(crate) const MAX_FIELD_BYTES: usize = u16::MAX as usize;
 
-/// What the decoder accepts. Every check runs before the thing it guards is
-/// allocated or read: an oversized packet is refused from its fixed header, and
-/// the counts bound growth while a list is walked, never a reservation made from
-/// a number the peer sent.
+/// What the decoder accepts. An oversized packet is refused from its fixed
+/// header, before its body is waited for, and the counts bound growth while a
+/// list is walked, never a reservation made from a number the peer sent.
 ///
 /// The defaults match the listener's defaults. Fields are public so a caller can
 /// set them from configuration.
@@ -27,8 +26,9 @@ pub struct Limits {
     /// Most filters in one `SUBSCRIBE` or `UNSUBSCRIBE`, and most return codes
     /// in one `SUBACK` or `UNSUBACK`.
     pub max_subscriptions: usize,
-    /// Most entries of a repeatable property in one packet: user properties,
-    /// and the subscription identifiers of a `PUBLISH`.
+    /// Most entries of a repeatable property in one property block: user
+    /// properties, and the subscription identifiers of a `PUBLISH`. A `CONNECT`
+    /// with a will has two blocks.
     pub max_repeated_properties: usize,
     /// Longest client identifier in bytes.
     pub max_client_id_bytes: usize,

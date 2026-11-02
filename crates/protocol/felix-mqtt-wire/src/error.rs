@@ -41,6 +41,8 @@ pub enum DecodeError {
     UnsupportedProtocolVersion(u8),
     #[error("invalid CONNECT flags {0:#010b}")]
     InvalidConnectFlags(u8),
+    #[error("invalid CONNACK acknowledge flags or session present with a refusal ({0:#010b})")]
+    InvalidConnAckFlags(u8),
     #[error("QoS 3 is not a QoS")]
     InvalidQos,
     #[error("DUP is set on a QoS 0 PUBLISH")]
@@ -80,7 +82,7 @@ impl DecodeError {
             DecodeError::LimitExceeded { .. } => ReasonCode::QuotaExceeded,
             DecodeError::FirstPacketNotConnect(_)
             | DecodeError::InvalidProtocolName
-            | DecodeError::InvalidConnectFlags(_)
+            | DecodeError::InvalidConnAckFlags(_)
             | DecodeError::DupOnQos0
             | DecodeError::ZeroPacketId
             | DecodeError::InvalidReasonCode { .. }

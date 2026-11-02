@@ -31,7 +31,7 @@ impl ConnAck {
     ) -> Result<ConnAck, DecodeError> {
         let flags = r.u8()?;
         if flags & !1 != 0 {
-            return Err(DecodeError::InvalidConnectFlags(flags));
+            return Err(DecodeError::InvalidConnAckFlags(flags));
         }
         let session_present = flags & 1 != 0;
         let code = r.u8()?;
@@ -53,7 +53,7 @@ impl ConnAck {
         };
         // A refusal has no session to resume.
         if session_present && reason != ReasonCode::Success {
-            return Err(DecodeError::InvalidConnectFlags(flags));
+            return Err(DecodeError::InvalidConnAckFlags(flags));
         }
         Ok(ConnAck {
             session_present,

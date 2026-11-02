@@ -2,10 +2,10 @@
 
 The MQTT 3.1.1 and 5.0 packet codec for the broker's MQTT listener. It turns
 bytes into `Packet` values and back. It does no I/O and keeps no session state,
-and it refuses a hostile packet while decoding it, before the packet can make
-the process allocate. It is internal to the Felix repository and is not
-published to crates.io. [`docs/mqtt-design.md`](../../../docs/mqtt-design.md)
-says why Felix owns this codec and where it fits.
+and it refuses a hostile packet while decoding it, with every size bounded by
+`Limits`. It is internal to the Felix repository and is not published to
+crates.io. `docs/mqtt-design.md` in the repository says why Felix owns this
+codec and where it fits.
 
 ## Using it
 
@@ -60,7 +60,13 @@ means close the connection: the stream cannot be resynchronised.
 `DecodeError::reason_code` gives the 5.0 `DISCONNECT` reason that fits.
 
 Strings and payloads are slices of the buffer the packet arrived in. Nothing is
-copied, and a slice keeps its packet's allocation alive while it is held.
+copied, and a slice keeps that whole buffer allocation alive while it is held,
+so copy any string or payload you keep past the packet (a session's client
+identifier, a filter, a retained payload).
+
+The default `Limits` allow a 1 MiB packet. Before `CONNECT` is accepted, decode
+with a smaller `max_packet_size`, since a device can announce a large packet
+with five bytes.
 
 To send a `PUBLISH` without copying a payload that already lives elsewhere,
 write `Publish::encode_head` and then the payload. `Packet::encoded_len` sizes a
@@ -86,11 +92,12 @@ packet alone:
   no control characters or Unicode non-characters, which the specification
   says a string should not hold.
 
-[`Limits`](src/limits.rs) bounds what a device can make the decoder hold: whole
-packet size, topic bytes and levels, filters per `SUBSCRIBE`, repeated
-properties, and client identifier length. The packet size is checked from the
-fixed header, before the body is waited for. Lists grow only as bytes that
-passed their checks arrive, never from a count the peer sent.
+`Limits` bounds what a device can make the decoder hold: whole packet size,
+topic bytes and levels, filters per `SUBSCRIBE`, repeated properties in a
+property block, and client identifier length. The packet size is checked from
+the fixed header, before the body is waited for. Lists grow only as bytes that
+passed their checks arrive, never from a count the peer sent, and stop at the
+limit.
 
 It leaves to the caller what depends on the connection: which packet may arrive
 in which state or direction, whether an empty client identifier is acceptable

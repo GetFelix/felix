@@ -85,8 +85,8 @@ impl Packet {
     /// read, and `None` before that, when only `CONNECT` is accepted.
     ///
     /// Strings, binary fields and the payload of a `PUBLISH` are slices of the
-    /// packet's bytes, not copies. A slice keeps that packet's allocation alive
-    /// until it is dropped, so copy out of a payload that will be held long.
+    /// packet's bytes, not copies. A slice keeps the whole buffer allocation
+    /// alive until it is dropped, so copy anything that will be held long.
     ///
     /// After an error the stream cannot be resynchronised: close the connection.
     pub fn decode(

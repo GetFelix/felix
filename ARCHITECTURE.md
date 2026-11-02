@@ -40,7 +40,7 @@ crates/testing/    exercising Felix          felix-cluster, felix-conformance, f
 services/          the two deployables       felix-broker-service, felix-controlplane-service
 ```
 
-Dependencies point one way. `felix-wire` and `felix-transport` depend on nothing else here. The
+Dependencies point one way. `felix-wire`, `felix-transport` and `felix-mqtt-wire` depend on nothing else here. The
 client depends only on those two, which is what keeps it Apache-2.0 and small; it is also all
 that is published to crates.io. Nothing on the server side uses the client at run time;
 brokers forward to each other over their own protocol (`felix-wire`'s `internal`). The broker

@@ -480,16 +480,16 @@ fn connack() {
     // [MQTT-3.2.2-1]: bits 7 to 1 of the acknowledge flags are reserved.
     assert!(matches!(
         refused(V3, &[0x20, 0x02, 0x02, 0x00]),
-        DecodeError::InvalidConnectFlags(0x02)
+        DecodeError::InvalidConnAckFlags(0x02)
     ));
     // [MQTT-3.2.2-4]: session present with a refusal.
     assert!(matches!(
         refused(V3, &[0x20, 0x02, 0x01, 0x05]),
-        DecodeError::InvalidConnectFlags(0x01)
+        DecodeError::InvalidConnAckFlags(0x01)
     ));
     assert!(matches!(
         refused(V5, &[0x20, 0x03, 0x01, 0x87, 0x00]),
-        DecodeError::InvalidConnectFlags(0x01)
+        DecodeError::InvalidConnAckFlags(0x01)
     ));
     // 3.1.1 return codes stop at 5.
     assert!(matches!(
@@ -1076,4 +1076,51 @@ fn errors_map_to_reason_codes() {
         DecodeError::InvalidTopicFilter(TopicError::Empty).reason_code(),
         ReasonCode::TopicFilterInvalid
     );
+}
+
+/// Each list and count limit refuses the entry after the last one allowed, and
+/// not the last one itself.
+#[test]
+fn every_limit_is_exact() {
+    let mut limits = Limits::default();
+    assert_eq!(limits.max_subscriptions, 64);
+    assert_eq!(limits.max_repeated_properties, 64);
+    limits.max_subscriptions = 2;
+    limits.max_repeated_properties = 2;
+    let check = |version: Option<Version>, ok: Vec<u8>, over: Vec<u8>| {
+        assert!(Packet::decode(&mut BytesMut::from(&ok[..]), version, &limits).is_ok());
+        let got = Packet::decode(&mut BytesMut::from(&over[..]), version, &limits);
+        assert!(
+            matches!(got, Err(DecodeError::LimitExceeded { max: 2, .. })),
+            "{over:02x?}: {got:?}"
+        );
+    };
+    for version in [V3, V5] {
+        let head: &[u8] = if version == V5 { &[0, 1, 0] } else { &[0, 1] };
+        let filters = |n: usize| {
+            let mut body = head.to_vec();
+            for _ in 0..n {
+                body.extend_from_slice(&string(b"a"));
+            }
+            body
+        };
+        check(
+            version,
+            packet(0xA2, &filters(2)),
+            packet(0xA2, &filters(3)),
+        );
+    }
+    check(V3, vec![0x90, 4, 0, 1, 0, 1], vec![0x90, 5, 0, 1, 0, 1, 2]);
+    check(
+        V5,
+        vec![0xB0, 5, 0, 1, 0, 0, 0],
+        vec![0xB0, 6, 0, 1, 0, 0, 0, 0],
+    );
+    let ids = |n: u8| {
+        packet(
+            0x30,
+            &cat(&[&string(b"t"), &props(&[0x0B, 1].repeat(n as usize))]),
+        )
+    };
+    check(V5, ids(2), ids(3));
 }
