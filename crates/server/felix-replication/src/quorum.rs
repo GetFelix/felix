@@ -889,6 +889,18 @@ pub async fn await_quorum<S: ShardServing + ?Sized>(
     }
 }
 
+/// Ask for a pass over `shard`, which just took a write.
+fn wake_pass(broker: &felix_broker::Broker, shard: &crate::ShardKey) {
+    broker
+        .appended_shards()
+        .mark(felix_broker::AppendedShards::slot(
+            &shard.tenant_id,
+            &shard.namespace,
+            &shard.stream,
+            shard.shard,
+        ));
+}
+
 /// Hold a write to a `Quorum` cache until a majority of its shard's replica set
 /// has it. The cache-side mirror of [`await_quorum`].
 ///
@@ -920,7 +932,7 @@ pub async fn await_cache_quorum<S: ShardServing + ?Sized>(
     // The cache log ships on a replication pass; start one now rather than
     // wait out the tick.
     if access == Access::Write {
-        broker.appended().notify_one();
+        wake_pass(broker, shard);
     }
     let consistency = broker
         .cache_consistency(&shard.tenant_id, &shard.namespace, &shard.stream)
@@ -1085,7 +1097,7 @@ pub async fn await_counter_quorum<S: ShardServing + ?Sized>(
     }
     // The counter log ships on a replication pass; start one now rather than
     // wait out the tick.
-    broker.appended().notify_one();
+    wake_pass(broker, shard);
     let waited_at = std::sync::atomic::AtomicU64::new(0);
     let leading = || {
         let generation = ingress.generation(shard);

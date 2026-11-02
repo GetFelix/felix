@@ -23,6 +23,7 @@ use std::time::Duration;
 use bytes::Bytes;
 
 use super::{ClaimedDurable, ClaimedPublish, PublishOutcome};
+use crate::broker::AppendedShards;
 use crate::broker::shards::StreamHandle;
 use crate::commit::StateOp;
 use crate::error::{BrokerError, Result};
@@ -53,7 +54,7 @@ pub(super) struct Completion {
     sample: bool,
     log_capacity: usize,
     /// The broker's replication wake-up.
-    replication: Arc<tokio::sync::Notify>,
+    replication: Arc<AppendedShards>,
     /// Set once the batch is in the ring: from then on only the fanout is
     /// left, and appending again would duplicate it.
     delivery: Option<Delivery>,
@@ -92,7 +93,7 @@ impl Completion {
         claimed: ClaimedPublish,
         trim_applied: Option<tokio::sync::oneshot::Sender<()>>,
         log_capacity: usize,
-        replication: Arc<tokio::sync::Notify>,
+        replication: Arc<AppendedShards>,
     ) -> Self {
         let ClaimedPublish {
             handle,
@@ -282,15 +283,9 @@ impl Completion {
             })?;
         // Replication waits on this. Under `Quorum` the publish is about to
         // block on a majority, so the shipping that produces it should already
-        // be under way rather than waiting out a tick.
-        //
-        // `notify_one`, not `notify_waiters`: the latter wakes only waiters
-        // already registered, so an append landing while replication is
-        // mid-pass would be lost and that record would wait for the tick after
-        // all. `notify_one` leaves a permit, so the next wait returns at once --
-        // and it stores only one, so a burst becomes a single extra pass rather
-        // than a storm.
-        self.replication.notify_one();
+        // be under way rather than waiting out a tick. The mark names the shard,
+        // so the driver passes it and not every shard it leads.
+        self.replication.mark(self.handle.state.append_slot);
         // `notify_waiters` here, unlike above: an offset reader registers
         // before it reads the tail, so it cannot miss this, and one that is not
         // waiting has nothing to be told.
