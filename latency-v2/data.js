@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793622560319,
+  "lastUpdate": 1793624616653,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -53394,6 +53394,72 @@ window.BENCHMARK_DATA = {
             "range": "37.65",
             "unit": "us",
             "extra": "trials: 5\nmedian: 414.00\nmean: 422.00\nstdev: 37.65\ncv: 8.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a66f00d13e5200ce313481588ef7bb675aaa97b8",
+          "message": "fix(controlplane): place new leaders under the cluster's floor first, so bulk creates move no existing shard (#1767)\n\nCloses part 1 of #1766.\n\nWhen many streams are created at once (felixd creates two per job, 16 jobs at a time), the placement reconciler kept moving the same few existing cache shards between brokers. A new shard's leader went to the best-scoring broker under the cluster's *ceiling* share, so a batch could leave the leader totals two apart, and the balancer then evened them by moving the first shard in key order on the broker leading most. In felixd's namespace that is `drains`, `epochs`, `leases`: 17 moves of `drains` in 11 minutes in one scale run, each one fencing that cache's writes.\n\nNow a new leader goes to a broker under the cluster's floor share first, then under the ceiling, inside the existing per-stream tiers. A batch stays within one of even and moves nothing that exists.\n\n- `rendezvous::choose`: tiers are (stream floor, stream ceil, any) x (cluster floor, cluster ceil, any), in that order.\n- `Shares` carries the cluster floor; `plan` computes it beside the ceiling.\n- New test `creating_streams_in_batches_moves_no_existing_leader`: 20 batches of 32 single-shard streams beside three caches. Fails without the fix (14 cut-overs, all caches), passes with it.\n- `docs/control-plane.md` \"How shards get placed\" describes the floor tier and why.\n\nDesign calls:\n- Fresh-cluster placement changes in some cases. The golden in `stream_placement_is_unchanged_by_cache_placement` swaps two `payments` leaders (spreads still 3/2/3 and 1/2/2). Its \"caches alongside\" half now checks each stream's spread rather than exact brokers: cache leaders count toward the cluster totals, which the old ceiling tier already depended on, so exact identity was never guaranteed. Existing assignments are never re-placed, so an upgraded cluster moves nothing.\n- Left alone: the balancer still picks the first eligible shard in key order when a real imbalance appears (a broker joins or comes back). That is one-off, not repeated, so not changed here.",
+          "timestamp": "2026-11-02T04:48:13-08:00",
+          "tree_id": "fece37be04cca739926ee896d9289a4cb4d99685",
+          "url": "https://github.com/GetFelix/felix/commit/a66f00d13e5200ce313481588ef7bb675aaa97b8"
+        },
+        "date": 1793624609684,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 150,
+            "range": "1.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 150.00\nmean: 149.40\nstdev: 1.52\ncv: 1.02%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 215,
+            "range": "2.88",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 215.00\nmean: 214.40\nstdev: 2.88\ncv: 1.34%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 249,
+            "range": "107.13",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 249.00\nmean: 298.60\nstdev: 107.13\ncv: 35.88%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 195,
+            "range": "1.34",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 195.00\nmean: 195.60\nstdev: 1.34\ncv: 0.69%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 378,
+            "range": "11.43",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 378.00\nmean: 381.80\nstdev: 11.43\ncv: 2.99%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 543,
+            "range": "207.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 543.00\nmean: 633.80\nstdev: 207.89\ncv: 32.80%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
