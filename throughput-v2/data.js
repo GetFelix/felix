@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793578240789,
+  "lastUpdate": 1793584516685,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -41288,6 +41288,58 @@ window.BENCHMARK_DATA = {
             "range": "2239.86",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 814318.36\nmean: 813430.33\nstdev: 2239.86\ncv: 0.28%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c23bac96f381412dd8b3977cf3f44c3cf10fe1c0",
+          "message": "release: v0.7.0-preview.2 (#1738)\n\nFold the changelog fragments into CHANGELOG.md as 0.7.0-preview.2 and move the remaining version pins to it.\n\nSpec-Unaffected: version references and changelog",
+          "timestamp": "2026-11-01T17:24:45-08:00",
+          "tree_id": "aac1af744af27dac97b9175a1347e075412b4ecf",
+          "url": "https://github.com/GetFelix/felix/commit/c23bac96f381412dd8b3977cf3f44c3cf10fe1c0"
+        },
+        "date": 1793584515847,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 354568.24,
+            "range": "10569.62",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 354568.24\nmean: 352610.84\nstdev: 10569.62\ncv: 3.00%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 354568.24,
+            "range": "10569.62",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 354568.24\nmean: 352610.84\nstdev: 10569.62\ncv: 3.00%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82540.42,
+            "range": "910.83",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82540.42\nmean: 82132.01\nstdev: 910.83\ncv: 1.11%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 825404.19,
+            "range": "9108.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 825404.19\nmean: 821320.06\nstdev: 9108.31\ncv: 1.11%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
