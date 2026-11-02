@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793647777765,
+  "lastUpdate": 1793648284187,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -42692,6 +42692,58 @@ window.BENCHMARK_DATA = {
             "range": "4956.90",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 801202.71\nmean: 800709.14\nstdev: 4956.90\ncv: 0.62%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "37476c910a9ad20c7c436d99f5e347f7548efe2a",
+          "message": "fix(auth): renew tenant JWKS in the background and serve cached keys through an outage (#1793) (#1802)\n\nFixes #1793.\n\n## What was wrong\n\nThe broker cached a tenant's JWKS for an hour and never renewed it in the background. The first `Auth` after expiry (control stream, uni stream, or a forwarded publish/cache op re-verified on the owner) fetched inline: up to 5 s waiting for a fetch slot plus 5 s for the request. If the control plane was down at that moment, every `Auth` and forwarded write of that tenant was refused until it came back.\n\n## What changes\n\n- **Requests read the cache only.** A tenant with keys fetched less than 24 h ago verifies with no control-plane I/O. Keys past their renewal time still count as usable (stale-while-revalidate).\n- **Background renewer** (`ControlPlaneKeyStore::renew_until`, spawned in `node.rs` on the sync shutdown token). Every 15 s it fetches the tenants due: 10 min after the last successful fetch. A failure keeps the cached keys and retries after 15 s, doubling to 5 min. At most 4 renewals and 2 unknown-kid fetches run at once, which leaves at least 2 of the 8 fetch slots for first fetches. A failed renewal of keys already past 24 h is remembered as a miss, so a request does not wait for its own fetch after waiting on the renewal.\n- **Unknown `kid`.** When verification fails and the token's `kid` is not in the cached set, the broker fetches once and verifies again. Concurrent requests share the fetch through the existing per-tenant flight. A tenant is fetched this way at most once per 10 s, counting any fetch. All tenants together share a broker-wide budget: a burst of 5, then 1/s, with at most 2 in flight. Made-up kids across many tenants therefore cannot drive requests either. A failed fetch keeps the old keys. A kid still missing afterwards is refused.\n- **Never-seen tenant.** This is the only inline fetch. The slot wait and the request now share one 5 s deadline, down from 5 s + 5 s, so a stream's pre-auth permit is held at most 5 s.\n- **Removed tenant.** On every pass (15 s), the renewer drops the keys of a tenant the seeded catalog no longer lists. It drops them under the tenant's flight lock, so a fetch already in progress cannot put them back.\n- **Metrics.** `felix_jwks_renew_errors_total` and `felix_jwks_oldest_age_seconds`, plus a `warn` line repeated every minute while renewals fail.\n\n## Security: the stale-key window\n\nA key the control plane retires keeps verifying on a broker until that broker's next successful fetch:\n\n- **Control plane reachable:** within about 10 min (renewal interval + one 15 s tick). Before this change it was up to 1 h, so retiring a leaked key now takes effect about 6x faster.\n- **Control plane unreachable:** for as long as the outage lasts, up to a hard 24 h after the last successful fetch. Past that, the tenant's tokens are refused until the control plane answers. That is the bound.\n- This matches how principal revocations already behave: they arrive from the control plane too, and a cut-off broker cannot learn of either. The revocation feed is untouched, and `Revocable` is still checked after verification.\n- Operators get `felix_jwks_oldest_age_seconds`, the window a retired key could still be verifying on that broker. Normally it stays under about 615. Alert well above that. At 86400 that tenant starts being refused. The leaked-key procedure in `docs/auth.md` now says to check it on every broker.\n- Algorithm pinning, key-shape checks, and percent-encoding of the tenant id are unchanged. A renewal that brings back the same set does not invalidate derived decoding keys. A changed set (including same kid with new material) does.\n\n## Performance\n\n- **Hot path** (cached tenant, known kid): `ensure_cached` is one `DashMap::get` plus an `Instant` compare. Before, it cloned the whole `Jwks` and allocated a `TenantId` first. `verification_keys` is unchanged. No new lock: the `DashMap` shard read lock was already taken, and `TenantKeyCache`'s write lock is now taken *less*, because an unchanged renewal skips `invalidate_tenant`.\n- **Failure path:** a token with a known kid that fails verification (bad signature, expired) is verified once more. That is one extra Ed25519 check on a request that is refused anyway.\n- **Control-plane load:** one small GET per cached tenant per broker every 10 min, at most 4 in flight per broker. Before, it was one per tenant per hour, but done inline on a request.\n\n## Tests\n\nIn `serving/auth/tests.rs`, against a stub control plane:\n- `existing_tenants_authenticate_while_the_control_plane_is_down_past_renewal`: the CP answers 503 past the renewal time. The renewal fails and backs off, and `authenticate` still succeeds with no request to the CP.\n- `keys_past_the_maximum_staleness_are_not_used`: the bound holds, and recovery works once the CP answers.\n- `an_unknown_kid_fetches_the_rotated_set_once`: 10 concurrent auths with a newly staged k2 cause one fetch. An unknown k3 is refused and paced. A failed fetch keeps the keys.\n- `a_tenant_never_seen_is_fetched_once_for_concurrent_auths`: 20 concurrent auths cause 1 fetch.\n- `a_renewal_drops_a_key_the_control_plane_retired`, `the_renewer_drops_a_tenant_the_catalog_no_longer_has` (the tenant is not due, so removal does not wait for its renewal).\n- `the_spawned_renewer_drops_a_retired_key_and_stops_on_shutdown`: runs `renew_until` itself, through a failing stretch and then a retirement.\n- `unknown_kid_fetches_share_one_budget_across_tenants`: made-up kids across 10 tenants stop at 5 fetches.\n\n**Revert check (local):** setting `expires_at` back to the renewal time (the old TTL semantics) fails the outage test. Stubbing out `refetch_for_kid` fails the kid-rotation test. Both pass with the fix restored.\n\n## Review\n\nAn opus reviewer (security + availability) found no MUST issues. Fixed:\n- The per-tenant-only pacing of unknown kids, now with the broker-wide budget.\n- Removal waiting for the next renewal, now done on every pass.\n- An inaccurate rotation-step sentence in the docs, and the stale \"up to an hour\" module doc in `signing_keys.rs`.\n- The spawned renewer was untested; it now has a test.\n- The warn-reset NIT, the 24 h inline double wait, the removal-vs-fetch race, and a test timing margin.\n\nLeft as is: a renewal that brings back an unchanged set skips `invalidate_tenant`. The reviewer noted that this removes an hourly self-heal for a race that needs same-kid-new-material, and control-plane kids are random.\n\n## Design calls\n\n- **24 h hard staleness, 10 min renewal, as constants with no env knob.** Adding a `BrokerConfig` field touches every struct literal in the tests for one number. 24 h rides out an overnight outage, and 10 min puts retirement well under the old hour. Easy to make configurable later if an operator needs a shorter fail-closed bound.\n- **A 404 on renewal is treated like any failed fetch** and does not drop keys. Some ingress controllers answer 404 when no backend is up, and treating that as \"tenant deleted\" would turn an outage into refusals for every tenant. A deleted tenant is dropped through the catalog instead.\n- **Renew every cached tenant, not only recently used ones**, so a broker that restarts and loses the CP can still verify forwarded writes for tenants it warmed but has not served yet.\n- **No push of JWKS through the catalog or revocation feed.** Polling at 10 min was enough to meet the goal. A push would cut the retirement window further and could follow later.\n\nSpec-Unaffected: client token verification against cached JWKS; no lease, quorum mark, report, promotion or handoff change.",
+          "timestamp": "2026-11-02T11:28:44-08:00",
+          "tree_id": "9c2dd77baaa88348222669de824ac6d2a0534902",
+          "url": "https://github.com/GetFelix/felix/commit/37476c910a9ad20c7c436d99f5e347f7548efe2a"
+        },
+        "date": 1793648283315,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 703236.22,
+            "range": "19368.41",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 703236.22\nmean: 696847.85\nstdev: 19368.41\ncv: 2.78%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 703236.22,
+            "range": "19368.41",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 703236.22\nmean: 696847.85\nstdev: 19368.41\ncv: 2.78%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 160954.1,
+            "range": "2937.18",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 160954.10\nmean: 161764.34\nstdev: 2937.18\ncv: 1.82%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1609541.02,
+            "range": "29371.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1609541.02\nmean: 1617643.37\nstdev: 29371.79\ncv: 1.82%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
