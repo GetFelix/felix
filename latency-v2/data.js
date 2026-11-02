@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793587145130,
+  "lastUpdate": 1793590785810,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -52536,6 +52536,72 @@ window.BENCHMARK_DATA = {
             "range": "628.81",
             "unit": "us",
             "extra": "trials: 5\nmedian: 568.00\nmean: 1015.60\nstdev: 628.81\ncv: 61.91%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4a98cccb02b51e9d8cbc4029391f0814d9809f6b",
+          "message": "ci: grant the nightly build actions: write so release.yml starts (#1748)\n\nThe scheduled Nightly has failed to start since Oct 31 (runs 41302091135 and the Oct 31 schedule both `startup_failure`), so the `nightly` tag has not moved since 59d58f3d and the companions' nightly checks would test a stale Felix.\n\nCause: #1668 added a `docs-redeploy` job to release.yml with `permissions: actions: write`. nightly.yml calls release.yml, and a called workflow cannot ask for more than its caller grants. GitHub checks that for every job before the run starts, including jobs a nightly skips, so the whole run is rejected. The `build` job now also grants `actions: write`. That is the only scope release.yml uses that the caller did not grant (it also uses contents, id-token and packages, all already granted).\n\nProof: this PR changes nightly.yml, so the Nightly dry run starts on it (it showed `startup_failure` on #1668's and #1734's PRs).",
+          "timestamp": "2026-11-01T19:32:21-08:00",
+          "tree_id": "d1f7bb4d1b122dfbbfa24d8e3c58f5d162a7a8b7",
+          "url": "https://github.com/GetFelix/felix/commit/4a98cccb02b51e9d8cbc4029391f0814d9809f6b"
+        },
+        "date": 1793590779264,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 147,
+            "range": "1.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 147.00\nmean: 147.20\nstdev: 1.10\ncv: 0.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 211,
+            "range": "2.49",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 211.00\nmean: 210.80\nstdev: 2.49\ncv: 1.18%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 259,
+            "range": "37.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 259.00\nmean: 271.20\nstdev: 37.55\ncv: 13.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 196,
+            "range": "12.24",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 196.00\nmean: 201.20\nstdev: 12.24\ncv: 6.08%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 386,
+            "range": "189.44",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 386.00\nmean: 471.20\nstdev: 189.44\ncv: 40.20%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 522,
+            "range": "545.65",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 522.00\nmean: 760.00\nstdev: 545.65\ncv: 71.80%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
