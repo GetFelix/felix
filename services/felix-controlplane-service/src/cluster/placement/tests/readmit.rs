@@ -117,7 +117,7 @@ fn plan_for(
         &[stream],
         &[],
         nodes,
-        &[existing.clone()],
+        std::slice::from_ref(existing),
         positions,
         policy,
     );
@@ -233,7 +233,7 @@ fn a_trim_does_not_count_a_learner_toward_the_rest_holding_the_tail() {
             &[stream],
             &[],
             &nodes,
-            &[fenced.clone()],
+            std::slice::from_ref(&fenced),
             &positions,
             policy,
         );
