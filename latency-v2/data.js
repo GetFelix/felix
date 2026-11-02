@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793590785810,
+  "lastUpdate": 1793591224820,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -52602,6 +52602,72 @@ window.BENCHMARK_DATA = {
             "range": "545.65",
             "unit": "us",
             "extra": "trials: 5\nmedian: 522.00\nmean: 760.00\nstdev: 545.65\ncv: 71.80%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f9ad5b84d5786b533b5b0931af91ddf0b31885de",
+          "message": "fix(controlplane): run raft store commits on the blocking pool (#1705) (#1743)\n\n* fix(controlplane): run raft store commits on the blocking pool (#1705)\n\nEvery redb commit fsyncs. The log and state machine stores ran them inline\nin openraft's async storage calls, so a slow disk held a runtime worker for\nthe whole flush and stalled every task queued on it, heartbeats and RPC\nhandlers included. Writes now run under spawn_blocking; openraft still\nawaits each one before the next, so order and durability are unchanged.\n\n* docs(controlplane): note why raft store commits run on the blocking pool (#1705)\n\n* docs(controlplane): say which tasks a blocking raft commit stalled (#1705)",
+          "timestamp": "2026-11-01T19:41:41-08:00",
+          "tree_id": "d6c32ea7a3907f5282ef5fafda1d989b44d17484",
+          "url": "https://github.com/GetFelix/felix/commit/f9ad5b84d5786b533b5b0931af91ddf0b31885de"
+        },
+        "date": 1793591220228,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 65,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 65.00\nmean: 65.20\nstdev: 0.84\ncv: 1.28%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 88,
+            "range": "2.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 88.00\nmean: 87.60\nstdev: 2.07\ncv: 2.37%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 112,
+            "range": "33.38",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 112.00\nmean: 125.40\nstdev: 33.38\ncv: 26.62%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 83,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 83.00\nmean: 82.60\nstdev: 0.89\ncv: 1.08%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 183,
+            "range": "14.69",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 183.00\nmean: 192.20\nstdev: 14.69\ncv: 7.64%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 398,
+            "range": "611.32",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 398.00\nmean: 703.60\nstdev: 611.32\ncv: 86.88%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
