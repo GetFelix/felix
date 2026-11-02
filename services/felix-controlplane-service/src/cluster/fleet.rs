@@ -170,7 +170,8 @@ pub(crate) fn check_prerequisites(
 /// and adopts elected leaders, and `joint_fence_ready` says `joint_fence` may be
 /// finalized at all.
 /// Any other feature passes. Under Raft the finalize also needs every member
-/// at metadata level 21, which the store checks as it proposes.
+/// at metadata level 21 (`replica_election`) or 23 (`joint_fence`), which the
+/// store checks as it proposes.
 ///
 /// Checked when the operator asks, like [`check_prerequisites`]: a Raft member
 /// applying the finalize must not decide differently from one on an older
@@ -220,9 +221,10 @@ where
 /// the wiped-voter guard (S8) are in too.
 pub(crate) const ELECTION_METADATA_LEVEL_READY: bool = false;
 
-/// Whether `joint_fence` may be finalized. A finalize is irreversible, and a
-/// joint fence needs the control plane to re-admit learners and placement to
-/// skip them (#1737). Stays false until both merge.
+/// Whether `joint_fence` may be finalized. A finalize is irreversible. The
+/// control plane now re-admits a replaced copy and keeps placement off a
+/// learner (#1737), but this stays false until an end-to-end cluster test
+/// shows it and `NON_VOTING_READY` in `quorum.rs` is flipped.
 pub(crate) const JOINT_FENCE_READY: bool = false;
 
 /// The features a cluster created on this release starts with. A finalize

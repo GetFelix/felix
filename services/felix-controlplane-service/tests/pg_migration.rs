@@ -213,6 +213,7 @@ async fn seed(store: &(dyn ControlPlaneAuthStore + Send + Sync)) {
             incarnation: 0,
             fence_storage_ids: Default::default(),
             member_storage_ids: Default::default(),
+            learners: Default::default(),
             pending_set: None,
         })
         .await

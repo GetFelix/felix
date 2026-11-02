@@ -26,6 +26,7 @@ async fn a_requested_pass_runs_without_waiting_for_the_interval() {
             incarnation: 0,
             fence_storage_ids: Default::default(),
             member_storage_ids: Default::default(),
+            learners: Default::default(),
             pending_set: None,
         })
         .await
@@ -76,6 +77,7 @@ async fn a_requested_pass_runs_without_waiting_for_the_interval() {
                 node_incarnations: Default::default(),
                 follower_storage: Default::default(),
                 joint_start_acked: None,
+                holds_start: Default::default(),
             },
             &fenced.leader,
         )

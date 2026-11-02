@@ -317,6 +317,7 @@ fn plan_once(
         .collect();
     let unpaced_max = policy.fence_max_lag_records;
     let (replica_election, fenced_caches) = (policy.replica_election, policy.fenced_caches);
+    let joint_fence = policy.joint_fence;
     let election_hold = policy.election_hold_millis;
     let mut moves = Moves::counting(existing, policy, &|assignment| {
         let replication_factor = placeable_of
@@ -430,6 +431,10 @@ fn plan_once(
             && !deposed
             && !replaced
         {
+            if let Some(decision) = readmit(existing, joint_fence, &is_live, caught_up) {
+                shards.push(ShardPlan { key, decision });
+                continue;
+            }
             let is_lost = |id: &str| is_lost(id) || is_halted_lost(existing, id);
             let decision = move_step(
                 &key,
@@ -639,6 +644,37 @@ fn plan_once(
 
 /// Who leads `assignment` once the move in flight completes: a live staged
 /// successor, else the leader.
+/// Re-admit a member whose storage was replaced, once its leader reports it
+/// caught up under its new identity: the same set is written at the next
+/// generation, which names the new identity and holds the member as a
+/// learner until it shows that generation's start record. Only for a shard
+/// with a live leader and nothing else in progress, and one member per pass.
+fn readmit(
+    existing: &ShardAssignment,
+    joint_fence: bool,
+    is_live: &dyn Fn(&str) -> bool,
+    caught_up: &dyn CaughtUp,
+) -> Option<Decision> {
+    if !joint_fence
+        || existing.state == ShardState::Draining
+        || existing.successor.is_some()
+        || existing.joining.is_some()
+        || existing.pending_set.is_some()
+        || !is_live(&existing.leader)
+    {
+        return None;
+    }
+    let node = caught_up.readmittable(&existing.key, existing.generation, &existing.leader)?;
+    Some(Decision::Move(
+        MoveStep::Readmit { node },
+        ShardAssignment {
+            generation: 0,
+            fence_storage_ids: Default::default(),
+            ..existing.clone()
+        },
+    ))
+}
+
 fn will_lead<'a>(assignment: &'a ShardAssignment, is_live: &dyn Fn(&str) -> bool) -> &'a str {
     assignment
         .successor
@@ -692,6 +728,7 @@ pub fn assignment_for(key: &ShardKey, leader: &str, replicas: Vec<String>) -> Sh
         incarnation: 0,
         fence_storage_ids: Default::default(),
         member_storage_ids: Default::default(),
+        learners: Default::default(),
         pending_set: None,
     }
 }
