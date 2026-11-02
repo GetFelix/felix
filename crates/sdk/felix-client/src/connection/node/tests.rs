@@ -130,6 +130,7 @@ fn limits(ceiling: usize, streams_per_conn: usize) -> NodeLimits {
         role: "test",
         ceiling,
         streams_per_conn,
+        spread: false,
         max_frame_bytes: MAX_FRAME,
         event_router_max_pending: 16,
     }
@@ -210,18 +211,32 @@ async fn grows_to_the_ceiling_when_stream_credit_runs_out() -> Result<()> {
     Ok(())
 }
 
-/// Streams opened after the pool go to the least-loaded connection, so a
-/// stream's per-shard publish streams land on different connections, and
-/// so on different listeners when the broker has several.
+/// A spreading set opens a connection per stream until the ceiling, and no
+/// sooner: one stream holds one connection. Later streams then go to the
+/// least-loaded connection, so a stream's per-shard publish streams land on
+/// different connections, and on different listeners when the broker has
+/// several.
 #[tokio::test]
-async fn later_streams_spread_over_a_filled_pool() -> Result<()> {
+async fn a_spreading_set_opens_connections_only_as_streams_need_them() -> Result<()> {
     let (broker, endpoint) = EchoBroker::start(1024)?;
-    let node = node(&broker, endpoint, limits(4, 1024));
-    node.fill(4, false).await?;
-    let mut pool = Vec::new();
-    for _ in 0..8 {
+    let node = node(
+        &broker,
+        endpoint,
+        NodeLimits {
+            spread: true,
+            ..limits(4, 1024)
+        },
+    );
+    let mut pool = vec![node.open().await?];
+    assert_eq!(broker.accepted(), 1, "one stream, one connection");
+    for _ in 0..7 {
         pool.push(node.open().await?);
     }
+    assert_eq!(
+        broker.accepted(),
+        4,
+        "one connection per stream up to the ceiling"
+    );
     let mut later = Vec::new();
     for _ in 0..4 {
         later.push(node.open().await?);

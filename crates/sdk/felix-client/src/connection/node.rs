@@ -6,7 +6,9 @@
 //! when every existing one is saturated -- past its stream budget, or out of
 //! the stream credit the broker granted (QUIC `MAX_STREAMS`). The ceiling
 //! bounds how far that goes; at the ceiling a new stream waits for whichever
-//! connection gets credit back first, as QUIC itself would.
+//! connection gets credit back first, as QUIC itself would. A set that spreads
+//! instead adds a connection for each new stream while every one carries a
+//! stream, up to the ceiling: a pool that opens only the connections in use.
 //!
 //! What a stream carries is its owner's business: a publish writer, a cache
 //! worker and a subscription all hold a stream and its lease the same way.
@@ -41,6 +43,7 @@ pub(crate) struct NodeConnections {
     role: &'static str,
     ceiling: usize,
     streams_per_conn: usize,
+    spread: bool,
     max_frame_bytes: usize,
     event_router_max_pending: usize,
     state: Mutex<State>,
@@ -66,6 +69,7 @@ impl NodeConnections {
             role: limits.role,
             ceiling: limits.ceiling.max(1),
             streams_per_conn: limits.streams_per_conn.max(1),
+            spread: limits.spread,
             max_frame_bytes: limits.max_frame_bytes,
             event_router_max_pending: limits.event_router_max_pending,
             state: Mutex::new(State {
@@ -102,23 +106,6 @@ impl NodeConnections {
             );
         }
         self.state.lock().expect("node state").targets = targets;
-    }
-
-    /// Open connections until there are `count`, up to the ceiling.
-    ///
-    /// For a set whose connections should exist before any stream needs
-    /// them. `announce` authenticates each one up front, because the broker
-    /// closes a connection that authenticates nothing within its timeout and
-    /// such a connection may wait a long time for its first stream.
-    pub(crate) async fn fill(&self, count: usize, announce: bool) -> Result<()> {
-        let _growing = self.growing.lock().await;
-        while self.connection_count() < count.min(self.ceiling) {
-            let link = self.connect().await?;
-            if announce {
-                self.credentials.announce(&link.connection).await?;
-            }
-        }
-        Ok(())
     }
 
     /// Open and authenticate a stream on the connection with the most room,
@@ -161,6 +148,20 @@ impl NodeConnections {
                 candidates.sort_by_key(|link| link.load());
                 (candidates, state.links.len() < self.ceiling, state.grown)
             };
+            // Spreading: a connection is added while every one already
+            // carries a stream, so streams land one per connection up to the
+            // ceiling, and connections open only as streams need them.
+            let spread_first =
+                self.spread && can_grow && candidates.first().is_none_or(|link| link.load() > 0);
+            if spread_first {
+                match self.grow(grown).await {
+                    Ok(()) => continue,
+                    Err(err) if !candidates.is_empty() => {
+                        debug!(role = self.role, error = %err, "could not add a connection; using an existing one");
+                    }
+                    Err(err) => return Err(err),
+                }
+            }
             for link in &candidates {
                 if link.load() >= self.streams_per_conn {
                     break;
@@ -256,6 +257,10 @@ pub(crate) struct NodeLimits {
     pub(crate) ceiling: usize,
     /// Streams a connection carries before another is opened beside it.
     pub(crate) streams_per_conn: usize,
+    /// Open a new connection for each stream until the ceiling, instead of
+    /// filling one first. Spreads the work over connections (and listeners)
+    /// without opening any a stream does not need.
+    pub(crate) spread: bool,
     pub(crate) max_frame_bytes: usize,
     pub(crate) event_router_max_pending: usize,
 }
