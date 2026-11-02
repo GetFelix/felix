@@ -6,6 +6,7 @@ mod ack;
 mod admission;
 mod api;
 mod encoding;
+mod headers;
 mod routing;
 mod shard_streams;
 mod stub_broker;
@@ -57,6 +58,7 @@ pub(super) fn fake_worker() -> PublishWorker {
         publish_window: 0,
         takes_width: true,
         takes_shard: true,
+        takes_record_headers: false,
     }
 }
 

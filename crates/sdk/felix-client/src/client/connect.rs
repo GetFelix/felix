@@ -287,7 +287,8 @@ impl Connection {
             Credentials::new(auth_tenant_id.clone(), client_config.tokens()?)
                 .with_ack_on_commit(client_config.ack_on_commit)
                 .with_publishers(client_config.publishers)
-                .with_timestamps(client_config.timestamps),
+                .with_timestamps(client_config.timestamps)
+                .with_record_headers(client_config.record_headers),
         );
         let publish_pool_size = client_config.publish_conn_pool;
         let publish_streams_per_conn = client_config.publish_streams_per_conn;
@@ -759,6 +760,7 @@ pub(super) fn spawn_publish_worker(
             negotiated.server_features_hi,
             felix_wire::FEATURE_EXPLICIT_SHARD,
         ),
+        takes_record_headers: negotiated.server_flags_ext & felix_wire::EXT_RECORD_HEADERS != 0,
     }
 }
 

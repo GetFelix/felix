@@ -608,6 +608,67 @@ Each shard's batch uses that shard's own publish stream while the client has
 room for one (`FELIX_PUB_SHARD_STREAMS`), so a slow shard does not hold up the
 others.
 
+### Keys and headers
+
+A record can carry a key and headers: small metadata such as a content type or
+a trace id that travels with the payload and comes back on `event.headers`.
+Build a `RecordHeaders` and publish with `publish_with_headers`, or
+`publish_batch_with_headers` for a batch with one `RecordHeaders` per payload
+(an empty one leaves that record plain).
+
+```rust
+use felix_client::{RecordHeaders, RecordHeadersError};
+
+let headers = RecordHeaders {
+    key: Some(Bytes::from_static(b"order-7")),
+    headers: vec![
+        ("content-type".to_string(), Bytes::from_static(b"application/json")),
+        ("trace-id".to_string(), Bytes::from_static(b"4bf92f35")),
+    ],
+};
+let payload = br#"{"total": 42}"#.to_vec();
+match client
+    .publish_with_headers("acme", "prod", "orders", headers, payload.clone(), AckMode::PerBatch)
+    .await
+{
+    Ok(_) => {}
+    // The broker predates record headers. Nothing was sent, so the payload
+    // can go without them if the consumers can do without.
+    Err(err) if matches!(
+        err.downcast_ref::<RecordHeadersError>(),
+        Some(RecordHeadersError::Unsupported)
+    ) => {
+        client
+            .publish("acme", "prod", "orders", payload, AckMode::PerBatch)
+            .await?;
+    }
+    Err(err) => return Err(err),
+}
+
+let mut orders = client.subscribe("acme", "prod", "orders").await?;
+while let Some(event) = orders.next_event().await? {
+    let Some(headers) = &event.headers else {
+        continue; // published without a key or headers
+    };
+    for (name, value) in &headers.headers {
+        tracing::info!(name, value = ?value, "header");
+    }
+}
+```
+
+- **The key does not route.** It belongs to the record. A record goes to the
+  shard `publish` would send it to, whatever its key.
+- **Names.** A header name is UTF-8 and not empty, and a name may repeat.
+  Names starting with `felix.` are reserved for the broker and refused with
+  `RecordHeadersError::ReservedName` before anything is sent.
+- **Older brokers.** A publish with headers against a broker that does not
+  accept them fails with `RecordHeadersError::Unsupported` and sends nothing,
+  so headers are never dropped quietly. A publish with no headers works
+  everywhere. On the read side `event.headers` is `None` there.
+- **Opting out.** `record_headers` in the `ClientConfig` is on by default. Set
+  it to `false` and the client neither offers nor accepts headers.
+- Idempotent producers and routing keys do not carry headers.
+
 ### Publisher API
 
 `Publisher` belongs to the single-connection `Connection`, which applications
@@ -939,6 +1000,7 @@ progress keeps running in the background and the next call picks it up.
 
 ```rust
 use bytes::Bytes;
+use felix_client::RecordHeaders;
 use std::sync::Arc;
 
 pub struct Event {
@@ -958,6 +1020,9 @@ pub struct Event {
     /// When the broker appended it, in microseconds since the Unix epoch,
     /// when `ClientConfig::timestamps` asked. `None` on an in-memory stream.
     pub timestamp_micros: Option<u64>,
+    /// The key and headers it was published with. `None` for a record that
+    /// had neither, and against a broker that did not accept record headers.
+    pub headers: Option<RecordHeaders>,
 }
 ```
 
