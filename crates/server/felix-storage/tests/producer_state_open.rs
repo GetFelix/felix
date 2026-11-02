@@ -46,6 +46,7 @@ async fn write(dir: &std::path::Path, marked: bool) {
                 timestamp_micros: 1,
                 mark,
                 publisher: None,
+                headers: None,
             })
             .collect();
         log.append(&records).await.expect("append");

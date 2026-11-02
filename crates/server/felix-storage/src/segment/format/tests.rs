@@ -33,7 +33,7 @@ fn segment_header_is_a_stable_golden_vector() {
 #[test]
 fn record_is_a_stable_golden_vector() {
     let mut buf = Vec::new();
-    encode_record(&mut buf, 7, 9, b"hi", None, &Default::default());
+    encode_record(&mut buf, 7, 9, b"hi", None, None, &Default::default());
     assert_eq!(
         buf,
         vec![
@@ -50,7 +50,15 @@ fn record_is_a_stable_golden_vector() {
 #[test]
 fn record_round_trips_every_field() {
     let mut buf = Vec::new();
-    let written = encode_record(&mut buf, 9, 1234, b"payload", None, &Default::default());
+    let written = encode_record(
+        &mut buf,
+        9,
+        1234,
+        b"payload",
+        None,
+        None,
+        &Default::default(),
+    );
     let (decoded, consumed) = decode_record(&buf).expect("decode");
     assert_eq!(written, consumed);
     assert_eq!(consumed, buf.len() as u64);
@@ -63,7 +71,7 @@ fn record_round_trips_every_field() {
 #[test]
 fn zero_length_payload_round_trips() {
     let mut buf = Vec::new();
-    encode_record(&mut buf, 0, 0, b"", None, &Default::default());
+    encode_record(&mut buf, 0, 0, b"", None, None, &Default::default());
     let (decoded, consumed) = decode_record(&buf).expect("decode");
     assert_eq!(consumed, RECORD_HEADER_LEN);
     assert!(decoded.payload.is_empty());
@@ -72,8 +80,8 @@ fn zero_length_payload_round_trips() {
 #[test]
 fn records_decode_back_to_back() {
     let mut buf = Vec::new();
-    encode_record(&mut buf, 0, 1, b"a", None, &Default::default());
-    encode_record(&mut buf, 1, 2, b"bb", None, &Default::default());
+    encode_record(&mut buf, 0, 1, b"a", None, None, &Default::default());
+    encode_record(&mut buf, 1, 2, b"bb", None, None, &Default::default());
     let (first, consumed) = decode_record(&buf).expect("first");
     assert_eq!(first.header.offset, 0);
     let (second, _) = decode_record(&buf[consumed as usize..]).expect("second");
@@ -84,7 +92,7 @@ fn records_decode_back_to_back() {
 #[test]
 fn truncation_at_every_boundary_reports_truncated() {
     let mut buf = Vec::new();
-    encode_record(&mut buf, 3, 4, b"abcd", None, &Default::default());
+    encode_record(&mut buf, 3, 4, b"abcd", None, None, &Default::default());
     for cut in 0..buf.len() {
         let err = decode_record(&buf[..cut]).expect_err("short buffer");
         assert!(err.is_truncation(), "cut {cut} gave {err}");
@@ -95,7 +103,7 @@ fn truncation_at_every_boundary_reports_truncated() {
 #[test]
 fn payload_corruption_fails_the_checksum() {
     let mut buf = Vec::new();
-    encode_record(&mut buf, 0, 0, b"payload", None, &Default::default());
+    encode_record(&mut buf, 0, 0, b"payload", None, None, &Default::default());
     let last = buf.len() - 1;
     buf[last] ^= 0xFF;
     let err = decode_record(&buf).expect_err("corrupt payload");
@@ -106,7 +114,7 @@ fn payload_corruption_fails_the_checksum() {
 #[test]
 fn header_corruption_fails_the_header_checksum() {
     let mut buf = Vec::new();
-    encode_record(&mut buf, 0, 0, b"payload", None, &Default::default());
+    encode_record(&mut buf, 0, 0, b"payload", None, None, &Default::default());
     // Flip a bit in the timestamp. The header checksum covers it, so this
     // is caught without reading the payload at all.
     buf[12] ^= 0x01;
@@ -120,7 +128,7 @@ fn header_corruption_fails_the_header_checksum() {
 #[test]
 fn a_corrupt_length_is_caught_by_the_header_checksum() {
     let mut buf = Vec::new();
-    encode_record(&mut buf, 4, 5, b"payload", None, &Default::default());
+    encode_record(&mut buf, 4, 5, b"payload", None, None, &Default::default());
     // Damage only the length field. Before the header checksum this was
     // indistinguishable from an unfinished write: the claimed extent ran
     // past the data, so recovery truncated an acknowledged record. Now the
@@ -137,24 +145,30 @@ fn a_corrupt_length_is_caught_by_the_header_checksum() {
 fn oversized_length_is_rejected_before_allocating() {
     // A header whose length is impossible but whose checksum is valid: the
     // shape that would reach an allocation if the bound were not checked.
-    // The largest length the flag bits leave room for.
+    // The largest length the flag bits leave room for before v8. From v8
+    // bit 26 is a flag, so no length is too large.
     let impossible = (1u32 << 27) - 1;
     let mut buf = vec![0u8; RECORD_HEADER_LEN as usize];
     buf[0..4].copy_from_slice(&impossible.to_be_bytes());
     let header_crc = crc32(&[&buf[0..20]]);
     buf[20..24].copy_from_slice(&header_crc.to_be_bytes());
 
-    let err = decode_record(&buf).expect_err("oversized");
-    assert!(
-        matches!(
-            err.kind,
-            CorruptionKind::RecordTooLarge {
-                payload_len,
-                limit: MAX_PAYLOAD_BYTES,
-            } if payload_len == impossible
-        ),
-        "got {err}"
-    );
+    for version in OLDEST_READABLE_VERSION..HEADERS_VERSION {
+        let err = RecordHeader::decode_in(&buf, version).expect_err("oversized");
+        assert!(
+            matches!(
+                err.kind,
+                CorruptionKind::RecordTooLarge {
+                    payload_len,
+                    limit: MAX_PAYLOAD_BYTES,
+                } if payload_len == impossible
+            ),
+            "v{version}: {err}"
+        );
+    }
+    let header = RecordHeader::decode(&buf).expect("v8");
+    assert_eq!(header.payload_len, MAX_PAYLOAD_BYTES - 1);
+    assert!(header.has_headers);
 }
 
 #[test]
@@ -173,7 +187,7 @@ fn a_garbage_header_is_rejected_before_its_length_is_believed() {
 fn max_size_payload_round_trips() {
     let payload = vec![0xA5u8; MAX_PAYLOAD_BYTES as usize];
     let mut buf = Vec::new();
-    encode_record(&mut buf, 0, 0, &payload, None, &Default::default());
+    encode_record(&mut buf, 0, 0, &payload, None, None, &Default::default());
     let (decoded, _) = decode_record(&buf).expect("decode");
     assert_eq!(decoded.header.payload_len, MAX_PAYLOAD_BYTES);
     assert_eq!(decoded.payload.len(), payload.len());
@@ -182,7 +196,15 @@ fn max_size_payload_round_trips() {
 #[test]
 fn a_header_alone_locates_the_next_record() {
     let mut buf = Vec::new();
-    let written = encode_record(&mut buf, 0, 0, b"some payload", None, &Default::default());
+    let written = encode_record(
+        &mut buf,
+        0,
+        0,
+        b"some payload",
+        None,
+        None,
+        &Default::default(),
+    );
     // Only the header bytes are available, yet the next position is known
     // without ever touching the payload.
     let header = RecordHeader::decode(&buf[..RECORD_HEADER_LEN as usize]).expect("header");
@@ -256,10 +278,10 @@ fn index_header_rejects_bad_magic_and_version() {
         CorruptionKind::IndexMagic { .. }
     ));
     let mut bad = good;
-    bad[4..6].copy_from_slice(&8u16.to_be_bytes());
+    bad[4..6].copy_from_slice(&9u16.to_be_bytes());
     assert!(matches!(
         IndexHeader::decode(&bad).expect_err("version").kind,
-        CorruptionKind::IndexVersion { found: 8 }
+        CorruptionKind::IndexVersion { found: 9 }
     ));
 }
 
@@ -284,9 +306,9 @@ fn a_producer_mark_round_trips_and_is_covered_by_the_checksum() {
         len: 2,
     });
     let mut buf = Vec::new();
-    let first = encode_record(&mut buf, 10, 1, b"a", None, &opens);
+    let first = encode_record(&mut buf, 10, 1, b"a", None, None, &opens);
     assert_eq!(first, RECORD_HEADER_LEN + PRODUCER_TAG_LEN + 1);
-    encode_record(&mut buf, 11, 1, b"b", None, &RecordMark::Continues);
+    encode_record(&mut buf, 11, 1, b"b", None, None, &RecordMark::Continues);
 
     let (decoded, consumed) = decode_record(&buf).expect("first");
     assert_eq!(
@@ -323,6 +345,7 @@ fn a_generation_start_round_trips_and_is_one_kind_only() {
         1,
         &7u64.to_be_bytes(),
         None,
+        None,
         &RecordMark::GenerationStart,
     );
     assert_eq!(len, RECORD_HEADER_LEN + 8);
@@ -334,7 +357,7 @@ fn a_generation_start_round_trips_and_is_one_kind_only() {
 
     // Two kinds at once is not a record this build wrote.
     let mut both = Vec::new();
-    encode_record(&mut both, 4, 1, b"x", None, &RecordMark::Continues);
+    encode_record(&mut both, 4, 1, b"x", None, None, &RecordMark::Continues);
     both[0] |= 0x20;
     let crc = crc32(&[&both[0..20]]);
     both[20..24].copy_from_slice(&crc.to_be_bytes());
@@ -347,7 +370,7 @@ fn a_generation_start_round_trips_and_is_one_kind_only() {
 #[test]
 fn a_commit_record_round_trips_and_is_one_kind_only() {
     let mut buf = Vec::new();
-    let len = encode_record(&mut buf, 9, 1, b"commit", None, &RecordMark::Commit);
+    let len = encode_record(&mut buf, 9, 1, b"commit", None, None, &RecordMark::Commit);
     assert_eq!(len, RECORD_HEADER_LEN + 6);
     let (decoded, consumed) = decode_record(&buf).expect("decode");
     assert_eq!(
@@ -397,8 +420,8 @@ fn a_record_carries_its_publisher_with_any_mark() {
     });
     for mark in [RecordMark::None, opens, RecordMark::Commit] {
         let mut buf = Vec::new();
-        let len = encode_record(&mut buf, 3, 4, b"event", Some(b"alice"), &mark);
-        assert_eq!(len, record_len(body_len(5, Some(b"alice")), &mark));
+        let len = encode_record(&mut buf, 3, 4, b"event", None, Some(b"alice"), &mark);
+        assert_eq!(len, record_len(body_len(5, None, Some(b"alice")), &mark));
         let (decoded, consumed) = decode_record(&buf).expect("decode");
         assert_eq!(consumed, len);
         assert_eq!(decoded.payload.as_ref(), b"event");
@@ -408,7 +431,7 @@ fn a_record_carries_its_publisher_with_any_mark() {
 
     // An empty publisher is still a publisher: one length byte.
     let mut buf = Vec::new();
-    let len = encode_record(&mut buf, 0, 0, b"x", Some(b""), &RecordMark::None);
+    let len = encode_record(&mut buf, 0, 0, b"x", None, Some(b""), &RecordMark::None);
     assert_eq!(len, RECORD_HEADER_LEN + 2);
     let (decoded, _) = decode_record(&buf).expect("decode");
     assert_eq!(decoded.publisher.as_deref(), Some(&b""[..]));
@@ -418,7 +441,7 @@ fn a_record_carries_its_publisher_with_any_mark() {
 #[test]
 fn a_record_without_a_publisher_is_unchanged() {
     let mut buf = Vec::new();
-    encode_record(&mut buf, 7, 9, b"hi", None, &RecordMark::None);
+    encode_record(&mut buf, 7, 9, b"hi", None, None, &RecordMark::None);
     assert_eq!(buf[0..4], [0x00, 0x00, 0x00, 0x02]);
     let (decoded, _) = decode_record(&buf).expect("decode");
     assert_eq!(decoded.publisher, None);
@@ -429,7 +452,7 @@ fn a_record_without_a_publisher_is_unchanged() {
 #[test]
 fn a_publisher_longer_than_its_body_is_refused() {
     let mut buf = Vec::new();
-    encode_record(&mut buf, 0, 0, b"", Some(b"ab"), &RecordMark::None);
+    encode_record(&mut buf, 0, 0, b"", None, Some(b"ab"), &RecordMark::None);
     let last = buf.len() - 1;
     buf[last] = 9;
     let crc = crc32(&[&buf[0..24], &buf[RECORD_HEADER_LEN as usize..]]);
@@ -452,7 +475,7 @@ fn only_a_v6_segment_holds_publishers() {
 #[test]
 fn a_record_with_a_publisher_is_a_stable_golden_vector() {
     let mut buf = Vec::new();
-    encode_record(&mut buf, 7, 9, b"hi", Some(b"al"), &RecordMark::None);
+    encode_record(&mut buf, 7, 9, b"hi", None, Some(b"al"), &RecordMark::None);
     assert_eq!(
         buf,
         [
@@ -542,7 +565,7 @@ fn every_older_record_kind_is_a_stable_golden_vector() {
     ];
     for (mark, publisher, expected) in cases {
         let mut buf = Vec::new();
-        encode_record(&mut buf, 7, 9, b"hi", publisher, &mark);
+        encode_record(&mut buf, 7, 9, b"hi", None, publisher, &mark);
         assert_eq!(buf, expected, "{mark:?}");
         let (decoded, _) = decode_record(&buf).expect("decode");
         assert_eq!(decoded.mark, mark);
@@ -552,13 +575,14 @@ fn every_older_record_kind_is_a_stable_golden_vector() {
 /// The header's version and CRC for every version this build reads.
 #[test]
 fn every_segment_header_version_is_a_stable_golden_vector() {
-    let crcs: [(u16, [u8; 4]); 6] = [
+    let crcs: [(u16, [u8; 4]); 7] = [
         (2, [0x7A, 0x09, 0xE5, 0xB1]),
         (3, [0xAD, 0xEB, 0x65, 0xE9]),
         (4, [0xE7, 0xD5, 0xEE, 0xA2]),
         (5, [0x30, 0x37, 0x6E, 0xFA]),
         (6, [0x93, 0x61, 0xE8, 0x53]),
         (7, [0x44, 0x83, 0x68, 0x0B]),
+        (8, [0x07, 0x1C, 0xFE, 0xC5]),
     ];
     for (version, crc) in crcs {
         let bytes = SegmentHeader::at_version(1, 2, version).encode();
@@ -567,11 +591,11 @@ fn every_segment_header_version_is_a_stable_golden_vector() {
         let decoded = SegmentHeader::decode(&bytes).expect("decodes");
         assert_eq!(decoded.holds_trims(), version >= TRIM_VERSION, "v{version}");
     }
-    let mut v8 = SegmentHeader::at_version(1, 2, 8);
-    v8.version = 8;
+    let mut v9 = SegmentHeader::at_version(1, 2, 8);
+    v9.version = 9;
     assert!(matches!(
-        SegmentHeader::decode(&v8.encode()).expect_err("v8").kind,
-        CorruptionKind::SegmentVersion { found: 8 }
+        SegmentHeader::decode(&v9.encode()).expect_err("v9").kind,
+        CorruptionKind::SegmentVersion { found: 9 }
     ));
 }
 
@@ -580,7 +604,15 @@ fn every_segment_header_version_is_a_stable_golden_vector() {
 #[test]
 fn a_trim_record_is_a_stable_golden_vector() {
     let mut buf = Vec::new();
-    let len = encode_record(&mut buf, 7, 9, b"hi", None, &RecordMark::Trim { floor: 5 });
+    let len = encode_record(
+        &mut buf,
+        7,
+        9,
+        b"hi",
+        None,
+        None,
+        &RecordMark::Trim { floor: 5 },
+    );
     assert_eq!(len, RECORD_HEADER_LEN + TRIM_TAG_LEN + 2);
     assert_eq!(
         buf,
@@ -601,8 +633,8 @@ fn a_trim_record_round_trips_with_and_without_a_publisher() {
     for publisher in [None, Some(&b"alice"[..])] {
         let mark = RecordMark::Trim { floor: 40 };
         let mut buf = Vec::new();
-        let len = encode_record(&mut buf, 41, 3, b"headers", publisher, &mark);
-        assert_eq!(len, record_len(body_len(7, publisher), &mark));
+        let len = encode_record(&mut buf, 41, 3, b"headers", None, publisher, &mark);
+        assert_eq!(len, record_len(body_len(7, None, publisher), &mark));
         let (decoded, consumed) = decode_record(&buf).expect("decode");
         assert_eq!(consumed, len);
         assert_eq!(decoded.header.kind, RecordKind::Trim);
@@ -619,7 +651,15 @@ fn a_trim_record_round_trips_with_and_without_a_publisher() {
 #[test]
 fn a_damaged_trim_floor_fails_the_checksum() {
     let mut buf = Vec::new();
-    encode_record(&mut buf, 4, 1, b"", None, &RecordMark::Trim { floor: 2 });
+    encode_record(
+        &mut buf,
+        4,
+        1,
+        b"",
+        None,
+        None,
+        &RecordMark::Trim { floor: 2 },
+    );
     buf[RECORD_HEADER_LEN as usize + 7] ^= 1;
     assert!(matches!(
         decode_record(&buf).expect_err("damaged floor").kind,
@@ -638,6 +678,7 @@ fn a_trim_is_record_flags_before_v7_and_other_kind_pairs_always_are() {
         4,
         1,
         b"x",
+        None,
         Some(b"a"),
         &RecordMark::Trim { floor: 2 },
     );
@@ -652,7 +693,7 @@ fn a_trim_is_record_flags_before_v7_and_other_kind_pairs_always_are() {
 
     for kinds in [0xC0u8, 0xA0, 0x90, 0x60, 0x50, 0x70, 0xB0, 0xF0] {
         let mut both = Vec::new();
-        encode_record(&mut both, 4, 1, b"x", None, &RecordMark::None);
+        encode_record(&mut both, 4, 1, b"x", None, None, &RecordMark::None);
         both[0] |= kinds;
         let crc = crc32(&[&both[0..20]]);
         both[20..24].copy_from_slice(&crc.to_be_bytes());
@@ -672,7 +713,15 @@ fn a_trim_is_record_flags_before_v7_and_other_kind_pairs_always_are() {
 #[test]
 fn an_oversized_trim_before_v7_is_record_flags_not_too_large() {
     let mut buf = Vec::new();
-    encode_record(&mut buf, 4, 1, b"", None, &RecordMark::Trim { floor: 2 });
+    encode_record(
+        &mut buf,
+        4,
+        1,
+        b"",
+        None,
+        None,
+        &RecordMark::Trim { floor: 2 },
+    );
     let oversized = (MAX_PAYLOAD_BYTES + 1) | 0x3000_0000;
     buf[0..4].copy_from_slice(&oversized.to_be_bytes());
     let crc = crc32(&[&buf[0..20]]);
@@ -692,4 +741,192 @@ fn an_oversized_trim_before_v7_is_record_flags_not_too_large() {
             .kind,
         CorruptionKind::RecordTooLarge { .. }
     ));
+}
+
+/// Pinned bytes for records with a key and headers: bit 26, then the block's
+/// length and the block ahead of the payload. A change here is a format
+/// change: see docs/storage-format.md, "Golden vectors".
+#[test]
+fn a_record_with_headers_is_a_stable_golden_vector() {
+    let prefix = |len_and_flags: [u8; 4], crcs: [u8; 8]| {
+        [
+            &len_and_flags[..],
+            &[0, 0, 0, 0, 0, 0, 0, 7],
+            &[0, 0, 0, 0, 0, 0, 0, 9],
+            &crcs,
+        ]
+        .concat()
+    };
+    type Case = (&'static [u8], Option<&'static [u8]>, Vec<u8>);
+    let cases: [Case; 3] = [
+        (
+            b"k",
+            None,
+            [
+                prefix(
+                    [0x04, 0x00, 0x00, 0x07],
+                    [0x7C, 0x17, 0xD9, 0xF2, 0x7B, 0xA6, 0xA5, 0xA2],
+                ),
+                b"\0\0\0\x01khi".to_vec(),
+            ]
+            .concat(),
+        ),
+        (
+            b"k",
+            Some(b"al"),
+            [
+                prefix(
+                    [0x0C, 0x00, 0x00, 0x0A],
+                    [0xF3, 0x72, 0xAC, 0x52, 0x91, 0xA0, 0x06, 0x9F],
+                ),
+                b"\0\0\0\x01khial\x02".to_vec(),
+            ]
+            .concat(),
+        ),
+        (
+            b"",
+            None,
+            [
+                prefix(
+                    [0x04, 0x00, 0x00, 0x06],
+                    [0xFB, 0xB1, 0x12, 0xB1, 0xEA, 0xC8, 0xB3, 0x3D],
+                ),
+                b"\0\0\0\0hi".to_vec(),
+            ]
+            .concat(),
+        ),
+    ];
+    for (headers, publisher, expected) in cases {
+        let mut buf = Vec::new();
+        let len = encode_record(
+            &mut buf,
+            7,
+            9,
+            b"hi",
+            Some(headers),
+            publisher,
+            &RecordMark::None,
+        );
+        assert_eq!(buf, expected, "{headers:?} {publisher:?}");
+        assert_eq!(
+            len,
+            record_len(body_len(2, Some(headers), publisher), &RecordMark::None)
+        );
+        let (decoded, _) = decode_record(&buf).expect("decode");
+        assert_eq!(decoded.payload, &b"hi"[..]);
+        assert_eq!(decoded.headers.as_deref(), Some(headers));
+        assert_eq!(decoded.publisher.as_deref(), publisher);
+    }
+}
+
+/// Headers combine with every mark, and a record without them is read back
+/// with none.
+#[test]
+fn headers_round_trip_with_any_mark() {
+    let opens = RecordMark::Opens(ProducerBatch {
+        producer_id: 1,
+        sequence: 2,
+        len: 3,
+    });
+    for mark in [
+        RecordMark::None,
+        opens,
+        RecordMark::Continues,
+        RecordMark::Commit,
+        RecordMark::Trim { floor: 4 },
+    ] {
+        for headers in [None, Some(&b"key and headers"[..])] {
+            let mut buf = Vec::new();
+            encode_record(&mut buf, 3, 4, b"payload", headers, Some(b"p"), &mark);
+            let (decoded, used) = decode_record(&buf).expect("decode");
+            assert_eq!(used, buf.len() as u64);
+            assert_eq!(decoded.mark, mark);
+            assert_eq!(decoded.headers.as_deref(), headers);
+            assert_eq!(decoded.payload, &b"payload"[..]);
+            assert_eq!(decoded.publisher.as_deref(), Some(&b"p"[..]));
+        }
+    }
+}
+
+/// Bit 26 with no length under it is a 2^26-byte body any older build could
+/// write, in any segment, never an empty record with headers.
+#[test]
+fn a_legacy_max_size_body_is_not_read_as_headers() {
+    let payload = vec![0u8; MAX_PAYLOAD_BYTES as usize];
+    let mut buf = Vec::new();
+    encode_record(&mut buf, 0, 0, &payload, None, None, &RecordMark::None);
+    assert_eq!(buf[0..4], [0x04, 0x00, 0x00, 0x00]);
+    for version in [3, 7, 8] {
+        let header = RecordHeader::decode_in(&buf, version).expect("decode");
+        assert!(!header.has_headers, "v{version}");
+        assert_eq!(header.payload_len, MAX_PAYLOAD_BYTES);
+    }
+    let (decoded, _) = decode_record(&buf).expect("decode");
+    assert_eq!(decoded.headers, None);
+    // With headers the body stops a byte short, so the two never meet.
+    assert!(body_fits(MAX_PAYLOAD_BYTES as usize, false));
+    assert!(!body_fits(MAX_PAYLOAD_BYTES as usize, true));
+    assert!(body_fits(MAX_PAYLOAD_BYTES as usize - 1, true));
+}
+
+/// Before v8, bit 26 over a non-zero length is the impossible length an older
+/// build refused as too large, so recovery judges it the same way.
+#[test]
+fn headers_before_v8_are_too_large() {
+    let mut buf = Vec::new();
+    encode_record(&mut buf, 0, 0, b"hi", Some(b"k"), None, &RecordMark::None);
+    for version in [3, 6, 7] {
+        assert!(
+            matches!(
+                RecordHeader::decode_in(&buf, version)
+                    .expect_err("old")
+                    .kind,
+                CorruptionKind::RecordTooLarge {
+                    payload_len: 0x0400_0007,
+                    ..
+                }
+            ),
+            "v{version}"
+        );
+        let header = RecordHeader::decode(&buf).expect("decode");
+        assert!(matches!(
+            header.check_version(version).expect_err("old").kind,
+            CorruptionKind::RecordTooLarge {
+                payload_len: 0x0400_0007,
+                ..
+            }
+        ));
+    }
+    let header = RecordHeader::decode_in(&buf, HEADERS_VERSION).expect("v8");
+    assert!(header.has_headers);
+    header
+        .check_version(HEADERS_VERSION)
+        .expect("v8 holds headers");
+}
+
+/// A block length claiming more than the body holds is corruption, never a
+/// short payload.
+#[test]
+fn headers_longer_than_their_body_are_refused() {
+    for publisher in [None, Some(&b"al"[..])] {
+        let mut buf = Vec::new();
+        encode_record(
+            &mut buf,
+            0,
+            0,
+            b"hi",
+            Some(b"k"),
+            publisher,
+            &RecordMark::None,
+        );
+        let at = RECORD_HEADER_LEN as usize;
+        buf[at..at + 4].copy_from_slice(&4u32.to_be_bytes());
+        let crc = crc32(&[&buf[0..24], &buf[at..]]);
+        buf[24..28].copy_from_slice(&crc.to_be_bytes());
+        let body_len = (buf.len() - at) as u32;
+        assert!(matches!(
+            decode_record(&buf).expect_err("misfit").kind,
+            CorruptionKind::RecordHeaders { body_len: found } if found == body_len
+        ));
+    }
 }

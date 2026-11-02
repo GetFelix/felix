@@ -2,6 +2,7 @@ use bytes::Bytes;
 use tempfile::{TempDir, tempdir};
 
 use super::*;
+use crate::segment::format::MAX_PAYLOAD_BYTES;
 use crate::segment::format::crc32;
 use crate::segment::{ScanOutcome, ScanStart, index_file_name, scan_segment};
 
@@ -11,6 +12,7 @@ fn record(payload: &str) -> AppendRecord {
         timestamp_micros: 42,
         mark: Default::default(),
         publisher: None,
+        headers: None,
     }
 }
 
@@ -122,6 +124,7 @@ fn an_oversized_payload_is_rejected_without_writing() {
         timestamp_micros: 0,
         mark: Default::default(),
         publisher: None,
+        headers: None,
     };
     assert!(matches!(
         writer.append(&[huge]).expect_err("oversized"),
@@ -142,6 +145,7 @@ fn a_rejected_batch_leaves_no_partial_records() {
             timestamp_micros: 0,
             mark: Default::default(),
             publisher: None,
+            headers: None,
         },
     ];
     assert!(writer.append(&batch).is_err());
@@ -563,4 +567,87 @@ fn only_a_trim_needs_a_v7_segment() {
             .map(|(offset, mark, _)| (*offset, *mark)),
         Some((batch.len() as u64 - 1, RecordMark::Trim { floor: 0 }))
     );
+}
+
+/// Only a record with a key and headers moves a log onto v8, whatever its
+/// mark, and a segment older than v8 refuses one.
+#[test]
+fn only_headers_need_a_v8_segment() {
+    let keyed = AppendRecord {
+        headers: Some(Box::new(Bytes::from_static(b"key and headers"))),
+        ..record("value")
+    };
+    let dir = tempdir().expect("dir");
+    let mut writer =
+        SegmentWriter::create_at_version(dir.path(), 0, 0, 1, 0, 64, TRIM_VERSION).expect("create");
+    let mut every_older_kind = records_for(6);
+    every_older_kind.push(AppendRecord {
+        mark: RecordMark::Trim { floor: 0 },
+        ..record("t")
+    });
+    assert_eq!(writer.successor_version(&every_older_kind), TRIM_VERSION);
+    assert!(!writer.holds(std::slice::from_ref(&keyed)));
+    assert!(matches!(
+        writer.append(std::slice::from_ref(&keyed)),
+        Err(StorageError::Unsupported(_))
+    ));
+    let trim_with_headers = AppendRecord {
+        mark: RecordMark::Trim { floor: 0 },
+        ..keyed.clone()
+    };
+    assert_eq!(
+        writer.successor_version(&[trim_with_headers]),
+        HEADERS_VERSION
+    );
+
+    let dir = tempdir().expect("dir");
+    let mut writer = SegmentWriter::create_at_version(dir.path(), 0, 0, 1, 0, 64, HEADERS_VERSION)
+        .expect("create");
+    assert!(writer.holds_headers());
+    let mut batch = every_older_kind;
+    batch.push(keyed);
+    batch.push(AppendRecord {
+        mark: RecordMark::Commit,
+        publisher: Some(Bytes::from_static(b"alice")),
+        headers: Some(Box::new(Bytes::new())),
+        ..record("c")
+    });
+    let projected = writer.projected_size(&batch);
+    writer.append(&batch).expect("append");
+    writer.sync().expect("sync");
+    assert_eq!(writer.descriptor().size_bytes, projected);
+    let outcome = scan(&dir);
+    assert_eq!(outcome.record_count, batch.len() as u64);
+    assert!(outcome.torn_tail.is_none());
+    // A plain read leaves the trim out.
+    let read = crate::segment::test_support::read_all(writer.path(), &outcome, 0);
+    let headers: Vec<_> = read.iter().map(|record| record.headers.clone()).collect();
+    let expected: Vec<_> = batch
+        .iter()
+        .filter(|record| !matches!(record.mark, RecordMark::Trim { .. }))
+        .map(|record| record.headers.clone())
+        .collect();
+    assert_eq!(headers, expected);
+}
+
+/// A body with a key and headers stops one byte short of the limit.
+#[test]
+fn headers_on_a_full_size_body_are_refused() {
+    let dir = tempdir().expect("dir");
+    let mut writer = SegmentWriter::create_at_version(dir.path(), 0, 0, 1, 0, 64, HEADERS_VERSION)
+        .expect("create");
+    let full = AppendRecord {
+        payload: Bytes::from(vec![0u8; MAX_PAYLOAD_BYTES as usize - 4]),
+        headers: Some(Box::new(Bytes::new())),
+        ..record("")
+    };
+    assert!(matches!(
+        writer.append(std::slice::from_ref(&full)),
+        Err(StorageError::Unsupported(_))
+    ));
+    let fits = AppendRecord {
+        payload: Bytes::from(vec![0u8; MAX_PAYLOAD_BYTES as usize - 5]),
+        ..full
+    };
+    writer.append(&[fits]).expect("one byte short fits");
 }

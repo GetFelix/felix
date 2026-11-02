@@ -102,6 +102,7 @@ async fn stage_without_committing(
             timestamp_micros: now_millis() * 1000,
             mark: Default::default(),
             publisher: None,
+            headers: None,
         }])
         .await
         .expect("stage");

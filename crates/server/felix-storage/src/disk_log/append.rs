@@ -239,6 +239,9 @@ impl LogInner {
         }
         let mut segments = self.segments.write();
         if segments.would_roll_within(records, self.roll_pending()) {
+            // A refused record must not leave the log on a newer version.
+            // Without a roll, staging the batch refuses it.
+            crate::segment::writer::check_sizes(records)?;
             self.before_inline_roll();
             self.sync_pending_seal()?;
             if let Err(err) = segments.roll_for(records) {
