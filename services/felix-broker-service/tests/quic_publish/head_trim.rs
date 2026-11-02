@@ -52,6 +52,7 @@ impl Session {
                 client_flags: Some(felix_wire::ORIGINAL_V1_FLAGS),
                 client_features: Some(features),
                 client_features_hi: features_hi,
+                client_flags_ext: None,
             })
             .await?;
         match answer {

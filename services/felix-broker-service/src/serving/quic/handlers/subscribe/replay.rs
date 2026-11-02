@@ -437,6 +437,7 @@ pub(super) async fn write_replay_batch<S: EventSink>(
         },
         publisher: batch.publisher.as_deref().filter(|_| format.publisher),
         timestamps: batch.timestamps.as_deref().filter(|_| format.timestamps),
+        record_headers: None,
     };
     let frame =
         felix_wire::binary::encode_event_batch_bytes_with_meta(subscription_id, payloads, meta)?;

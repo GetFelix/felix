@@ -242,6 +242,7 @@ pub fn encode_publish_ack_bytes_at(
 
 /// Decode a publish ack frame.
 pub fn decode_publish_ack(frame: &Frame) -> Result<PublishAck> {
+    super::reject_extension(frame.header.flags)?;
     let mut buf = frame.payload.clone();
     if buf.remaining() < 11 {
         return Err(Error::Incomplete);

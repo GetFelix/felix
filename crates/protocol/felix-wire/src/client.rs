@@ -12,4 +12,5 @@ pub(crate) mod features;
 pub(crate) mod flags;
 pub(crate) mod frame;
 pub(crate) mod message;
+pub(crate) mod record_headers;
 pub mod text;

@@ -156,6 +156,7 @@ fn auth_message(fixture: &AuthFixture) -> Message {
         client_flags: None,
         client_features: None,
         client_features_hi: None,
+        client_flags_ext: None,
     }
 }
 

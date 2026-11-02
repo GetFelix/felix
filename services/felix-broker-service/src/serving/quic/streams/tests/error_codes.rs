@@ -13,6 +13,7 @@ fn auth_offering(fixture: &AuthFixture, features: Option<u32>) -> Message {
         client_flags: Some(felix_wire::KNOWN_FLAGS),
         client_features: features,
         client_features_hi: None,
+        client_flags_ext: None,
     }
 }
 

@@ -175,6 +175,7 @@ impl DeliveryEnvelope {
                     skipped_before,
                     publisher,
                     timestamps: timestamps.as_deref(),
+                    record_headers: None,
                 },
             )?
         };
