@@ -45,6 +45,10 @@ impl Broker {
     /// anywhere but zero is [`BrokerError::UnknownProducer`], and a duplicate
     /// too old to say where it landed is [`BrokerError::SequenceExpired`].
     ///
+    /// `headers` is each record's key and headers block, as for
+    /// [`Broker::claim_publish`]; a broker that does not accept headers
+    /// refuses a batch that carries any.
+    ///
     /// Needs a durable stream, whose log is what remembers the sequences. Any
     /// other is refused with [`BrokerError::StreamNotDurable`], without names,
     /// since the handle does not carry them.
@@ -54,6 +58,7 @@ impl Broker {
         producer_id: u64,
         first_sequence: u64,
         payloads: &[Bytes],
+        headers: Option<&[Option<Bytes>]>,
     ) -> Result<IdempotentOutcome> {
         let Some(log) = &handle.state.durable else {
             return Err(BrokerError::StreamNotDurable {
@@ -71,6 +76,7 @@ impl Broker {
                 duplicate: false,
             });
         }
+        let headers = super::usable_headers(payloads, headers)?;
         // Serialises this producer's batches, so two re-sends of one batch
         // cannot both find it unwritten.
         let turn = handle.state.producers.serialise(producer_id);
@@ -126,7 +132,7 @@ impl Broker {
                 &payloads[written as usize..],
                 Append::Marked(&marks),
                 None,
-                None,
+                headers.map(|headers| &headers[written as usize..]),
             )
             .await?
             .expect("a marked append always claims");

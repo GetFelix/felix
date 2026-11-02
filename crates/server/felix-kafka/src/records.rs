@@ -7,13 +7,18 @@
 //! is never returned; Kafka allows that gap, as it does for its own control
 //! records. A trim record never reaches a consumer, so its headers are never
 //! read as a record, let alone a tombstone.
-//! Timestamps are the broker's append time in milliseconds. Felix records have
-//! no key and no headers.
+//! Timestamps are the broker's append time in milliseconds. A record's key and
+//! headers come from its block when it has one, and are null and empty
+//! otherwise. A header value is never null, and a name that repeats comes back
+//! once: Kafka's decoder keeps one value per name.
 
 pub(crate) mod decode;
 
+use anyhow::Context;
 use bytes::{Bytes, BytesMut};
 use felix_storage::log::LogRecord;
+use felix_wire::RecordHeaders;
+use kafka_protocol::protocol::StrBytes;
 use kafka_protocol::records::{
     Compression, NO_PARTITION_LEADER_EPOCH, NO_PRODUCER_EPOCH, NO_PRODUCER_ID, Record,
     RecordBatchEncoder, RecordEncodeOptions, TimestampType,
@@ -87,22 +92,25 @@ pub(crate) fn encode_batch(records: &[LogRecord]) -> anyhow::Result<Bytes> {
     let first_offset = first.offset;
     let converted: Vec<Record> = records
         .iter()
-        .map(|record| Record {
-            transactional: false,
-            control: false,
-            delete_horizon: false,
-            partition_leader_epoch: NO_PARTITION_LEADER_EPOCH,
-            producer_id: NO_PRODUCER_ID,
-            producer_epoch: NO_PRODUCER_EPOCH,
-            timestamp_type: TimestampType::Creation,
-            offset: record.offset as i64,
-            sequence: (record.offset - first_offset) as i32 - 1,
-            timestamp: timestamp_ms(record),
-            key: None,
-            value: Some(record.payload.clone()),
-            headers: Default::default(),
+        .map(|record| {
+            let (key, headers) = key_and_headers(record)?;
+            Ok(Record {
+                transactional: false,
+                control: false,
+                delete_horizon: false,
+                partition_leader_epoch: NO_PARTITION_LEADER_EPOCH,
+                producer_id: NO_PRODUCER_ID,
+                producer_epoch: NO_PRODUCER_EPOCH,
+                timestamp_type: TimestampType::Creation,
+                offset: record.offset as i64,
+                sequence: (record.offset - first_offset) as i32 - 1,
+                timestamp: timestamp_ms(record),
+                key,
+                value: Some(record.payload.clone()),
+                headers: headers.into_iter().collect(),
+            })
         })
-        .collect();
+        .collect::<anyhow::Result<_>>()?;
     let mut buf = BytesMut::new();
     RecordBatchEncoder::encode(
         &mut buf,
@@ -113,6 +121,23 @@ pub(crate) fn encode_batch(records: &[LogRecord]) -> anyhow::Result<Bytes> {
         },
     )?;
     Ok(buf.freeze())
+}
+
+/// A record's key and headers as Kafka carries them: from its block, or none.
+fn key_and_headers(
+    record: &LogRecord,
+) -> anyhow::Result<(Option<Bytes>, Vec<(StrBytes, Option<Bytes>)>)> {
+    let Some(block) = &record.headers else {
+        return Ok((None, Vec::new()));
+    };
+    let block = RecordHeaders::decode(Bytes::clone(block))
+        .with_context(|| format!("the key and headers of record {}", record.offset))?;
+    let headers = block
+        .headers
+        .into_iter()
+        .map(|(name, value)| (StrBytes::from_string(name), Some(value)))
+        .collect();
+    Ok((block.key, headers))
 }
 
 /// A record's timestamp as Kafka carries it: milliseconds since the epoch.

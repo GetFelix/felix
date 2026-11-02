@@ -4,6 +4,11 @@
 //! idempotence and every client this listener supports writes v2, so a
 //! legacy set is refused rather than half-supported.
 //!
+//! A record's key and headers become its Felix block when the caller keeps
+//! them (see `felix_wire::RecordHeaders`); a record with neither has no block.
+//! A null header value becomes an empty one, since Felix values are not
+//! nullable. Kafka's decoder keeps one value per header name, the last.
+//!
 //! Decompression is bounded. A batch arrives inside a request of at most
 //! 8 MiB, but a few megabytes of zstd can expand to far more memory than a
 //! broker has; each batch stops inflating at [`MAX_BATCH_BYTES`].
@@ -12,7 +17,8 @@ use std::io::Read;
 
 use anyhow::Context;
 use bytes::{Buf, Bytes};
-use kafka_protocol::records::{BatchDecodeInfo, Compression, RecordBatchDecoder};
+use felix_wire::{RESERVED_HEADER_PREFIX, RecordHeaders};
+use kafka_protocol::records::{BatchDecodeInfo, Compression, Record, RecordBatchDecoder};
 
 /// The most a batch may decompress to.
 pub(crate) const MAX_BATCH_BYTES: usize = 16 * 1024 * 1024;
@@ -25,8 +31,11 @@ pub(crate) struct Batch {
     pub(crate) base_sequence: i32,
     /// The record values. A null value is stored as an empty payload.
     pub(crate) values: Vec<Bytes>,
-    /// Records that carried a key, and records that carried headers. Felix
-    /// records have neither, so both are dropped; these say how many.
+    /// Each record's key and headers block, one per value; `None` when the
+    /// caller did not keep them or no record has a key or headers.
+    pub(crate) blocks: Option<Vec<Option<Bytes>>>,
+    /// Records that carried a key, and records that carried headers. When the
+    /// blocks are not kept, these say how many were dropped.
     pub(crate) keyed: u64,
     pub(crate) with_headers: u64,
 }
@@ -40,12 +49,17 @@ pub(crate) enum Refused {
     Transactional,
     /// Decompressed past [`MAX_BATCH_BYTES`].
     TooLarge,
+    /// A record Kafka would call invalid: a header name Felix reserves or
+    /// cannot store.
+    Invalid(String),
     /// Truncated, a bad CRC, an unknown codec, or records that do not parse.
     Corrupt(String),
 }
 
-/// Decode every batch in a partition's `records`.
-pub(crate) fn decode(records: Bytes) -> Result<Vec<Batch>, Refused> {
+/// Decode every batch in a partition's `records`. With `keep_headers`, each
+/// record's key and headers are built into blocks and checked; without, they
+/// are only counted.
+pub(crate) fn decode(records: Bytes, keep_headers: bool) -> Result<Vec<Batch>, Refused> {
     let mut headers_view = records.clone();
     let infos = RecordBatchDecoder::decode_batch_info(&mut headers_view)
         .map_err(|err| Refused::Corrupt(format!("{err:#}")))?;
@@ -74,29 +88,59 @@ pub(crate) fn decode(records: Bytes) -> Result<Vec<Batch>, Refused> {
                 Refused::Corrupt(format!("{err:#}"))
             }
         })?;
-        batches.push(batch(&info, set.records));
+        batches.push(batch(&info, set.records, keep_headers)?);
     }
     Ok(batches)
 }
 
-fn batch(info: &BatchDecodeInfo, records: Vec<kafka_protocol::records::Record>) -> Batch {
+fn batch(
+    info: &BatchDecodeInfo,
+    records: Vec<Record>,
+    keep_headers: bool,
+) -> Result<Batch, Refused> {
     let mut keyed = 0;
     let mut with_headers = 0;
-    let values = records
-        .into_iter()
-        .map(|record| {
-            keyed += u64::from(record.key.is_some());
-            with_headers += u64::from(!record.headers.is_empty());
-            record.value.unwrap_or_default()
-        })
-        .collect();
-    Batch {
+    let mut values = Vec::with_capacity(records.len());
+    let mut blocks = Vec::with_capacity(if keep_headers { records.len() } else { 0 });
+    for record in records {
+        keyed += u64::from(record.key.is_some());
+        with_headers += u64::from(!record.headers.is_empty());
+        if keep_headers {
+            blocks.push(block(&record)?);
+        }
+        values.push(record.value.unwrap_or_default());
+    }
+    Ok(Batch {
         producer_id: info.producer_id,
         base_sequence: info.base_sequence,
         values,
+        blocks: Some(blocks).filter(|blocks| blocks.iter().any(Option::is_some)),
         keyed,
         with_headers,
+    })
+}
+
+/// The record's key and headers as a block, or `None` when it has neither.
+fn block(record: &Record) -> Result<Option<Bytes>, Refused> {
+    let mut headers = Vec::with_capacity(record.headers.len());
+    for (name, value) in &record.headers {
+        if name.starts_with(RESERVED_HEADER_PREFIX) {
+            return Err(Refused::Invalid(format!(
+                "header names starting with \"{RESERVED_HEADER_PREFIX}\" are reserved for Felix"
+            )));
+        }
+        headers.push((name.to_string(), value.clone().unwrap_or_default()));
     }
+    let block = RecordHeaders {
+        key: record.key.clone(),
+        headers,
+    };
+    if block.is_empty() {
+        return Ok(None);
+    }
+    block.encode().map(Some).map_err(|err| {
+        Refused::Invalid(format!("a record's key or headers cannot be stored: {err}"))
+    })
 }
 
 /// The magic byte of the batch at the front of `buf`.

@@ -253,8 +253,10 @@ consumer.assign(List.of(p0));
 consumer.seek(p0, loadOffset(0));
 ```
 
-Records have a value and a timestamp. There is no key and there are no headers,
-so a pipeline that routes on the Kafka key needs the value parsed instead.
+Each record has a value and a timestamp. A record stored with a key or headers
+(by a Kafka producer, or by a Felix client that sent them) comes back with
+them, so a pipeline that routes on the Kafka key keeps working. A record stored
+without has a null key and no headers.
 
 Where it stops: anything that manages its own consumption through a group. Kafka
 Connect, Kafka Streams, ksqlDB, Debezium and MirrorMaker all do, and none of
@@ -306,18 +308,24 @@ producer.produce("orders.created", value=order_json, key=order_id)
 producer.flush()
 ```
 
-That is a sketch; kcat is what is tested. Three things change on the way in:
+That is a sketch; kcat is what is tested. Three things to know on the way in:
 
-- **The key picks the partition and is then dropped.** The client hashes it to
-  choose a partition, which is a shard, so records with the same key still land
-  on the same shard in order. The key itself is not stored: Felix records do
-  not have one, and a consumer reading them back sees no key. If a consumer
-  needs it, put it in the value.
-- **Headers are dropped.** Tracing headers added by an interceptor are the usual
-  case. Nothing refuses them, since refusing would break producers that add
-  headers without being asked, but they are counted in
-  `felix_kafka_produce_dropped_total{field="headers"}` so you can see it
-  happening.
+- **The key and headers are stored with the record.** The client hashes the key
+  to choose a partition, which is a shard, so records with the same key land on
+  the same shard in order. The key and the headers are then kept, and a consumer
+  reads them back, in order. Two rules come from Felix's records. A null header
+  value is stored as an empty value, since Felix values are not nullable. A
+  header name that starts with `felix.` is reserved for Felix's own listeners,
+  so the produce is refused with `INVALID_RECORD` and a message naming the
+  prefix. A name that repeats in one record comes back once, with its last
+  value.
+- **A broker that does not accept headers drops them.** A broker outside a
+  cluster accepts them unless `FELIX_RECORD_HEADERS=false`; a clustered one does
+  once its fleet has finalized `record_headers` (see
+  [Upgrades](/deployment/upgrades/)). Until then keys and headers are dropped,
+  not refused, so producers that add tracing headers without being asked keep
+  working through an upgrade. They are counted in
+  `felix_kafka_produce_dropped_total{field}`.
 - **The timestamp is the broker's.** A Felix record's timestamp is when the
   broker appended it. The producer's timestamp is not kept, and the produce
   answer says so by carrying the append time, which librdkafka then reports as
@@ -335,7 +343,7 @@ Because Felix speaks the producer side of the protocol, a migration does not
 need every writer rewritten at once. Point one producer at Felix, check its
 records with `kcat -C` or a Felix subscriber, then move the next. Producers
 that are rewritten later against a Felix client write to the same stream, and
-readers cannot tell the difference except by the missing keys.
+readers cannot tell the difference.
 
 Two things to settle before moving a producer:
 
@@ -447,8 +455,9 @@ commit point if that is lower. Asking for an offset outside that range gets
 `OFFSET_OUT_OF_RANGE`, and the client falls back to its `auto.offset.reset`.
 
 **Records.** The value is the Felix payload. The timestamp is when the broker
-appended the record. There is no key and there are no headers, whether the
-record was written by a Felix client or a Kafka producer.
+appended the record. The key and headers are the record's own, whether a Felix
+client or a Kafka producer wrote it: a record stored with a key or headers
+returns them, and one without has a null key and no headers.
 
 **Tenants come from the credential.** The SASL username is the tenant, and the
 token must belong to it. Two tenants can each have an `orders.created` topic;
@@ -571,9 +580,15 @@ without losing anything.
 **Message size too large.** A batch decompresses to more than 16 MiB. Lower the
 producer's `batch.size` or `linger.ms`.
 
-**Records arrive without keys or headers.** Expected: Felix records have
-neither. See [Feeding Felix from Kafka producers you already
+**Records arrive without keys or headers.** The record was stored without
+them, or the broker that took the produce does not accept record headers yet
+and dropped them. `felix_kafka_produce_dropped_total` says whether that
+happened. See [Feeding Felix from Kafka producers you already
 have](#feeding-felix-from-kafka-producers-you-already-have).
+
+**A produce is refused with `INVALID_RECORD`.** A header name starts with
+`felix.`, which Felix reserves, or is empty. The error message says which.
+Rename the header.
 
 **SSL handshake failed.** Either the client does not trust the broker's
 certificate (point `ssl.ca.location` at the CA that issued `FELIX_TLS_CERT`,
@@ -615,16 +630,17 @@ them, this is not the tool for that part of it.
 
 **Accepted, but not kept**
 
-- Record keys. The key still picks the partition on the producer's side, but it
-  is not stored, so a consumer reads every record with a null key. Anything that
-  reads meaning from the key after that point will not see it.
-- Record headers, dropped the same way.
 - Producer timestamps. A record's timestamp is the broker's append time.
 - Tombstones. A null value is stored as an empty payload, and since Felix does
   not compact, it deletes nothing.
-
-Dropped keys and headers are counted in `felix_kafka_produce_dropped_total`, so
-you can see whether a producer relies on them.
+- Null header values, which are stored and returned as empty values, and a
+  header name that repeats in one record, which comes back once with its last
+  value.
+- Keys and headers, while the broker does not accept record headers (see
+  [Feeding Felix from Kafka producers you already
+  have](#feeding-felix-from-kafka-producers-you-already-have)). They are counted
+  in `felix_kafka_produce_dropped_total`, so you can see whether a producer
+  relies on them.
 
 **Not there at all**
 
