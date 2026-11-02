@@ -3263,6 +3263,58 @@ still lands before the mark moves, and a shard promoted here still ships
 nothing and moves no mark until a majority has taken its fence, so nothing here
 changes what an acknowledgement rests on.
 
+**Shards take turns at the pass slots, and work goes first.** A broker runs at
+most 16 shard passes at once, and fences promoted shards in 16 slots of its own,
+so a burst of new shards fencing never takes the slots that serving shards ship
+in. Every durable append wakes the driver, and on a busy broker that is many
+times a second. If each wake passed every shard, and a shard whose pass ended
+took its slot straight back, the same 16 shards kept the slots under a steady
+append stream and the rest never shipped: their writes were never acknowledged
+(#1794). So the driver schedules passes like this:
+
+- **An append wakes only its own shard.** The publish path marks the shard's
+  bit in a fixed-size bit set (one atomic `or`, no lock, no allocation) before it
+  wakes the driver, and the scan takes the set. A scan woken by an append passes
+  the shards whose bit is set, plus any shard whose last pass left work: a mark
+  below the tail, a follower behind, halted, rebuilding or not answering, an
+  exchange still out, or a drain or route change in progress. A shard whose
+  last pass settled is skipped. Two shards that hash to the same bit both get a
+  pass, which costs a pass and nothing else.
+- **The tick and a route change pass every shard.** That refreshes each
+  shard's report and retries what nothing else wakes. Group cursor and
+  dead-letter writes do not mark their shard, so they ship on its next pass: an
+  append to it or the tick.
+- **A shard that cannot start waits in a queue, oldest first.** There are two:
+  urgent (an append, a write waiting on the mark, a follower answer that moved
+  a cursor) and refresh (the tick, or a follower to try again). Urgent shards
+  start first, but at most four in a row while a refresh waits, so a steady
+  stream of appends cannot hold any shard's report back for good.
+- **A finished pass goes to the back.** When a pass ends and its shard wants
+  another, the shard joins the queue behind the shards already waiting, and
+  the freed slot goes to the one at the front. A shard with one append waits
+  behind at most the shards that asked before it
+  (`a_shard_with_one_append_is_not_starved_by_busier_ones`).
+- **A pass waiting only on a slow follower yields.** Once its mark and report
+  are out, a pass that is waiting on stragglers hands them to the driver when a
+  scan finds shards queued, so the slot is free for them.
+
+```mermaid
+flowchart LR
+  A[append marks its shard] --> S[scan]
+  T[tick or route change] --> S
+  S -->|marked, or last pass left work| W{slot free?}
+  S -->|settled, append wake| X[skipped]
+  W -->|yes| P[pass]
+  W -->|no| Q[urgent or refresh queue]
+  P -->|ends, wants another| Q
+  P -->|ends| F[slot goes to the front of the queue]
+  Q --> F
+```
+
+None of this changes what a pass does or what an acknowledgement rests on: it
+only decides which shard's pass runs next. Skipping a settled shard skips a pass
+that would have shipped nothing.
+
 **A `Quorum` cache's counters ride the same exchanges.** A counter add is
 acknowledged at the counter log's own mark, under the same majority rule, and
 the report leaves out any follower short of that mark. Shipping the counter log

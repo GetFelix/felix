@@ -202,6 +202,7 @@ felix_broker_fleet_feature_enabled{feature} # 1 once an operator has finalized i
 felix_broker_replication_lag_records
 felix_broker_publish_quorum_wait_seconds    # a Quorum publish's wait for its majority; a tail near the replication tick is a missed wake
 felix_broker_replication_halted             # a count; GET /replication/halted says which
+felix_broker_replication_passes_waiting     # shards waiting for a pass slot; with slot_wait_seconds, a broker leading more busy shards than it ships at once
 felix_broker_replication_rebuilding         # halted followers the leader is rebuilding right now
 felix_broker_replication_rebuilds_total     # by outcome: started, completed, refused
 felix_broker_replication_drain_withheld_total # by log; a planned move waiting to hand over group state or counters

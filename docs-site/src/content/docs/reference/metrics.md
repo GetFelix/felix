@@ -206,6 +206,9 @@ Replication from a shard's leader to its followers, and the `Quorum` publish pat
 | `felix_broker_replication_rebuilding` | gauge | - | Followers being rebuilt right now. |
 | `felix_broker_replication_rebuilds_total` | counter | `outcome` | Follower rebuilds by outcome. |
 | `felix_broker_replication_move_throttled_bytes_total` | counter | - | Bytes shipped to a move's destination under `FELIX_SHARD_MOVE_BYTES_PER_SEC`. |
+| `felix_broker_replication_scans_total` | counter | `wake` | Scans of the shards this broker leads, by what woke the driver: `append`, `tick` or `routes`. Its rate is scans per second. |
+| `felix_broker_replication_passes_waiting` | gauge | - | Shards waiting for a pass or fence slot right now. Staying high means more shards have work than this broker ships at once. |
+| `felix_broker_replication_slot_wait_seconds` | histogram | `queue` | How long a shard waited for a slot before its pass or fence started. `urgent` is an append, a write waiting on the mark, or a follower answer; `refresh` is the regular pass; `fence` is a promoted shard's fence. |
 | `felix_broker_replication_drain_withheld_total` | counter | `log` | Drained reports held back because a follower was still behind on a log. A planned move waits on this. |
 | `felix_broker_replicated_total` | counter | `outcome` | Replication batches stored as a follower. `gap` is ordinary during catch-up; other failure outcomes need different responses. |
 | `felix_broker_replica_reports_per_request` | histogram | - | Shards' reports sharing one control-plane request. One means nothing was batched. |

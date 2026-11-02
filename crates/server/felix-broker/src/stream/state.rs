@@ -69,6 +69,8 @@ pub(crate) struct StreamState {
     /// the log by offset (the Kafka listener's long-poll fetch) rather than
     /// holding a subscription.
     pub(crate) appended: Arc<tokio::sync::Notify>,
+    /// This shard's bit in the broker's [`crate::AppendedShards`].
+    pub(crate) append_slot: u16,
     /// Durable batches past the committed mark, kept from the ring and from
     /// subscribers until it passes them. Empty unless the stream is `Quorum`.
     pub(crate) held: CommitHold,
@@ -126,6 +128,19 @@ impl CommitScan {
 }
 
 impl StreamState {
+    /// The state of shard `shard` of `name`, which replication tells apart
+    /// from other shards' appends by this.
+    pub(crate) fn for_shard(
+        mut self,
+        tenant_id: &str,
+        namespace: &str,
+        name: &str,
+        shard: u32,
+    ) -> Self {
+        self.append_slot = crate::AppendedShards::slot(tenant_id, namespace, name, shard);
+        self
+    }
+
     pub(crate) fn new(
         handle_id: u64,
         subscriber_queue_capacity: usize,
@@ -155,6 +170,7 @@ impl StreamState {
             commit_sequencer: Arc::new(CommitSequencer::new(0)),
             producers: ProducerTable::default(),
             appended: Arc::new(tokio::sync::Notify::new()),
+            append_slot: 0,
             held: CommitHold::default(),
             commits: CommitScan::default(),
         }

@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use super::Broker;
+use super::{AppendedShards, Broker};
 use crate::durable::StreamLog;
 use crate::error::Result;
 
@@ -108,7 +108,12 @@ impl Broker {
     /// than on its next tick — which is most of a `Quorum` publish's latency
     /// when the tick is seconds and the shipping is milliseconds.
     pub fn appended(&self) -> Arc<tokio::sync::Notify> {
-        Arc::clone(&self.appended)
+        self.appended.wake()
+    }
+
+    /// Which shards were appended to; marking one also wakes [`Self::appended`].
+    pub fn appended_shards(&self) -> &AppendedShards {
+        &self.appended
     }
 
     /// The log for one shard, whichever kind of thing it belongs to.
@@ -381,7 +386,7 @@ impl Broker {
         let offset = log.append_generation_start(generation).await?;
         let run = offset + 1 - log.event_end(0, offset + 1).await?;
         handle.state.skip_generation_start(offset, run);
-        self.appended.notify_one();
+        self.appended.mark(handle.state.append_slot);
         Ok(offset)
     }
 
