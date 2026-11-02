@@ -1257,7 +1257,9 @@ than another node** leads, gives one to the node leading fewest of that
 stream. Once no stream wants a move, the node leading the most shards
 cluster-wide, when that is two or more more than another node, gives one to
 the node leading fewest, choosing a shard of a stream the destination leads
-fewer of, so evening the totals never unevens a stream. The totals wait for
+fewer of, so evening the totals never unevens a stream. It gives a stream
+shard when it has one that can go, and a cache shard only when it has none:
+moving a cache fences it, and every client of the cache waits on that. The totals wait for
 the streams because a shard moved for the totals first can land where a
 stream's move then takes it away again. Balancing only the totals let one stream land 1/1/10 on three
 brokers while the cluster read 21/21/19, and that stream then ran on one

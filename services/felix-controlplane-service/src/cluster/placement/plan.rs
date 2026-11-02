@@ -344,13 +344,19 @@ fn plan_once(
     // Among shards whose last move was given up, the one that last had a slot
     // longest ago goes first, so two that keep failing take turns. Stable, so
     // key order breaks the remaining ties.
+    //
+    // Among shards that only move for balance, streams go before caches. The
+    // first over-share shard planned is the one that moves, and caches sort
+    // before most stream names, so they would be moved first. Every client of
+    // a cache waits while it is fenced.
     keys.sort_by_cached_key(|key| {
         let class = class(key);
         let retried = current
             .get(key)
             .filter(|_| class >= RETRIED)
             .and_then(|existing| existing.move_started_at_millis);
-        (class, retried)
+        let cache_last = class == BALANCE && key.kind == ShardKind::Cache;
+        (class, retried, cache_last)
     });
 
     let is_empty_cluster = eligible.is_empty();
@@ -829,6 +835,10 @@ fn left_unconfirmed<'a>(
         .collect()
 }
 
+/// The class in [`start_order`] of a shard with nothing to repair, which
+/// moves only for balance.
+const BALANCE: u8 = 2;
+
 /// Added to a shard's class in [`start_order`] while its last move's start
 /// is still recorded: one that was given up.
 const RETRIED: u8 = 3;
@@ -862,7 +872,7 @@ fn start_order(
     {
         1
     } else {
-        2
+        BALANCE
     };
     if existing.move_started_at_millis.is_some() {
         class + RETRIED

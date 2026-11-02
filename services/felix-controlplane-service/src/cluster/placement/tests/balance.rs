@@ -450,3 +450,115 @@ fn a_capped_broker_is_not_filled_past_its_cap() {
     assert_eq!(spread_on(&ids, &existing, None, Some("s")), vec![5, 5, 2]);
     assert_no_move_undone(&moved);
 }
+
+/// One single-shard stream or cache per name, led where `at` says (an index
+/// into `ids`), each with `rf` copies.
+fn single_shards(
+    ids: &[&str],
+    rf: usize,
+    kind: ShardKind,
+    names_at: &[(&str, usize)],
+) -> Vec<ShardAssignment> {
+    names_at
+        .iter()
+        .flat_map(|(name, at)| {
+            let mut counts = vec![0; ids.len()];
+            counts[*at] = 1;
+            led_on(ids, rf, kind, name, &counts)
+        })
+        .collect()
+}
+
+/// Caches sort before the `wl.*` streams, so a balance that took the first
+/// over-share shard in key order would move a cache and fence its writes.
+fn assert_no_cache_moved(moved: &[Moved]) {
+    assert!(
+        moved.iter().all(|(key, _, _)| key.kind != ShardKind::Cache),
+        "a cache moved: {moved:?}"
+    );
+}
+
+/// Streams deleted from one broker leave the totals two apart. The balance
+/// evens them with a stream shard, not a cache.
+#[test]
+fn a_delete_is_balanced_by_moving_a_stream_not_a_cache() {
+    let caches: Vec<Cache> = ["drains", "epochs", "leases"]
+        .iter()
+        .map(|name| quorum_cache(name, 1))
+        .collect();
+    let names = ["wl.w0", "wl.w1", "wl.w2", "wl.w3"];
+    let streams: Vec<Stream> = names.iter().map(|name| quorum(name, 1)).collect();
+    // wl.w4 and wl.w5, led on broker-2, were deleted: totals 3/3/1.
+    let mut existing = [
+        single_shards(
+            &NODES,
+            3,
+            ShardKind::Cache,
+            &[("drains", 0), ("epochs", 1), ("leases", 2)],
+        ),
+        single_shards(
+            &NODES,
+            3,
+            ShardKind::Stream,
+            &[("wl.w0", 0), ("wl.w1", 0), ("wl.w2", 1), ("wl.w3", 1)],
+        ),
+    ]
+    .concat();
+
+    let moved = converge(&streams, &caches, &mut existing, 100);
+
+    assert!(within_one(&spread(&existing, None, None)), "{moved:?}");
+    assert_eq!(moved.len(), 1, "{moved:?}");
+    assert_no_cache_moved(&moved);
+}
+
+/// A drain on five brokers fills its destinations only up to the cluster's
+/// share, which can leave the totals two apart. Evening them out moves
+/// streams, and the caches stay where they are.
+#[test]
+fn a_drain_on_five_brokers_leaves_the_caches_in_place() {
+    let ids = ["broker-0", "broker-1", "broker-2", "broker-3", "broker-4"];
+    let mut nodes = live(&ids);
+    nodes[4].status.lifecycle = NodeLifecycle::Draining;
+    let single = |name: &str| Cache {
+        replication_factor: 1,
+        ..quorum_cache(name, 1)
+    };
+    let caches: Vec<Cache> = ["drains", "epochs", "leases"]
+        .iter()
+        .map(|name| single(name))
+        .collect();
+    let mut placed = vec![];
+    let mut at = |broker: usize, count: usize| {
+        for _ in 0..count {
+            let name = format!("wl.w{}", placed.len());
+            placed.push((name, broker));
+        }
+    };
+    at(1, 2);
+    at(2, 2);
+    at(3, 4);
+    at(4, 6);
+    let streams: Vec<Stream> = placed
+        .iter()
+        .map(|(name, _)| replicated_stream(name, 1, 1))
+        .collect();
+    let names_at: Vec<(&str, usize)> = placed.iter().map(|(n, b)| (n.as_str(), *b)).collect();
+    let mut existing = [
+        single_shards(
+            &ids,
+            1,
+            ShardKind::Cache,
+            &[("drains", 0), ("epochs", 1), ("leases", 2)],
+        ),
+        single_shards(&ids, 1, ShardKind::Stream, &names_at),
+    ]
+    .concat();
+
+    let moved = converge_on(&nodes, &streams, &caches, &mut existing, 2_000);
+
+    let totals = spread_on(&ids, &existing, None, None);
+    assert_eq!(totals[4], 0, "{moved:?}");
+    assert!(within_one(&totals[..4]), "{totals:?} {moved:?}");
+    assert_no_cache_moved(&moved);
+}

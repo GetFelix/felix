@@ -16,7 +16,9 @@ Three things, and an operator (see
   shards, when that is two or more more than another broker, hands one to the
   broker leading fewest of that stream. Once every stream is even, the same
   rule applies to the totals, picking a shard of a stream the destination
-  leads fewer of. Moves go one at a time by default, until every stream's
+  leads fewer of. For the totals it moves a stream shard if it can, and a
+  cache shard only when no stream shard can go, because every client of a
+  cache waits while it moves. Moves go one at a time by default, until every stream's
   leaders and the totals are each within one of even. A new
   broker registering is the usual cause: it starts with nothing and takes
   shards from whoever has the most.
