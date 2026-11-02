@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793652515949,
+  "lastUpdate": 1793653682761,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -54384,6 +54384,72 @@ window.BENCHMARK_DATA = {
             "range": "35.13",
             "unit": "us",
             "extra": "trials: 5\nmedian: 271.00\nmean: 286.40\nstdev: 35.13\ncv: 12.27%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f50c8250457e3dd8825eef115c482f78a2369fa4",
+          "message": "ci(nightly): move the nightly tag with the release bot and retry image signing (#1804)\n\nThe `nightly` tag has been stuck at 59d58f3d since 10/29, so companion nightlies and felixd's scale check have been testing old Felix. Two failures caused it:\n\n- **Tag move, HTTP 403** (run 41409092180): `Resource not accessible by integration` on `PATCH git/refs/tags/nightly`. There is no tag ruleset or tag protection on the repo (only the two branch rulesets), and the old release belongs to `github-actions[bot]`, so neither is the cause. The commits between 59d58f3d and the new target change 15 files under `.github/workflows/`, and GitHub refuses to point a ref at such a commit unless the token has the `workflows` permission, which `GITHUB_TOKEN` can never have.\n- **Rekor 409** (run 41448134950): `cosign sign` took 30 s, resent its log entry, got `an equivalent entry already exists` and exited before attaching the signature.\n\nChanges:\n\n- `nightly.yml` publish job mints a `getfelix-release-bot` token (same App and org secrets as release.yml's companion dispatch; `create-github-app-token` pinned to the same SHA) with only `contents: write` + `workflows: write`, scoped to this repo by default (no `owner`/`repositories`). Only the tag/release step sees it. The job's own `GITHUB_TOKEN` drops from `contents: write` to `contents: read`.\n- `nightly.yml` plan job mints a read-only (`contents: read`) token first, so a missing App installation fails in a minute instead of after the build. It also makes this PR's dry run prove the App is installed on felix. Fork PRs (no secrets) skip it.\n- `release.yml` image signing: up to 3 tries with 20 s / 40 s backoff. A failed try counts as success if `cosign verify` passes for this digest with the exact `release.yml@${GITHUB_REF}` identity. Each try uses a fresh ephemeral key, so a retry cannot hit the same 409.\n- Docs: building.md says the App must be installed on felix too and explains why the nightly uses it. kubernetes.md's `cosign verify` example still named `gabloe/felix`.\n\nDesign calls:\n- I verify after any `cosign sign` failure, not only on a 409. It is simpler, and a passing verify is what matters either way.\n- The installation check runs on every nightly, PRs included, rather than only in the publish job.",
+          "timestamp": "2026-11-02T13:00:44-08:00",
+          "tree_id": "c38e7e003b0f9ef02513be51025059ac6739aa03",
+          "url": "https://github.com/GetFelix/felix/commit/f50c8250457e3dd8825eef115c482f78a2369fa4"
+        },
+        "date": 1793653677458,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 65,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 65.00\nmean: 64.60\nstdev: 0.55\ncv: 0.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 90,
+            "range": "571.99",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 90.00\nmean: 344.80\nstdev: 571.99\ncv: 165.89%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 115,
+            "range": "1229.87",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 115.00\nmean: 669.00\nstdev: 1229.87\ncv: 183.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 84,
+            "range": "1.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 84.00\nmean: 83.80\nstdev: 1.10\ncv: 1.31%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 181,
+            "range": "16.77",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 181.00\nmean: 186.80\nstdev: 16.77\ncv: 8.98%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 275,
+            "range": "68.59",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 275.00\nmean: 294.80\nstdev: 68.59\ncv: 23.27%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
