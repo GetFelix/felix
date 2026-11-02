@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793628442952,
+  "lastUpdate": 1793630632316,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -42276,6 +42276,58 @@ window.BENCHMARK_DATA = {
             "range": "5892.88",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1252663.28\nmean: 1249785.19\nstdev: 5892.88\ncv: 0.47%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "44a93c04809ce82fb64d67195f063ae91ff614a8",
+          "message": "feat(storage): format v8, records with a key and headers (#1688) (#1776)\n\nFirst slice of #1688 (MQTT 2: record headers). Storage only: nothing writes a record with headers yet, so behaviour is unchanged.\n\n## What changes\n\n- **Format v8.** Bit 26 of a record's length word says the body starts with a `u32` length and a key-and-headers block. The block is opaque to storage (its layout is the broker's, like a commit record's payload). The checksum covers it; a block length that runs past the body is new `RecordHeaders` corruption.\n- `AppendRecord::headers` / `LogRecord::headers` / `DecodedRecord::headers`. A log rolls onto a v8 segment only for the first record with headers (`successor_version`, `holds`), exactly as v6 did for publishers.\n- **No-headers records are byte-identical.** Existing golden vectors and the per-version segment/index checksums (v3 to v6) are unchanged; new golden vectors pin a record with headers (with and without a publisher, and an empty block), and the v8 segment header CRC. The vectors were computed independently (Python `zlib.crc32`), not copied from the encoder.\n- Docs: `docs/storage-format.md` (new \"Keys and headers\" section, header table, corruption table, golden vectors, version history, limits). The docs-site copy of the format page was stuck at v4; its title, header and record tables, kind-bit rules, corruption table and version history now match v8 (it still links to `docs/storage-format.md` for the v5 to v8 sections).\n\n## Design calls\n\n1. **Bit 26 vs the 2^26 body.** `MAX_PAYLOAD_BYTES` is 2^26, so a legal body of exactly 2^26 already sets bit 26. Rule: bit 26 over a zero length is that legacy body in every version, never headers; a body with headers stops one byte short (`body_fits`). No existing record changes meaning and no limit changes for records without headers.\n2. **Before v8, bit 26 over a non-zero length stays `RecordTooLarge`**, not `RecordFlags`, in recovery's scan (`decode_in`) and in the reader for sealed segments (`check_version`, cached version lookup), so damage is judged exactly as an older build judged it. Repairability is therefore unchanged.\n3. **Opaque block in storage.** Storage does not parse the key and headers. The next slice defines the block layout once in `felix-wire` (shared by broker, client and the Kafka listener) and uses the same bytes on the wire, so a delivery passes the stored block through without re-encoding.\n4. Headers precede the payload (the publisher stays a trailer), so both are located from the front and the back without scanning.\n- `headers` is boxed on `AppendRecord` and `LogRecord`. This keeps both under 128 bytes, at the cost of one allocation per record that has headers.\n\n## Review (opus)\nNo MUST findings. Fixed: docs-site page claims (step formula, kind-bit rule, corruption table); a record refused for its size is now refused before the roll (`check_sizes` ahead of `would_roll_within`, test fails with it reverted); the v8 section states the existing crash / failed-condition caveat shared with v6 and v7; recovery-scan tests for a torn record with headers and a misfit block; doc wording nits. Left as is: `check_version` stays `#[cold]` (one call per record with headers, against a decode and a copy).\n\n## Next slices (#1688)\n2. Wire flag + block codec in `felix-wire` + broker publish/deliver + Rust client API, gated by a fleet feature so no log reaches v8 until every peer reads it.\n3. Replication carries headers; Kafka listener maps keys and headers.\n\n## Testing\n- `cargo test -p felix-storage` (all pass), `task lint`, `task docs:evidence` scripts.\n- New: golden vectors, round trip with every mark, legacy 2^26 body never read as headers, headers-before-v8 is `RecordTooLarge` (decode_in and check_version), misfit block is `RecordHeaders`, writer rolls only for headers and refuses them below v8, full-size body with headers refused, disk log rolls and reads back after restart, reader refuses headers in a sealed v7 segment (reverted the reader check: the test fails), format fuzz round trip with headers. The libFuzzer `segment_record` target re-encodes with the decoded headers.\n- Perf: see the storage A/B below (perf-pr does not touch disk).\n\nSpec-Unaffected: the model covers offsets, generations and the quorum mark; a record's key and headers are stored with it like its payload and change none of them.\n\n\n\n## Perf A/B: records without headers\nperf-pr and the IPM gate never touch disk (latency-demo runs on `EphemeralCache`, and IPM runs on an in-memory stream). So the A/B is a storage harness run in Actions: `DiskLog` appends of 256-byte records at batch 1 (100k) and batch 64 (400k), `FsyncMode::None`, then a full `read_range` scan. Base is the merge-base 58324020d, and head is this branch. Both are release builds on the same runner, with 8 trials alternating which side goes first. Callgrind counts the instructions of the whole run at 40k records, twice per side.\n\nThe first head regressed: append b64 -4.3%, read -3.7% to -5.7%, and +6.5% instructions. The profile showed three causes. The new `Option<Bytes>` pushed `AppendRecord` (104 to 136 bytes) and `LogRecord` (120 to 152 bytes) past the 128-byte inline-move limit, so every record move became a `memcpy` call. The checksum got two more parts. And the size check ran twice. The fixes: `headers` is `Option<Box<Bytes>>` on both types, so a record without headers is its old size. The checksum takes the header parts only when there are headers. The early size check runs only when the append rolls. The read path also stops decoding and checksumming each record header twice (`decode_record_after`). That double decode predates this PR, and dropping it more than pays for the new header bit.\n\nFinal run (41448116835), median records/s:\n\n| batch | metric | base | head | delta |\n|---|---|---|---|---|\n| 1 | append | 588,276 | 591,346 | +0.5% |\n| 1 | read | 2,727,874 | 2,980,232 | +9.3% |\n| 64 | append | 1,156,462 | 1,149,828 | -0.6% |\n| 64 | read | 2,774,511 | 3,087,462 | +11.3% |\n\nInstructions: base 236.9M / 237.4M, head 227.4M / 224.6M (-4.5%).\n\nThe harness and its workflow are on the throwaway branch `perf-ab-1776`, which gets deleted after merge.",
+          "timestamp": "2026-11-02T06:25:11-08:00",
+          "tree_id": "508f4156e0215166bf122af0427d6aa21177cac4",
+          "url": "https://github.com/GetFelix/felix/commit/44a93c04809ce82fb64d67195f063ae91ff614a8"
+        },
+        "date": 1793630631710,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 359837.31,
+            "range": "15241.63",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 359837.31\nmean: 355528.23\nstdev: 15241.63\ncv: 4.29%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 359837.31,
+            "range": "15241.63",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 359837.31\nmean: 355528.23\nstdev: 15241.63\ncv: 4.29%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81314.03,
+            "range": "4157.14",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81314.03\nmean: 79889.23\nstdev: 4157.14\ncv: 5.20%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 813140.26,
+            "range": "41571.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 813140.26\nmean: 798892.23\nstdev: 41571.43\ncv: 5.20%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
