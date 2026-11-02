@@ -61,7 +61,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: ${{ fromJSON(github.event_name == 'push' && '["per-pr","nightly"]' || format('["{0}"]', inputs.variant || 'nightly')) }}
+        variant: ${{ fromJSON(github.event_name == 'push' && '["per-pr"]' || format('["{0}"]', inputs.variant || 'nightly')) }}
     permissions:
       contents: read
       issues: write

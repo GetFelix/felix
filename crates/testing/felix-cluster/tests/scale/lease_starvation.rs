@@ -95,9 +95,9 @@ impl Load {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_lease_cache_renews_on_time_while_shards_are_created_in_bulk() {
     run(Load::from_env(Load {
-        streams: 300,
-        appended: 32,
-        hold: Duration::from_secs(20),
+        streams: 600,
+        appended: 96,
+        hold: Duration::from_secs(30),
     }))
     .await;
 }
@@ -522,8 +522,8 @@ impl Report {
             let bound = bound(p99(idle));
             if p99(loaded) > bound {
                 problems.push(format!(
-                    "{what} p99 {:.0?} under load is over {bound:.0?} \
-                     ({BASELINE_MULTIPLE}x the quiet p99 {:.0?}, at least {BOUND_FLOOR:.0?})",
+                    "{what} p99 {:.1?} under load is over {bound:.1?} \
+                     ({BASELINE_MULTIPLE}x the quiet p99 {:.1?}, at least {BOUND_FLOOR:.1?})",
                     p99(loaded),
                     p99(idle)
                 ));
@@ -537,7 +537,7 @@ impl std::fmt::Display for Report {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let line = |took: &[Duration]| {
             format!(
-                "n={} p50={:.0?} p99={:.0?} max={:.0?}",
+                "n={} p50={:.1?} p99={:.1?} max={:.1?}",
                 took.len(),
                 percentile(took, 50),
                 p99(took),
@@ -546,7 +546,7 @@ impl std::fmt::Display for Report {
         };
         write!(
             f,
-            "renewals idle [{}] loaded [{}] bound {:.0?}; reads idle [{}] loaded [{}] bound {:.0?}; {} lapse(s)",
+            "renewals idle [{}] loaded [{}] bound {:.1?}; reads idle [{}] loaded [{}] bound {:.1?}; {} lapse(s)",
             line(&self.renew_idle),
             line(&self.renew_loaded),
             bound(p99(&self.renew_idle)),
