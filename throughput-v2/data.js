@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793596092275,
+  "lastUpdate": 1793597136715,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -41652,6 +41652,58 @@ window.BENCHMARK_DATA = {
             "range": "3147.36",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 821827.28\nmean: 821689.96\nstdev: 3147.36\ncv: 0.38%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6e3d47496e89b76013c653f5c8c23c6c9a549395",
+          "message": "feat(auth): lease tokens minted on a conditional cache write (#1625) (#1742)\n\n* feat(auth): lease tokens minted on a conditional cache write (#1625)\n\nA cache_put_if with lease_token: true that applies returns a short-lived\nbroker token for the writer, granting what the caller's lease templates\nname for the key: stream.publish:stream:t1/prod/wl.{leases}.out grants\npublish on wl.K.out to whoever holds key K of cache t1/prod/leases.\n\n- felix-authz: lease template grammar and expansion, shared name grammar\n  (moved from the control plane), a lease claim on FelixClaims, and the\n  matcher skipping templates so one never grants directly.\n- Control plane: templates are validated on policy writes and take only\n  data actions; a template never satisfies a control-plane check,\n  narrowing passes one through but never makes one, and /token/delegate\n  leaves them out.\n- Broker: the key's owner mints with a key every broker shares\n  (FELIX_LEASE_TOKEN_KEY_FILE), refusing before the write for a lease or\n  delegated caller, no template, or a key that cannot be part of a name.\n  Lease tokens verify against the lease key only, and their sessions end\n  at exp. Forwarded claims use new peer kinds 45 and 46 so an older owner\n  refuses them.\n- Wire: FEATURE_LEASE_TOKEN (extended bit 0x20), lease_token on\n  cache_put_if, lease_token and lease_refused on cache_condition_result.\n- Rust client: cache_put_if_lease on Connection and Client.\n\n* fix(auth): bound lease token verification, and say what lease tokens protect (#1625)\n\n- Lease tokens skip the JWKS fetch, so the tenant id check now runs on that\n  path too, and the lease keys are built once from the key file instead of\n  being cached per tenant: junk Auth frames with new tenant ids kept nothing\n  but grew the key cache.\n- A lease token is accepted only in the shape a broker mints: a lease claim,\n  no future iat, no longer than the maximum TTL, and only exact stream or\n  cache key data grants in its own tenant. That bounds what a leaked key file\n  can sign.\n- Docs: the key file is a signing key for every tenant on every broker host;\n  a principal that can write the lease cache can take a live lease with one\n  conditional put; a forwarded claim on an expired session token is refused\n  at the owner; a brace-holding cache key grant is now a template.\n\n* fix(auth): cap a lease token's iat at mint time, document matching max TTL (#1625)\n\nA control plane whose clock runs ahead of a broker's issues caller tokens\ndated in the future, which the lease token copied and verification then\nrefused. The docs now say every broker needs the same maximum TTL and how to\nroll a change, and use one wording for who can take a lease.\n\n* chore: note that lease tokens leave the modelled protocols unchanged\n\nSpec-Unaffected: lease tokens change authentication only. Lease-token forwards are routed like any other forwarded cache op. Shard leases, the quorum mark, reports, promotion and handoff are unchanged.\n\n* chore(demos): relock for the control plane's new felix-authz dependency",
+          "timestamp": "2026-11-01T21:14:23-08:00",
+          "tree_id": "ee696dd0b33e8db5e0cc76628a2516adc2e4b3d9",
+          "url": "https://github.com/GetFelix/felix/commit/6e3d47496e89b76013c653f5c8c23c6c9a549395"
+        },
+        "date": 1793597135892,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 352514.13,
+            "range": "23383.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 352514.13\nmean: 351930.03\nstdev: 23383.38\ncv: 6.64%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 352514.13,
+            "range": "23383.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 352514.13\nmean: 351930.03\nstdev: 23383.38\ncv: 6.64%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82644.29,
+            "range": "554.50",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82644.29\nmean: 82813.17\nstdev: 554.50\ncv: 0.67%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 826442.87,
+            "range": "5545.01",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 826442.87\nmean: 828131.66\nstdev: 5545.01\ncv: 0.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
