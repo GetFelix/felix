@@ -14,6 +14,7 @@ mod operator;
 mod pacing;
 mod pending_set;
 mod reconciler;
+mod refused;
 mod regions;
 mod rendezvous;
 mod replicas;

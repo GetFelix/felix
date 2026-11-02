@@ -48,6 +48,7 @@ fn a_report_that_is_not_drained_omits_the_field() {
         replica_storage_ids: BTreeMap::new(),
         inherited_storage_ids: BTreeMap::new(),
         joint_start_acked: None,
+        refused: None,
         elected: None,
     };
     let json = serde_json::to_string(&status).expect("write");
@@ -85,6 +86,7 @@ fn a_report_without_storage_ids_is_unchanged() {
         replica_storage_ids: BTreeMap::new(),
         inherited_storage_ids: BTreeMap::new(),
         joint_start_acked: None,
+        refused: None,
         elected: None,
     };
     let today = r#"{"tenant_id":"t1","namespace":"ns","stream":"orders","shard":0,"kind":"stream","generation":1,"caught_up":["broker-b"],"replica_offsets":[],"leader_offset":3}"#;
@@ -154,6 +156,7 @@ fn a_report_round_trips() {
                 "cd000000000000000000000000000000".into(),
             )]),
             joint_start_acked: None,
+            refused: None,
             elected: None,
         }],
     };
@@ -203,4 +206,32 @@ fn an_elected_leadership_is_appended_and_absent_reads_as_none() {
     );
     let parsed: ShardReplicaStatus = serde_json::from_str(&json).expect("read");
     assert_eq!(parsed, elected);
+}
+
+/// **A refusal is appended after everything else, and a report without one is
+/// today's JSON byte for byte**, so an old and a new peer exchange identical
+/// frames until a broker has something to refuse.
+#[test]
+fn a_refusal_is_appended_and_absent_reads_as_none() {
+    let today = r#"{"tenant_id":"t1","namespace":"ns","stream":"orders","shard":0,"kind":"stream","generation":4,"caught_up":[],"replica_offsets":[]}"#;
+    let status: ShardReplicaStatus = serde_json::from_str(today).expect("read");
+    assert_eq!(status.refused, None);
+    assert_eq!(serde_json::to_string(&status).expect("write"), today);
+
+    let refused = ShardReplicaStatus {
+        refused: Some(RefusedGeneration {
+            generation: 4,
+            promised_to: "broker-b".into(),
+        }),
+        ..status
+    };
+    let json = serde_json::to_string(&refused).expect("write");
+    assert!(
+        json.ends_with(r#","refused":{"generation":4,"promised_to":"broker-b"}}"#),
+        "{json}",
+    );
+    assert_eq!(
+        serde_json::from_str::<ShardReplicaStatus>(&json).expect("read"),
+        refused,
+    );
 }

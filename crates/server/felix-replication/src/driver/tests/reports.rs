@@ -1,6 +1,8 @@
 //! What the leader tells the control plane about its replicas.
 
 use super::*;
+use crate::status::ShardStatusBoard;
+use felix_common::membership::RefusedGeneration;
 
 /// A pass reports the shard, its generation, and who could take it over.
 #[tokio::test]
@@ -509,6 +511,7 @@ fn a_report_body_is_the_shape_the_control_plane_parses() {
             replica_storage_ids: Default::default(),
             inherited_storage_ids: Default::default(),
             joint_start_acked: None,
+            refused: None,
             elected: None,
         }],
     };
@@ -861,4 +864,99 @@ async fn a_new_leader_names_a_follower_holding_what_it_inherited() {
 
     let report = pass.reports.last().expect("a report");
     assert_eq!(report.caught_up, vec!["broker-b".to_string()]);
+}
+
+/// A fence that says this broker refused to open `key` at one generation.
+struct RefusedAt(RefusedGeneration);
+
+impl WriteFence for RefusedAt {
+    fn quiesced(&self, _key: &crate::ShardKey) -> bool {
+        true
+    }
+
+    fn refused_at(&self, _key: &crate::ShardKey) -> Option<RefusedGeneration> {
+        Some(self.0.clone())
+    }
+}
+
+fn refused(generation: u64) -> RefusedGeneration {
+    RefusedGeneration {
+        generation,
+        promised_to: "broker-d".to_string(),
+    }
+}
+
+/// **A shard this broker refused to open is reported as refused, and not
+/// shipped.** The control plane still names this broker at the generation it
+/// promised away, and hears nothing else from it: without the report it waits
+/// on silence.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_shard_reports_the_refusal_and_does_not_ship() {
+    let (broker, _dir) = leader_with(3).await;
+    let router = router(LOCAL, &["broker-b"], 4);
+    let follower = AcceptingFollower::default();
+    let marks = QuorumMarks::new();
+    let status = ShardStatusBoard::new();
+    let rebuilds = Rebuilds::new(RebuildPolicy::default());
+    let throttle = MoveThrottle::unlimited();
+    let (plane, received) = recording_control_plane().await;
+    let shutdown = CancellationToken::new();
+    let reporter = plane.reporter(shutdown.clone());
+    let fence = RefusedAt(refused(4));
+    let mut shards = Shards::new(Context {
+        requester: &follower,
+        broker: &broker,
+        router: &router,
+        fence: &fence,
+        gate: &crate::promotion::NoGate,
+        marks: &marks,
+        status: &status,
+        reporter: Some(&reporter),
+        rebuilds: &rebuilds,
+        throttle: &throttle,
+        refresh: Duration::from_secs(300),
+    });
+
+    shards.scan(WakeKind::Tick);
+
+    assert!(shards.passes.is_empty(), "a refused shard still shipped");
+    let report = first_report(&received, Duration::from_secs(5))
+        .await
+        .expect("no report of the refusal");
+    assert_eq!(report.generation, 4);
+    assert_eq!(report.refused, Some(refused(4)));
+    assert_eq!(report.leader_offset, None, "a refusal measures no tail");
+    assert!(follower.batches().is_empty());
+    shutdown.cancel();
+}
+
+/// A refusal of an older generation than the route's says nothing about it:
+/// the shard is led and shipped as usual, and no refusal is reported.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refusal_of_an_older_generation_does_not_hold_the_shard_back() {
+    let (broker, _dir) = leader_with(3).await;
+    let router = router(LOCAL, &["broker-b"], 4);
+    let follower = AcceptingFollower::default();
+    let marks = QuorumMarks::new();
+    let status = ShardStatusBoard::new();
+    let rebuilds = Rebuilds::new(RebuildPolicy::default());
+    let throttle = MoveThrottle::unlimited();
+    let fence = RefusedAt(refused(3));
+    let mut shards = Shards::new(Context {
+        requester: &follower,
+        broker: &broker,
+        router: &router,
+        fence: &fence,
+        gate: &crate::promotion::NoGate,
+        marks: &marks,
+        status: &status,
+        reporter: None,
+        rebuilds: &rebuilds,
+        throttle: &throttle,
+        refresh: Duration::from_secs(300),
+    });
+
+    shards.scan(WakeKind::Tick);
+
+    assert_eq!(shards.passes.len(), 1, "the shard was held back");
 }

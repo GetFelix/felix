@@ -165,6 +165,7 @@ fn replica_report(
         node_incarnations: Default::default(),
         follower_storage: Default::default(),
         joint_start_acked: None,
+        refused: None,
     }
 }
 

@@ -84,7 +84,9 @@ const INHERITED_STORAGE_LEVEL: u16 = 20;
 const PENDING_SET_LEVEL: u16 = 21;
 
 /// The metadata level whose members store the storage identity each member of
-/// a shard's set registered with, on the assignment (#1009 S8).
+/// a shard's set registered with, on the assignment (#1009 S8), and the
+/// refusal a leader reports when it promised its generation to another node
+/// (#1730).
 const MEMBER_STORAGE_LEVEL: u16 = 22;
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
@@ -978,6 +980,11 @@ impl ControlPlaneStore for RaftStore {
         // Dropped first.
         if report.joint_start_acked.is_some() && self.group_level().await < PENDING_SET_LEVEL {
             report.joint_start_acked = None;
+        }
+        // Without it the shard waits on the leader's silence, as before.
+        // Dropped first.
+        if report.refused.is_some() && self.group_level().await < MEMBER_STORAGE_LEVEL {
+            report.refused = None;
         }
         // The API's own check still stands for a group that cannot apply
         // the field.

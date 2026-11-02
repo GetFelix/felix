@@ -813,6 +813,27 @@ impl std::fmt::Display for GaveUp {
 
 impl std::error::Error for GaveUp {}
 
+/// An open refused because this broker had already promised the generation
+/// to another node: the control plane recorded that node's election at the
+/// generation without adopting it, and still names this broker there.
+#[derive(Debug)]
+pub struct PromisedAway {
+    pub generation: u64,
+    pub promised_to: String,
+}
+
+impl std::fmt::Display for PromisedAway {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "this broker already accepted generation {} for the shard from {}, so it cannot lead it",
+            self.generation, self.promised_to
+        )
+    }
+}
+
+impl std::error::Error for PromisedAway {}
+
 /// What a driver needs to open and close local shard state.
 ///
 /// A trait so the lifecycle can be exercised without a disk, and so the durable
@@ -1871,6 +1892,11 @@ async fn apply_open(
             if err.downcast_ref::<GaveUp>().is_some() {
                 lifecycle.fence().gave_up(&key, generation);
             }
+            if let Some(promised) = err.downcast_ref::<PromisedAway>() {
+                lifecycle
+                    .fence()
+                    .refused(&key, generation, &promised.promised_to);
+            }
             lifecycle.open_failed(&key, generation, format!("{err:#}"));
             drop(lifecycle);
             tracing::error!(
@@ -1956,12 +1982,11 @@ async fn accept_led_generation(
                  newer than the {generation} it was assigned to lead"
             );
         }
-        Ok(felix_storage::disk_log::GenerationCheck::Promised { leader }) => {
-            anyhow::bail!(
-                "this broker already accepted generation {generation} for the shard \
-                 from {leader}, so it cannot lead it"
-            );
+        Ok(felix_storage::disk_log::GenerationCheck::Promised { leader }) => Err(PromisedAway {
+            generation,
+            promised_to: leader,
         }
+        .into()),
         Ok(_) => Ok(()),
         Err(err) => anyhow::bail!("persist the accepted generation: {err}"),
     }

@@ -14,6 +14,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use felix_broker::Broker;
+use felix_common::membership::RefusedGeneration;
 use felix_router::{ShardKey, ShardRouter};
 use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
@@ -280,6 +281,19 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
     fn leads(&self, key: &ShardKey, route: &felix_router::Route) -> bool {
         route.leader.node_id == self.cx.router.local_node_id()
             && !self.cx.fence.withheld(&watch_key(key), route.generation)
+            && self.refusal(key, route).is_none()
+    }
+
+    /// The refusal that keeps this broker from leading `route`'s generation,
+    /// if it refused that one. An older refusal says nothing about it.
+    fn refusal(&self, key: &ShardKey, route: &felix_router::Route) -> Option<RefusedGeneration> {
+        if route.leader.node_id != self.cx.router.local_node_id() {
+            return None;
+        }
+        self.cx
+            .fence
+            .refused_at(&watch_key(key))
+            .filter(|refused| refused.generation == route.generation)
     }
 
     /// Give every shard led here a pass, and forget the ones that are not.
@@ -301,10 +315,19 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             })
             .map(|(key, route)| (key.clone(), route.clone()))
             .collect();
-        self.probed
-            .retain(|key, _| given_up.iter().any(|(given, _)| given == key));
+        let refused: Vec<(ShardKey, RefusedGeneration)> = table
+            .iter()
+            .filter_map(|(key, route)| Some((key.clone(), self.refusal(key, route)?)))
+            .collect();
+        self.probed.retain(|key, _| {
+            given_up.iter().any(|(given, _)| given == key)
+                || refused.iter().any(|(refused, _)| refused == key)
+        });
         for (key, route) in given_up {
             self.probe(key, route);
+        }
+        for (key, refused) in refused {
+            self.report_refusal(key, refused);
         }
         for key in &live {
             self.start(key, appended);
@@ -593,6 +616,24 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                 tail: 0,
             }
         }));
+    }
+
+    /// Tell the control plane, each tick, that this broker refused to lead a
+    /// shard at the generation it names. See `crate::reclaim::refusal_report`.
+    fn report_refusal(&mut self, key: ShardKey, refused: RefusedGeneration) {
+        let Some(reporter) = self.cx.reporter else {
+            return;
+        };
+        let now = tokio::time::Instant::now();
+        if self
+            .probed
+            .get(&key)
+            .is_some_and(|at| now.duration_since(*at) < self.cx.refresh / 2)
+        {
+            return;
+        }
+        self.probed.insert(key.clone(), now);
+        reporter.submit(crate::reclaim::refusal_report(&key, refused));
     }
 
     /// Keep a shard's reported tail, so the next report does not go back.

@@ -102,6 +102,11 @@ pub enum MoveStep {
     /// `MovePolicy::pending_set_timeout_millis`: the change is dropped and
     /// the control plane's own set stays, at a new generation.
     PendingSetTimedOut,
+    /// The leader reported that it refused to open its generation, having
+    /// promised it to a node whose election the control plane recorded
+    /// without adopting. It is named again at a new generation, above the
+    /// one it promised away, on the same set.
+    ElectionRefused,
     /// The shard no longer elects (its consistency changed), so a pending
     /// set can never be reported: the change is dropped.
     PendingSetDropped,
@@ -132,6 +137,7 @@ impl MoveStep {
             Self::Discard { .. } => "discard",
             Self::TakePendingSet => "take_pending_set",
             Self::PendingSetTimedOut => "pending_set_timed_out",
+            Self::ElectionRefused => "election_refused",
             Self::PendingSetDropped => "pending_set_dropped",
             Self::PendingSetCancelled => "pending_set_cancelled",
         }

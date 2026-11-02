@@ -273,6 +273,7 @@ pub(super) async fn report(
                 node_incarnations: Default::default(),
                 follower_storage: Default::default(),
                 joint_start_acked: None,
+                refused: None,
             },
             &leader,
         )
@@ -573,6 +574,7 @@ async fn failed_over(ids: &[(&str, &str)]) -> (InMemoryStore, ShardAssignment) {
                     .map(|(node, id)| (node.to_string(), id.to_string()))
                     .collect(),
                 joint_start_acked: None,
+                refused: None,
             },
             "broker-a",
         )
@@ -688,6 +690,7 @@ async fn a_promotion_after_a_seat_names_only_the_set() {
                     .map(|(node, id)| (node.to_string(), id.clone()))
                     .collect(),
                 joint_start_acked: None,
+                refused: None,
             },
             "broker-a",
         )

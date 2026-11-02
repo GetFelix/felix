@@ -77,6 +77,9 @@ struct DbReplicaReport {
     inherited_storage_at: Option<i64>,
     joint_start_acked: Option<i64>,
     joint_start_acked_at: Option<i64>,
+    refused_generation: Option<i64>,
+    refused_to: Option<String>,
+    refused_at: Option<i64>,
 }
 
 pub(super) async fn put_shard_assignment(
@@ -645,9 +648,10 @@ pub(super) async fn record_replica_report(
                     follower_storage, follower_storage_at,
                     leader, node_incarnations, stamped_at, given_up, given_up_at,
                     inherited_storage, inherited_storage_at,
-                    joint_start_acked, joint_start_acked_at)
+                    joint_start_acked, joint_start_acked_at,
+                    refused_generation, refused_to, refused_at)
                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $9,
-                       $16, $9, $17, $18, $9, $19, $9, $20, $9, $21, $9)
+                       $16, $9, $17, $18, $9, $19, $9, $20, $9, $21, $9, $22, $23, $9)
                ON CONFLICT (tenant_id, namespace, kind, stream, shard) DO UPDATE
                SET generation = EXCLUDED.generation,
                    caught_up = EXCLUDED.caught_up,
@@ -670,7 +674,10 @@ pub(super) async fn record_replica_report(
                    inherited_storage = EXCLUDED.inherited_storage,
                    inherited_storage_at = EXCLUDED.inherited_storage_at,
                    joint_start_acked = EXCLUDED.joint_start_acked,
-                   joint_start_acked_at = EXCLUDED.joint_start_acked_at
+                   joint_start_acked_at = EXCLUDED.joint_start_acked_at,
+                   refused_generation = EXCLUDED.refused_generation,
+                   refused_to = EXCLUDED.refused_to,
+                   refused_at = EXCLUDED.refused_at
                WHERE EXCLUDED.generation > replica_reports.generation
                   OR (EXCLUDED.generation = replica_reports.generation
                       AND (EXCLUDED.leader_offset IS NULL
@@ -702,6 +709,18 @@ pub(super) async fn record_replica_report(
     .bind(report.given_up)
     .bind(serde_json::to_value(&report.inherited_storage).expect("a map of strings serializes"))
     .bind(report.joint_start_acked.map(|generation| generation as i64))
+    .bind(
+        report
+            .refused
+            .as_ref()
+            .map(|refused| refused.generation as i64),
+    )
+    .bind(
+        report
+            .refused
+            .as_ref()
+            .map(|refused| refused.promised_to.as_str()),
+    )
     .execute(&mut *tx)
     .await;
     match result {
@@ -725,7 +744,8 @@ pub(super) async fn list_replica_reports(store: &PostgresStore) -> StoreResult<V
                       follower_storage, follower_storage_at,
                       leader, node_incarnations, stamped_at, given_up, given_up_at,
                       inherited_storage, inherited_storage_at,
-                      joint_start_acked, joint_start_acked_at
+                      joint_start_acked, joint_start_acked_at,
+                      refused_generation, refused_to, refused_at
                FROM replica_reports
                ORDER BY tenant_id, namespace, kind, stream, shard"#,
     )
@@ -855,6 +875,18 @@ fn replica_report_from_db(row: DbReplicaReport) -> StoreResult<ReplicaReport> {
             .joint_start_acked
             .filter(|_| row.joint_start_acked_at == Some(row.reported_at_millis))
             .map(|generation| generation as u64),
+        // And for the refusal (0040).
+        refused: match (row.refused_generation, row.refused_to) {
+            (Some(generation), Some(promised_to))
+                if row.refused_at == Some(row.reported_at_millis) =>
+            {
+                Some(felix_common::membership::RefusedGeneration {
+                    generation: generation as u64,
+                    promised_to,
+                })
+            }
+            _ => None,
+        },
     })
 }
 

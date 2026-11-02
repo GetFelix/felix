@@ -164,6 +164,7 @@ pub(crate) async fn run_shard_contract(store: Arc<dyn ControlPlaneStore>) {
     replica_reports::a_give_up_is_kept(store).await;
     replica_reports::inherited_storage_is_kept(store).await;
     replica_reports::a_joint_start_is_kept(store).await;
+    replica_reports::a_refusal_is_kept(store).await;
     a_conditional_write_lands_only_at_the_expected_generation(store).await;
     a_fence_planned_before_a_cut_over_is_refused_after_it(store).await;
     a_consistency_change_fences_placement(store).await;
@@ -1526,6 +1527,7 @@ async fn deleting_a_stream_or_cache_takes_its_shard_assignments_with_it(
         node_incarnations: Default::default(),
         follower_storage: Default::default(),
         joint_start_acked: None,
+        refused: None,
     };
     store
         .record_replica_report(doomed_report.clone(), "broker-x")
@@ -1666,6 +1668,7 @@ async fn a_cascading_delete_takes_shard_assignments_and_reports(store: &dyn Cont
                         node_incarnations: Default::default(),
                         follower_storage: Default::default(),
                         joint_start_acked: None,
+                        refused: None,
                     },
                     "broker-x",
                 )

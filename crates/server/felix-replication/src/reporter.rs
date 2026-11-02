@@ -17,8 +17,8 @@
 use std::collections::BTreeMap;
 
 use felix_common::membership::{
-    HaltedReplicaStatus, ReplicaOffset, ReplicaStatusRequest, ReplicaStatusResponse,
-    ShardKind as WireShardKind, ShardReplicaStatus,
+    HaltedReplicaStatus, RefusedGeneration, ReplicaOffset, ReplicaStatusRequest,
+    ReplicaStatusResponse, ShardKind as WireShardKind, ShardReplicaStatus,
 };
 use felix_router::ShardKey;
 use felix_storage::StorageId;
@@ -168,6 +168,11 @@ pub struct ShardReport {
     /// majority of the set being left and of the new one. The control plane
     /// takes the new set on a report that names it for this generation.
     pub joint_start_acked: Option<u64>,
+    /// This broker, named leader at `generation`, refused to open it because
+    /// it had promised the generation to another node. Sent without a tail
+    /// or any measured position; the control plane names this broker again at
+    /// a generation above the refused one.
+    pub refused: Option<RefusedGeneration>,
 }
 
 impl ShardReport {
@@ -244,6 +249,7 @@ pub(super) fn shard_report(
             .collect(),
         given_up: false,
         joint_start_acked: None,
+        refused: None,
         inherited_storage: followers
             .iter()
             .filter(|follower| follower.storage_id.is_none())
@@ -340,7 +346,8 @@ async fn send_reports(to: &ReportTo, reports: &[ShardReport]) -> Vec<bool> {
                 generation: report.generation,
                 caught_up: report.caught_up.to_vec(),
                 drained: report.drained,
-                leader_offset: (!report.given_up).then_some(report.tail),
+                leader_offset: (!report.given_up && report.refused.is_none())
+                    .then_some(report.tail),
                 replica_offsets: report
                     .offsets
                     .iter()
@@ -378,6 +385,7 @@ async fn send_reports(to: &ReportTo, reports: &[ShardReport]) -> Vec<bool> {
                 inherited_storage_ids: report.inherited_storage.iter().cloned().collect(),
                 joint_start_acked: report.joint_start_acked,
                 elected: None,
+                refused: report.refused.clone(),
             })
             .collect(),
     };

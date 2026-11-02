@@ -184,6 +184,26 @@ pub struct ShardReplicaStatus {
     /// a leader the control plane named, and by brokers that predate it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub elected: Option<ElectedLeadership>,
+    /// Set by a leader the control plane names whose open was refused because
+    /// it had already promised the generation to another node. The shard is
+    /// not served and nothing else in the report is measured. Placement
+    /// answers by naming the leader again at a generation above the refused
+    /// one. Omitted otherwise, and by brokers that predate it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refused: Option<RefusedGeneration>,
+}
+
+/// A generation a broker refused to lead because it had promised it to
+/// another node (`docs/replication-design.md`, "Electing without the control
+/// plane", rule 10).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(ToSchema))]
+pub struct RefusedGeneration {
+    /// The generation the control plane named this broker at, which it had
+    /// already promised away.
+    pub generation: u64,
+    /// The node it promised the generation to.
+    pub promised_to: String,
 }
 
 /// A leadership a broker won by election (`docs/replication-design.md`,

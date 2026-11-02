@@ -76,6 +76,7 @@ async fn a_requested_pass_runs_without_waiting_for_the_interval() {
                 node_incarnations: Default::default(),
                 follower_storage: Default::default(),
                 joint_start_acked: None,
+                refused: None,
             },
             &fenced.leader,
         )

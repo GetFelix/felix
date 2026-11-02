@@ -425,6 +425,39 @@ pub(super) async fn a_joint_start_is_kept(store: &dyn ControlPlaneStore) {
     assert_eq!(stored(store, shard).await.joint_start_acked, None);
 }
 
+/// A leader's refusal rides its report, and a later report without it clears
+/// it.
+pub(super) async fn a_refusal_is_kept(store: &dyn ControlPlaneStore) {
+    // Follows `a_joint_start_is_kept` on the same shard.
+    let shard = 3;
+    let at = generation(store, shard).await;
+    let refused = felix_common::membership::RefusedGeneration {
+        generation: at,
+        promised_to: "broker-z".to_string(),
+    };
+    let mut sent = report(shard, at, &[], 20_800);
+    sent.refused = Some(refused.clone());
+    sent.leader_offset = None;
+    assert_eq!(
+        store
+            .record_replica_report(sent, LEADER)
+            .await
+            .expect("record"),
+        ReportWrite::Stored
+    );
+    assert_eq!(stored(store, shard).await.refused, Some(refused));
+
+    let without = report(shard, at, &["broker-y"], 20_900);
+    assert_eq!(
+        store
+            .record_replica_report(without, LEADER)
+            .await
+            .expect("record"),
+        ReportWrite::Stored
+    );
+    assert_eq!(stored(store, shard).await.refused, None);
+}
+
 /// A leader's give-up rides its report, and a later report without it
 /// clears it.
 pub(super) async fn a_give_up_is_kept(store: &dyn ControlPlaneStore) {
@@ -485,6 +518,7 @@ fn report(shard: u32, generation: u64, caught_up: &[&str], at: u64) -> ReplicaRe
         follower_storage: Default::default(),
         inherited_storage: Default::default(),
         joint_start_acked: None,
+        refused: None,
     }
 }
 

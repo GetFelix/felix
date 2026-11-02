@@ -662,6 +662,13 @@ pub struct ReplicaReport {
     /// Raft, until every member can apply it; the change then stays pending.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub joint_start_acked: Option<u64>,
+    /// The leader refused to open the generation it was named at because it
+    /// had promised that generation to another node. Placement names it again
+    /// at a generation above the refused one. Absent from brokers that
+    /// predate it and, under Raft, until every member can apply it; the shard
+    /// then waits as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refused: Option<felix_common::membership::RefusedGeneration>,
 }
 
 /// A copy of a shard its leader has stopped shipping to.

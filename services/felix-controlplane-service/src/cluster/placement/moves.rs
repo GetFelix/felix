@@ -399,6 +399,28 @@ pub(super) fn move_step<'a>(
     // Kept off as a destination, as of any report still believed.
     let is_halted = |node: &str| caught_up.halted(key, node).is_some();
 
+    // The leader promised this generation to another node, whose election was
+    // recorded without being adopted, so it can never open here and no one
+    // else is named to lead. The next generation is above that promise: the
+    // leader opens, and its fence deposes the elected node through the
+    // ballot. The set, a pending change and a copy being added are untouched.
+    // Not during a move that ends through its own steps, which would lose
+    // its successor or its fence to the new generation.
+    if existing.successor.is_none()
+        && existing.state != ShardState::Draining
+        && caught_up.leader_refused(key, existing.generation, leader)
+    {
+        return Decision::Move(
+            MoveStep::ElectionRefused,
+            ShardAssignment {
+                generation: 0,
+                fence_storage_ids: Default::default(),
+                member_storage_ids: Default::default(),
+                ..existing.clone()
+            },
+        );
+    }
+
     // A pending set change ends on the leader's word, a failover that
     // abandons it, or one of the endings below. Nothing else changes either
     // set meanwhile.
@@ -1751,6 +1773,10 @@ impl CaughtUp for AtGeneration<'_> {
 
     fn joint_start_acked(&self, key: &ShardKey, generation: u64, leader: &str) -> Option<u64> {
         self.inner.joint_start_acked(key, generation, leader)
+    }
+
+    fn leader_refused(&self, key: &ShardKey, generation: u64, leader: &str) -> bool {
+        self.inner.leader_refused(key, generation, leader)
     }
 
     fn lag_records(&self, key: &ShardKey, node_id: &str) -> Option<u64> {
