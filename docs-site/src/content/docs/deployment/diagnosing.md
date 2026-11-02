@@ -616,7 +616,8 @@ kind is `plain` for an ordinary record, or `producer-batch-start`,
 row for the offset you asked for is starred. The payload is not shown unless
 you add `--payload`, which prints each as a hex dump with text beside it, cut at
 64 KiB. `--json` prints one line per record, with `payload_hex` and
-`payload_utf8` fields under `--payload`. Add `--kind` and `--incarnation` for a
+`payload_utf8` fields under `--payload`, and `headers_bytes` giving the size of
+a record's key and headers block (`null` when it has none). Add `--kind` and `--incarnation` for a
 shard that is not a stream, or not at incarnation 0, as for `inspect segments`.
 
 A record that fails to verify ends the read, with the rows before it kept.

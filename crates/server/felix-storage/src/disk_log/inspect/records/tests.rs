@@ -48,6 +48,7 @@ fn record(payload: Bytes) -> AppendRecord {
         timestamp_micros: 1_700_000_000_000_000,
         mark: Default::default(),
         publisher: None,
+        headers: None,
     }
 }
 
@@ -198,6 +199,28 @@ async fn a_publisher_and_mark_are_reported() {
     assert_eq!(report.records[0].publisher.as_deref(), Some(&b"alice"[..]));
     assert_eq!(report.records[0].payload_len, 5);
     assert_eq!(report.records[0].mark, RecordMark::None);
+}
+
+#[tokio::test]
+async fn a_headers_block_is_reported_by_size() {
+    let data = tempdir().expect("dir");
+    let dir = data.path().join("shard");
+    let log = DiskLog::open(dir.clone(), "shard".to_string(), one_segment()).expect("open");
+    log.append(&[
+        AppendRecord {
+            headers: Some(Box::new(Bytes::from_static(b"block"))),
+            ..record("hello".into())
+        },
+        record("plain".into()),
+    ])
+    .await
+    .expect("append");
+    log.shutdown().await.expect("shutdown");
+
+    let report = look(&dir, &query(0, 1)).expect("read");
+    assert_eq!(report.records[0].headers_len, Some(5));
+    assert_eq!(report.records[0].payload_len, 5);
+    assert_eq!(report.records[1].headers_len, None);
 }
 
 #[tokio::test]
@@ -665,7 +688,15 @@ async fn an_empty_segment_in_the_middle_with_the_wrong_base_is_a_gap() {
     let header = SegmentHeader::at_version(15, 1, BASELINE_VERSION).encode();
     let empty = add_segment(&dir, &header);
     let mut next = header.to_vec();
-    encode_record(&mut next, 15, 1, b"after-gap", None, &RecordMark::None);
+    encode_record(
+        &mut next,
+        15,
+        1,
+        b"after-gap",
+        None,
+        None,
+        &RecordMark::None,
+    );
     add_segment(&dir, &next);
 
     let stop = first_damage(&dir, &LogConfig::default())
