@@ -214,6 +214,61 @@ fn api_tls_is_both_paths_or_neither() {
 
 #[serial]
 #[test]
+fn api_ui_is_off_unless_asked_for_and_rejects_unknown_values() {
+    let _env = clear_felix_env();
+    let config = ControlPlaneConfig::from_env().expect("defaults");
+    assert_eq!(config.api_ui, ApiUi::Off);
+    assert_eq!(config.api_ui_path, "/api");
+
+    unsafe {
+        env::set_var("FELIX_CONTROLPLANE_API_UI", "Scalar");
+        env::set_var("FELIX_CONTROLPLANE_API_UI_PATH", "/reference");
+    }
+    let config = ControlPlaneConfig::from_env().expect("scalar");
+    assert_eq!(config.api_ui, ApiUi::Scalar);
+    assert_eq!(config.api_ui_path, "/reference");
+
+    unsafe {
+        env::set_var("FELIX_CONTROLPLANE_API_UI", "scaler");
+    }
+    let err = ControlPlaneConfig::from_env().expect_err("typo");
+    assert!(err.to_string().contains("off, scalar"), "{err}");
+}
+
+#[serial]
+#[test]
+fn api_ui_path_must_not_shadow_the_api() {
+    let _env = clear_felix_env();
+    unsafe {
+        env::set_var("FELIX_CONTROLPLANE_API_UI", "scalar");
+    }
+    for bad in [
+        "api",
+        "/",
+        "/api/",
+        "/v1",
+        "/v1/docs",
+        "/a b",
+        "/internal/x",
+    ] {
+        unsafe {
+            env::set_var("FELIX_CONTROLPLANE_API_UI_PATH", bad);
+        }
+        assert!(
+            ControlPlaneConfig::from_env().is_err(),
+            "{bad} was accepted"
+        );
+    }
+    // A bad path is only a problem when the page is on.
+    unsafe {
+        env::set_var("FELIX_CONTROLPLANE_API_UI", "off");
+        env::set_var("FELIX_CONTROLPLANE_API_UI_PATH", "api");
+    }
+    ControlPlaneConfig::from_env().expect("off ignores the path");
+}
+
+#[serial]
+#[test]
 fn from_env_uses_defaults() {
     let _env = clear_felix_env();
     let config = ControlPlaneConfig::from_env().expect("from_env");
@@ -737,6 +792,18 @@ postgres:
             .expect("apply");
 
         assert_eq!(config.shutdown_drain_timeout_ms, before);
+    }
+
+    #[serial]
+    #[test]
+    fn the_api_ui_keys_reach_the_config_and_unknown_values_fail() {
+        let (mut config, _restore) = base();
+        config
+            .apply(parse("api_ui: scalar\napi_ui_path: /reference"))
+            .expect("apply");
+        assert_eq!(config.api_ui, ApiUi::Scalar);
+        assert_eq!(config.api_ui_path, "/reference");
+        assert!(config.apply(parse("api_ui: swagger")).is_err());
     }
 
     /// An address that does not parse fails the load and names the key, so

@@ -8,7 +8,7 @@ publishes the assignment feed brokers follow. It is never on the data path.
 This page documents its endpoints and how brokers and operators use them.
 
 Every route is plain HTTP and JSON under `/v1`. The control plane also serves
-its OpenAPI document at `/v1/openapi.json`. It serves no UI for it; see [Viewing the API document](#viewing-the-api-document).
+its OpenAPI document at `/v1/openapi.json`. A browsable reference page is available but off by default; see [Viewing the API document](#viewing-the-api-document).
 
 ## Authentication and Token Exchange (HTTP)
 
@@ -669,6 +669,7 @@ The endpoints not covered above:
 | `GET /v1/system/live` | 200 while the process runs | none |
 | `GET /v1/system/ready`, `GET /v1/system/health` | 200 when the instance can serve metadata, 503 `not_ready` otherwise | none |
 | `GET /v1/openapi.json` | the OpenAPI document | none |
+| `GET /api` | the API reference page, only when `FELIX_CONTROLPLANE_API_UI=scalar` ([details](#viewing-the-api-document)) | none |
 
 Errors share one body: `{"code": "...", "message": "...", "request_id": ...}`.
 
@@ -774,10 +775,44 @@ the Postgres-to-Raft migration are in
 
 ## Viewing the API document
 
-The control plane serves the OpenAPI document but no viewer, which keeps a
-browser UI and its build-time download out of the service. Any OpenAPI viewer
-can read the document. The control plane sends no CORS headers, so give the
-viewer the file rather than the URL:
+The OpenAPI document is always at `/v1/openapi.json`. To read it as a browsable
+reference, either turn on the built-in page or point an external viewer at the
+file.
+
+### The built-in page
+
+Set `FELIX_CONTROLPLANE_API_UI=scalar` and restart. The control plane then
+serves an [API reference page](https://github.com/scalar/scalar) at `/api`:
+
+```bash
+FELIX_CONTROLPLANE_API_UI=scalar felix-controlplane
+# open http://localhost:8443/api
+```
+
+Use `FELIX_CONTROLPLANE_API_UI_PATH` to serve it somewhere else. The value must
+be a plain path such as `/reference`, and it cannot be under `/v1`. In the
+config file the keys are `api_ui` and `api_ui_path`. The default is `off`, and
+an unknown value stops startup rather than quietly leaving the page off.
+
+What to know before you turn it on:
+
+- **The browser needs internet access to the CDN.** The page is a short HTML
+  file that loads one script from `cdn.jsdelivr.net`. It does not work offline
+  or in an air-gapped network; use an external viewer there.
+- **The script is pinned.** The page names an exact Scalar version and a
+  Subresource Integrity hash, so the browser refuses a script that differs.
+  Upgrading Felix is what changes the version.
+- **A Content-Security-Policy limits the page.** Scripts may only come from the
+  pinned URL, and the page may only make requests to the control plane itself.
+  That is why no CORS headers are needed.
+- **The page needs no sign-in**, like `/v1/openapi.json`. It holds no cluster
+  data. To use "Try it", paste a token into the page; requests go from your
+  browser to the control plane with that token.
+
+### An external viewer
+
+Any OpenAPI viewer can read the document. The control plane sends no CORS
+headers, so give the viewer the file rather than the URL:
 
 ```bash
 curl -s http://localhost:8443/v1/openapi.json -o openapi.json
@@ -787,4 +822,3 @@ docker run --rm -p 8081:8080 -e SWAGGER_JSON=/spec/openapi.json \
 
 Then open `http://localhost:8081`. Podman works the same with `podman` in place
 of `docker`.
-

@@ -14,7 +14,9 @@ use std::time::Duration;
 use felix_common::lifecycle::Readiness;
 use tokio_util::sync::CancellationToken;
 
-use crate::api::{build_bootstrap_router, build_bootstrap_router_with_dev_tokens, build_router};
+use crate::api::{
+    api_ui_router, build_bootstrap_router, build_bootstrap_router_with_dev_tokens, build_router,
+};
 use crate::cluster::{membership, placement};
 use crate::config::ControlPlaneConfig;
 use crate::raft::LeadershipGate;
@@ -99,7 +101,10 @@ where
         api_shutdown.clone(),
     );
 
-    let app = build_router(state.clone());
+    let mut app = build_router(state.clone());
+    if let Some(ui) = api_ui_router(config.api_ui, &config.api_ui_path) {
+        app = app.merge(ui);
+    }
 
     // The Raft RPCs get a listener of their own, authenticated as peers:
     // `propose` can replace the whole store, so it must never share the
