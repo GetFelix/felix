@@ -487,8 +487,9 @@ The tag and release move with a token from the release bot App (see
 [Companion repos](#companion-repos)), not the workflow's own token. GitHub
 refuses to point a ref at a commit that changes `.github/workflows/` unless the
 token has the Workflows permission, and the workflow's own token never has it.
-The first job checks that the App can reach the repo, so a missing
-installation fails the run before the build starts.
+The nightly cannot publish without the App: the first job checks that the
+`FELIX_RELEASE_BOT_*` secrets are set and the App is installed on the repo, so
+either one missing fails the run before the build starts.
 
 A last step deletes `nightly-YYYYMMDD` image tags older than 14 days. It can
 only delete versions of a package that grants this repository admin access,

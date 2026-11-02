@@ -56,9 +56,13 @@ jobs:
       # The publish job moves the tag with the release bot's token. Minting a
       # read-only one here fails in a minute, not after the build, when the App
       # is not installed on this repo, and a pull request's dry run checks it
-      # too. Pull requests from forks get no secrets, so they skip it.
+      # too. Pull requests from forks and Dependabot get no Actions secrets, so
+      # they skip it.
       - name: Check the release bot can reach this repo
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        if: >-
+          github.event_name != 'pull_request'
+          || (github.event.pull_request.head.repo.full_name == github.repository
+              && github.actor != 'dependabot[bot]')
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: ${{ secrets.FELIX_RELEASE_BOT_APP_ID }}

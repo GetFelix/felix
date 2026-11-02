@@ -593,7 +593,6 @@ jobs:
           DIGEST: ${{ steps.merge.outputs.digest }}
           IMAGE: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}
         run: |
-          set -uo pipefail
           # Signed by digest, never by tag: a tag can be moved to point at
           # something else, and a signature over a tag would follow it.
           #
