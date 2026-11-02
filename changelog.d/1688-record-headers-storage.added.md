@@ -4,5 +4,3 @@
   the first record with one, and nothing writes one yet, so every log stays
   readable by older builds. Records without a key or headers are byte for byte
   what v7 wrote, pinned by golden vectors.
-- `felix-broker inspect records --json` reports `headers_bytes`, the size of a
-  record's key and headers block (#1688).
