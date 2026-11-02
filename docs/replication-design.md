@@ -1825,8 +1825,8 @@ not the stream's: it has at most one exchange outstanding per follower and log.
 **A slow fence does not hold up a read round or a ping.** Fences, tail
 fetches, pre-votes and pings share one control stream per peer connection.
 A broker runs them side by side and answers each as it finishes. Otherwise
-a burst of shard creates queues read-round fences (one per follower for every
-confirmed cache read) and pings behind the new shards' promotion fences, and a
+a burst of shard creates queues read-round fences (one per follower per read
+round; confirmed cache reads share rounds) and pings behind the new shards' promotion fences, and a
 queue longer than `FELIX_LEADER_SUSPECT_AFTER_MS` reads as a dead leader
 (#1796). The orderings the protocol relies on are all kept by the requester,
 which waits for an answer before anything that depends on it: the fence before

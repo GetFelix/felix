@@ -40,7 +40,7 @@ const MAX_CONCURRENT_FORWARDS_PER_STREAM: usize = 256;
 
 /// Fences, tail fetches and pre-votes one stream may hold at once. The same
 /// as the requester's default in-flight limit per peer, so a requester at its
-/// defaults is never refused.
+/// defaults reaches it only with requests it timed out on still running here.
 pub(super) const MAX_CONTROLS_PER_STREAM: usize = 1024;
 
 /// Of those, tail fetches that may run at once. Each answer holds up to 4 MiB
