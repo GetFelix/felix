@@ -1261,22 +1261,36 @@ assignment it had and the report is judged as before. Postgres needs no
 migration for it.
 
 **When the election is recorded and not adopted**, the assignment still names
-the old leader, now at the elected generation. That leader cannot open
-there: it promised the generation to the elected broker, so its open fails and
-it serves nothing. It says so in its report, with `refused` set to the
-`generation` it refused and the node it `promised_to`, and repeats it each
-tick. The follower suspicion above cannot help, since the followers follow the
-elected leader. When the leader of an assignment that is not in a move
-reports a refusal of exactly the assignment's generation, placement names it
-again (`election_refused`): the same leader, the same set, any pending change
-kept, at the next generation. That is above the one the leader promised away,
-so it opens, and the followers, which take the higher generation, depose the
-elected leader. Placement acts only on that report. A refusal of an older
-generation, or one that is no longer fresh, is ignored, and so is any refusal
-while a fenced move is under way, which ends through its own steps. Without
-the report the shard waits for the pending-set timeout or a lease lapse, as
-before. Under Raft the field is stored from metadata level 22 and dropped
-below it; under Postgres it is migration 0040 (`refused_generation`,
+the old leader, now at the elected generation. That leader cannot serve there,
+in one of two ways:
+
+- It promised the generation to the elected broker before it heard of the
+  assignment, so its open fails.
+- It opened first, persisting its own promise, but a majority of the set
+  promised the generation to the elected broker, so its fence can never reach
+  a majority.
+
+Either way it says so in its report, with `refused` set to the `generation`
+it refused and the node it `promised_to`, and repeats it each tick. The
+follower suspicion above cannot help, since the followers follow the elected
+leader.
+
+When the assignment's leader reports a refusal of exactly the assignment's
+generation, placement names it again (`election_refused`): the same leader,
+the same set, any pending change kept, at the next generation. That is above
+the one the leader promised away, so it opens and fences, and the followers,
+which take the higher generation, depose the elected leader.
+
+Placement acts only on that report. It ignores a refusal of an older
+generation and one that is no longer fresh. It also skips the step while the
+shard is in a move that ends through its own steps: one with a successor
+named, or one whose leader is draining. A follower replacement does not stop
+it: the new generation keeps the joining copy, and the replacement goes on
+under the same leader.
+
+Without the report the shard waits for the pending-set timeout or a lease
+lapse, as before. Under Raft the field is stored from metadata level 22 and
+dropped below it; under Postgres it is migration 0040 (`refused_generation`,
 `refused_to`), with `refused_at` as the marker that keeps what a member that
 predates the columns leaves behind from reading as a refusal.
 

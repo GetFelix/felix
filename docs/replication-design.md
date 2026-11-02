@@ -1174,13 +1174,15 @@ elected leader waits for the lease until the control plane is back (issue
     never reissues a generation at or below one it was told was elected. A
     leader on the old set is passed over while a change is pending: the new
     set's leader, carrying a newer set generation, deposes it. The control
-    plane then still names the old leader at the elected generation, which
-    that leader promised to the elected one and so cannot open. It reports
-    the refusal (`refused`: the generation and the node it promised it to),
-    and the control plane names it again at the next generation, on the same
-    set. That generation is above the one it promised away, so it opens and
-    its followers depose the elected leader. The control plane acts on that
-    report, never on silence.
+    plane then still names the old leader at the elected generation. That
+    leader cannot serve there: either it promised the generation to the
+    elected one, so its open fails, or a majority of the set did, so its
+    fence never reaches a majority. It reports the refusal (`refused`: the
+    generation and the node it was promised to), and the control plane
+    names it again at the next generation, on the same set. That generation
+    is above the one promised away, so it opens and fences, and its
+    followers depose the elected leader. The control plane acts on that
+    report, never on silence (`CpRename` in the model).
 
 **Why it is safe.** Ballots give one leader per generation: each generation
 is fenced on one set, any two majorities of one set share a replica, and
@@ -3826,15 +3828,16 @@ generation. The model is to cover that before the election driver.
 A leader sends `joint_start_acked` once `joint_fence` is finalized (below;
 control-plane.md, [Moving a shard](control-plane.md#moving-a-shard)).
 
-An election the control plane records and does not adopt (rule 10) is bounded
-too. The old leader the assignment still names refuses to open the elected
-generation, since it promised it away, and says so in its report (`refused`,
-sent each tick in place of the usual measurements, with no tail). Placement
-names it again at the next generation, on the same set, and nothing else
-about the shard changes (control-plane.md, [Adopting an elected
-leader](control-plane.md#adopting-an-elected-leader)). Before this the shard
-waited for the pending-set timeout or a lease lapse, and with no pending set
-for neither.
+An election the control plane records and does not adopt (rule 10) does not
+leave the shard waiting. The old leader the assignment still names cannot
+serve the elected generation: its open is refused when it promised the
+generation away, and its fence is refused when a majority of the set did.
+Either way it says so in its report (`refused`, sent each tick in place of
+the usual measurements, with no tail). Placement names it again at the next
+generation, on the same set, and nothing else about the shard changes
+(control-plane.md, [Adopting an elected
+leader](control-plane.md#adopting-an-elected-leader)). In the model that is
+`CpRename`, checked by `FelixShardElectRename.cfg`.
 
 Joint fences and the fenced next-generation open are built too, dormant
 behind `joint_fence`. No build reports that feature, so a fleet cannot
