@@ -272,7 +272,11 @@ FELIX_TENANT_PUBLISH_QUOTAS=acme:209715200:20000,batch:0:0
 
 - The per-address cap exists so one host cannot hold every connection a broker
   can serve. Set it high enough for the NAT gateways and connection pools in
-  front of you; a client that pools connections uses several per broker.
+  front of you. A cluster `Client` uses one connection per broker. A plain
+  `Connection` uses 4 at connect, one more per subscription up to 8, and 8 more
+  once it touches the cache, so 512 admits about 100 default subscribers from
+  one host. See "How many connections a `Connection` holds" in
+  [client-config.md](client-config.md).
 - A tenant's quota covers its QUIC and Kafka publishes together. It is checked
   before any shared byte budget is taken, so a tenant over its quota holds none
   of the ingress memory other tenants need.

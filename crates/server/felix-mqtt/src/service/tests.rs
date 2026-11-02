@@ -14,7 +14,22 @@ use tokio_util::sync::CancellationToken;
 
 use super::MqttService;
 use crate::auth::{AuthError, Authenticator, Principal};
+use crate::mount::{MountedTopic, Mounts};
 use crate::settings::Settings;
+
+/// Tenant `acme` has one mount, `plant/`, on stream `ns/plant`. Another
+/// tenant would have its own, so the tenant is checked.
+struct FakeMounts;
+
+impl Mounts for FakeMounts {
+    fn resolve(&self, tenant_id: &str, topic: &str) -> Option<MountedTopic> {
+        (tenant_id == "acme" && topic.starts_with("plant/")).then(|| MountedTopic {
+            namespace: "ns".into(),
+            stream: "plant".into(),
+            shard: 0,
+        })
+    }
+}
 
 /// Accepts the token `good` for tenant `acme`, says `down` is unavailable, and
 /// rejects everything else.
@@ -114,6 +129,7 @@ fn start(settings: Settings, expires_at: Option<i64>) -> Harness {
             expires_at,
             revoke: Arc::clone(&revoke),
         }),
+        Arc::new(FakeMounts),
         settings,
     );
     let shutdown = CancellationToken::new();
@@ -169,11 +185,15 @@ async fn connected(version: Version) -> Harness {
 }
 
 fn publish(qos: QoS, packet_id: Option<u16>) -> Publish {
+    publish_to("plant/line1", qos, packet_id)
+}
+
+fn publish_to(topic: &str, qos: QoS, packet_id: Option<u16>) -> Publish {
     Publish {
         dup: false,
         qos,
         retain: false,
-        topic: Utf8::new("a/b").unwrap(),
+        topic: Utf8::new(topic.to_string()).unwrap(),
         packet_id,
         properties: Properties::default(),
         payload: Bytes::from_static(b"x"),
@@ -537,4 +557,233 @@ async fn shutdown_tells_a_5_client_and_closes() {
         Some(Packet::Disconnect(d)) if d.reason == ReasonCode::ServerShuttingDown
     ));
     assert!(h.client.closed().await);
+}
+
+/// Sums `felix_mqtt_refused_total` by reason.
+#[derive(Default)]
+struct Refusals {
+    counts: Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>,
+}
+
+impl Refusals {
+    fn get(&self, reason: &str) -> u64 {
+        self.counts
+            .lock()
+            .unwrap()
+            .get(reason)
+            .copied()
+            .unwrap_or(0)
+    }
+}
+
+struct Tally {
+    reason: String,
+    counts: Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>,
+}
+
+impl metrics::CounterFn for Tally {
+    fn increment(&self, value: u64) {
+        *self
+            .counts
+            .lock()
+            .unwrap()
+            .entry(self.reason.clone())
+            .or_default() += value;
+    }
+
+    fn absolute(&self, _: u64) {}
+}
+
+impl metrics::Recorder for Refusals {
+    fn describe_counter(
+        &self,
+        _: metrics::KeyName,
+        _: Option<metrics::Unit>,
+        _: metrics::SharedString,
+    ) {
+    }
+    fn describe_gauge(
+        &self,
+        _: metrics::KeyName,
+        _: Option<metrics::Unit>,
+        _: metrics::SharedString,
+    ) {
+    }
+    fn describe_histogram(
+        &self,
+        _: metrics::KeyName,
+        _: Option<metrics::Unit>,
+        _: metrics::SharedString,
+    ) {
+    }
+
+    fn register_counter(&self, key: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Counter {
+        if key.name() != "felix_mqtt_refused_total" {
+            return metrics::Counter::noop();
+        }
+        let reason = key
+            .labels()
+            .find(|label| label.key() == "reason")
+            .map(|label| label.value().to_string())
+            .unwrap_or_default();
+        metrics::Counter::from_arc(Arc::new(Tally {
+            reason,
+            counts: Arc::clone(&self.counts),
+        }))
+    }
+
+    fn register_gauge(&self, _: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Gauge {
+        metrics::Gauge::noop()
+    }
+
+    fn register_histogram(
+        &self,
+        _: &metrics::Key,
+        _: &metrics::Metadata<'_>,
+    ) -> metrics::Histogram {
+        metrics::Histogram::noop()
+    }
+}
+
+/// Run `test` on a paused single-thread runtime with the refusal counter
+/// recorded. The connection tasks run on this thread, so the thread-local
+/// recorder sees what they count.
+fn counting<F: std::future::Future<Output = ()>>(test: F) -> Refusals {
+    let refusals = Refusals::default();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .start_paused(true)
+        .build()
+        .unwrap();
+    metrics::with_local_recorder(&refusals, || runtime.block_on(test));
+    refusals
+}
+
+#[test]
+fn a_publish_to_an_unmounted_topic_closes_a_3_1_1_connection() {
+    let refusals = counting(async {
+        let mut h = connected(Version::V311).await;
+        h.client
+            .send(
+                Packet::Publish(publish_to("yard/gate", QoS::AtLeastOnce, Some(1))),
+                Version::V311,
+            )
+            .await;
+        assert!(h.client.closed().await);
+    });
+    assert_eq!(refusals.get("unmounted"), 1);
+    assert_eq!(refusals.get("publish_unsupported"), 0);
+}
+
+#[test]
+fn a_5_client_is_told_per_message_that_a_topic_is_unmounted() {
+    let refusals = counting(async {
+        let mut h = connected(Version::V5).await;
+        h.client
+            .send(
+                Packet::Publish(publish_to("yard/gate", QoS::AtLeastOnce, Some(7))),
+                Version::V5,
+            )
+            .await;
+        match h.client.recv().await {
+            Some(Packet::PubAck(ack)) => {
+                assert_eq!(ack.packet_id, 7);
+                assert_eq!(ack.reason, ReasonCode::TopicNameInvalid);
+            }
+            other => panic!("expected PUBACK, got {other:?}"),
+        }
+        h.client
+            .send(
+                Packet::Publish(publish_to("yard/gate", QoS::ExactlyOnce, Some(8))),
+                Version::V5,
+            )
+            .await;
+        assert!(matches!(
+            h.client.recv().await,
+            Some(Packet::PubRec(ack)) if ack.packet_id == 8 && ack.reason == ReasonCode::TopicNameInvalid
+        ));
+        // The connection is still good.
+        h.client.send(Packet::PingReq, Version::V5).await;
+        assert!(matches!(h.client.recv().await, Some(Packet::PingResp)));
+    });
+    assert_eq!(refusals.get("unmounted"), 2);
+}
+
+#[test]
+fn an_unmounted_qos_0_publish_disconnects_a_5_client() {
+    let refusals = counting(async {
+        let mut h = connected(Version::V5).await;
+        h.client
+            .send(
+                Packet::Publish(publish_to("yard/gate", QoS::AtMostOnce, None)),
+                Version::V5,
+            )
+            .await;
+        assert!(matches!(
+            h.client.recv().await,
+            Some(Packet::Disconnect(d)) if d.reason == ReasonCode::TopicNameInvalid
+        ));
+        assert!(h.client.closed().await);
+    });
+    assert_eq!(refusals.get("unmounted"), 1);
+}
+
+#[test]
+fn a_topic_that_is_only_a_prefix_of_a_mount_is_unmounted() {
+    let refusals = counting(async {
+        let mut h = connected(Version::V5).await;
+        for topic in ["plant", "plan", "Plant/x"] {
+            h.client
+                .send(
+                    Packet::Publish(publish_to(topic, QoS::AtLeastOnce, Some(1))),
+                    Version::V5,
+                )
+                .await;
+            assert!(
+                matches!(
+                    h.client.recv().await,
+                    Some(Packet::PubAck(ack)) if ack.reason == ReasonCode::TopicNameInvalid
+                ),
+                "{topic}"
+            );
+        }
+    });
+    assert_eq!(refusals.get("unmounted"), 3);
+}
+
+/// What the decoder already refuses, and the one thing it lets through: an
+/// empty name under a topic alias, which this listener never offered.
+#[test]
+fn an_invalid_topic_name_is_a_protocol_error_counted_apart() {
+    let refusals = counting(async {
+        let mut h = connected(Version::V311).await;
+        // PUBLISH QoS 0 to "a/+", written by hand because the encoder
+        // would not.
+        h.client
+            .raw(&[0x30, 7, 0, 3, b'a', b'/', b'+', b'x', b'y'])
+            .await;
+        assert!(h.client.closed().await);
+
+        let mut h = connected(Version::V5).await;
+        h.client
+            .raw(&[0x30, 7, 0, 3, b'a', b'/', b'#', 0, b'x'])
+            .await;
+        assert!(matches!(
+            h.client.recv().await,
+            Some(Packet::Disconnect(d)) if d.reason == ReasonCode::TopicNameInvalid
+        ));
+        assert!(h.client.closed().await);
+
+        let mut h = connected(Version::V5).await;
+        let mut aliased = publish_to("", QoS::AtLeastOnce, Some(1));
+        aliased.properties.topic_alias = Some(1);
+        h.client.send(Packet::Publish(aliased), Version::V5).await;
+        assert!(matches!(
+            h.client.recv().await,
+            Some(Packet::Disconnect(d)) if d.reason == ReasonCode::TopicNameInvalid
+        ));
+        assert!(h.client.closed().await);
+    });
+    assert_eq!(refusals.get("invalid_topic_name"), 3);
+    assert_eq!(refusals.get("unmounted"), 0);
 }

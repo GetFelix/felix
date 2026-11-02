@@ -406,6 +406,32 @@ A record with its publisher is storage format v6, which an older broker
 refuses to open, so turning this on is a one-way step for the data directory.
 Each record grows by the principal's length plus one byte.
 
+### `FELIX_RECORD_HEADERS`
+
+**Description**: On a broker outside a cluster, accept record headers (a key
+and named headers) from clients that send them. Set it to `false` to refuse
+every publish that carries headers (`feature_not_enabled`, reason
+`record_headers`), so the logs stay at storage format v7. Subscribers still
+read headers a log already holds, so turning it off later does not hide them.
+In a cluster this has no effect: headers are a fleet feature, and a cluster
+member does not enable them until they replicate.
+
+**Type**: Boolean
+
+**Default**: `true`
+
+**Accepted values**: `1`, `true`, `yes`, `on` = enabled; `0`, `false`, `no`,
+`off` = disabled. Anything else keeps the default.
+
+**Example**:
+```bash
+export FELIX_RECORD_HEADERS="false"
+```
+
+A record with headers is storage format v8, which an older broker refuses to
+open, so the first such publish is a one-way step for the data directory. Turn
+this off first if you may need to run an older broker on the same data.
+
 ### `FELIX_MAX_FRAME_BYTES`
 
 **Description**: Maximum frame size accepted on QUIC streams.
@@ -883,7 +909,7 @@ export FELIX_SUB_STREAM_MODE="per_subscriber"
 
 ### `FELIX_CACHE_CONN_POOL`
 
-**Description**: Number of QUIC connections in cache pool (client-side).
+**Description**: Most QUIC connections in a `Connection`'s cache pool (client-side). They all open on the first cache request, so a client that never uses the cache holds none.
 
 **Type**: Positive integer (count)
 
@@ -1028,7 +1054,7 @@ export FELIX_CLUSTER_STREAMS_PER_CONN="1024"
 
 ### `FELIX_EVENT_CONN_POOL`
 
-**Description**: Number of QUIC connections for event delivery (client).
+**Description**: Most QUIC connections for subscriptions and event delivery (client). Each new subscription opens one until the pool is full, then shares the least-loaded, so a client with one subscription holds one.
 
 **Type**: Positive integer (count)
 
@@ -1110,7 +1136,7 @@ export FELIX_CLIENT_SUB_QUEUE_POLICY="drop_new"
 
 ### `FELIX_PUB_CONN_POOL`
 
-**Description**: Number of publishing QUIC connections (client).
+**Description**: Number of publishing QUIC connections (client), all opened at connect.
 
 **Type**: Positive integer (count)
 
@@ -1374,7 +1400,7 @@ back to "unlimited".
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `FELIX_MAX_CONNECTIONS_PER_IP` | `512` | Client QUIC connections one source IP may hold across all of this broker's QUIC listeners. The next one is refused before its handshake (the client sees a QUIC connection refusal) and counted in `felix_quic_connections_refused_total{reason="per_ip_limit"}`. Applies alongside the broker-wide `FELIX_MAX_CLIENT_CONNECTIONS`. IPv4-mapped IPv6 addresses count as the IPv4 address. `0` is unlimited. |
+| `FELIX_MAX_CONNECTIONS_PER_IP` | `512` | Client QUIC connections one source IP may hold across all of this broker's QUIC listeners. The next one is refused before its handshake (the client sees a QUIC connection refusal) and counted in `felix_quic_connections_refused_total{reason="per_ip_limit"}`. Applies alongside the broker-wide `FELIX_MAX_CLIENT_CONNECTIONS`. IPv4-mapped IPv6 addresses count as the IPv4 address. `0` is unlimited. A `Client` uses one connection per broker; a `Connection` uses 4 at connect, one per subscription up to 8, and 8 more once it uses the cache, so the default admits about 100 subscribing `Connection`s from one host. |
 | `FELIX_TENANT_PUBLISH_BYTES_PER_SEC` | `0` | Payload bytes per second every tenant may publish, unless `FELIX_TENANT_PUBLISH_QUOTAS` names it. `0` is unlimited. |
 | `FELIX_TENANT_PUBLISH_MSGS_PER_SEC` | `0` | Messages per second every tenant may publish, the same way. Either rate refuses on its own. |
 | `FELIX_TENANT_PUBLISH_QUOTAS` | unset | Per-tenant rates that replace the defaults: comma-separated `tenant:bytes_per_sec:msgs_per_sec`, `0` meaning unlimited, e.g. `acme:10485760:5000,beta:0:100`. A tenant named twice fails startup. |

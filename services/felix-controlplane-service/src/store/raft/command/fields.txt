@@ -123,6 +123,7 @@
 5 create_resources.streams[].durable
 10 create_resources.streams[].incarnation
 5 create_resources.streams[].kind
+24 create_resources.streams[].mount
 5 create_resources.streams[].namespace
 5 create_resources.streams[].region
 5 create_resources.streams[].replication_factor
@@ -142,6 +143,7 @@
 0 create_stream.stream.durable
 10 create_stream.stream.incarnation
 0 create_stream.stream.kind
+24 create_stream.stream.mount
 0 create_stream.stream.namespace
 0 create_stream.stream.region
 0 create_stream.stream.replication_factor
@@ -404,9 +406,9 @@
 13 import_state.state.replica_reports[].node_incarnations.*
 3 import_state.state.replica_reports[].offsets
 3 import_state.state.replica_reports[].offsets.*
-24 import_state.state.replica_reports[].refused
-24 import_state.state.replica_reports[].refused.generation
-24 import_state.state.replica_reports[].refused.promised_to
+25 import_state.state.replica_reports[].refused
+25 import_state.state.replica_reports[].refused.generation
+25 import_state.state.replica_reports[].refused.promised_to
 3 import_state.state.replica_reports[].reported_at_millis
 10 import_state.state.replica_reports[].stream_incarnation
 0 import_state.state.shard_changes
@@ -481,6 +483,7 @@
 0 import_state.state.stream_changes.items[].stream.durable
 10 import_state.state.stream_changes.items[].stream.incarnation
 0 import_state.state.stream_changes.items[].stream.kind
+24 import_state.state.stream_changes.items[].stream.mount
 0 import_state.state.stream_changes.items[].stream.namespace
 0 import_state.state.stream_changes.items[].stream.region
 0 import_state.state.stream_changes.items[].stream.replication_factor
@@ -503,6 +506,7 @@
 0 import_state.state.streams[][].durable
 10 import_state.state.streams[][].incarnation
 0 import_state.state.streams[][].kind
+24 import_state.state.streams[][].mount
 0 import_state.state.streams[][].namespace
 0 import_state.state.streams[][].region
 0 import_state.state.streams[][].replication_factor
@@ -585,6 +589,7 @@
 0 patch_stream.patch.consistency
 0 patch_stream.patch.delivery
 0 patch_stream.patch.durable
+24 patch_stream.patch.mount
 0 patch_stream.patch.retention
 0 patch_stream.patch.retention.max_age_seconds
 0 patch_stream.patch.retention.max_size_bytes
@@ -706,9 +711,9 @@
 13 record_replica_report.report.node_incarnations.*
 0 record_replica_report.report.offsets
 0 record_replica_report.report.offsets.*
-24 record_replica_report.report.refused
-24 record_replica_report.report.refused.generation
-24 record_replica_report.report.refused.promised_to
+25 record_replica_report.report.refused
+25 record_replica_report.report.refused.generation
+25 record_replica_report.report.refused.promised_to
 0 record_replica_report.report.reported_at_millis
 10 record_replica_report.report.stream_incarnation
 0 register_node
@@ -1017,9 +1022,9 @@
 13 snapshot.state.replica_reports[].node_incarnations.*
 3 snapshot.state.replica_reports[].offsets
 3 snapshot.state.replica_reports[].offsets.*
-24 snapshot.state.replica_reports[].refused
-24 snapshot.state.replica_reports[].refused.generation
-24 snapshot.state.replica_reports[].refused.promised_to
+25 snapshot.state.replica_reports[].refused
+25 snapshot.state.replica_reports[].refused.generation
+25 snapshot.state.replica_reports[].refused.promised_to
 3 snapshot.state.replica_reports[].reported_at_millis
 10 snapshot.state.replica_reports[].stream_incarnation
 0 snapshot.state.shard_changes
@@ -1094,6 +1099,7 @@
 0 snapshot.state.stream_changes.items[].stream.durable
 10 snapshot.state.stream_changes.items[].stream.incarnation
 0 snapshot.state.stream_changes.items[].stream.kind
+24 snapshot.state.stream_changes.items[].stream.mount
 0 snapshot.state.stream_changes.items[].stream.namespace
 0 snapshot.state.stream_changes.items[].stream.region
 0 snapshot.state.stream_changes.items[].stream.replication_factor
@@ -1116,6 +1122,7 @@
 0 snapshot.state.streams[][].durable
 10 snapshot.state.streams[][].incarnation
 0 snapshot.state.streams[][].kind
+24 snapshot.state.streams[][].mount
 0 snapshot.state.streams[][].namespace
 0 snapshot.state.streams[][].region
 0 snapshot.state.streams[][].replication_factor

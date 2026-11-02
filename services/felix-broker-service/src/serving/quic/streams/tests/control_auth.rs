@@ -41,6 +41,7 @@ async fn control_loop_rejects_auth_failed() -> Result<()> {
         client_flags: None,
         client_features: None,
         client_features_hi: None,
+        client_flags_ext: None,
     })))];
     let (result, messages) = run_control_loop_with_frames(
         broker,
@@ -402,6 +403,7 @@ async fn auth_ok_for(client_features: u32, client_features_hi: Option<u32>) -> R
         client_flags: Some(felix_wire::KNOWN_FLAGS),
         client_features: Some(client_features),
         client_features_hi,
+        client_flags_ext: None,
     })))];
     let (_, messages) = run_control_loop_with_frames(
         broker,

@@ -49,6 +49,7 @@ mod ack;
 mod admission;
 mod commit_ack;
 mod control;
+mod headers;
 mod ingress;
 mod order;
 mod parked;
@@ -277,6 +278,9 @@ pub(crate) type PublishResult = Result<Option<u64>>;
 pub(crate) struct PublishJob {
     pub(crate) target: PublishTarget,
     pub(crate) payloads: Vec<Bytes>,
+    /// Each payload's key and headers block, when any has one. Always one per
+    /// payload when `Some`.
+    pub(crate) headers: Option<Vec<Option<Bytes>>>,
     /// The authenticated principal publishing it.
     pub(crate) publisher: Option<Bytes>,
     pub(crate) response: Option<PublishReply>,

@@ -140,6 +140,7 @@ async fn a_lost_node_has_its_ephemeral_shards_replaced() {
                 consistency: None,
                 delivery: None,
                 durable: Some(false),
+                mount: None,
             },
         )
         .await

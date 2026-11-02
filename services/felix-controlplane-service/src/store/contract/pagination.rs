@@ -96,6 +96,7 @@ fn stream(name: &str, shards: u32) -> Stream {
         region: None,
         routing: Default::default(),
         incarnation: 0,
+        mount: None,
     }
 }
 

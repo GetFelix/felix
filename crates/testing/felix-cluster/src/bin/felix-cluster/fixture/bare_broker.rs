@@ -101,6 +101,7 @@ async fn serve_stream(
                     server_flags: felix_wire::ORIGINAL_V1_FLAGS,
                     server_features: None,
                     server_features_hi: None,
+                    server_flags_ext: None,
                     listener_ports: None,
                     publish_window: None,
                 };

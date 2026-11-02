@@ -334,3 +334,44 @@ fn headers_in_an_older_segment_are_refused_by_the_reader() {
         ));
     }
 }
+
+/// A headers block is returned with the payload, so it spends the read's
+/// byte budget too.
+#[test]
+fn a_headers_block_counts_against_the_byte_budget() {
+    use crate::log::RecordMark;
+    use crate::segment::format::{HEADERS_VERSION, SegmentHeader, encode_record};
+    let dir = tempdir().expect("dir");
+    let path = dir.path().join("a.log");
+    let block = vec![b'k'; 100];
+    let mut bytes = SegmentHeader::at_version(0, 1, HEADERS_VERSION)
+        .encode()
+        .to_vec();
+    for offset in 0..3 {
+        encode_record(
+            &mut bytes,
+            offset,
+            100 + offset,
+            b"data",
+            Some(&block),
+            None,
+            &RecordMark::None,
+        );
+    }
+    std::fs::write(&path, &bytes).expect("write");
+    let outcome = scan_segment(&path, 0, "t/ns/s/0", 4096, ScanStart::Full, false).expect("scan");
+
+    let reader = SegmentReader::open(&path, 0, 0).expect("open");
+    let mut out = Vec::new();
+    reader
+        .read_from(
+            &outcome.index,
+            0,
+            outcome.valid_bytes,
+            &mut ReadBudget::new(150, usize::MAX),
+            "t/ns/s/0",
+            &mut out,
+        )
+        .expect("read");
+    assert_eq!(out.len(), 1);
+}

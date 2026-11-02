@@ -137,7 +137,7 @@ async fn offset_for_time_finds_the_first_record_at_or_after_a_time() {
     let order = Arc::new(CommitSequencer::new(0));
     for (values, time) in [(&["a"][..], 100), (&["b", "c"][..], 200), (&["d"][..], 300)] {
         let (pending, turn) = log
-            .begin_append(&payloads(values), &[], time, &order)
+            .begin_append(&payloads(values), &[], None, time, &order)
             .await
             .expect("append");
         log.commit(&pending).await.expect("commit");

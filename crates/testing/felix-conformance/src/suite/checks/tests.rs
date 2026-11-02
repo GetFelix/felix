@@ -93,6 +93,7 @@ fn ensure_flag_advertised_variants() {
             server_flags,
             server_features: None,
             server_features_hi: None,
+            server_flags_ext: None,
             listener_ports: None,
             publish_window: None,
         })

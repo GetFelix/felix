@@ -409,6 +409,7 @@ mod feed {
                 assignments_changed: Arc::default(),
                 routes_changed: Arc::default(),
                 joint_fence: None,
+                prefetch: None,
             },
             router,
         )
@@ -701,4 +702,68 @@ fn a_pending_set_change_routes_the_new_set_and_keeps_the_one_being_left() {
     let change = route.pending.as_deref().expect("pending");
     assert_eq!(change.generation, 6);
     assert_eq!(change.leaving, ["broker-a", "broker-b", "broker-c"]);
+}
+
+/// **The feed names a copy for an early confirmed read only when it is new
+/// (#1791):** a move's destination or a follower just added, not the routes
+/// a broker starts with, not a copy it already followed, and not a shard's
+/// creation, which skips the read.
+#[test]
+fn only_newly_named_followers_are_read_early() {
+    let map = |assignments: Vec<ShardAssignment>| {
+        assignments
+            .into_iter()
+            .map(|assignment| (assignment.key.clone(), assignment))
+            .collect::<HashMap<_, _>>()
+    };
+    let named = |before: &HashMap<_, _>, after: &HashMap<_, _>| {
+        let mut shards: Vec<u32> = newly_named(before, after, "broker-b")
+            .map(|(key, _)| key.shard)
+            .collect();
+        shards.sort_unstable();
+        shards
+    };
+    let staged = ShardAssignment {
+        successor: Some("broker-b".to_string()),
+        replicas: vec!["broker-b".to_string()],
+        ..assignment(0, "broker-a", 3)
+    };
+    let followed = ShardAssignment {
+        replicas: vec!["broker-b".to_string()],
+        ..assignment(1, "broker-a", 2)
+    };
+    let created = ShardAssignment {
+        replicas: vec!["broker-b".to_string()],
+        incarnation: 4,
+        member_storage_ids: [("broker-b".to_string(), "00".to_string())].into(),
+        ..assignment(2, "broker-a", 1)
+    };
+    let led = ShardAssignment {
+        replicas: vec!["broker-c".to_string()],
+        ..assignment(3, "broker-b", 1)
+    };
+    let joining = ShardAssignment {
+        replicas: vec!["broker-c".to_string()],
+        pending_set: Some(crate::shards::watch::PendingSet {
+            replicas: vec!["broker-b".to_string(), "broker-c".to_string()],
+            generation: 6,
+        }),
+        ..assignment(4, "broker-a", 5)
+    };
+    let before = map(vec![assignment(0, "broker-a", 2), followed.clone()]);
+    let after = map(vec![
+        staged.clone(),
+        followed.clone(),
+        created,
+        led,
+        joining,
+    ]);
+    assert_eq!(named(&before, &after), [0, 4]);
+    assert!(named(&HashMap::new(), &after).is_empty(), "the first view");
+    // A re-created stream is another log, so its copy is new again.
+    let recreated = ShardAssignment {
+        incarnation: 9,
+        ..followed
+    };
+    assert_eq!(named(&before, &map(vec![staged, recreated])), [0, 1]);
 }

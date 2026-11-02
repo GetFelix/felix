@@ -65,6 +65,7 @@ fn stream(tenant_id: &str, namespace: &str, name: &str) -> Stream {
         region: None,
         routing: Default::default(),
         incarnation: 0,
+        mount: None,
     }
 }
 

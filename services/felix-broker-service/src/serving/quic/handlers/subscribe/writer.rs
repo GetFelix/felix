@@ -95,8 +95,7 @@ pub(super) async fn run_writer_lane(
                 Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
             }
         }
-        metrics::gauge!("felix_sub_lane_queue_len", "lane" => lane_label.clone())
-            .set(rx.len() as f64);
+        manager.lane_queue_len[lane_id].set(rx.len() as f64);
 
         for cmd in pending {
             match cmd {
@@ -224,6 +223,7 @@ pub(super) async fn run_connection_writer(
         block,
     } = config;
     let max_queued_per_subscriber = max_queued_per_subscriber.max(1);
+    let queue_depth = metrics::histogram!("felix_sub_conn_queue_depth");
     // Only read by the telemetry build's per-connection series.
     #[cfg_attr(not(feature = "telemetry"), allow(unused_variables))]
     let conn_label = connection_id.to_string();
@@ -347,7 +347,7 @@ pub(super) async fn run_connection_writer(
                         Err(_) => break,
                     }
                 }
-                metrics::histogram!("felix_sub_conn_queue_depth").record(rx.len() as f64);
+                queue_depth.record(rx.len() as f64);
                 for cmd in pending {
                     match cmd {
                         ConnectionCommand::Register {

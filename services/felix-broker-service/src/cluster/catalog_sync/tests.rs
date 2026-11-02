@@ -5,6 +5,7 @@ mod cache_incarnation;
 mod consistency;
 mod fetch;
 mod incarnation;
+mod mounts;
 mod pass;
 mod refresh;
 mod replay;

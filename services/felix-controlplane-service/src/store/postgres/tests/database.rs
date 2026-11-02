@@ -419,6 +419,8 @@ async fn satisfies_the_shard_store_contract() -> anyhow::Result<()> {
     crate::store::contract::rbac::run_rbac_contract(store.clone()).await;
     crate::store::contract::resources::run_resources_contract(store.clone()).await;
     crate::store::contract::resources::run_resources_race_contract(store.clone(), 50).await;
+    crate::store::contract::mounts::run_mount_contract(store.clone()).await;
+    crate::store::contract::mounts::run_mount_race_contract(store.clone(), 30).await;
     crate::store::contract::pagination::run_pagination_contract(store).await;
     Ok(())
 }
@@ -603,6 +605,7 @@ fn feed_stream(name: &str) -> Stream {
         region: None,
         routing: Default::default(),
         incarnation: 0,
+        mount: None,
     }
 }
 
@@ -1165,6 +1168,7 @@ async fn postgres_store_full_roundtrip() -> anyhow::Result<()> {
             region: Some("eu-west-1".to_string()),
             routing: Default::default(),
             incarnation: 0,
+            mount: None,
         })
         .await?;
     store
@@ -1178,6 +1182,7 @@ async fn postgres_store_full_roundtrip() -> anyhow::Result<()> {
                 consistency: Some(ConsistencyLevel::Quorum),
                 delivery: Some(DeliveryGuarantee::AtMostOnce),
                 durable: Some(true),
+                mount: None,
             },
         )
         .await?;
@@ -1468,6 +1473,7 @@ fn incarnation_stream(name: &str) -> crate::model::Stream {
         region: None,
         routing: Default::default(),
         incarnation: 0,
+        mount: None,
     }
 }
 

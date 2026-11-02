@@ -53,6 +53,9 @@ pub struct GroupReader {
     /// Shards whose cursors were checked against their dead-letter log since
     /// this broker started, began a term, or had either log rewritten.
     normalized: SyncMutex<HashSet<(String, String, String, u32)>>,
+    /// Told which shard a cursor or dead-letter write was for, so
+    /// replication ships it without waiting for its tick.
+    appended: Arc<crate::AppendedShards>,
 }
 
 impl GroupReader {
@@ -72,7 +75,24 @@ impl GroupReader {
             max_in_flight: AtomicUsize::new(DEFAULT_MAX_IN_FLIGHT),
             capped: AtomicU64::new(0),
             normalized: SyncMutex::new(HashSet::new()),
+            appended: Arc::default(),
         }
+    }
+
+    /// Mark each shard written to in `appended`.
+    pub(crate) fn waking(mut self, appended: Arc<crate::AppendedShards>) -> Self {
+        self.appended = appended;
+        self
+    }
+
+    /// `key`'s shard logs took a write.
+    fn wrote(&self, key: &GroupKey) {
+        self.appended.mark(crate::AppendedShards::slot(
+            &key.tenant_id,
+            &key.namespace,
+            &key.stream,
+            key.shard,
+        ));
     }
 
     /// Check the shard's cursors against its dead-letter log, once, before
@@ -283,6 +303,7 @@ impl GroupReader {
         for (i, dead) in claim.dead_lettered.iter().enumerate() {
             let recorded = self.dead_letters.record(key, dead.offset).await;
             if recorded.is_ok() {
+                self.wrote(key);
                 // The write replaced any redrive record.
                 tracker.lock().await.take_redriven(dead.offset);
             }
@@ -350,6 +371,8 @@ impl GroupReader {
                             (tracker.attempts(offset), tracker.skipped_before(offset))
                         };
                         bytes += record.payload.len();
+                        // Group records are JSON and carry no headers: a block
+                        // stays in the log and is not delivered.
                         claimed.push(Claimed {
                             offset,
                             payload: record.payload,
@@ -504,6 +527,7 @@ impl GroupReader {
             return Ok(false);
         }
         self.dead_letters.record(key, offset).await?;
+        self.wrote(key);
         // The write replaced any redrive record.
         tracker.take_redriven(offset);
         let advanced = tracker.ack(offset);
@@ -836,6 +860,7 @@ impl GroupReader {
                 self.dead_letter_mark(key).await?,
             )
             .await?;
+        self.wrote(key);
         Ok(())
     }
 

@@ -504,6 +504,7 @@ async fn a_consistency_change_fences_placement_only_when_its_entry_says_so() {
                     consistency: Some(crate::model::ConsistencyLevel::Quorum),
                     delivery: None,
                     durable: None,
+                    mount: None,
                 },
                 fence,
             })

@@ -86,6 +86,7 @@ fn stream() -> Stream {
         region: Some(s("r")),
         routing: StreamRouting::JumpHash,
         incarnation: 7,
+        mount: Some(s("m/")),
     }
 }
 
@@ -95,6 +96,7 @@ fn stream_patch() -> StreamPatchRequest {
         consistency: Some(ConsistencyLevel::Leader),
         delivery: Some(DeliveryGuarantee::AtMostOnce),
         durable: Some(true),
+        mount: Some(Some(s("m/"))),
     }
 }
 
@@ -808,6 +810,7 @@ fn a_command_at_its_defaults_needs_only_its_variant() {
     let mut plain = stream();
     plain.routing = StreamRouting::Modulo;
     plain.incarnation = 0;
+    plain.mount = None;
     assert_eq!(
         MetaCommand::CreateStream {
             names: false,
@@ -817,6 +820,17 @@ fn a_command_at_its_defaults_needs_only_its_variant() {
         .version(),
         0
     );
+    let mut unmounted = stream();
+    unmounted.mount = None;
+    assert_eq!(
+        MetaCommand::CreateStream {
+            names: false,
+            stream: unmounted,
+            incarnations: false
+        }
+        .version(),
+        10
+    );
     assert_eq!(
         MetaCommand::CreateStream {
             names: false,
@@ -824,7 +838,32 @@ fn a_command_at_its_defaults_needs_only_its_variant() {
             incarnations: false
         }
         .version(),
-        10
+        24
+    );
+    // A clear is a write too: an older member would not know to drop it.
+    let clear = StreamPatchRequest {
+        retention: None,
+        consistency: None,
+        delivery: None,
+        durable: None,
+        mount: Some(None),
+    };
+    let patch = |patch| MetaCommand::PatchStream {
+        key: stream_key(),
+        patch,
+        fence: false,
+    };
+    assert_eq!(patch(clear).version(), 24);
+    assert_eq!(
+        patch(StreamPatchRequest {
+            retention: None,
+            consistency: None,
+            delivery: None,
+            durable: Some(true),
+            mount: None,
+        })
+        .version(),
+        0
     );
 
     let mut token = refresh_token();

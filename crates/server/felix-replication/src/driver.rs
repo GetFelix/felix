@@ -40,6 +40,16 @@ use shards::{Context, Event, Shards, WakeKind};
 /// to stay a bounded amount of concurrent work.
 const SHARD_CONCURRENCY: usize = 16;
 
+/// How many promoted shards are fenced at the same time. Apart from
+/// [`SHARD_CONCURRENCY`], so a burst of new shards fencing cannot take the
+/// slots shards already serving need to ship.
+const FENCE_CONCURRENCY: usize = 16;
+
+/// How many shards with work start, at most, while one waiting only for its
+/// regular pass is passed over. Work goes first, but a steady stream of
+/// appends must not hold back every other shard's report for good.
+const REFRESH_SHARE: usize = 4;
+
 /// How soon a pass follows one that left a fenced shard undrained. Short,
 /// because clients are held for the switch-over; not zero, because a
 /// destination that is gone would otherwise be dialled in a tight loop until
@@ -617,7 +627,7 @@ async fn open_promoted<R: PeerRequester>(
             .into_iter()
             .map(|(key, route)| fence_one(requester, broker, router, key, route, marks)),
     )
-    .buffer_unordered(SHARD_CONCURRENCY)
+    .buffer_unordered(FENCE_CONCURRENCY)
     .collect()
     .await;
     let mut pending = false;

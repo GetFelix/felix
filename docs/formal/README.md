@@ -1117,8 +1117,8 @@ plane holds failed:
   code's leader does (`LearnerAcksCount`), and without elections a non-voter
   also takes them from a leader the control plane named at that leader's
   generation after it moved on (`CatchUpFromDeposed`), as the code's
-  confirmed read, cached for 500 ms, lets it. That cache is in memory, so
-  its reads came after the wipe: the deposed leader's generation is at least
+  confirmed read, reused for 10 s without elections, lets it. That cache is
+  in memory, so its reads came after the wipe: the deposed leader's generation is at least
   the one at the wipe. Both are on in every configuration without
   elections; with elections counting a learner loses a write
   (`FelixShardElectWipeNonVoterCreatesLearnerAcks.cfg`), so the leader must

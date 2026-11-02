@@ -20,6 +20,7 @@ use std::time::Instant;
 
 use anyhow::Result;
 use bytes::Bytes;
+use felix_wire::RecordHeaders;
 use tokio::sync::mpsc;
 
 use crate::connection::StreamLease;
@@ -149,6 +150,7 @@ impl Subscription {
                 skipped_before,
                 publisher,
                 timestamp_micros,
+                headers,
             } => {
                 record_e2e_latency(
                     &payload,
@@ -164,6 +166,7 @@ impl Subscription {
                     skipped_before,
                     publisher,
                     timestamp_micros,
+                    headers,
                 }))
             }
             QueuedEvent::Error(err) => Err(err),
@@ -243,6 +246,11 @@ pub struct Event {
     /// unless [`crate::ClientConfig::timestamps`] asked for it, and for an
     /// in-memory stream, which stores no time.
     pub timestamp_micros: Option<u64>,
+    /// The key and headers the publisher gave this record. `None` for a record
+    /// published without either, and when
+    /// [`crate::ClientConfig::record_headers`] is off or the broker did not
+    /// accept the extension.
+    pub headers: Option<RecordHeaders>,
 }
 
 /// Where a subscription's shard went, sent by the broker as the last frame
@@ -279,6 +287,7 @@ enum QueuedEvent {
         skipped_before: u64,
         publisher: Option<Arc<str>>,
         timestamp_micros: Option<u64>,
+        headers: Option<RecordHeaders>,
     },
     Error(anyhow::Error),
 }

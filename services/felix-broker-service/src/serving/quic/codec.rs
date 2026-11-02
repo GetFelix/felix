@@ -10,6 +10,43 @@ use quinn::{RecvStream, SendStream, StreamId};
 #[cfg(feature = "telemetry")]
 use super::telemetry;
 
+/// True if the broker refuses a frame for its flags.
+///
+/// `FLAG_EXTENDED` is accepted only once the connection negotiated an
+/// extension (`negotiated_ext` is the bits `Auth` and `AuthOk` agreed on), and
+/// only on a binary publish batch, the one client frame that carries an
+/// extension today. Otherwise it is refused as it was before the bit was
+/// defined, so a client that skipped the offer learns it from the error and a
+/// JSON frame cannot reach a decoder that would close the stream over it.
+/// Every reader of client frames checks this before the body.
+pub(crate) fn refuses_flags(flags: u16, negotiated_ext: u32) -> bool {
+    felix_wire::has_unknown_flags(flags)
+        || (flags & felix_wire::FLAG_EXTENDED != 0
+            && (negotiated_ext == 0 || flags & felix_wire::FLAG_BINARY_PUBLISH_BATCH == 0))
+}
+
+/// The extension bits a client's `Auth` offered that this broker serves.
+///
+/// Today that is record headers, offered whenever the broker can read them,
+/// which on a lone broker is always: the switch that turns publishing them off
+/// does not hide what a log already holds.
+pub(crate) fn negotiated_ext(
+    broker: &felix_broker::Broker,
+    client_flags: Option<u16>,
+    client_flags_ext: Option<u32>,
+) -> u32 {
+    let served = if broker.reads_headers() {
+        felix_wire::EXT_RECORD_HEADERS
+    } else {
+        0
+    };
+    let offered = felix_wire::peer_flags_ext(
+        client_flags.unwrap_or(felix_wire::ORIGINAL_V1_FLAGS),
+        client_flags_ext,
+    );
+    offered & served
+}
+
 // Helper for tests and small control flows with an explicit frame cap.
 pub async fn read_message_limited(
     recv: &mut RecvStream,
@@ -20,7 +57,8 @@ pub async fn read_message_limited(
         Some(frame) => frame,
         None => return Ok(None),
     };
-    if felix_wire::has_unknown_flags(frame.header.flags) {
+    // No `Auth` has been read here, so no extension is negotiated.
+    if refuses_flags(frame.header.flags, 0) {
         return Err(anyhow!(
             "unsupported frame flags {:#06x}",
             frame.header.flags
@@ -139,7 +177,7 @@ const READ_CHUNKS: usize = 32;
 ///
 /// A frame with unknown flag bits is returned rather than refused, with its
 /// body consumed, so the control stream can answer it and stay on a frame
-/// boundary. Every caller must check `felix_wire::has_unknown_flags` before
+/// boundary. Every caller must check [`refuses_flags`] before
 /// reading the body.
 ///
 /// Cancel-safe: nothing is consumed from `scratch` until the whole frame has

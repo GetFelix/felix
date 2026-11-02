@@ -63,7 +63,7 @@ async fn of_writers_racing_at_one_offset_exactly_one_wins() {
     let dir = tempfile::tempdir().expect("dir");
     let (broker, handle) = durable_broker(dir.path()).await;
     broker
-        .publish_batch_with_outcome(&handle, &[Bytes::from_static(b"start")], None)
+        .publish_batch_with_outcome(&handle, &[Bytes::from_static(b"start")], None, None)
         .await
         .expect("publish");
 
@@ -117,7 +117,7 @@ async fn a_refused_publish_leaves_no_record_and_no_gap() {
 
     let next = tokio::time::timeout(
         Duration::from_secs(5),
-        broker.publish_batch_with_outcome(&handle, &[Bytes::from_static(b"next")], None),
+        broker.publish_batch_with_outcome(&handle, &[Bytes::from_static(b"next")], None, None),
     )
     .await
     .expect("the next publish was held up")
@@ -219,7 +219,7 @@ async fn a_commit_at_a_stale_offset_changes_no_state() {
     assert_eq!(first.offsets, Some((0, 0)));
 
     broker
-        .publish_batch_with_outcome(&handle, &[Bytes::from_static(b"other")], None)
+        .publish_batch_with_outcome(&handle, &[Bytes::from_static(b"other")], None, None)
         .await
         .expect("publish");
     let refused = broker

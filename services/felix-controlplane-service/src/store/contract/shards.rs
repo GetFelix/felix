@@ -90,6 +90,7 @@ pub(crate) async fn seed(store: &dyn ControlPlaneStore) {
             region: None,
             routing: Default::default(),
             incarnation: 0,
+            mount: None,
         })
         .await;
 
@@ -292,6 +293,7 @@ pub(crate) async fn an_assignment_racing_a_recreate_names_the_stream_it_landed_o
         region: None,
         routing: Default::default(),
         incarnation,
+        mount: None,
     };
     let key = StreamKey {
         tenant_id: TENANT.to_string(),
@@ -1091,6 +1093,7 @@ async fn a_consistency_change_fences_placement(store: &dyn ControlPlaneStore) {
         consistency,
         delivery: None,
         durable,
+        mount: None,
     };
     let unchanged = [
         patch(None, None),
@@ -1372,6 +1375,7 @@ async fn a_recreated_stream_is_announced_and_starts_past_the_deleted_one(
         region: None,
         routing: Default::default(),
         incarnation: 0,
+        mount: None,
     };
     let stream_key = StreamKey {
         tenant_id: TENANT.to_string(),
@@ -1475,6 +1479,7 @@ async fn deleting_a_stream_or_cache_takes_its_shard_assignments_with_it(
             region: None,
             routing: Default::default(),
             incarnation: 0,
+            mount: None,
         })
         .await
         .expect("create the stream to delete");
@@ -1646,6 +1651,7 @@ async fn a_cascading_delete_takes_shard_assignments_and_reports(store: &dyn Cont
                 region: None,
                 routing: Default::default(),
                 incarnation: 0,
+                mount: None,
             })
             .await
             .expect("stream");
@@ -1772,6 +1778,7 @@ pub(crate) async fn an_assignment_names_the_incarnation_it_was_written_for(
         region: None,
         routing: Default::default(),
         incarnation,
+        mount: None,
     };
     let assignment = ShardAssignment {
         key: ShardKey {
@@ -1886,6 +1893,7 @@ pub(crate) async fn a_recreated_stream_never_repeats_a_generation(store: &dyn Co
         region: None,
         routing: Default::default(),
         incarnation,
+        mount: None,
     };
     let assignment = ShardAssignment {
         key: ShardKey {

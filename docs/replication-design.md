@@ -779,7 +779,120 @@ generation older than the confirmed one is refused with `FencedEpoch`, at
 the confirmed generation only the leader it names is answered, and a read
 that fails or finds no assignment refuses with `StaleRoute`, retryably,
 writing nothing. The check only adds refusals to the view's, so it cannot
-make a copy take anything it would have refused before. A control plane
+make a copy take anything it would have refused before.
+
+A new shard's copy skips the read. When the view holds the shard's
+creation, generation 1 of the incarnation the request names, naming this
+copy under the storage id it holds now, and the request is from the leader
+it names, the copy answers from its ballot alone. That set was written after this storage id registered, so
+after any wipe of this broker: no earlier copy here ever held the shard,
+and this one lost no promise for the read to stand in for. Its empty
+ballot is true, as on any new follower, under elections too. This is the
+same test `is_wiped_learner` uses for the shard's creation. A set at a
+later generation, an older control plane's set with no storage ids, or one
+naming another id is no such evidence, and the read decides. Neither is the
+creation of a shard with no incarnation. The control plane refuses to
+re-create a deleted name until incarnations are finalized, but if it did
+not, the copy would keep its storage id and a lagging view's old creation
+would look the same as the new one, so the copy does not rely on that.
+
+No peer request waits on the read
+([#1791](https://github.com/GetFelix/felix/issues/1791)). A peer lane
+answers one request at a time, so a control-plane round trip there would
+hold up every other shard's fence or batch queued behind it. Instead a
+background task reads for the shard, and the copy decides from the last
+answer it holds. With no fresh answer it refuses with `StaleRoute`,
+retryably, and the leader's retry finds the answer (`ConfirmedReads` in
+`crates/server/felix-replication/src/confirmed.rs`).
+
+```mermaid
+flowchart TD
+    R[Fence, batch, bootstrap or rebuild<br/>for a copy] --> H{Promise on disk<br/>and not a learner?}
+    H -- yes --> B[The ballot answers]
+    H -- no --> C{View holds the creation<br/>naming this storage id?}
+    C -- yes --> B
+    C -- no --> F{Fresh confirmed<br/>answer held?}
+    F -- yes --> D[Decide from the answer]
+    F -- no --> S[Refuse with StaleRoute<br/>and start one background read]
+    S -. leader retries .-> R
+```
+
+Each step is cheap. A copy that holds a promise checks its ballot and
+nothing else, as before. The creation test is a routing-view lookup.
+Looking up a held answer is a lock-free map load and a few atomics, with no
+lock and no allocation. Only the first request for a shard copies the map
+to add it, and starting a read allocates its task. A shard has at most one read in flight, and at most 16 run at
+once across all shards, so a bulk create does not hit the control plane
+with hundreds at the same moment.
+
+The task refreshes the answer shortly before it goes stale, leaving twice
+what the last read took, and only while the shard is still being asked
+about. A queue of reads at the control plane widens that margin rather
+than letting answers lapse. A request that needs a fresher answer than the
+task is keeping (elections just turned on) wakes it to read again at once.
+A failed read or an unassigned shard
+clears the answer and is not retried on its own: the next request starts
+another read.
+
+After a refusal the task keeps the answer fresh until the leader's retry
+comes. A leader retries a copy that refused it on its driver tick, the
+control-plane sync interval (`FELIX_CONTROLPLANE_SYNC_INTERVAL_MS`), so
+the answer is kept for twice that interval, and at least 5 s. Kept any
+shorter, a retry would find a stale answer, be refused again and start
+another read, every time, and a move onto the copy would never finish.
+A retry can still come later than that, for example when the leader's
+fences queue behind others during a bulk failover. If a refused retry is
+refused again, later waits for that shard grow to twice the longest such
+gap, up to 60 s, so the next retry finds the answer. A retry more than
+60 s after the last request is still refused.
+
+Usually there is no refusal at all. When this broker's assignments first
+name it a follower of a shard, as a move's destination or a follower just added,
+the routing feed starts the read before the leader asks, so the leader's
+first request usually finds the answer. The feed does this as it applies the
+change, so a request pays nothing for it. It starts at most 64 such reads
+per change and keeps each answer fresh for at least 5 s if no request
+comes. It
+skips any change that follows an empty view, such as the one a broker
+starts with (those copies mostly hold promises already), and a shard's
+creation (that copy skips the read). Every other copy is read on its first
+request.
+
+How fresh an answer must be depends on elections. Without them an answer
+is used for 10 s, and its age is not what makes it safe. Answers live in
+memory, so every one was read after the restart, after any wipe, and names
+the newest generation the copy lost a promise for or a later one. That is
+all the check needs: the model (`Forget` under `PromiseFromRoutes` in
+`docs/formal/FelixShard.tla`) seeds the view at the wipe and never
+refreshes it, which is older than any answer here, and finds nothing. An
+old answer can let through a leader deposed after it was read, at the
+generation it names. So does the model's view, and for a learner that is
+`CatchUpFromDeposed`, which the model also explores. An old answer never
+refuses the current leader: it refuses older generations and other leaders
+at its own, and the control plane never names two leaders at one
+generation. The 10 s bound is for liveness, so a control plane upgraded to
+serve the read is asked again soon. Under elections an answer is used for
+500 ms, since a promise to a candidate is in no read and only a recent read
+sees the control plane move on. A shard with no incarnation gets 500 ms
+too: it can be deleted and re-created at generation 1, and an older
+answer would refuse the new leader.
+
+Evidence (`replica/tests/fence.rs`):
+`a_new_shards_first_fence_needs_no_confirmed_read`,
+`a_later_set_or_another_storage_id_still_needs_the_read`,
+`confirmed_reads_for_new_shards_do_not_hold_up_the_lane`,
+`one_confirmed_read_answers_every_request_for_a_shard`;
+`a_shorter_freshness_wakes_the_refresh`,
+`a_retry_a_driver_tick_later_is_answered`,
+`a_retry_that_came_late_is_waited_for_longer`,
+`a_prefetch_keeps_a_refused_retrys_window`,
+`a_prefetched_copy_answers_the_first_request`,
+`early_reads_are_bounded_per_change`, `an_unasked_early_read_stops` and
+`a_copy_named_again_reads_again` (`confirmed/tests.rs`); and
+`only_newly_named_followers_are_read_early`
+(`services/felix-broker-service/src/shards/routing/tests.rs`).
+
+A control plane
 that does not serve the read (404, or 501 while its Raft leader predates
 it) leaves the view to answer alone, as before, so a mixed-version cluster
 behaves as it did until every control-plane member has the route. A
@@ -792,9 +905,11 @@ made to one. For elections a wiped copy does not vote at all until it is
 re-admitted; see [A copy that lost its storage does not
 vote](#a-copy-that-lost-its-storage-does-not-vote).
 
-The cost is a fence round trip or a few while a follower's watch catches up,
-and one control-plane read per answer, only for copies with no promise: a
-wiped one, or a new shard's first fence. With one replica of a
+The cost is a fence round trip or a few while a follower's watch catches up
+or its confirmed read comes back. A new shard's copy costs neither once its
+view has the shard. A wiped copy costs a read every few seconds without
+elections, and a learner under elections about two a second per shard
+while it takes batches. With one replica of a
 set of three wiped the other two make the majority anyway. With a majority
 wiped at once their votes wait for their views; once they have them they
 answer, so the shard is not stuck, but what it acknowledged was on those
@@ -921,9 +1036,12 @@ from a broker that predates storage ids is evidence.
   fence is refused for as long as the copy is marked wiped, which outlasts
   its re-admission (below).
 - It takes records only from the leader the control plane confirms at that
-  generation. The confirmed leader is reused for 500 ms at the same
-  generation rather than read for every batch. Taking a batch records that
-  leader's ballot, as it does for any follower.
+  generation. The confirmed answer is read in the background (above) and
+  used for 500 ms under elections, 10 s without, rather than read for every
+  batch. It is refreshed shortly before it goes stale while requests keep
+  coming, and after a refused request for up to 5 s, so a retry spaced out
+  by backoff finds it.
+  Taking a batch records that leader's ballot, as it does for any follower.
 - It is never promoted. A broker whose kept set marks it a wiped learner,
   or a learner under another storage id, refuses to open as leader before it
   fences or writes anything, so the mark survives. So does a copy that holds
@@ -1008,7 +1126,7 @@ Not covered yet, and needed before elections (#1009 S9):
   furthest one it has.
 - The leader still counts a learner's acknowledgements, and a learner takes
   a batch from a leader the control plane confirmed at that generation even
-  after it moved on (the 500 ms cache, or a read just before a failover).
+  after it moved on (a reused read, or one just before a failover).
   The model explores both without elections (`LearnerAcksCount`,
   `CatchUpFromDeposed`) and finds nothing. With elections counting a learner
   loses a write (`FelixShardElectWipeNonVoterCreatesLearnerAcks.cfg`), so
@@ -1039,7 +1157,7 @@ Evidence (`replica/tests/non_voting.rs`):
 `a_route_naming_member_ids_makes_a_wiped_copy_a_learner`,
 `a_replaced_storage_id_is_a_learner`, `a_replaced_storage_id_votes_at_creation`,
 `a_replaced_copy_is_a_learner_in_an_idless_creation_set`,
-`before_the_build_allows_it_confirmed_reads_are_not_cached`,
+`before_the_build_allows_it_a_read_since_the_restart_is_reused`,
 `a_replaced_copy_refuses_a_fence_without_a_set`,
 `a_counter_fence_is_refused_while_the_cache_copy_is_a_learner`,
 `a_copy_is_readmitted_only_once_its_counter_log_caught_up`,
@@ -3271,6 +3389,63 @@ redialled in a loop. The report
 still lands before the mark moves, and a shard promoted here still ships
 nothing and moves no mark until a majority has taken its fence, so nothing here
 changes what an acknowledgement rests on.
+
+**Shards take turns at the pass slots, and work goes first.** A broker runs at
+most 16 shard passes at once, and fences promoted shards in 16 slots of its own,
+so a burst of new shards fencing never takes the slots that serving shards ship
+in. Appends wake the driver, many times a second on a busy broker. If each wake passed every shard, and a shard whose pass ended
+took its slot straight back, the same 16 shards kept the slots under a steady
+append stream and the rest never shipped: their writes were never acknowledged
+(#1794). So the driver schedules passes like this:
+
+- **An append wakes only its own shard.** The publish path marks the shard's
+  bit in a fixed-size bit set (one atomic `or`, no lock, no allocation) before it
+  wakes the driver, and the scan takes the set. Only the append that sets a clear
+  bit wakes the driver: later appends to a shard whose bit is still set are
+  picked up by the same scan, so a busy shard does not touch the shared wake-up
+  on every append. Each word of the set sits on its own cache line, so
+  publishers to different shards rarely contend. A scan woken by an append passes
+  the shards whose bit is set, plus any shard whose last pass left work: a mark
+  below the tail, a follower behind, halted, rebuilding or not answering, an
+  exchange still out, or a drain or route change in progress. A shard whose
+  last pass settled is skipped. A consumer-group acknowledgement that moves
+  the cursor, and a record being dead-lettered, mark their shard the same way.
+  Two shards that hash to the same bit both get a pass, which costs a pass and
+  nothing else.
+- **The tick and a route change pass every shard.** That refreshes each
+  shard's report and retries what nothing else wakes, such as a group seek, a
+  redrive, or a dead letter an operator discarded.
+- **A shard that cannot start waits in a queue, oldest first.** There are two:
+  urgent (an append, a write waiting on the mark, a follower answer that moved
+  a cursor) and refresh (the tick, or a follower to try again). Urgent shards
+  start first, but at most four in a row while a refresh waits, so a steady
+  stream of appends cannot hold any shard's report back for good. A shard
+  being moved counts as urgent: its clients are held until the drained report.
+- **A finished pass goes to the back.** When a pass ends and its shard wants
+  another, the shard joins the queue behind the shards already waiting, and
+  the freed slot goes to the one at the front. A shard with one append waits
+  for the urgent shards that asked before it, and for at most one refresh in
+  every five starts (`a_shard_with_one_append_is_not_starved_by_busier_ones`).
+- **A pass waiting only on a slow follower yields.** Once its mark and report
+  are out, a pass that is waiting on stragglers hands them to the driver when a
+  scan finds shards queued, so the slot is free for them.
+
+```mermaid
+flowchart LR
+  A[append marks its shard] --> S[scan]
+  T[tick or route change] --> S
+  S -->|marked, or last pass left work| W{slot free?}
+  S -->|settled, append wake| X[skipped]
+  W -->|yes| P[pass]
+  W -->|no| Q[urgent or refresh queue]
+  P -->|ends, wants another| Q
+  P -->|ends| F[slot goes to the front of the queue]
+  Q --> F
+```
+
+None of this changes what a pass does or what an acknowledgement rests on: it
+only decides which shard's pass runs next. Skipping a settled shard skips a pass
+that would have shipped nothing.
 
 **A `Quorum` cache's counters ride the same exchanges.** A counter add is
 acknowledged at the counter log's own mark, under the same majority rule, and

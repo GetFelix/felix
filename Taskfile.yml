@@ -537,7 +537,7 @@ tasks:
       # `seeds` is the curated set that ships; `corpus` is libFuzzer's own
       # working directory and is git-ignored. Passing corpus first makes it
       # the one that grows, so a run never writes into the committed seeds.
-      - for: ["frame", "internal_message", "binary_payload", "client_message"]
+      - for: ["frame", "internal_message", "binary_payload", "client_message", "record_headers"]
         cmd: >
           cd crates/protocol/felix-wire/fuzz &&
           mkdir -p corpus/{{.ITEM}} &&

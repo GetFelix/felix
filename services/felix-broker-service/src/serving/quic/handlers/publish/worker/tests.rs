@@ -29,6 +29,7 @@ async fn build_publish_context_clamps_executor_and_queue_minimums() -> Result<()
     publish_ctx
         .scheduler
         .send(PublishJob {
+            headers: None,
             target: PublishTarget::Named {
                 tenant_id: "t1".to_string(),
                 namespace: "default".to_string(),
@@ -58,6 +59,7 @@ async fn build_publish_context_worker_returns_publish_error() -> Result<()> {
     publish_ctx
         .scheduler
         .send(PublishJob {
+            headers: None,
             target: PublishTarget::Named {
                 tenant_id: "t1".to_string(),
                 namespace: "default".to_string(),
@@ -84,6 +86,7 @@ pub(super) const PANICKING_STREAM: &str = "panics-the-worker";
 
 fn named_job(stream: &str, response: Option<oneshot::Sender<Result<Option<u64>>>>) -> PublishJob {
     PublishJob {
+        headers: None,
         target: PublishTarget::Named {
             tenant_id: "t1".to_string(),
             namespace: "default".to_string(),
@@ -250,6 +253,7 @@ async fn the_tracker_waits_for_queued_publishes_and_their_completions() -> Resul
     for _ in 0..JOBS {
         scheduler
             .send(PublishJob {
+                headers: None,
                 target: PublishTarget::Resolved {
                     handle: handle.clone(),
                     shard: None,
@@ -367,6 +371,7 @@ mod fence {
         publish_ctx
             .scheduler
             .send(PublishJob {
+                headers: None,
                 target,
                 payloads: vec![Bytes::from_static(b"late")],
                 response: Some(response_tx.into()),
@@ -444,6 +449,7 @@ mod fence {
         publish_ctx
             .scheduler
             .send(PublishJob {
+                headers: None,
                 target,
                 payloads: vec![Bytes::from_static(b"on time")],
                 response: Some(response_tx.into()),
@@ -511,6 +517,7 @@ mod lane_claim {
     ) -> (PublishJob, Answer) {
         let (response_tx, response_rx) = oneshot::channel();
         let job = PublishJob {
+            headers: None,
             target: PublishTarget::Resolved {
                 handle: handle.clone(),
                 shard,

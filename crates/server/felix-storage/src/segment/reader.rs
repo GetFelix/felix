@@ -143,7 +143,8 @@ impl SegmentReader {
                 StorageError::Corruption(err.in_segment(shard_label, self.id).at_position(position))
             })?;
 
-            budget.consume(decoded.payload.len());
+            // A headers block is held and sent with the payload, so it counts too.
+            budget.consume(decoded.payload.len() + decoded.headers.as_ref().map_or(0, |h| h.len()));
             out.push(LogRecord {
                 offset: decoded.header.offset,
                 timestamp_micros: decoded.header.timestamp_micros,

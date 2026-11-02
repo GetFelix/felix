@@ -907,7 +907,7 @@ fn replica_report_from_db(row: DbReplicaReport) -> StoreResult<ReplicaReport> {
             }
             _ => Default::default(),
         },
-        // And for the refusal (0041).
+        // And for the refusal (0042).
         refused: match (row.refused_generation, row.refused_to) {
             (Some(generation), Some(promised_to))
                 if row.refused_at == Some(row.reported_at_millis) =>

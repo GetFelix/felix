@@ -26,6 +26,7 @@ pub(super) struct DbStream {
     pub(super) delivery: String,
     pub(super) durable: bool,
     pub(super) region: Option<String>,
+    pub(super) mount: Option<String>,
     pub(super) routing: Option<String>,
     pub(super) incarnation: i64,
 }
@@ -80,6 +81,7 @@ pub(super) fn stream_from_db(row: DbStream) -> StoreResult<Stream> {
         delivery: parse_delivery(&row.delivery)?,
         durable: row.durable,
         region: row.region,
+        mount: row.mount,
         routing: parse_routing(row.routing.as_deref())?,
         incarnation: row.incarnation as u64,
     })
