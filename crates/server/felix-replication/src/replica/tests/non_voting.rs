@@ -309,6 +309,67 @@ async fn a_readmitted_copy_keeps_the_ballot_its_catch_up_took() {
     assert_eq!(log.accepted_leader().as_deref(), Some("broker-a"));
 }
 
+/// A leader at generation 7 shipping the copy the log from the start of 6, the
+/// generation of the set that re-admitted it. Unstamped, so the copy keeps
+/// that set: a stamp would swap it for the routing view's, which names no
+/// storage ids, and the copy would wait for a set that names its own.
+fn catch_up_to_7() -> ReplicateRecords {
+    ReplicateRecords {
+        set_generation: None,
+        generations: Some(vec![
+            GenerationStart {
+                generation: 6,
+                start_offset: 0,
+            },
+            GenerationStart {
+                generation: 7,
+                start_offset: 1,
+            },
+        ]),
+        ..batch(7, 0, &["a", "b"])
+    }
+}
+
+/// The same when the leader that catches the copy up is at a later
+/// generation than the set the copy kept: the ballot it takes is the
+/// leader's, so a fence at the copy's own generation is refused.
+#[tokio::test]
+async fn a_readmitted_copy_keeps_the_ballot_of_a_later_leader() {
+    let (broker, _dir) = broker_with_storage().await;
+    // The re-admission came while the control plane confirmed 6; the
+    // catch-up comes after it moved on to 7.
+    let at_6 = handler(&broker, 6, OWN);
+    wiped_at_5(&at_6).await;
+    let answer = at_6.fence(SENDER, readmission(6, OWN)).await;
+    assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
+    let log = log_of(&broker).await;
+    assert_eq!(log.set_generation(), 6);
+    let handler = handler(&broker, 7, OWN);
+
+    let answer = handler
+        .apply(SENDER, catch_up_to_7(), felix_broker::LogKind::Stream)
+        .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    assert_eq!(log.member_is_learner(LOCAL), Some(false));
+    assert_eq!(log.accepted_generation(), 7);
+    assert_eq!(log.accepted_leader().as_deref(), Some("broker-a"));
+
+    for candidate in [false, true] {
+        let answer = handler
+            .fence(
+                Some("broker-c"),
+                fence_with(6, set(6, OWN), None, candidate),
+            )
+            .await;
+        assert_eq!(refusal(&answer).code, ErrorCode::FencedEpoch, "{answer:?}");
+    }
+    assert_eq!(log.accepted_generation(), 7);
+    assert_eq!(log.accepted_leader().as_deref(), Some("broker-a"));
+}
+
 /// **A broker the control plane last registered under another storage id
 /// is a learner for a shard it may have held.** The wipe came before any set
 /// was heard, so the first set it learns names its new id: no evidence in the
