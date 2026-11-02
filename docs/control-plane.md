@@ -202,8 +202,10 @@ No build reports either yet, so a finalize of either is refused
 (`the_election_features_cannot_be_finalized_yet`), and a new cluster does not
 start with them. A broker that offers the `ELECTION` peer capability reports
 it as `peer_election`, which no build does yet. Finalizing `joint_fence` is
-refused while a serving broker lacks it; `replica_election` is also refused
-before `joint_fence` and its other prerequisites, and until the control plane
+refused while a serving broker lacks it, and even when none does until the
+control plane re-admits learners and placement skips them (#1737);
+`replica_election` is also refused before `joint_fence` and its other
+prerequisites, and until the control plane
 has the metadata level for the pending replica set (see
 [Moving a shard](#moving-a-shard)) and adoption (see [Adopting an elected
 leader](#adopting-an-elected-leader)), 21 under Raft on every member. The

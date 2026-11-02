@@ -483,8 +483,8 @@ async fn follower_features_are_finalized_after_generation_start() {
 
 /// The election features are refused over the API while a serving broker does
 /// not offer `ELECTION`, and `replica_election` is refused before
-/// `joint_fence`. Even with everything offered it is refused for the metadata
-/// level: the election driver (#1009 S9) turns that on.
+/// `joint_fence`. Even with everything offered `joint_fence` is refused until
+/// the control plane re-admits learners (#1737).
 #[tokio::test]
 async fn election_features_are_refused_with_their_reason() {
     let store = store();
@@ -567,7 +567,8 @@ async fn election_features_are_refused_with_their_reason() {
     assert_eq!(read_json(response).await["would_enable"], false);
     refused("finalize joint_fence first", "replica_election").await;
 
-    // Offering ELECTION lets joint_fence through, and then replica_election.
+    // Offering ELECTION is not enough: joint_fence stays refused until the
+    // control plane re-admits learners, so replica_election waits behind it.
     let mut offered = all.to_vec();
     offered.push("peer_election");
     let response = app
@@ -576,19 +577,20 @@ async fn election_features_are_refused_with_their_reason() {
         .await
         .expect("request");
     assert_eq!(response.status(), StatusCode::OK);
+    refused("re-admit a learner", "joint_fence").await;
     let response = app
         .clone()
-        .oneshot(finalize("joint_fence", false))
+        .oneshot(finalize("joint_fence", true))
         .await
         .expect("request");
-    assert_eq!(response.status(), StatusCode::OK);
-    refused("control-plane metadata level", "replica_election").await;
+    assert_eq!(read_json(response).await["would_enable"], false);
+    refused("finalize joint_fence first", "replica_election").await;
     assert!(
         !store
             .enabled_fleet_features()
             .await
             .expect("enabled")
-            .contains("replica_election")
+            .contains("joint_fence")
     );
 }
 
