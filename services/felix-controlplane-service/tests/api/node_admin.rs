@@ -417,6 +417,7 @@ async fn seed_shards(store: &InMemoryStore) {
             region: None,
             routing: Default::default(),
             incarnation: 0,
+            mount: None,
         })
         .await
         .expect("stream");
@@ -551,6 +552,7 @@ async fn shard_assignments_carry_the_streams_routing() {
             region: None,
             routing: felix_controlplane_service::model::StreamRouting::JumpHash,
             incarnation: 77,
+            mount: None,
         })
         .await
         .expect("stream");

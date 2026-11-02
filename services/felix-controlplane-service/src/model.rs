@@ -4,6 +4,7 @@
 //! payloads used by the API and store layers.
 mod cache;
 mod incarnation;
+pub(crate) mod mount;
 mod namespace;
 mod node;
 mod shard;

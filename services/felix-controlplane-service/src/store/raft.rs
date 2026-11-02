@@ -86,6 +86,9 @@ const PENDING_SET_LEVEL: u16 = 21;
 /// The metadata level whose members store the storage identity each member of
 /// a shard's set registered with, on the assignment (#1009 S8).
 const MEMBER_STORAGE_LEVEL: u16 = 22;
+
+/// The metadata level whose members store a stream's MQTT mount (#1690).
+const MOUNT_LEVEL: u16 = 24;
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
@@ -135,6 +138,20 @@ impl RaftStore {
         self.handle
             .cluster_version_with_unknown_at(self.machine.join_floor())
             .await
+    }
+
+    /// A mount is refused below [`MOUNT_LEVEL`] rather than dropped: a member
+    /// that does not know the field would store the stream unmounted, and its
+    /// copy would differ from the rest. Checked before anything is proposed.
+    fn require_mount_level(level: u16, mounting: bool) -> StoreResult<()> {
+        if mounting && level < MOUNT_LEVEL {
+            return Err(StoreError::Conflict(format!(
+                "a mount needs every control-plane member at metadata version {MOUNT_LEVEL}, \
+                 but the group is at {level}; {}",
+                crate::store::UPGRADE_HINT
+            )));
+        }
+        Ok(())
     }
 
     /// Without the level an older member would drop the map and diverge, so
@@ -209,7 +226,8 @@ impl RaftStore {
         if needs > 0 && level < needs {
             return Err(StoreError::Conflict(format!(
                 "this change needs every control-plane member at metadata version {needs}, \
-                 but the group is at {level}; finish upgrading every member first"
+                 but the group is at {level}; {}",
+                crate::store::UPGRADE_HINT
             )));
         }
         let bytes = self
@@ -354,6 +372,7 @@ impl ControlPlaneStore for RaftStore {
 
     async fn create_stream(&self, mut stream: Stream) -> StoreResult<Stream> {
         let level = self.group_level().await;
+        Self::require_mount_level(level, stream.mount.is_some())?;
         let incarnations = Self::decides_at(level);
         if incarnations && stream.incarnation == 0 {
             stream.incarnation = crate::model::proposed_incarnation();
@@ -380,14 +399,19 @@ impl ControlPlaneStore for RaftStore {
         patch: StreamPatchRequest,
     ) -> StoreResult<Stream> {
         // Only where it can matter, so other patches stay at level 0.
-        let fence = (patch.consistency.is_some() || patch.durable.is_some())
-            && self.group_level().await >= PATCH_FENCE_LEVEL;
+        let level = self.group_level().await;
+        Self::require_mount_level(level, patch.mount.is_some())?;
+        let fence =
+            (patch.consistency.is_some() || patch.durable.is_some()) && level >= PATCH_FENCE_LEVEL;
         match self
-            .propose(MetaCommand::PatchStream {
-                key: key.clone(),
-                patch,
-                fence,
-            })
+            .propose_at(
+                level,
+                MetaCommand::PatchStream {
+                    key: key.clone(),
+                    patch,
+                    fence,
+                },
+            )
             .await?
         {
             MetaResponse::Stream { stream } => Ok(stream),
@@ -519,6 +543,7 @@ impl ControlPlaneStore for RaftStore {
         caches: Vec<Cache>,
     ) -> StoreResult<(Vec<Stream>, Vec<Cache>)> {
         let level = self.group_level().await;
+        Self::require_mount_level(level, streams.iter().any(|s| s.mount.is_some()))?;
         let incarnations = Self::caches_decide_at(level, &caches);
         let (mut streams, mut caches) = (streams, caches);
         if incarnations {

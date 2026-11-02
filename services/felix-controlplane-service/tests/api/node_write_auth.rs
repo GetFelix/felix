@@ -400,6 +400,7 @@ async fn seed_shard(store: &InMemoryStore, leader: &str, generation: u64) {
             region: None,
             routing: Default::default(),
             incarnation: 0,
+            mount: None,
         })
         .await;
     for _ in 0..=generation {

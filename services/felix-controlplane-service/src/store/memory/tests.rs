@@ -199,6 +199,7 @@ async fn namespace_stream_cache_errors_and_cascades() {
             region: None,
             routing: Default::default(),
             incarnation: 0,
+            mount: None,
         })
         .await
         .expect("stream");
@@ -289,6 +290,14 @@ async fn satisfies_the_resources_contract() {
     let store = std::sync::Arc::new(store_with_limits(100, 1000));
     crate::store::contract::resources::run_resources_contract(store.clone()).await;
     crate::store::contract::resources::run_resources_race_contract(store, 200).await;
+}
+
+/// The same suite Postgres and Raft run.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn satisfies_the_mount_contract() {
+    let store = std::sync::Arc::new(store_with_limits(100, 1000));
+    crate::store::contract::mounts::run_mount_contract(store.clone()).await;
+    crate::store::contract::mounts::run_mount_race_contract(store, 200).await;
 }
 
 /// The same suite Postgres runs, at a page of two so every feed spans pages.
@@ -390,6 +399,7 @@ async fn a_snapshot_never_counts_a_change_its_rows_do_not_show() {
         region: None,
         routing: Default::default(),
         incarnation: 0,
+        mount: None,
     };
     let stream_key = StreamKey {
         tenant_id: "t".to_string(),
