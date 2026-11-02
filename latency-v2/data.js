@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793630628677,
+  "lastUpdate": 1793632009259,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -53724,6 +53724,72 @@ window.BENCHMARK_DATA = {
             "range": "40.33",
             "unit": "us",
             "extra": "trials: 5\nmedian: 540.00\nmean: 544.60\nstdev: 40.33\ncv: 7.40%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "50c31602e68faca1da2e3d75bdd67bc32ae8c3b4",
+          "message": "fix(controlplane): balance the totals with stream shards before caches (#1768) (#1772)\n\nFixes #1768.\n\nWhen leader totals are two apart, placement moves the first over-share shard it plans. Caches (`drains`, `epochs`, `leases`) sort before most stream names, so that shard was usually a cache. Moving a cache fences it, and every client of the cache waits until the move finishes. #1767 stops bulk creates from causing the imbalance, but deletes and drains still cause it.\n\nAmong shards that move only for balance (start-order class `BALANCE`), the plan now puts streams before caches. The first stream shard that can go closes the gap, so the cache shards behind it no longer qualify. A cache still moves when no stream shard ahead of it can. Drains, restores, failovers, retried moves and new placements keep their order. A cache's own spread, zone and trim moves now also wait behind the streams' moves for a slot.\n\nTests (`placement/tests/balance.rs`). The first two fail without the fix:\n- `a_delete_is_balanced_by_moving_a_stream_not_a_cache`: totals 3/3/1 after two streams are deleted from broker-2. Before the fix `drains` moved; now one `wl.*` stream moves.\n- `a_drain_on_five_brokers_leaves_the_caches_in_place`: a drain whose destinations end two apart. Before the fix `epochs` moved; now the totals end within one and no cache moves.\n- `a_cache_moves_for_the_totals_when_no_stream_shard_can`: the fallback. With `s` at 1/1/1 and totals 3/1/1, a cache moves and the totals even out.\n\nDocs: `docs/control-plane.md` (balance rules) and the docs-site scaling page say which shard the totals move.\n\nDesign calls\n- Fixed through plan order instead of a check in `decide`, so a cache is still the fallback when every stream shard is blocked (backoff, region, per-stream spread). A hard \"never move a cache for the totals\" rule could leave the totals two apart for good.\n- Only the class with nothing to repair is reordered. A stream shard whose last move was given up stays in the retried class, behind the caches. Retried moves go last on purpose. Failover and drain order stay as they are, so a cache on a dead or draining broker doesn't wait behind streams.\n- I didn't do least-recently-moved. It needs per-shard move history in the plan, and preferring streams is enough to stop the churn the issue describes.",
+          "timestamp": "2026-11-02T06:35:22-08:00",
+          "tree_id": "ff385559ba4dec688dc63c67b2083f186ec2fd45",
+          "url": "https://github.com/GetFelix/felix/commit/50c31602e68faca1da2e3d75bdd67bc32ae8c3b4"
+        },
+        "date": 1793632001582,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 152,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 152.00\nmean: 152.20\nstdev: 0.84\ncv: 0.55%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 218,
+            "range": "5.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 218.00\nmean: 220.40\nstdev: 5.55\ncv: 2.52%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 276,
+            "range": "14.93",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 276.00\nmean: 277.60\nstdev: 14.93\ncv: 5.38%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 198,
+            "range": "1.73",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 198.00\nmean: 199.00\nstdev: 1.73\ncv: 0.87%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 404,
+            "range": "98.68",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 404.00\nmean: 438.40\nstdev: 98.68\ncv: 22.51%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 550,
+            "range": "599.15",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 550.00\nmean: 810.00\nstdev: 599.15\ncv: 73.97%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
