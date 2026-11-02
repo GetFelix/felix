@@ -2731,18 +2731,20 @@ CpFlip ==
 \* does for any two leaders (`NamedFenceSkipsBallot` drops it for the named
 \* one).
 \*
-\* The control plane flips on the report alone, which may be stale: the
-\* leader may have promised the next generation to a candidate since it
-\* sent it. Then the control plane still flips, and the leader refuses the
-\* generation and stays as it is
-\* (`a_generation_promised_to_another_node_is_not_led`).
+\* The control plane flips on the report alone, which may be stale: since
+\* sending it the leader may have stopped leading, or promised the next
+\* generation to a candidate. The control plane still flips. A leader that
+\* promised the generation away refuses it and stays as it is
+\* (`a_generation_promised_to_another_node_is_not_led`); any other fences
+\* at it.
 FlipReported ==
     /\ \E i \in 1..hwm[leader] : i <= Len(log[leader]) /\ log[leader][i] = Start(gen)
     /\ \/ /\ bgen[leader] = gen /\ ~fencing[leader]
           /\ mine[leader] = cpNext /\ setGen[leader] = cpNextGen /\ oldSet[leader] /= {}
-       \* Sent before the leader promised the next generation away: its joint
-       \* open happened.
-       \/ /\ ~MayPromise(leader, leader, gen + 1)
+       \* A stale report: the joint open happened. This also admits a report
+       \* the leader never sent, when it learned the hwm from a candidate
+       \* that took its log, so it is broader than the code.
+       \/ /\ ~(bgen[leader] = gen /\ ~fencing[leader])
           /\ <<cpNextGen, cpNext, CpSet>> \in installed
 
 CpFlipNamed ==
@@ -2755,7 +2757,7 @@ CpFlipNamed ==
     /\ gen' = gen + 1
     /\ cpExpiry' = now + L
     /\ report' = NoReport
-    /\ IF bgen[leader] = gen /\ ~fencing[leader] /\ MayPromise(leader, leader, gen + 1)
+    /\ IF MayPromise(leader, leader, gen + 1)
        THEN /\ bgen' = [bgen EXCEPT ![leader] = gen + 1]
             /\ bexpiry' = [bexpiry EXCEPT ![leader] = clock[leader] + L]
             /\ queued' = [queued EXCEPT ![leader] = 0]

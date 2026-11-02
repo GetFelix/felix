@@ -1154,12 +1154,9 @@ elected leader waits for the lease until the control plane is back (issue
    then does the control plane take the new set, at a new generation naming
    the same leader, which fences the new set alone before it acknowledges
    on a majority of it. A candidate may have taken that generation already;
-   each replica refuses whichever fence reaches it second, so the two cannot
-   both win majorities (`FelixShardElectSwapFlip.cfg`). The control plane
-   flips on the report alone, so the leader may have promised that
-   generation to a candidate since it sent it, and then it refuses to lead
-   there. Until
-   then the change is pending everywhere it went: a replica persists the
+   a replica that answered one refuses the other, so the two cannot both
+   win majorities (`FelixShardElectSwapFlip.cfg`). Until the flip the
+   change is pending everywhere it went: a replica persists the
    old set beside the new one, a fence and a batch carry both, a leader
    acknowledges on a majority of both, and whoever stands next fences both,
    so a leader deposed mid-change leaves the change to the next one rather
@@ -1167,7 +1164,12 @@ elected leader waits for the lease until the control plane is back (issue
    change. A leader elected on the old set while it is pending is not
    adopted (rule 10). A cut-over that changes the set also waits for the
    drain, so the old leader has stopped and the joining copies hold the
-   destination's log, which holds the old leader's.
+   destination's log, which holds the old leader's. The control plane
+   flips on the leader's report alone, and the report can be stale. If the
+   leader promised the new generation to a candidate after sending it, the
+   leader refuses that generation and the candidate keeps serving there;
+   the control plane does not adopt the candidate, since its generation is
+   not above the control plane's (issue #1730).
 9. *Redirects.* A follower answers `NotLeader` with the leader it promised,
    so clients find an elected leader without asking the control plane.
 10. *Adoption.* The elected leader reports its generation and its set's
