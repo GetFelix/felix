@@ -799,6 +799,19 @@ fn settle(
                 "a publish acknowledged on enqueue was not written",
             );
         }
+        // Fire-and-forget has nobody to refuse, so a batch the broker will not
+        // store with its headers is dropped, counted and logged.
+        (None, Err(err))
+            if *ClientError::from_anyhow(&err).code()
+                == felix_wire::ErrorCode::FeatureNotEnabled =>
+        {
+            crate::serving::quic::telemetry::count_publish("headers_refused");
+            tracing::warn!(
+                shard = ?shard,
+                error = %err,
+                "dropping an unacknowledged publish with record headers"
+            );
+        }
         (None, _) => {}
     }
 }

@@ -229,9 +229,10 @@ async fn ship_batch<R: PeerRequester>(
         return Progress::UpToDate;
     }
 
-    // Headers replicate in the next change of #1688. Until then a record that
-    // has them is never shipped bare: a follower that acked it would hold a
-    // different record than the leader. What precedes it still goes.
+    // Headers replicate in the next change of #1688. Until then this path
+    // never ships such a record bare: a follower that acked it would hold a
+    // different record than the leader. What precedes it still goes. The
+    // promotion catch-up fetch (`replica.rs`) does not carry headers yet either.
     if let Some(at) = records.iter().position(|record| record.headers.is_some()) {
         records.truncate(at);
         if records.is_empty() {
@@ -244,7 +245,8 @@ async fn ship_batch<R: PeerRequester>(
                     stream = %shard.stream,
                     shard = shard.shard,
                     offset = cursor.next_offset,
-                    "cannot replicate a record with headers yet; the follower stays behind it",
+                    "cannot replicate a record with headers yet; the follower stays behind it, \
+                     and this shard cannot rebuild, drain or move until headers replicate",
                 );
             }
             metrics::record_shipped(metrics::OUTCOME_HEADERS_UNSUPPORTED);

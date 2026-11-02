@@ -394,12 +394,14 @@ other kinds, the roll happens before the record is written, so a crash, or a
 conditional append whose condition fails, in between leaves an empty v8
 active segment, which an older build refuses.
 
-Replication does not carry a record's key and headers yet. A leader holding
-such a record does not ship it bare: the follower stays behind it, and the
+Replication does not carry a record's key and headers yet. The ship path holds
+such a record back instead of sending it bare: the follower stays behind it, and the
 leader logs the stall and counts it as `headers_unsupported` in
 `felix_broker_replication_shipped_total`. A cluster member never accepts headers
 for that reason, so do not move a data directory that holds them into a cluster
-until headers replicate.
+until headers replicate: replication stalls at the first record that has them,
+so the shard cannot rebuild, drain or move. The promotion catch-up fetch does
+not carry headers yet either; both are fixed when replication carries them.
 
 ## Index file
 

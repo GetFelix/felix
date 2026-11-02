@@ -409,8 +409,10 @@ Each record grows by the principal's length plus one byte.
 ### `FELIX_RECORD_HEADERS`
 
 **Description**: On a broker outside a cluster, accept record headers (a key
-and named headers) from clients that send them. Set it to `false` to keep the
-broker from ever offering the feature, so its logs stay at storage format v7.
+and named headers) from clients that send them. Set it to `false` to refuse
+every publish that carries headers (`feature_not_enabled`, reason
+`record_headers`), so the logs stay at storage format v7. Subscribers still
+read headers a log already holds, so turning it off later does not hide them.
 In a cluster this has no effect: headers are a fleet feature, and a cluster
 member does not enable them until they replicate.
 

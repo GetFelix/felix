@@ -162,8 +162,8 @@ pub enum BrokerError {
     #[error("head trims are not enabled on this broker (finalize `head_trim`)")]
     HeadTrimNotEnabled,
     /// A publish carried record headers and this broker does not accept
-    /// them: the broker is in a cluster whose fleet has not finalized
-    /// `record_headers`. Nothing was written.
+    /// them: the operator turned them off, or the broker is in a cluster
+    /// whose fleet has not finalized `record_headers`. Nothing was written.
     #[error("record headers are not enabled on this broker")]
     RecordHeadersNotEnabled,
     /// A head trim waited too long for the committed mark or the replay ring.

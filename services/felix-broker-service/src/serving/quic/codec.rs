@@ -27,13 +27,15 @@ pub(crate) fn refuses_flags(flags: u16, negotiated_ext: u32) -> bool {
 
 /// The extension bits a client's `Auth` offered that this broker serves.
 ///
-/// Today that is record headers, and only while the broker accepts them.
+/// Today that is record headers, offered whenever the broker can read them,
+/// which on a lone broker is always: the switch that turns publishing them off
+/// does not hide what a log already holds.
 pub(crate) fn negotiated_ext(
     broker: &felix_broker::Broker,
     client_flags: Option<u16>,
     client_flags_ext: Option<u32>,
 ) -> u32 {
-    let served = if broker.records_headers() {
+    let served = if broker.reads_headers() {
         felix_wire::EXT_RECORD_HEADERS
     } else {
         0

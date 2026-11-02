@@ -24,9 +24,25 @@ struct Fixture {
 }
 
 impl Fixture {
-    /// `headers` turns the broker's record-header gate on; `log_capacity`
-    /// bounds the replay ring, so older records are read off disk.
+    /// `headers` turns the broker's record-header gates on, as a lone broker
+    /// has them; `log_capacity` bounds the replay ring, so older records are
+    /// read off disk.
     async fn start(dir: &std::path::Path, headers: bool, log_capacity: usize) -> Result<Self> {
+        Self::start_with(dir, headers, headers, log_capacity).await
+    }
+
+    /// A lone broker whose `FELIX_RECORD_HEADERS` switch is off: it reads
+    /// headers but refuses a publish that carries them.
+    async fn start_switch_off(dir: &std::path::Path, log_capacity: usize) -> Result<Self> {
+        Self::start_with(dir, false, true, log_capacity).await
+    }
+
+    async fn start_with(
+        dir: &std::path::Path,
+        accepts: bool,
+        reads: bool,
+        log_capacity: usize,
+    ) -> Result<Self> {
         let storage = felix_broker::DurableStorage::open(
             dir,
             felix_storage::log::LogConfig {
@@ -40,8 +56,11 @@ impl Fixture {
                 .with_durable_storage(storage)
                 .with_log_capacity(log_capacity)?,
         );
-        if headers {
+        if accepts {
             broker.record_headers_when(|| true);
+        }
+        if reads {
+            broker.read_record_headers_when(|| true);
         }
         broker.register_tenant("t1").await?;
         broker.register_namespace("t1", "default").await?;
@@ -277,12 +296,24 @@ fn publish_frame(
     records: &[(Option<Bytes>, &[u8])],
     extended: bool,
 ) -> Bytes {
+    publish_frame_as(Some(request_id), stream, records, extended)
+}
+
+/// [`publish_frame`], fire-and-forget when `request_id` is `None`.
+fn publish_frame_as(
+    request_id: Option<u64>,
+    stream: &str,
+    records: &[(Option<Bytes>, &[u8])],
+    extended: bool,
+) -> Bytes {
     let mut body = BytesMut::new();
     if extended {
         body.put_u32(EXT_RECORD_HEADERS);
     }
-    body.put_u64(request_id);
-    body.put_u8(2);
+    if let Some(request_id) = request_id {
+        body.put_u64(request_id);
+        body.put_u8(2);
+    }
     for name in ["t1", "default", stream] {
         body.put_u16(name.len() as u16);
         body.extend_from_slice(name.as_bytes());
@@ -301,7 +332,10 @@ fn publish_frame(
         body.put_u32(payload.len() as u32);
         body.extend_from_slice(payload);
     }
-    let mut flags = FLAG_BINARY_PUBLISH_BATCH | FLAG_BINARY_PUBLISH_ACKED;
+    let mut flags = FLAG_BINARY_PUBLISH_BATCH;
+    if request_id.is_some() {
+        flags |= FLAG_BINARY_PUBLISH_ACKED;
+    }
     if extended {
         flags |= FLAG_EXTENDED;
     }
@@ -545,6 +579,92 @@ async fn replay_after_a_restart_returns_the_headers() -> Result<()> {
             (Bytes::from_static(b"alpha"), Some(first)),
             (Bytes::from_static(b"beta"), None),
             (Bytes::from_static(b"gamma"), Some(second)),
+        ]
+    );
+    fixture.stop().await;
+    Ok(())
+}
+
+/// **Turning `FELIX_RECORD_HEADERS` off does not hide what a log holds.** A
+/// subscriber still negotiates headers and reads the stored blocks; a publish that carries headers is refused with
+/// `feature_not_enabled` / `record_headers` and nothing is stored, and the
+/// same publish sent fire-and-forget is dropped.
+#[tokio::test]
+#[serial]
+async fn switch_off_still_delivers_stored_headers_and_refuses_new_ones() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let fixture = Fixture::start(dir.path(), true, 1024).await?;
+    let mut publisher = fixture.session(true).await?;
+    let first = block("trace", b"k1");
+    let reply = publisher
+        .publish(&publish_frame(
+            1,
+            "orders",
+            &[(Some(first.clone()), b"alpha")],
+            true,
+        ))
+        .await?;
+    assert_eq!(ack(&reply).error, None);
+    fixture.stop().await;
+    drop(publisher);
+
+    let fixture = Fixture::start_switch_off(dir.path(), 1024).await?;
+    let mut session = fixture.session(true).await?;
+    assert_eq!(
+        session.offered()?,
+        (KNOWN_FLAGS | FLAG_EXTENDED, Some(EXT_RECORD_HEADERS))
+    );
+    let mut events = session
+        .subscribe("orders", Some(StartPosition::Offset(0)))
+        .await?;
+    assert_eq!(
+        events.records(1).await?,
+        vec![(Bytes::from_static(b"alpha"), Some(first.clone()))]
+    );
+
+    let mut publisher = fixture.session(true).await?;
+    let refused = ack(&publisher
+        .publish(&publish_frame(
+            2,
+            "orders",
+            &[(Some(block("trace", b"k2")), b"beta")],
+            true,
+        ))
+        .await?);
+    assert_eq!(
+        refused.code.clone().map(|(code, _)| code),
+        Some(felix_wire::ErrorCode::FeatureNotEnabled),
+        "{refused:?}"
+    );
+    assert_eq!(
+        refused
+            .detail
+            .clone()
+            .and_then(|detail| detail.reason)
+            .as_deref(),
+        Some(felix_wire::feature_reason::RECORD_HEADERS)
+    );
+
+    // Fire-and-forget has no reply, so the proof is that it is not stored
+    // while a publish without headers behind it is.
+    publisher
+        .send
+        .write_all(&publish_frame_as(
+            None,
+            "orders",
+            &[(Some(block("trace", b"k3")), b"gamma")],
+            true,
+        ))
+        .await?;
+    let reply = publisher
+        .publish(&publish_frame(3, "orders", &[(None, b"delta")], true))
+        .await?;
+    assert_eq!(ack(&reply).error, None);
+    assert_eq!(
+        stored(&fixture.broker, "orders").await,
+        vec![
+            (Bytes::from_static(b"alpha"), Some(first)),
+            (Bytes::from_static(b"delta"), None)
         ]
     );
     fixture.stop().await;

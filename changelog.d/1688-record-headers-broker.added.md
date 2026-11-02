@@ -8,6 +8,7 @@
   headers yet, because replication does not ship them, and a forward that carries
   them is refused. Consumer groups do not deliver headers. A retried idempotent
   batch is matched on its payloads only, so a re-send with changed headers is
-  not stored with the new ones. `FELIX_RECORD_HEADERS=false` turns the feature
-  off on a single broker, which keeps its logs at v7 and readable by older
-  builds. See `docs/protocol.md`.
+  not stored with the new ones. `FELIX_RECORD_HEADERS=false` makes a single broker
+  refuse every publish that carries headers, which keeps its logs at v7 and
+  readable by older builds; turning it off later leaves stored headers readable.
+  See `docs/protocol.md`.

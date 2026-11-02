@@ -175,6 +175,9 @@ pub struct Broker {
     /// Whether publishes may carry record headers, once the node says.
     /// Unset refuses them.
     record_headers: std::sync::OnceLock<NodeGate>,
+    /// Whether subscribers are offered the headers stored with records, once
+    /// the node says. Unset offers none.
+    record_headers_read: std::sync::OnceLock<NodeGate>,
 }
 
 /// A yes or no the node decides at startup and may change its answer to
@@ -243,6 +246,7 @@ impl Broker {
             producer_id_counter: std::sync::atomic::AtomicU64::new(0),
             record_publishers: std::sync::OnceLock::new(),
             record_headers: std::sync::OnceLock::new(),
+            record_headers_read: std::sync::OnceLock::new(),
         }
     }
 
@@ -263,11 +267,11 @@ impl Broker {
 
     /// Accept record headers on publishes whenever `gate` says so.
     ///
-    /// Asked at each client's auth, to decide what to offer, and on every
-    /// durable publish. A durable record with headers is storage format v8,
-    /// which an older build refuses to open, and replication does not ship
-    /// headers, so a cluster member says yes only when its fleet has finalized
-    /// `record_headers`. Only the first call counts.
+    /// Asked on every durable publish. A durable record with headers is
+    /// storage format v8, which an older build refuses to open, and
+    /// replication does not ship headers, so a cluster member says yes only
+    /// when its fleet has finalized `record_headers`. Only the first call
+    /// counts.
     pub fn record_headers_when(&self, gate: impl Fn() -> bool + Send + Sync + 'static) {
         let _ = self.record_headers.set(NodeGate(Arc::new(gate)));
     }
@@ -275,6 +279,24 @@ impl Broker {
     /// Whether publishes may now carry record headers.
     pub fn records_headers(&self) -> bool {
         self.record_headers.get().is_some_and(|gate| (gate.0)())
+    }
+
+    /// Offer subscribers the headers stored with records whenever `gate` says
+    /// so, whether or not new publishes may carry any. A log that already
+    /// holds headers stays readable after the publish switch is turned off.
+    /// Only the first call counts.
+    pub fn read_record_headers_when(&self, gate: impl Fn() -> bool + Send + Sync + 'static) {
+        let _ = self.record_headers_read.set(NodeGate(Arc::new(gate)));
+    }
+
+    /// Whether clients may now negotiate record headers. Anything that lets a
+    /// publish carry them lets a subscriber read them.
+    pub fn reads_headers(&self) -> bool {
+        self.records_headers()
+            || self
+                .record_headers_read
+                .get()
+                .is_some_and(|gate| (gate.0)())
     }
 
     /// Per-subscriber queue capacity. Zero is rejected.

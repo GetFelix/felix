@@ -183,8 +183,8 @@ cannot open.
 ### `record_headers`
 
 **Description**: On a broker outside a cluster, accept record headers from
-clients that send them. In a cluster, the `record_headers` fleet feature
-decides instead.
+clients that send them. A subscriber can always read the headers a log already
+holds. In a cluster, the `record_headers` fleet feature decides instead.
 
 **Type**: `bool`
 
@@ -193,7 +193,9 @@ decides instead.
 **Environment**: `FELIX_RECORD_HEADERS` (`1`, `true`, `yes`, `on` = enabled)
 
 Storing one moves the stream's log to storage format v8, which an older broker
-cannot open. Set it to `false` to keep the logs at v7.
+cannot open. Set it to `false` to keep the logs at v7: a publish that carries
+headers is then refused with `feature_not_enabled`. Turning it off later leaves
+stored headers readable.
 
 ### `ack_on_commit`
 
