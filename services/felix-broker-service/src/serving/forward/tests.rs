@@ -736,3 +736,28 @@ async fn a_forward_with_headers_is_never_resent_on_the_legacy_kind() {
         "the batch was sent again without its headers"
     );
 }
+
+/// A redirect to an owner that never offered `RECORD_HEADERS` ends in a typed
+/// refusal the publish path reports as `feature_not_enabled`, not a generic
+/// failure. The batch is not sent to that owner.
+#[tokio::test]
+async fn a_redirect_to_an_owner_without_the_capability_is_refused_as_unsupported() {
+    let owner = ScriptedOwner::new([
+        Ok(moved_to("broker-c", "10.0.0.5:7002", 5)),
+        Err(PeerError::Unsupported {
+            node_id: "broker-c".to_string(),
+            kind: felix_wire::internal::Kind::HeaderedForwardPublish,
+        }),
+    ]);
+    let err = forward_with_headers(&owner).await.expect_err("refused");
+    assert!(
+        matches!(
+            err,
+            ForwardError::Refused {
+                code: Some(ErrorCode::UnsupportedKind),
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+}

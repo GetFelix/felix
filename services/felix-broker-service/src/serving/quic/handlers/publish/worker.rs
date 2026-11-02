@@ -733,7 +733,7 @@ fn payload_bytes(payloads: &[Bytes]) -> usize {
 
 /// Send a forwarded batch and wait for the owner's answer.
 async fn forward(
-    pool: &felix_replication::peer::PeerPool,
+    pool: &impl felix_replication::peer::PeerRequester,
     job: &PublishJob,
     budget: Duration,
 ) -> super::PublishResult {
@@ -746,26 +746,6 @@ async fn forward(
     else {
         unreachable!("only forwards are forwarded")
     };
-    // An owner that cannot read the blocks is refused here rather than sent
-    // the batch without them, which would tell the client they were kept.
-    if job.headers.is_some()
-        && felix_replication::peer::PeerRequester::capabilities(
-            pool,
-            &target.node_id,
-            target.advertise_addr,
-        )
-        .await
-        .is_ok_and(|offered| {
-            !offered.contains(felix_wire::internal::PeerCapabilities::RECORD_HEADERS)
-        })
-    {
-        return Err(ClientError::from_broker(
-            &felix_broker::BrokerError::RecordHeadersNotEnabled,
-            "record headers cannot be forwarded to a shard owner that predates them; \
-             publish to the owner",
-        )
-        .into());
-    }
     crate::serving::forward::forward_publish(
         pool,
         target,
@@ -778,7 +758,30 @@ async fn forward(
     )
     .await
     .map(|placed| placed.map(|(first, _)| first))
-    .map_err(anyhow::Error::from)
+    .map_err(|err| headers_unsupported(err, job.headers.is_some()))
+}
+
+/// An owner that cannot take header blocks is refused, never sent the batch
+/// without them: the client would think they were kept. The pool declines the
+/// frame for an owner that did not offer the capability, and an owner whose
+/// own gate is not open yet answers `UnsupportedKind`; either way the batch
+/// was not written.
+fn headers_unsupported(
+    err: crate::serving::forward::ForwardError,
+    has_headers: bool,
+) -> anyhow::Error {
+    use crate::serving::forward::ForwardError;
+    match &err {
+        ForwardError::Refused {
+            code: Some(felix_wire::internal::ErrorCode::UnsupportedKind),
+            ..
+        } if has_headers => ClientError::from_broker(
+            &felix_broker::BrokerError::RecordHeadersNotEnabled,
+            "the shard's owner does not accept record headers yet; publish without them or to the owner",
+        )
+        .into(),
+        _ => err.into(),
+    }
 }
 
 /// The offset a successful publish reports: its first record's, when the

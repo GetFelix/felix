@@ -391,6 +391,31 @@ fn a_forward_with_a_block_is_its_own_kind_and_round_trips() {
     );
 }
 
+/// A forward with a block for an incarnated stream is the headered kind inside
+/// the incarnation envelope, and decodes to the same message.
+#[test]
+fn a_headered_forward_round_trips_inside_the_incarnation() {
+    let InternalMessage::ForwardPublish(base) =
+        headered_forward(Some(vec![Some(Bytes::from_static(b"block")), None]))
+    else {
+        panic!("a forward");
+    };
+    let message = InternalMessage::ForwardPublish(ForwardPublish {
+        shard: ShardRef {
+            incarnation: Some(7),
+            ..base.shard.clone()
+        },
+        ..base
+    });
+    assert_eq!(message.kind(), Kind::HeaderedForwardPublish);
+    let bytes = message.encode().expect("encode");
+    assert_eq!(
+        InternalHeader::decode(&bytes).expect("header").kind,
+        Kind::Incarnated
+    );
+    assert_eq!(InternalMessage::decode(bytes).expect("decode"), message);
+}
+
 /// The headers count must match the payloads, on the way out and on the way
 /// in.
 #[test]

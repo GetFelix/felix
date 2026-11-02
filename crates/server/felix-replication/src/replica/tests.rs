@@ -17,6 +17,7 @@ use super::*;
 mod election;
 mod fence;
 mod groups;
+mod headers;
 mod incarnation;
 mod non_voting;
 mod trim;

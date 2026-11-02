@@ -385,7 +385,7 @@ async fn a_forward_with_headers_is_refused_while_the_owner_does_not_accept_them(
 
     let answer = handler.apply(publish).await;
     assert!(
-        matches!(&answer, InternalMessage::ForwardPublishError(err) if err.code == ErrorCode::StorageFailed),
+        matches!(&answer, InternalMessage::ForwardPublishError(err) if err.code == ErrorCode::UnsupportedKind),
         "{answer:?}"
     );
     let tail = broker

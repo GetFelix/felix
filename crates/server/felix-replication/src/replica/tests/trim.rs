@@ -6,7 +6,7 @@ use felix_wire::internal::ProducerMark;
 
 use super::*;
 
-async fn quorum_follower() -> (Arc<Broker>, TempDir) {
+pub(super) async fn quorum_follower() -> (Arc<Broker>, TempDir) {
     let (broker, dir) = broker_with_storage().await;
     broker.register_tenant(TENANT).await.expect("tenant");
     broker
@@ -43,7 +43,7 @@ fn with_commit(mut batch: ReplicateRecords, commit: u64) -> ReplicateRecords {
     batch
 }
 
-fn stored_ok(answer: &InternalMessage) -> u64 {
+pub(super) fn stored_ok(answer: &InternalMessage) -> u64 {
     match answer {
         InternalMessage::ReplicateOk(ok) => ok.durable_offset,
         other => panic!("expected the batch stored, got {other:?}"),

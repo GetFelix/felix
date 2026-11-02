@@ -190,6 +190,12 @@ impl ForwardingHandler {
                     outcome.offsets,
                 ))
             }
+            // The ingress broker saw the finalize before this one did. Nothing
+            // was written; it answers the client with `feature_not_enabled`.
+            Err(err @ felix_broker::BrokerError::RecordHeadersNotEnabled) => {
+                metrics::record_served(metrics::OUTCOME_REFUSED);
+                error(correlation_id, ErrorCode::UnsupportedKind, err.to_string())
+            }
             Err(err) => {
                 // The owner accepted the request and the write failed. Distinct
                 // from a refusal: the requester must not retry, because this

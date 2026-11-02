@@ -172,6 +172,10 @@ pub struct Broker {
     head_trim_marked: std::sync::atomic::AtomicBool,
     /// Serializes the first marker write: it goes through one temporary file.
     head_trim_marking: tokio::sync::Mutex<()>,
+    /// The data directory's record-headers marker is known to be on disk.
+    headers_marked: std::sync::atomic::AtomicBool,
+    /// Serializes the first marker write, as `head_trim_marking` does.
+    headers_marking: tokio::sync::Mutex<()>,
     /// Seeds producer ids; randomly keyed at construction.
     producer_ids: ahash::RandomState,
     producer_id_counter: std::sync::atomic::AtomicU64,
@@ -248,6 +252,8 @@ impl Broker {
             head_trims: std::sync::OnceLock::new(),
             head_trim_marked: std::sync::atomic::AtomicBool::new(false),
             head_trim_marking: tokio::sync::Mutex::new(()),
+            headers_marked: std::sync::atomic::AtomicBool::new(false),
+            headers_marking: tokio::sync::Mutex::new(()),
             trim_wait: crate::broker::trim::TRIM_WAIT,
             producer_ids: ahash::RandomState::new(),
             producer_id_counter: std::sync::atomic::AtomicU64::new(0),
@@ -497,6 +503,50 @@ impl Broker {
             .any(|mark| matches!(mark, felix_wire::internal::ProducerMark::Trim { .. }))
         {
             self.mark_head_trimmed().await?;
+        }
+        Ok(())
+    }
+
+    /// Put the data directory's record-headers marker on disk before a
+    /// record with a key or headers block is stored, so the node can refuse
+    /// a fleet that has not finalized `record_headers`
+    /// (`felix_storage::run_state::has_record_headers`). After the first
+    /// write this is one atomic load.
+    pub(crate) async fn mark_headers_stored(&self) -> Result<()> {
+        use std::sync::atomic::Ordering;
+        if self.headers_marked.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let Some(storage) = &self.durable_storage else {
+            return Ok(());
+        };
+        let _first = self.headers_marking.lock().await;
+        if self.headers_marked.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let root = storage.root().to_path_buf();
+        tokio::task::spawn_blocking(move || felix_storage::run_state::record_headers_stored(&root))
+            .await
+            .map_err(|err| {
+                BrokerError::Storage(format!("record the record-headers marker: {err}"))
+            })?
+            .map_err(|err| {
+                BrokerError::Storage(format!("record the record-headers marker: {err}"))
+            })?;
+        self.headers_marked.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    /// Put the record-headers marker on disk before a replicated batch whose
+    /// records carry header blocks is stored here, as a follower, a promoted
+    /// leader catching up or a shard's new copy all do without going through
+    /// [`Broker::claim_publish`].
+    pub async fn mark_headers_stored_for(
+        &self,
+        headers: Option<&[Option<bytes::Bytes>]>,
+    ) -> Result<()> {
+        if headers.is_some_and(|headers| headers.iter().any(Option::is_some)) {
+            self.mark_headers_stored().await?;
         }
         Ok(())
     }

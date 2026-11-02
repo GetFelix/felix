@@ -765,6 +765,14 @@ impl ReplicaHandler {
             metrics::record_replicated(metrics::OUTCOME_ERROR);
             return refused(correlation_id, ErrorCode::StorageFailed, 0, err.to_string());
         }
+        if let Err(err) = self
+            .broker
+            .mark_headers_stored_for(batch.headers.as_deref())
+            .await
+        {
+            metrics::record_replicated(metrics::OUTCOME_ERROR);
+            return refused(correlation_id, ErrorCode::StorageFailed, 0, err.to_string());
+        }
         let mut outcome = match unverified {
             Some(expected) if batch.first_offset > expected => Ok(Err(Divergence::Gap {
                 expected,

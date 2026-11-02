@@ -311,6 +311,16 @@ pub async fn forward_publish(
                     detail: err.to_string(),
                 });
             }
+            // The pool did not send it: this owner never offered the capability
+            // the frame needs. Possible for a headered batch after a redirect.
+            Err(err @ PeerError::Unsupported { .. }) => {
+                metrics::record_forward(metrics::OUTCOME_REFUSED);
+                return Err(ForwardError::Refused {
+                    stream: key.stream.clone(),
+                    code: Some(ErrorCode::UnsupportedKind),
+                    detail: err.to_string(),
+                });
+            }
             Err(err) => {
                 metrics::record_forward(metrics::OUTCOME_REFUSED);
                 return Err(ForwardError::Refused {

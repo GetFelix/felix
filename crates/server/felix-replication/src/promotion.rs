@@ -1142,6 +1142,10 @@ async fn catch_up<R: PeerRequester>(
             .mark_head_trimmed_for(&batch.marks)
             .await
             .map_err(|err| err.to_string())?;
+        broker
+            .mark_headers_stored_for(batch.headers.as_deref())
+            .await
+            .map_err(|err| err.to_string())?;
         let applied = replication::apply(
             log,
             batch.first_offset,

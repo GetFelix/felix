@@ -558,8 +558,8 @@ has no request that trims.
 Once finalized, a durable stream in a cluster accepts record keys and headers
 from clients that send them, stores them with the record, and replication and
 forwarding carry them. Until then a broker in a cluster does not offer
-`EXT_RECORD_HEADERS`, so a client never sends any, and a publish that does is
-refused with `feature_not_enabled` and `detail.reason` `record_headers`.
+`EXT_RECORD_HEADERS`, so a client never sends any. A frame that carries them
+anyway is refused as invalid (`unsupported frame flags`) and nothing is stored.
 
 - **It is the one-way step.** A record with headers is storage format v8,
   which an older broker refuses to open. A log moves onto v8 only at the first
@@ -572,7 +572,14 @@ refused with `feature_not_enabled` and `detail.reason` `record_headers`.
   finalize needs every broker to report the feature, so no follower is held
   once it is done.
 - **A single broker** accepts headers from the start, unless
-  `FELIX_RECORD_HEADERS=false`.
+  `FELIX_RECORD_HEADERS=false`. A data directory that stored a record with
+  headers joins a cluster only once that cluster has finalized
+  `record_headers`: an older follower would be held at the record, and an
+  older leader promoted over it could not read it. So the first such record
+  writes a `record-headers` marker in the data directory, before the record,
+  and a broker holding it that registers with a fleet that has not finalized
+  `record_headers` deregisters and stops with an error saying so. Finalize
+  `record_headers` first, then start it.
 - **A new cluster** starts with it finalized.
 - **What clients see.** Nothing changes for a client that never sends headers.
   One that does learns at connect time whether the cluster accepts them.
@@ -653,10 +660,10 @@ with its publisher, once `publisher_principal` is, or on a single broker with
 `FELIX_RECORD_PUBLISHERS=true` (see
 [`publisher_principal`](#publisher_principal)); and v7 for a head trim, once
 `head_trim` is, or from the start on a single broker (see
-[`head_trim`](#head_trim)); and v8 for a record with a key and headers, on a
-single broker from the first publish that carries headers (a cluster does not
-accept headers yet, and `FELIX_RECORD_HEADERS=false` makes a single broker
-refuse them). Each of those is the one-way step. Consumer-group cursors are not in the segment format but have a layout
+[`head_trim`](#head_trim)); and v8 for a record with a key or headers, once
+`record_headers` is, or from the start on a single broker (see
+[`record_headers`](#record_headers)). Each of those is the one-way
+step. Consumer-group cursors are not in the segment format but have a layout
 of their own: a cluster moves to the newer one once
 [`group_cursor_dependencies`](#group_cursor_dependencies) is finalized, and a
 single broker from the start, after which an older build cannot read that
