@@ -281,9 +281,12 @@ graph LR
   `Unacknowledged`, and its late result is discarded.
 - An answer is sent once the batch is durable under the stream's fsync mode
   and in the replay ring, and before the batch is fanned out
-  (`complete_publish_answering`). A `Quorum` publish is answered after its
-  quorum wait instead. A pipelining client still gets its answers in request
-  order (`AckOrder`).
+  (`complete_publish_answering`). It never precedes durability. A `Quorum`
+  publish is answered after its quorum wait, and under the `Block` queue
+  policy the answer still follows the fanout, since that policy promises the
+  publisher waits for every subscriber's queue. Idempotent, forwarded and
+  conditional publishes also answer after the fanout. A pipelining client
+  still gets its answers in request order (`AckOrder`).
 - Answering first keeps subscribers off the publisher's round trip. Fanout
   wakes one feeder task per subscriber, and each of those drives a lane, a
   connection writer and a QUIC send. Answered after the fanout, the ack waited

@@ -600,8 +600,16 @@ impl Finisher {
     /// [`Self::run`], telling `answer` the outcome once the batch is durable
     /// and in the ring, before the fanout rather than after it. The outcome
     /// counts no subscribers.
+    ///
+    /// Under `Block` the answer still follows the fanout: that policy is the
+    /// promise that a publisher waits for every subscriber's queue.
     pub(super) async fn run_answering(mut self, answer: impl FnOnce(Result<PublishOutcome>)) {
         let completion = self.0.as_mut().expect("armed until run");
+        if completion.handle.state.subscriber_queue_policy == SubQueuePolicy::Block {
+            let outcome = completion.run().await;
+            self.0 = None;
+            return answer(outcome);
+        }
         match completion.settle().await {
             Ok(None) => answer(Ok(completion.appended_outcome())),
             Ok(Some(outcome)) => {

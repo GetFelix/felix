@@ -338,8 +338,8 @@ impl LaneWork {
         self.work.spawn(async move {
             let ClaimGroup { members, fences } = group;
             // Answered before the fanout, so the acks do not queue behind
-            // the work of waking every subscriber. A quorum is awaited
-            // first, and such a batch is fanned out on release anyway.
+            // the work of waking every subscriber. A `Quorum` answer waits
+            // for its quorum, so it keeps the old order.
             if handle.consistency() != felix_broker::ConsistencyLevel::Quorum {
                 broker
                     .complete_publish_answering(claimed, |completed| {
