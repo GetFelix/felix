@@ -620,10 +620,21 @@ ReplacedIdLearner == TRUE
 \* decides, and a non-voter's empty counter log counts.
 \* `ReadmitChecksCounters`: re-admission also waits for the counter log to
 \* hold the start record of the set's generation.
+\* `LearnerAcksCount`: the leader counts a non-voter's answers to its catch-up
+\* batches toward its marks, as the code's leader does: it ships a learner
+\* the batches it ships any follower.
+\* `CatchUpFromDeposed`: a non-voter takes a catch-up batch from a leader the
+\* control plane named at that leader's generation after it moved on, as
+\* the code's confirmed read, cached for 500 ms or answered just before a
+\* failover, lets it. The cache is in memory, so its reads came after the
+\* wipe: at the generation then or a later one. Only without elections,
+\* where every leader that opened was named.
 SetlessFences == FALSE
 SetlessSeesMarker == TRUE
 CounterFenceSeesLearner == TRUE
 ReadmitChecksCounters == TRUE
+LearnerAcksCount == TRUE
+CatchUpFromDeposed == TRUE
 \* `RefuseShortCopy`: a leader that gave its copy up in a crash answers no
 \* promotion fence from it until a newer leader has shipped to it, unless a
 \* set of two acknowledged what it may have lost (`AckedByTwo`):
@@ -932,6 +943,14 @@ LearnSet(f, b) ==
 \* Whether a broker is a candidate rather than the leader the control plane
 \* named at its generation.
 Candidate(b) == ~(leader = b /\ bgen[b] = gen)
+
+\* Whether non-voter `f` takes `b`'s batch: from the leader the control plane
+\* confirms at its generation, and with `CatchUpFromDeposed` from one it
+\* named there since `f`'s wipe and has replaced, which without elections is
+\* every open leader at that generation or later.
+ConfirmedSender(b, f) ==
+    \/ b = leader /\ bgen[b] = gen
+    \/ CatchUpFromDeposed /\ Elections = 0 /\ bgen[b] >= wipedAt[f]
 
 \* Under `WipedWaitsForAdopt`, whether `f` lost its promises and the control
 \* plane has not yet taken a generation past the one it had then. Until it
@@ -2943,16 +2962,16 @@ Readmitted(w) ==
     /\ UNCHANGED << handoffVars, fenceVars >>
 
 \* Under `WipedNonVoter`, a wiped replica copies a leader's log to catch up,
-\* replacing its own, but never below its mark. The leader counts nothing
-\* from it.
+\* replacing its own, but never below its mark. With `LearnerAcksCount` the
+\* leader counts its answer.
 CatchUp(b, f) ==
     /\ NonVoter(f) /\ f /= b
     /\ bgen[b] > 0 /\ ~fencing[b]
-    \* Only from the leader the control plane confirms at its generation.
-    /\ b = leader /\ bgen[b] = gen
+    /\ ConfirmedSender(b, f)
     /\ log[f] /= log[b]
     /\ Len(log[b]) >= hwm[f] /\ SubSeq(log[f], 1, hwm[f]) = SubSeq(log[b], 1, hwm[f])
     /\ log' = [log EXCEPT ![f] = log[b]]
+    /\ IF LearnerAcksCount THEN Confirm(b, f, Len(log[b])) ELSE UNCHANGED confirmed
     \* The batch takes the ballot, as every batch does (`accept_sender`):
     \* once re-admitted the copy never promises that generation, or one
     \* below it, to another leader. Before its wipe it may have promised
@@ -2961,7 +2980,7 @@ CatchUp(b, f) ==
     /\ Promise(f, b, bgen[b])
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, hwm, halted, queued, pending, acked, writes, staleCommit >>
-    /\ UNCHANGED << handoffVars, fencing, answered, confirmed, opened, setVars, ackGen >>
+    /\ UNCHANGED << handoffVars, fencing, answered, opened, setVars, ackGen >>
 
 \* The same for the counter log, which the leader ships apart from the cache
 \* log, so either can be behind the other.
@@ -2969,9 +2988,11 @@ CatchUpCounters(b, f) ==
     /\ Counters
     /\ NonVoter(f) /\ f /= b
     /\ bgen[b] > 0 /\ ~fencing[b]
-    /\ b = leader /\ bgen[b] = gen
+    /\ ConfirmedSender(b, f)
     /\ clog[f] /= clog[b]
     /\ clog' = [clog EXCEPT ![f] = clog[b]]
+    /\ cconfirmed' = IF LearnerAcksCount THEN [cconfirmed EXCEPT ![b][f] = Len(clog[b])]
+                     ELSE cconfirmed
     /\ MayPromise(f, b, bgen[b])
     /\ Promise(f, b, bgen[b])
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
@@ -3067,7 +3088,7 @@ Next ==
             \/ WipedLearnSet(b, f) /\ UNCHANGED << counterVars, heard, idVars, named, wipedAt, readmit >>
             \/ AnswerSetlessFence(b, f) /\ UNCHANGED quietVars
             \/ CatchUp(b, f) /\ UNCHANGED quietVars
-            \/ CatchUpCounters(b, f) /\ UNCHANGED << chwm, cconfirmed, canswered, cacked, heard, idVars, named, wipeVars >>
+            \/ CatchUpCounters(b, f) /\ UNCHANGED << chwm, canswered, cacked, heard, idVars, named, wipeVars >>
             \/ ShipCounter(b, f) /\ UNCHANGED loudVars
             \/ AnswerCounterFence(b, f) /\ UNCHANGED loudVars
             \/ Probe(b, f) /\ UNCHANGED << counterVars, heard, named >>

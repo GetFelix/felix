@@ -1092,6 +1092,13 @@ plane holds failed:
   for both to hold the start record (`ReadmitChecksCounters`;
   `FelixShardElectWipeNonVoterCountersUnchecked.cfg` re-admits on the cache
   log alone).
+- The leader counts a non-voter's answers to its catch-up batches, as the
+  code's leader does (`LearnerAcksCount`), and without elections a non-voter
+  also takes them from a leader the control plane named at that leader's
+  generation after it moved on (`CatchUpFromDeposed`), as the code's
+  confirmed read, cached for 500 ms, lets it. That cache is in memory, so
+  its reads came after the wipe: the deposed leader's generation is at least
+  the one at the wipe. Both are on in every configuration.
 - Without elections (`Elections = 0`), the two older faults still lose a
   write: re-admitted before it caught up
   (`FelixShardElectWipeNonVoterNoCatchUpFailover.cfg`), or with only the
