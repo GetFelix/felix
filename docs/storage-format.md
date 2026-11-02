@@ -394,6 +394,13 @@ other kinds, the roll happens before the record is written, so a crash, or a
 conditional append whose condition fails, in between leaves an empty v8
 active segment, which an older build refuses.
 
+Replication does not carry a record's key and headers yet. A leader holding
+such a record does not ship it bare: the follower stays behind it, and the
+leader logs the stall and counts it as `headers_unsupported` in
+`felix_broker_replication_shipped_total`. A cluster member never accepts headers
+for that reason, so do not move a data directory that holds them into a cluster
+until headers replicate.
+
 ## Index file
 
 Index files accelerate reads and are **never trusted**. Every entry is used only
