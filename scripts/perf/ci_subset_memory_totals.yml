@@ -1,5 +1,5 @@
 {
-  "_comment": "Cells where a broker-wide byte budget is touched often: small payloads at high fanout, and the 16 and 64 KiB batches that reach the subscriber byte bounds. Run by perf-env-ab.yml next to the other ci_subset files.",
+  "_comment": "The 16 and 64 KiB batches at fanout 1 and 10, which reach the subscriber byte bounds. Run by perf-env-ab.yml in place of ci_subset_large_payload.yml, which it supersedes there: same 8-stream workload, so no cell is counted twice.",
   "defaults": {
     "trials": 5
   },
@@ -34,6 +34,8 @@
         "4",
         "--pub-streams-per-conn",
         "2",
+        "--pub-stream-count",
+        "8",
         "--pub-sharding",
         "hash_stream",
         "--idle-ms",

@@ -1,6 +1,7 @@
 name: Performance A/B (environment)
 
-# Runs the fast perf subsets twice against ONE build of the checked-out ref:
+# Runs the fast perf subsets twice against ONE build of the checked-out ref
+# (use settings that do not change the build; RUSTFLAGS would rebuild per side):
 # once with env A (default: nothing set) and once with env B. Use it to price a
 # configuration default, for example whether a broker-wide byte budget costs
 # throughput. perf-pr.yml compares two revisions; this compares two settings of
@@ -11,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       env_a:
-        description: "Side A environment, space-separated KEY=VALUE (empty for the defaults)"
+        description: "Side A environment, space-separated KEY=VALUE, no spaces inside a value (empty for the defaults). Keys the benchmark profile sets itself, such as FELIX_EVENT_*, are overridden by the profile."
         required: false
         default: ""
         type: string
@@ -20,7 +21,7 @@ on:
         required: true
         type: string
       rounds:
-        description: "Rounds; each runs every cell once per side. Keep it even."
+        description: "Rounds; each runs every cell once per side. Use an even number so each side goes first equally often."
         required: false
         default: "6"
         type: string
@@ -69,9 +70,11 @@ jobs:
           run_side() {
             local side="$1" settings="$2"
             rm -f data/raw/latency_demo_runs.jsonl
-            for cfg in ci_subset_latency ci_subset_throughput ci_subset_large_payload ci_subset_memory_totals; do
+            for cfg in ci_subset_latency ci_subset_throughput ci_subset_memory_totals; do
               # shellcheck disable=SC2086  # settings is KEY=VALUE words by design
-              env $settings python3 scripts/perf/run_latency_matrix.py --trials 1 --config "scripts/perf/$cfg.yml"
+              # A failed trial must not throw away the rounds already run.
+              env $settings python3 scripts/perf/run_latency_matrix.py --trials 1 --config "scripts/perf/$cfg.yml" \
+                || echo "::warning::$side: $cfg had a failed trial"
             done
             cat data/raw/latency_demo_runs.jsonl >> "$out/$side.jsonl"
           }
