@@ -423,6 +423,9 @@ async fn serve_connection(
             let forwards = Arc::new(Semaphore::new(MAX_CONCURRENT_FORWARDS_PER_STREAM));
             let controls = Arc::new(Semaphore::new(MAX_CONTROLS_PER_STREAM));
             let fetches = Arc::new(Semaphore::new(MAX_CONCURRENT_FETCHES_PER_STREAM));
+            // Whether this pump shares the serving runtime, rather than the
+            // QUIC I/O thread, where no handler code may run.
+            let inline = tokio::runtime::Handle::try_current().is_ok_and(|now| now.id() == app.id());
             loop {
                 let request = tokio::select! {
                     _ = shutdown.cancelled() => break,
@@ -617,6 +620,7 @@ async fn serve_connection(
                     request @ (InternalMessage::Fence(_)
                     | InternalMessage::PreVote(_)
                     | InternalMessage::ReplicateFetch(_)) => {
+                        let idle = controls.available_permits() == MAX_CONTROLS_PER_STREAM;
                         let Ok(queued) = Arc::clone(&controls).try_acquire_owned() else {
                             metrics::record_served(metrics::OUTCOME_REFUSED);
                             let refusal = InternalMessage::ReplicateError(ReplicateError {
@@ -638,6 +642,34 @@ async fn serve_connection(
                             .then(|| Arc::clone(&fetches));
                         let handler = Arc::clone(&handler);
                         let peer = ballot_identity(&offered, &identity);
+                        let mut answering = Box::pin(
+                            AssertUnwindSafe(
+                                async move { handler.handle_from(peer, request).await },
+                            )
+                            .catch_unwind(),
+                        );
+                        // A read round's fence is done on its first poll, so
+                        // it is answered here without a task of its own: every
+                        // confirmed read waits on one. Only on an idle stream
+                        // and the serving runtime, because a first poll can
+                        // open a new shard's log from disk; behind a promotion
+                        // fence that would hold up the stream again. Fetches
+                        // wait for a slot and can answer 4 MiB, so never.
+                        if inline && idle && fetching.is_none()
+                            && let Some(answered) = (&mut answering).now_or_never()
+                        {
+                            drop(queued);
+                            // Not behind a large fetch answer being written.
+                            if let Ok(mut held) = send.try_lock() {
+                                write_answer(&mut held, answered).await;
+                            } else {
+                                let send = Arc::clone(&send);
+                                app.spawn(async move {
+                                    write_answer(&mut *send.lock().await, answered).await;
+                                });
+                            }
+                            continue;
+                        }
                         let send = Arc::clone(&send);
                         app.spawn(async move {
                             let _queued = queued;
@@ -646,7 +678,8 @@ async fn serve_connection(
                                 Some(fetches) => fetches.acquire_owned().await.ok(),
                                 None => None,
                             };
-                            answer_out_of_order(&send, handler.handle_from(peer, request)).await;
+                            let answered = answering.await;
+                            write_answer(&mut *send.lock().await, answered).await;
                         });
                         continue;
                     }
@@ -753,14 +786,21 @@ async fn answer_out_of_order(
     answering: impl std::future::Future<Output = InternalMessage>,
 ) {
     let answered = AssertUnwindSafe(answering).catch_unwind().await;
-    let mut send = send.lock().await;
+    write_answer(&mut *send.lock().await, answered).await;
+}
+
+/// Write a handler's answer, or end the stream if the handler panicked.
+async fn write_answer(
+    send: &mut quinn::SendStream,
+    answered: std::thread::Result<InternalMessage>,
+) {
     let Ok(response) = answered else {
         tracing::warn!("internal request handler panicked");
         metrics::record_served(metrics::OUTCOME_ERROR);
         let _ = send.finish();
         return;
     };
-    match write_frame(&mut send, &response).await {
+    match write_frame(send, &response).await {
         Ok(()) => metrics::record_served(metrics::OUTCOME_OK),
         Err(_) => metrics::record_served(metrics::OUTCOME_ERROR),
     }

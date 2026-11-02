@@ -1092,6 +1092,14 @@ to tell a leader is alive. A queue that lasted
 answered before the next request is read, because every later request on the
 connection is checked against the identity it gives.
 
+A fence or pre-vote that finishes without waiting is answered straight from the
+read loop, with no task of its own. A leader's fence to confirm a cache read
+is one, so the fence behind every confirmed read skips a task spawn and a
+wake. This happens only while nothing else on the stream is running: a request that has
+to open a new shard's log from disk could otherwise hold up the stream behind
+it. It also does not happen where the read loop runs on the QUIC I/O runtime
+(the default on macOS), which runs no handler code.
+
 Nothing depends on the order of the control stream. A requester that needs
 one request to happen before another waits for the first answer before it
 sends the second:
