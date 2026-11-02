@@ -906,9 +906,10 @@ an incarnation-0 route for a name that now has an incarnation does not arise.
 A follower asks each broker that leads a shard it follows whether it is there:
 `Ping` (kind 38), answered with `Pong` (kind 39). Both bodies are the
 correlation id alone. It goes on the connection's control lane, so it never
-waits behind a forwarded publish, and the answer comes from the broker's
-serving runtime rather than the transport task, so a broker whose runtime is
-stuck reads as unreachable. Sent only to a peer that offered `PING`; one that
+waits behind a forwarded publish, and it is answered as soon as it arrives, so
+it never waits behind a slow fence either (see "The transport"). The answer
+comes from the broker's serving runtime rather than the transport task, so a
+broker whose runtime is stuck reads as unreachable. Sent only to a peer that offered `PING`; one that
 did not is not watched at all, so a rolling upgrade never reads as a dead
 leader.
 
@@ -1064,7 +1065,7 @@ goes on its own class's streams:
 
 | Class | Streams | Carries |
 | --- | --- | --- |
-| Control | 1 | `Hello`, `Fence`, `ReplicateFetch`, `Ping` |
+| Control | 1 | `Hello`, `Fence`, `ReplicateFetch`, `PreVote`, `Ping` |
 | Forward | `FELIX_INTERNAL_STREAMS_PER_CONN` | `ForwardPublish`, `ForwardCacheOp` |
 | Replication | `FELIX_INTERNAL_STREAMS_PER_CONN` | every other `Replicate*` request, for every log |
 
@@ -1078,6 +1079,40 @@ keep it off forward streams on the sending side, and a broker answers forwards
 out of order on the serving side, so a link is safe once either end has the
 fix. A promoted leader serves nothing until its fence is answered, and a ping
 stuck behind a forward would read as a dead leader, hence the control stream.
+
+**The control stream is not served in order either.** A broker answers each
+`Fence`, `ReplicateFetch`, `PreVote` and `Ping` as it finishes, matched by
+correlation id, and reads the next request while earlier ones run. Without
+this, one slow request held up everything behind it on the stream. During a
+burst of shard creates, the promotion fences for the new shards would hold up
+the fences a leader sends to confirm cache reads, and the pings followers use
+to tell a leader is alive. A queue that lasted
+`FELIX_LEADER_SUSPECT_AFTER_MS` read as a dead leader
+([#1796](https://github.com/GetFelix/felix/issues/1796)). `Hello` is still
+answered before the next request is read, because every later request on the
+connection is checked against the identity it gives.
+
+Nothing depends on the order of the control stream. A requester that needs
+one request to happen before another waits for the first answer before it
+sends the second:
+
+- A promoted leader waits for a follower's `FenceOk` before it fetches that
+  follower's tail, and before it ships a batch at the new generation. The
+  batches go on replication streams anyway, which were never ordered with the
+  control stream.
+- Two fences for the same shard can still run at once. That was already true
+  for fences from two brokers, or from one broker with more than one
+  connection (`FELIX_INTERNAL_CONNS_PER_PEER`). Accepting a generation
+  re-checks the ballot under the log's own lock, so the higher generation
+  wins and a generation is promised to one leader whichever fence lands
+  first.
+- A ping touches no state.
+
+Every requester build matches answers by correlation id, so the change needs
+no capability bit: an older broker gets the same answers, sooner. A stream
+runs at most 256 fences and pre-votes and 16 tail fetches at once (each fetch
+answer can hold 4 MiB). At either limit it stops reading until one finishes.
+A ping needs no permit, so a ping is never queued behind a full stream.
 
 Round-robin within a class does not reorder replication: the driver keeps at
 most one exchange outstanding per follower and log, and waits for its answer

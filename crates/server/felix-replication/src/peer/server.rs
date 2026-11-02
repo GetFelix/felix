@@ -38,6 +38,14 @@ use super::tls;
 /// what one stream can make this broker hold.
 const MAX_CONCURRENT_FORWARDS_PER_STREAM: usize = 256;
 
+/// Fences and pre-votes one stream may have running at once. Each holds a few
+/// hundred bytes, so this is as generous as the forward limit.
+const MAX_CONCURRENT_FENCES_PER_STREAM: usize = 256;
+
+/// Tail fetches one stream may have running at once. Each answer holds up to
+/// 4 MiB of records until it is written.
+const MAX_CONCURRENT_FETCHES_PER_STREAM: usize = 16;
+
 /// What answers a peer's request.
 ///
 /// The broker implements it with `BrokerPeerHandler` (#106). A listener built
@@ -412,6 +420,8 @@ async fn serve_connection(
             // `write_frame` per lock, so frames never interleave.
             let send = Arc::new(tokio::sync::Mutex::new(send));
             let forwards = Arc::new(Semaphore::new(MAX_CONCURRENT_FORWARDS_PER_STREAM));
+            let fences = Arc::new(Semaphore::new(MAX_CONCURRENT_FENCES_PER_STREAM));
+            let fetches = Arc::new(Semaphore::new(MAX_CONCURRENT_FETCHES_PER_STREAM));
             loop {
                 let request = tokio::select! {
                     _ = shutdown.cancelled() => break,
@@ -582,17 +592,49 @@ async fn serve_connection(
                         continue;
                     }
                     // Answered by the serving runtime, not the pump, so a
-                    // broker whose runtime is stuck reads as unreachable.
+                    // broker whose runtime is stuck reads as unreachable. Out
+                    // of order and without a permit, so a ping never waits
+                    // behind a slow fence: that would read as a dead leader.
                     InternalMessage::Ping(ping) => {
-                        let answer = app.spawn(async move {
-                            InternalMessage::Pong(Pong {
+                        let send = Arc::clone(&send);
+                        app.spawn(async move {
+                            let pong = InternalMessage::Pong(Pong {
                                 correlation_id: ping.correlation_id,
-                            })
+                            });
+                            answer_out_of_order(&send, async { pong }).await;
                         });
-                        match answer.await {
-                            Ok(pong) => pong,
-                            Err(_) => break,
-                        }
+                        continue;
+                    }
+                    // Fences, tail fetches and pre-votes run side by side and
+                    // are answered as they finish, so a promotion fence slow
+                    // to persist does not hold up a read round's fence behind
+                    // it (#1796). None relies on its place on the stream: a
+                    // requester waits for the answer before anything that
+                    // depends on it. At a limit the stream stops reading
+                    // until one finishes.
+                    request @ (InternalMessage::Fence(_)
+                    | InternalMessage::PreVote(_)
+                    | InternalMessage::ReplicateFetch(_)) => {
+                        let limit = if matches!(request, InternalMessage::ReplicateFetch(_)) {
+                            &fetches
+                        } else {
+                            &fences
+                        };
+                        let permit = tokio::select! {
+                            _ = shutdown.cancelled() => break,
+                            permit = Arc::clone(limit).acquire_owned() => match permit {
+                                Ok(permit) => permit,
+                                Err(_) => break,
+                            },
+                        };
+                        let handler = Arc::clone(&handler);
+                        let peer = ballot_identity(&offered, &identity);
+                        let send = Arc::clone(&send);
+                        app.spawn(async move {
+                            let _permit = permit;
+                            answer_out_of_order(&send, handler.handle_from(peer, request)).await;
+                        });
+                        continue;
                     }
                     // A forward can sit out a whole quorum wait, and that wait
                     // may need replication a peer has queued behind it on this
@@ -624,23 +666,7 @@ async fn serve_connection(
                         let send = Arc::clone(&send);
                         app.spawn(async move {
                             let _permit = permit;
-                            let answered = AssertUnwindSafe(handler.handle_from(peer, request))
-                                .catch_unwind()
-                                .await;
-                            let mut send = send.lock().await;
-                            let Ok(response) = answered else {
-                                // As for a request answered inline: the write
-                                // may have been applied, so end the stream
-                                // rather than answer.
-                                tracing::warn!("internal request handler panicked");
-                                metrics::record_served(metrics::OUTCOME_ERROR);
-                                let _ = send.finish();
-                                return;
-                            };
-                            match write_frame(&mut send, &response).await {
-                                Ok(()) => metrics::record_served(metrics::OUTCOME_OK),
-                                Err(_) => metrics::record_served(metrics::OUTCOME_ERROR),
-                            }
+                            answer_out_of_order(&send, handler.handle_from(peer, request)).await;
                         });
                         continue;
                     }
@@ -689,13 +715,41 @@ async fn serve_connection(
                 }
                 metrics::record_served(metrics::OUTCOME_OK);
             }
-            // Let the forwards still running answer before the stream ends.
+            // Let the requests still running answer before the stream ends.
             tokio::select! {
                 _ = shutdown.cancelled() => {}
-                _ = forwards.acquire_many(MAX_CONCURRENT_FORWARDS_PER_STREAM as u32) => {}
+                _ = async {
+                    tokio::join!(
+                        forwards.acquire_many(MAX_CONCURRENT_FORWARDS_PER_STREAM as u32),
+                        fences.acquire_many(MAX_CONCURRENT_FENCES_PER_STREAM as u32),
+                        fetches.acquire_many(MAX_CONCURRENT_FETCHES_PER_STREAM as u32),
+                    )
+                } => {}
             }
             let _ = send.lock().await.finish();
         });
+    }
+}
+
+/// Write the answer to a request handed off so its stream could read on.
+///
+/// A handler that panicked may have applied the write, so the stream is ended
+/// rather than answered, as a panic in a request answered in turn ends it.
+async fn answer_out_of_order(
+    send: &tokio::sync::Mutex<quinn::SendStream>,
+    answering: impl std::future::Future<Output = InternalMessage>,
+) {
+    let answered = AssertUnwindSafe(answering).catch_unwind().await;
+    let mut send = send.lock().await;
+    let Ok(response) = answered else {
+        tracing::warn!("internal request handler panicked");
+        metrics::record_served(metrics::OUTCOME_ERROR);
+        let _ = send.finish();
+        return;
+    };
+    match write_frame(&mut send, &response).await {
+        Ok(()) => metrics::record_served(metrics::OUTCOME_OK),
+        Err(_) => metrics::record_served(metrics::OUTCOME_ERROR),
     }
 }
 

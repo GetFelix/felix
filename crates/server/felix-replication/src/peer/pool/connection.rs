@@ -471,8 +471,10 @@ impl Drop for PeerConnection {
 /// follower and log, so round-robin within a class cannot reorder a shard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LaneClass {
-    /// The handshake, the promotion fence and pings: one stream nothing slow
-    /// shares. A ping queued behind a forward would read as a dead leader.
+    /// The handshake, fences, tail fetches, pre-votes and pings: one stream
+    /// no forward shares, since a ping queued behind one would read as a dead
+    /// leader. The listener answers these as they finish, so a slow fence does
+    /// not hold up the rest either.
     Control,
     /// Forwarded publishes and cache operations.
     Forward,

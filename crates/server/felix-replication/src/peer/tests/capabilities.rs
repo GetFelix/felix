@@ -604,6 +604,104 @@ async fn the_fence_is_not_queued_behind_slow_requests() {
     listener.stop().await;
 }
 
+/// The stream name [`SlowPromotions`] holds fences for.
+const PROMOTING: &str = "promoting";
+
+/// Holds every fence for [`PROMOTING`] until `release` has permits, as a
+/// follower slow to persist a new shard's ballot would, and answers any other
+/// fence at once.
+struct SlowPromotions {
+    release: tokio::sync::Semaphore,
+}
+
+#[async_trait::async_trait]
+impl PeerRequestHandler for SlowPromotions {
+    async fn handle(&self, request: InternalMessage) -> InternalMessage {
+        let InternalMessage::Fence(fence) = request else {
+            panic!("only fences are sent here, got {:?}", request.kind());
+        };
+        if fence.shard.stream == PROMOTING {
+            let _ = self.release.acquire().await.expect("open").forget();
+        }
+        InternalMessage::FenceOk(felix_wire::internal::FenceOk {
+            correlation_id: fence.correlation_id,
+            log_end: fence.shard.shard.into(),
+            commit_offset: 0,
+            last_generation: 0,
+        })
+    }
+}
+
+fn fence_for(stream: &str, number: u32) -> InternalMessage {
+    InternalMessage::Fence(Fence {
+        correlation_id: 0,
+        shard: ShardRef {
+            stream: stream.to_string(),
+            shard: number,
+            ..shard()
+        },
+        log: ReplicaLog::Stream,
+        election: None,
+    })
+}
+
+/// **A read round's fence and a ping do not wait behind promotion fences**
+/// (#1796). Both share the control stream with the fences a new leader sends
+/// for every shard it is promoted on, and a follower slow to take those must
+/// still confirm a read and answer a ping at once, or a long enough queue
+/// reads as a dead leader.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_read_round_fence_and_a_ping_do_not_wait_behind_promotion_fences() {
+    let config = PeerTransportConfig {
+        request_timeout: Duration::from_secs(10),
+        ..config()
+    };
+    let handler = Arc::new(SlowPromotions {
+        release: tokio::sync::Semaphore::new(0),
+    });
+    let listener = Listener::start_on(PEER, Arc::clone(&handler) as _, config.clone()).await;
+    let pool = pool(config);
+    pool.capabilities(PEER, listener.addr)
+        .await
+        .expect("handshake");
+
+    let mut promotions = Vec::new();
+    for shard in 0..8 {
+        let pool = Arc::clone(&pool);
+        let addr = listener.addr;
+        promotions.push(tokio::spawn(async move {
+            pool.request(PEER, addr, fence_for(PROMOTING, shard)).await
+        }));
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let bound = Duration::from_millis(500);
+    let read_round = tokio::time::timeout(bound, pool.request(PEER, listener.addr, fence()))
+        .await
+        .expect("the read round's fence waited behind promotion fences")
+        .expect("fence");
+    assert!(
+        matches!(read_round, InternalMessage::FenceOk(_)),
+        "{read_round:?}"
+    );
+    assert_eq!(
+        crate::suspicion::ping(&pool, PEER, listener.addr, bound).await,
+        crate::suspicion::Answer::Pong,
+        "the ping waited behind promotion fences"
+    );
+
+    // Each held fence still gets its own answer once it finishes.
+    handler.release.add_permits(promotions.len());
+    for (shard, promotion) in promotions.into_iter().enumerate() {
+        match promotion.await.expect("join") {
+            Ok(InternalMessage::FenceOk(ok)) => assert_eq!(ok.log_end, shard as u64),
+            other => panic!("promotion fence {shard}: {other:?}"),
+        }
+    }
+    pool.shutdown().await;
+    listener.stop().await;
+}
+
 /// **A current broker answers a ping; one that predates pings is not
 /// pinged.** The older broker is not counted as silent either, which would
 /// let a rolling upgrade read as a dead leader.
