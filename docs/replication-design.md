@@ -3278,22 +3278,23 @@ append stream and the rest never shipped: their writes were never acknowledged
   the shards whose bit is set, plus any shard whose last pass left work: a mark
   below the tail, a follower behind, halted, rebuilding or not answering, an
   exchange still out, or a drain or route change in progress. A shard whose
-  last pass settled is skipped. Two shards that hash to the same bit both get a
+  last pass settled is skipped. Consumer-group acknowledgements and
+  dead-letter writes mark their shard the same way. Two shards that hash to the same bit both get a
   pass, which costs a pass and nothing else.
 - **The tick and a route change pass every shard.** That refreshes each
-  shard's report and retries what nothing else wakes. Group cursor and
-  dead-letter writes do not mark their shard, so they ship on its next pass: an
-  append to it or the tick.
+  shard's report and retries what nothing else wakes, such as a group seek or
+  a dead letter discarded by an operator.
 - **A shard that cannot start waits in a queue, oldest first.** There are two:
   urgent (an append, a write waiting on the mark, a follower answer that moved
   a cursor) and refresh (the tick, or a follower to try again). Urgent shards
   start first, but at most four in a row while a refresh waits, so a steady
-  stream of appends cannot hold any shard's report back for good.
+  stream of appends cannot hold any shard's report back for good. A shard
+  being moved counts as urgent: its clients are held until the drained report.
 - **A finished pass goes to the back.** When a pass ends and its shard wants
   another, the shard joins the queue behind the shards already waiting, and
   the freed slot goes to the one at the front. A shard with one append waits
-  behind at most the shards that asked before it
-  (`a_shard_with_one_append_is_not_starved_by_busier_ones`).
+  for the urgent shards that asked before it, and for at most one refresh in
+  every five starts (`a_shard_with_one_append_is_not_starved_by_busier_ones`).
 - **A pass waiting only on a slow follower yields.** Once its mark and report
   are out, a pass that is waiting on stragglers hands them to the driver when a
   scan finds shards queued, so the slot is free for them.

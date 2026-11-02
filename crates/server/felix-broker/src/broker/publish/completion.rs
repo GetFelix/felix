@@ -259,8 +259,8 @@ impl Completion {
             })?;
         // Replication waits on this. Under `Quorum` the publish is about to
         // block on a majority, so the shipping that produces it should already
-        // be under way rather than waiting out a tick.
-        //
+        // be under way rather than waiting out a tick. The mark names the shard,
+        // so the driver passes it and not every shard it leads.
         self.replication.mark(self.handle.state.append_slot);
         // `notify_waiters` here, unlike above: an offset reader registers
         // before it reads the tail, so it cannot miss this, and one that is not

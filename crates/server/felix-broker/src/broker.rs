@@ -362,12 +362,10 @@ impl Broker {
         visibility: std::time::Duration,
         max_attempts: u32,
     ) -> Self {
-        self.group_reader = Some(Arc::new(GroupReader::new(
-            Arc::clone(&groups),
-            dead_letters,
-            visibility,
-            max_attempts,
-        )));
+        self.group_reader = Some(Arc::new(
+            GroupReader::new(Arc::clone(&groups), dead_letters, visibility, max_attempts)
+                .waking(Arc::clone(&self.appended)),
+        ));
         self.consumer_groups = Some(groups);
         self
     }

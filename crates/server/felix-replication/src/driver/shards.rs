@@ -520,13 +520,12 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             AppendedShards::slot(&key.tenant_id, &key.namespace, &key.stream, key.shard)
         });
         let dirty = appended.contains(slot);
-        if dirty || state.owed {
+        // A move's drained report holds its clients, so it goes first too.
+        let moving = route.draining || route.pending.is_some();
+        if dirty || state.owed || moving {
             return Some((true, dirty));
         }
-        let settled = state.settled_at == Some(route.generation)
-            && !route.draining
-            && route.pending.is_none()
-            && !busy;
+        let settled = state.settled_at == Some(route.generation) && !busy;
         (!matches!(wake, WakeKind::Append) || !settled).then_some((false, false))
     }
 
@@ -674,7 +673,10 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             return;
         };
         let since = match state.queued {
+            // Moved up, or out of the fence queue once its fence is done
+            // with, so it waits for the slot it now needs.
             Some((Queue::Refresh, since)) if queue == Queue::Urgent => since,
+            Some((Queue::Fence, since)) if queue != Queue::Fence => since,
             Some(_) => return,
             None => {
                 self.waiting += 1;
@@ -1034,6 +1036,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         } = attempt;
         let scan = self.scan;
         let Some(state) = self.states.get_mut(&key) else {
+            self.fill();
             return;
         };
         if let Some(next) = state.running.take() {
