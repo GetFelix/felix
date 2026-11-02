@@ -230,6 +230,8 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardElectSwapNoJoint.cfg` | the same without the joint configuration: the cut-over fences, ships and acknowledges on the new set alone | violate `AckedHeldByLeader`: a replica left on the old set stands at the new leader's generation, opens on a majority of the old set the new leader never fenced, and acknowledges a record the new leader does not hold |
 | `FelixShardElectSwapFlip.cfg` | `FelixShardElectSwap.cfg` with one write and the flip as the code writes it (`FlipNewGeneration`): the control plane takes the pending set at the next generation, naming the cut-over's leader again, which fences the new set alone. A candidate may already hold that generation, and the flip may follow a stale report: if the leader promised that generation to a candidate since, the leader refuses the generation | pass, the same invariants (not yet measured) |
 | `FelixShardElectSwapFlipSkipsBallot.cfg` | the same with replicas answering the flip's fence by the generation alone, not the ballot (`NamedFenceSkipsBallot`) | violate `OneLeaderPerGeneration`: a candidate fences both sets without the leader and opens at the generation after the cut-over's; the flip names the leader there, and it opens too |
+| `FelixShardElectSwapFlipJoinLags.cfg` | `FelixShardElectSwapFlip.cfg` where a copy joining in the cut-over holds the destination's log only as the drain check saw it (`JoinLags`), and the flip waits for the start record of the destination's named stint (`StintStarts`). Checked in the piece where the twin below finds its trace: the cut-over keeps the old leader, after the write, once several replicas had promised past the control plane's generation, the destination among them | pass, the same invariants (not yet measured) |
+| `FelixShardElectSwapFlipJoinLagsFirstStart.cfg` | the same with the flip taking the generation's first start record, as `own_start` does today (#1787) | violate `AckedOnMajority`: a destination elected past the old leader acknowledges a write on the old set, the cut-over names it again at that generation, the joining copy lacks the write, and the flip follows the elected stint's start, leaving the write on one copy of the new set |
 | `FelixShardElectPreVote.cfg` | `FelixShardElect.cfg` with pre-vote and stickiness (`PreVote`), time to 2 so leases lapse and elections follow, two writes, the set check | pass, the same invariants (not yet measured) |
 | `FelixShardElectNoBallotAcks.cfg` | `FelixShardElect.cfg` without ballots, two generations of elections and two writes, the set check on so the first leader can follow a candidate | violate `AckedHeldByLeader`, checked per generation |
 | `FelixShardElectAdoptPromote.cfg` | `FelixShardElect.cfg` with one write, the set check, adoption up to generation 2 and promotion on suspicion up to generation 2 | pass, the same invariants (186K distinct states without the write; not yet measured with it) |
@@ -716,7 +718,22 @@ against it. While its change is pending a leader acknowledges on a majority
 of both sets (`HeldAtGen`) and ships to both. `CpFlip` takes the new set once
 a leader on it has its generation's start record acknowledged, which then
 sits on a majority of both, and `FinishChange` lets a leader drop the old set
-once the control plane holds its set. A failover (`Promote`) abandons the
+once the control plane holds its set.
+
+A destination can already lead the cut-over's generation: it was elected
+there, and the control plane, which never heard of the election, names it
+there again. Its log then holds two start records at that generation, the
+elected stint's and the named stint's. Records the elected stint
+acknowledged sit between them, on a majority of the old set only, and a copy
+joining in the cut-over may not hold them: it holds the destination's log as
+the drain check saw it, and the destination can write more before the
+cut-over is written (`JoinLags`). The flip must wait for the named stint's
+start (`StintStarts`), which reaches the new set only behind those records.
+`FelixShardElectSwapFlipJoinLagsFirstStart.cfg` takes the generation's first
+start instead, as the code's `own_start` does today, and loses an
+acknowledged write (#1787).
+
+A failover (`Promote`) abandons the
 pending change; it writes the set at a generation above the pending one.
 While a change is pending, `CpAdopt` adopts only a leader on the pending set
 and takes just the generation of one on the old set, which the new set's

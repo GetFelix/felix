@@ -250,6 +250,7 @@ expectations=(
   "FelixShardElectSwapDrop1StoodOneOther pass"
   "FelixShardElectSwapDrop1StoodSeveralOther pass"
   "FelixShardElectSwapFlipSkipsBallot violates OneLeaderPerGeneration"
+  "FelixShardElectSwapFlipJoinLagsFirstStart violates AckedOnMajority"
   "FelixShardElectPreVote pass"
   "FelixShardElectNoBallotAcks violates AckedHeldByLeader"
   "FelixShardElectStepDown pass"

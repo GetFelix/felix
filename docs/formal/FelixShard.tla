@@ -694,6 +694,19 @@ FenceIdsSetOnly == FALSE
 \* every fence.
 FlipNewGeneration == FALSE
 NamedFenceSkipsBallot == FALSE
+\* `StintStarts`: a leader opening again at a generation it already started
+\* (elected there, then named there by a cut-over) begins a new stint, and
+\* the flip waits for that stint's start record. Off, the flip takes the
+\* generation's first start, as `own_start` in felix-replication's
+\* driver/shard.rs reads the generation's start offset, which a retake
+\* does not move. Records the elected stint acknowledged after that start
+\* need not be on a majority of the new set (#1787).
+\* `JoinLags`: a copy joining in a cut-over holds the destination's log as
+\* the drain check saw it. A destination elected past the old leader can
+\* write more before the cut-over is written. Off, a joining copy holds the
+\* destination's whole log at the cut-over.
+StintStarts == FALSE
+JoinLags == FALSE
 
 \* There only the leader loses records, so a report may count followers by
 \* their logs.
@@ -1092,6 +1105,14 @@ Same(r, s) == r.g = s.g /\ r.id = s.id
 \* `g`, which `Same` compares.
 StartId == 0
 Start(g) == Record(g, StartId)
+
+\* Whether the start of `b`'s stint at `g` is under its mark: the last start
+\* record at `g` under `StintStarts`, any of them otherwise. A leader opening
+\* at a generation it already started appends another, identical start.
+StartAcked(b, g) ==
+    LET at == { i \in 1..Len(log[b]) : log[b][i] = Start(g) }
+    IN /\ at /= {}
+       /\ IF StintStarts THEN \A i \in at : i <= hwm[b] ELSE \E i \in at : i <= hwm[b]
 
 \* `b`'s log once it starts leading at `g`.
 Opened(b, g) == IF StartRecord THEN Append(log[b], Start(g)) ELSE log[b]
@@ -2666,6 +2687,11 @@ CutOverPiece ==
 \* destination can hold more than the old leader when it was elected past
 \* it, and a copy that held only the old leader's log then missed what the
 \* destination had acknowledged (FelixShardElectSwap.cfg, AckedOnMajority).
+\* With `JoinLags` the joining copy holds the destination's log only as far
+\* as the drain check saw it: a destination elected past the old leader may
+\* have acknowledged more since, on the old set. The flip must then wait for
+\* the start of the destination's named stint (`StintStarts`), which
+\* reaches the new set only behind those records.
 Swap(v, f, views) ==
     /\ Swaps > 0 /\ moves < Swaps
     /\ v.leader = leader /\ ~v.lapsed
@@ -2680,7 +2706,8 @@ Swap(v, f, views) ==
          /\ f \in S /\ Cardinality(S) = Cardinality(CpSet) /\ S /= CpSet
          /\ mine' = [mine EXCEPT ![f] = S]
          /\ cpNext' = S
-         /\ log' = [m \in Brokers |-> IF m \in S \ CpSet THEN log[f] ELSE log[m]]
+         /\ \E k \in (IF JoinLags THEN Len(log[leader]) ELSE Len(log[f]))..Len(log[f]) :
+              log' = [m \in Brokers |-> IF m \in S \ CpSet THEN SubSeq(log[f], 1, k) ELSE log[m]]
          /\ cutOver' = IF SplitAtCutOver /\ cutOver = <<>>
                        THEN <<CutOverTag(leader \in S, f)>> ELSE cutOver
     /\ cpNextGen' = gen + 1
@@ -2721,7 +2748,7 @@ CpFlip ==
     /\ \E l \in Brokers :
         /\ mine[l] = cpNext /\ setGen[l] = cpNextGen /\ oldSet[l] /= {}
         /\ bgen[l] > 0 /\ ~fencing[l]
-        /\ \E i \in 1..hwm[l] : i <= Len(log[l]) /\ log[l][i] = Start(bgen[l])
+        /\ StartAcked(l, bgen[l])
     /\ out' = (out \cup CpSet) \ cpNext
     /\ cpNext' = {} /\ cpNextGen' = 0 /\ UNCHANGED cutOver
     /\ ver' = ver + 1
@@ -2747,7 +2774,7 @@ CpFlip ==
 \* (`a_generation_promised_to_another_node_is_not_led`); any other fences
 \* at it.
 FlipReported ==
-    /\ \E i \in 1..hwm[leader] : i <= Len(log[leader]) /\ log[leader][i] = Start(gen)
+    /\ StartAcked(leader, gen)
     /\ \/ /\ bgen[leader] = gen /\ ~fencing[leader]
           /\ mine[leader] = cpNext /\ setGen[leader] = cpNextGen /\ oldSet[leader] /= {}
        \* A stale report: the joint open happened. This also admits a report
