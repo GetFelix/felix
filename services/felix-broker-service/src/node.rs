@@ -350,6 +350,8 @@ where
                 catalog_seeded.clone(),
             )),
     );
+    // Keeps cached keys current so no request waits on the control plane.
+    tokio::spawn(Arc::clone(&key_store).renew_until(sync_shutdown.clone()));
     let auth = Arc::new(
         BrokerAuth::with_key_store(Arc::clone(&key_store))
             .with_subject_binding(config.client_tls.bind_subject)

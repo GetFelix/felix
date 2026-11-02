@@ -7,7 +7,10 @@
 //! rotation in progress does not reject valid tokens.
 //!
 //! The JWKS cache is a `DashMap`; invalidation is per-tenant and coordinated
-//! with refresh. Nothing here logs a token or a key.
+//! with refresh. Requests read the cache and a background task renews it, so
+//! the control plane is off the request path for every tenant already cached
+//! (`docs/auth.md`, "Keeping tenant keys current"). Nothing here logs a token
+//! or a key.
 //!
 //! Construct [`BrokerAuth`] with the control-plane URL and call
 //! [`BrokerAuth::authenticate`] to get an [`AuthContext`].
@@ -128,7 +131,11 @@ impl BrokerAuth {
     }
 
     /// Verify a token for a tenant and return an [`AuthContext`] with a
-    /// precomputed permission matcher. Fetches JWKS if not already cached.
+    /// precomputed permission matcher.
+    ///
+    /// Verifies against the cached JWKS without asking the control plane. It
+    /// fetches only for a tenant with no usable keys cached, and once (paced)
+    /// for a token whose `kid` the cached set does not have.
     ///
     /// # Errors
     /// JWKS fetch failures (control plane unreachable) and token verification
@@ -148,8 +155,18 @@ impl BrokerAuth {
             })?;
             lease.verify(&tenant, token)?
         } else {
-            ensure_jwks_cached(&self.key_store, tenant_id).await?;
-            self.verifier.verify(&tenant, token)?
+            self.key_store.ensure_cached(tenant_id).await?;
+            match self.verifier.verify(&tenant, token) {
+                Ok(claims) => claims,
+                // A kid the cached set lacks is how a newly staged key first
+                // shows up, so it is worth one fetch before refusing.
+                Err(err) => {
+                    if !self.key_store.refetch_for_kid(&tenant, token).await {
+                        return Err(err.into());
+                    }
+                    self.verifier.verify(&tenant, token)?
+                }
+            }
         };
         let matcher = PermissionMatcher::from_strings(&claims.perms)?;
         let actor = claims.act.map(|actor| actor.sub);
@@ -234,7 +251,7 @@ fn publisher_of(subject: &str) -> Option<bytes::Bytes> {
     Some(bytes::Bytes::copy_from_slice(subject.as_bytes()))
 }
 
-/// How long one JWKS request may take, connect included.
+/// How long one JWKS fetch may take, waiting for a fetch slot included.
 const JWKS_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 const JWKS_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 /// How long a failed fetch is remembered. Short, so a tenant created a moment
@@ -244,6 +261,31 @@ const JWKS_MISS_TTL: Duration = Duration::from_secs(5);
 const JWKS_MISS_CACHE_MAX: usize = 4096;
 /// JWKS requests in flight at once, across every tenant.
 const JWKS_FETCH_CONCURRENCY: usize = 8;
+/// Background renewals in flight at once. Below [`JWKS_FETCH_CONCURRENCY`],
+/// so a request for a tenant this broker has not seen always finds a slot.
+const JWKS_RENEW_CONCURRENCY: usize = 4;
+/// How long after a successful fetch the renewer fetches a tenant's JWKS
+/// again. While the control plane answers, a retired key stops verifying
+/// within about this long.
+const JWKS_RENEW_EVERY: Duration = Duration::from_secs(10 * 60);
+/// How long cached keys keep verifying with no successful fetch. This bounds
+/// how long a control-plane outage can keep a retired key working; past it,
+/// the tenant's tokens are refused until the control plane answers again.
+const JWKS_MAX_STALENESS: Duration = Duration::from_secs(24 * 60 * 60);
+/// How often the renewer looks for tenants that are due.
+const JWKS_RENEW_TICK: Duration = Duration::from_secs(15);
+/// The wait before retrying a failed renewal, doubling up to the cap.
+const JWKS_RETRY_MIN: Duration = Duration::from_secs(15);
+const JWKS_RETRY_MAX: Duration = Duration::from_secs(5 * 60);
+/// The shortest gap between a tenant's fetches that an unknown `kid` may
+/// cause, so tokens with made-up kids cannot drive requests.
+const JWKS_KID_REFETCH_GAP: Duration = Duration::from_secs(10);
+/// How often a run of failed renewals is warned about again.
+const JWKS_WARN_EVERY: Duration = Duration::from_secs(60);
+/// Renewals that failed, for any reason.
+const RENEW_ERRORS_TOTAL: &str = "felix_jwks_renew_errors_total";
+/// Seconds since the oldest cached JWKS was fetched.
+const OLDEST_AGE_GAUGE: &str = "felix_jwks_oldest_age_seconds";
 /// Longer tenant ids are refused without a lookup.
 const TENANT_ID_MAX_BYTES: usize = 256;
 
@@ -273,6 +315,11 @@ impl TenantCatalog {
 /// Fetches and caches per-tenant JWKS from the control plane, and exposes the
 /// verification keys to `felix_authz`. Holds public keys only.
 ///
+/// Requests verify against the cache and do not wait on the control plane.
+/// [`Self::renew_until`] fetches each cached tenant's keys again in the
+/// background, and a failed renewal leaves the cached keys in use until
+/// [`JWKS_MAX_STALENESS`] after the last successful fetch.
+///
 /// The tenant id comes from an unauthenticated `Auth`, so a fetch is guarded:
 /// the local catalog is asked first, concurrent misses for one tenant share a
 /// single request, failures are remembered for [`JWKS_MISS_TTL`], and at most
@@ -285,7 +332,8 @@ pub struct ControlPlaneKeyStore {
     misses: Arc<DashMap<String, Instant>>,
     inflight: Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     fetches: Arc<Semaphore>,
-    ttl: Duration,
+    renew_every: Duration,
+    max_staleness: Duration,
     key_cache: Arc<TenantKeyCache>,
     catalog: Option<TenantCatalog>,
     revocations: Arc<Revocations>,
@@ -294,7 +342,17 @@ pub struct ControlPlaneKeyStore {
 #[derive(Clone)]
 struct CachedJwks {
     jwks: Jwks,
+    /// When the control plane last answered with it.
+    fetched_at: Instant,
+    /// Past this the keys are not used: [`JWKS_MAX_STALENESS`] after
+    /// `fetched_at`.
     expires_at: Instant,
+    /// When the renewer fetches it next.
+    renew_at: Instant,
+    /// The last fetch tried, answered or not. Paces unknown-kid fetches.
+    attempted_at: Instant,
+    /// Renewals that failed in a row.
+    failures: u32,
 }
 
 impl ControlPlaneKeyStore {
@@ -311,7 +369,8 @@ impl ControlPlaneKeyStore {
             misses: Arc::new(DashMap::new()),
             inflight: Arc::new(DashMap::new()),
             fetches: Arc::new(Semaphore::new(JWKS_FETCH_CONCURRENCY)),
-            ttl: Duration::from_secs(3600),
+            renew_every: JWKS_RENEW_EVERY,
+            max_staleness: JWKS_MAX_STALENESS,
             key_cache,
             catalog: None,
             revocations: Arc::new(Revocations::default()),
@@ -330,18 +389,29 @@ impl ControlPlaneKeyStore {
         self
     }
 
-    /// Cache JWKS for a tenant, replacing any existing entry and invalidating
-    /// the derived decoding keys so a rotation takes effect immediately.
+    /// Cache JWKS for a tenant, replacing any existing entry. A key set that
+    /// differs from the cached one also drops the derived decoding keys, so a
+    /// rotation takes effect immediately.
     pub fn insert_jwks(&self, tenant_id: &TenantId, jwks: Jwks) {
-        self.cache.insert(
-            tenant_id.to_string(),
-            CachedJwks {
-                jwks,
-                expires_at: Instant::now() + self.ttl,
-            },
-        );
+        let now = Instant::now();
+        let fresh = CachedJwks {
+            jwks,
+            fetched_at: now,
+            expires_at: now + self.max_staleness,
+            renew_at: now + self.renew_every,
+            attempted_at: now,
+            failures: 0,
+        };
+        // A renewal usually brings back the same keys. Invalidating then would
+        // take the decoding-key cache's write lock for nothing.
+        let changed = match self.cache.insert(tenant_id.to_string(), fresh.clone()) {
+            Some(previous) => previous.jwks != fresh.jwks,
+            None => true,
+        };
         self.misses.remove(tenant_id.as_str());
-        self.key_cache.invalidate_tenant(tenant_id);
+        if changed {
+            self.key_cache.invalidate_tenant(tenant_id);
+        }
     }
 
     /// Fetch JWKS from the control plane and cache it.
@@ -352,14 +422,35 @@ impl ControlPlaneKeyStore {
     pub async fn refresh(&self, tenant_id: &TenantId) -> Result<Jwks> {
         check_tenant_id(tenant_id.as_str())?;
         let url = self.jwks_url(tenant_id.as_str())?;
-        let _permit = tokio::time::timeout(JWKS_FETCH_TIMEOUT, self.fetches.acquire())
+        // One deadline for the slot and the request, so a caller holding a
+        // stream's pre-auth permit waits at most this long.
+        let fetched = match tokio::time::timeout(JWKS_FETCH_TIMEOUT, self.fetch(url)).await {
+            Ok(fetched) => fetched,
+            Err(_) => Err(anyhow::anyhow!("jwks fetch timed out")),
+        };
+        match fetched {
+            Ok(jwks) => {
+                self.insert_jwks(tenant_id, jwks.clone());
+                Ok(jwks)
+            }
+            Err(err) => {
+                if let Some(mut entry) = self.cache.get_mut(tenant_id.as_str()) {
+                    entry.attempted_at = Instant::now();
+                }
+                Err(err)
+            }
+        }
+    }
+
+    async fn fetch(&self, url: reqwest::Url) -> Result<Jwks> {
+        let _permit = self
+            .fetches
+            .acquire()
             .await
-            .context("wait for a jwks fetch slot")?
             .expect("jwks fetch semaphore is never closed");
         // The URL is deliberately not logged: a deployment may embed
         // credentials in the base URL.
-        let jwks: Jwks = self
-            .client
+        self.client
             .get(url)
             .send()
             .await
@@ -368,15 +459,15 @@ impl ControlPlaneKeyStore {
             .context("fetch jwks")?
             .json()
             .await
-            .context("decode jwks")?;
-        self.insert_jwks(tenant_id, jwks.clone());
-        Ok(jwks)
+            .context("decode jwks")
     }
 
-    /// Make sure JWKS for `tenant_id` is cached, fetching it if not.
-    async fn ensure_cached(&self, tenant_id: &str) -> Result<()> {
-        let tenant = TenantId::new(tenant_id);
-        if self.cached_jwks(&tenant).is_some() {
+    /// Make sure usable JWKS for `tenant_id` is cached, fetching it if not.
+    ///
+    /// Keys past their renewal time but within [`JWKS_MAX_STALENESS`] count
+    /// as usable: renewing them is the renewer's job, not the request's.
+    pub(crate) async fn ensure_cached(&self, tenant_id: &str) -> Result<()> {
+        if self.has_keys(tenant_id) {
             return Ok(());
         }
         check_tenant_id(tenant_id)?;
@@ -392,10 +483,11 @@ impl ControlPlaneKeyStore {
         }
         // One request per tenant however many streams ask at once: the
         // others wait here and find the answer in a cache.
-        let flight = Arc::clone(&self.inflight.entry(tenant_id.to_string()).or_default());
+        let tenant = TenantId::new(tenant_id);
+        let flight = self.join_flight(tenant_id);
         let result = {
             let _guard = flight.lock().await;
-            if self.cached_jwks(&tenant).is_some() {
+            if self.has_keys(tenant_id) {
                 Ok(())
             } else if self.recent_miss(tenant_id) {
                 Err(anyhow::anyhow!(
@@ -409,9 +501,52 @@ impl ControlPlaneKeyStore {
                 fetched
             }
         };
-        self.inflight
-            .remove_if(tenant_id, |_, current| Arc::ptr_eq(current, &flight));
+        self.leave_flight(tenant_id, &flight);
         result
+    }
+
+    /// Fetch a tenant's JWKS again because `token` names a `kid` the cached
+    /// set lacks, and say whether the set now has it.
+    ///
+    /// Concurrent callers share one fetch, and a tenant is fetched this way at
+    /// most once per [`JWKS_KID_REFETCH_GAP`]. A failed fetch keeps the cached
+    /// keys.
+    pub(crate) async fn refetch_for_kid(&self, tenant: &TenantId, token: &str) -> bool {
+        let Some(kid) = jsonwebtoken::decode_header(token)
+            .ok()
+            .and_then(|header| header.kid)
+        else {
+            return false;
+        };
+        // Another request's fetch may have brought it since this one
+        // verified. When the kid was known all along, the retry fails the
+        // same way, which costs one more signature check on a bad token.
+        if self.knows_kid(tenant.as_str(), &kid) {
+            return true;
+        }
+        if !self.kid_refetch_due(tenant.as_str(), &kid) {
+            return false;
+        }
+        let flight = self.join_flight(tenant.as_str());
+        let found = {
+            let _guard = flight.lock().await;
+            // A fetch that finished while this one waited may have brought it.
+            if self.knows_kid(tenant.as_str(), &kid) {
+                true
+            } else if !self.kid_refetch_due(tenant.as_str(), &kid) {
+                false
+            } else {
+                match self.refresh(tenant).await {
+                    Ok(jwks) => jwks.keys.iter().any(|key| key.kid == kid),
+                    Err(err) => {
+                        tracing::debug!(error = %err, "jwks fetch for an unknown kid failed");
+                        false
+                    }
+                }
+            }
+        };
+        self.leave_flight(tenant.as_str(), &flight);
+        found
     }
 
     /// Fetch JWKS for every tenant in `tenants` that is not cached yet,
@@ -433,6 +568,122 @@ impl ControlPlaneKeyStore {
         if tokio::time::timeout(budget, fetches).await.is_err() {
             tracing::warn!(?budget, "gave up fetching tenant jwks ahead of use");
         }
+    }
+
+    /// Renew cached JWKS in the background until `shutdown`: each tenant
+    /// [`JWKS_RENEW_EVERY`] after its last fetch, and sooner again after a
+    /// failure, with backoff.
+    pub(crate) async fn renew_until(self: Arc<Self>, shutdown: CancellationToken) {
+        let mut warned_at: Option<Instant> = None;
+        loop {
+            tokio::select! {
+                () = shutdown.cancelled() => return,
+                () = tokio::time::sleep(JWKS_RENEW_TICK) => {}
+            }
+            let (failed, oldest) = self.renew_due().await;
+            if failed == 0 {
+                warned_at = None;
+                continue;
+            }
+            let now = Instant::now();
+            if warned_at.is_none_or(|at| now.duration_since(at) >= JWKS_WARN_EVERY) {
+                warned_at = Some(now);
+                tracing::warn!(
+                    failed,
+                    oldest_secs = oldest.as_secs(),
+                    max_staleness_secs = self.max_staleness.as_secs(),
+                    "could not renew tenant jwks; verifying with the cached keys until they \
+                     reach the maximum staleness"
+                );
+            }
+        }
+    }
+
+    /// One pass of the renewer: fetch every tenant that is due. Returns how
+    /// many fetches failed and the age of the oldest cached set before it.
+    async fn renew_due(&self) -> (usize, Duration) {
+        use futures::StreamExt;
+        let now = Instant::now();
+        let mut oldest = Duration::ZERO;
+        let due: Vec<String> = self
+            .cache
+            .iter()
+            .filter_map(|entry| {
+                oldest = oldest.max(now.saturating_duration_since(entry.fetched_at));
+                (entry.renew_at <= now).then(|| entry.key().clone())
+            })
+            .collect();
+        metrics::gauge!(OLDEST_AGE_GAUGE).set(oldest.as_secs_f64());
+        let failed = std::sync::atomic::AtomicUsize::new(0);
+        futures::stream::iter(due)
+            .for_each_concurrent(JWKS_RENEW_CONCURRENCY, |tenant_id| {
+                let failed = &failed;
+                async move {
+                    if !self.renew(&tenant_id).await {
+                        failed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+            })
+            .await;
+        (failed.into_inner(), oldest)
+    }
+
+    /// Renew one tenant's JWKS. `false` when the fetch failed.
+    async fn renew(&self, tenant_id: &str) -> bool {
+        // A tenant the control plane removed has no keys to renew. Dropping
+        // them stops its tokens verifying here.
+        if let Some(catalog) = &self.catalog
+            && catalog.rules_out(tenant_id).await
+        {
+            let tenant = TenantId::new(tenant_id);
+            self.cache.remove(tenant_id);
+            self.key_cache.invalidate_tenant(&tenant);
+            return true;
+        }
+        let flight = self.join_flight(tenant_id);
+        let renewed = {
+            let _guard = flight.lock().await;
+            // A request's fetch may have renewed it while this waited.
+            let due = self
+                .cache
+                .get(tenant_id)
+                .is_some_and(|entry| entry.renew_at <= Instant::now());
+            if due {
+                match self.refresh(&TenantId::new(tenant_id)).await {
+                    Ok(_) => true,
+                    Err(err) => {
+                        metrics::counter!(RENEW_ERRORS_TOTAL).increment(1);
+                        tracing::debug!(tenant_id, error = %err, "jwks renewal failed");
+                        self.back_off(tenant_id);
+                        false
+                    }
+                }
+            } else {
+                true
+            }
+        };
+        self.leave_flight(tenant_id, &flight);
+        renewed
+    }
+
+    fn back_off(&self, tenant_id: &str) {
+        if let Some(mut entry) = self.cache.get_mut(tenant_id) {
+            entry.failures = entry.failures.saturating_add(1);
+            let doublings = entry.failures.min(6) - 1;
+            let wait = JWKS_RETRY_MIN
+                .saturating_mul(1 << doublings)
+                .min(JWKS_RETRY_MAX);
+            entry.renew_at = Instant::now() + wait;
+        }
+    }
+
+    fn join_flight(&self, tenant_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        Arc::clone(&self.inflight.entry(tenant_id.to_string()).or_default())
+    }
+
+    fn leave_flight(&self, tenant_id: &str, flight: &Arc<tokio::sync::Mutex<()>>) {
+        self.inflight
+            .remove_if(tenant_id, |_, current| Arc::ptr_eq(current, flight));
     }
 
     fn jwks_url(&self, tenant_id: &str) -> Result<reqwest::Url> {
@@ -464,6 +715,28 @@ impl ControlPlaneKeyStore {
         }
         self.misses
             .insert(tenant_id.to_string(), Instant::now() + JWKS_MISS_TTL);
+    }
+
+    fn has_keys(&self, tenant_id: &str) -> bool {
+        self.cache
+            .get(tenant_id)
+            .is_some_and(|entry| entry.expires_at > Instant::now())
+    }
+
+    fn knows_kid(&self, tenant_id: &str, kid: &str) -> bool {
+        self.cache.get(tenant_id).is_some_and(|entry| {
+            entry.expires_at > Instant::now() && entry.jwks.keys.iter().any(|key| key.kid == kid)
+        })
+    }
+
+    /// Whether an unknown `kid` may cause a fetch now: the tenant's keys are
+    /// cached, lack `kid`, and were not fetched in the last
+    /// [`JWKS_KID_REFETCH_GAP`].
+    fn kid_refetch_due(&self, tenant_id: &str, kid: &str) -> bool {
+        self.cache.get(tenant_id).is_some_and(|entry| {
+            entry.attempted_at.elapsed() >= JWKS_KID_REFETCH_GAP
+                && !entry.jwks.keys.iter().any(|key| key.kid == kid)
+        })
     }
 
     fn cached_jwks(&self, tenant_id: &TenantId) -> Option<Jwks> {

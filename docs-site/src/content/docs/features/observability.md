@@ -216,6 +216,8 @@ felix_broker_credential_refreshes_total     # by outcome: ok, unavailable
 felix_broker_credential_rotations_total     # by outcome: ok, rejected; a token file rewritten from outside
 felix_revocation_feed_last_success_seconds  # Unix time of the last good poll of principal revocations (start time until one succeeds)
 felix_revocation_feed_poll_errors_total     # failed polls of that feed
+felix_jwks_renew_errors_total               # failed background renewals of a tenant's signing keys
+felix_jwks_oldest_age_seconds               # age of the oldest tenant key set held; unused past 86400
 ```
 
 **Alert on `time() - felix_revocation_feed_last_success_seconds`** growing past
