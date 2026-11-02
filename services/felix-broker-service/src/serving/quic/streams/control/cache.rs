@@ -7,10 +7,12 @@ use anyhow::Result;
 use bytes::Bytes;
 use felix_authz::{Action, CacheKeys};
 use felix_wire::Message;
+use felix_wire::internal::ForwardLease;
 
 use super::authz::authorize_cache;
 use super::{Ctx, Session, Step};
 use crate::observability::timings;
+use crate::serving::lease::LeaseMint;
 use crate::serving::quic::client_error::ClientError;
 use crate::serving::quic::errors::{AckEnqueueError, record_ack_enqueue_failure};
 use crate::serving::quic::handlers::publish::{
@@ -269,6 +271,7 @@ pub(super) async fn cache_get(
         } else {
             crate::serving::forward::CacheRequest::Get
         },
+        None,
     )
     .await;
     if let Some(start) = lookup_start {
@@ -487,6 +490,8 @@ pub(super) struct ConditionalRequest {
     pub(super) key: String,
     pub(super) request_id: u64,
     pub(super) request: crate::serving::forward::CacheRequest,
+    /// A put asking for a lease token if it applies.
+    pub(super) lease_token: bool,
 }
 
 /// `cache_put_if` and `cache_delete_if`: both are writes, authorized as one,
@@ -498,13 +503,9 @@ pub(super) async fn cache_conditional(
 ) -> Result<Step> {
     let Ctx {
         broker,
+        auth,
         publish_ctx,
         authz_ctx,
-        out_ack_tx,
-        out_ack_depth,
-        ack_throttle_tx,
-        ack_timeout_state,
-        cancel_tx,
         ..
     } = *cx;
     let ConditionalRequest {
@@ -514,6 +515,7 @@ pub(super) async fn cache_conditional(
         key,
         request_id,
         request,
+        lease_token,
     } = request;
     if !authorize_cache(
         session.auth_ctx.as_ref(),
@@ -528,6 +530,18 @@ pub(super) async fn cache_conditional(
     {
         return Ok(Step::Close(false));
     }
+    // Planned before the write, so a refused mint writes nothing.
+    let lease = if lease_token {
+        match lease_mint(auth, session.auth_ctx.as_ref(), &namespace, &cache, &key) {
+            Ok(mint) => Some(mint),
+            Err(refusal) => {
+                send_cache_answer(cx, refusal.into_message()).await?;
+                return Ok(Step::Next);
+            }
+        }
+    } else {
+        None
+    };
     let answer = if !broker.cache_exists(&tenant_id, &namespace, &cache).await {
         ClientError::not_found(format!(
             "cache scope not found: {tenant_id}/{namespace}/{cache}"
@@ -552,17 +566,30 @@ pub(super) async fn cache_conditional(
             &cache,
             &key,
             request,
+            lease.as_ref(),
         )
         .await;
         match applied {
             Ok(crate::serving::cache_routing::CacheAnswer {
                 outcome: Some(outcome),
+                lease,
                 ..
-            }) => Message::CacheConditionResult {
-                applied: outcome.applied,
-                version: outcome.version,
-                request_id,
-            },
+            }) => {
+                let (lease_token, lease_refused) = match lease {
+                    Some(ForwardLease::Minted { token, expires_at }) => {
+                        (Some(felix_wire::LeaseToken { token, expires_at }), None)
+                    }
+                    Some(ForwardLease::Refused(why)) => (None, Some(why)),
+                    Some(ForwardLease::NotMinted) | None => (None, None),
+                };
+                Message::CacheConditionResult {
+                    applied: outcome.applied,
+                    version: outcome.version,
+                    request_id,
+                    lease_token,
+                    lease_refused,
+                }
+            }
             Ok(_) => {
                 ClientError::internal(format!("{what} answered without an outcome")).into_message()
             }
@@ -571,21 +598,43 @@ pub(super) async fn cache_conditional(
                 .into_message(),
         }
     };
+    send_cache_answer(cx, answer).await?;
+    Ok(Step::Next)
+}
+
+/// What a lease token for `key` would grant this connection, or why it may
+/// not have one.
+fn lease_mint(
+    auth: &crate::serving::auth::BrokerAuth,
+    caller: Option<&crate::serving::auth::AuthContext>,
+    namespace: &str,
+    cache: &str,
+    key: &str,
+) -> Result<LeaseMint, ClientError> {
+    let tokens = auth
+        .lease_tokens()
+        .ok_or_else(|| ClientError::invalid("this broker does not mint lease tokens"))?;
+    let caller = caller
+        .ok_or_else(|| ClientError::forbidden("a lease token needs an authenticated connection"))?;
+    LeaseMint::plan(tokens, caller, namespace, cache, key)
+        .map_err(|refusal| ClientError::forbidden(refusal.to_string()))
+}
+
+async fn send_cache_answer(cx: &Ctx<'_>, answer: Message) -> Result<()> {
     handle_ack_enqueue_result(
         send_outgoing_critical(
-            out_ack_tx,
-            out_ack_depth,
+            cx.out_ack_tx,
+            cx.out_ack_depth,
             "felix_broker_out_ack_depth",
-            ack_throttle_tx,
+            cx.ack_throttle_tx,
             Outgoing::CacheMessage(answer),
         )
         .await,
-        ack_timeout_state,
-        ack_throttle_tx,
-        cancel_tx,
+        cx.ack_timeout_state,
+        cx.ack_throttle_tx,
+        cx.cancel_tx,
     )
-    .await?;
-    Ok(Step::Next)
+    .await
 }
 
 // One parameter per field of the message it answers.

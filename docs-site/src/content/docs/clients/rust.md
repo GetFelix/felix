@@ -1401,6 +1401,65 @@ current version, not an error. Needs a broker advertising
 resends a conditional write after a lost answer. See
 [Conditional writes](/features/cache/#9-conditional-writes).
 
+### Leases and lease tokens
+
+A node that holds a lease can ask for a *lease token* with the same write: a
+short-lived token that grants what its lease templates name for the key, such
+as publishing to `wl.w7.out` while it holds lease `w7`. The broker must have a
+lease key, and the caller's token must hold the templates; see
+[Lease tokens](/features/security/#lease-tokens).
+
+```rust
+use bytes::Bytes;
+use felix_client::{AckMode, CacheCondition};
+
+// Claim workload w7's lease for 30 seconds. Only a write that applies comes
+// back with a token.
+let claim = client
+    .cache_put_if_lease("acme", "prod", "leases", "w7", Bytes::from_static(b"node-a"),
+        Some(30_000), CacheCondition::Absent)
+    .await?;
+if !claim.result.applied {
+    return Ok(()); // another node holds it
+}
+let lease = claim
+    .token
+    .with_context(|| format!("claimed without a token: {:?}", claim.token_refused))?;
+let version = claim.result.version.context("an applied write has a version")?;
+
+// Publish the workload's output as the holder, on a handle of its own.
+let holder = client.with_identity_token("acme", lease.token).await?;
+holder
+    .publish("acme", "prod", "wl.w7.out", b"started".to_vec(), AckMode::PerMessage)
+    .await?;
+
+// Renew before the TTL runs out, at the version held. A renewal that applies
+// carries a fresh token; one that does not means the lease is gone.
+let renewed = client
+    .cache_put_if_lease("acme", "prod", "leases", "w7", Bytes::from_static(b"node-a"),
+        Some(30_000), CacheCondition::Version(version))
+    .await?;
+drop(holder); // its streams end at the old token's expiry anyway
+if let Some(fresh) = renewed.token {
+    let _holder = client.with_identity_token("acme", fresh.token).await?;
+}
+```
+
+`cache_put_if_lease` fails without writing when the broker did not advertise
+`FEATURE_LEASE_TOKEN`, or refuses the mint: the caller's token is itself a
+lease or delegated token, holds no template naming this cache, or the key
+cannot be part of a name. An applied write whose token would already be
+expired comes back with `token_refused` set; the write stands. That happens
+when the token the cache stream authenticated with has expired, since a lease
+token never outlives it. If the key lives on another broker, the claim can
+instead fail with `unauthorized` and write nothing, once that token is more
+than a minute past its expiry. A connection authenticates its cache stream
+once, so on a long-lived connection claim through a handle opened with a
+fresh token (`with_identity`). Streams opened with a lease token end when it expires, so
+switch handles on each renewal.
+`LeaseToken` leaves the token out of its `Debug` output. `Connection` has the
+same call.
+
 ### Watch
 
 Subscribe to changes for one key or key prefix. Each change carries its

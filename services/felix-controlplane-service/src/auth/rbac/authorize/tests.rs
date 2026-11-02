@@ -638,3 +638,78 @@ fn a_cache_key_rule_takes_only_data_actions() {
     assert!(validate_new_rule_allowed(&room_admin, "t1", &wider).is_err());
     assert!(validate_new_rule_allowed(&room_admin, "t1", &rule(ACTION_CACHE_READ)).is_ok());
 }
+
+fn rule(object: &str, action: &str) -> PolicyRule {
+    PolicyRule {
+        subject: "role:node".to_string(),
+        object: object.to_string(),
+        action: action.to_string(),
+    }
+}
+
+#[test]
+fn a_tenant_admin_can_write_lease_templates_with_data_actions() {
+    let scopes = vec![parse_object("tenant:t1", "t1").expect("parse")];
+    for (object, action) in [
+        ("stream:t1/prod/wl.{leases}.out", ACTION_STREAM_PUBLISH),
+        ("stream:t1/prod/wl.{leases}.out", ACTION_STREAM_SUBSCRIBE),
+        ("cache:t1/prod/snaps/wl.{leases}", ACTION_CACHE_WRITE),
+        ("cache:t1/prod/snaps/wl.{leases}", ACTION_CACHE_READ),
+    ] {
+        let parsed = validate_new_rule_allowed(&scopes, "t1", &rule(object, action))
+            .unwrap_or_else(|err| panic!("{action} {object}: {err}"));
+        assert!(is_lease_template(&parsed));
+    }
+}
+
+#[test]
+fn malformed_or_misused_lease_templates_are_refused() {
+    let scopes = vec![parse_object("tenant:t1", "t1").expect("parse")];
+    for (object, action) in [
+        ("stream:t1/prod/wl.{leases}.{x}", ACTION_STREAM_PUBLISH),
+        ("stream:t1/prod/wl.{leases", ACTION_STREAM_PUBLISH),
+        ("stream:t1/*/wl.{leases}.out", ACTION_STREAM_PUBLISH),
+        ("stream:t1/prod/wl.{leases}*", ACTION_STREAM_PUBLISH),
+        ("stream:t2/prod/wl.{leases}.out", ACTION_STREAM_PUBLISH),
+        ("namespace:t1/{leases}", ACTION_NS_MANAGE),
+        ("stream:t1/prod/wl.{leases}.out", ACTION_STREAM_MANAGE),
+        ("stream:t1/prod/wl.{leases}.out", ACTION_CACHE_WRITE),
+        ("cache:t1/prod/snaps/wl.{leases}", ACTION_STREAM_PUBLISH),
+        ("cache:t1/prod/{leases}", ACTION_CACHE_WRITE),
+    ] {
+        assert!(
+            validate_new_rule_allowed(&scopes, "t1", &rule(object, action)).is_err(),
+            "{action} {object} should be refused"
+        );
+    }
+}
+
+/// A template grants only through a broker's lease token. Held as a scope it
+/// must not pass any control-plane check, not even one on itself.
+#[test]
+fn a_lease_template_never_satisfies_a_control_plane_check() {
+    let template = parse_object("stream:t1/prod/wl.{leases}.out", "t1").expect("parse");
+    for target in [
+        "stream:t1/prod/wl.{leases}.out",
+        "stream:t1/prod/wl.w7.out",
+        "stream:t1/prod/*",
+        "namespace:t1/prod",
+        "tenant:t1",
+    ] {
+        let target = parse_object(target, "t1").expect("parse");
+        assert!(!object_within_scope(&template, &target), "{target:?}");
+    }
+    let key = parse_object("cache:t1/prod/snaps/wl.{leases}", "t1").expect("parse");
+    let real_key = parse_object("cache:t1/prod/snaps/wl.w7", "t1").expect("parse");
+    assert!(!object_within_scope(&key, &key));
+    assert!(!object_within_scope(&key, &real_key));
+}
+
+#[test]
+fn narrowing_passes_a_template_through_but_never_makes_one() {
+    let template = parse_object("stream:t1/prod/wl.{leases}.out", "t1").expect("parse");
+    let wide = parse_object("stream:t1/prod/*", "t1").expect("parse");
+    assert_eq!(narrow_object(&template, &wide), Some(template.clone()));
+    assert_eq!(narrow_object(&wide, &template), None);
+    assert_eq!(narrow_object(&template, &template), None);
+}

@@ -859,6 +859,7 @@ async fn control_loop_serves_conditional_cache_writes() -> Result<()> {
             ttl_ms: None,
             condition: felix_wire::CacheCondition::Absent,
             request_id,
+            lease_token: false,
         })))
     };
     let delete_if = |version, request_id| {
@@ -912,6 +913,8 @@ async fn control_loop_serves_conditional_cache_writes() -> Result<()> {
         applied,
         version,
         request_id,
+        lease_token: None,
+        lease_refused: None,
     };
     assert_eq!(answers[0], &result(true, Some(first), 1));
     assert_eq!(answers[1], &result(false, Some(first), 2));

@@ -215,7 +215,8 @@ requester. Every response echoes it.
 by exactly one of `ForwardPublishOk`, `ForwardPublishError`, or `NotLeader`;
 `ForwardCacheOp` by exactly one of `ForwardCacheOk`, `ForwardCacheError`, or
 `NotLeader`; `ConditionalForwardCacheOp` the same way, with
-`ConditionalForwardCacheOk` for its success. A requester that never receives one, because the connection
+`ConditionalForwardCacheOk` for its success, and `LeaseForwardCacheOp` with
+`LeaseForwardCacheOk`. A requester that never receives one, because the connection
 dropped, treats the request as failed, so nothing is silently abandoned as
 pending.
 
@@ -430,6 +431,27 @@ forwarder refuses a conditional write, and sends a versioned `Get` again as a
 plain one, which answers without a version. A conditional write is not
 re-sent after an indeterminate answer either: one that applied would be
 refused by the version it wrote.
+
+A conditional put that asks the owner to mint a lease token travels as
+`LeaseForwardCacheOp` (45), with exactly the `ConditionalForwardCacheOp` body;
+the condition is always absent or a version. The owner verifies the credential
+itself, checks that it may have a lease token for the key, and refuses with
+`ForwardCacheError` before writing when it may not. It answers with
+`LeaseForwardCacheOk` (46): the correlation id, a `u8` applied flag, a `u8`
+presence byte and `u64` version, then a `u8` lease tag and what it carries:
+
+```text
+u8  lease       0 none (the write did not apply), 1 minted, 2 refused
+u32+bytes token       only after a 1, bounded like a credential
+u64 expires_at  only after a 1, seconds since the epoch
+u32+bytes detail      only after a 2, why an applied write got no token
+```
+
+A separate kind, because an owner that predates lease tokens must refuse the
+request rather than write without minting. On that `UnsupportedKind` the
+forwarder refuses the write, and it treats a plain `ConditionalForwardCacheOk`
+answer to this kind as a protocol error. See
+[auth.md](auth.md#lease-tokens).
 
 ### Handshake
 
@@ -922,7 +944,8 @@ Typed, because they need different responses:
 `ReplicateFetch` 31, `ReplicateLabelledRecords` 32,
 `ReplicateLabelledFetch` 33, `ReplicateTimedRecords` 36,
 `ReplicateTimedFetch` 37, `Incarnated` 40, `ElectionFence` 41,
-`SetStamped` 42, `PreVote` 43 and `PreVoteAnswer` 44. A peer
+`SetStamped` 42, `PreVote` 43, `PreVoteAnswer` 44, `LeaseForwardCacheOp` 45
+and `LeaseForwardCacheOk` 46. A peer
 that predates any of them rejects the
 kind rather than misreading the body, which is why
 each is a new kind rather than a field on `ReplicateRecords`: this protocol

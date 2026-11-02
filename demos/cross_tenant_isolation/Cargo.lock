@@ -1141,6 +1141,7 @@ dependencies = [
  "chrono",
  "dashmap",
  "ed25519-dalek",
+ "felix-authz",
  "felix-common",
  "felix-router",
  "hex",

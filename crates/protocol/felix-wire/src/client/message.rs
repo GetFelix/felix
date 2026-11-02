@@ -9,8 +9,8 @@ mod fields;
 mod inspect;
 
 pub use fields::{
-    AckMode, BrokerEndpoint, CacheCondition, CursorErrorReason, GroupRecord, PublishRefusalReason,
-    ShardKind, ShardOwner, StartPosition, StateChange, StreamRecord,
+    AckMode, BrokerEndpoint, CacheCondition, CursorErrorReason, GroupRecord, LeaseToken,
+    PublishRefusalReason, ShardKind, ShardOwner, StartPosition, StateChange, StreamRecord,
 };
 pub use inspect::{
     InspectedAssignment, InspectedFence, InspectedLease, InspectedReplica, InspectedSubscription,
@@ -749,6 +749,10 @@ pub enum Message {
         ttl_ms: Option<u64>,
         condition: CacheCondition,
         request_id: u64,
+        /// Ask for a lease token if the write applies. Sent only to a broker
+        /// that advertised `FEATURE_LEASE_TOKEN`.
+        #[serde(default, skip_serializing_if = "is_false")]
+        lease_token: bool,
     },
     /// Remove a key only if its current version is `version`; answered with
     /// `CacheConditionResult`. Sent only to a broker that advertised
@@ -766,11 +770,19 @@ pub enum Message {
     /// `applied` says whether the write was made. After an applied put,
     /// `version` is the version it wrote; otherwise it is the key's current
     /// version, absent when the key has no live entry.
+    ///
+    /// For a put that asked for `lease_token` and applied, `lease_token` is
+    /// the token, or `lease_refused` says why there is none. The write stands
+    /// either way.
     CacheConditionResult {
         applied: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         version: Option<u64>,
         request_id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lease_token: Option<LeaseToken>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lease_refused: Option<String>,
     },
     /// Watch a cache key or key prefix for changes; answered with
     /// `CacheWatchStarted` and a uni event stream carrying `CacheEvent`s.

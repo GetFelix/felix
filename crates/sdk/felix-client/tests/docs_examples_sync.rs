@@ -377,6 +377,14 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         },
     ),
     example(
+        "Leases and lease tokens",
+        1,
+        Body {
+            params: CLUSTER,
+            context: "",
+        },
+    ),
+    example(
         "Watch",
         1,
         Body {

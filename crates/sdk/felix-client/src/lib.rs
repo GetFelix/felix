@@ -73,7 +73,8 @@ pub mod timings;
 
 pub use auth::{FETCH_TIMEOUT, RefreshingToken, TokenFuture, TokenProvider};
 pub use cache::{
-    CacheChange, CacheConditionResult, CacheWatch, CacheWatchFilter, CacheWatchItem, VersionedValue,
+    CacheChange, CacheConditionResult, CacheWatch, CacheWatchFilter, CacheWatchItem, LeaseToken,
+    LeaseWrite, VersionedValue,
 };
 pub use client::{
     ConditionalWrite, Connection, GroupInfo, GroupMember, GroupPollOptions, GroupPosition,
