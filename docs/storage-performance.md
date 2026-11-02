@@ -268,9 +268,10 @@ waiter task in between and no timer per publish.
 
 ```mermaid
 graph LR
-    A["commit task<br/><i>flush done, fanned out</i>"] --> B["writer queue"]
+    A["commit task<br/><i>flush done, in the replay ring</i>"] --> B["writer queue"]
     B --> C["writer<br/><i>takes everything queued</i>"]
     C --> D["one QUIC write"]
+    A --> E["fanout<br/><i>after the answer</i>"]
 ```
 
 - The writer takes every answer already queued and sends them in one write.
@@ -278,9 +279,41 @@ graph LR
 - The ack timeout is one deadline queue per control stream, swept on a coarse
   tick while anything is owed. A publish that outlives it is answered with
   `Unacknowledged`, and its late result is discarded.
-- An answer is never sent before `complete_publish` returns, so it never
-  precedes durability under the stream's fsync mode. A pipelining client still
-  gets its answers in request order (`AckOrder`).
+- An answer is sent once the batch is durable under the stream's fsync mode
+  and in the replay ring, and before the batch is fanned out
+  (`complete_publish_answering`). It never precedes durability. A `Quorum`
+  publish is answered after its quorum wait, and under the `Block` queue
+  policy the answer still follows the fanout, since that policy promises the
+  publisher waits for every subscriber's queue. Idempotent, forwarded and
+  conditional publishes also answer after the fanout. A pipelining client
+  still gets its answers in request order (`AckOrder`).
+- Answering first takes the subscriber loop off the ack's path. Fanout wakes
+  one feeder task per subscriber, and each of those drives a lane, a
+  connection writer and a QUIC send. Answered after the fanout, the ack waited
+  for the subscriber loop and then queued for a worker thread behind those
+  tasks.
+- It does not make subscribers free. Their tasks run on the same cores as the
+  publisher's, so on a host short of CPU the ack rate still falls as
+  subscribers are added.
+
+The CI fanout cell (`scripts/perf/ci_subset_fanout.yml` in `perf-pr`) shows
+the second point. One acked publisher sends 256-byte records to N
+subscribers, each on its own connection, on a 4-vCPU runner. "Ack last" is
+the build that answered after the fanout; "ack first" answers before it and
+adds the per-subscriber trims (one queue-depth update per publish, the shared frame
+for a lone record). Under `Block` both answer after the fanout, so that row
+prices the trims alone. Five trials per side, alternated on one runner:
+
+| Queue policy | Fanout | Acked publishes/s, ack last | ack first | First subscriber p50, ack last | ack first |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `DropNew` | 1 | 6,512 | 6,545 | 154µs | 154µs |
+| `DropNew` | 100 | 1,190 | 1,191 | 1,121µs | 1,112µs |
+| `Block` | 100 | 1,181 | 1,188 | 1,143µs | 1,116µs |
+
+No difference is significant. At fanout 100 a publish takes about 840µs
+against 153µs alone, roughly 7µs per subscriber, either way. The broker and
+all 101 clients share four vCPUs there, so the delivery work sets the rate,
+not the order of the answer. The gain needs spare cores.
 
 To compare before and after, run `scripts/perf/azure/nats/nats-latency.sh`
 with `LAT_PAIRS="oncommit inmem"` on both builds. The `inmem`
