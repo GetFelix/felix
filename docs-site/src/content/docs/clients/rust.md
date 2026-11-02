@@ -662,8 +662,10 @@ while let Some(event) = orders.next_event().await? {
   Names starting with `felix.` are reserved for the broker and refused with
   `RecordHeadersError::ReservedName` before anything is sent.
 - **Older brokers.** A publish with headers against a broker that does not
-  accept them (an older one, or for now any broker in a cluster) fails with `RecordHeadersError::Unsupported` and sends nothing,
-  so headers are never dropped quietly. A publish with no headers works
+  accept them (an older one, a single broker run with
+  `FELIX_RECORD_HEADERS=false`, or for now any broker in a cluster) fails with
+  `RecordHeadersError::Unsupported` and sends nothing, so headers are never
+  dropped quietly. A publish with no headers works
   everywhere. On the read side `event.headers` is `None` there.
 - **Opting out.** `record_headers` in the `ClientConfig` is on by default. Set
   it to `false` and the client neither offers nor accepts headers.

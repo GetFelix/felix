@@ -180,6 +180,21 @@ published each durable record. In a cluster, finalizing the
 Writing one moves the stream's log to storage format v6, which an older broker
 cannot open.
 
+### `record_headers`
+
+**Description**: On a broker outside a cluster, accept record headers from
+clients that send them. In a cluster, the `record_headers` fleet feature
+decides instead.
+
+**Type**: `bool`
+
+**Default**: `true`
+
+**Environment**: `FELIX_RECORD_HEADERS` (`1`, `true`, `yes`, `on` = enabled)
+
+Storing one moves the stream's log to storage format v8, which an older broker
+cannot open. Set it to `false` to keep the logs at v7.
+
 ### `ack_on_commit`
 
 **Description**: When an acknowledged publish is answered. Unset, a durable

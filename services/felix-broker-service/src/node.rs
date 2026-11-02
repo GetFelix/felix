@@ -247,12 +247,14 @@ where
     }
     // A record with headers is storage format v8, and replication does not
     // ship headers yet, so a cluster member never enables them. A lone broker
-    // has no follower to lose them, and a client opts in by sending them.
+    // has no follower to lose them, and a client opts in by sending them. An
+    // operator who must keep the log readable by older builds turns it off.
     if config.membership.is_some() {
         let fleet = Arc::clone(&fleet);
         broker.record_headers_when(move || fleet.supports(felix_common::fleet::RECORD_HEADERS));
     } else {
-        broker.record_headers_when(|| true);
+        let enabled = config.record_headers;
+        broker.record_headers_when(move || enabled);
     }
     // Once this broker has seen streams carry incarnations, a stream's logs
     // open only once the catalog has registered it, at the incarnation it

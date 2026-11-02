@@ -131,6 +131,11 @@ pub struct BrokerConfig {
     /// outside a cluster. In a cluster the fleet decides: see
     /// `felix_common::fleet::PUBLISHER_PRINCIPAL`.
     pub record_publishers: bool,
+    /// Accept record headers from clients that offer them, on a broker
+    /// outside a cluster. On by default; off keeps the logs at storage format
+    /// v7. In a cluster the fleet decides: see
+    /// `felix_common::fleet::RECORD_HEADERS`.
+    pub record_headers: bool,
     /// Max frame size accepted on QUIC streams.
     pub max_frame_bytes: usize,
     /// Max frame size a stream may send before it has authenticated. Only an
@@ -502,6 +507,7 @@ impl Default for BrokerConfig {
             ack_on_commit: false,
             ack_durable_on_commit: true,
             record_publishers: false,
+            record_headers: true,
             max_frame_bytes: DEFAULT_MAX_FRAME_BYTES,
             preauth_max_frame_bytes: DEFAULT_PREAUTH_MAX_FRAME_BYTES,
             preauth_max_streams_per_conn: DEFAULT_PREAUTH_MAX_STREAMS_PER_CONN,
