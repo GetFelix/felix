@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793626132556,
+  "lastUpdate": 1793628440048,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -53592,6 +53592,72 @@ window.BENCHMARK_DATA = {
             "range": "36.09",
             "unit": "us",
             "extra": "trials: 5\nmedian: 544.00\nmean: 527.40\nstdev: 36.09\ncv: 6.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9d7c12401b7354f5c340325f8c4690afffa91fd8",
+          "message": "perf: the latency demo honours FELIX_SUB_QUEUE_POLICY, and the fanout cell gets a drop_new profile (#1777)\n\nHarness only. Needed so perf-pr can price #1773's early answer.\n\n## What\n\n- `demos/broker/latency_demo.rs` forced `SubQueuePolicy::Block` on the core subscriber queues. Block answers a publish after its fanout, so the demo could never exercise the production default (`DropNew`). When `FELIX_SUB_QUEUE_POLICY` is set, the demo now uses it for the core queue policy (both the ack and the throughput profile). Unset, nothing changes. The lane queue stays `Block`.\n- New cell `scripts/perf/ci_subset_fanout.yml`, wired into `perf-pr.yml`: one acked publisher, fanout 1 and 100, one connection per subscriber, profiles `balanced` (Block, as the demo always ran) and `drop_new`. perf-pr timeout 40 -> 50 min for the extra cells.\n\n## Design calls\n\n- Only the core queue policy follows the env var; the lane queue stays Block so a slow lane backpressures the feeder rather than dropping in the demo.\n- Both profiles are kept so the Block numbers stay comparable with earlier runs.\n\n## Check\n\n`cargo clippy -p felix-broker-service --all-targets --all-features -D warnings` clean. This PR's own perf-pr run exercises the cell on both sides (the baseline harness is this PR's, the baseline demo is main's, so the drop_new profile on the baseline side still runs Block until this merges; the numbers that matter come from #1773 after the merge).",
+          "timestamp": "2026-11-02T05:56:27-08:00",
+          "tree_id": "3e0e3f62fba2f45bf4fc3627b3242db28650fa10",
+          "url": "https://github.com/GetFelix/felix/commit/9d7c12401b7354f5c340325f8c4690afffa91fd8"
+        },
+        "date": 1793628433584,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 98,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 98.00\nmean: 98.00\nstdev: 0.71\ncv: 0.72%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 132,
+            "range": "2.39",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 132.00\nmean: 131.80\nstdev: 2.39\ncv: 1.81%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 169,
+            "range": "29.98",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 169.00\nmean: 180.80\nstdev: 29.98\ncv: 16.58%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 133,
+            "range": "2.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 133.00\nmean: 133.40\nstdev: 2.07\ncv: 1.55%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 258,
+            "range": "36.59",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 258.00\nmean: 271.80\nstdev: 36.59\ncv: 13.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 354,
+            "range": "581.20",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 354.00\nmean: 609.60\nstdev: 581.20\ncv: 95.34%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
