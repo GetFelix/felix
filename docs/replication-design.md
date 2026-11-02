@@ -798,9 +798,10 @@ not, the copy would keep its storage id and a lagging view's old creation
 would look the same as the new one, so the copy does not rely on that.
 
 No peer request waits on the read
-([#1791](https://github.com/GetFelix/felix/issues/1791)). A peer lane
-answers one request at a time, so a control-plane round trip there would
-hold up every other shard's fence or batch queued behind it. Instead a
+([#1791](https://github.com/GetFelix/felix/issues/1791)). A fence that
+waited on a control-plane round trip could outlast the leader's request
+timeout, and it would hold one of its stream's control slots meanwhile
+(see "A slow fence does not hold up a read round or a ping"). Instead a
 background task reads for the shard, and the copy decides from the last
 answer it holds. With no fresh answer it refuses with `StaleRoute`,
 retryably, and the leader's retry finds the answer (`ConfirmedReads` in

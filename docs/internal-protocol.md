@@ -1115,8 +1115,9 @@ default in-flight limit per peer (`FELIX_INTERNAL_MAX_INFLIGHT`), so a
 requester at its defaults rarely reaches it: only when requests it gave up on
 after its timeout are still running here, as in a long disk stall. Past that,
 a request is answered `Overload` at once and nothing is applied, so the stream
-never stops reading and a ping never waits. Only 16 of the fetches run at a time, because each answer can
-hold 4 MiB; the rest wait off the stream. A ping needs no permit at all.
+never stops reading and a ping never waits behind a slow fence. Only 16 of the
+fetches run at a time, because each answer can hold 4 MiB; the rest wait off
+the stream. A ping needs no permit at all.
 
 Round-robin within a class does not reorder replication: the driver keeps at
 most one exchange outstanding per follower and log, and waits for its answer

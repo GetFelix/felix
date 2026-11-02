@@ -612,7 +612,8 @@ async fn serve_connection(
                     // ping behind it (#1796). None relies on its place on the
                     // stream: a requester waits for the answer before anything
                     // that depends on it. Past the limit a request is
-                    // refused rather than read later, so a ping never waits.
+                    // refused rather than read later, so a ping is never
+                    // left unread behind them.
                     request @ (InternalMessage::Fence(_)
                     | InternalMessage::PreVote(_)
                     | InternalMessage::ReplicateFetch(_)) => {

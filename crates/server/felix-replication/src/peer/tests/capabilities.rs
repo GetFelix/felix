@@ -676,7 +676,9 @@ async fn a_read_round_fence_and_a_ping_do_not_wait_behind_promotion_fences() {
     }
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let bound = Duration::from_millis(500);
+    // Without the fix this waits out the 10 s request timeout; 2 s leaves a
+    // loaded runner room.
+    let bound = Duration::from_secs(2);
     let read_round = tokio::time::timeout(bound, pool.request(PEER, listener.addr, fence()))
         .await
         .expect("the read round's fence waited behind promotion fences")
