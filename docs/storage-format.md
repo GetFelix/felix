@@ -370,7 +370,9 @@ u8[n]  payload
 ```
 
 Storage keeps the block as it is given and does not look inside it. Its
-layout is the broker's, the way a commit record's payload is.
+layout is the wire's record headers block, byte for byte, so the broker
+stores what a publisher sent and replays it without re-encoding. See
+[The record headers block](protocol.md#the-record-headers-block).
 
 A record stored without the block has no bit 26, so it is byte for byte what
 v7 wrote. A block length that claims more than the body
