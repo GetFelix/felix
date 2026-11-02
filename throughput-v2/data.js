@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793594077296,
+  "lastUpdate": 1793595399602,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -41548,6 +41548,58 @@ window.BENCHMARK_DATA = {
             "range": "78142.53",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1729143.05\nmean: 1716297.49\nstdev: 78142.53\ncv: 4.55%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "61edcf112d37a74bab34dd2d571b0491900e74a5",
+          "message": "fix(release): drop RUSTFLAGS from the Node addon build; it broke the aarch64 zig link (#1752)\n\nSetting RUSTFLAGS on the Linux legs (to silence zig's -O1 notice) made zig receive\nrustc's -Wl,--fix-cortex-a53-843419 on aarch64-unknown-linux-gnu, which it rejects,\nso the v0.7.0-preview.2 aarch64 addon failed to link and npm publishing was skipped.",
+          "timestamp": "2026-11-01T20:20:45-08:00",
+          "tree_id": "544319217b7972b534736a58fe5fe1c458f23353",
+          "url": "https://github.com/GetFelix/felix/commit/61edcf112d37a74bab34dd2d571b0491900e74a5"
+        },
+        "date": 1793595398793,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 352808.71,
+            "range": "4481.67",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 352808.71\nmean: 353728.12\nstdev: 4481.67\ncv: 1.27%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 352808.71,
+            "range": "4481.67",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 352808.71\nmean: 353728.12\nstdev: 4481.67\ncv: 1.27%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82616.38,
+            "range": "568.77",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82616.38\nmean: 82657.31\nstdev: 568.77\ncv: 0.69%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 826163.76,
+            "range": "5687.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 826163.76\nmean: 826573.12\nstdev: 5687.76\ncv: 0.69%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
