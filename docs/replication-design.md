@@ -861,8 +861,10 @@ storage id (`member_storage_ids`, see `docs/control-plane.md`). A set written
 before the wipe names the old id. A copy that learns a set naming another id
 for itself, from a fence or from the route a batch is stamped with, marks
 itself a learner and marks itself *wiped*. Both are kept in the log's
-`replica-set` file, so a restart keeps them, and a later set does not clear
-them. The wiped mark is what tells a wiped learner from a move's staged
+`replica-set` file, so a restart keeps them. They are kept apart from the
+member lists, so a later set does not clear them either, even a move's set
+that lists the copy only as leaving and a set after it that names the copy
+again. The wiped mark is what tells a wiped learner from a move's staged
 destination, which is a learner too but lost nothing.
 
 That evidence alone is not enough. A copy wiped before it heard any set

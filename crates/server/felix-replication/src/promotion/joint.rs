@@ -91,14 +91,13 @@ impl<'a> Joint<'a> {
                     });
             return self.replaced && !created_here;
         };
-        kept.current.members.iter().any(|member| {
+        let names_other = kept.current.members.iter().any(|member| {
             member.node == local
-                && member.learner
-                && (member.wiped
-                    || member
-                        .storage
-                        .is_some_and(|named| self.local_storage.is_some_and(|own| named != own)))
-        })
+                && member
+                    .storage
+                    .is_some_and(|named| self.local_storage.is_some_and(|own| named != own))
+        });
+        log.member_is_learner(local) == Some(true) && (log.member_is_wiped(local) || names_other)
     }
 }
 

@@ -221,9 +221,8 @@ pub async fn fence_shard<R: PeerRequester>(
             // The counter log carries no set, and is fenced on the new set
             // alone, as the model's `Counters` are.
             let set = set.as_ref().filter(|_| kind != LogKind::Counters);
-            // A copy its kept set marks a learner for another copy's storage id lost
-            // what it held; a staged destination is a learner too, and may lead. Leading
-            // would also replace that set with the route's and clear the mark.
+            // A copy marked a learner on evidence of a wipe lost what it held; a
+            // staged destination is a learner too, and may lead.
             if set.is_some()
                 && joint.is_some_and(|joint| joint.is_wiped_learner(&log, local_node_id, route))
             {
@@ -290,7 +289,8 @@ pub async fn fence_shard<R: PeerRequester>(
     // fence lands first.
     let (own, groups) = match key.kind {
         ShardKind::Stream => {
-            // Read before this broker keeps the route's set, which drops the mark.
+            // A copy marked wiped may lack group records a majority took, so
+            // its own group logs count only once the mark is settled.
             let own_counts = !broker
                 .shard_log(
                     LogKind::Stream,

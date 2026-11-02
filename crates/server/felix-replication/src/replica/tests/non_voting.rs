@@ -1023,6 +1023,95 @@ async fn a_readmitted_copy_answers_group_fences_once_its_group_logs_caught_up() 
     }
 }
 
+/// A move of this broker's copy to broker-d, at `generation`: a set that does
+/// not list it.
+fn moved(generation: u64) -> ReplicaSetView {
+    ReplicaSetView {
+        generation,
+        members: [("broker-a", 1), ("broker-c", 2), ("broker-d", 4)]
+            .into_iter()
+            .map(|(node, id)| SetMember {
+                node_id: node.to_string(),
+                storage_id: Some([id; 16]),
+                learner: node == "broker-d",
+            })
+            .collect(),
+    }
+}
+
+/// **A replaced copy that first learns a set listing it only as leaving is
+/// marked**, so a set naming it again later finds it a learner.
+#[tokio::test]
+async fn a_replaced_copy_listed_only_as_leaving_is_marked() {
+    let (broker, _dir) = broker_with_storage().await;
+    let handler = handler(&broker, 6, OWN).with_replaced_storage(true);
+    let answer = handler
+        .fence(SENDER, fence_with(7, moved(7), Some(set(6, OWN)), false))
+        .await;
+    assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
+    let log = log_of(&broker).await;
+    assert!(log.member_is_wiped(LOCAL));
+    assert_eq!(log.member_is_learner(LOCAL), Some(true));
+
+    let answer = handler
+        .fence(SENDER, fence_with(8, set(8, OWN), None, false))
+        .await;
+    assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized, "{answer:?}");
+}
+
+/// **A move away and back does not end the wiped mark.** The copy, re-admitted
+/// on its stream log but not yet on its group logs, answers the move's fence
+/// as a voter of the set being left, so it keeps a set that does not list it.
+/// Named again later, it must still refuse group fences: its group logs are
+/// as empty as before, and a leader counting one would open without a dead
+/// letter a majority took.
+#[tokio::test]
+async fn a_set_that_moves_the_copy_away_and_back_keeps_it_wiped() {
+    use super::groups::group_broker;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let broker = group_broker(dir.path());
+    let handler = handler(&broker, 6, OWN).with_replaced_storage(true);
+    let answer = handler
+        .fence(SENDER, fence_with(6, set(6, OWN), None, false))
+        .await;
+    assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
+    let answer = handler
+        .apply(SENDER, stamped(6, 0, &["a"]), felix_broker::LogKind::Stream)
+        .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    let log = log_of(&broker).await;
+    assert_eq!(log.member_is_learner(LOCAL), Some(false), "re-admitted");
+    assert!(log.member_is_wiped(LOCAL));
+
+    // The move to broker-d: this copy is listed only in the set being left.
+    let answer = handler
+        .fence(SENDER, fence_with(7, moved(7), Some(set(6, OWN)), false))
+        .await;
+    assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
+    assert!(
+        log.member_is_wiped(LOCAL),
+        "a set listing it only as leaving keeps the mark"
+    );
+
+    // Placed back in the set.
+    let answer = handler
+        .fence(SENDER, fence_with(8, set(8, OWN), None, false))
+        .await;
+    assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
+    assert!(log.member_is_wiped(LOCAL));
+    for kind in [ReplicaLog::GroupDeadLetters, ReplicaLog::GroupCursors] {
+        let fence = Fence {
+            election: None,
+            ..on(kind, fence_with(8, named(8, None), None, false))
+        };
+        let answer = handler.fence(SENDER, fence).await;
+        assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized, "{answer:?}");
+    }
+}
+
 /// **A cache copy whose counter log cannot be opened is not re-admitted.**
 /// Its counter log may lack updates a majority acknowledged, and nothing
 /// says otherwise.

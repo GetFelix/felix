@@ -18,6 +18,10 @@
 //! the accepted generation at open is a write that order rules out; the open
 //! raises the generation to it rather than trust the older one.
 //!
+//! The file also keeps this copy's wiped mark apart from the member lists: a
+//! newer set may list the copy only as leaving, or not at all, and name it
+//! again later, and none of that may end the mark.
+//!
 //! `DiskLog::accept_set` and the open's reading of the file live here.
 
 use std::path::{Path, PathBuf};
@@ -31,11 +35,14 @@ use crate::{Result, StorageError, StorageId};
 /// `"FLRS"`.
 const MAGIC: u32 = 0x464C_5253;
 const VERSION: u16 = 1;
-/// magic(4) + version(2) + flags(2), then the set and, when the flag is
-/// set, the set it is leaving, then a crc(4) over everything before it.
+/// magic(4) + version(2) + flags(2), then the set, the set it is leaving and
+/// the wiped mark when their flags are set, then a crc(4) over everything
+/// before it.
 pub(super) const HEADER_LEN: usize = 8;
 /// The flags bit for a set being left.
 const FLAG_LEAVING: u16 = 1;
+/// The flags bit for a wiped mark: node length(2), the node id, learner(1).
+const FLAG_WIPED: u16 = 2;
 /// Member flags: a storage id follows; the member does not vote; this copy
 /// found it lost what it held.
 const MEMBER_STORAGE: u8 = 1;
@@ -55,6 +62,9 @@ const TEMPORARY_PREFIX: &str = "replica-set.tmp";
 /// reads them from the ballot.
 type Accepted = (u64, Option<Arc<str>>);
 
+/// What the file holds: the set and this copy's wiped mark.
+pub(super) type Kept = (ReplicaSet, Option<WipedMark>);
+
 /// A replica in a set: its node id and the storage identity the fence counts
 /// it under, when placement named one.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,6 +77,15 @@ pub struct Member {
     /// (a wipe), as against a learner placement staged. Ends only at
     /// re-admission, so a promotion can tell the two apart.
     pub wiped: bool,
+}
+
+/// This copy's mark while it is wiped: the node id it answers as, and
+/// whether it is still a learner on this log. Held beside the set, not in it,
+/// so that only [`DiskLog::admit_member`] ends it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct WipedMark {
+    pub(super) node: String,
+    pub(super) learner: bool,
 }
 
 /// One assignment's replicas.
@@ -86,13 +105,13 @@ pub struct ReplicaSet {
 
 impl ReplicaSet {
     /// Fails for a set `decode` would refuse, so the file never holds one.
-    pub(super) fn encode(&self) -> Result<Vec<u8>> {
+    pub(super) fn encode(&self, wiped: Option<&WipedMark>) -> Result<Vec<u8>> {
         self.check()?;
-        let flags = if self.leaving.is_some() {
-            FLAG_LEAVING
-        } else {
-            0
-        };
+        if wiped.is_some_and(|mark| mark.node.len() > MAX_NODE_LEN) {
+            return Err(invalid("a wiped mark past the size the file allows"));
+        }
+        let flags = (u16::from(self.leaving.is_some()) * FLAG_LEAVING)
+            | (u16::from(wiped.is_some()) * FLAG_WIPED);
         let mut out = Vec::with_capacity(HEADER_LEN + 64);
         out.extend_from_slice(&MAGIC.to_be_bytes());
         out.extend_from_slice(&VERSION.to_be_bytes());
@@ -101,12 +120,17 @@ impl ReplicaSet {
         if let Some(leaving) = &self.leaving {
             leaving.encode_into(&mut out);
         }
+        if let Some(mark) = wiped {
+            out.extend_from_slice(&(mark.node.len() as u16).to_be_bytes());
+            out.extend_from_slice(mark.node.as_bytes());
+            out.push(u8::from(mark.learner));
+        }
         let crc = crate::segment::format::crc32(&[&out]);
         out.extend_from_slice(&crc.to_be_bytes());
         Ok(out)
     }
 
-    pub(super) fn decode(bytes: &[u8]) -> Option<Self> {
+    pub(super) fn decode(bytes: &[u8]) -> Option<Kept> {
         let body_len = bytes.len().checked_sub(4)?;
         let (body, crc) = bytes.split_at(body_len);
         if body.len() < HEADER_LEN
@@ -117,7 +141,7 @@ impl ReplicaSet {
             return None;
         }
         let flags = u16::from_be_bytes(body[6..8].try_into().ok()?);
-        if flags & !FLAG_LEAVING != 0 {
+        if flags & !(FLAG_LEAVING | FLAG_WIPED) != 0 {
             return None;
         }
         let mut rest = &body[HEADER_LEN..];
@@ -127,9 +151,24 @@ impl ReplicaSet {
         } else {
             None
         };
+        let wiped = if flags & FLAG_WIPED != 0 {
+            let len = u16::from_be_bytes(take(&mut rest, 2)?.try_into().ok()?) as usize;
+            if len > MAX_NODE_LEN {
+                return None;
+            }
+            let node = String::from_utf8(take(&mut rest, len)?.to_vec()).ok()?;
+            let learner = match take(&mut rest, 1)?[0] {
+                0 => false,
+                1 => true,
+                _ => return None,
+            };
+            Some(WipedMark { node, learner })
+        } else {
+            None
+        };
         // Slack would let two byte strings mean one set.
         let set = Self { current, leaving };
-        (rest.is_empty() && set.check().is_ok()).then_some(set)
+        (rest.is_empty() && set.check().is_ok()).then_some((set, wiped))
     }
 
     /// What both `encode` and `decode` insist on: sizes within the file's
@@ -162,9 +201,10 @@ impl DiskLog {
     }
 
     /// Count `set` from here on if it is newer than the set already kept,
-    /// persisting it first. A member the kept set marks wiped stays marked
-    /// in the new one: only [`Self::admit_member`] ends the mark, whoever
-    /// writes the newer set.
+    /// persisting it first. A member marked wiped, in the set or the set it
+    /// is leaving, marks this copy wiped until [`Self::admit_member`] settles
+    /// it, whoever writes a newer set and whether or not that set lists it.
+    /// The mark is copied onto the member's entry in each newer set.
     ///
     /// Returns once a raised set is on disk, so a caller that answers at it
     /// afterwards has made a promise that survives a restart. A caller that
@@ -183,17 +223,34 @@ impl DiskLog {
             if let Some(found) = check_set(known, set.current.generation) {
                 return Ok(found);
             }
-            if let Some(kept) = inner.replica_set.read().as_ref() {
-                for member in &mut set.current.members {
-                    member.wiped |= kept
-                        .current
-                        .members
-                        .iter()
-                        .any(|old| old.node == member.node && old.wiped);
+            let mut wiped = inner.wiped.read().clone();
+            let listed = set.leaving.iter().flat_map(|leaving| &leaving.members);
+            for member in set.current.members.iter().chain(listed) {
+                if !member.wiped {
+                    continue;
+                }
+                match &mut wiped {
+                    Some(mark) if mark.node == member.node => mark.learner |= member.learner,
+                    _ => {
+                        wiped = Some(WipedMark {
+                            node: member.node.clone(),
+                            learner: member.learner,
+                        });
+                    }
                 }
             }
-            store(&inner.dir, &set)?;
+            if let Some(mark) = &wiped {
+                for member in &mut set.current.members {
+                    if member.node == mark.node {
+                        member.wiped = true;
+                        member.learner |= mark.learner;
+                    }
+                }
+            }
+            store(&inner.dir, &set, wiped.as_ref())?;
             let generation = set.current.generation;
+            // The mark first: a reader that sees the new set sees it too.
+            *inner.wiped.write() = wiped;
             *inner.replica_set.write() = Some(set);
             inner.set_generation.store(generation, Ordering::Release);
             Ok(SetCheck::Raised)
@@ -205,8 +262,12 @@ impl DiskLog {
 
 impl DiskLog {
     /// Whether the kept set lists `node` as a learner: `None` with no set or
-    /// no such member. Allocation-free, for the replication hot path.
+    /// no such member. A wiped mark naming `node` a learner counts whether
+    /// the set lists it or not. Allocation-free, for the replication hot path.
     pub fn member_is_learner(&self, node: &str) -> Option<bool> {
+        if self.wiped_mark_on(node) == Some(true) {
+            return Some(true);
+        }
         self.inner
             .replica_set
             .read()
@@ -218,15 +279,21 @@ impl DiskLog {
             .map(|member| member.learner)
     }
 
-    /// Whether the kept set marks `node` wiped: it found it lost what it
-    /// held, and has not settled since. False with no set or no such member.
+    /// Whether this copy is marked wiped as `node`: it found it lost what it
+    /// held, and has not settled since. False with no such mark.
     pub fn member_is_wiped(&self, node: &str) -> bool {
+        self.wiped_mark_on(node).is_some()
+    }
+
+    /// Whether the wiped mark names `node` a learner, or `None` with no mark
+    /// on it.
+    fn wiped_mark_on(&self, node: &str) -> Option<bool> {
         self.inner
-            .replica_set
+            .wiped
             .read()
             .as_ref()
-            .and_then(|set| set.current.members.iter().find(|m| m.node == node))
-            .is_some_and(|member| member.wiped)
+            .filter(|mark| mark.node == node)
+            .map(|mark| mark.learner)
     }
 
     /// Count `node` as a voter in the set already kept, at the same
@@ -244,15 +311,30 @@ impl DiskLog {
             let Some(mut set) = inner.replica_set.read().clone() else {
                 return Ok(false);
             };
-            let Some(member) = set.current.members.iter_mut().find(|member| {
-                member.node == node && (member.learner || (settled && member.wiped))
-            }) else {
+            let mut wiped = inner.wiped.read().clone();
+            let mut changed = false;
+            if let Some(member) =
+                set.current.members.iter_mut().find(|member| {
+                    member.node == node && (member.learner || (settled && member.wiped))
+                })
+            {
+                member.learner = false;
+                member.wiped &= !settled;
+                changed = true;
+            }
+            if let Some(mark) = wiped.as_mut().filter(|mark| mark.node == node) {
+                changed |= mark.learner || settled;
+                mark.learner = false;
+                if settled {
+                    wiped = None;
+                }
+            }
+            if !changed {
                 return Ok(false);
-            };
-            member.learner = false;
-            member.wiped &= !settled;
-            store(&inner.dir, &set)?;
+            }
+            store(&inner.dir, &set, wiped.as_ref())?;
             *inner.replica_set.write() = Some(set);
+            *inner.wiped.write() = wiped;
             Ok(true)
         })
         .await
@@ -278,7 +360,7 @@ pub(super) fn reconcile(
     dir: &Path,
     label: &str,
     accepted: Accepted,
-) -> Result<(Option<ReplicaSet>, Accepted)> {
+) -> Result<(Option<Kept>, Accepted)> {
     // A shard that never kept a set pays one stat, not a directory scan. A
     // temporary from a crash during the very first write waits for the next
     // open after a set exists; `load` ignores it meanwhile.
@@ -287,7 +369,7 @@ pub(super) fn reconcile(
     }
     let set = load(dir)?;
     let accepted = match &set {
-        Some(set) if set.current.generation > accepted.0 => {
+        Some((set, _)) if set.current.generation > accepted.0 => {
             tracing::warn!(
                 shard = %label,
                 set_generation = set.current.generation,
@@ -387,8 +469,9 @@ fn take<'a>(rest: &mut &'a [u8], n: usize) -> Option<&'a [u8]> {
     Some(head)
 }
 
-/// Read a shard's replica set, or `None` if it has never kept one.
-pub(super) fn load(dir: &Path) -> Result<Option<ReplicaSet>> {
+/// Read a shard's replica set and wiped mark, or `None` if it has never kept
+/// a set.
+pub(super) fn load(dir: &Path) -> Result<Option<Kept>> {
     let path = path_in(dir);
     match std::fs::read(&path) {
         Ok(bytes) => ReplicaSet::decode(&bytes).map(Some).ok_or_else(|| {
@@ -416,10 +499,10 @@ pub(super) fn load(dir: &Path) -> Result<Option<ReplicaSet>> {
 /// ordered here (the later rename wins), so the caller must serialize them per
 /// shard and persist in generation order, as `ballot`'s caller does under
 /// `replica_persisted`.
-pub(super) fn store(dir: &Path, set: &ReplicaSet) -> Result<()> {
+pub(super) fn store(dir: &Path, set: &ReplicaSet, wiped: Option<&WipedMark>) -> Result<()> {
     use std::io::Write;
 
-    let bytes = set.encode()?;
+    let bytes = set.encode(wiped)?;
     let path = path_in(dir);
     let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let temporary = dir.join(format!("{TEMPORARY_PREFIX}.{}.{n}", std::process::id()));

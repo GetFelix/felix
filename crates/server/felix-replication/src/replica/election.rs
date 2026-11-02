@@ -254,15 +254,28 @@ impl ReplicaHandler {
 
     /// The set as this copy keeps it: a learner stays one, and under
     /// `joint_fence` a set naming another storage id for this copy makes it
-    /// a learner marked wiped, apart from a learner placement staged. Only
-    /// [`Self::admit_when_caught_up`] ends either mark.
+    /// a learner marked wiped, apart from a learner placement staged. The
+    /// entry in the set being left is marked too, so a set listing the copy
+    /// only there still records the mark; the log keeps it from then on
+    /// whatever later sets list. Only [`Self::admit_when_caught_up`] ends
+    /// either mark.
     fn mark_local(&self, log: &felix_broker::StreamLog, mut set: ReplicaSet) -> ReplicaSet {
         let local = self.router.local_node_id();
         let evidence =
             self.non_voting_gate() == Some(true) && self.names_other_in(log, &set.current);
         let learner = self.is_learner(log) || evidence;
         let wiped = self.is_wiped(log) || evidence;
-        for member in set.current.members.iter_mut().filter(|m| m.node == local) {
+        let leaving = set
+            .leaving
+            .iter_mut()
+            .flat_map(|leaving| &mut leaving.members);
+        for member in set
+            .current
+            .members
+            .iter_mut()
+            .chain(leaving)
+            .filter(|m| m.node == local)
+        {
             member.learner |= learner;
             member.wiped |= wiped;
         }

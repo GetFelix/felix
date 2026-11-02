@@ -4,6 +4,19 @@
 //! returns.
 use super::*;
 
+/// The set alone, for the cases that keep no wiped mark.
+fn store(dir: &Path, set: &ReplicaSet) -> Result<()> {
+    super::store(dir, set, None)
+}
+
+fn load(dir: &Path) -> Result<Option<ReplicaSet>> {
+    Ok(super::load(dir)?.map(|(set, _)| set))
+}
+
+fn decode(bytes: &[u8]) -> Option<ReplicaSet> {
+    ReplicaSet::decode(bytes).map(|(set, _)| set)
+}
+
 fn member(node: &str, storage: Option<u8>) -> Member {
     Member {
         node: node.to_string(),
@@ -92,7 +105,7 @@ fn an_empty_set_round_trips() {
         },
         leaving: None,
     };
-    assert_eq!(ReplicaSet::decode(&set.encode().unwrap()), Some(set));
+    assert_eq!(decode(&set.encode(None).unwrap()), Some(set));
 }
 
 #[test]
@@ -108,7 +121,7 @@ fn a_crash_before_the_rename_still_reads_the_old_set() {
     // What a crash between the temporary's write and the rename leaves: the
     // new set whole, or half of it.
     let temporary = dir.path().join("replica-set.tmp.1.0");
-    let next = changing(8).encode().unwrap();
+    let next = changing(8).encode(None).unwrap();
     std::fs::write(&temporary, &next).expect("whole");
     assert_eq!(load(dir.path()).expect("load"), Some(settled(7)));
     std::fs::write(&temporary, &next[..next.len() / 2]).expect("half");
@@ -134,7 +147,7 @@ fn a_crash_before_the_rename_still_reads_the_old_set() {
 fn a_crash_before_the_first_rename_reads_as_no_set() {
     let dir = tempfile::tempdir().expect("tempdir");
     let temporary = dir.path().join("replica-set.tmp.1.0");
-    std::fs::write(&temporary, settled(1).encode().unwrap()).expect("write");
+    std::fs::write(&temporary, settled(1).encode(None).unwrap()).expect("write");
     assert_eq!(load(dir.path()).expect("load"), None);
     assert!(temporary.exists());
     assert!(!path_in(dir.path()).exists(), "load created no file");
@@ -168,21 +181,26 @@ fn sealed(mut body: Vec<u8>) -> Vec<u8> {
 
 #[test]
 fn a_checksummed_but_malformed_body_does_not_decode() {
-    let good = settled(3).encode().unwrap();
+    let good = settled(3).encode(None).unwrap();
     let body = good[..good.len() - 4].to_vec();
 
     let mut slack = body.clone();
     slack.push(0);
-    assert_eq!(ReplicaSet::decode(&sealed(slack)), None);
+    assert_eq!(decode(&sealed(slack)), None);
 
     let mut flags = body.clone();
-    flags[6..8].copy_from_slice(&2u16.to_be_bytes());
-    assert_eq!(ReplicaSet::decode(&sealed(flags)), None);
+    flags[6..8].copy_from_slice(&4u16.to_be_bytes());
+    assert_eq!(decode(&sealed(flags)), None);
+
+    // A flag for a wiped mark that is not there.
+    let mut unmarked = body.clone();
+    unmarked[6..8].copy_from_slice(&FLAG_WIPED.to_be_bytes());
+    assert_eq!(decode(&sealed(unmarked)), None);
 
     // A flag for a set that is not there.
     let mut missing = body.clone();
     missing[6..8].copy_from_slice(&FLAG_LEAVING.to_be_bytes());
-    assert_eq!(ReplicaSet::decode(&sealed(missing)), None);
+    assert_eq!(decode(&sealed(missing)), None);
 
     // A member flag no build defines.
     let mut flag = ReplicaSet {
@@ -192,12 +210,12 @@ fn a_checksummed_but_malformed_body_does_not_decode() {
         },
         leaving: None,
     }
-    .encode()
+    .encode(None)
     .unwrap();
     let at = flag.len() - 5;
     flag[at] = 8;
     flag.truncate(flag.len() - 4);
-    assert_eq!(ReplicaSet::decode(&sealed(flag)), None);
+    assert_eq!(decode(&sealed(flag)), None);
 }
 
 #[test]
@@ -259,21 +277,15 @@ fn one(members: Vec<Member>) -> ReplicaSet {
 #[test]
 fn the_member_limit_is_enforced_on_a_full_body() {
     let full = |n: usize| one((0..n).map(|i| member(&format!("n{i}"), None)).collect());
-    assert_eq!(
-        ReplicaSet::decode(&raw(&full(MAX_MEMBERS))),
-        Some(full(MAX_MEMBERS))
-    );
-    assert_eq!(ReplicaSet::decode(&raw(&full(MAX_MEMBERS + 1))), None);
+    assert_eq!(decode(&raw(&full(MAX_MEMBERS))), Some(full(MAX_MEMBERS)));
+    assert_eq!(decode(&raw(&full(MAX_MEMBERS + 1))), None);
 }
 
 #[test]
 fn the_node_id_limit_is_enforced_on_a_full_body() {
     let long = |n: usize| one(vec![member(&"n".repeat(n), None)]);
-    assert_eq!(
-        ReplicaSet::decode(&raw(&long(MAX_NODE_LEN))),
-        Some(long(MAX_NODE_LEN))
-    );
-    assert_eq!(ReplicaSet::decode(&raw(&long(MAX_NODE_LEN + 1))), None);
+    assert_eq!(decode(&raw(&long(MAX_NODE_LEN))), Some(long(MAX_NODE_LEN)));
+    assert_eq!(decode(&raw(&long(MAX_NODE_LEN + 1))), None);
 }
 
 #[test]
@@ -282,12 +294,12 @@ fn a_member_listed_twice_does_not_decode_or_encode() {
         one(vec![member("a", Some(1)), member("a", Some(2))]),
         one(vec![member("a", Some(1)), member("b", Some(1))]),
     ] {
-        assert_eq!(ReplicaSet::decode(&raw(&set)), None);
-        assert!(set.encode().is_err());
+        assert_eq!(decode(&raw(&set)), None);
+        assert!(set.encode(None).is_err());
     }
     // Two members with no storage id are not the same member.
     let set = one(vec![member("a", None), member("b", None)]);
-    assert_eq!(ReplicaSet::decode(&set.encode().unwrap()), Some(set));
+    assert_eq!(decode(&set.encode(None).unwrap()), Some(set));
     // A set being left is checked too.
     let mut set = changing(8);
     set.leaving
@@ -295,7 +307,7 @@ fn a_member_listed_twice_does_not_decode_or_encode() {
         .unwrap()
         .members
         .push(member("a", None));
-    assert_eq!(ReplicaSet::decode(&raw(&set)), None);
+    assert_eq!(decode(&raw(&set)), None);
 }
 
 #[test]
@@ -303,8 +315,8 @@ fn a_set_being_left_must_be_older() {
     for left in [8, 9] {
         let mut set = changing(8);
         set.leaving.as_mut().unwrap().generation = left;
-        assert_eq!(ReplicaSet::decode(&raw(&set)), None, "{left}");
-        assert!(set.encode().is_err());
+        assert_eq!(decode(&raw(&set)), None, "{left}");
+        assert!(set.encode(None).is_err());
         let dir = tempfile::tempdir().expect("tempdir");
         assert!(store(dir.path(), &set).is_err());
         assert_eq!(load(dir.path()).expect("load"), None);
@@ -317,7 +329,7 @@ fn a_learner_round_trips_and_is_distinct_from_a_voter() {
     set.current.members[2].learner = true;
     set.current.members[0].storage = None;
     set.current.members[0].learner = true;
-    let found = ReplicaSet::decode(&set.encode().unwrap()).expect("decodes");
+    let found = decode(&set.encode(None).unwrap()).expect("decodes");
     assert_eq!(found, set);
     assert_ne!(found, settled(4));
 }
@@ -377,4 +389,27 @@ fn leftover_temporaries_are_swept_and_the_set_is_kept() {
     assert_eq!(leftovers(dir.path()), 0);
     assert!(dir.path().join("ballot").exists());
     assert_eq!(load(dir.path()).expect("load"), Some(settled(7)));
+}
+
+#[test]
+fn a_wiped_mark_round_trips_beside_the_set() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mark = WipedMark {
+        node: "b".to_string(),
+        learner: true,
+    };
+    super::store(dir.path(), &changing(8), Some(&mark)).expect("store");
+    assert_eq!(
+        super::load(dir.path()).expect("load"),
+        Some((changing(8), Some(mark.clone())))
+    );
+
+    let good = settled(3).encode(Some(&mark)).unwrap();
+    let mut learner = good[..good.len() - 4].to_vec();
+    *learner.last_mut().unwrap() = 2;
+    assert_eq!(
+        decode(&sealed(learner)),
+        None,
+        "a learner byte no build defines"
+    );
 }
