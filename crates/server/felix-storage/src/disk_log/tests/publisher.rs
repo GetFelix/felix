@@ -10,6 +10,7 @@ fn published(payload: &'static str, publisher: &'static str, mark: RecordMark) -
         timestamp_micros: 1,
         mark,
         publisher: Some(Bytes::from_static(publisher.as_bytes())),
+        headers: None,
     }
 }
 
@@ -74,6 +75,7 @@ async fn a_publisher_past_the_limit_is_refused() {
             timestamp_micros: 1,
             mark: RecordMark::None,
             publisher: Some(long),
+            headers: None,
         }])
         .await
         .expect_err("too long");

@@ -48,6 +48,7 @@ pub(crate) async fn write(args: WriteArgs) -> Result<(), Failure> {
                 timestamp_micros: now_micros(),
                 mark: Default::default(),
                 publisher: None,
+                headers: None,
             })
             .collect();
 
@@ -269,6 +270,7 @@ async fn run_load(
                         timestamp_micros: now_micros(),
                         mark: Default::default(),
                         publisher: None,
+                        headers: None,
                     })
                     .collect();
                 let started = Instant::now();

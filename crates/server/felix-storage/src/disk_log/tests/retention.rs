@@ -23,6 +23,7 @@ fn aged_record(payload: &str, timestamp_micros: u64) -> AppendRecord {
         timestamp_micros,
         mark: Default::default(),
         publisher: None,
+        headers: None,
     }
 }
 

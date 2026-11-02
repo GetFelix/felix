@@ -63,7 +63,7 @@ pub(crate) struct FinalizeQuery {
     ),
     responses(
         (status = 200, description = "Enabled, or with dry_run the preview", body = FleetFinalizeResponse),
-        (status = 409, description = "A serving broker does not support it, none is serving, or a feature it needs is not enabled yet")
+        (status = 409, description = "A serving broker does not support it, none is serving, a feature it needs is not enabled yet, or it is a capability report such as peer_election or start_holders")
     )
 )]
 /// Enable a fleet feature. One-way: once enabled, a broker without the
@@ -78,8 +78,9 @@ pub(crate) struct FinalizeQuery {
 /// which brokers lack it and which features it still needs.
 ///
 /// # Errors
-/// - 409 when a serving broker lacks the feature, no broker is serving, or a
-///   feature it needs is not enabled yet.
+/// - 409 when a serving broker lacks the feature, no broker is serving, a
+///   feature it needs is not enabled yet, or the name is `peer_election` or
+///   `start_holders`, which brokers report but operators cannot enable.
 /// - 500 when the store cannot be read or written.
 pub(crate) async fn finalize_fleet_feature(
     State(state): State<AppState>,
@@ -88,6 +89,11 @@ pub(crate) async fn finalize_fleet_feature(
     Query(query): Query<FinalizeQuery>,
 ) -> Result<Json<FleetFinalizeResponse>, ApiError> {
     require_cluster_action(&state, &headers, ACTION_NODE_MANAGE).await?;
+    // Dry run included: it must not promise what a real finalize refuses.
+    crate::cluster::fleet::check_operator_finalizable(&feature).map_err(|err| match err {
+        StoreError::Conflict(ref message) => api_conflict("conflict", message),
+        ref other => api_internal("finalize a fleet feature", other),
+    })?;
     let nodes = state
         .store
         .list_nodes()
@@ -167,3 +173,6 @@ fn serving(nodes: &[crate::model::Node]) -> usize {
         .filter(|node| node.status.lifecycle.is_serving())
         .count()
 }
+
+#[cfg(test)]
+mod tests;

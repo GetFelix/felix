@@ -8,6 +8,7 @@ mod conditional;
 mod durability;
 mod generation_start;
 mod head_floor;
+mod headers;
 mod offload;
 mod placed_at_a_base_offset;
 #[cfg(target_os = "linux")]
@@ -39,6 +40,7 @@ fn record(payload: &str) -> AppendRecord {
         timestamp_micros: 1_700_000_000,
         mark: Default::default(),
         publisher: None,
+        headers: None,
     }
 }
 

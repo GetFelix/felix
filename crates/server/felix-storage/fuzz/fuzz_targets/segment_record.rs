@@ -19,7 +19,11 @@ fuzz_target!(|data: &[u8]| {
         assert_eq!(
             consumed,
             record_len(
-                body_len(decoded.payload.len(), decoded.publisher.as_deref()),
+                body_len(
+                    decoded.payload.len(),
+                    decoded.headers.as_deref(),
+                    decoded.publisher.as_deref(),
+                ),
                 &decoded.mark
             )
         );
@@ -35,6 +39,7 @@ fuzz_target!(|data: &[u8]| {
             decoded.header.offset,
             decoded.header.timestamp_micros,
             &decoded.payload,
+            decoded.headers.as_deref(),
             decoded.publisher.as_deref(),
             &decoded.mark,
         );

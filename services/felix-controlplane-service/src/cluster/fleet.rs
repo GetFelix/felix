@@ -126,6 +126,24 @@ where
     )))
 }
 
+/// Refuse to enable [`felix_common::fleet::PEER_ELECTION`] or
+/// [`felix_common::fleet::START_HOLDERS`]. They are reports, not features: a
+/// broker states them so the control plane can gate other finalizes, and
+/// enabling one would make [`admit`] refuse every broker that predates it.
+///
+/// Checked when the operator asks, like [`check_prerequisites`], so a Raft
+/// member applying the finalize decides the same as one on an older release.
+pub(crate) fn check_operator_finalizable(feature: &str) -> Result<(), StoreError> {
+    use felix_common::fleet::{PEER_ELECTION, START_HOLDERS};
+    if feature == PEER_ELECTION.name() || feature == START_HOLDERS.name() {
+        return Err(StoreError::Conflict(format!(
+            "cannot finalize {feature}: it is how a broker reports a capability, not a \
+             feature; finalize the feature that needs it"
+        )));
+    }
+    Ok(())
+}
+
 /// The features `feature` needs enabled first that `enabled` lacks
 /// ([`felix_common::fleet::prerequisites`]).
 pub(crate) fn missing_prerequisites(enabled: &BTreeSet<String>, feature: &str) -> Vec<String> {
@@ -165,12 +183,15 @@ pub(crate) fn check_prerequisites(
 
 /// Refuse to enable `joint_fence` or `replica_election` unless every serving
 /// broker offers the `ELECTION` capability (reported as
-/// [`felix_common::fleet::PEER_ELECTION`]), and, for `replica_election`,
+/// [`felix_common::fleet::PEER_ELECTION`]), for `joint_fence` unless every
+/// serving broker names start holders in its reports
+/// ([`felix_common::fleet::START_HOLDERS`]), and, for `replica_election`,
 /// `metadata_level_ready` says the control plane keeps the pending replica set
 /// and adopts elected leaders, and `joint_fence_ready` says `joint_fence` may be
 /// finalized at all.
 /// Any other feature passes. Under Raft the finalize also needs every member
-/// at metadata level 21, which the store checks as it proposes.
+/// at metadata level 21 (`replica_election`) or 23 (`joint_fence`), which the
+/// store checks as it proposes.
 ///
 /// Checked when the operator asks, like [`check_prerequisites`]: a Raft member
 /// applying the finalize must not decide differently from one on an older
@@ -185,18 +206,29 @@ pub(crate) fn check_election<'a, I>(
 where
     I: IntoIterator<Item = &'a Node>,
 {
-    use felix_common::fleet::{JOINT_FENCE, PEER_ELECTION, REPLICA_ELECTION};
+    use felix_common::fleet::{JOINT_FENCE, PEER_ELECTION, REPLICA_ELECTION, START_HOLDERS};
     let needs_level = feature == REPLICA_ELECTION.name();
     let is_joint_fence = feature == JOINT_FENCE.name();
     if !needs_level && !is_joint_fence {
         return Ok(());
     }
-    let lacking = lacking(nodes, PEER_ELECTION.name());
-    if !lacking.is_empty() {
+    let nodes: Vec<&Node> = nodes.into_iter().collect();
+    let without_election = lacking(nodes.iter().copied(), PEER_ELECTION.name());
+    if !without_election.is_empty() {
         return Err(StoreError::Conflict(format!(
             "cannot finalize {feature}: serving broker(s) {} do not offer the ELECTION \
              peer capability; upgrade them first",
-            lacking.join(", "),
+            without_election.join(", "),
+        )));
+    }
+    // A learner is re-admitted only on its leader's word that it holds the
+    // start record. A broker that never says so would keep it one for good.
+    let without_holders = lacking(nodes.iter().copied(), START_HOLDERS.name());
+    if is_joint_fence && !without_holders.is_empty() {
+        return Err(StoreError::Conflict(format!(
+            "cannot finalize {feature}: serving broker(s) {} do not report which followers \
+             hold a generation's start record; upgrade them first",
+            without_holders.join(", "),
         )));
     }
     if is_joint_fence && !joint_fence_ready {
@@ -220,9 +252,10 @@ where
 /// the wiped-voter guard (S8) are in too.
 pub(crate) const ELECTION_METADATA_LEVEL_READY: bool = false;
 
-/// Whether `joint_fence` may be finalized. A finalize is irreversible, and a
-/// joint fence needs the control plane to re-admit learners and placement to
-/// skip them (#1737). Stays false until both merge.
+/// Whether `joint_fence` may be finalized. A finalize is irreversible. The
+/// control plane now re-admits a replaced copy and keeps placement off a
+/// learner (#1737), but this stays false until an end-to-end cluster test
+/// shows it and `NON_VOTING_READY` in `quorum.rs` is flipped.
 pub(crate) const JOINT_FENCE_READY: bool = false;
 
 /// The features a cluster created on this release starts with. A finalize

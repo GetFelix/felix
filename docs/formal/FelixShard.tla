@@ -584,6 +584,11 @@ WipedNonVoter == FALSE
 ReadmitCountsWiped == FALSE
 ReadmitBeforeCatchUp == FALSE
 PromoteNonVoter == FALSE
+\* `WriteDropsLearners`: a placement write may name no learners, as one does
+\* when its read of the assignment it replaces fails and is taken for no
+\* assignment, or when it comes from a control plane that predates learners
+\* (a mixed fleet on Postgres, which has no metadata level to stop it).
+WriteDropsLearners == FALSE
 WipeLeads == FALSE
 Forgets == 1
 \* `OneNonVoter`: a wipe is refused while it would leave two brokers non-voters.
@@ -817,7 +822,8 @@ VARIABLES
     wipedAt,    \* per broker, 0 for never wiped or re-admitted; else the control plane's generation at the wipe
     readmit,    \* under `WipedNonVoter`, a pending re-admission: {} or {<<wiped broker, generation, leader>>}
     learner,    \* under `WipedNonVoter`, the learner mark each copy keeps in its set file
-    marked      \* the wiped mark kept beside it, which under `GroupLogs` outlasts it
+    marked,     \* the wiped mark kept beside it, which under `GroupLogs` outlasts it
+    cpLearner   \* under `WipedNonVoter`, the copies placement holds as learners
 
 \* The counter log's state, which only a cache shard's actions change.
 counterVars == << clog, chwm, cconfirmed, canswered, cacked >>
@@ -832,7 +838,7 @@ setVars == << setGen, oldSet, installed, nextVars >>
 idVars == << sid, seen, seenInc, wipes, checked, registered, inc, restarting, expect, inherited,
              leftDirty, gaveUp, fenceIds >>
 \* A wiped replica's guard, and a re-admission the control plane has pending.
-wipeVars == << wipedAt, readmit, learner, marked >>
+wipeVars == << wipedAt, readmit, learner, marked, cpLearner >>
 \* All of them but `expect`, `inherited` and the promoted leader's `seen`
 \* and `seenInc`, which a promotion sets.
 decideIdVars == << sid, wipes, checked, registered, inc, restarting, leftDirty, gaveUp, wipeVars >>
@@ -1138,6 +1144,7 @@ IdInit ==
     /\ readmit = {}
     /\ learner = [b \in Brokers |-> FALSE]
     /\ marked = [b \in Brokers |-> FALSE]
+    /\ cpLearner = {}
 
 Init ==
     /\ now = 0
@@ -1796,9 +1803,11 @@ Promote(v, f, views) ==
     \* A leader that gave its copy up is replaced at once.
     /\ v.lapsed \/ v.gen <= Suspicions \/ LeaderReplaced(v)
     /\ f \notin out
-    \* Failover never names a non-voter: it may hold none of what a majority
-    \* acknowledged, and its own fence would count it.
-    /\ ~PromoteNonVoter => ~NonVoter(f)
+    \* Failover never names a copy placement holds as a learner: it may hold
+    \* none of what a majority acknowledged, and its own fence would count it.
+    \* Placement reads only what it was told (`cpLearner`), never the copy's
+    \* own mark; `PlacementKnowsLearners` checks the one covers the other.
+    /\ ~PromoteNonVoter => f \notin cpLearner
     \* With it off, a `Quorum` failover never names the destination: it ends
     \* the move instead (`promote` in services/felix-controlplane-service/src/
     \* cluster/placement/plan.rs).
@@ -2640,7 +2649,7 @@ Swap(v, f, views) ==
     /\ v.leader = leader /\ ~v.lapsed
     /\ bgen[leader] = gen /\ ~fencing[leader]
     /\ joining = {} /\ cpNext = {}
-    /\ f \in CpSet \ {leader} /\ f \notin halted
+    /\ f \in CpSet \ {leader} /\ f \notin halted /\ f \notin cpLearner
     /\ queued[leader] = 0 /\ pending[leader] = 0
     /\ HoldsPrefix(f, leader, Len(log[leader]))
     /\ Elections > 0 => MayPromise(f, f, gen + 1)
@@ -2913,6 +2922,11 @@ Forget(f) ==
     \* only `NamesOther` sets it.
     /\ learner' = IF WipedNonVoter THEN [learner EXCEPT ![f] = ReplacedIdLearner] ELSE learner
     /\ marked' = IF WipedNonVoter THEN [marked EXCEPT ![f] = ReplacedIdLearner] ELSE marked
+    \* The control plane learns of the wipe from the registration under the
+    \* new id: the assignment names another id for `f` from here
+    \* (`ReplicaPositions` in services/felix-controlplane-service/src/cluster/
+    \* placement/replica_positions.rs).
+    /\ cpLearner' = IF WipedNonVoter THEN cpLearner \cup {f} ELSE cpLearner
     /\ wipedAt' =
           CASE WipedNonVoter -> [wipedAt EXCEPT ![f] = gen]
             [] WipedWaitsForAdopt ->
@@ -2958,7 +2972,7 @@ WipedLearnSet(b, f) ==
 \* and only up to `Adopt`, which bounds every generation here. A pending
 \* re-admission the control plane has moved past is started again.
 Readmit(w) ==
-    /\ NonVoter(w)
+    /\ NonVoter(w) /\ w \in cpLearner
     /\ \A r \in readmit : r[2] < gen
     /\ leader /= w /\ bgen[leader] = gen /\ ~fencing[leader] /\ <<gen, leader>> \in opened
     /\ Elections > 0 => gen + 1 <= Adopt
@@ -3045,6 +3059,26 @@ CatchUpCounters(b, f) ==
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, fencing, answered, confirmed, opened, setVars, ackGen >>
+
+\* Placement stops holding `w` a learner once the report of the control
+\* plane's leader shows `w` holding the start record of the control plane's
+\* generation, written after the wipe so it names `w`'s new id, on every log
+\* re-admission checks: `holds_start` in the report, read by
+\* `ReplicaPositions` in services/felix-controlplane-service/src/cluster/
+\* placement/replica_positions.rs. `w` re-admits itself before it answers
+\* the batch that carried the record (`admit_when_caught_up` runs before the
+\* `ReplicateOk` in crates/server/felix-replication/src/replica.rs), so by
+\* the time the leader can report it `w` is no longer a non-voter: the
+\* `~NonVoter(w)` conjunct stands for that order.
+CpAdmit(w) ==
+    /\ w \in cpLearner
+    /\ gen > wipedAt[w] /\ ~NonVoter(w)
+    /\ \E k \in 1..Len(log[w]) : log[w][k] = Start(gen)
+    /\ Counters /\ ReadmitChecksCounters => \E k \in 1..Len(clog[w]) : clog[w][k] = Start(gen)
+    /\ cpLearner' = cpLearner \ {w}
+    /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
+                    hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
+    /\ UNCHANGED << handoffVars, fenceVars >>
 
 \* Under `GroupLogs`, a re-admitted copy's wiped mark ends once its group
 \* log holds a record written at its set's generation or later: that record
@@ -3161,7 +3195,7 @@ Next ==
             \/ LearnHwm(b, f) /\ UNCHANGED quietVars
             \/ AnswerFence(b, f) /\ UNCHANGED quietVars
             \/ RefuseStaleSet(b, f) /\ UNCHANGED quietVars
-            \/ WipedLearnSet(b, f) /\ UNCHANGED << counterVars, heard, idVars, named, wipedAt, readmit >>
+            \/ WipedLearnSet(b, f) /\ UNCHANGED << counterVars, heard, idVars, named, wipedAt, readmit, cpLearner >>
             \/ AnswerSetlessFence(b, f) /\ UNCHANGED quietVars
             \/ CatchUp(b, f) /\ UNCHANGED quietVars
             \/ CatchUpCounters(b, f) /\ UNCHANGED << chwm, canswered, cacked, heard, idVars, named, wipeVars >>
@@ -3171,15 +3205,21 @@ Next ==
             \/ Answer(b, f) /\ UNCHANGED << counterVars, heard, named >>
         \/ Wipe(b) /\ UNCHANGED << counterVars, heard, named >>
         \/ Forget(b) /\ UNCHANGED << cconfirmed, canswered, cacked, heard, named, readmit >>
-        \/ Readmit(b) /\ UNCHANGED << counterVars, heard, idVars, named, wipedAt, learner, marked >>
-        \/ Readmitted(b) /\ UNCHANGED << counterVars, heard, idVars, named >>
-        \/ GroupsCaughtUp(b) /\ UNCHANGED << counterVars, heard, idVars, named, wipedAt, readmit, learner >>
-        \/ KeepOwnSet(b) /\ UNCHANGED << counterVars, heard, idVars, named, wipedAt, readmit, learner >>
+        \/ Readmit(b) /\ UNCHANGED << counterVars, heard, idVars, named, wipedAt, learner, marked, cpLearner >>
+        \/ Readmitted(b) /\ UNCHANGED << counterVars, heard, idVars, named, cpLearner >>
+        \/ CpAdmit(b) /\ UNCHANGED << counterVars, heard, idVars, named, wipedAt, readmit, learner, marked >>
+        \/ GroupsCaughtUp(b) /\ UNCHANGED << counterVars, heard, idVars, named, wipedAt, readmit, learner, cpLearner >>
+        \/ KeepOwnSet(b) /\ UNCHANGED << counterVars, heard, idVars, named, wipedAt, readmit, learner, cpLearner >>
         \/ Crash(b) /\ UNCHANGED << counterVars, named >>
         \/ CleanStop(b) /\ UNCHANGED << counterVars, heard, named >>
         \/ Register(b) /\ UNCHANGED << counterVars, heard, named >>
         \/ OpenForWrites(b) /\ UNCHANGED loudVars
         \/ Decide(Now, b, cpView) /\ UNCHANGED << heard, decideIdVars, named >>
+        \/ /\ WriteDropsLearners
+           /\ Decide(Now, b, cpView)
+           /\ cpLearner' = {}
+           /\ UNCHANGED << heard, sid, wipes, checked, registered, inc, restarting, leftDirty, gaveUp,
+                          wipedAt, readmit, learner, marked, named >>
         \/ /\ \E p \in Planners : \E v \in cpView[p] : Decide(v, b, [cpView EXCEPT ![p] = {}])
            /\ UNCHANGED << heard, decideIdVars, named >>
         \/ CommitCounter(b) /\ UNCHANGED loudVars
@@ -3210,6 +3250,12 @@ AckedSurvive ==
 \* elected itself to. Only `Elect` takes a broker past the control plane's.
 Newest == LET gs == {gen} \cup { bgen[m] : m \in Brokers }
           IN CHOOSE g \in gs : \A h \in gs : h <= g
+
+\* Placement never names a copy leader that refuses to vote: every
+\* non-voter is one placement holds as a learner, so `Promote` and `Swap`,
+\* which skip those, skip every non-voter.
+PlacementKnowsLearners ==
+    \A f \in Brokers : NonVoter(f) => f \in cpLearner
 
 \* The leader at the newest generation holds every acknowledged record once
 \* it may serve. Unlike AckedSurvive this says nothing about the lease, so it
@@ -3428,7 +3474,7 @@ TypeOK ==
     /\ inherited \in [Brokers -> SUBSET Brokers]
     /\ leftDirty \in [Brokers -> Nat]
     /\ gaveUp \in [Brokers -> Nat] /\ fenceIds \in [Brokers -> SUBSET Brokers] /\ named \subseteq Brokers
-    /\ wipedAt \in [Brokers -> Nat] /\ learner \in [Brokers -> BOOLEAN]
+    /\ wipedAt \in [Brokers -> Nat] /\ learner \in [Brokers -> BOOLEAN] /\ cpLearner \subseteq Brokers
     /\ marked \in [Brokers -> BOOLEAN]
     /\ \A r \in readmit : r[1] \in Brokers /\ r[2] \in Nat /\ r[3] \in Brokers
     /\ wipes \in 0..(IF LosePromises THEN Forgets ELSE Wipes)
