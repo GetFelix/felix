@@ -743,6 +743,12 @@ A `CursorError` says where you can resume instead of leaving you to guess:
   retention set the floor.
 
 ```python
+import logging
+
+import felix
+
+log = logging.getLogger(__name__)
+
 start = 7  # for example, a checkpoint plus one
 try:
     with client.subscribe("t1", "default", "orders", start=start) as events:
