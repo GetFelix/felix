@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793622565151,
+  "lastUpdate": 1793624621567,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -42068,6 +42068,58 @@ window.BENCHMARK_DATA = {
             "range": "20967.76",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 957231.73\nmean: 954813.66\nstdev: 20967.76\ncv: 2.20%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a66f00d13e5200ce313481588ef7bb675aaa97b8",
+          "message": "fix(controlplane): place new leaders under the cluster's floor first, so bulk creates move no existing shard (#1767)\n\nCloses part 1 of #1766.\n\nWhen many streams are created at once (felixd creates two per job, 16 jobs at a time), the placement reconciler kept moving the same few existing cache shards between brokers. A new shard's leader went to the best-scoring broker under the cluster's *ceiling* share, so a batch could leave the leader totals two apart, and the balancer then evened them by moving the first shard in key order on the broker leading most. In felixd's namespace that is `drains`, `epochs`, `leases`: 17 moves of `drains` in 11 minutes in one scale run, each one fencing that cache's writes.\n\nNow a new leader goes to a broker under the cluster's floor share first, then under the ceiling, inside the existing per-stream tiers. A batch stays within one of even and moves nothing that exists.\n\n- `rendezvous::choose`: tiers are (stream floor, stream ceil, any) x (cluster floor, cluster ceil, any), in that order.\n- `Shares` carries the cluster floor; `plan` computes it beside the ceiling.\n- New test `creating_streams_in_batches_moves_no_existing_leader`: 20 batches of 32 single-shard streams beside three caches. Fails without the fix (14 cut-overs, all caches), passes with it.\n- `docs/control-plane.md` \"How shards get placed\" describes the floor tier and why.\n\nDesign calls:\n- Fresh-cluster placement changes in some cases. The golden in `stream_placement_is_unchanged_by_cache_placement` swaps two `payments` leaders (spreads still 3/2/3 and 1/2/2). Its \"caches alongside\" half now checks each stream's spread rather than exact brokers: cache leaders count toward the cluster totals, which the old ceiling tier already depended on, so exact identity was never guaranteed. Existing assignments are never re-placed, so an upgraded cluster moves nothing.\n- Left alone: the balancer still picks the first eligible shard in key order when a real imbalance appears (a broker joins or comes back). That is one-off, not repeated, so not changed here.",
+          "timestamp": "2026-11-02T04:48:13-08:00",
+          "tree_id": "fece37be04cca739926ee896d9289a4cb4d99685",
+          "url": "https://github.com/GetFelix/felix/commit/a66f00d13e5200ce313481588ef7bb675aaa97b8"
+        },
+        "date": 1793624620618,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 358616.63,
+            "range": "7191.20",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 358616.63\nmean: 362684.54\nstdev: 7191.20\ncv: 1.98%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 358616.63,
+            "range": "7191.20",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 358616.63\nmean: 362684.54\nstdev: 7191.20\ncv: 1.98%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82469.24,
+            "range": "178.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82469.24\nmean: 82407.79\nstdev: 178.58\ncv: 0.22%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 824692.36,
+            "range": "1785.84",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 824692.36\nmean: 824077.91\nstdev: 1785.84\ncv: 0.22%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
