@@ -9,18 +9,19 @@
 //!
 //! The set being left is the control plane's set at the generation right
 //! before the route's, as the model's `Swap` takes it (`oldSet' = CpSet`).
-//! It comes from the assignment this broker's watch saw at that generation,
-//! from the set the leader before shipped with at it, or from what this
-//! leader kept beside its own set. When none of those knows it, the fence
+//! A cut-over the control plane holds as pending names it on the route.
+//! Otherwise it comes from the assignment this broker's watch saw at that
+//! generation, from the set the leader before shipped with at it, or from
+//! what this leader kept beside its own set. When none of those knows it, the fence
 //! stays pending: fencing the new set alone could leave a majority of the old
 //! one that never heard of the change.
 
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
 
-use felix_router::{NodeRef, PriorSet, Route};
+use felix_router::{NodeRef, PendingChange, PriorSet, Route};
 use felix_storage::StorageId;
-use felix_storage::disk_log::{Membership, ReplicaSet};
+use felix_storage::disk_log::{Member, Membership, ReplicaSet};
 use felix_wire::internal::{PeerCapabilities, ReplicaSetView, SetMember};
 
 use crate::peer::PeerRequester;
@@ -199,22 +200,36 @@ pub(crate) fn set_before(
     prior: Option<&PriorSet>,
 ) -> Result<Option<Membership>, String> {
     let before = route.generation.checked_sub(1);
-    if let Some(stored) = stored {
-        if stored.current.generation > route.generation {
-            return Err(format!(
-                "this broker counts the set of generation {}, newer than this one",
-                stored.current.generation
-            ));
-        }
-        // What this leader kept beside its set under `joint_fence`. A set
-        // kept at this generation without it may have been kept before the
-        // feature was on, and says nothing about the set before.
-        if stored.current.generation == route.generation
-            && let Some(leaving) = &stored.leaving
-            && Some(leaving.generation) == before
-        {
-            return Ok(Some(leaving.clone()));
-        }
+    if let Some(stored) = stored
+        && stored.current.generation > route.generation
+    {
+        return Err(format!(
+            "this broker counts the set of generation {}, newer than this one",
+            stored.current.generation
+        ));
+    }
+    // A cut-over the control plane holds as pending names the set it leaves:
+    // the control plane's own, as the model's `Swap` takes it, and the set
+    // the leader acknowledges on (`held_by_both`). After an election the
+    // control plane recorded without taking, this log can keep the elected
+    // leader's set at the generation before, which is not the one being left.
+    if let Some(pending) = route
+        .pending
+        .as_deref()
+        .filter(|pending| pending.generation == route.generation)
+        && let Some(before) = before
+    {
+        return Ok(Some(recorded_leaving(pending, before, stored, prior)));
+    }
+    // What this leader kept beside its set under `joint_fence`. A set kept
+    // at this generation without it may have been kept before the feature
+    // was on, and says nothing about the set before.
+    if let Some(stored) = stored
+        && stored.current.generation == route.generation
+        && let Some(leaving) = &stored.leaving
+        && Some(leaving.generation) == before
+    {
+        return Ok(Some(leaving.clone()));
     }
     match prior.filter(|prior| prior.generation == route.generation) {
         Some(PriorSet {
@@ -240,6 +255,49 @@ pub(crate) fn set_before(
          fenced",
         route.generation
     ))
+}
+
+/// A pending change's set being left, at generation `before`. The other
+/// sources only fill in what `PendingChange` does not carry, each member's
+/// copy and learner mark, and only when they name exactly its members.
+/// Without one, the members count by node id alone.
+fn recorded_leaving(
+    pending: &PendingChange,
+    before: u64,
+    stored: Option<&ReplicaSet>,
+    prior: Option<&PriorSet>,
+) -> Membership {
+    let recorded: BTreeSet<&str> = pending.leaving.iter().map(String::as_str).collect();
+    let same = |set: &Membership| {
+        set.generation == before
+            && set.members.len() == recorded.len()
+            && set
+                .members
+                .iter()
+                .all(|member| recorded.contains(member.node.as_str()))
+    };
+    let kept_leaving = stored.and_then(|stored| stored.leaving.clone());
+    let watched = prior
+        .filter(|prior| prior.generation == before + 1)
+        .and_then(|prior| prior.before.as_deref())
+        .map(|set| crate::replica_set::placed(set, before));
+    let logged = stored.map(|stored| stored.current.clone());
+    [kept_leaving, watched, logged]
+        .into_iter()
+        .flatten()
+        .find(same)
+        .unwrap_or_else(|| Membership {
+            generation: before,
+            members: recorded
+                .iter()
+                .map(|node| Member {
+                    node: node.to_string(),
+                    storage: None,
+                    learner: false,
+                    wiped: false,
+                })
+                .collect(),
+        })
 }
 
 /// The fence for `route` under `joint_fence`: the set it leaves, and the

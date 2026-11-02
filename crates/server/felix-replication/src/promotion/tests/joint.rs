@@ -450,6 +450,74 @@ async fn a_leader_whose_log_kept_no_set_still_fences_the_old_majority() {
     assert_eq!(own.leaving.map(|old| old.generation), Some(4));
 }
 
+/// **A pending cut-over leaves the control plane's set, whatever the log
+/// kept.** The control plane recorded an election at generation 4 without
+/// taking it, so its set stayed {broker-x, broker-b, broker-c} while the
+/// elected leader shipped {broker-a, broker-x, broker-z}, which broker-a's
+/// log keeps. Its watch never saw the step to the cut-over. The route's
+/// pending change still names the set being left: with broker-b and broker-c
+/// down the shard stays closed, and the fence carries the recorded set.
+#[tokio::test]
+async fn a_pending_cut_over_leaves_the_recorded_set_whatever_the_log_kept() {
+    let mut replicas = replicas_with(&["broker-x", "broker-z"]);
+    replicas.get_mut("broker-b").reachable = false;
+    replicas.get_mut("broker-c").reachable = false;
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+    kept_before(&leader, &[LEADER, "broker-x", "broker-z"], &[]).await;
+
+    let outcome = fence_pending(&replicas, &leader).await;
+
+    let Outcome::Pending { why, .. } = &outcome else {
+        panic!("left the set the log kept, not the recorded one: {outcome:?}");
+    };
+    assert!(why.contains("1 of 3 voters of the set being left"), "{why}");
+
+    replicas.get_mut("broker-b").reachable = true;
+    let outcome = fence_pending(&replicas, &leader).await;
+
+    assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
+    let kept = replicas
+        .get("broker-b")
+        .broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log")
+        .replica_set()
+        .expect("broker-b kept the set");
+    let leaving: Vec<String> = kept
+        .leaving
+        .expect("the set being left rides the fence")
+        .members
+        .into_iter()
+        .map(|member| member.node)
+        .collect();
+    assert_eq!(leaving, ["broker-b", "broker-c", "broker-x"]);
+}
+
+/// [`fence`] on [`swapped`] as a cut-over the control plane holds pending,
+/// leaving {broker-x, broker-b, broker-c}, with no step seen by the watch.
+async fn fence_pending(replicas: &Replicas, leader: &Arc<Broker>) -> Outcome {
+    let route = Route {
+        pending: Some(Arc::new(felix_router::PendingChange {
+            generation: PROMOTED,
+            leaving: vec!["broker-x".into(), "broker-b".into(), "broker-c".into()],
+        })),
+        ..swapped()
+    };
+    let addr_of = addr_of;
+    let joint = Joint::new(&addr_of, None);
+    fence_shard(
+        replicas,
+        leader,
+        LEADER,
+        &key(),
+        &route,
+        false,
+        Some(&joint),
+    )
+    .await
+}
+
 /// **A set before that is not known keeps the shard closed.** Neither the
 /// watch nor the leader's log knows the set at generation 4, so the fence
 /// does not fall back to the new set alone. A first assignment, with nothing

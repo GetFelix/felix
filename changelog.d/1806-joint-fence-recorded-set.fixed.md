@@ -1,0 +1,1 @@
+A cut-over's joint fence takes the set being left from the control plane's pending change on the route, not from the broker's watch or log, which could disagree after an election the control plane recorded without taking (#1806). Dormant behind the `joint_fence` fleet feature.

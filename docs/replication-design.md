@@ -4043,7 +4043,14 @@ Once it is finalized on a broker that offers `ELECTION`:
   each. That covers a move's cut-over, a replacement's join and
   seat, a top-up and a grow. The set being left is the control plane's set
   at the generation right before the route's, as the model's `Swap` takes it.
-  The broker learns it from the assignment its watch saw at that generation,
+  A cut-over the control plane holds as pending names that set on the route,
+  and the broker takes it from there, the same set the leader acknowledges
+  on. The broker's watch or log only fill in each member's copy and learner
+  mark, and only when they name the same members. This matters after an
+  election the control plane recorded without taking: the log then keeps
+  the elected leader's set at the generation before, not the control
+  plane's. For other changes the broker learns the set from the assignment
+  its watch saw at that generation,
   from the set the leader before shipped with at it, or from what this
   leader kept beside its own set. When none of those knows it (the watch
   started from a snapshot, or skipped that generation, and the log keeps an
