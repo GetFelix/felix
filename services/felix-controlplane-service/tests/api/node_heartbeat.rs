@@ -567,10 +567,19 @@ async fn election_features_are_refused_with_their_reason() {
     assert_eq!(read_json(response).await["would_enable"], false);
     refused("finalize joint_fence first", "replica_election").await;
 
-    // Offering ELECTION is not enough: joint_fence stays refused until the
-    // control plane re-admits learners, so replica_election waits behind it.
+    // Offering ELECTION is not enough: joint_fence also waits for brokers
+    // that name start holders, and stays refused until the control plane
+    // re-admits learners, so replica_election waits behind it.
     let mut offered = all.to_vec();
     offered.push("peer_election");
+    let response = app
+        .clone()
+        .oneshot(register(&offered))
+        .await
+        .expect("request");
+    assert_eq!(response.status(), StatusCode::OK);
+    refused("hold a generation's start record", "joint_fence").await;
+    offered.push("start_holders");
     let response = app
         .clone()
         .oneshot(register(&offered))

@@ -165,7 +165,9 @@ pub(crate) fn check_prerequisites(
 
 /// Refuse to enable `joint_fence` or `replica_election` unless every serving
 /// broker offers the `ELECTION` capability (reported as
-/// [`felix_common::fleet::PEER_ELECTION`]), and, for `replica_election`,
+/// [`felix_common::fleet::PEER_ELECTION`]), for `joint_fence` unless every
+/// serving broker names start holders in its reports
+/// ([`felix_common::fleet::START_HOLDERS`]), and, for `replica_election`,
 /// `metadata_level_ready` says the control plane keeps the pending replica set
 /// and adopts elected leaders, and `joint_fence_ready` says `joint_fence` may be
 /// finalized at all.
@@ -186,18 +188,29 @@ pub(crate) fn check_election<'a, I>(
 where
     I: IntoIterator<Item = &'a Node>,
 {
-    use felix_common::fleet::{JOINT_FENCE, PEER_ELECTION, REPLICA_ELECTION};
+    use felix_common::fleet::{JOINT_FENCE, PEER_ELECTION, REPLICA_ELECTION, START_HOLDERS};
     let needs_level = feature == REPLICA_ELECTION.name();
     let is_joint_fence = feature == JOINT_FENCE.name();
     if !needs_level && !is_joint_fence {
         return Ok(());
     }
-    let lacking = lacking(nodes, PEER_ELECTION.name());
-    if !lacking.is_empty() {
+    let nodes: Vec<&Node> = nodes.into_iter().collect();
+    let without_election = lacking(nodes.iter().copied(), PEER_ELECTION.name());
+    if !without_election.is_empty() {
         return Err(StoreError::Conflict(format!(
             "cannot finalize {feature}: serving broker(s) {} do not offer the ELECTION \
              peer capability; upgrade them first",
-            lacking.join(", "),
+            without_election.join(", "),
+        )));
+    }
+    // A learner is re-admitted only on its leader's word that it holds the
+    // start record. A broker that never says so would keep it one for good.
+    let without_holders = lacking(nodes.iter().copied(), START_HOLDERS.name());
+    if is_joint_fence && !without_holders.is_empty() {
+        return Err(StoreError::Conflict(format!(
+            "cannot finalize {feature}: serving broker(s) {} do not report which followers \
+             hold a generation's start record; upgrade them first",
+            without_holders.join(", "),
         )));
     }
     if is_joint_fence && !joint_fence_ready {

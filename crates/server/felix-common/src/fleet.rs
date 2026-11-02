@@ -175,6 +175,14 @@ pub const REPLICA_ELECTION: FleetFeature = FleetFeature::new("replica_election")
 /// serving broker reports it.
 pub const PEER_ELECTION: FleetFeature = FleetFeature::new("peer_election");
 
+/// Not a feature: how a broker reports that its shard leaders name, in each
+/// replica report, the followers holding the generation's start record. The
+/// control plane re-admits a replaced copy only on that word, so it finalizes
+/// [`JOINT_FENCE`] only when every serving broker reports this. Kept out of
+/// [`IMPLEMENTED`], like [`PEER_ELECTION`]; every broker from this build on
+/// adds it to its report.
+pub const START_HOLDERS: FleetFeature = FleetFeature::new("start_holders");
+
 /// The most features one gate tracks. A report longer than this is cut, which
 /// only ever leaves features off.
 pub const MAX_FEATURES: usize = 64;
@@ -223,7 +231,10 @@ pub fn prerequisites(feature: &str) -> &'static [FleetFeature] {
     ];
     if feature == REPLICA_ELECTION.name() {
         FOR_ELECTION
-    } else if feature == MAJORITY_ACK.name() {
+    } else if feature == MAJORITY_ACK.name() || feature == JOINT_FENCE.name() {
+        // A replaced copy stops being a learner only once it holds its
+        // generation's start record, which leaders write under
+        // generation_start.
         &[GENERATION_START]
     } else if feature == LEASE_FREE_READS.name() || feature == FENCED_CACHES.name() {
         BY_FOLLOWERS
