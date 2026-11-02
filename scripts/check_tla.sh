@@ -250,6 +250,9 @@ expectations=(
   "FelixShardElectSwapDrop1StoodOneOther pass"
   "FelixShardElectSwapDrop1StoodSeveralOther pass"
   "FelixShardElectSwapFlipSkipsBallot violates OneLeaderPerGeneration"
+  "FelixShardElectLive pass"
+  "FelixShardElectLiveLoosePreVote violates NoStandAgainstHeardLeader"
+  "FelixShardElectLiveNoBackoff violates liveness"
   "FelixShardElectPreVote pass"
   "FelixShardElectNoBallotAcks violates AckedHeldByLeader"
   "FelixShardElectStepDown pass"
@@ -607,7 +610,11 @@ for entry in "${selected[@]}"; do
       ;;
     "violates "*)
       invariant="${expect#violates }"
-      if ! grep -q "Invariant $invariant is violated" <<<"$output"; then
+      # `violates liveness` expects a temporal property to fail; an action
+      # property is named as an invariant is.
+      pattern="(Invariant|Action property) $invariant is violated"
+      if [ "$invariant" = liveness ]; then pattern="Temporal properties were violated"; fi
+      if ! grep -qE "$pattern" <<<"$output"; then
         echo "   FAIL: expected TLC to violate $invariant"
         echo "$output" | tail -40
         failed=1
