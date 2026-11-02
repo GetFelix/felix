@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793630632316,
+  "lastUpdate": 1793632012847,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -42328,6 +42328,58 @@ window.BENCHMARK_DATA = {
             "range": "41571.43",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 813140.26\nmean: 798892.23\nstdev: 41571.43\ncv: 5.20%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "50c31602e68faca1da2e3d75bdd67bc32ae8c3b4",
+          "message": "fix(controlplane): balance the totals with stream shards before caches (#1768) (#1772)\n\nFixes #1768.\n\nWhen leader totals are two apart, placement moves the first over-share shard it plans. Caches (`drains`, `epochs`, `leases`) sort before most stream names, so that shard was usually a cache. Moving a cache fences it, and every client of the cache waits until the move finishes. #1767 stops bulk creates from causing the imbalance, but deletes and drains still cause it.\n\nAmong shards that move only for balance (start-order class `BALANCE`), the plan now puts streams before caches. The first stream shard that can go closes the gap, so the cache shards behind it no longer qualify. A cache still moves when no stream shard ahead of it can. Drains, restores, failovers, retried moves and new placements keep their order. A cache's own spread, zone and trim moves now also wait behind the streams' moves for a slot.\n\nTests (`placement/tests/balance.rs`). The first two fail without the fix:\n- `a_delete_is_balanced_by_moving_a_stream_not_a_cache`: totals 3/3/1 after two streams are deleted from broker-2. Before the fix `drains` moved; now one `wl.*` stream moves.\n- `a_drain_on_five_brokers_leaves_the_caches_in_place`: a drain whose destinations end two apart. Before the fix `epochs` moved; now the totals end within one and no cache moves.\n- `a_cache_moves_for_the_totals_when_no_stream_shard_can`: the fallback. With `s` at 1/1/1 and totals 3/1/1, a cache moves and the totals even out.\n\nDocs: `docs/control-plane.md` (balance rules) and the docs-site scaling page say which shard the totals move.\n\nDesign calls\n- Fixed through plan order instead of a check in `decide`, so a cache is still the fallback when every stream shard is blocked (backoff, region, per-stream spread). A hard \"never move a cache for the totals\" rule could leave the totals two apart for good.\n- Only the class with nothing to repair is reordered. A stream shard whose last move was given up stays in the retried class, behind the caches. Retried moves go last on purpose. Failover and drain order stay as they are, so a cache on a dead or draining broker doesn't wait behind streams.\n- I didn't do least-recently-moved. It needs per-shard move history in the plan, and preferring streams is enough to stop the churn the issue describes.",
+          "timestamp": "2026-11-02T06:35:22-08:00",
+          "tree_id": "ff385559ba4dec688dc63c67b2083f186ec2fd45",
+          "url": "https://github.com/GetFelix/felix/commit/50c31602e68faca1da2e3d75bdd67bc32ae8c3b4"
+        },
+        "date": 1793632011939,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 337531.45,
+            "range": "8517.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 337531.45\nmean: 342059.77\nstdev: 8517.58\ncv: 2.49%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 337531.45,
+            "range": "8517.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 337531.45\nmean: 342059.77\nstdev: 8517.58\ncv: 2.49%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81739.61,
+            "range": "380.49",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81739.61\nmean: 81746.15\nstdev: 380.49\ncv: 0.47%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 817396.06,
+            "range": "3804.92",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 817396.06\nmean: 817461.47\nstdev: 3804.92\ncv: 0.47%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
