@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793597133590,
+  "lastUpdate": 1793604437846,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -52932,6 +52932,72 @@ window.BENCHMARK_DATA = {
             "range": "212.23",
             "unit": "us",
             "extra": "trials: 5\nmedian: 557.00\nmean: 635.00\nstdev: 212.23\ncv: 33.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f98da7bdfc327c4d251a8b6506ca11378e7f72e6",
+          "message": "ci(perf-pr): alternate baseline and candidate trials (#1756)\n\nperf-pr.yml ran every baseline trial and then every candidate trial, so runner drift between the two halves showed up as a regression. A 64 KiB fanout-10 run reported -5.6% with all twelve candidate trials uniformly slower; an interleaved A/B across three runners (18 rounds, arms rotated) then showed the same code within +-0.6%.\n\nNow both binaries are built first, then each round runs one trial of every cell on one side and then the other, and the side that goes first flips each round. Six rounds, so each side goes first equally often (the job timeout rises to 40 minutes to fit). The harness already takes `--trials 1` and appends to the JSONL under the directory it runs in, and `compare_benchmarks.py` groups by cell, so nothing else changes.\n\nDesign calls:\n- Alternation is per round (all cells of one side, then all cells of the other), not per cell. Cells are about a minute each, so a round is a few minutes; drift on that scale is the thing being cancelled.\n- The old baseline and candidate run steps become \"Prepare baseline\", \"Build baseline and candidate\" and one \"Run benchmarks\" step. The comment step maps each of them to its failure reason.\n- Build moves ahead of all trials so compile time never sits between measurements.\n\nDocs: benchmarks.md, building.md and the comparison comment text describe the alternating method.\n\nThe PR's own Performance Regression Check run is the proof; I will link it here.",
+          "timestamp": "2026-11-01T23:16:00-08:00",
+          "tree_id": "56f3fb3bfc96deb0db0ced762fa65a42248ad549",
+          "url": "https://github.com/GetFelix/felix/commit/f98da7bdfc327c4d251a8b6506ca11378e7f72e6"
+        },
+        "date": 1793604431621,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 94,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 94.00\nmean: 94.40\nstdev: 0.55\ncv: 0.58%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 129,
+            "range": "1.95",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 129.00\nmean: 129.60\nstdev: 1.95\ncv: 1.50%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 173,
+            "range": "10.27",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 173.00\nmean: 171.00\nstdev: 10.27\ncv: 6.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 130,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 130.00\nmean: 130.60\nstdev: 0.89\ncv: 0.68%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 255,
+            "range": "5.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 255.00\nmean: 255.20\nstdev: 5.07\ncv: 1.99%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 358,
+            "range": "16.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 358.00\nmean: 348.60\nstdev: 16.64\ncv: 4.77%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
