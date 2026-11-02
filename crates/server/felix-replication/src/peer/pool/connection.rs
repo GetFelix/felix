@@ -488,9 +488,9 @@ impl LaneClass {
             | InternalMessage::PreVote(_)
             | InternalMessage::ReplicateFetch(_)
             | InternalMessage::Ping(_) => Self::Control,
-            InternalMessage::ForwardPublish(_) | InternalMessage::ForwardCacheOp(_) => {
-                Self::Forward
-            }
+            InternalMessage::ForwardPublish(_)
+            | InternalMessage::ForwardCacheOp(_)
+            | InternalMessage::LeaseForwardCacheOp(_) => Self::Forward,
             _ => Self::Replication,
         }
     }
@@ -647,6 +647,18 @@ pub(super) fn with_correlation(message: InternalMessage, correlation_id: u64) ->
             correlation_id,
             ..m
         }),
+        InternalMessage::LeaseForwardCacheOp(m) => {
+            InternalMessage::LeaseForwardCacheOp(ForwardCacheOp {
+                correlation_id,
+                ..m
+            })
+        }
+        InternalMessage::LeaseForwardCacheOk(m) => {
+            InternalMessage::LeaseForwardCacheOk(LeaseForwardCacheOk {
+                correlation_id,
+                ..m
+            })
+        }
     }
 }
 

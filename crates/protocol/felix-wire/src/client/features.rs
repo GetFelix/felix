@@ -412,13 +412,23 @@ pub const FEATURE_EXPLICIT_SHARD: u32 = 0x0000_0008;
 /// got.
 pub const FEATURE_HEAD_TRIM: u32 = 0x0000_0010;
 
+/// The broker mints a lease token on a `cache_put_if` that asks for one with
+/// `lease_token`.
+///
+/// An extended bit, in `server_features_hi`. Advertised by a *broker*, and
+/// only one configured with a lease token key: an older broker ignores the
+/// unknown field and makes the write without minting, which would look like
+/// a refusal to mint. A client checks the bit before setting the field.
+pub const FEATURE_LEASE_TOKEN: u32 = 0x0000_0020;
+
 /// Every extended feature bit this version implements: bits that travel in
 /// `client_features_hi` / `server_features_hi` rather than the first word.
 pub const KNOWN_FEATURES_HI: u32 = FEATURE_INSPECT
     | FEATURE_STREAM_DELETED
     | FEATURE_PUBLISH_WIDTH
     | FEATURE_EXPLICIT_SHARD
-    | FEATURE_HEAD_TRIM;
+    | FEATURE_HEAD_TRIM
+    | FEATURE_LEASE_TOKEN;
 
 /// The peer reads the other side's extended feature word.
 ///

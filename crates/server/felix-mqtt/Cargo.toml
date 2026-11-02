@@ -16,7 +16,7 @@ publish = false
 [dependencies]
 async-trait = { workspace = true }
 bytes = { workspace = true }
-felix-mqtt-wire = { path = "../../protocol/felix-mqtt-wire", version = "0.7.0-preview.2" }
+felix-mqtt-wire = { path = "../../protocol/felix-mqtt-wire", version = "0.7.0-preview.3" }
 metrics = { workspace = true }
 tokio = { workspace = true, features = ["io-util"] }
 tokio-util = { workspace = true }

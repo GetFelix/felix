@@ -1,5 +1,9 @@
 //! Wildcard permission matching. `*` matches zero or more bytes; there is no
 //! `?` or character-class syntax. Matching is byte-based and case-sensitive.
+//!
+//! Lease templates (`crate::is_lease_template`) are skipped by every check
+//! here: a template only grants through a lease token minted from it.
+use crate::lease::{expand_lease_templates, is_lease_template};
 use crate::resource::group_prefix;
 use crate::{
     Action, AuthzResult, CLUSTER_RESOURCE, CacheScope, GroupName, Namespace, PermissionPattern,
@@ -33,7 +37,7 @@ impl PermissionMatcher {
     /// Whether any pattern allows `action` on `resource`, directly or through
     /// an action that implies it ([`Action::is_granted_by`]).
     pub fn allows(&self, action: Action, resource: &str) -> bool {
-        self.patterns.iter().any(|pattern| {
+        self.grants().any(|pattern| {
             action.is_granted_by(pattern.action)
                 && wildcard_match(&pattern.resource_pattern, resource)
         })
@@ -46,7 +50,7 @@ impl PermissionMatcher {
     /// the string, but no tenant scope contains the cluster, so a pattern a
     /// tenant admin could write for themselves must not reach it.
     pub fn allows_cluster(&self, action: Action) -> bool {
-        self.patterns.iter().any(|pattern| {
+        self.grants().any(|pattern| {
             action.is_granted_by(pattern.action) && pattern.resource_pattern == CLUSTER_RESOURCE
         })
     }
@@ -72,7 +76,7 @@ impl PermissionMatcher {
             return true;
         }
         let prefix = group_prefix(tenant_id, namespace, stream);
-        let narrowed = self.patterns.iter().any(|pattern| {
+        let narrowed = self.grants().any(|pattern| {
             action.is_granted_by(pattern.action)
                 && pattern.resource_pattern.starts_with("group:")
                 && matches_some_extension(&pattern.resource_pattern, &prefix)
@@ -101,7 +105,7 @@ impl PermissionMatcher {
         if self.allows(action, &cache_resource(tenant_id, namespace, cache)) {
             return true;
         }
-        self.patterns.iter().any(|pattern| {
+        self.grants().any(|pattern| {
             action.is_granted_by(pattern.action)
                 && KeyGrant::parse(&pattern.resource_pattern).is_some_and(|grant| {
                     wildcard_match(grant.tenant, tenant_id.as_str())
@@ -112,9 +116,32 @@ impl PermissionMatcher {
         })
     }
 
+    /// What the lease templates naming lease cache `cache` grant the holder
+    /// of `key`, as `action:object` strings. Empty when none names it.
+    ///
+    /// # Errors
+    /// [`crate::AuthzError::InvalidLeaseKey`] when `key` cannot expand one of
+    /// them.
+    pub fn lease_grants(
+        &self,
+        tenant_id: &TenantId,
+        namespace: &Namespace,
+        cache: &CacheScope,
+        key: &str,
+    ) -> AuthzResult<Vec<String>> {
+        expand_lease_templates(&self.patterns, tenant_id, namespace, cache, key)
+    }
+
     /// The parsed patterns, for inspection and tests.
     pub fn patterns(&self) -> &[PermissionPattern] {
         &self.patterns
+    }
+
+    /// The patterns that grant directly: every one but the lease templates.
+    fn grants(&self) -> impl Iterator<Item = &PermissionPattern> {
+        self.patterns
+            .iter()
+            .filter(|pattern| !is_lease_template(&pattern.resource_pattern))
     }
 }
 

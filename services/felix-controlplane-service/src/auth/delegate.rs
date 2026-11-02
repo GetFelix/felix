@@ -32,7 +32,8 @@ use crate::auth::felix_token::{
 };
 use crate::auth::idp_registry::IdpIssuerConfig;
 use crate::auth::rbac::authorize::{
-    ACTION_TOKEN_DELEGATE, ParsedObject, object_within_scope, parse_permission,
+    ACTION_TOKEN_DELEGATE, ParsedObject, is_lease_template_permission, object_within_scope,
+    parse_permission,
 };
 use crate::auth::rbac::enforcer::build_enforcer;
 use crate::auth::rbac::permissions::effective_permissions;
@@ -200,7 +201,7 @@ pub async fn delegate_token(
         audience: BROKER_AUDIENCE.to_string(),
         may_act: None,
     };
-    let perms = for_fleet(
+    let mut perms = for_fleet(
         for_audience(
             narrow_permissions(subject.perms, &narrowing, &tenant_id),
             BROKER_AUDIENCE,
@@ -208,6 +209,9 @@ pub async fn delegate_token(
         BROKER_AUDIENCE,
         head_trim_finalized(&state).await,
     );
+    // A broker refuses to mint from a delegated token anyway; leaving the
+    // templates off says so in the token.
+    perms.retain(|perm| !is_lease_template_permission(perm));
     if perms.is_empty() {
         return Err(refused(Refusal::Forbidden, "no permissions"));
     }

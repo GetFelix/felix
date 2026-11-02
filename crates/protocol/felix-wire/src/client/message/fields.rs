@@ -211,6 +211,24 @@ pub enum StateChange {
     },
 }
 
+/// A token minted for the holder of a lease, on a `cache_condition_result`.
+/// The token is a bearer secret.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeaseToken {
+    pub token: String,
+    /// When the token stops working, in seconds since the Unix epoch.
+    pub expires_at: u64,
+}
+
+impl std::fmt::Debug for LeaseToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LeaseToken")
+            .field("token", &"<redacted>")
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
+}
+
 /// What a `cache_put_if` requires of the key's current entry.
 ///
 /// JSON is `"absent"` or `{"version": n}`.

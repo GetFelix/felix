@@ -29,7 +29,8 @@ pub use error_code::ErrorCode;
 pub use fence::{Fence, FenceOk, PeerCapabilities, Ping, Pong, ReplicateFetch};
 pub use forward::{
     AckMode, CacheOpKind, ForwardCacheCondition, ForwardCacheError, ForwardCacheOk, ForwardCacheOp,
-    ForwardCacheOutcome, ForwardPublish, ForwardPublishError, ForwardPublishOk, NotLeader,
+    ForwardCacheOutcome, ForwardLease, ForwardPublish, ForwardPublishError, ForwardPublishOk,
+    LeaseForwardCacheOk, NotLeader,
 };
 pub use handshake::{Hello, HelloOk};
 pub use header::{

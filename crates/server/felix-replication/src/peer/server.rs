@@ -601,7 +601,8 @@ async fn serve_connection(
                     // Requesters never relied on a stream's order: the ingress
                     // holds a shard's next forward until this one is answered.
                     request @ (InternalMessage::ForwardPublish(_)
-                    | InternalMessage::ForwardCacheOp(_)) => {
+                    | InternalMessage::ForwardCacheOp(_)
+                    | InternalMessage::LeaseForwardCacheOp(_)) => {
                         // Refused rather than queued: waiting would stall the
                         // stream, and an older requester puts replication on
                         // it too. Nothing was applied, so the forwarder may
@@ -703,7 +704,7 @@ fn overloaded(request: &InternalMessage) -> InternalMessage {
     let correlation_id = request.correlation_id();
     let detail = "this broker is serving as many forwards as it allows".to_string();
     match request {
-        InternalMessage::ForwardCacheOp(_) => {
+        InternalMessage::ForwardCacheOp(_) | InternalMessage::LeaseForwardCacheOp(_) => {
             InternalMessage::ForwardCacheError(ForwardCacheError {
                 correlation_id,
                 code: ErrorCode::Overload,

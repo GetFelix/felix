@@ -198,6 +198,14 @@ pub enum Kind {
     PreVote = 43,
     /// The answer to `PreVote`: granted, or refused with a reason.
     PreVoteAnswer = 44,
+    /// `ConditionalForwardCacheOp` for a put that asks the owner to mint a
+    /// lease token if it applies, answered with `LeaseForwardCacheOk`. A
+    /// separate kind so an older owner refuses it instead of writing without
+    /// minting.
+    LeaseForwardCacheOp = 45,
+    /// The conditional write's outcome and the lease token, or why there is
+    /// none.
+    LeaseForwardCacheOk = 46,
 }
 
 impl Kind {
@@ -249,6 +257,8 @@ impl Kind {
             42 => Ok(Kind::SetStamped),
             43 => Ok(Kind::PreVote),
             44 => Ok(Kind::PreVoteAnswer),
+            45 => Ok(Kind::LeaseForwardCacheOp),
+            46 => Ok(Kind::LeaseForwardCacheOk),
             other => Err(Error::UnsupportedInternalKind(other)),
         }
     }

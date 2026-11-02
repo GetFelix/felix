@@ -119,6 +119,9 @@ fn make_auth_ctx(tenant_id: &str, perms: &[&str]) -> AuthContext {
         tenant_id: tenant_id.to_string(),
         matcher,
         token: "test-token".to_string(),
+        issued_at: 0,
+        expires_at: i64::MAX,
+        lease_token: false,
         revocable: crate::serving::revocation::Revocable::new(
             Default::default(),
             tenant_id.to_string(),
@@ -126,7 +129,6 @@ fn make_auth_ctx(tenant_id: &str, perms: &[&str]) -> AuthContext {
             None,
             0,
         ),
-        expires_at: i64::MAX,
     }
 }
 

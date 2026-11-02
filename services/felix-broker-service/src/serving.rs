@@ -22,6 +22,7 @@ pub mod forward;
 pub(crate) mod group_ops;
 pub(crate) mod inspect;
 pub mod kafka;
+pub mod lease;
 pub mod limits;
 pub mod mqtt;
 pub mod quic;

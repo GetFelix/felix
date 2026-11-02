@@ -4,18 +4,19 @@
 //! URL paths and broker storage paths, so each of those syntaxes constrains
 //! them: a stream named `*` would read as a wildcard in every grant written
 //! for it, `/` or `:` would shift an object's segments, and `..` is a path.
-//! Checked when a resource is created; names that exist already are left
-//! alone.
+//! The control plane checks it when a resource is created (names that exist
+//! already are left alone); a broker checks it on every name a lease template
+//! expands to.
 
 /// Longest name accepted.
-pub(crate) const MAX_IDENTIFIER_LEN: usize = 128;
+pub const MAX_IDENTIFIER_LEN: usize = 128;
 
 /// Check a new name: 1 to [`MAX_IDENTIFIER_LEN`] ASCII letters, digits, `-`,
 /// `_` or `.`, starting with a letter or digit.
 ///
 /// # Errors
 /// A message naming `what` and the rule it broke, fit to return to the caller.
-pub(crate) fn validate_identifier(what: &str, value: &str) -> Result<(), String> {
+pub fn validate_identifier(what: &str, value: &str) -> Result<(), String> {
     if value.is_empty() || value.len() > MAX_IDENTIFIER_LEN {
         return Err(format!(
             "{what} must be 1 to {MAX_IDENTIFIER_LEN} characters"

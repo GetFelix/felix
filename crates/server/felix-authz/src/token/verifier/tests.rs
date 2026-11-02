@@ -72,6 +72,7 @@ fn verify_uses_first_key_when_no_kid() {
         jti: None,
         perms: vec![],
         act: None,
+        lease: None,
     };
     let header = Header::new(signing.alg);
     let encoding_key = encoding_key_from_seed(&signing.private_key);
@@ -101,6 +102,7 @@ fn verify_succeeds_when_kid_unknown() {
         jti: None,
         perms: vec![],
         act: None,
+        lease: None,
     };
     let mut header = Header::new(signing.alg);
     header.kid = Some("unknown".to_string());

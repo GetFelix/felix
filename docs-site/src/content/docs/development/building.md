@@ -146,7 +146,7 @@ Its jobs:
 | `chart` | `scripts/check_chart.py`, the same as `task chart:check` |
 | `python`, `typescript` | Builds each binding and runs its client conformance suite, then verifies the results with `felix-conformance verify` |
 | `spec-pairing` | `scripts/check_spec_pairing.py` against the PR base, on pull requests that change code |
-| `formal` | `scripts/check_tla.sh` (`task tla:check`), only when `docs/formal/`, `scripts/check_tla.sh` or `ci.yml` changes. A pull request checks the configurations of ten minutes or less (`TLA_QUICK=1`); main checks all of them |
+| `formal` | `scripts/check_tla.sh` (`task tla:check`), only when `docs/formal/`, `scripts/check_tla.sh` or `ci.yml` changes. A pull request checks the configurations of ten minutes or less (`TLA_QUICK=1`) and the ones whose `.cfg` it changes, each one over 30 minutes in a `formal-heavy` job of its own; main checks all of them |
 | `fuzz` | `task fuzz` with `FUZZ_SECONDS=30` |
 
 `task deny` runs `cargo-deny check` against

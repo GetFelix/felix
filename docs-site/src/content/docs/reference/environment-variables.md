@@ -300,6 +300,51 @@ export FELIX_CONTROLPLANE_SYNC_INTERVAL_MS="500"   # Fast polling
 export FELIX_CONTROLPLANE_SYNC_INTERVAL_MS="10000" # Slow polling
 ```
 
+## Lease Tokens
+
+Brokers mint lease tokens for lease holders; see
+[Lease tokens](/features/security/#lease-tokens).
+
+### `FELIX_LEASE_TOKEN_KEY_FILE`
+
+**Description**: File holding the key brokers sign and verify lease tokens
+with: one base64 32-byte Ed25519 seed per line (standard or URL-safe, padding
+optional), blank lines and `#` comments ignored. The first key signs and every
+key verifies. Every broker needs the same file.
+
+**Type**: File path
+
+**Default**: unset (the broker neither mints nor accepts lease tokens, and does
+not advertise `FEATURE_LEASE_TOKEN`)
+
+**Example**:
+```bash
+openssl rand -base64 32 > lease-keys
+export FELIX_LEASE_TOKEN_KEY_FILE="$PWD/lease-keys"
+```
+
+**Notes**:
+- Read once at startup. A file that cannot be read, holds no key, or has a
+  line that is not a 32-byte seed stops the broker; the error names the line,
+  never its contents.
+- Whoever has the file can mint lease tokens, so protect it like a signing key.
+  To rotate, see [docs/auth.md](https://github.com/GetFelix/felix/blob/main/docs/auth.md#the-lease-key).
+
+### `FELIX_LEASE_TOKEN_MAX_TTL_SECONDS`
+
+**Description**: The longest a lease token lasts, in seconds. A token lasts as
+long as the lease entry's TTL, but no longer than this or the caller's own
+token.
+
+**Type**: Unsigned integer, at least 1
+
+**Default**: `300`
+
+**Example**:
+```bash
+export FELIX_LEASE_TOKEN_MAX_TTL_SECONDS="60"
+```
+
 ## Publishing Configuration
 
 ### `FELIX_ACK_ON_COMMIT`
