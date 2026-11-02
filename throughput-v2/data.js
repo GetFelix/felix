@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793605105682,
+  "lastUpdate": 1793606447008,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -41808,6 +41808,58 @@ window.BENCHMARK_DATA = {
             "range": "19980.21",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1571662.51\nmean: 1563700.80\nstdev: 19980.21\ncv: 1.28%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "61d36e843ea86233fdda2cb486fa3e919a77e91e",
+          "message": "ci(release): fix the aarch64 Node addon link under zig (#1759)\n\nThe Felix nightly (run 41388153150) and the v0.7.0-preview.2 release both failed on \"Node addon (aarch64-unknown-linux-gnu)\", so the `nightly` tag never moved and npm publishing was skipped. The failure is not RUSTFLAGS: with #1752 applied it still fails with `unsupported linker arg: --fix-cortex-a53-843419`. v0.7.0-preview.1 passed on Rust 1.97.1; the leg broke when the toolchain moved to 1.99.1, whose rustc passes `-Wl,--fix-cortex-a53-843419` on aarch64 Linux, and zig rejects it.\n\nnapi CLI 2 always installs its own zig linker wrapper and has no hook to drop a flag, so this puts a small `zig` shim ahead of the real one on PATH for that one leg. The shim removes only that argument and execs the real zig.\n\nProof: a throwaway workflow on this branch ran the aarch64 leg (build plus the glibc 2.28 check) green, run 41397987131. The workflow was removed again before this PR.\n\nDesign calls:\n- Shim on PATH instead of switching to cargo-zigbuild or pinning an older toolchain: smallest change, touches only the failing leg, easy to delete when napi or zig handles the flag.",
+          "timestamp": "2026-11-01T23:51:18-08:00",
+          "tree_id": "489dc4c0b2407c2a770e95d4f9fa4950c245751a",
+          "url": "https://github.com/GetFelix/felix/commit/61d36e843ea86233fdda2cb486fa3e919a77e91e"
+        },
+        "date": 1793606446098,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 347662.16,
+            "range": "20194.09",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 347662.16\nmean: 346843.39\nstdev: 20194.09\ncv: 5.82%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 347662.16,
+            "range": "20194.09",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 347662.16\nmean: 346843.39\nstdev: 20194.09\ncv: 5.82%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 78581.08,
+            "range": "2066.33",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 78581.08\nmean: 77785.43\nstdev: 2066.33\ncv: 2.66%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 785810.82,
+            "range": "20663.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 785810.82\nmean: 777854.30\nstdev: 20663.31\ncv: 2.66%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
