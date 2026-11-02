@@ -1102,7 +1102,7 @@ While this reference covers broker configuration, clients also have tunable para
 
 **Default**: `8`
 
-**Description**: Most QUIC connections for cache operations, all opened on the first cache request.
+**Description**: Most QUIC connections a `Connection` uses for cache operations, all opened on its first cache request.
 
 ### Cache Streams Per Connection
 

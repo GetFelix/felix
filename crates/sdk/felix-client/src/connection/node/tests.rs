@@ -249,6 +249,57 @@ async fn a_spreading_set_opens_connections_only_as_streams_need_them() -> Result
     Ok(())
 }
 
+/// Streams opened at once still land one per connection: a burst of
+/// subscriptions does not pile onto whichever connection opened first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_spreading_set_spreads_a_burst_of_streams() -> Result<()> {
+    let (broker, endpoint) = EchoBroker::start(1024)?;
+    let node = node(
+        &broker,
+        endpoint,
+        NodeLimits {
+            spread: true,
+            ..limits(8, 1024)
+        },
+    );
+    let streams = open_concurrently(&node, 8).await;
+    let mut slots: Vec<usize> = streams.iter().map(|stream| stream.lease.slot()).collect();
+    slots.sort_unstable();
+    slots.dedup();
+    assert_eq!(slots.len(), 8, "a burst shared connections: {slots:?}");
+    assert_eq!(node.connection_count(), 8);
+    Ok(())
+}
+
+/// Two placers that both see a connection idle cannot both take it as idle:
+/// the second is sent back to place again, which grows the set.
+#[tokio::test]
+async fn only_one_placer_claims_an_idle_connection() -> Result<()> {
+    let (broker, endpoint) = EchoBroker::start(1024)?;
+    let node = node(
+        &broker,
+        endpoint,
+        NodeLimits {
+            spread: true,
+            ..limits(4, 1024)
+        },
+    );
+    drop(node.open().await?);
+    let link = Arc::clone(&node.state.lock().unwrap().links[0]);
+    assert_eq!(link.load(), 0);
+    let first = super::StreamLease::claim(&link, true);
+    assert!(first.is_some());
+    assert!(
+        super::StreamLease::claim(&link, true).is_none(),
+        "claimed twice"
+    );
+    // Outside spreading, a busy connection still takes more streams.
+    let shared = super::StreamLease::claim(&link, false);
+    assert_eq!(link.load(), 2);
+    drop((first, shared));
+    Ok(())
+}
+
 /// The stream budget is the other trigger: a connection carrying its share
 /// gets a neighbour even when the broker would grant more.
 #[tokio::test]

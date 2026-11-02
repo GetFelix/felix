@@ -75,8 +75,9 @@ least-loaded connection.
 | Cache | All of `cache_conn_pool` on the first cache request | 0 or 8 |
 
 So with the defaults, a client that only publishes holds 4 connections to its
-broker, a client with one subscription holds 5, and a client using all three
-holds up to 20. `Connection::connection_count` reports the current number.
+broker (5 once it publishes by key, since it asks the stream's width over the
+event pool), a client with one subscription holds 5, and a client using all
+three holds up to 20. `Connection::connection_count` reports the current number.
 
 This matters for the broker's per-address cap (`FELIX_MAX_CONNECTIONS_PER_IP`,
 default 512), which counts every connection from one host. At 5 connections per
@@ -84,7 +85,8 @@ subscriber, about 100 default subscribers fit behind one address; at 20, about 2
 Clients sharing a host or a NAT address can lower `publish_conn_pool` (a
 subscriber publishing little loses nothing with `1`) or use one `Connection`
 with several subscriptions instead of many connections. A `Client` holds one
-connection per broker whatever it does (see "Cluster Client Connections").
+connection per broker, more only under heavy stream load (see "Cluster Client
+Connections").
 
 ### Publish Parallelism
 

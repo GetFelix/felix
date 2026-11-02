@@ -61,8 +61,8 @@ impl Connection {
         note_connection(&mut worker_connections, opened.lease.connection());
         let publish_worker = spawn_publish_worker(opened, &self.runtime_config, settings);
 
-        // Opened when the parent opens its own: a pooled parent's on its
-        // first cache request, so an identity dials nothing up front.
+        // Lazy when the parent's are: an identity's cache worker opens on its
+        // own first cache request, so an identity dials nothing up front.
         let cache_workers = if self.cache_workers.opens_on_demand() {
             CacheWorkers::on_demand(1)
         } else {

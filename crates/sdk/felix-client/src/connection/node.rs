@@ -109,7 +109,8 @@ impl NodeConnections {
     }
 
     /// Open and authenticate a stream on the connection with the most room,
-    /// adding a connection first if every one is saturated.
+    /// adding a connection first if every one is saturated, or, in a
+    /// spreading set below its ceiling, if every one already carries a stream.
     ///
     /// The lease counts the stream against its connection until dropped, so
     /// whoever owns the stream should hold it for as long as the stream is in
@@ -125,11 +126,25 @@ impl NodeConnections {
     /// streams for different principals can share a connection without one's
     /// grants reaching the other's requests.
     pub(crate) async fn open_as(&self, credentials: &Credentials) -> Result<OpenedStream> {
-        let (link, first) = self.place().await?;
-        let lease = StreamLease::new(link);
-        let (send, recv, negotiated) = credentials
-            .open(lease.connection(), first, self.max_frame_bytes)
-            .await?;
+        // Token first: placing may dial a connection, which a refused or
+        // slow token would leave idle until the broker's auth timeout.
+        let token = credentials.current_token().await?;
+        let (lease, first) = self.place().await?;
+        let opened = credentials
+            .open(lease.connection(), first, token, self.max_frame_bytes)
+            .await;
+        let (send, recv, negotiated) = match opened {
+            Ok(opened) => opened,
+            Err(err) => {
+                // A spreading set may have dialled this connection for the
+                // refused stream. Idle, it would only wait out the broker's
+                // auth timeout and count against the per-address cap.
+                if self.spread && lease.link.load() == 1 {
+                    lease.connection().close(0u32.into(), b"stream refused");
+                }
+                return Err(err);
+            }
+        };
         Ok(OpenedStream {
             send,
             recv,
@@ -139,7 +154,7 @@ impl NodeConnections {
     }
 
     /// Pick a connection and open a raw stream on it.
-    async fn place(&self) -> Result<(Arc<Link>, (SendStream, RecvStream))> {
+    async fn place(&self) -> Result<(StreamLease, (SendStream, RecvStream))> {
         loop {
             let (candidates, can_grow, grown) = {
                 let mut state = self.state.lock().expect("node state");
@@ -153,10 +168,13 @@ impl NodeConnections {
             // ceiling, and connections open only as streams need them.
             let spread_first =
                 self.spread && can_grow && candidates.first().is_none_or(|link| link.load() > 0);
+            // Below the ceiling, a spreading set takes only idle connections.
+            let mut idle_only = self.spread && can_grow;
             if spread_first {
                 match self.grow(grown).await {
                     Ok(()) => continue,
                     Err(err) if !candidates.is_empty() => {
+                        idle_only = false;
                         debug!(role = self.role, error = %err, "could not add a connection; using an existing one");
                     }
                     Err(err) => return Err(err),
@@ -166,8 +184,14 @@ impl NodeConnections {
                 if link.load() >= self.streams_per_conn {
                     break;
                 }
+                // Counted before the open, so concurrent placers see the
+                // connection taken. One that lost an idle connection to
+                // another falls through to growing the set.
+                let Some(lease) = StreamLease::claim(link, idle_only) else {
+                    continue;
+                };
                 match try_open_bi(&link.connection) {
-                    Probe::Opened(pair) => return Ok((Arc::clone(link), pair)),
+                    Probe::Opened(pair) => return Ok((lease, pair)),
                     // Out of the broker's stream credit, or already closed:
                     // either way this one has no room right now.
                     Probe::Saturated | Probe::Closed => continue,
@@ -186,7 +210,9 @@ impl NodeConnections {
             // At the ceiling, and every connection is saturated: wait for
             // whichever gets credit back first, as QUIC itself would.
             match first_to_open(&candidates).await {
-                Some((index, pair)) => return Ok((Arc::clone(&candidates[index]), pair)),
+                Some((index, pair)) => {
+                    return Ok((StreamLease::new(Arc::clone(&candidates[index])), pair));
+                }
                 // All of them closed while waiting; place again.
                 None if !candidates.is_empty() => continue,
                 None => anyhow::bail!("no connection to the broker"),
@@ -283,6 +309,20 @@ impl StreamLease {
     fn new(link: Arc<Link>) -> Self {
         link.streams.fetch_add(1, Ordering::Relaxed);
         Self { link }
+    }
+
+    /// [`StreamLease::new`], except that with `idle_only` the connection is
+    /// taken only if it carries no stream: `None` means another one got there.
+    fn claim(link: &Arc<Link>, idle_only: bool) -> Option<Self> {
+        if !idle_only {
+            return Some(Self::new(Arc::clone(link)));
+        }
+        link.streams
+            .compare_exchange(0, 1, Ordering::Relaxed, Ordering::Relaxed)
+            .ok()?;
+        Some(Self {
+            link: Arc::clone(link),
+        })
     }
 
     pub(crate) fn connection(&self) -> &QuicConnection {

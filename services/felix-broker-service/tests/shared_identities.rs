@@ -438,11 +438,7 @@ async fn a_user_works_only_its_own_consumer_group() -> Result<()> {
 #[tokio::test]
 async fn one_users_token_expiring_leaves_the_others_alone() -> Result<()> {
     let running = Running::start().await?;
-    // One event connection, so carol's refused subscribe lands on the one
-    // bob's subscription uses, instead of opening a pool neighbour.
-    let gateway = running
-        .gateway_with(|config| config.event_conn_pool = 1)
-        .await?;
+    let gateway = running.gateway().await?;
     let carol_tokens = Arc::new(UserTokens(Mutex::new(Ok(running.token("carol")?))));
     let carol = gateway
         .with_identity(TENANT, Arc::clone(&carol_tokens) as Arc<dyn TokenProvider>)
