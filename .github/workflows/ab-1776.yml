@@ -1,0 +1,63 @@
+name: TEMP storage A/B 1776
+on:
+  push:
+    branches: [perf-ab-1776]
+permissions:
+  contents: read
+jobs:
+  ab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.99.1"
+      - name: Prepare both sides
+        run: |
+          set -euo pipefail
+          BASE=$(git merge-base HEAD origin/main)
+          echo "base=$BASE head=$(git rev-parse HEAD~1)"
+          git worktree add ../base "$BASE"
+          cp .github/ab/ab_append_read.rs crates/server/felix-storage/tests/
+          sed '/headers: None,/d' .github/ab/ab_append_read.rs > ../base/crates/server/felix-storage/tests/ab_append_read.rs
+          sudo apt-get update -qq && sudo apt-get install -y -qq valgrind
+      - name: Build
+        run: |
+          set -euo pipefail
+          for side in base head; do
+            dir=$([ $side = base ] && echo ../base || echo .)
+            (cd $dir && CARGO_TARGET_DIR=/tmp/t-$side cargo test --locked --release -p felix-storage --test ab_append_read --no-run 2>&1 | tail -2)
+            cp $(ls -t /tmp/t-$side/release/deps/ab_append_read-* | grep -v '\.d$' | head -1) /tmp/bin-$side
+          done
+      - name: Wall clock, alternating
+        run: |
+          set -euo pipefail
+          for i in 1 2 3 4 5 6 7 8; do
+            if [ $((i % 2)) = 1 ]; then order="base head"; else order="head base"; fi
+            for side in $order; do
+              AB_TAG=$side /tmp/bin-$side --ignored --nocapture --test-threads 1 | grep '^AB ' | sed 's/^AB //' >> results.jsonl
+            done
+          done
+          python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import json, statistics as st
+          rows=[json.loads(l) for l in open("results.jsonl")]
+          print("| batch | metric | base median | head median | delta |\n|---|---|---|---|---|")
+          for b in (1,64):
+              for m in ("append_rps","read_rps"):
+                  v={s:st.median([r[m] for r in rows if r["tag"]==s and r["batch"]==b]) for s in ("base","head")}
+                  print(f"| {b} | {m} | {v['base']:.0f} | {v['head']:.0f} | {100*(v['head']/v['base']-1):+.2f}% |")
+          PY
+      - name: Instructions (callgrind)
+        run: |
+          set -euo pipefail
+          echo "| side | Ir (whole test, 40k records) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          for side in base head; do
+            AB_TOTAL=40000 valgrind --tool=callgrind --callgrind-out-file=/tmp/cg-$side /tmp/bin-$side --ignored --test-threads 1 2>&1 | grep -E "Collected" | tee /tmp/ir-$side
+            echo "| $side | $(awk '{print $NF}' /tmp/ir-$side) |" >> "$GITHUB_STEP_SUMMARY"
+            callgrind_annotate /tmp/cg-$side 2>/dev/null | grep -E "felix_storage" | head -15 || true
+          done
