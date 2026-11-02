@@ -1,7 +1,8 @@
 name: Perf scratch (#1796 listener)
 
-# Temporary: A/B of the peer listener change against its main parent. Deleted
-# with the branch.
+# Temporary: control-path microbench and RF 3 cluster A/B for the #1796
+# follow-up. Three sides: p = main before #1800, m = main after #1800,
+# f = the follow-up (this branch). Deleted with the branch.
 
 on:
   push:
@@ -12,165 +13,110 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  A_SHA: f8f023bded359963b9b61c3990492c10ea1cd00c
-  ROUNDS: "6"
+  P_SHA: 3e81b94ef04fb13709eb8e1a5ab3b53fdbbfc34b
+  M_SHA: 15004f5354ecec6b160a6f4b22237486df26d80a
   BENCH_STEADY_SECS: "40"
-  STORAGE_RUNS: "0"
 
 jobs:
-  ab:
+  build:
     runs-on: ${{ vars.FELIX_LARGE_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 240
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
           fetch-depth: 0
-
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: "1.99.1"
-          components: rustfmt
-
       - name: Rust cache
         uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-
-      - name: Machine
-        run: |
-          nproc; free -g; df -h /tmp; uname -a
-          echo "B = $(git rev-parse HEAD)  A = $A_SHA"
-          git diff --stat "$A_SHA" HEAD -- crates services
-
-      - name: Build side B and the measurement binaries
+      - name: Build three sides
         run: |
           set -euo pipefail
-          p=/tmp/perf; mkdir -p $p/a $p/b $p/bin $p/out
-          cargo build --release -p felix-broker-service --bin felix-broker
-          cp target/release/felix-broker $p/b/felix-broker
+          out=/tmp/perf-bin; mkdir -p $out
+          f_sha=$(git rev-parse HEAD)
+          cp crates/server/felix-replication/tests/control_path_bench.rs /tmp/control_path_bench.rs
           exe() {
             cargo test --release -p "$1" --test "$2" --no-run --message-format=json \
               | jq -r 'select(.profile.test == true and .executable != null) | .executable' | tail -1
           }
-          cp "$(exe felix-cluster replicated_bench)" $p/bin/replicated_bench
-          cp "$(exe felix-storage ballot_fsync_contention)" $p/bin/ballot_fsync_contention
-          # The harness looks for felix-broker beside its own executable; the
-          # wrapper decides which side actually runs.
-          cp $p/b/felix-broker $p/bin/felix-broker
+          for side in p m f; do
+            case $side in p) sha=$P_SHA;; m) sha=$M_SHA;; f) sha=$f_sha;; esac
+            git checkout --detach -q "$sha"
+            cp /tmp/control_path_bench.rs crates/server/felix-replication/tests/control_path_bench.rs
+            cargo build --release -p felix-broker-service --bin felix-broker
+            cp target/release/felix-broker $out/felix-broker-$side
+            cp "$(exe felix-replication control_path_bench)" $out/control_path_bench-$side
+            if [ $side = f ]; then cp "$(exe felix-cluster replicated_bench)" $out/replicated_bench; fi
+            git checkout -q -- . ; git clean -fdq crates/server/felix-replication/tests
+          done
+          git checkout --detach -q "$f_sha"
+          sha256sum $out/*
+      - uses: actions/upload-artifact@v7
+        with:
+          name: perf-bin
+          path: /tmp/perf-bin/
+          retention-days: 3
 
-      - name: Build side A (main)
+  run:
+    needs: build
+    runs-on: ${{ vars.FELIX_LARGE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    env:
+      ROUNDS: "7"
+      MICRO_ROUNDS: "5"
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: perf-bin
+          path: /tmp/perf-bin
+      - name: Machine
+        run: nproc; free -g; uname -a; chmod +x /tmp/perf-bin/*
+      - name: Control-path microbench, rotating sides
         run: |
-          set -euo pipefail
-          p=/tmp/perf
-          branch_sha=$(git rev-parse HEAD)
-          git checkout --detach "$A_SHA"
-          cargo build --release -p felix-broker-service --bin felix-broker
-          cp target/release/felix-broker $p/a/felix-broker
-          git checkout --detach "$branch_sha"
-          sha256sum $p/a/felix-broker $p/b/felix-broker
-          if cmp -s $p/a/felix-broker $p/b/felix-broker; then
-            echo "::error::A and B brokers are identical"; exit 1
-          fi
-          for side in a b; do
-            printf '#!/bin/bash\nshift\nexec %s/%s/felix-broker "$@"\n' "$p" "$side" > $p/wrap-$side.sh
+          set -uo pipefail
+          p=/tmp/perf; mkdir -p $p/out; cd $p
+          for round in $(seq 1 "$MICRO_ROUNDS"); do
+            sides=(p m f); k=$(( (round + ${{ matrix.shard }}) % 3 ))
+            for i in 0 1 2; do
+              side=${sides[$(( (i + k) % 3 ))]}
+              BENCH_SIDE=$side BENCH_ROUND=${{ matrix.shard }}-$round \
+                /tmp/perf-bin/control_path_bench-$side --ignored --nocapture --test-threads=1 2>&1 \
+                | tee -a $p/out/micro.log | grep BENCH_JSON | sed 's/^.*BENCH_JSON //' >> $p/out/micro.jsonl || true
+            done
+          done
+      - name: Cluster rounds, rotating sides
+        run: |
+          set -uo pipefail
+          p=/tmp/perf; cd $p
+          mkdir -p $p/bin
+          cp /tmp/perf-bin/replicated_bench $p/bin/replicated_bench
+          cp /tmp/perf-bin/felix-broker-f $p/bin/felix-broker
+          for side in p m f; do
+            printf '#!/bin/bash\nshift\nexec /tmp/perf-bin/felix-broker-%s "$@"\n' "$side" > $p/wrap-$side.sh
             chmod +x $p/wrap-$side.sh
           done
-
-      - name: Storage microbench (ballot raises vs commits)
-        run: |
-          set -uo pipefail
-          p=/tmp/perf
-          cd $p
-          for run in $(seq 1 "$STORAGE_RUNS"); do
-            echo "::group::storage run $run"
-            $p/bin/ballot_fsync_contention --ignored --nocapture --test-threads=1 2>&1 | tee $p/out/storage-$run.log \
-              || echo "::warning::storage run $run failed"
-            echo "::endgroup::"
-          done
-
-      - name: Cluster rounds, alternating
-        run: |
-          set -uo pipefail
-          p=/tmp/perf
-          cd $p
-          run_side() {
-            local side="$1" round="$2"
-            echo "::group::round $round side $side"
-            FELIX_BROKER_WRAPPER=$p/wrap-$side.sh BENCH_SIDE=$side BENCH_ROUND=$round \
-              timeout 1500 $p/bin/replicated_bench --ignored --nocapture --test-threads=1 2>&1 \
-              | tee $p/out/cluster-$round-$side.log || echo "::warning::round $round side $side failed"
-            grep -h 'BENCH_JSON ' $p/out/cluster-$round-$side.log | sed 's/^.*BENCH_JSON //' >> $p/out/cluster.jsonl || true
-            echo "::endgroup::"
-          }
           for round in $(seq 1 "$ROUNDS"); do
-            if [ $((round % 2)) -eq 1 ]; then run_side a $round; run_side b $round
-            else run_side b $round; run_side a $round; fi
+            sides=(p m f); k=$(( (round + ${{ matrix.shard }}) % 3 ))
+            for i in 0 1 2; do
+              side=${sides[$(( (i + k) % 3 ))]}
+              r=${{ matrix.shard }}-$round
+              echo "::group::round $r side $side"
+              FELIX_BROKER_WRAPPER=$p/wrap-$side.sh BENCH_SIDE=$side BENCH_ROUND=$r \
+                timeout 1500 $p/bin/replicated_bench --ignored --nocapture --test-threads=1 2>&1 \
+                | tee $p/out/cluster-$r-$side.log || echo "::warning::round $r side $side failed"
+              grep -h 'BENCH_JSON ' $p/out/cluster-$r-$side.log | sed 's/^.*BENCH_JSON //' >> $p/out/cluster.jsonl || true
+              echo "::endgroup::"
+            done
           done
-
-      - name: Summarize
+      - uses: actions/upload-artifact@v7
         if: always()
-        run: |
-          set -euo pipefail
-          python3 - <<'EOF' | tee /tmp/perf/out/summary.md
-          import glob, json, statistics
-          def med(v):
-              v = [x for x in v if x is not None]
-              return statistics.median(v) if v else None
-          def fmt(v):
-              v = [x for x in v if x is not None]
-              if not v: return "-"
-              return f"{statistics.median(v):.3f} ({min(v):.3f}-{max(v):.3f})"
-          rows = [json.loads(l) for l in open('/tmp/perf/out/cluster.jsonl')] if glob.glob('/tmp/perf/out/cluster.jsonl') else []
-          def derived(r):
-              out = dict((k, v) for k, v in r.items() if isinstance(v, (int, float)) and not isinstance(v, bool))
-              for label, m in r.get('metrics', {}).items():
-                  cnt = sum(n['count'] for n in m.values())
-                  tot = sum(n['count'] * n['mean_ms'] for n in m.values() if n['mean_ms'] is not None)
-                  out[f'{label}.count'] = cnt
-                  out[f'{label}.mean_ms'] = tot / cnt if cnt else None
-                  for q in ('0.5', '0.99', '0.999', '1'):
-                      vals = [n['window'].get(f'q{q}_ms') for n in m.values()]
-                      vals = [x for x in vals if x is not None]
-                      out[f'{label}.max_node_q{q}_ms'] = max(vals) if vals else None
-              return out
-          print("## Cluster A/B (A = main, B = PR); median (min-max) across rounds\n")
-          for phase in ('steady', 'burst'):
-              by = {s: [derived(r) for r in rows if r['phase'] == phase and r['side'] == s] for s in 'ab'}
-              print(f"### {phase} (rounds: A={len(by['a'])}, B={len(by['b'])})\n")
-              print("| metric | A | B | B/A (median) | A rounds | B rounds |")
-              print("|---|---|---|---|---|---|")
-              keys = []
-              for s in 'ab':
-                  for d in by[s]:
-                      for k in d:
-                          if k not in keys and k not in ('publishers', 'shards', 'streams'): keys.append(k)
-              for k in keys:
-                  a = [d.get(k) for d in by['a']]; b = [d.get(k) for d in by['b']]
-                  ma, mb = med(a), med(b)
-                  ratio = f"{mb/ma:.3f}" if ma and mb is not None else "-"
-                  ra = " ".join("-" if x is None else f"{x:.5g}" for x in a)
-                  rb = " ".join("-" if x is None else f"{x:.5g}" for x in b)
-                  print(f"| {k} | {fmt(a)} | {fmt(b)} | {ratio} | {ra} | {rb} |")
-              print()
-          print("## Storage microbench (same code both sides); median (min-max) across runs\n")
-          cells = {}
-          for f in sorted(glob.glob('/tmp/perf/out/storage-*.log')):
-              for l in open(f):
-                  if l.startswith('BENCH_JSON '):
-                      r = json.loads(l[len('BENCH_JSON '):])
-                      cells.setdefault((r['appenders'], r['k']), []).append(r)
-          cols = ['commits_per_s', 'commit_p50_us', 'commit_p99_us', 'commit_p999_us', 'raise_p50_us', 'raise_p99_us', 'raises_per_s']
-          print("| appenders | K | " + " | ".join(cols) + " |")
-          print("|---|---|" + "---|" * len(cols))
-          for (ap, k), rs in sorted(cells.items()):
-              print(f"| {ap} | {k} | " + " | ".join(fmt([r[c] for r in rs]) for c in cols) + " |")
-          EOF
-          cat /tmp/perf/out/summary.md >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload
-        if: always()
-        uses: actions/upload-artifact@v7
         with:
-          name: perf-1796
+          name: perf-out-${{ matrix.shard }}
           path: /tmp/perf/out/
-          if-no-files-found: warn

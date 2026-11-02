@@ -317,7 +317,7 @@ async fn first_ack(
             Ok(Err(err)) => last = format!("{err:?}"),
             Err(_) => last = "timed out after 10 s".to_string(),
         }
-        tokio::time::sleep(Duration::from_millis(250)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
     if FIRST_ERRORS.fetch_add(1, Ordering::Relaxed) < 5 {
         println!("first ack {stream}: gave up; last: {last}");
@@ -441,52 +441,70 @@ async fn replicated_publish_steady_and_through_promotion_burst() {
     );
     let admin = cluster.admin_token();
     let first_client = Arc::new(connect().await.expect("first-ack client"));
-    let mut creates = JoinSet::new();
-    let mut firsts = JoinSet::new();
-    let mut create_us = Vec::new();
-    let mut create_failed = 0usize;
-    let mut next = 0;
-    loop {
-        while next < streams && creates.len() < CREATES_IN_FLIGHT {
-            let (http, url, admin) = (http.clone(), url.clone(), admin.clone());
-            let name = format!("bulk-{next:05}");
-            creates.spawn(async move {
-                let started = Instant::now();
-                let ok = create_stream(&http, &url, &admin, &name).await;
-                (name, started, ok)
-            });
-            next += 1;
+    // The harness's control plane places shards only when asked; without
+    // this no new stream is ever assigned, promoted or publishable.
+    let placed = std::sync::atomic::AtomicUsize::new(0);
+    let placing = async {
+        loop {
+            let outcome = cluster.place_shards().await;
+            placed.fetch_add(outcome.placed, Ordering::Relaxed);
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        match creates.join_next().await {
-            Some(done) => {
-                let (name, started, ok) = done.expect("create task");
-                create_us.push(started.elapsed().as_micros() as u64);
-                // A sample, so the probes do not become the load.
-                let sampled = name.ends_with('0') || name.ends_with('5');
-                if ok && sampled {
-                    firsts.spawn(first_ack(
-                        Arc::clone(&first_client),
-                        tenant.clone(),
-                        namespace.clone(),
-                        name,
-                        started,
-                    ));
-                } else if !ok {
-                    create_failed += 1;
-                }
+    };
+    let collecting = async {
+        let mut creates = JoinSet::new();
+        let mut firsts = JoinSet::new();
+        let mut create_us = Vec::new();
+        let mut create_failed = 0usize;
+        let mut next = 0;
+        loop {
+            while next < streams && creates.len() < CREATES_IN_FLIGHT {
+                let (http, url, admin) = (http.clone(), url.clone(), admin.clone());
+                let name = format!("bulk-{next:05}");
+                creates.spawn(async move {
+                    let started = Instant::now();
+                    let ok = create_stream(&http, &url, &admin, &name).await;
+                    (name, started, ok)
+                });
+                next += 1;
             }
-            None => break,
+            match creates.join_next().await {
+                Some(done) => {
+                    let (name, started, ok) = done.expect("create task");
+                    create_us.push(started.elapsed().as_micros() as u64);
+                    // A sample, so the probes do not become the load.
+                    let sampled = name.ends_with('0') || name.ends_with('5');
+                    if ok && sampled {
+                        firsts.spawn(first_ack(
+                            Arc::clone(&first_client),
+                            tenant.clone(),
+                            namespace.clone(),
+                            name,
+                            started,
+                        ));
+                    } else if !ok {
+                        create_failed += 1;
+                    }
+                }
+                None => break,
+            }
         }
-    }
-    let created_in = burst_started.elapsed();
-    let mut first_us = Vec::new();
-    let mut first_failed = 0usize;
-    while let Some(done) = firsts.join_next().await {
-        match done.expect("first-ack task") {
-            Some(us) => first_us.push(us),
-            None => first_failed += 1,
+        let created_in = burst_started.elapsed();
+        let mut first_us = Vec::new();
+        let mut first_failed = 0usize;
+        while let Some(done) = firsts.join_next().await {
+            match done.expect("first-ack task") {
+                Some(us) => first_us.push(us),
+                None => first_failed += 1,
+            }
         }
-    }
+        (create_us, create_failed, created_in, first_us, first_failed)
+    };
+    let (mut create_us, create_failed, created_in, mut first_us, first_failed) = tokio::select! {
+        collected = collecting => collected,
+        () = placing => unreachable!("placement never stops"),
+    };
+    let placed = placed.load(Ordering::Relaxed);
     let burst_elapsed = burst_started.elapsed();
     let m2 = scrape(&cluster).await;
     phase.store(PHASE_DONE, Ordering::Release);
@@ -533,7 +551,7 @@ async fn replicated_publish_steady_and_through_promotion_burst() {
         "first_ack_p50_ms": round3(pct_ms(&first_us, 50.0)),
         "first_ack_p99_ms": round3(pct_ms(&first_us, 99.0)),
         "first_ack_max_ms": round3(first_us.last().map_or(f64::NAN, |v| *v as f64 / 1000.0)),
-        "first_ack_failed": first_failed,
+        "first_ack_failed": first_failed, "first_acked": first_us.len(), "placed": placed,
         "read_p50_ms": round3(pct_ms(&burst_reads, 50.0)),
         "read_p99_ms": round3(pct_ms(&burst_reads, 99.0)),
         "reads": burst_reads.len(), "reads_failed": burst_reads_failed,
