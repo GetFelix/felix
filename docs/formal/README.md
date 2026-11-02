@@ -256,7 +256,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardElectWipeNonVoterFailover.cfg` | `FelixShardElectWipeNonVoter.cfg` with a one-tick lease and time to 1, so control-plane failover is reachable, and adoption up to generation 2 (at 3 it passed 136M distinct states unfinished); failover never names a non-voter | pass, the same invariants (46.9M distinct states, depth 37, 10 min on twelve workers; runs nightly, not per PR, see below) |
 | `FelixShardElectWipeNonVoterFailoverWipesLeader.cfg` | the same where a leader or candidate can be wiped (`WipeLeads`) | pass, the same invariants (53.2M distinct states, depth 37, 11 min on twelve workers; runs nightly, not per PR, see below) |
 | `FelixShardElectWipeNonVoterPromotes.cfg` | `FelixShardElectWipeNonVoterFailover.cfg` with failover free to name a non-voter (`PromoteNonVoter`) | violate `OneLeaderPerGeneration`: the non-voter forgot its promise to a candidate and is promoted at that generation |
-| `FelixShardElectWipeNonVoterCreates.cfg` | `FelixShardElectWipeNonVoter.cfg` starting as the shard is created (`Creates`): the first leader fences at generation 1, no follower holds a promise or a set, and a follower not wiped votes with an empty log; adoption up to generation 3, with no broker promising 3 before the re-admission (`ThreeOnceReadmitted`; unbounded at 3 it passed 137M distinct states unfinished in two hours) | pass, the same invariants (1.83M distinct states, depth 34, 2 min on four workers) |
+| `FelixShardElectWipeNonVoterCreates.cfg` | `FelixShardElectWipeNonVoter.cfg` starting as the shard is created (`Creates`): the first leader fences at generation 1, no follower holds a promise or a set, and a follower not wiped votes with an empty log; adoption up to generation 3, with no broker promising 3 before the re-admission (`ThreeOnceReadmitted`; unbounded at 3 it passed 137M distinct states unfinished in two hours) | pass, the same invariants and `PlacementKnowsLearners` (2.14M distinct states, depth 35, 2 min on four workers) |
 | `FelixShardElectWipeNonVoterCreatesLearnerAcks.cfg` | the same, the leader counting a non-voter's catch-up answers (`LearnerAcksCount`, on by default only without elections, as the code runs) | violate `AckedHeldByLeader`: c promises candidate b generation 2, is wiped, catches up from a at 1, and a acknowledges on {a, c}; b opens on {b, c} without the write. Before elections ship the leader must leave a learner out |
 | `FelixShardElectWipeNonVoterCreateCountsEmpty.cfg` | the same, where a copy with no set file votes, wiped or not (`CreateCountsEmpty`) | violate `OneLeaderPerGeneration`: the wiped copy forgot its promise of generation 2 and gives it to a second leader |
 | `FelixShardElectWipeNonVoterCreatesOpens.cfg` | `FelixShardElectWipeNonVoterCreates.cfg` with no write, checking a witness | violate `NoCreationBesideNonVoter`: the new shard opens while a copy wiped before it answered is a non-voter |
@@ -1168,8 +1168,14 @@ What is not checked:
   same generation are not exercised. Two wipes at most, and a wiped leader
   only in the configurations that name `WipeLeads`.
 - Planners. The control plane re-admits from a live read, so a re-admission
-  decided on a stale view is not checked. How the control plane learns the
-  replica caught up is not modelled: `Readmitted` reads the logs directly.
+  decided on a stale view is not checked. Placement holds a wiped copy as a
+  learner (`cpLearner`) from its registration under the new id until the
+  leader's report shows it holding the start record of the control plane's
+  generation (`CpAdmit`). Failover and swaps never name such a copy, and
+  `PlacementKnowsLearners` checks that every non-voter is one. `CpAdmit`
+  takes the copy's own re-admission as done when the report can show it,
+  which stands for the code's order: a copy re-admits itself before it
+  answers the batch carrying the record.
 - Cursors. A leader's count of a replica's answers is not reset at the
   wipe, so an answer from before it can still count toward a later
   acknowledgement. That admits more than a leader that resets on the new
@@ -1181,10 +1187,10 @@ What is not checked:
   (`NonVoterCredit`). A second wipe of the same broker is one failure; two
   distinct brokers wiped, including `WipeLeads` with `Forgets = 2`, exceed
   what three replicas tolerate and are not checked.
-- Control-plane re-admission (#1737). When the control plane re-admits from
-  a caught-up report, the report must be tied to the copy's current storage
-  id. Otherwise a report sent before a second wipe could re-admit an empty
-  copy; the model reads the logs directly and cannot show this.
+- Control-plane re-admission (#1737). The control plane re-admits only from
+  a report naming the copy under its current registered storage id, so a
+  report sent before a second wipe cannot vouch for an empty copy. The model
+  has no report ids here and cannot show this; the code's tests do.
 - Three brokers. The set that re-admits a copy is fenced by both other
   copies, so its generation is at least any the copy promised before its
   wipe, including a candidate's above the control plane's. With five, a
