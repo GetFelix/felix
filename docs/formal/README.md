@@ -265,6 +265,10 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardElectWipeNonVoterSetlessUnmarked.cfg` | the same, a fence without a set refused only on a mark kept in a set file (`SetlessSeesMarker` off) | violate `AckedHeldByLeader`: the write is acknowledged by {b, c}, c is wiped, the failover's fence reaches c without a set, and c answers with an empty log |
 | `FelixShardElectWipeNonVoterCountersCountLearner.cfg` | the same, the counter fence answered by a non-voter (`CounterFenceSeesLearner` off) | violate `CountersHeldByLeader`: the failover's counter fence counts the wiped copy's empty counter log |
 | `FelixShardElectWipeNonVoterCountersUnchecked.cfg` | the same, re-admitted once the cache log holds the start record, the counter log not checked (`ReadmitChecksCounters` off) | violate `CountersHeldByLeader` (`CountersOnMajority` left out, as it breaks at the re-admission itself) |
+| `FelixShardElectWipeNonVoterGroups.cfg` | `FelixShardElectWipeNonVoterSetless.cfg` without fences that carry no set, the counter log standing for a stream's group logs (`GroupLogs`): re-admission does not wait for them, and the copy stays marked wiped until its group log holds a record of its set's generation, refusing group fences and, as a leader, not counting its own | pass, the same invariants (no violation through 33.6M distinct states, depth 24, 17 min on six workers, unfinished; runs nightly, not per PR, see below) |
+| `FelixShardElectWipeNonVoterGroupsKeepDropsMark.cfg` | the same, the promoted leader's set write dropping its own mark (`KeepSetDropsMark`), as `keep_own_set` did | violate `CountersHeldByLeader`: a group record acknowledged on {a, c}; c wiped and re-admitted with its group log behind, promoted, drops its mark keeping its set, and opens on its own group log and b's, which lags |
+| `FelixShardElectWipeNonVoterIdlessCreation.cfg` | the same rule on a stream shard without counters, its creation set naming no storage ids (`IdlessCreation`), as a shard created before sets named member ids keeps | pass, the same invariants (4.68M distinct states, depth 35, 2 min on six workers) |
+| `FelixShardElectWipeNonVoterIdlessCreationExempt.cfg` | the same, a copy that holds no set taking any generation-1 set as a voter (`GenOneExempt`), as `replaced_copy_of` did | violate `AckedHeldByLeader`: c is wiped at generation 1, learns the id-less creation set as a voter, and a failover's lagging leader opens on {b, c} |
 | `FelixShardElectWipeNonVoterNoCatchUpFailover.cfg` | `FelixShardElectWipeNonVoterNoCatchUp.cfg`'s fault with `Elections = 0`, no counters and no fence without a set | violate `AckedHeldByLeader`: re-admitted with an empty log, the copy answers the next failover's fence |
 | `FelixShardElectWipeNonVoterEvidenceOnlyFailover.cfg` | `FelixShardElectWipeNonVoterEvidenceOnly.cfg`'s fault with `Elections = 0`, no counters and no fence without a set | violate `AckedHeldByLeader`: wiped before it heard any set, the copy answers a failover's fence that names its new id |
 | `FelixShardElectWipeNonVoterCreatesReadmits.cfg` | `FelixShardElectWipeNonVoterCreates.cfg` at the same bound, checking a witness | violate `NoFailoverAfterReadmit`: the wiped copy is re-admitted, the write is acknowledged at the re-admission's generation, and a leader opens above it |
@@ -1102,7 +1106,22 @@ plane holds failed:
   the one at the wipe. Both are on in every configuration without
   elections; with elections counting a learner loses a write
   (`FelixShardElectWipeNonVoterCreatesLearnerAcks.cfg`), so the leader must
-  leave it out before they ship.
+  leave it out before they ship (#1762).
+- A stream's group logs carry no start record, so re-admission does not
+  wait for them. The copy keeps a wiped mark (`marked`) past re-admission
+  until its group log holds a record of its set's generation
+  (`GroupsCaughtUp`): until then it refuses group fences, and as a leader its
+  own group log does not count toward the group majority. The mark is kept
+  in the set file, so whatever writes a newer set must carry it: with the
+  promoted leader's own set write dropping it (`KeepSetDropsMark`), a group
+  take retried after a failure counts the leader's empty group log
+  (`FelixShardElectWipeNonVoterGroupsKeepDropsMark.cfg`).
+- A shard created before sets named member ids keeps a creation set that
+  names none (`IdlessCreation`), which is no evidence of a wipe. A copy
+  wiped while the shard is still at generation 1 is marked by the
+  replaced-storage marker alone; exempting generation 1 from it
+  (`GenOneExempt`) lets that copy vote with an empty log
+  (`FelixShardElectWipeNonVoterIdlessCreationExempt.cfg`).
 - Without elections (`Elections = 0`), the two older faults still lose a
   write: re-admitted before it caught up
   (`FelixShardElectWipeNonVoterNoCatchUpFailover.cfg`), or with only the
@@ -1178,8 +1197,10 @@ What is not checked:
   `FelixShardElectWipeNonVoterTwice.cfg`, both of which start past creation.
 - Cache shards. The counter log is checked only without elections
   (`FelixShardElectWipeNonVoterSetless.cfg`), since `Elections > 0` leaves
-  counters out. A stream's group logs are not modelled, so a copy re-admitted
-  with its group logs behind is not checked.
+  counters out. A stream's group logs are checked the same way, with the
+  counter log standing for them (`GroupLogs`): one log, not the dead-letter
+  and cursor pair, and the leader waits for a group majority where the code,
+  short of answers once every replica has replied, takes the furthest one.
 - Only the control plane's leader sends a fence without a set, as in the
   code, where a candidate's fence always carries its set. Such fences are
   checked only in the configurations without elections.

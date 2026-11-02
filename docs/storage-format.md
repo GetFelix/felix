@@ -737,7 +737,9 @@ caught up, so it does not vote and no majority includes it.
 
 Only a copy sets the wiped bit, on its own entry, when it finds it lost what it
 held. It tells a wiped learner from a staged one, and outlasts the learner bit
-until the copy's group logs have caught up too. A build that predates the bit
+until the copy's group logs have caught up too. A newer set written over it
+keeps the bit on every member the old set marked, whoever wrote the new one;
+only re-admission ends it. A build that predates the bit
 refuses the file, as it would any unknown flag; brokers set it only once
 `joint_fence` is finalized and the build allows it.
 
