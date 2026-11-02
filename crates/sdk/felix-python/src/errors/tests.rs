@@ -176,3 +176,19 @@ fn a_trim_the_client_would_not_send_is_its_own_class() {
     let err = anyhow::Error::from(felix_client::TrimError::Unsupported).context("trim_before");
     assert_eq!(classify(&err).kind, Kind::Trim);
 }
+
+#[test]
+fn a_cursor_error_keeps_where_to_resume() {
+    let err: anyhow::Error = felix_client::SubscribeCursorError {
+        reason: felix_wire::CursorErrorReason::TooOld,
+        requested: 3,
+        available: 9,
+        trim_headers: Some(bytes::Bytes::from_static(b"who")),
+    }
+    .into();
+    let classified = classify(&err.context("subscribe"));
+    assert_eq!(classified.kind, Kind::Cursor);
+    let cursor = classified.cursor.expect("the cursor error rides along");
+    assert_eq!((cursor.requested, cursor.available), (3, 9));
+    assert_eq!(cursor.trim_headers.as_deref(), Some(&b"who"[..]));
+}

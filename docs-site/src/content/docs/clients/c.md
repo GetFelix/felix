@@ -1036,7 +1036,8 @@ already stood at or past `before`.
 
 Do not send a timed-out trim again as it is. If it landed, the same call is refused with a tail one past
 the trim, which looks like a lost race. Read the shard's earliest offset, or read below the floor you
-asked for, to tell the two apart. A read below the floor completes with `FELIX_STATUS_CURSOR`.
+asked for, to tell the two apart. A read below the floor completes with `FELIX_STATUS_CURSOR`, and
+[`felix_last_cursor_error`](#when-a-start-offset-is-refused) gives the trim's headers.
 
 ## Idempotent producers
 
@@ -1169,7 +1170,7 @@ valid while the callback runs.
 | `FELIX_STATUS_CONNECTION` | 21 | broker unreachable, connection lost mid-call, or broker shutting down | yes |
 | `FELIX_STATUS_AUTH` | 22 | token rejected or missing the permission | no |
 | `FELIX_STATUS_NOT_FOUND` | 23 | no such tenant, namespace, stream or cache | see message |
-| `FELIX_STATUS_CURSOR` | 24 | the start offset is no longer retained | no; restart earlier |
+| `FELIX_STATUS_CURSOR` | 24 | the start offset is not available: retention or a head trim discarded it, or it is past the tail; [`felix_last_cursor_error`](#when-a-start-offset-is-refused) says where to resume | no; resume from `available` |
 | `FELIX_STATUS_SHARD_UNAVAILABLE` | 25 | no broker can serve the shard, usually while it moves; nothing applied | yes |
 | `FELIX_STATUS_OVERLOADED` | 26 | the broker is shedding load; nothing applied | yes, after a pause |
 | `FELIX_STATUS_OUTCOME_UNKNOWN` | 27 | the write may or may not have been applied | only if idempotent |
@@ -1177,6 +1178,48 @@ valid while the callback runs.
 
 These are the same classes as the
 [other clients' errors](/clients/python/#errors-you-can-act-on).
+
+### When a start offset is refused
+
+A subscribe that starts at an offset the stream cannot serve completes with
+`FELIX_STATUS_CURSOR`. Call `felix_last_cursor_error` to learn why and where to
+resume. It fills a `FelixCursorError`:
+
+- `reason` is `FELIX_CURSOR_TOO_OLD` (retention or a head trim discarded the
+  offset) or `FELIX_CURSOR_IN_FUTURE` (it is past the tail).
+- `requested` is the offset you asked for.
+- `available` is the nearest offset that would have worked: the oldest retained
+  after `FELIX_CURSOR_TOO_OLD`, the tail after `FELIX_CURSOR_IN_FUTURE`. Resume
+  from it to accept the gap.
+- `has_trim_headers`, `trim_headers` and `trim_headers_len` hold the headers a
+  [head trim](#trimming-a-shards-head) was written with, so a reader can tell
+  who trimmed past it. They are empty when retention set the floor.
+
+Read it inside the callback that receives `FELIX_STATUS_CURSOR`. The details
+belong to the calling thread
+and `trim_headers` is valid only until the callback returns, so copy what you
+keep. On any other thread the function returns false, and so it does for the
+rare cursor error that arrives as text with no details.
+
+```c
+void on_subscribed(void *user_data, FelixStatus status, const char *message,
+                   FelixSubscription *sub) {
+  (void)user_data;
+  (void)message;
+  if (status == FELIX_STATUS_CURSOR) {
+    FelixCursorError why;
+    if (felix_last_cursor_error(&why)) {
+      printf("offset %" PRIu64 " is %s; resume from %" PRIu64 "\n", why.requested,
+             why.reason == FELIX_CURSOR_TOO_OLD ? "gone" : "not written yet",
+             why.available);
+    }
+    return;
+  }
+  if (status == FELIX_STATUS_OK) {
+    felix_subscription_free(sub);
+  }
+}
+```
 
 ## Binding from another language
 
