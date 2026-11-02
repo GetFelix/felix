@@ -1358,9 +1358,12 @@ than another node** leads, gives one to the node leading fewest of that
 stream. Once no stream wants a move, the node leading the most shards
 cluster-wide, when that is two or more more than another node, gives one to
 the node leading fewest, choosing a shard of a stream the destination leads
-fewer of, so evening the totals never unevens a stream. The totals wait for
-the streams because a shard moved for the totals first can land where a
-stream's move then takes it away again. Balancing only the totals let one stream land 1/1/10 on three
+fewer of, so evening the totals never unevens a stream. It prefers a
+stream shard: caches are planned after the streams, so a cache moves only
+when no stream shard ahead of it can. Moving a cache fences it, and every
+client of the cache waits on that. The totals wait for the streams because a
+shard moved for the totals first can land where a stream's move then takes
+it away again. Balancing only the totals let one stream land 1/1/10 on three
 brokers while the cluster read 21/21/19, and that stream then ran on one
 broker. Moves in flight are counted as complete for both counts, so a node
 never stages more moves than it needs. Every move lowers each stream's

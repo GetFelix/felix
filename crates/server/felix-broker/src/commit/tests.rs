@@ -141,6 +141,7 @@ fn a_reader_sees_a_commit_record_as_its_event() {
         payload: stored.clone(),
         mark,
         publisher: None,
+        headers: None,
     };
     assert_eq!(client_record(record(RecordMark::Commit)).payload, "event");
     assert_eq!(client_record(record(RecordMark::None)).payload, stored);

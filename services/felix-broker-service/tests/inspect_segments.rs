@@ -43,6 +43,7 @@ async fn data_dir_with_a_shard(count: usize) -> (tempfile::TempDir, PathBuf) {
             timestamp_micros: 1,
             mark: Default::default(),
             publisher: None,
+            headers: None,
         }])
         .await
         .expect("append");
