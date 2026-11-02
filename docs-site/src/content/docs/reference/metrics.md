@@ -132,6 +132,8 @@ Per-tenant usage. The `tenant` label is capped; once the cap is reached further 
 | `felix_broker_principal_revocations_total` | counter | - | Principal revocations this broker applied. |
 | `felix_revocation_feed_last_success_seconds` | gauge | - | Unix time of the last poll that reached the control plane's revocation feed. A stale value means revocations are not arriving. |
 | `felix_revocation_feed_poll_errors_total` | counter | - | Revocation feed polls that failed. |
+| `felix_jwks_renew_errors_total` | counter | - | Background renewals of a tenant's JWKS that failed. The broker keeps verifying with the keys it has. |
+| `felix_jwks_oldest_age_seconds` | gauge | - | Seconds since the oldest tenant JWKS the broker holds was fetched. Normally under about 615. A retired key can verify for this long, and keys older than 86400 are not used. |
 | `felix_lease_tokens_issued_total` | counter | - | Lease tokens this broker minted as a lease key's owner. |
 | `felix_lease_token_refusals_total` | counter | `reason` | Lease token mints refused, by `reason`: `lease_token`, `delegated`, `no_template` or `invalid_key` (nothing written), `expired` or `signing` (the write stands). |
 | `felix_broker_stream_incarnation_refused_total` | counter | - | Stream registrations refused because they came from an older catalog than the one the broker holds. |

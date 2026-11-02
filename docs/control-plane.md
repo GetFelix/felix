@@ -2231,6 +2231,8 @@ Broker:
 | `felix_broker_principal_revocations_total` | revocations this broker learned that moved a principal's cutoff; each one ends the principal's open streams here |
 | `felix_revocation_feed_last_success_seconds` | Unix time of this broker's last successful poll of the revocation feed, or of when it started following the feed until a poll succeeds. Alert on `time() - felix_revocation_feed_last_success_seconds`. While it is stale, revocations made meanwhile are not enforced here; see [auth.md](auth.md#while-a-broker-cannot-reach-the-feed) |
 | `felix_revocation_feed_poll_errors_total` | failed polls of the revocation feed. A run of failures is also a `warn` log line, repeated every minute while it lasts |
+| `felix_jwks_renew_errors_total` | failed background renewals of a tenant's JWKS. The broker keeps verifying with the keys it has; a run of failures is also a `warn` log line, repeated every minute while it lasts |
+| `felix_jwks_oldest_age_seconds` | seconds since the oldest tenant JWKS this broker holds was fetched. Normally under about 615; keys past 86400 are not used. See [auth.md](auth.md#keeping-tenant-keys-current) |
 
 The `rejected` / `unavailable` split is the one worth keeping. `rejected` means
 the control plane answered and said no (a duplicate address, a superseded
