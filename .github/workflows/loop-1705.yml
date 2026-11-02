@@ -13,7 +13,8 @@ jobs:
       fail-fast: false
       matrix:
         load: [io]
-        floor: ["10", "0"]
+        floor: ["0"]
+        variant: [fix, base]
         shard: [1, 2]
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -21,12 +22,16 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+          fetch-depth: 0
+      - name: Use main's store.rs for the baseline
+        if: matrix.variant == 'base'
+        run: git checkout 0cdbac84a -- services/felix-controlplane-service/src/raft/store.rs && git diff --cached --stat
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: "1.99.1"
       - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          shared-key: loop-1705-2
+          shared-key: loop-1705-${{ matrix.variant }}
       - name: Build
         run: |
           cargo test -p felix-controlplane-service --test raft_hold --no-run 2>&1 | tail -3
@@ -35,6 +40,7 @@ jobs:
       - name: Loop
         env:
           DIAG_FLOOR: ${{ matrix.floor }}
+          DIAG_DUMP: "1"
         run: |
           set +e
           sudo apt-get install -y -qq stress-ng >/dev/null 2>&1
@@ -47,17 +53,20 @@ jobs:
           end=$((SECONDS + 40*60))
           for i in $(seq 1 200); do
             [ $SECONDS -ge $end ] && break
-            if "$BIN" > out.txt 2>&1; then pass=$((pass+1)); else fail=$((fail+1)); cp out.txt "fails/iter-$i.txt"; fi
+            if "$BIN" --nocapture > out.txt 2>&1; then pass=$((pass+1)); else fail=$((fail+1)); cp out.txt "fails/iter-$i.txt"; fi
+            awk '$2 == "STALL" { n++; if ($3 > m) m = $3 } END { printf "%d %d %.1f\n", '"$i"', n, m }' out.txt >> stalls.txt
           done
-          echo "load=${{ matrix.load }} floor=${{ matrix.floor }} pass=$pass fail=$fail" | tee summary.txt
-          echo "### load=${{ matrix.load }} floor=${{ matrix.floor }}: pass=$pass fail=$fail" >> "$GITHUB_STEP_SUMMARY"
+          stalls=$(awk '{ n += $2; if ($3 > m) m = $3; if ($3 >= 500) big++ } END { printf "stalls=%d max_ms=%.1f iters_with_stall_over_500ms=%d", n, m, big }' stalls.txt)
+          echo "variant=${{ matrix.variant }} load=${{ matrix.load }} floor=${{ matrix.floor }} pass=$pass fail=$fail $stalls" | tee summary.txt
+          echo "### variant=${{ matrix.variant }} load=${{ matrix.load }} floor=${{ matrix.floor }}: pass=$pass fail=$fail $stalls" >> "$GITHUB_STEP_SUMMARY"
           for f in fails/*.txt; do [ -f "$f" ] && grep -h "panicked\|left:\|right:" "$f" >> "$GITHUB_STEP_SUMMARY"; done
           exit 0
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: loop-${{ matrix.load }}-floor${{ matrix.floor }}-${{ matrix.shard }}
+          name: loop-${{ matrix.variant }}-${{ matrix.shard }}
           path: |
             summary.txt
+            stalls.txt
             fails/
           if-no-files-found: ignore
