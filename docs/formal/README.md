@@ -257,6 +257,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardElectWipeNonVoterFailoverWipesLeader.cfg` | the same where a leader or candidate can be wiped (`WipeLeads`) | pass, the same invariants (53.2M distinct states, depth 37, 11 min on twelve workers; runs nightly, not per PR, see below) |
 | `FelixShardElectWipeNonVoterPromotes.cfg` | `FelixShardElectWipeNonVoterFailover.cfg` with failover free to name a non-voter (`PromoteNonVoter`) | violate `OneLeaderPerGeneration`: the non-voter forgot its promise to a candidate and is promoted at that generation |
 | `FelixShardElectWipeNonVoterCreates.cfg` | `FelixShardElectWipeNonVoter.cfg` starting as the shard is created (`Creates`): the first leader fences at generation 1, no follower holds a promise or a set, and a follower not wiped votes with an empty log; adoption up to generation 3, with no broker promising 3 before the re-admission (`ThreeOnceReadmitted`; unbounded at 3 it passed 137M distinct states unfinished in two hours) | pass, the same invariants (1.83M distinct states, depth 34, 2 min on four workers) |
+| `FelixShardElectWipeNonVoterCreatesLearnerAcks.cfg` | the same, the leader counting a non-voter's catch-up answers (`LearnerAcksCount`, on by default only without elections, as the code runs) | violate `AckedHeldByLeader`: c promises candidate b generation 2, is wiped, catches up from a at 1, and a acknowledges on {a, c}; b opens on {b, c} without the write. Before elections ship the leader must leave a learner out |
 | `FelixShardElectWipeNonVoterCreateCountsEmpty.cfg` | the same, where a copy with no set file votes, wiped or not (`CreateCountsEmpty`) | violate `OneLeaderPerGeneration`: the wiped copy forgot its promise of generation 2 and gives it to a second leader |
 | `FelixShardElectWipeNonVoterCreatesOpens.cfg` | `FelixShardElectWipeNonVoterCreates.cfg` with no write, checking a witness | violate `NoCreationBesideNonVoter`: the new shard opens while a copy wiped before it answered is a non-voter |
 | `FelixShardElectWipeNonVoterEvidenceOnly.cfg` | `FelixShardElectWipeNonVoterFailover.cfg` with only the evidence the code sees in a set (`ReplacedIdLearner` off): a copy is a learner once a set names its old storage id | violate `OneLeaderPerGeneration`: a follower promises 2 to a candidate and is wiped before it hears a set naming its old id; it answers the fence of a failover at 2 that names its new one, with no promise and an empty log |
@@ -1098,7 +1099,10 @@ plane holds failed:
   generation after it moved on (`CatchUpFromDeposed`), as the code's
   confirmed read, cached for 500 ms, lets it. That cache is in memory, so
   its reads came after the wipe: the deposed leader's generation is at least
-  the one at the wipe. Both are on in every configuration.
+  the one at the wipe. Both are on in every configuration without
+  elections; with elections counting a learner loses a write
+  (`FelixShardElectWipeNonVoterCreatesLearnerAcks.cfg`), so the leader must
+  leave it out before they ship.
 - Without elections (`Elections = 0`), the two older faults still lose a
   write: re-admitted before it caught up
   (`FelixShardElectWipeNonVoterNoCatchUpFailover.cfg`), or with only the

@@ -973,8 +973,9 @@ Not covered yet, and needed before elections (#1009 S9):
   a batch from a leader the control plane confirmed at that generation even
   after it moved on (the 500 ms cache, or a read just before a failover).
   The model explores both without elections (`LearnerAcksCount`,
-  `CatchUpFromDeposed`). With elections the leader must leave learners'
-  acknowledgements out.
+  `CatchUpFromDeposed`) and finds nothing. With elections counting a learner
+  loses a write (`FelixShardElectWipeNonVoterCreatesLearnerAcks.cfg`), so
+  the leader must leave learners' acknowledgements out before they ship.
 - A candidate's generation can be above anything the control plane has
   written, and a copy wiped after promising one cannot know it. With three
   copies that is safe: the set that re-admits it was fenced by both other

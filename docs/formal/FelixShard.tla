@@ -622,7 +622,10 @@ ReplacedIdLearner == TRUE
 \* hold the start record of the set's generation.
 \* `LearnerAcksCount`: the leader counts a non-voter's answers to its catch-up
 \* batches toward its marks, as the code's leader does: it ships a learner
-\* the batches it ships any follower.
+\* the batches it ships any follower. The code runs without elections, where
+\* that holds; with them the leader must leave a learner out, since its wipe
+\* took a promise to a candidate (#1009 S9; twin
+\* `FelixShardElectWipeNonVoterCreatesLearnerAcks.cfg`).
 \* `CatchUpFromDeposed`: a non-voter takes a catch-up batch from a leader the
 \* control plane named at that leader's generation after it moved on, as
 \* the code's confirmed read, cached for 500 ms or answered just before a
@@ -633,7 +636,7 @@ SetlessFences == FALSE
 SetlessSeesMarker == TRUE
 CounterFenceSeesLearner == TRUE
 ReadmitChecksCounters == TRUE
-LearnerAcksCount == TRUE
+LearnerAcksCount == Elections = 0
 CatchUpFromDeposed == TRUE
 \* `RefuseShortCopy`: a leader that gave its copy up in a crash answers no
 \* promotion fence from it until a newer leader has shipped to it, unless a
