@@ -3266,8 +3266,7 @@ changes what an acknowledgement rests on.
 **Shards take turns at the pass slots, and work goes first.** A broker runs at
 most 16 shard passes at once, and fences promoted shards in 16 slots of its own,
 so a burst of new shards fencing never takes the slots that serving shards ship
-in. Every durable append wakes the driver, and on a busy broker that is many
-times a second. If each wake passed every shard, and a shard whose pass ended
+in. Appends wake the driver, many times a second on a busy broker. If each wake passed every shard, and a shard whose pass ended
 took its slot straight back, the same 16 shards kept the slots under a steady
 append stream and the rest never shipped: their writes were never acknowledged
 (#1794). So the driver schedules passes like this:

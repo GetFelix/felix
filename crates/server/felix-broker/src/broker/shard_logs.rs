@@ -102,7 +102,9 @@ impl Broker {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Signalled after every durable append.
+    /// Signalled when a durable append marks a shard that was not already
+    /// marked since replication last took the set, so one wake can stand for
+    /// many appends. [`Self::appended_shards`] says which shards they were for.
     ///
     /// Replication waits on it so shipping starts when a record lands rather
     /// than on its next tick — which is most of a `Quorum` publish's latency

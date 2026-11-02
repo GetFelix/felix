@@ -50,7 +50,8 @@ impl AppendedShards {
         (hasher.finish() % (WORDS as u64 * 64)) as u16
     }
 
-    /// `slot`'s shard took an append: mark it and wake replication.
+    /// `slot`'s shard took an append: mark it, and wake replication if it was
+    /// not already marked.
     pub fn mark(&self, slot: u16) {
         let slot = usize::from(slot);
         let bit = 1 << (slot % 64);

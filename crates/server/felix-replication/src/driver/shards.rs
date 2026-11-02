@@ -240,7 +240,7 @@ struct ShardState {
     held: Vec<Answered>,
     /// Promoted here, and a majority has not taken the fence yet.
     fence_pending: bool,
-    /// No fence before this. Every append wakes a scan, so without it a shard
+    /// No fence before this. Appends wake scans, so without it a shard
     /// the broker keeps closed after its fence is fenced again at the append
     /// rate of every other shard.
     fence_after: Option<tokio::time::Instant>,
@@ -755,7 +755,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
     }
 
     /// Report a shard led here alone at a new generation, and again each tick
-    /// so the report stays fresh. Every append wakes a scan, so not on each.
+    /// so the report stays fresh. Appends wake scans, so not on each.
     fn report_alone(&mut self, key: &ShardKey, generation: u64) {
         let Some(reporter) = self.cx.reporter else {
             return;
