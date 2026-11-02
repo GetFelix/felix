@@ -13,6 +13,7 @@ mod moves;
 mod operator;
 mod pacing;
 mod pending_set;
+mod readmit;
 mod reconciler;
 mod regions;
 mod rendezvous;
@@ -133,6 +134,7 @@ fn pinned(stream: &str, shard: u32, leader: &str) -> ShardAssignment {
         incarnation: 0,
         fence_storage_ids: Default::default(),
         member_storage_ids: Default::default(),
+        learners: Default::default(),
         pending_set: None,
     }
 }
@@ -157,6 +159,7 @@ fn assigned(stream: &str, leader: &str, replicas: &[&str]) -> ShardAssignment {
         incarnation: 0,
         fence_storage_ids: Default::default(),
         member_storage_ids: Default::default(),
+        learners: Default::default(),
         pending_set: None,
     }
 }
