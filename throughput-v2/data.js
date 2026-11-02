@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793558841170,
+  "lastUpdate": 1793578240789,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -41236,6 +41236,58 @@ window.BENCHMARK_DATA = {
             "range": "34375.58",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1679634.01\nmean: 1668013.42\nstdev: 34375.58\ncv: 2.06%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b2f8a1a6d4217c9d18ef0f07d11d8136b054731d",
+          "message": "fix(build): clear CI and release warnings (#1734)\n\nRing::back is debug-only (its one caller is a debug assertion). The vendored kafka-protocol allows deprecated, so path-crate builds stop printing 540 warnings. homepage is getfelix.dev instead of the repository URL. npm repository.url is written as git+https. Zig-linked Linux Node addon legs allow linker_messages (zig ignores rustc's -O1). deny.toml drops the unused OpenSSL license allowance, and yoke-derive moves off the yanked 0.8.3.",
+          "timestamp": "2026-11-01T15:29:00-08:00",
+          "tree_id": "1661dd78a724f06972dd8a69d76c84d01077713d",
+          "url": "https://github.com/GetFelix/felix/commit/b2f8a1a6d4217c9d18ef0f07d11d8136b054731d"
+        },
+        "date": 1793578240104,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 359359.37,
+            "range": "13128.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 359359.37\nmean: 364361.33\nstdev: 13128.64\ncv: 3.60%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 359359.37,
+            "range": "13128.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 359359.37\nmean: 364361.33\nstdev: 13128.64\ncv: 3.60%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81431.84,
+            "range": "223.99",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81431.84\nmean: 81343.03\nstdev: 223.99\ncv: 0.28%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 814318.36,
+            "range": "2239.86",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 814318.36\nmean: 813430.33\nstdev: 2239.86\ncv: 0.28%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
