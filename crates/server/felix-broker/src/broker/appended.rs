@@ -17,8 +17,15 @@ const WORDS: usize = 64;
 #[derive(Debug)]
 pub struct AppendedShards {
     wake: Arc<tokio::sync::Notify>,
-    bits: [AtomicU64; WORDS],
+    bits: [Word; WORDS],
 }
+
+/// One word of the set on its own cache line, so publishers to shards in
+/// different words do not contend. 128 bytes covers Apple silicon's line and
+/// x86's paired-line prefetch.
+#[derive(Debug, Default)]
+#[repr(align(128))]
+struct Word(AtomicU64);
 
 /// The bits [`AppendedShards::take`] cleared.
 #[derive(Debug, Clone, Copy)]
@@ -28,7 +35,7 @@ impl Default for AppendedShards {
     fn default() -> Self {
         Self {
             wake: Arc::new(tokio::sync::Notify::new()),
-            bits: std::array::from_fn(|_| AtomicU64::new(0)),
+            bits: std::array::from_fn(|_| Word::default()),
         }
     }
 }
@@ -46,11 +53,17 @@ impl AppendedShards {
     /// `slot`'s shard took an append: mark it and wake replication.
     pub fn mark(&self, slot: u16) {
         let slot = usize::from(slot);
-        self.bits[slot / 64].fetch_or(1 << (slot % 64), Ordering::Release);
-        // `notify_one`, not `notify_waiters`: it leaves a permit when the
-        // driver is mid-pass, and stores only one, so a burst becomes a single
-        // extra scan rather than a storm.
-        self.wake.notify_one();
+        let bit = 1 << (slot % 64);
+        // Wake only when this append set the bit. If it was already set, its
+        // setter has woken or is about to wake the driver, and the `take` that
+        // clears it comes after this `or`, so it still covers this append.
+        // That keeps the shared `Notify` off the hot path of a busy shard.
+        if self.bits[slot / 64].0.fetch_or(bit, Ordering::Release) & bit == 0 {
+            // `notify_one`, not `notify_waiters`: it leaves a permit when the
+            // driver is mid-pass, and stores only one, so a burst becomes a
+            // single extra scan rather than a storm.
+            self.wake.notify_one();
+        }
     }
 
     /// What replication waits on.
@@ -63,8 +76,8 @@ impl AppendedShards {
         let mut taken = [0; WORDS];
         for (word, bits) in taken.iter_mut().zip(&self.bits) {
             // Most words are clear; a load keeps a scan from writing to them.
-            if bits.load(Ordering::Relaxed) != 0 {
-                *word = bits.swap(0, Ordering::Acquire);
+            if bits.0.load(Ordering::Relaxed) != 0 {
+                *word = bits.0.swap(0, Ordering::Acquire);
             }
         }
         Appended(taken)

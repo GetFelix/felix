@@ -3274,7 +3274,11 @@ append stream and the rest never shipped: their writes were never acknowledged
 
 - **An append wakes only its own shard.** The publish path marks the shard's
   bit in a fixed-size bit set (one atomic `or`, no lock, no allocation) before it
-  wakes the driver, and the scan takes the set. A scan woken by an append passes
+  wakes the driver, and the scan takes the set. Only the append that sets a clear
+  bit wakes the driver: later appends to a shard whose bit is still set are
+  picked up by the same scan, so a busy shard does not touch the shared wake-up
+  on every append. Each word of the set sits on its own cache line, so
+  publishers to different shards rarely contend. A scan woken by an append passes
   the shards whose bit is set, plus any shard whose last pass left work: a mark
   below the tail, a follower behind, halted, rebuilding or not answering, an
   exchange still out, or a drain or route change in progress. A shard whose

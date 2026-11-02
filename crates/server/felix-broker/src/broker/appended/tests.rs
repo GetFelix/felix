@@ -36,3 +36,20 @@ async fn a_mark_wakes_a_waiter_that_came_later() {
     .await
     .expect("woken");
 }
+
+#[tokio::test]
+async fn only_the_mark_that_sets_a_bit_wakes() {
+    let appended = AppendedShards::default();
+    appended.mark(7);
+    appended.wake().notified().await;
+    // Still set, so its first mark's wake covers it: no second permit.
+    appended.mark(7);
+    let again = appended.wake();
+    let notified = again.notified();
+    tokio::pin!(notified);
+    assert!(!notified.as_mut().enable(), "an already set bit woke again");
+    assert!(appended.take().contains(7));
+    // Cleared by the take, so the next mark wakes.
+    appended.mark(7);
+    assert!(notified.as_mut().enable());
+}
