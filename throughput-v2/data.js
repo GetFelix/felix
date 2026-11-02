@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793604440712,
+  "lastUpdate": 1793605105682,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -41756,6 +41756,58 @@ window.BENCHMARK_DATA = {
             "range": "11580.53",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1241726.00\nmean: 1246429.72\nstdev: 11580.53\ncv: 0.93%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8ded063df9636a74425627f7b1ce385348cc1278",
+          "message": "feat(mqtt): felix-mqtt-wire, the MQTT 3.1.1 and 5.0 packet codec (#1687) (#1755)\n\nCloses #1687. Part of #1685 (native MQTT ingress); design in `docs/mqtt-design.md`.\n\n## What this adds\n\n`crates/protocol/felix-mqtt-wire`, the MQTT 3.1.1 and 5.0 packet codec the MQTT listener will use. It depends on `bytes` and `thiserror` only, does no I/O and keeps no session state.\n\n- Decodes and encodes every packet, including AUTH and all 5.0 properties.\n- Refuses what the specification makes malformed or a protocol error from the packet alone: fixed header flags, minimal remaining length, reserved bits, QoS 3, packet id 0, reason codes per packet, where each property may appear and its value rules, UTF-8 and U+0000, wildcard placement, `$share/` syntax.\n- `Limits` (packet size, topic bytes and levels, filters per packet, repeated properties, client id length) is checked while decoding. An oversized packet is refused from its fixed header, before the body is waited for. Lists grow only as bytes that passed their checks arrive.\n- Strings and payloads are slices of the input buffer.\n- The encoder refuses what the decoder refuses (checked by a round-trip property over generated packets).\n\nThe listener is not wired in, so with `FELIX_MQTT_LISTEN` unset nothing changes. Binary size: no crate depends on `felix-mqtt-wire`, so the broker binary is unchanged (`cargo tree -i felix-mqtt-wire` shows no dependents). The delta gets measured in the first slice that links it.\n\n## Tests\n\n- `tests/golden.rs`: 55 packets encoded by rumqttc 0.25.1 (`tests/vectors/rumqttc-gen` regenerates them) decode and re-encode byte for byte, except 4 where rumqttc orders properties differently (compared as decoded packets). Field-level checks on the interesting ones, plus AUTH and the optional short forms built from the specification.\n- `tests/malformed.rs`: a case per way a packet is refused, citing the specification statement.\n- `tests/generated.rs`: 60k generated packets round-trip; damaged and random bytes never panic and what survives round-trips; the fuzz seeds stay valid.\n- Fuzz target `mqtt_packet` (both versions, before and after CONNECT) is in `task fuzz`, the CI fuzz job and the nightly matrix. A 45 s local run did 8.5M executions without a failure.\n- I mutated 20 checks (flags, size limit, minimal length, property table, topic wildcard rule, trailing bytes, and so on) and each made a test fail.\n\nrumqttc 0.25.1 writes a DISCONNECT with a stray trailing byte for reason `PacketTooLarge` (remaining length 1, then an extra 0x00). That vector is left out and the correct form is tested by hand.\n\n## Design calls\n\n- Licence: Apache-2.0, like the rest of `crates/protocol/`, with `publish = false` (D5). It holds no server logic. `LICENSING.md` and `check_publish_metadata.py` list it. Reversible while nothing outside the repo uses it.\n- Topics are held to the stricter reading of \"SHOULD NOT include\" (control characters, Unicode non-characters). Other strings only get the MUST rules. A topic becomes a record key and a log line, so this is refused at the edge.\n- Edge cases passed to the session instead of decided here: an empty client id with clean start false (3.1.1 answers it with a CONNACK, not a close), topic alias resolution, packet direction and state, payload format validity.\n- A 3.1.1 CONNACK return code is carried as the matching 5.0 reason code, so the listener has one type.\n- 5.0 acknowledgements and DISCONNECT use the shortest form when the reason is Success and there are no properties, and an explicit zero property length otherwise (what rumqttc and mosquitto write). The decoder accepts all three forms.\n- AUTH requires the Authentication Method and does not have the short forms, as rumqttc does.\n- `Limits` is `#[non_exhaustive]` so adding a bound is not a breaking change; callers set fields on `Limits::default()`.\n- The README is the crate docs (`include_str!`), so its example is a doctest.",
+          "timestamp": "2026-11-01T23:19:57-08:00",
+          "tree_id": "365a3beae518457f7650bbf6ded64ac2759f98f4",
+          "url": "https://github.com/GetFelix/felix/commit/8ded063df9636a74425627f7b1ce385348cc1278"
+        },
+        "date": 1793605105001,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 604752.18,
+            "range": "43602.10",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 604752.18\nmean: 629299.64\nstdev: 43602.10\ncv: 6.93%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 604752.18,
+            "range": "43602.10",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 604752.18\nmean: 629299.64\nstdev: 43602.10\ncv: 6.93%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 157166.25,
+            "range": "1998.02",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 157166.25\nmean: 156370.08\nstdev: 1998.02\ncv: 1.28%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1571662.51,
+            "range": "19980.21",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1571662.51\nmean: 1563700.80\nstdev: 19980.21\ncv: 1.28%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
