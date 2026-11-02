@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use felix_mqtt::Settings;
+use felix_mqtt::ws::{AllowedOrigins, Settings as WsSettings};
 
 /// Threads in the listener's own runtime.
 const DEFAULT_WORKER_THREADS: usize = 2;
@@ -34,6 +35,16 @@ pub struct MqttListenerConfig {
     pub connect_rate: u32,
     /// What each connection is held to.
     pub settings: Settings,
+    /// MQTT over WebSockets, when `FELIX_MQTT_WS_LISTEN` is set.
+    pub ws: Option<MqttWsConfig>,
+}
+
+/// The WebSocket listener. It shares the MQTT listener's runtime, limits,
+/// connection caps and TLS setting; this is only what is its own.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MqttWsConfig {
+    pub listen: SocketAddr,
+    pub settings: WsSettings,
 }
 
 impl MqttListenerConfig {
@@ -50,6 +61,12 @@ impl MqttListenerConfig {
                 .filter(|value| !value.is_empty())
         };
         let Some(listen) = get("FELIX_MQTT_LISTEN") else {
+            // The WebSocket listener shares the MQTT one's runtime and caps.
+            // Ignoring it would leave a browser app unable to connect with
+            // nothing said.
+            if get("FELIX_MQTT_WS_LISTEN").is_some() {
+                bail!("FELIX_MQTT_WS_LISTEN needs FELIX_MQTT_LISTEN to be set too");
+            }
             return Ok(None);
         };
         let listen: SocketAddr = listen
@@ -115,6 +132,7 @@ impl MqttListenerConfig {
                 65_535,
             )? as u16,
         };
+        let ws = ws_config(&get, &number)?;
         Ok(Some(Self {
             listen,
             tls,
@@ -143,6 +161,54 @@ impl MqttListenerConfig {
                 u32::MAX.into(),
             )? as u32,
             settings,
+            ws,
         }))
     }
+}
+
+/// `FELIX_MQTT_WS_*`. `None` unless a WebSocket address is given.
+fn ws_config(
+    get: &dyn Fn(&str) -> Option<String>,
+    number: &dyn Fn(&str, u64, u64, u64) -> Result<u64>,
+) -> Result<Option<MqttWsConfig>> {
+    let Some(listen) = get("FELIX_MQTT_WS_LISTEN") else {
+        return Ok(None);
+    };
+    let listen: SocketAddr = listen
+        .parse()
+        .with_context(|| format!("FELIX_MQTT_WS_LISTEN {listen:?} is not an ip:port address"))?;
+    let defaults = WsSettings::default();
+    let allowed_origins = match get("FELIX_MQTT_WS_ALLOWED_ORIGINS") {
+        None => AllowedOrigins::None,
+        Some(list) => {
+            let items: Vec<String> = list
+                .split(',')
+                .map(|item| item.trim().to_string())
+                .filter(|item| !item.is_empty())
+                .collect();
+            if items.iter().any(|item| item == "*") {
+                AllowedOrigins::Any
+            } else {
+                AllowedOrigins::Only(items)
+            }
+        }
+    };
+    Ok(Some(MqttWsConfig {
+        listen,
+        settings: WsSettings {
+            allowed_origins,
+            max_header_bytes: number(
+                "FELIX_MQTT_WS_MAX_HEADER_BYTES",
+                defaults.max_header_bytes as u64,
+                256,
+                65_536,
+            )? as usize,
+            upgrade_timeout: Duration::from_millis(number(
+                "FELIX_MQTT_WS_UPGRADE_TIMEOUT_MS",
+                defaults.upgrade_timeout.as_millis() as u64,
+                1,
+                u64::MAX / 1000,
+            )?),
+        },
+    }))
 }

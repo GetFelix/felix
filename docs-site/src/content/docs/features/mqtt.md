@@ -48,6 +48,52 @@ A connection ends when its token expires or is revoked. A device is also closed
 if it is silent for one and a half keepalive intervals, with the interval capped
 at `FELIX_MQTT_KEEPALIVE_MAX_SECS`.
 
+## Browsers and WebSockets
+
+A browser cannot open a raw TCP socket, so web apps and dashboards connect over
+WebSockets instead. Set a second address next to the first:
+
+```bash
+FELIX_MQTT_LISTEN=0.0.0.0:8883 \
+FELIX_MQTT_WS_LISTEN=0.0.0.0:8884 \
+FELIX_MQTT_WS_ALLOWED_ORIGINS=https://app.example.com \
+felix-broker
+```
+
+The address serves `wss` when TLS is on and `ws` when `FELIX_MQTT_TLS=false`.
+A client asks for the `mqtt` subprotocol, as MQTT.js does, on any path:
+
+```js
+import mqtt from "mqtt";
+
+const client = mqtt.connect("wss://broker.example.com:8884/mqtt", {
+  username: "my-tenant",
+  password: token,
+});
+client.on("connect", () => console.log("connected"));
+client.on("error", (err) => console.error(err.message));
+```
+
+The connection behaves exactly like one on the TCP listener: the same token
+check, packet limits, keepalive, and caps. Connections on both sockets count
+toward one `FELIX_MQTT_MAX_CONNECTIONS`, one per-address limit and one connect
+rate.
+
+A browser always sends an `Origin` header, and the broker refuses any request
+that has one unless `FELIX_MQTT_WS_ALLOWED_ORIGINS` lists it (`*` allows every
+origin). Without the list, a browser app gets `403` and the refusal is counted
+as `ws_origin`. Tools and device clients send no `Origin` and connect either
+way. The `Origin` check keeps other websites from using a visitor's browser to
+reach a broker on a private network; it is not authentication, the token is.
+
+The upgrade request is read with a size limit (`FELIX_MQTT_WS_MAX_HEADER_BYTES`)
+and a time limit (`FELIX_MQTT_WS_UPGRADE_TIMEOUT_MS`), and a request that is
+not a valid WebSocket upgrade for `mqtt` is answered with an error and closed.
+An MQTT message may be split across WebSocket messages, or several may share
+one; the broker reads the bytes as one stream, so the packet limits above apply
+the same way. Text messages are refused, as are compressed ones (the broker
+does not negotiate `permessage-deflate`).
+
 ## Protect the broker from the fleet
 
 The listener runs on its own threads (`FELIX_MQTT_WORKER_THREADS`), so a storm

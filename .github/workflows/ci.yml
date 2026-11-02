@@ -1211,6 +1211,7 @@ jobs:
             .
             crates/protocol/felix-wire/fuzz
             crates/protocol/felix-mqtt-wire/fuzz
+            crates/server/felix-mqtt/fuzz
             crates/server/felix-storage/fuzz
             crates/server/felix-kafka/fuzz
 
@@ -1238,6 +1239,7 @@ jobs:
           path: |
             crates/protocol/felix-wire/fuzz/artifacts/
             crates/protocol/felix-mqtt-wire/fuzz/artifacts/
+            crates/server/felix-mqtt/fuzz/artifacts/
             crates/server/felix-storage/fuzz/artifacts/
             crates/server/felix-kafka/fuzz/artifacts/
           if-no-files-found: ignore

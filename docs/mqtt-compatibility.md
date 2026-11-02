@@ -2,7 +2,8 @@
 
 A Felix broker can accept MQTT connections from devices. With `FELIX_MQTT_LISTEN`
 set, the broker opens a listener that speaks MQTT 3.1.1 and 5.0 over TCP, with
-TLS by default. The design for the whole feature is in
+TLS by default, and over WebSockets for browsers when `FELIX_MQTT_WS_LISTEN` is
+also set. The design for the whole feature is in
 [mqtt-design.md](mqtt-design.md); this page says what works today.
 
 **Today the listener only authenticates connections.** A device can connect with
@@ -65,6 +66,44 @@ connection that sends a wrong token is still refused.
 A connection ends when its token expires or is revoked. A 5.0 client is sent a
 `DISCONNECT` with reason 0x87 first. Re-authenticating with `AUTH` is not
 supported yet.
+
+## Over WebSockets
+
+Browser apps connect with MQTT over WebSockets. Set `FELIX_MQTT_WS_LISTEN` to a
+second address; it needs `FELIX_MQTT_LISTEN` as well, because the two sockets
+share one runtime, one TLS setting (`wss` with TLS, `ws` without), and one set of
+connection limits and connect rate. After the upgrade a connection is the same as
+one on the TCP listener, and everything on this page applies to it.
+
+```mermaid
+sequenceDiagram
+    participant C as Browser client
+    participant L as WebSocket socket
+    participant M as MQTT connection
+    C->>L: GET /mqtt, Upgrade: websocket, Sec-WebSocket-Protocol: mqtt
+    L->>L: size and time limits, Origin, version, subprotocol
+    L-->>C: 101 Switching Protocols (or 400, 403, 408, 426, 431)
+    C->>M: binary messages carry the MQTT byte stream
+    M-->>C: replies, one binary message per batch
+```
+
+| Case | Answer |
+|---|---|
+| Valid upgrade for the `mqtt` subprotocol, on any path | `101`, then MQTT as above. |
+| Not a `GET`, not HTTP/1.1, no `Upgrade`, wrong version or key, no `mqtt` subprotocol | `400`, or `426` when it is not an upgrade or not version 13. |
+| An `Origin` that `FELIX_MQTT_WS_ALLOWED_ORIGINS` does not allow | `403`. With the variable unset every request that has an `Origin` gets this; clients that send none connect. |
+| A request head over `FELIX_MQTT_WS_MAX_HEADER_BYTES`, or over 64 header lines | `431`, as soon as the limit is reached. |
+| No complete request within `FELIX_MQTT_WS_UPGRADE_TIMEOUT_MS` | `408`. |
+| Bytes that are not an HTTP `GET` (an MQTT client on the wrong port) | `400`. |
+| A text message, an unmasked frame, a reserved bit, a bad control frame | The connection closes with a WebSocket close code (1003 for text, 1002 otherwise). |
+
+MQTT packets may be split across WebSocket messages, or several may share one.
+The broker joins the messages into one byte stream before decoding, so the packet
+limits apply to it exactly as on TCP. Pings are answered, a close is echoed,
+and the broker does not negotiate extensions, so there is no compression.
+
+Upgrades that are refused are counted in `felix_mqtt_refused_total` with a
+reason that starts with `ws_`.
 
 ## After connecting
 

@@ -18,6 +18,7 @@ fn config(max_connections_per_ip: usize) -> MqttListenerConfig {
         max_connections_per_ip,
         connect_rate: 0,
         settings: felix_mqtt::Settings::default(),
+        ws: None,
     }
 }
 
@@ -90,6 +91,7 @@ async fn closed_by_server(socket: &mut TcpStream) -> bool {
 
 struct Running {
     addr: std::net::SocketAddr,
+    ws_addr: Option<std::net::SocketAddr>,
     shutdown: CancellationToken,
     connections: TaskTracker,
 }
@@ -97,11 +99,13 @@ struct Running {
 fn start(config: &MqttListenerConfig, auth: Arc<dyn Authenticator>) -> Running {
     let listener = MqttListener::bind(config, None, auth).expect("bind");
     let addr = listener.local_addr().expect("addr");
+    let ws_addr = listener.ws_local_addr().expect("ws addr");
     let shutdown = CancellationToken::new();
     let connections = TaskTracker::new();
     drop(listener.spawn(shutdown.clone(), connections.clone(), None));
     Running {
         addr,
+        ws_addr,
         shutdown,
         connections,
     }
@@ -236,4 +240,223 @@ async fn credentials_the_broker_refuses_are_rejected_not_unavailable() {
         .await
         .expect("no certificate, nothing to bind to");
     assert_eq!(principal.tenant_id(), "t1");
+}
+
+mod websocket {
+    use futures::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use tokio_tungstenite::tungstenite::http::HeaderValue;
+    use tokio_tungstenite::tungstenite::{Message, handshake::client::Request};
+    use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
+
+    use super::*;
+
+    type Client = WebSocketStream<MaybeTlsStream<TcpStream>>;
+
+    fn ws_config(max_connections: usize, origins: ws::AllowedOrigins) -> MqttListenerConfig {
+        let mut config = config(0);
+        config.max_connections = max_connections;
+        config.ws = Some(crate::config::MqttWsConfig {
+            listen: "127.0.0.1:0".parse().expect("addr"),
+            settings: ws::Settings {
+                allowed_origins: origins,
+                ..ws::Settings::default()
+            },
+        });
+        config
+    }
+
+    fn request(addr: std::net::SocketAddr, origin: Option<&str>) -> Request {
+        let mut request = format!("ws://{addr}/mqtt")
+            .into_client_request()
+            .expect("request");
+        request
+            .headers_mut()
+            .insert("Sec-WebSocket-Protocol", HeaderValue::from_static("mqtt"));
+        if let Some(origin) = origin {
+            request
+                .headers_mut()
+                .insert("Origin", HeaderValue::from_str(origin).expect("origin"));
+        }
+        request
+    }
+
+    async fn connect(addr: std::net::SocketAddr) -> Client {
+        let (client, response) = connect_async(request(addr, None)).await.expect("upgrade");
+        assert_eq!(
+            response
+                .headers()
+                .get("Sec-WebSocket-Protocol")
+                .expect("subprotocol"),
+            "mqtt"
+        );
+        client
+    }
+
+    /// The packets in the next message the server sends. It writes the replies
+    /// to one batch of packets as one message.
+    async fn next_packets(client: &mut Client) -> Vec<Packet> {
+        let message = tokio::time::timeout(Duration::from_secs(5), client.next())
+            .await
+            .expect("answered")
+            .expect("open")
+            .expect("message");
+        let Message::Binary(bytes) = message else {
+            panic!("expected a binary message, got {message:?}");
+        };
+        let mut buf = bytes::BytesMut::from(&bytes[..]);
+        let mut packets = Vec::new();
+        while let Some(packet) =
+            Packet::decode(&mut buf, Some(Version::V311), &Limits::default()).expect("decode")
+        {
+            packets.push(packet);
+        }
+        assert!(buf.is_empty(), "the message ends on a packet boundary");
+        packets
+    }
+
+    async fn next_packet(client: &mut Client) -> Packet {
+        let mut packets = next_packets(client).await;
+        assert_eq!(packets.len(), 1, "{packets:?}");
+        packets.remove(0)
+    }
+
+    fn ack(packet: Packet) -> ReasonCode {
+        match packet {
+            Packet::ConnAck(ack) => ack.reason,
+            other => panic!("expected CONNACK, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_client_connects_over_websockets_on_the_listeners_own_threads() {
+        let recorder = Arc::new(Recorder::default());
+        let running = start(&ws_config(64, ws::AllowedOrigins::None), recorder.clone());
+        let mut client = connect(running.ws_addr.expect("websocket on")).await;
+        client
+            .send(Message::binary(connect_packet("acme", "anything")))
+            .await
+            .expect("send");
+        assert_eq!(ack(next_packet(&mut client).await), ReasonCode::Success);
+        client
+            .send(Message::binary(vec![0xc0, 0x00]))
+            .await
+            .expect("send");
+        assert!(matches!(next_packet(&mut client).await, Packet::PingResp));
+        let threads = recorder.threads.lock().expect("lock").clone();
+        assert!(
+            !threads.is_empty() && threads.iter().all(|name| name == "felix-mqtt"),
+            "authentication ran on {threads:?}"
+        );
+        client.close(None).await.expect("close");
+        running.stop().await;
+    }
+
+    #[tokio::test]
+    async fn a_packet_may_span_messages_and_messages_may_hold_several_packets() {
+        let running = start(
+            &ws_config(64, ws::AllowedOrigins::None),
+            Arc::new(Recorder::default()),
+        );
+        let mut client = connect(running.ws_addr.expect("websocket on")).await;
+        let connect = connect_packet("acme", "anything");
+        let (head, tail) = connect.split_at(5);
+        client
+            .send(Message::binary(head.to_vec()))
+            .await
+            .expect("send");
+        client
+            .send(Message::binary(tail.to_vec()))
+            .await
+            .expect("send");
+        assert_eq!(ack(next_packet(&mut client).await), ReasonCode::Success);
+
+        // Two PINGREQs in one message are two PINGRESPs.
+        client
+            .send(Message::binary(vec![0xc0, 0x00, 0xc0, 0x00]))
+            .await
+            .expect("send");
+        let replies = next_packets(&mut client).await;
+        assert!(matches!(replies[..], [Packet::PingResp, Packet::PingResp]));
+        running.stop().await;
+    }
+
+    #[tokio::test]
+    async fn the_origin_list_decides_which_browsers_connect() {
+        let origins = ws::AllowedOrigins::Only(vec!["https://app.example.com".into()]);
+        let running = start(&ws_config(64, origins), Arc::new(Recorder::default()));
+        let addr = running.ws_addr.expect("websocket on");
+
+        let refused = connect_async(request(addr, Some("https://evil.example.com"))).await;
+        let Err(tokio_tungstenite::tungstenite::Error::Http(response)) = refused else {
+            panic!("the upgrade should be refused with a status: {refused:?}");
+        };
+        assert_eq!(response.status().as_u16(), 403);
+
+        let (mut client, _) = connect_async(request(addr, Some("https://app.example.com")))
+            .await
+            .expect("allowed origin");
+        client
+            .send(Message::binary(connect_packet("acme", "anything")))
+            .await
+            .expect("send");
+        assert_eq!(ack(next_packet(&mut client).await), ReasonCode::Success);
+        running.stop().await;
+    }
+
+    #[tokio::test]
+    async fn mqtt_sent_to_the_websocket_port_is_closed() {
+        let running = start(
+            &ws_config(64, ws::AllowedOrigins::None),
+            Arc::new(Recorder::default()),
+        );
+        let mut socket = TcpStream::connect(running.ws_addr.expect("websocket on"))
+            .await
+            .expect("connect");
+        socket
+            .write_all(&connect_packet("acme", "anything"))
+            .await
+            .expect("write");
+        let mut reply = String::new();
+        tokio::time::timeout(Duration::from_secs(1), socket.read_to_string(&mut reply))
+            .await
+            .expect("closed")
+            .expect("read");
+        assert!(reply.starts_with("HTTP/1.1 400 Bad Request\r\n"), "{reply}");
+        running.stop().await;
+    }
+
+    // The WebSocket socket draws on the same slots as the plain one, so a
+    // browser fleet cannot take more than the configured connections.
+    #[tokio::test]
+    async fn connection_caps_count_both_sockets_together() {
+        let running = start(
+            &ws_config(1, ws::AllowedOrigins::None),
+            Arc::new(Recorder::default()),
+        );
+        let mut plain = TcpStream::connect(running.addr).await.expect("connect");
+        plain
+            .write_all(&connect_packet("acme", "anything"))
+            .await
+            .expect("write");
+        assert_eq!(read_connack(&mut plain).await, ReasonCode::Success);
+
+        let mut socket = TcpStream::connect(running.ws_addr.expect("websocket on"))
+            .await
+            .expect("connect");
+        assert!(closed_by_server(&mut socket).await, "no slot left");
+
+        drop(plain);
+        // The slot comes back once the first connection is gone.
+        let mut admitted = false;
+        for _ in 0..50 {
+            if let Ok((_, _)) = connect_async(request(running.ws_addr.expect("ws"), None)).await {
+                admitted = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(admitted, "the slot was never released");
+        running.stop().await;
+    }
 }

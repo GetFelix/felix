@@ -7,6 +7,10 @@ limits. It refuses every `PUBLISH` and `SUBSCRIBE`; mounting streams at topics
 and the publish and subscribe paths are later slices of
 [docs/mqtt-design.md](../../../docs/mqtt-design.md).
 
+The `ws` module serves the same protocol to browsers: it reads the WebSocket
+upgrade, checks the origin and subprotocol, and presents the connection as a byte
+stream, so the connection loop and its limits are the same on both transports.
+
 The broker service owns the sockets, the accept loop and the runtime, and hands
 each accepted connection to `MqttService`. Packets are encoded and decoded by
 [`felix-mqtt-wire`](../../protocol/felix-mqtt-wire). What the listener serves

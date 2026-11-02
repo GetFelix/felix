@@ -120,6 +120,9 @@ tempfile = { workspace = true }
 [dev-dependencies]
 # The MQTT tests speak to the listener with the real codec.
 felix-mqtt-wire = { path = "../../crates/protocol/felix-mqtt-wire", version = "0.7.0-preview.3" }
+# An independent WebSocket client, so the listener is checked against another
+# implementation of the protocol and not only its own.
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake"] }
 tempfile = { workspace = true }
 # The Kafka tests run kcat in a container.
 tokio = { workspace = true, features = ["process", "test-util"] }
