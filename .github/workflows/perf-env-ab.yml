@@ -1,0 +1,112 @@
+name: Performance A/B (environment)
+
+# Runs the fast perf subsets twice against ONE build of the checked-out ref:
+# once with env A (default: nothing set) and once with env B. Use it to price a
+# configuration default, for example whether a broker-wide byte budget costs
+# throughput. perf-pr.yml compares two revisions; this compares two settings of
+# one revision. Sides alternate, and the one that goes first flips each round,
+# so runner drift lands on both. The report is advisory: it never fails the run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      env_a:
+        description: "Side A environment, space-separated KEY=VALUE (empty for the defaults)"
+        required: false
+        default: ""
+        type: string
+      env_b:
+        description: "Side B environment, space-separated KEY=VALUE"
+        required: true
+        type: string
+      rounds:
+        description: "Rounds; each runs every cell once per side. Keep it even."
+        required: false
+        default: "6"
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  compare:
+    runs-on: ${{ vars.FELIX_LARGE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.99.1"
+          components: rustfmt
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Build
+        run: cargo build --release --bin latency-demo --all-features
+
+      - name: Run both sides, alternating
+        env:
+          ENV_A: ${{ inputs.env_a }}
+          ENV_B: ${{ inputs.env_b }}
+          ROUNDS: ${{ inputs.rounds }}
+        run: |
+          set -euo pipefail
+          out=/tmp/felix-perf-env-ab
+          mkdir -p "$out"
+          : > "$out/a.jsonl"
+          : > "$out/b.jsonl"
+
+          # One trial of every cell with the given settings. The harness always
+          # appends to data/raw, so each side's records are moved out after.
+          run_side() {
+            local side="$1" settings="$2"
+            rm -f data/raw/latency_demo_runs.jsonl
+            for cfg in ci_subset_latency ci_subset_throughput ci_subset_large_payload ci_subset_memory_totals; do
+              # shellcheck disable=SC2086  # settings is KEY=VALUE words by design
+              env $settings python3 scripts/perf/run_latency_matrix.py --trials 1 --config "scripts/perf/$cfg.yml"
+            done
+            cat data/raw/latency_demo_runs.jsonl >> "$out/$side.jsonl"
+          }
+
+          for round in $(seq 1 "$ROUNDS"); do
+            echo "::group::Round $round of $ROUNDS"
+            if [ $((round % 2)) -eq 1 ]; then
+              run_side a "$ENV_A"; run_side b "$ENV_B"
+            else
+              run_side b "$ENV_B"; run_side a "$ENV_A"
+            fi
+            echo "::endgroup::"
+          done
+
+      - name: Compare A (baseline) and B (candidate)
+        run: |
+          set -euo pipefail
+          out=/tmp/felix-perf-env-ab
+          {
+            echo "## Performance A/B"
+            echo
+            echo "- A: \`${{ inputs.env_a }}\` (empty means defaults)"
+            echo "- B: \`${{ inputs.env_b }}\`"
+            echo
+          } > "$out/report.md"
+          python3 scripts/perf/compare_benchmarks.py \
+            --baseline "$out/a.jsonl" --candidate "$out/b.jsonl" \
+            --output-markdown "$out/table.md" --output-json "$out/result.json"
+          cat "$out/table.md" >> "$out/report.md"
+          cat "$out/report.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload raw results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: perf-env-ab-results
+          path: /tmp/felix-perf-env-ab/
+          if-no-files-found: warn
