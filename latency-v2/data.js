@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793558838039,
+  "lastUpdate": 1793578236984,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -52338,6 +52338,72 @@ window.BENCHMARK_DATA = {
             "range": "400.57",
             "unit": "us",
             "extra": "trials: 5\nmedian: 383.00\nmean: 587.80\nstdev: 400.57\ncv: 68.15%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b2f8a1a6d4217c9d18ef0f07d11d8136b054731d",
+          "message": "fix(build): clear CI and release warnings (#1734)\n\nRing::back is debug-only (its one caller is a debug assertion). The vendored kafka-protocol allows deprecated, so path-crate builds stop printing 540 warnings. homepage is getfelix.dev instead of the repository URL. npm repository.url is written as git+https. Zig-linked Linux Node addon legs allow linker_messages (zig ignores rustc's -O1). deny.toml drops the unused OpenSSL license allowance, and yoke-derive moves off the yanked 0.8.3.",
+          "timestamp": "2026-11-01T15:29:00-08:00",
+          "tree_id": "1661dd78a724f06972dd8a69d76c84d01077713d",
+          "url": "https://github.com/GetFelix/felix/commit/b2f8a1a6d4217c9d18ef0f07d11d8136b054731d"
+        },
+        "date": 1793578230582,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 153,
+            "range": "2.49",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 153.00\nmean: 153.20\nstdev: 2.49\ncv: 1.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 224,
+            "range": "333.87",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 224.00\nmean: 373.80\nstdev: 333.87\ncv: 89.32%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 267,
+            "range": "485.81",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 267.00\nmean: 485.00\nstdev: 485.81\ncv: 100.17%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 198,
+            "range": "10.01",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 198.00\nmean: 202.20\nstdev: 10.01\ncv: 4.95%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 392,
+            "range": "251.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 392.00\nmean: 503.60\nstdev: 251.92\ncv: 50.02%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 603,
+            "range": "670.18",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 603.00\nmean: 876.60\nstdev: 670.18\ncv: 76.45%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
