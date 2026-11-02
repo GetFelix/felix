@@ -106,10 +106,18 @@ flowchart LR
 
 Felix never sees your IdP password, and the broker does not ask the control
 plane about each request: it verifies the signature against the tenant's
-published JWKS, which it fetches for every tenant it knows when it starts and
-caches for an hour, and reads the permissions out of the token. A broker can
-therefore keep verifying tokens through a control-plane outage shorter than that
-hour.
+published JWKS and reads the permissions out of the token. It fetches the JWKS
+for every tenant it knows when it starts, renews each one in the background
+about every 10 minutes, and fetches at once when a token names a key it has
+not seen, so a newly staged key works straight away.
+
+A control-plane outage does not stop a broker verifying tokens. If a renewal
+fails, it keeps using the keys it has, for up to 24 hours after the last
+successful fetch. The cost is that a key retired during the outage keeps
+verifying on that broker until the control plane is back, or until those 24
+hours run out. `felix_jwks_oldest_age_seconds` shows how stale a broker's keys
+are. The details are in
+[Keeping tenant keys current](https://github.com/GetFelix/felix/blob/main/docs/auth.md#keeping-tenant-keys-current).
 
 ### Bootstrap Mode (Day-0)
 

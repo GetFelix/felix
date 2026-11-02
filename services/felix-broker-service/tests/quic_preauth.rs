@@ -94,6 +94,7 @@ async fn authenticate(harness: &Harness, connection: &QuicConnection) -> Result<
             client_flags: Some(felix_wire::KNOWN_FLAGS),
             client_features: None,
             client_features_hi: None,
+            client_flags_ext: None,
         },
     )
     .await?;

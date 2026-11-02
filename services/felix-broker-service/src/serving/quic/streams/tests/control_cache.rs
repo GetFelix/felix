@@ -886,6 +886,7 @@ async fn control_loop_serves_conditional_cache_writes() -> Result<()> {
             client_flags: Some(0),
             client_features: Some(felix_wire::FEATURE_CACHE_CONDITIONAL),
             client_features_hi: None,
+            client_flags_ext: None,
         }))),
         put_if(1),
         put_if(2),

@@ -118,6 +118,7 @@ async fn a_new_stream_during_drain_is_told_draining() -> Result<()> {
         client_flags: Some(felix_wire::KNOWN_FLAGS),
         client_features: features,
         client_features_hi: None,
+        client_flags_ext: None,
     };
     let mut scratch = crate::serving::quic::FrameScratch::new();
 
@@ -225,6 +226,7 @@ async fn a_held_stream_does_not_outlast_the_drain_deadline() -> Result<()> {
             client_flags: None,
             client_features: None,
             client_features_hi: None,
+            client_flags_ext: None,
         },
     )
     .await?;

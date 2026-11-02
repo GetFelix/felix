@@ -402,6 +402,7 @@ fn record_json(record: &RecordView) -> Value {
         "segment": record.segment,
         "byte": record.position,
         "publisher": record.publisher.as_ref().map(|p| String::from_utf8_lossy(p).into_owned()),
+        "headers_bytes": record.headers_len,
     });
     if let Some(bytes) = &record.payload {
         line["payload_hex"] = bytes

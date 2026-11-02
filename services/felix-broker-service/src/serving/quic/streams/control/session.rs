@@ -227,6 +227,7 @@ pub(super) async fn authenticate(
                             },
                     ),
                     server_features_hi: None,
+                    server_flags_ext: None,
                     // Only when there is more than one. A single
                     // listener is the default, and saying so
                     // explicitly would change the bytes every

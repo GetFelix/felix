@@ -54,4 +54,11 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "record_headers"
+path = "fuzz_targets/record_headers.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]

@@ -10,6 +10,15 @@ use quinn::{RecvStream, SendStream, StreamId};
 #[cfg(feature = "telemetry")]
 use super::telemetry;
 
+/// True if the broker refuses a frame for its flags.
+///
+/// `FLAG_EXTENDED` is a flag this version of the wire crate understands but the
+/// broker serves no extension behind, so it is refused as it was before the
+/// bit was defined. Every reader of client frames checks this before the body.
+pub(crate) fn refuses_flags(flags: u16) -> bool {
+    felix_wire::has_unknown_flags(flags) || flags & felix_wire::FLAG_EXTENDED != 0
+}
+
 // Helper for tests and small control flows with an explicit frame cap.
 pub async fn read_message_limited(
     recv: &mut RecvStream,
@@ -20,7 +29,7 @@ pub async fn read_message_limited(
         Some(frame) => frame,
         None => return Ok(None),
     };
-    if felix_wire::has_unknown_flags(frame.header.flags) {
+    if refuses_flags(frame.header.flags) {
         return Err(anyhow!(
             "unsupported frame flags {:#06x}",
             frame.header.flags
@@ -139,7 +148,7 @@ const READ_CHUNKS: usize = 32;
 ///
 /// A frame with unknown flag bits is returned rather than refused, with its
 /// body consumed, so the control stream can answer it and stay on a frame
-/// boundary. Every caller must check `felix_wire::has_unknown_flags` before
+/// boundary. Every caller must check [`refuses_flags`] before
 /// reading the body.
 ///
 /// Cancel-safe: nothing is consumed from `scratch` until the whole frame has

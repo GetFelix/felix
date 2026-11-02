@@ -511,3 +511,56 @@ async fn a_deleted_stream_name_is_refused_before_the_finalize() {
         "{message}"
     );
 }
+
+/// Mounts in a batch are checked against each other and against the stored
+/// ones, and a refusal says why instead of being retried.
+#[tokio::test]
+async fn overlapping_mounts_in_a_batch_create_nothing() {
+    let h = harness().await;
+    let mounted = |name: &str, mount: &str| {
+        let mut body = stream_body(name);
+        body["durable"] = true.into();
+        body["mount"] = mount.into();
+        body
+    };
+
+    let (status, error) = send(
+        &h,
+        json_request_as(
+            "POST",
+            BATCH,
+            &admin(&h),
+            batch(&[mounted("a", "line/"), mounted("b", "line/3/")], &[]),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{error}");
+    assert!(error["message"].as_str().unwrap().contains("overlaps"));
+    assert!(!has_stream(&h, "a").await && !has_stream(&h, "b").await);
+
+    let (status, created) = send(
+        &h,
+        json_request_as(
+            "POST",
+            BATCH,
+            &admin(&h),
+            batch(&[mounted("a", "line/"), mounted("c", "yard/")], &[]),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    assert_eq!(created["streams"][0]["stream"]["mount"], "line/");
+
+    let (status, _) = send(
+        &h,
+        json_request_as(
+            "POST",
+            BATCH,
+            &admin(&h),
+            batch(&[mounted("d", "line/3/")], &[]),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(!has_stream(&h, "d").await);
+}

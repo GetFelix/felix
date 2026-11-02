@@ -470,6 +470,7 @@ async fn serve_stream(
                             | extended,
                     ),
                     server_features_hi: (features_hi != 0).then_some(features_hi),
+                    server_flags_ext: None,
                     listener_ports: None,
                     publish_window: None,
                 };

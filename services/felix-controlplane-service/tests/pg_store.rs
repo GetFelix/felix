@@ -196,6 +196,7 @@ async fn pg_stream_sequences_monotonic() {
         region: None,
         routing: Default::default(),
         incarnation: 0,
+        mount: None,
     };
     store
         .create_stream(stream.clone())
@@ -215,6 +216,7 @@ async fn pg_stream_sequences_monotonic() {
                 consistency: None,
                 delivery: None,
                 durable: None,
+                mount: None,
             },
         )
         .await
@@ -279,6 +281,7 @@ async fn pg_delete_namespace_emits_cascades() {
             region: None,
             routing: Default::default(),
             incarnation: 0,
+            mount: None,
         })
         .await
         .expect("stream");
@@ -557,6 +560,7 @@ async fn pg_store_stream_conflict_and_not_found() {
             region: None,
             routing: Default::default(),
             incarnation: 0,
+            mount: None,
         })
         .await
         .expect_err("missing namespace");
@@ -579,6 +583,7 @@ async fn pg_store_stream_conflict_and_not_found() {
         region: None,
         routing: Default::default(),
         incarnation: 0,
+        mount: None,
     };
     store.create_stream(stream.clone()).await.expect("stream");
     let err = store.create_stream(stream).await.expect_err("conflict");
@@ -606,6 +611,7 @@ async fn pg_store_stream_conflict_and_not_found() {
                 consistency: None,
                 delivery: None,
                 durable: None,
+                mount: None,
             },
         )
         .await
@@ -663,6 +669,7 @@ async fn pg_store_keeps_a_streams_replication_factor() {
             region: None,
             routing: Default::default(),
             incarnation: 0,
+            mount: None,
         })
         .await
         .expect("stream");
@@ -693,6 +700,7 @@ async fn pg_store_keeps_a_streams_replication_factor() {
                 consistency: None,
                 delivery: None,
                 durable: None,
+                mount: None,
             },
         )
         .await
@@ -849,6 +857,7 @@ async fn pg_store_list_get_and_exists_roundtrip() {
             region: None,
             routing: Default::default(),
             incarnation: 0,
+            mount: None,
         })
         .await
         .expect("stream");
@@ -986,6 +995,7 @@ async fn pg_delete_tenant_emits_stream_retention_max_size() {
             region: None,
             routing: Default::default(),
             incarnation: 0,
+            mount: None,
         })
         .await
         .expect("stream");
@@ -1087,4 +1097,91 @@ async fn pg_set_tenant_signing_keys_rejects_invalid_material() {
         .await
         .expect_err("invalid keys");
     assert!(matches!(err, StoreError::Unexpected(_)));
+}
+
+/// Two creates with overlapping prefixes at once: the feed lock makes the
+/// check and the insert one step, so exactly one wins however they race.
+#[tokio::test]
+#[serial]
+async fn pg_store_never_stores_two_overlapping_mounts() {
+    let Some(store) = pg_store().await else {
+        return;
+    };
+    store
+        .create_tenant(Tenant {
+            tenant_id: "t1".to_string(),
+            display_name: "Tenant One".to_string(),
+        })
+        .await
+        .expect("tenant");
+    for namespace in ["a", "b"] {
+        store
+            .create_namespace(Namespace {
+                tenant_id: "t1".to_string(),
+                namespace: namespace.to_string(),
+                display_name: namespace.to_string(),
+            })
+            .await
+            .expect("namespace");
+    }
+    let mounted = |namespace: &str, name: &str, mount: &str| Stream {
+        tenant_id: "t1".to_string(),
+        namespace: namespace.to_string(),
+        stream: name.to_string(),
+        kind: StreamKind::Stream,
+        shards: 1,
+        replication_factor: 1,
+        retention: RetentionPolicy {
+            max_age_seconds: None,
+            max_size_bytes: None,
+        },
+        consistency: ConsistencyLevel::Leader,
+        delivery: DeliveryGuarantee::AtLeastOnce,
+        durable: true,
+        region: None,
+        mount: Some(mount.to_string()),
+        routing: Default::default(),
+        incarnation: 0,
+    };
+
+    for round in 0..20 {
+        let wide = format!("wide{round}");
+        let narrow = format!("narrow{round}");
+        let (a, b) = tokio::join!(
+            store.create_stream(mounted("a", &wide, &format!("line{round}/"))),
+            store.create_stream(mounted("b", &narrow, &format!("line{round}/3/"))),
+        );
+        match (&a, &b) {
+            (Ok(_), Err(StoreError::Conflict(message)))
+            | (Err(StoreError::Conflict(message)), Ok(_)) => {
+                assert!(message.contains("overlaps"), "{message}");
+            }
+            other => panic!("round {round}: exactly one create must win, got {other:?}"),
+        }
+    }
+
+    // The stored prefix reads back, and a delete frees it.
+    let key = StreamKey {
+        tenant_id: "t1".to_string(),
+        namespace: "a".to_string(),
+        stream: "solo".to_string(),
+    };
+    store
+        .create_stream(mounted("a", "solo", "solo/"))
+        .await
+        .expect("create");
+    assert_eq!(
+        store.get_stream(&key).await.expect("get").mount.as_deref(),
+        Some("solo/")
+    );
+    let err = store
+        .create_stream(mounted("b", "second", "solo/"))
+        .await
+        .expect_err("same prefix");
+    assert!(matches!(err, StoreError::Conflict(_)));
+    store.delete_stream(&key).await.expect("delete");
+    store
+        .create_stream(mounted("b", "second", "solo/"))
+        .await
+        .expect("the prefix is free");
 }

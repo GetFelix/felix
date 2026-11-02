@@ -6,6 +6,7 @@
 //! state; `publish` and `subscribe` are the data path; `shard_logs` is what
 //! replication needs.
 
+mod appended;
 mod backup;
 mod cache_incarnation;
 mod commit;
@@ -13,6 +14,7 @@ mod incarnation;
 mod inspect;
 mod keys;
 mod metadata;
+mod mounts;
 mod publish;
 mod read;
 mod registry;
@@ -21,10 +23,12 @@ mod shards;
 mod subscribe;
 mod trim;
 
+pub use appended::{Appended, AppendedShards};
 pub use backup::CommittedOffsets;
 pub use commit::StateRead;
 pub use inspect::SubscriptionPage;
 pub use metadata::{CacheMetadata, ConsistencyLevel, StreamMetadata};
+pub use mounts::MountedStream;
 pub use publish::{
     ClaimedPublish, IdempotentClaim, IdempotentOutcome, PublishOutcome, RECORD_SEQUENCE_WRAP,
     SequenceReuse,
@@ -99,6 +103,8 @@ pub struct Broker {
     topics: RwLock<HashMap<TopicKey, Arc<StreamState>, RandomState>>,
     // Map of stream key -> metadata for existence checks.
     streams: RwLock<HashMap<StreamKey, StreamMetadata, RandomState>>,
+    // Each stream's MQTT mount, kept in step with `streams` under its lock.
+    mounts: mounts::Mounts,
     // Map of cache key -> metadata for existence checks.
     caches: RwLock<HashMap<CacheKey, CacheMetadata, RandomState>>,
     // Map of tenant id -> active marker.
@@ -150,10 +156,10 @@ pub struct Broker {
     /// Signalled after every durable append, so replication can ship without
     /// waiting for its next tick.
     ///
-    /// A `Notify` rather than a channel: a waiter only needs to know that
-    /// *something* landed, and coalescing a burst into one wake-up is the
-    /// behaviour wanted rather than a queue of them to drain.
-    appended: Arc<tokio::sync::Notify>,
+    /// A wake-up plus a set of which shards it was for, rather than a channel:
+    /// coalescing a burst into one wake-up is the behaviour wanted, and the
+    /// set lets replication skip the shards nothing was appended to.
+    appended: Arc<AppendedShards>,
     /// How far readers of a `Quorum` stream may see, once the cluster side
     /// says. Shared with every stream state, which asks it per shard.
     read_bounds: Arc<std::sync::OnceLock<Arc<dyn crate::stream::ReadBounds>>>,
@@ -208,6 +214,7 @@ impl Broker {
         Self {
             topics: RwLock::new(HashMap::with_hasher(RandomState::new())),
             streams: RwLock::new(HashMap::with_hasher(RandomState::new())),
+            mounts: Default::default(),
             caches: RwLock::new(HashMap::with_hasher(RandomState::new())),
             tenants: RwLock::new(HashMap::with_hasher(RandomState::new())),
             namespaces: RwLock::new(HashMap::with_hasher(RandomState::new())),
@@ -230,7 +237,7 @@ impl Broker {
             group_reader: None,
             counters: None,
             cache_watches,
-            appended: Arc::new(tokio::sync::Notify::new()),
+            appended: Arc::default(),
             read_bounds: Arc::default(),
             head_trims: std::sync::OnceLock::new(),
             head_trim_marked: std::sync::atomic::AtomicBool::new(false),
@@ -360,12 +367,10 @@ impl Broker {
         visibility: std::time::Duration,
         max_attempts: u32,
     ) -> Self {
-        self.group_reader = Some(Arc::new(GroupReader::new(
-            Arc::clone(&groups),
-            dead_letters,
-            visibility,
-            max_attempts,
-        )));
+        self.group_reader = Some(Arc::new(
+            GroupReader::new(Arc::clone(&groups), dead_letters, visibility, max_attempts)
+                .waking(Arc::clone(&self.appended)),
+        ));
         self.consumer_groups = Some(groups);
         self
     }

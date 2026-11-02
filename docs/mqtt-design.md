@@ -764,6 +764,15 @@ A mount field on the stream, set through the control plane. Rejected: a
 Kafka-style naming convention, which would force Felix's hierarchy on firmware,
 and a separate mount table.
 
+The prefix is a plain byte prefix and need not end in `/`: `plant/` is the usual
+choice, and `plant` also catches `plants/7`. Requiring the slash would make a
+mount a topic-level boundary, which the design does not need, and the operator
+who wants one writes the slash. A prefix is at most 1024 bytes, holds no
+wildcard or control character, and does not start with `$`, which MQTT reserves
+for broker topics. The control plane refuses an overlapping prefix in the same
+tenant inside the write, in every store (`docs/control-plane.md`, "Mounting a
+stream at an MQTT topic prefix").
+
 ### D4. Where the topic lives in the record
 
 A key and headers on records (#1688): a new record version and a negotiated wire
@@ -828,7 +837,9 @@ revisited with measurements.
 ### D15. A 3.1.1 publish to an unmounted topic
 
 The connection is closed and the refusal counted in
-`felix_mqtt_refused_total`, never a silent drop.
+`felix_mqtt_refused_total`, never a silent drop. Under 5.0 the client is told
+instead: `PUBACK` or `PUBREC` with reason 0x90 for QoS 1 and 2, and a
+`DISCONNECT` with 0x90 for QoS 0, which has no acknowledgement to carry it.
 
 ### D16. Shared subscriptions
 

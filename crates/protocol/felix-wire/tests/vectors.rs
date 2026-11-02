@@ -127,6 +127,44 @@ fn vectors_match_frame_encoding() {
                     "round trip mismatch for {path:?}"
                 );
             }
+            "binary_publish_batch_headers" => {
+                let batch = binary::decode_publish_batch(&decoded).expect("decode batch");
+                assert_eq!(batch.tenant_id, value["tenant_id"].as_str().unwrap());
+                assert_eq!(batch.namespace, value["namespace"].as_str().unwrap());
+                assert_eq!(batch.stream, value["stream"].as_str().unwrap());
+                let payloads: Vec<Vec<u8>> = batch.payloads.iter().map(|p| p.to_vec()).collect();
+                let expected: Vec<Vec<u8>> = value["payloads_utf8"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|p| p.as_str().unwrap().as_bytes().to_vec())
+                    .collect();
+                assert_eq!(payloads, expected);
+                let expected_blocks: Vec<Option<Bytes>> = value["record_headers_hex"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|block| block.as_str().map(|h| Bytes::from(hex_to_bytes(h))))
+                    .collect();
+                assert_eq!(batch.record_headers, Some(expected_blocks.clone()));
+
+                let re_encoded = binary::encode_publish_batch_bytes_with_headers(
+                    None,
+                    None,
+                    batch.key.as_deref(),
+                    &batch.tenant_id,
+                    &batch.namespace,
+                    &batch.stream,
+                    &payloads,
+                    &expected_blocks,
+                )
+                .expect("re-encode batch");
+                assert_eq!(
+                    re_encoded.as_ref(),
+                    frame_expected.as_ref(),
+                    "round trip mismatch for {path:?}"
+                );
+            }
             "binary_publish_ack" => {
                 let ack = binary::decode_publish_ack(&decoded).expect("decode ack");
                 assert_eq!(ack.request_id, value["request_id"].as_u64().unwrap());
@@ -152,7 +190,7 @@ fn vectors_match_frame_encoding() {
     }
     // Guard against the loop silently matching nothing.
     assert!(
-        checked >= 13,
+        checked >= 14,
         "expected all vectors to be checked, got {checked}"
     );
 }

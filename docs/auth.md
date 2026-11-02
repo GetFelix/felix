@@ -1086,13 +1086,16 @@ Bootstrap tokens **never** authorize normal admin endpoints.
    does not know is refused without a request. The id is percent-encoded as one
    path segment. Concurrent misses for one tenant share a single request, a
    failed fetch is remembered for 5 seconds, at most 8 fetches run at once, and
-   each has a 5 second timeout. A fetched JWKS is cached for an hour.
+   each has a 5 second timeout, waiting for a free fetch slot included.
 
    The broker also fetches the JWKS of every tenant in its catalog once the
    first catalog sync lands, before it reports ready, spending at most 5
    seconds on it. A broker that restarts and then loses the control plane can
    still verify tokens of tenants it had not served yet, including the token a
    peer forwards with a client's write.
+
+   After that, requests do not wait on the control plane. See
+   [Keeping tenant keys current](#keeping-tenant-keys-current).
 3) Broker validates claims:
    - `iss = felix-auth`
    - `aud = felix-broker`
@@ -1101,6 +1104,64 @@ Bootstrap tokens **never** authorize normal admin endpoints.
 4) Broker parses `perms` once at connect time and enforces per operation using keyMatch2.
    A cache request is also checked against its key, or a prefix watch against
    its prefix, so a key-scoped grant covers only the keys it names.
+
+### Keeping tenant keys current
+
+An `Auth` for a tenant whose keys the broker holds verifies against them
+without asking the control plane. That covers every forwarded publish or cache
+operation too, since the owner verifies the client's token again. A background
+task keeps the keys current:
+
+- **Renewal.** Each tenant's JWKS is fetched again 10 minutes after the last
+  successful fetch. A request never waits for this: it keeps using the keys it
+  has while the renewal runs.
+- **Failed renewals.** If the control plane does not answer, the broker keeps
+  verifying with the keys it has and retries after 15 seconds, doubling the
+  wait up to 5 minutes. A control-plane outage does not refuse the `Auth`s or
+  forwarded writes of tenants it already holds keys for.
+- **Maximum staleness.** Keys not refreshed for 24 hours are no longer used.
+  The tenant's tokens are then refused until the control plane answers again.
+- **A new key.** A token whose `kid` is not in the cached set makes the broker
+  fetch the set once, then verify again. Requests that arrive together share
+  that fetch. A tenant is fetched this way at most once every 10 seconds, and
+  all tenants together at most 5 at once and then one a second, so tokens with
+  made-up `kid`s cannot make the broker flood the control plane. A failed fetch
+  keeps the old keys, and a `kid` still missing afterwards is refused.
+- **A removed tenant.** Once the catalog sync no longer lists a tenant, the
+  renewer drops its keys within 15 seconds, and its tokens are refused.
+
+A tenant the broker has never held keys for is the only case where a request
+fetches inline, and then under the guards in step 2.
+
+```mermaid
+flowchart TD
+    A["Auth or forwarded request"] --> B{"Keys cached and fetched<br/>less than 24 h ago?"}
+    B -- "no" --> C["Fetch inline<br/>(5 s budget, shared by concurrent requests)"]
+    C --> D
+    B -- "yes" --> D{"Signature verifies?"}
+    D -- "yes" --> OK["Accepted"]
+    D -- "no, kid not in the set" --> E{"Fetched in the<br/>last 10 s?"}
+    E -- "no" --> F["Fetch once, verify again"]
+    E -- "yes" --> NO["Refused"]
+    D -- "no, kid known" --> NO
+    R["Renewer, every 15 s"] -. "fetches tenants due for renewal" .-> B
+```
+
+**What this costs in security.** A key the control plane retires keeps
+verifying on a broker until that broker's next successful fetch. While the
+control plane answers, that is within about 10 minutes. While a broker cannot
+reach it, the retired key keeps verifying for as long as the outage lasts, up
+to 24 hours after the broker's last successful fetch. Principal revocations
+have the same shape: they also arrive from the control plane, and the broker
+cannot learn of either while it is cut off (see
+[While a broker cannot reach the feed](#while-a-broker-cannot-reach-the-feed)).
+
+The broker logs a warning when renewals fail, again every minute while they
+keep failing. `felix_jwks_renew_errors_total` counts failed renewals, and
+`felix_jwks_oldest_age_seconds` is the age of the oldest key set the broker
+holds. Alert on it growing well past 600 seconds: it is how long a retired key
+could still be verifying, and at 86400 seconds that tenant's tokens start
+being refused.
 
 ## Data Stored Per Tenant
 
@@ -1119,27 +1180,32 @@ tenant. Responses name keys by `kid`; key material never leaves the store.
 1. **Stage** a new key: `POST /v1/tenants/{tenant_id}/signing-keys`. The
    control plane generates it, publishes it in the JWKS and accepts tokens it
    signs, but keeps signing with the current key.
-2. **Wait for brokers to learn it.** A broker caches a tenant's JWKS for up to
-   an hour and does not refetch on an unknown `kid`, so a token signed by a key
-   it has not seen is refused until its cache expires. Wait at least an hour.
+2. **Wait for brokers to learn it.** A broker renews a tenant's JWKS about
+   every 10 minutes, and fetches it at once for a token whose `kid` it does not
+   have, so a broker that can reach the control plane accepts the new key
+   straight away. A broker that cannot reach it learns the key once it can
+   again, through either path.
 3. **Activate** it: `POST /v1/tenants/{tenant_id}/signing-keys/{kid}/activate`.
    It signs from now on; the key it replaced keeps verifying.
 4. **Wait for the old key's tokens to expire**: the access-token TTL
    (`FELIX_EXCHANGE_TOKEN_TTL_SECONDS`, 900 s by default) plus a minute of
    clock skew.
 5. **Retire** the old key: `DELETE /v1/tenants/{tenant_id}/signing-keys/{kid}`.
-   It leaves the JWKS the control plane serves, but a broker does not refetch
-   on its own schedule: one that cached the JWKS before the retirement keeps
-   the old key and keeps accepting tokens signed by it for up to the cache TTL
-   (an hour). The current key cannot be retired (`409`).
+   It leaves the JWKS the control plane serves, and each broker drops it at
+   its next renewal, within about 10 minutes. A broker that cannot reach the
+   control plane keeps accepting tokens signed by it until it can, for at most
+   24 hours (see [Keeping tenant keys current](#keeping-tenant-keys-current)).
+   The current key cannot be retired (`409`).
 
 `GET /v1/tenants/{tenant_id}/signing-keys` lists `current` and the keys that
 only verify. Refresh tokens are not signed and are unaffected. To respond to a
 leaked key, do the same with no waits: stage, activate and retire back to
 back. New tokens stop being issued with the leaked key immediately, but
-brokers that already cached its JWKS may still accept tokens it signed for up
-to that same hour. There is no way to force an early refetch today, so
-budget that hour into how fast the response actually cuts the key off.
+brokers that already cached its JWKS may still accept tokens it signed until
+their next renewal, about 10 minutes. There is no way to force an early
+refetch today, so budget those 10 minutes into how fast the response actually
+cuts the key off, and check `felix_jwks_oldest_age_seconds` on every broker:
+one that cannot reach the control plane keeps the leaked key until it can.
 
 ## Allowing Particular Upstream IdPs
 

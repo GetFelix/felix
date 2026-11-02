@@ -149,15 +149,18 @@ impl Broker {
             .open_durable_log(tenant_id, namespace, stream, shard, &metadata)
             .await?;
         let handle_id = self.next_stream_handle.fetch_add(1, Ordering::Relaxed);
-        let state = Arc::new(StreamState::new(
-            handle_id,
-            self.topic_capacity,
-            self.subscriber_queue_policy,
-            self.subscriber_queue_bytes.clone(),
-            &self.ring_bytes,
-            durable,
-            metadata.consistency,
-        ));
+        let state = Arc::new(
+            StreamState::new(
+                handle_id,
+                self.topic_capacity,
+                self.subscriber_queue_policy,
+                self.subscriber_queue_bytes.clone(),
+                &self.ring_bytes,
+                durable,
+                metadata.consistency,
+            )
+            .for_shard(tenant_id, namespace, stream, shard),
+        );
         self.bind_reads(&state, &topic);
         self.hydrate_durable_stream(&state).await?;
 
