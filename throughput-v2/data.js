@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793648284187,
+  "lastUpdate": 1793651686735,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -42744,6 +42744,58 @@ window.BENCHMARK_DATA = {
             "range": "29371.79",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1609541.02\nmean: 1617643.37\nstdev: 29371.79\ncv: 1.82%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f8f023bded359963b9b61c3990492c10ea1cd00c",
+          "message": "fix(replication): shards take turns at the driver's pass slots (#1794) (#1801)\n\n* fix(replication): shards take turns at the driver's pass slots (#1794)\n\nUnder a steady append stream the same 16 shards kept the replication pass\nslots: every append scanned every led shard, and a finished pass restarted\nits own shard before any waiting one. Shards past the slots shipped nothing\nand their Quorum writes timed out with idle followers.\n\n- The publish path marks its shard in a fixed bit set (one atomic or, no\n  lock or allocation) before waking the driver. Cache and counter writes and\n  generation starts mark theirs too. A scan woken by an append passes only\n  the marked shards and those whose last pass left work; the tick and route\n  changes still pass every shard.\n- Shards that cannot start wait in FIFO queues: urgent (an append, an owed\n  mark, a moved follower) before refresh, at most four urgent in a row while\n  a refresh waits. A finished pass goes to the back.\n- Fences have their own 16 slots and queue.\n- Metrics (#1797, driver half): felix_broker_replication_scans_total{wake},\n  felix_broker_replication_passes_waiting,\n  felix_broker_replication_slot_wait_seconds{queue}.\n\nSpec-Unaffected: only which shard's pass runs next changes. What a pass ships, counts and reports, the quorum mark, fencing and promotion are unchanged, and no formal model covers driver scheduling.\n\n* fix(replication): review fixes for the driver's slot scheduling (#1794)\n\n- Consumer-group acknowledgements and dead-letter records mark their shard,\n  so they ship on the next scan rather than the tick.\n- A draining shard or one with a pending set is urgent: its clients wait on\n  the drained report.\n- A shard queued for a fence slot moves to the pass queue it now needs once\n  its fence is done with.\n- fenced() fills free slots on every path.\n- Docs: what marks a shard, the wait bound with refreshes, observability lines.\n\nSpec-Unaffected: scheduling only; what a pass ships, counts and reports, the quorum mark, fencing and promotion are unchanged.\n\n* docs(replication): say which group writes mark their shard (#1794)\n\nSpec-Unaffected: documentation only.\n\n* perf(broker): wake replication only when an append sets its shard's bit (#1794)\n\nA busy shard's appends found its bit already set and still hit the shared\nNotify each time. Only the append that sets a clear bit wakes now; the take\nthat clears it is ordered after every later or, so those appends are still\npassed. Each word of the set gets its own 128-byte line so publishers to\ndifferent shards do not share one.\n\n* docs(replication): say a wake can stand for many appends (#1794)",
+          "timestamp": "2026-11-02T12:27:44-08:00",
+          "tree_id": "5cabd611811ebe5d1ad0749a17cec7045b26a4f9",
+          "url": "https://github.com/GetFelix/felix/commit/f8f023bded359963b9b61c3990492c10ea1cd00c"
+        },
+        "date": 1793651685872,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 353885.99,
+            "range": "13938.36",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 353885.99\nmean: 358128.88\nstdev: 13938.36\ncv: 3.89%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 353885.99,
+            "range": "13938.36",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 353885.99\nmean: 358128.88\nstdev: 13938.36\ncv: 3.89%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82213.97,
+            "range": "2709.24",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82213.97\nmean: 81137.73\nstdev: 2709.24\ncv: 3.34%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 822139.71,
+            "range": "27092.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 822139.71\nmean: 811377.32\nstdev: 27092.43\ncv: 3.34%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
