@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793632012847,
+  "lastUpdate": 1793634013784,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -42380,6 +42380,58 @@ window.BENCHMARK_DATA = {
             "range": "3804.92",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 817396.06\nmean: 817461.47\nstdev: 3804.92\ncv: 0.47%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "97532a6d7fc15ce5db2d06657e98bf0f4a1f5a40",
+          "message": "feat(controlplane): re-admit a wiped copy and keep learners out of placement (#1009 S8b) (#1775)\n\nCloses #1737. Part of #1009. Follows #1733.\n\nA copy that lost its storage is a learner on its own disk after #1733: it refuses fences and votes until a set naming its new storage id re-admits it and it holds that set's generation-start record. This adds the control plane's half: it re-admits such a copy, and placement never names one leader or counts it in a majority.\n\n## What changes\n\n- **Joint fence on a storage-id change** (`promotion/joint.rs`). A member kept under another storage id is another copy, so the same node list is still a set change: the old set's majority counts only the copy it named.\n- **`holds_start` in the leader's report.** Followers the leader saw past this generation's start record, under the storage id the report names (and past the counter log's start for a cache). A copy re-admits itself before it answers the batch carrying the record (`replica.rs`), so a report can only show this once the copy is re-admitted.\n- **`learners` on the assignment.** Members whose named storage id changed at a write, carried to later writes until the previous generation's leader reports them holding the start.\n- **Placement skips learners** (`ReplicaPositions`). With `joint_fence` on, a member is a learner when the assignment names another id than it registered, or it is in `learners` without `holds_start` from the current leader at this generation. Learners are never caught up, so failover, trims, seats and old-set majorities leave them out.\n- **Re-admission** (`MoveStep::Readmit`, label `readmit`). When the leader's report at G shows the replaced member caught up under its new registered id, with a live majority of the set besides that member and nothing else in progress, placement writes G+1 with the same members, which names the new id.\n- **An operator write's read** of the assignment it replaces fails the write on any error but `NotFound`. Taking a failed read for \"no assignment\" wrote no learners.\n- **Finalize gate.** `generation_start` is a prerequisite of `joint_fence` (leaders write the start record only under it, and a learner leaves only once it holds one). Brokers add `start_holders` to their reported features, a marker like `peer_election`; `joint_fence` is refused while a serving broker lacks it.\n- **Metadata level 23** (`learners`, `holds_start`; cleared below it) and Postgres migration 0040 with generation markers. Finalizing `joint_fence` needs level 23.\n- Without `joint_fence`, writes and placement are as before.\n\n## Spec\n\n`FelixShard.tla`: placement's own view of learners (`cpLearner`), cleared by `CpAdmit` on the report. `Promote` and `Swap` skip them, and read only `cpLearner`, never the copy's own mark. The model sets `cpLearner` in the wipe step (`Forget`) itself, while the code learns of a wipe only at the re-registration under the new id; in that window only the broker's own guard (#1733) keeps the copy from leading or voting, and the model does not check placement there. Splitting the step would add an action to the largest configurations, so it stays a documented gap. New invariant `PlacementKnowsLearners` (every non-voter is a learner placement holds) on the passing wipe configurations. SANY parses; `FelixShardElectWipeNonVoterCreates.cfg` passes locally (2.14M distinct states, depth 35). Dispatch of every `FelixShardElectWipeNonVoter*` configuration: run 41414532387 (still queued at round 1).\n\n`WriteDropsLearners` lets a placement write name no learners, as a write whose read failed or one from a pre-learner control plane on Postgres does. `FelixShardElectWipeNonVoterDropsLearners.cfg` pins the violation of `PlacementKnowsLearners` (127 distinct states, depth 5, locally), so the model catches the operator-read fix being removed. Off by default, so no other configuration's state space changes.\n\n## Tests (each fails with its fix reverted)\n\n- `a_member_named_under_another_storage_id_is_a_set_change` (D1).\n- `a_report_lists_the_followers_holding_the_generations_start` (report field).\n- `failover_skips_a_replaced_member_until_its_leader_shows_it_holding_the_start`, `a_trim_does_not_count_a_learner_toward_the_rest_holding_the_tail` (skipping).\n- `a_readmission_needs_the_new_copy_caught_up_and_nothing_else_in_progress`, `a_wiped_member_is_readmitted_then_counts_once_it_holds_the_start` (the issue's sequence at control-plane level: wipe c, b leads at 2 naming c's old id, c catches up, re-admitted at 3, a down, c counts).\n- `learners_wait_for_every_member` (Raft level 23), store contract `learners_are_persisted_until_the_next_write`, Postgres marker test.\n- `an_operator_write_whose_read_fails_does_not_drop_the_learners` (a transient read error fails the write; the learners stay).\n- `a_readmission_needs_the_new_copy_caught_up_and_nothing_else_in_progress` now also covers a down follower (no readmit without a live majority of the rest).\n- `joint_fence_is_refused_while_a_serving_broker_names_no_start_holders`, `the_election_features_cannot_be_finalized_yet` (prerequisite), `a_broker_reports_that_it_names_start_holders`, and the finalize API test in `node_heartbeat.rs`.\n- `the_reported_markers_cannot_be_finalized_by_name` (finalize and dry run both answer 409 for `start_holders` and `peer_election`, and neither is enabled).\n\n## Design calls\n\n1. Learner state is placement's own (assignment `learners` plus the registered-vs-named check), cleared by a leader-computed `holds_start`, not by a learner flag on `ReplicateOk`. That flag is #1762's (S9) and needs a wire change; this needs none.\n2. The filter sits in `ReplicaPositions::counted` and `is_caught_up`, so every reader excludes learners; no per-caller patches.\n3. The assignment's leader is never a learner here; a replaced leader is still `leader_replaced`.\n4. An operator write has no report, so it carries `learners` forward; the next report at the new generation clears them. A failed read fails the write rather than carrying nothing.\n5. Below level 23 the fields are cleared before proposing rather than refused, as `member_storage_ids` is.\n6. `start_holders` is a reported marker, not a feature: kept out of `IMPLEMENTED` like `peer_election`, so a new cluster never finalizes it. The gate is checked at finalize only. After finalize, a broker registering must have `joint_fence`, and any build that reports it is one that sends `holds_start`.\n7. The readmit majority counts the set's live members other than the replaced one, against a majority of the whole set: the new generation needs that many to take it, and the learner is not one of them.\n8. `start_holders` and `peer_election` are refused by name in the finalize endpoint, dry run included, checked there and not in the stores for the same reason as prerequisites (a Raft member applying the command must not decide differently from an older one). Enabling one would make `admit` refuse every pre-#1737 broker for good.\n\n## Gates and what it takes to flip them\n\n`JOINT_FENCE_READY` (control plane) and `NON_VOTING_READY` (brokers, `quorum.rs`) stay false. The list is also in `docs/control-plane.md`, \"Turning on joint fences\". To flip them:\n1. An end-to-end cluster test of the issue's sequence (wipe c, failover to b at 2, c catches up, re-admitted at 3, a dies, moving a's copy succeeds), which needs a harness switch for both gates.\n2. `NON_VOTING_READY` on in a broker release first, then `JOINT_FENCE_READY` in a control-plane release.\n3. `joint_fence` added to `IMPLEMENTED` in a build that also reports `peer_election` and `start_holders` (the finalize refuses otherwise).\n4. `generation_start` finalized (the finalize refuses otherwise).\n5. Raft: every member at metadata level 23 (the store refuses otherwise).\n6. **Postgres mixed fleet: nothing enforces this.** Every control-plane instance must run a release with learners (migration 0040) before the finalize. An older instance writing an assignment after it leaves `learners_generation` stale, which reads as no learners, the unsafe direction. Migration 0040 is additive and nullable, so rolling back before the finalize is harmless. After the finalize no instance may be rolled back or started on a release without learners; nothing gates that on Postgres and it drops learners the same way.\n7. The `FelixShardElectWipeNonVoter*` TLA dispatch green with `PlacementKnowsLearners`, and the review of this PR.\n8. #1762 before elections ship (a leader leaves a learner's acks out), which S9 needs anyway, not this flip.\n\n## Not covered\n\n- A shard whose assignment predates member storage ids (no level 22 write since) names no ids, so placement cannot see the wipe there; the broker still refuses to lead or vote. The next placement write names ids.\n- The model has no report ids, so a report from before a second wipe re-admitting an empty copy is covered by the identity checks in the code and its tests, not by TLC.",
+          "timestamp": "2026-11-02T07:16:05-08:00",
+          "tree_id": "010d007d6317195be586da3af25d7105cd943f2f",
+          "url": "https://github.com/GetFelix/felix/commit/97532a6d7fc15ce5db2d06657e98bf0f4a1f5a40"
+        },
+        "date": 1793634012909,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 350887.01,
+            "range": "4248.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 350887.01\nmean: 352231.08\nstdev: 4248.79\ncv: 1.21%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 350887.01,
+            "range": "4248.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 350887.01\nmean: 352231.08\nstdev: 4248.79\ncv: 1.21%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 77967.93,
+            "range": "4860.40",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 77967.93\nmean: 75384.43\nstdev: 4860.40\ncv: 6.45%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 779679.35,
+            "range": "48604.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 779679.35\nmean: 753844.35\nstdev: 48604.00\ncv: 6.45%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
