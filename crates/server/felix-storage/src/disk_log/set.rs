@@ -204,7 +204,9 @@ impl DiskLog {
     /// persisting it first. A member marked wiped, in the set or the set it
     /// is leaving, marks this copy wiped until [`Self::admit_member`] settles
     /// it, whoever writes a newer set and whether or not that set lists it.
-    /// The mark is copied onto the member's entry in each newer set.
+    /// The mark is copied onto the member's entry in each newer set. A
+    /// leaving entry can start the mark but never makes an existing one a
+    /// learner.
     ///
     /// Returns once a raised set is on disk, so a caller that answers at it
     /// afterwards has made a promise that survives a restart. A caller that
@@ -225,12 +227,18 @@ impl DiskLog {
             }
             let mut wiped = inner.wiped.read().clone();
             let listed = set.leaving.iter().flat_map(|leaving| &leaving.members);
-            for member in set.current.members.iter().chain(listed) {
+            let current = set.current.members.len();
+            for (i, member) in set.current.members.iter().chain(listed).enumerate() {
                 if !member.wiped {
                     continue;
                 }
                 match &mut wiped {
-                    Some(mark) if mark.node == member.node => mark.learner |= member.learner,
+                    // A leaving entry's learner flag is the old set's view of
+                    // this copy, which may predate its re-admission, so it
+                    // never makes a mark already held a learner.
+                    Some(mark) if mark.node == member.node => {
+                        mark.learner |= i < current && member.learner;
+                    }
                     _ => {
                         wiped = Some(WipedMark {
                             node: member.node.clone(),

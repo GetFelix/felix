@@ -1177,3 +1177,50 @@ async fn before_the_build_allows_it_a_wiped_copy_is_not_marked() {
     assert_eq!(log.member_is_learner(LOCAL), Some(false));
     assert!(!log.member_is_wiped(LOCAL));
 }
+
+/// **A promotion whose set being left still lists the copy as a learner does
+/// not make it one again.** Re-admitted on its stream log but still wiped
+/// (its group logs lag), the copy is promoted to a voter; the set it leaves
+/// is the old leader's view from before the re-admission. Taking that as the
+/// copy's own state would have it refuse the next leader's fence too, and
+/// with one more failure no majority could form.
+#[tokio::test]
+async fn a_stale_learner_flag_in_the_set_being_left_does_not_demote_the_copy() {
+    use super::groups::group_broker;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let broker = group_broker(dir.path());
+    let handler = handler(&broker, 6, OWN).with_replaced_storage(true);
+    let staged = |generation| {
+        let mut set = set(generation, OWN);
+        set.members[1].learner = true;
+        set
+    };
+    let answer = handler
+        .fence(SENDER, fence_with(6, staged(6), None, false))
+        .await;
+    assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
+    let answer = handler
+        .apply(SENDER, stamped(6, 0, &["a"]), felix_broker::LogKind::Stream)
+        .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    let log = log_of(&broker).await;
+    assert_eq!(log.member_is_learner(LOCAL), Some(false), "re-admitted");
+    assert!(log.member_is_wiped(LOCAL));
+
+    let answer = handler
+        .fence(SENDER, fence_with(7, set(7, OWN), Some(staged(6)), false))
+        .await;
+    assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
+    assert_eq!(
+        log.member_is_learner(LOCAL),
+        Some(false),
+        "the set being left is not this copy's state"
+    );
+    let answer = handler
+        .fence(SENDER, fence_with(8, set(8, OWN), Some(set(7, OWN)), true))
+        .await;
+    assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
+}

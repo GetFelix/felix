@@ -413,3 +413,31 @@ fn a_wiped_mark_round_trips_beside_the_set() {
         "a learner byte no build defines"
     );
 }
+
+/// A file an older build wrote, with no wiped section, still opens as the
+/// same set and no wiped mark.
+#[test]
+fn a_file_from_before_wiped_marks_reads_as_not_wiped() {
+    let golden = "464c5253000100010000000000000004000200016101010101010101010101010101010101\
+                  0100016202000000000000000300020001610101010101010101010101010101010101000163\
+                  007ffe9d4a";
+    let bytes: Vec<u8> = (0..golden.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&golden[i..i + 2], 16).unwrap())
+        .collect();
+    let learner = Member {
+        learner: true,
+        ..member("b", None)
+    };
+    let expected = ReplicaSet {
+        current: Membership {
+            generation: 4,
+            members: vec![member("a", Some(1)), learner],
+        },
+        leaving: Some(Membership {
+            generation: 3,
+            members: vec![member("a", Some(1)), member("c", None)],
+        }),
+    };
+    assert_eq!(ReplicaSet::decode(&bytes), Some((expected, None)));
+}
