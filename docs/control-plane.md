@@ -202,8 +202,10 @@ No build reports either yet, so a finalize of either is refused
 (`the_election_features_cannot_be_finalized_yet`), and a new cluster does not
 start with them. A broker that offers the `ELECTION` peer capability reports
 it as `peer_election`, which no build does yet. Finalizing `joint_fence` is
-refused while a serving broker lacks it, and even when none does until the
-control plane re-admits learners and placement skips them (#1737);
+refused while a serving broker lacks it, until every Raft member is at
+metadata level 23, and for now even when none does: the control plane
+re-admits learners and placement skips them (#1737), but the finalize stays
+refused until an end-to-end cluster test shows it;
 `replica_election` is also refused before `joint_fence` and its other
 prerequisites, and until the control plane
 has the metadata level for the pending replica set (see
@@ -771,6 +773,47 @@ reads it, because a registered id is not the id a report vouched for.
 Postgres keeps it only for the generation that wrote it (migration 0039), and
 the Raft store writes it only at metadata level 22.
 
+Under `joint_fence` an assignment also carries `learners`: the members the
+control plane holds as learners because their storage was replaced. Empty
+otherwise, so a write is what it was before. Postgres keeps it only for the
+generation that wrote it (migration 0040), and the Raft store writes it only
+at metadata level 23, which also carries a report's `holds_start`.
+
+##### Re-admitting a replaced copy
+
+A broker whose disk was wiped registers again under a new storage id. The
+assignment still names the old one, so the copy is a *learner* (see
+`docs/replication-design.md`, "A copy that lost its storage does not vote"),
+and placement treats it as one. With `joint_fence` finalized:
+
+1. **Placement keeps it out.** A member is a learner of a shard when the
+   assignment names it under one storage id and it is registered under
+   another, or when it is in the assignment's `learners` and the leader's
+   report at the assignment's generation does not list it in `holds_start`
+   under the id it is registered with. A learner is never chosen as a
+   failover leader and never counts in a majority, such as the rest of a
+   set that a trim or a seat judges level with the leader. A move's staged
+   destination is not a learner unless one of those holds.
+2. **The write names the new id.** When the shard has a live leader, no move,
+   drain or pending set in progress, and the leader's report at the
+   assignment's generation shows the replaced member caught up under its
+   new id, placement writes the same leader and replicas at the next
+   generation (the `readmit` step, at most one member per shard per pass).
+   The write names the new id and puts the member in `learners`.
+3. **The report lets it count.** The leader's report at that generation
+   lists the member in `holds_start` once the member holds the generation's
+   start record. For a cache shard its counter log must hold the counter
+   log's start record too. From then on placement counts the member again.
+   The next placement write drops it from `learners`.
+
+Every placement write works out `learners` from the assignment it replaces:
+a member that assignment named under another id than the one registered now,
+and a member it held that no report has admitted. The leader is never a
+learner here; a leader that came back on a replaced disk is failed over
+(`leader_replaced`). An operator's write has no report to read, so it keeps
+the learners it finds. Without `joint_fence` the field is always empty and
+nothing in this section happens.
+
 States are `assigning` (placement decided, the leader has not confirmed),
 `active` (the leader is serving), and `draining` (the leader has been told to
 stop serving at this generation so the shard can move). A drained shard leaves
@@ -812,6 +855,13 @@ word](replication-design.md#failover-on-the-followers-word)). It is left out
 when false and by brokers that predate it, which placement reads as a leader on
 its lease. Under Raft it is recorded only once every member is at metadata
 level 11.
+`holds_start` lists the followers the leader saw holding the start record of
+its own generation (for a cache, its counter log's too), by node id, and only
+those that gave a storage id. Placement re-admits a replaced copy on it
+([Re-admitting a replaced copy](#re-admitting-a-replaced-copy)). It is left
+out when empty and by brokers that predate it. Postgres keeps it only for the
+report that wrote it (migration 0040), and under Raft it is recorded only once
+every member is at metadata level 23.
 
 The answer is per shard, in request order: each entry names the shard and
 generation and says `accepted`, `stale`, `not_leader`, `unassigned` or
@@ -1405,7 +1455,7 @@ after the fence.
 
 | Metric | Meaning |
 | --- | --- |
-| `felix_shard_move_steps_total{step}` | move steps written: `stage`, `fence`, `cut_over`, `abandon`, `halted` (the destination halted), `timed_out`, `stalled` (a restore's copy stopped moving), `reseat`, `restore`, `seat`, `take_pending_set` (a pending replica set taken on the leader's report), `pending_set_timed_out`, `pending_set_dropped`, `pending_set_cancelled` (one dropped), and an operator's `cancel`, `retake` and `discard` |
+| `felix_shard_move_steps_total{step}` | move steps written: `stage`, `fence`, `cut_over`, `abandon`, `halted` (the destination halted), `timed_out`, `stalled` (a restore's copy stopped moving), `reseat`, `restore`, `seat`, `take_pending_set` (a pending replica set taken on the leader's report), `pending_set_timed_out`, `pending_set_dropped`, `pending_set_cancelled` (one dropped), `readmit` (a replaced copy named by its new storage id and held as a learner), and an operator's `cancel`, `retake` and `discard` |
 | `felix_shards_under_replicated` | shards with fewer copies on serving brokers than their replication factor; non-zero for longer than the restore delay plus a copy means no broker can take the copy, or placement is paused |
 | `felix_shard_replicas_missing` | the copies those shards are missing between them |
 | `felix_shard_replicas_halted` | copies whose leader reports it has stopped shipping to them; counted as missing, kept out of placement, and replaced after the restore delay |
