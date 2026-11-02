@@ -14,6 +14,10 @@ pub enum Error {
     FrameTooLarge,
     #[error("unsupported frame flags {0:#06x}")]
     UnknownFlags(u16),
+    #[error("unsupported frame extension bits {0:#010x}")]
+    UnknownExtension(u32),
+    #[error("invalid record headers: {0}")]
+    InvalidRecordHeaders(&'static str),
     #[error("incomplete frame")]
     Incomplete,
     #[error("failed to serialize message")]

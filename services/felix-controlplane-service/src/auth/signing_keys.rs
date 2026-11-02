@@ -1,9 +1,9 @@
 //! Tenant signing-key rotation: `/v1/tenants/{tenant_id}/signing-keys`.
 //!
-//! Rotation is three calls rather than one because brokers cache a tenant's
-//! JWKS (for up to an hour) and do not refetch it on an unknown `kid`. A key
-//! that signed the moment it was created would be refused by every broker
-//! until its cache expired. So:
+//! Rotation is three calls rather than one because brokers verify against a
+//! cached copy of a tenant's JWKS. They fetch it again on an unknown `kid`,
+//! but a broker cut off from the control plane cannot, so a key that signed
+//! the moment it was created could be refused there. So:
 //!
 //! 1. **stage** a new key: published in the JWKS and accepted, but not used
 //!    to sign;

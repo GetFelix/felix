@@ -99,6 +99,7 @@ pub(crate) async fn one_shard_cluster() -> (
             region: None,
             routing: Default::default(),
             incarnation: 0,
+            mount: None,
         })
         .await
         .expect("stream");

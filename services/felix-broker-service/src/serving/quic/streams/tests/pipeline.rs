@@ -11,6 +11,7 @@ fn pipelining_auth(fixture: &AuthFixture) -> Message {
         client_flags: Some(felix_wire::KNOWN_FLAGS),
         client_features: Some(felix_wire::FEATURE_PUBLISH_PIPELINE),
         client_features_hi: None,
+        client_flags_ext: None,
     }
 }
 

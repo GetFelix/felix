@@ -188,6 +188,7 @@ fn stream(name: &str) -> Stream {
         region: None,
         routing: Default::default(),
         incarnation: 0,
+        mount: None,
     }
 }
 

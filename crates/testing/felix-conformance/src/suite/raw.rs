@@ -35,6 +35,7 @@ pub(crate) async fn run_pubsub(
             client_flags: None,
             client_features: None,
             client_features_hi: None,
+            client_flags_ext: None,
         },
     )
     .await?;
@@ -105,6 +106,7 @@ pub(crate) async fn run_cache(
             client_flags: None,
             client_features: None,
             client_features_hi: None,
+            client_flags_ext: None,
         },
     )
     .await?;
@@ -158,6 +160,7 @@ pub(crate) async fn publish(
             client_flags: None,
             client_features: None,
             client_features_hi: None,
+            client_flags_ext: None,
         },
     )
     .await?;
@@ -202,6 +205,7 @@ async fn cache_get(
             client_flags: None,
             client_features: None,
             client_features_hi: None,
+            client_flags_ext: None,
         },
     )
     .await?;

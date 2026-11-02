@@ -57,6 +57,9 @@ pub struct StreamMetadata {
     /// stream with logs of its own. 0 is a stream from before incarnations,
     /// whose logs keep the directory names they always had.
     pub incarnation: u64,
+    /// The MQTT topic prefix this stream is mounted at, if any. See
+    /// [`Broker::resolve_mount`](crate::Broker::resolve_mount).
+    pub mount: Option<String>,
 }
 
 impl Default for StreamMetadata {
@@ -67,6 +70,7 @@ impl Default for StreamMetadata {
             consistency: ConsistencyLevel::Leader,
             retention: felix_storage::log::Retention::default(),
             incarnation: 0,
+            mount: None,
         }
     }
 }

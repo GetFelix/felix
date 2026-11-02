@@ -25,6 +25,7 @@ fn stream() -> Stream {
         consistency: None,
         retention: None,
         incarnation: 7,
+        mount: None,
     }
 }
 

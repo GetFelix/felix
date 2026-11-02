@@ -42,6 +42,7 @@ use tokio_util::task::TaskTracker;
 use crate::cluster::{controlplane_http, credential};
 use crate::config::{self, DurableStorageConfig};
 use crate::serving::auth::{BrokerAuth, ControlPlaneKeyStore, TenantCatalog};
+use crate::serving::mqtt::BrokerMounts;
 use crate::serving::tls::ClientTls;
 use felix_replication as replication;
 
@@ -350,6 +351,8 @@ where
                 catalog_seeded.clone(),
             )),
     );
+    // Keeps cached keys current so no request waits on the control plane.
+    tokio::spawn(Arc::clone(&key_store).renew_until(sync_shutdown.clone()));
     let auth = Arc::new(
         BrokerAuth::with_key_store(Arc::clone(&key_store))
             .with_subject_binding(config.client_tls.bind_subject)
@@ -372,7 +375,11 @@ where
         },
     )
     .await?;
-    let mqtt = listeners::bind_mqtt(&client_tls, &auth)?;
+    let mqtt = listeners::bind_mqtt(
+        &client_tls,
+        &auth,
+        BrokerMounts::new(Arc::clone(&broker), ingress_router.clone()),
+    )?;
     let mut accept_tasks = listeners::spawn_accept_loops(
         &quic_servers,
         listeners::AcceptLoops {

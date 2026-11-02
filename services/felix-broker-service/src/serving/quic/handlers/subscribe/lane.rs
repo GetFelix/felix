@@ -96,6 +96,9 @@ pub(crate) struct WriterLaneManager {
     pub(super) lane_queue_capacity: usize,
     pub(super) lane_queue_policy: felix_broker::SubQueuePolicy,
     pub(super) lane_queue_highwater: Vec<AtomicUsize>,
+    /// `felix_sub_lane_queue_len` per lane, resolved once: a labelled lookup
+    /// on every delivery is a per-subscriber cost of every publish.
+    pub(super) lane_queue_len: Vec<metrics::Gauge>,
     pub(super) connection_writers: DashMap<u64, mpsc::Sender<ConnectionCommand>>,
     pub(super) subscriber_connections: DashMap<u64, u64>,
     pub(super) connection_queue_capacity: usize,
@@ -152,11 +155,15 @@ impl WriterLaneManager {
         for _ in 0..lane_count {
             lane_queue_highwater.push(AtomicUsize::new(0));
         }
+        let lane_queue_len = (0..lane_count)
+            .map(|lane| metrics::gauge!("felix_sub_lane_queue_len", "lane" => lane.to_string()))
+            .collect();
         let manager = Self {
             lanes,
             lane_queue_capacity: queue_depth,
             lane_queue_policy: config.subscriber_lane_queue_policy,
             lane_queue_highwater,
+            lane_queue_len,
             connection_writers: DashMap::new(),
             subscriber_connections: DashMap::new(),
             connection_queue_capacity: queue_depth,
@@ -236,6 +243,10 @@ impl WriterLaneManager {
         connection_id: u64,
         connection: Option<&felix_transport::QuicConnection>,
     ) -> mpsc::Sender<ConnectionCommand> {
+        // Read-locked on the delivery path; `entry` write-locks the shard.
+        if let Some(writer) = self.connection_writers.get(&connection_id) {
+            return writer.clone();
+        }
         match self.connection_writers.entry(connection_id) {
             Entry::Occupied(entry) => entry.get().clone(),
             Entry::Vacant(entry) => {
@@ -320,6 +331,7 @@ impl WriterLaneManager {
         lane_idx: usize,
         cmd: LaneCommand,
     ) -> std::result::Result<(), ()> {
+        #[cfg(feature = "telemetry")]
         let lane = lane_idx.to_string();
         let sender = &self.lanes[lane_idx];
         let enqueue_wait_start = Instant::now();
@@ -334,7 +346,7 @@ impl WriterLaneManager {
         t_counter!("broker_sub_lane_enqueued_total", "lane" => lane.clone()).increment(1);
         self.update_lane_queue_highwater(lane_idx);
         let queue_len = self.lane_queue_capacity.saturating_sub(sender.capacity());
-        metrics::gauge!("felix_sub_lane_queue_len", "lane" => lane).set(queue_len as f64);
+        self.lane_queue_len[lane_idx].set(queue_len as f64);
         Ok(())
     }
 }

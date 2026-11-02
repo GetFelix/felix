@@ -189,6 +189,7 @@ async fn authenticate_stream(
             client_flags: Some(flags),
             client_features: Some(features),
             client_features_hi: features_hi,
+            client_flags_ext: None,
         },
     )
     .await
@@ -199,6 +200,8 @@ async fn authenticate_stream(
             server_flags,
             server_features,
             server_features_hi,
+            // The client offers no extension yet, so there is nothing to read.
+            server_flags_ext: _,
             listener_ports,
             publish_window,
         }) => Ok(Negotiated {

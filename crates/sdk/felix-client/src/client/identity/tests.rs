@@ -111,6 +111,7 @@ async fn answer(
                 server_flags: felix_wire::KNOWN_FLAGS,
                 server_features: Some(0),
                 server_features_hi: None,
+                server_flags_ext: None,
                 listener_ports: None,
                 publish_window: None,
             },

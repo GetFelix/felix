@@ -89,10 +89,12 @@ Field definitions:
   | `0x1000` | `BINARY_PUBLISH_ACK_OFFSET` | Modifier on `0x0010`: a successful ack ends with the offset of the batch's first record. Offered by a client, it also lets `publish_ok` carry `offset` |
   | `0x2000` | `EVENT_BATCH_PUBLISHER` | Modifier on `0x0002` or `0x0004`: the batch carries the principal that published its events. See [Event batch publisher](#event-batch-publisher) |
   | `0x4000` | `EVENT_BATCH_TIMESTAMPS` | Modifier on `0x0002` or `0x0004`: each event is preceded by its record's append time. See [Event batch timestamps](#event-batch-timestamps) |
+  | `0x8000` | `EXTENDED` | Modifier on `0x0001`, `0x0002` or `0x0004`: the payload starts with a `u32` extension word. See [Extended frames and record headers](#extended-frames-and-record-headers) |
 
   Because these bits change how the payload is parsed, a receiver MUST reject a
   frame carrying any bit it does not recognise rather than masking it off (see
-  Future Compatibility).
+  Future Compatibility). `0x8000` is the last free bit, so a layout change after
+  it goes in the extension word instead.
 - `length` (u32, big-endian): payload length in bytes
 
 Payload:
@@ -2507,6 +2509,117 @@ peer capability (`docs/internal-protocol.md`); a record replicated to or from
 a broker that predates it is stamped with the follower's own clock, normally
 later than the leader's by the replication delay.
 
+## Extended frames and record headers
+
+A record can carry a key and headers: named byte values, such as a trace id or a
+content type, that travel with the record but are not part of its payload. The
+key is the record's own and does not route; a batch's shard still comes from its
+batch routing key (`0x0040`, `BINARY_PUBLISH_KEYED`). They ride in a new frame layout, selected by `EXTENDED` (`0x8000`) in
+the frame flags. No broker or client sends it yet; this page defines the bytes so
+that both sides can be built against them.
+
+`0x8000` was the last free flag bit, so it does not select one layout. It says
+the payload starts with a big-endian `u32` extension word, ahead of every other
+prefix (the acked prefix, the routing key and the subscription id). Each bit of
+that word selects a layout change, the way a flag does:
+
+| Bit | Name | Meaning |
+| --- | --- | --- |
+| `0x0000_0001` | `EXT_RECORD_HEADERS` | Each record is preceded by a record headers block |
+
+`EXTENDED` is valid only on a binary publish batch (`0x0001`, with or without
+`0x0008`), a per-subscriber event batch (`0x0002`) and a shared event batch
+(`0x0004`). A receiver MUST reject it on any other frame, including a JSON
+message and a publish ack. It MUST also reject an extension word of zero and one
+with a bit it does not know, for the same reason as an unknown flag bit: the word
+changes how the rest of the payload is read.
+
+### Negotiating it
+
+Offers travel in `auth` and `auth_ok` like the extended feature word does. The
+frame flag says a second word exists, and the word says which extension bits:
+
+```json
+{"type":"auth","tenant_id":"t1","token":"...","client_flags":32793,"client_flags_ext":1}
+{"type":"auth_ok","server_flags":32793,"server_flags_ext":1}
+```
+
+JSON has no hex, so for reading: `32793` is `0x8019`, which is `EXTENDED` (`0x8000`)
+with `BINARY_PUBLISH_BATCH` (`0x0001`), `BINARY_PUBLISH_ACKED` (`0x0008`) and
+`BINARY_PUBLISH_ACK` (`0x0010`). `client_flags_ext` and `server_flags_ext` of `1`
+are `EXT_RECORD_HEADERS`.
+
+- A client sets `0x8000` in `client_flags` and sends `client_flags_ext` only when
+  it offers an extension bit. A client that offers none sends the `auth` it
+  always did.
+- A broker sets `0x8000` in `server_flags` and sends `server_flags_ext` only to a
+  client that offered `0x8000`, and only when it serves an extension bit.
+- A reader counts the extension word only when the flags carry `0x8000`. Absent
+  means none.
+- A peer sets `0x8000` on a frame only when the other side offered the matching
+  extension bit.
+
+A broker that does not support `0x8000` refuses a frame that carries it with an
+`unsupported frame flags` error, so a client that skips the offer would only
+learn that from a failed publish.
+
+`0x8000` is not part of `KNOWN_FLAGS`, which is what a peer that has no extension
+advertises, and not part of `ORIGINAL_V1_FLAGS`. The Rust helpers are
+`offer_flags`, `answer_flags` and `peer_flags_ext` in `felix-wire`, with
+`FLAG_EXTENDED`, `EXT_RECORD_HEADERS` and `KNOWN_EXT_FLAGS` as the constants.
+
+### The record headers block
+
+Every number is big-endian.
+
+| Field | Size | Meaning |
+| --- | --- | --- |
+| `flags` | 1 | Bit 0: a key follows. Every other bit MUST be 0 |
+| `key_len`, `key` | 4 + `key_len` | Present only when bit 0 is set. An empty key is a key |
+| `count` | 4 | Number of headers |
+| per header: `name_len` | 2 | |
+| per header: `name` | `name_len` | UTF-8, not empty |
+| per header: `value_len` | 4 | |
+| per header: `value` | `value_len` | Any bytes, possibly none |
+
+Names may repeat and keep the order they were sent in. A receiver rejects a block
+that is truncated, has bytes after its last header, sets a reserved flag bit,
+has an empty or non-UTF-8 name, or declares a `count` that the remaining bytes
+cannot hold.
+
+A record with no key and no headers has no block. Senders send nothing for it
+(a block length of zero in a frame), and a receiver rejects the five bytes an
+empty block would take, so "none" has one encoding. The `felix-wire` type is `RecordHeaders`, with `encode`, `decode`
+and `validate`. `validate` checks a raw block without allocating, for a layer
+that only stores or forwards it and can keep the block as opaque bytes.
+
+### Where the block goes
+
+With `EXT_RECORD_HEADERS`, every record in a batch gets a `u32 block_len` and the
+block before its payload. A `block_len` of zero means that record has none.
+
+```
+u32 extension_word          # 0x0000_0001
+...                         # the batch's other prefixes, unchanged
+u32 count
+repeat count times:
+  u64 timestamp_micros      # event batches with 0x4000 only
+  u32 block_len             # 0 = no block
+  u8[block_len] block
+  u32 payload_len
+  u8[payload_len] payload
+```
+
+Everything that reads at a fixed offset moves four bytes: the acked prefix's
+`request_id` is at offset 4, and an event batch's `base_offset` follows the
+extension word and the subscription id. The batch's routing key prefix (`0x0040`)
+is unchanged and still follows the acked and producer prefixes.
+
+An encoder sets `0x8000` only when at least one record has a block. A batch
+whose records have none is byte-identical to the frame without the extension, so
+a peer that never negotiated it cannot tell the difference. A decoder checks every
+non-empty block and rejects the frame if one is invalid.
+
 ## ALPN
 
 Client listeners use the ALPN id `felix/1` (`felix_wire::CLIENT_ALPN`). A
@@ -2546,11 +2659,29 @@ omits it otherwise.
   unrecognised bit instead of ignoring it: flag bits select the payload layout, so
   masking an unknown bit off means confidently misparsing the body rather than
   failing. `0x0008` is the cautionary case; see Binary acked PublishBatch.
+- All sixteen flag bits are now defined. A further layout change is a bit of the
+  extension word, negotiated in `client_flags_ext` and `server_flags_ext`.
 - Future message types must be version-gated.
 
 ## Test Vectors
 Client implementations MUST validate against shared vectors in:
 `crates/protocol/felix-wire/tests/vectors/`
+
+The extended layout has one, `binary_publish_headers`: a publish batch for tenant
+`t`, namespace `n`, stream `s` with two records. The first has a block holding
+one header, `a: 1`; the second has none. The frame is:
+
+```
+464c5831 0001 8001 00000032      header: flags 0x8001 (EXTENDED | BINARY_PUBLISH_BATCH)
+00000001                         extension word: EXT_RECORD_HEADERS
+0001 74  0001 6e  0001 73        tenant, namespace, stream
+00000002                         count
+0000000d                         record 0: block length 13
+00 00000001 0001 61 00000001 31  block: no key, one header a: 1
+00000002 7031                    record 0: payload "p1"
+00000000                         record 1: no block
+00000002 7032                    record 1: payload "p2"
+```
 
 ## Conformance
 All clients SHOULD pass the shared conformance suite (felix-conformance).

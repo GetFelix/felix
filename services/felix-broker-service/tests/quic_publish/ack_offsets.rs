@@ -31,6 +31,7 @@ async fn authed_stream(
             client_flags,
             client_features: None,
             client_features_hi: None,
+            client_flags_ext: None,
         },
     )
     .await?;

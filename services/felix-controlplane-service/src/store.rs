@@ -838,6 +838,19 @@ pub(crate) fn reused_name_refusal(err: &StoreError) -> Option<&str> {
     }
 }
 
+/// Ends the refusal of a Raft write that needs a newer metadata level than
+/// the group has reached.
+pub(crate) const UPGRADE_HINT: &str = "finish upgrading every member first";
+
+/// Whether `err` is that refusal, and its words if so: the write was valid
+/// but the group cannot take it yet, which is not the same as a name in use.
+pub(crate) fn upgrade_refusal(err: &StoreError) -> Option<&str> {
+    match err {
+        StoreError::Conflict(message) if message.ends_with(UPGRADE_HINT) => Some(message),
+        _ => None,
+    }
+}
+
 impl From<sqlx::Error> for StoreError {
     fn from(err: sqlx::Error) -> Self {
         StoreError::Unexpected(err.into())
