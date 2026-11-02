@@ -87,14 +87,17 @@ jobs:
           done
 
       - name: Compare A (baseline) and B (candidate)
+        env:
+          ENV_A: ${{ inputs.env_a }}
+          ENV_B: ${{ inputs.env_b }}
         run: |
           set -euo pipefail
           out=/tmp/felix-perf-env-ab
           {
             echo "## Performance A/B"
             echo
-            echo "- A: \`${{ inputs.env_a }}\` (empty means defaults)"
-            echo "- B: \`${{ inputs.env_b }}\`"
+            echo "- A: \`$ENV_A\` (empty means defaults)"
+            echo "- B: \`$ENV_B\`"
             echo
           } > "$out/report.md"
           python3 scripts/perf/compare_benchmarks.py \
