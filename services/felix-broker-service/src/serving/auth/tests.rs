@@ -64,18 +64,15 @@ async fn ensure_jwks_cached_refreshes_when_expired() -> Result<()> {
     let server =
         tokio::spawn(async move { axum::serve(listener, app).await.context("serve jwks") });
 
-    let key_store = ControlPlaneKeyStore::new(
+    let mut key_store = ControlPlaneKeyStore::new(
         format!("http://{addr}"),
         Arc::new(TenantKeyCache::default()),
     );
     let tenant = TenantId::new("t1");
-    key_store.cache.insert(
-        tenant.to_string(),
-        CachedJwks {
-            jwks: Jwks { keys: vec![] },
-            expires_at: Instant::now() - Duration::from_secs(1),
-        },
-    );
+    // Past the maximum staleness the moment it lands.
+    key_store.max_staleness = Duration::ZERO;
+    key_store.insert_jwks(&tenant, Jwks { keys: vec![] });
+    key_store.max_staleness = JWKS_MAX_STALENESS;
 
     ensure_jwks_cached(&key_store, "t1").await?;
     let cached = key_store.cached_jwks(&tenant).expect("cached jwks");
@@ -147,19 +144,14 @@ fn jwks_missing_returns_error() {
 }
 
 #[test]
-fn cached_jwks_expires_after_ttl() {
-    let key_store = ControlPlaneKeyStore::new(
+fn cached_jwks_expires_after_the_maximum_staleness() {
+    let mut key_store = ControlPlaneKeyStore::new(
         "http://127.0.0.1:1".to_string(),
         Arc::new(TenantKeyCache::default()),
     );
     let tenant = TenantId::new("t1");
-    key_store.cache.insert(
-        tenant.to_string(),
-        CachedJwks {
-            jwks: Jwks { keys: vec![] },
-            expires_at: Instant::now() - Duration::from_secs(5),
-        },
-    );
+    key_store.max_staleness = Duration::ZERO;
+    key_store.insert_jwks(&tenant, Jwks { keys: vec![] });
     assert!(key_store.cached_jwks(&tenant).is_none());
 }
 
@@ -404,4 +396,357 @@ async fn a_lease_token_for_an_implausible_tenant_is_refused_before_verifying() {
             .expect("refused");
         assert!(err.to_string().contains("invalid tenant id"), "{err:#}");
     }
+}
+
+/// A control plane whose tenant JWKS can be changed or taken down mid-test.
+struct KeyServer {
+    addr: std::net::SocketAddr,
+    hits: Arc<std::sync::atomic::AtomicUsize>,
+    /// `None` answers 503, like a control plane that is down.
+    jwks: Arc<parking_lot::Mutex<Option<Jwks>>>,
+    server: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for KeyServer {
+    fn drop(&mut self) {
+        self.server.abort();
+    }
+}
+
+impl KeyServer {
+    async fn start(jwks: Jwks) -> Result<Self> {
+        use axum::http::StatusCode;
+        use axum::response::IntoResponse;
+
+        let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let served = Arc::new(parking_lot::Mutex::new(Some(jwks)));
+        let (handler_hits, handler_jwks) = (Arc::clone(&hits), Arc::clone(&served));
+        let app = Router::new().fallback(move || {
+            let hits = Arc::clone(&handler_hits);
+            let jwks = handler_jwks.lock().clone();
+            async move {
+                hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                // Slow enough that concurrent callers overlap the fetch.
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                match jwks {
+                    Some(jwks) => Json(jwks).into_response(),
+                    None => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+                }
+            }
+        });
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        Ok(Self {
+            addr,
+            hits,
+            jwks: served,
+            server,
+        })
+    }
+
+    fn serve(&self, jwks: Option<Jwks>) {
+        *self.jwks.lock() = jwks;
+    }
+
+    fn hits(&self) -> usize {
+        self.hits.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn store(&self) -> ControlPlaneKeyStore {
+        ControlPlaneKeyStore::new(
+            format!("http://{}", self.addr),
+            Arc::new(TenantKeyCache::default()),
+        )
+    }
+}
+
+/// A tenant signing key: `seed` is the private key, `kid` its name.
+struct Signer {
+    kid: &'static str,
+    seed: u8,
+}
+
+impl Signer {
+    fn public_key(&self) -> [u8; 32] {
+        ed25519_dalek::SigningKey::from_bytes(&[self.seed; 32])
+            .verifying_key()
+            .to_bytes()
+    }
+
+    fn jwk(&self) -> felix_authz::Jwk {
+        felix_authz::Jwk {
+            kty: "OKP".to_string(),
+            kid: self.kid.to_string(),
+            alg: "EdDSA".to_string(),
+            use_field: felix_authz::KeyUse::Sig,
+            crv: Some("Ed25519".to_string()),
+            x: Some(URL_SAFE_NO_PAD.encode(self.public_key())),
+        }
+    }
+
+    fn mint(&self, tenant_id: &str) -> String {
+        let material = felix_authz::TenantKeyMaterial {
+            kid: self.kid.to_string(),
+            alg: Algorithm::EdDSA,
+            private_key: [self.seed; 32],
+            public_key: self.public_key(),
+            jwks: Jwks {
+                keys: vec![self.jwk()],
+            },
+        };
+        let keys = std::collections::HashMap::from([(tenant_id.to_string(), material)]);
+        felix_authz::FelixTokenIssuer::new(
+            "felix-auth",
+            "felix-broker",
+            Duration::from_secs(900),
+            Arc::new(keys),
+        )
+        .mint(&TenantId::new(tenant_id), "p:test", vec![])
+        .expect("mint")
+    }
+}
+
+const K1: Signer = Signer {
+    kid: "k1",
+    seed: 11,
+};
+const K2: Signer = Signer {
+    kid: "k2",
+    seed: 12,
+};
+const K3: Signer = Signer {
+    kid: "k3",
+    seed: 13,
+};
+
+fn key_set(signers: &[&Signer]) -> Jwks {
+    Jwks {
+        keys: signers.iter().map(|signer| signer.jwk()).collect(),
+    }
+}
+
+/// Make the next unknown-kid fetch for `tenant_id` due, as if the last fetch
+/// were long ago.
+fn age_last_attempt(key_store: &ControlPlaneKeyStore, tenant_id: &str) {
+    let mut entry = key_store.cache.get_mut(tenant_id).expect("cached");
+    entry.attempted_at = Instant::now()
+        .checked_sub(JWKS_KID_REFETCH_GAP)
+        .expect("uptime");
+}
+
+/// The regression: keys used to expire an hour after a fetch, and the next
+/// auth fetched them inline, so a control plane that was down at that moment
+/// refused every token of the tenant.
+#[tokio::test]
+async fn existing_tenants_authenticate_while_the_control_plane_is_down_past_renewal() -> Result<()>
+{
+    let cp = KeyServer::start(key_set(&[&K1])).await?;
+    let mut store = cp.store();
+    store.renew_every = Duration::from_millis(100);
+    let store = Arc::new(store);
+    let auth = BrokerAuth::with_key_store(Arc::clone(&store));
+    let token = K1.mint("t1");
+    auth.authenticate("t1", &token).await?;
+    assert_eq!(cp.hits(), 1);
+
+    cp.serve(None);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let (_, failed, _) = store.renew_due().await;
+    assert_eq!(
+        failed, 1,
+        "the renewal reached the control plane and failed"
+    );
+    assert_eq!(cp.hits(), 2);
+
+    auth.authenticate("t1", &token)
+        .await
+        .context("a renewal that failed keeps the cached keys")?;
+    assert_eq!(cp.hits(), 2, "the request did not ask the control plane");
+
+    // Backed off: the next pass does not ask again straight away.
+    store.renew_due().await;
+    assert_eq!(cp.hits(), 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn keys_past_the_maximum_staleness_are_not_used() -> Result<()> {
+    let cp = KeyServer::start(key_set(&[&K1])).await?;
+    let mut store = cp.store();
+    store.max_staleness = Duration::from_millis(500);
+    let auth = BrokerAuth::with_key_store(Arc::new(store));
+    let token = K1.mint("t1");
+    auth.authenticate("t1", &token).await?;
+
+    cp.serve(None);
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(auth.authenticate("t1", &token).await.is_err());
+
+    // A control plane that answers again restores them.
+    cp.serve(Some(key_set(&[&K1])));
+    auth.key_store.misses.clear();
+    auth.authenticate("t1", &token).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_renewal_drops_a_key_the_control_plane_retired() -> Result<()> {
+    let cp = KeyServer::start(key_set(&[&K1, &K2])).await?;
+    let mut store = cp.store();
+    store.renew_every = Duration::from_millis(100);
+    let store = Arc::new(store);
+    let auth = BrokerAuth::with_key_store(Arc::clone(&store));
+    let old = K1.mint("t1");
+    auth.authenticate("t1", &old).await?;
+
+    cp.serve(Some(key_set(&[&K2])));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(store.renew_due().await.1, 0);
+    assert!(auth.authenticate("t1", &old).await.is_err());
+    auth.authenticate("t1", &K2.mint("t1")).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_unknown_kid_fetches_the_rotated_set_once() -> Result<()> {
+    let cp = KeyServer::start(key_set(&[&K1])).await?;
+    let auth = Arc::new(BrokerAuth::with_key_store(Arc::new(cp.store())));
+    auth.authenticate("t1", &K1.mint("t1")).await?;
+    assert_eq!(cp.hits(), 1);
+
+    // k2 is staged after this broker cached the set.
+    cp.serve(Some(key_set(&[&K1, &K2])));
+    age_last_attempt(&auth.key_store, "t1");
+    let rotated = K2.mint("t1");
+    let mut tasks = Vec::new();
+    for _ in 0..10 {
+        let (auth, token) = (Arc::clone(&auth), rotated.clone());
+        tasks.push(tokio::spawn(async move {
+            auth.authenticate("t1", &token).await.map(|_| ())
+        }));
+    }
+    for task in tasks {
+        task.await??;
+    }
+    assert_eq!(cp.hits(), 2, "concurrent requests shared one fetch");
+
+    // A kid the control plane does not have either is refused, and paced:
+    // straight after a fetch it does not cause another.
+    let unknown = K3.mint("t1");
+    assert!(auth.authenticate("t1", &unknown).await.is_err());
+    assert_eq!(cp.hits(), 2);
+    age_last_attempt(&auth.key_store, "t1");
+    assert!(auth.authenticate("t1", &unknown).await.is_err());
+    assert_eq!(cp.hits(), 3);
+    assert!(auth.authenticate("t1", &unknown).await.is_err());
+    assert_eq!(cp.hits(), 3);
+
+    // A failed fetch keeps the keys it had.
+    cp.serve(None);
+    age_last_attempt(&auth.key_store, "t1");
+    assert!(auth.authenticate("t1", &unknown).await.is_err());
+    assert_eq!(cp.hits(), 4);
+    auth.authenticate("t1", &rotated).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_tenant_never_seen_is_fetched_once_for_concurrent_auths() -> Result<()> {
+    let cp = KeyServer::start(key_set(&[&K1])).await?;
+    let auth = Arc::new(BrokerAuth::with_key_store(Arc::new(cp.store())));
+    let token = K1.mint("t1");
+    let mut tasks = Vec::new();
+    for _ in 0..20 {
+        let (auth, token) = (Arc::clone(&auth), token.clone());
+        tasks.push(tokio::spawn(async move {
+            auth.authenticate("t1", &token).await.map(|_| ())
+        }));
+    }
+    for task in tasks {
+        task.await??;
+    }
+    assert_eq!(cp.hits(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_renewer_drops_a_tenant_the_catalog_no_longer_has() -> Result<()> {
+    let cp = KeyServer::start(key_set(&[&K1])).await?;
+    let broker = Arc::new(Broker::new(felix_storage::EphemeralCache::new().into()));
+    broker.register_tenant("t1").await?;
+    let seeded = CancellationToken::new();
+    seeded.cancel();
+    let mut store = cp
+        .store()
+        .with_tenant_catalog(TenantCatalog::new(Arc::clone(&broker), seeded));
+    // Not due: removal does not wait for the tenant's next renewal.
+    store.renew_every = Duration::from_secs(3600);
+    let store = Arc::new(store);
+    let auth = BrokerAuth::with_key_store(Arc::clone(&store));
+    let token = K1.mint("t1");
+    auth.authenticate("t1", &token).await?;
+
+    broker.remove_tenant("t1").await?;
+    store.renew_due().await;
+    assert!(store.cached_jwks(&TenantId::new("t1")).is_none());
+    assert!(auth.authenticate("t1", &token).await.is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_spawned_renewer_drops_a_retired_key_and_stops_on_shutdown() -> Result<()> {
+    let cp = KeyServer::start(key_set(&[&K1, &K2])).await?;
+    let mut store = cp.store();
+    store.renew_every = Duration::from_millis(100);
+    store.renew_tick = Duration::from_millis(20);
+    let store = Arc::new(store);
+    let auth = BrokerAuth::with_key_store(Arc::clone(&store));
+    let old = K1.mint("t1");
+    auth.authenticate("t1", &old).await?;
+
+    let shutdown = CancellationToken::new();
+    let renewer = tokio::spawn(Arc::clone(&store).renew_until(shutdown.clone()));
+    // A failing stretch first: the cached keys keep verifying.
+    cp.serve(None);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    auth.authenticate("t1", &old).await?;
+
+    cp.serve(Some(key_set(&[&K2])));
+    // Backoff after the failures is at least 15 s, so step the renewal along.
+    store.cache.get_mut("t1").expect("cached").renew_at = Instant::now();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while auth.authenticate("t1", &old).await.is_ok() {
+        assert!(Instant::now() < deadline, "the renewer never dropped k1");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    shutdown.cancel();
+    tokio::time::timeout(Duration::from_secs(5), renewer)
+        .await
+        .context("the renewer stops on shutdown")??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn unknown_kid_fetches_share_one_budget_across_tenants() -> Result<()> {
+    let cp = KeyServer::start(key_set(&[&K1])).await?;
+    let auth = BrokerAuth::with_key_store(Arc::new(cp.store()));
+    let tenants: Vec<String> = (0..10).map(|i| format!("t{i}")).collect();
+    for tenant in &tenants {
+        auth.authenticate(tenant, &K1.mint(tenant)).await?;
+    }
+    let before = cp.hits();
+    for tenant in &tenants {
+        age_last_attempt(&auth.key_store, tenant);
+        assert!(auth.authenticate(tenant, &K3.mint(tenant)).await.is_err());
+    }
+    assert_eq!(
+        cp.hits() - before,
+        JWKS_KID_REFETCH_BURST as usize,
+        "made-up kids across tenants stop at the broker-wide budget"
+    );
+    Ok(())
 }

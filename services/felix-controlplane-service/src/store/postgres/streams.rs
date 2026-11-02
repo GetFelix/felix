@@ -10,6 +10,7 @@ use super::{
     CatalogFeed, PostgresStore, begin_consistent_read, begin_feed_write, feed_head,
     is_unique_violation, page_fetch,
 };
+use crate::model::mount;
 use crate::model::{
     Stream, StreamChange, StreamChangeOp, StreamKey, StreamPatchRequest, StreamRouting,
 };
@@ -33,7 +34,7 @@ pub(super) async fn list_streams(
     namespace: &str,
 ) -> StoreResult<Vec<Stream>> {
     let rows = sqlx::query_as::<_, DbStream>(
-        r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing, incarnation
+        r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, mount, routing, incarnation
                FROM streams WHERE tenant_id = $1 AND namespace = $2 ORDER BY stream"#,
     )
     .bind(tenant_id)
@@ -55,14 +56,14 @@ pub(super) async fn list_streams_page(
     let fetch = page_fetch(page.limit);
     let rows = match &page.after {
         None => sqlx::query_as::<_, DbStream>(
-            r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing, incarnation
+            r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, mount, routing, incarnation
                FROM streams WHERE tenant_id = $1 AND namespace = $2 ORDER BY stream LIMIT $3"#,
         )
         .bind(tenant_id)
         .bind(namespace)
         .bind(fetch),
         Some(after) => sqlx::query_as::<_, DbStream>(
-            r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing, incarnation
+            r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, mount, routing, incarnation
                FROM streams WHERE tenant_id = $1 AND namespace = $2 AND stream > $3
                ORDER BY stream LIMIT $4"#,
         )
@@ -82,7 +83,7 @@ pub(super) async fn list_streams_page(
 
 pub(super) async fn get_stream(store: &PostgresStore, key: &StreamKey) -> StoreResult<Stream> {
     let row = sqlx::query_as::<_, DbStream>(
-        r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing, incarnation
+        r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, mount, routing, incarnation
                FROM streams WHERE tenant_id = $1 AND namespace = $2 AND stream = $3"#,
     )
     .bind(&key.tenant_id)
@@ -161,9 +162,17 @@ pub(super) async fn insert_stream(
     if stream.incarnation == 0 {
         stream.incarnation = crate::model::proposed_incarnation();
     }
+    if let Some(prefix) = &stream.mount {
+        let key = StreamKey {
+            tenant_id: stream.tenant_id.clone(),
+            namespace: stream.namespace.clone(),
+            stream: stream.stream.clone(),
+        };
+        check_mount(tx, &key, prefix, stream.durable).await?;
+    }
     let insert = sqlx::query_scalar::<_, i64>(
-        r#"INSERT INTO streams (tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing, incarnation)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+        r#"INSERT INTO streams (tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, mount, routing, incarnation)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
                RETURNING incarnation"#,
     )
     .bind(&stream.tenant_id)
@@ -178,6 +187,7 @@ pub(super) async fn insert_stream(
     .bind(delivery_to_str(&stream.delivery))
     .bind(stream.durable)
     .bind(stream.region.as_deref())
+    .bind(stream.mount.as_deref())
     .bind((!stream.routing.is_modulo()).then(|| stream.routing.as_str()))
     .bind(stream.incarnation as i64)
     .fetch_one(&mut **tx)
@@ -222,7 +232,7 @@ pub(super) async fn patch_stream(
             .await?;
     }
     let current = sqlx::query_as::<_, DbStream>(
-        r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing, incarnation
+        r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, mount, routing, incarnation
                FROM streams WHERE tenant_id = $1 AND namespace = $2 AND stream = $3 FOR UPDATE"#,
     )
     .bind(&key.tenant_id)
@@ -249,10 +259,19 @@ pub(super) async fn patch_stream(
     if let Some(durable) = patch.durable {
         updated.durable = durable;
     }
+    let touches_mount = patch.mount.is_some() || patch.durable.is_some();
+    if let Some(mount) = patch.mount {
+        updated.mount = mount;
+    }
+    if let Some(prefix) = &updated.mount
+        && touches_mount
+    {
+        check_mount(&mut tx, key, prefix, updated.durable).await?;
+    }
 
     sqlx::query(
-        r#"UPDATE streams SET kind = $1, shards = $2, replication_factor = $3, retention_max_age_seconds = $4, retention_max_size_bytes = $5, consistency = $6, delivery = $7, durable = $8, updated_at = now()
-                WHERE tenant_id = $9 AND namespace = $10 AND stream = $11"#,
+        r#"UPDATE streams SET kind = $1, shards = $2, replication_factor = $3, retention_max_age_seconds = $4, retention_max_size_bytes = $5, consistency = $6, delivery = $7, durable = $8, mount = $9, updated_at = now()
+                WHERE tenant_id = $10 AND namespace = $11 AND stream = $12"#,
     )
     .bind(stream_kind_to_str(&updated.kind))
     .bind(updated.shards as i32)
@@ -262,6 +281,7 @@ pub(super) async fn patch_stream(
     .bind(consistency_to_str(&updated.consistency))
     .bind(delivery_to_str(&updated.delivery))
     .bind(updated.durable)
+    .bind(updated.mount.as_deref())
     .bind(&key.tenant_id)
     .bind(&key.namespace)
     .bind(&key.stream)
@@ -286,6 +306,46 @@ pub(super) async fn patch_stream(
     Ok(updated)
 }
 
+/// Whether `key` may be mounted at `prefix`: the stream is durable and no
+/// other stream of the tenant has an overlapping mount. Inside the caller's
+/// transaction, which holds the streams feed lock, so no other writer can add
+/// a mount between this check and the write.
+async fn check_mount(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    key: &StreamKey,
+    prefix: &str,
+    durable: bool,
+) -> StoreResult<()> {
+    if !durable {
+        return Err(mount::needs_durable());
+    }
+    let other = sqlx::query_as::<_, (String, String, String)>(
+        r#"SELECT namespace, stream, mount FROM streams
+               WHERE tenant_id = $1 AND mount IS NOT NULL
+                 AND NOT (namespace = $2 AND stream = $3)
+                 AND (starts_with(mount, $4) OR starts_with($4, mount))
+               ORDER BY namespace, stream LIMIT 1"#,
+    )
+    .bind(&key.tenant_id)
+    .bind(&key.namespace)
+    .bind(&key.stream)
+    .bind(prefix)
+    .fetch_optional(&mut **tx)
+    .await?;
+    match other {
+        Some((namespace, stream, other)) => Err(mount::overlap(
+            prefix,
+            &StreamKey {
+                tenant_id: key.tenant_id.clone(),
+                namespace,
+                stream,
+            },
+            &other,
+        )),
+        None => Ok(()),
+    }
+}
+
 pub(super) async fn delete_stream(store: &PostgresStore, key: &StreamKey) -> StoreResult<()> {
     let (_gates, mut tx) = begin_feed_write(store, &[CatalogFeed::Streams]).await?;
     let locked: Option<i32> = sqlx::query_scalar(
@@ -308,7 +368,7 @@ pub(super) async fn delete_stream(store: &PostgresStore, key: &StreamKey) -> Sto
     }
     let removed = sqlx::query_as::<_, DbStream>(
         r#"DELETE FROM streams WHERE tenant_id = $1 AND namespace = $2 AND stream = $3
-               RETURNING tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing, incarnation"#,
+               RETURNING tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, mount, routing, incarnation"#,
     )
     .bind(&key.tenant_id)
     .bind(&key.namespace)
@@ -345,7 +405,7 @@ pub(super) async fn stream_snapshot(store: &PostgresStore) -> StoreResult<Snapsh
     let mut tx = store.pool.begin().await?;
     begin_consistent_read(&mut tx).await?;
     let rows = sqlx::query_as::<_, DbStream>(
-        r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, routing, incarnation FROM streams ORDER BY tenant_id, namespace, stream"#,
+        r#"SELECT tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, mount, routing, incarnation FROM streams ORDER BY tenant_id, namespace, stream"#,
     )
     .fetch_all(&mut *tx)
     .await
