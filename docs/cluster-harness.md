@@ -649,12 +649,11 @@ It fails when:
 
 | Variant | Streams | Appended | Hold | Build | Where |
 | --- | --- | --- | --- | --- | --- |
-| `a_lease_cache_renews_on_time_while_shards_are_created_in_bulk` | 600 | 96 | 30 s | debug | every PR, in the cluster job's `rest` suite (see below) |
+| `a_lease_cache_renews_on_time_while_shards_are_created_in_bulk` | 600 | 96 | 30 s | debug | every PR, in the cluster job's `rest` suite |
 | `a_lease_cache_renews_on_time_at_felixd_scale` (`#[ignore]`) | 1500 | 96 | 60 s | release | nightly, `.github/workflows/scale-nightly.yml` |
 
-The per-PR variant is `#[ignore]` until the three fixes (#1799, #1800, #1801)
-are all on main, because it fails without them. Until then
-`scale-nightly.yml` runs it on dispatch with `variant=per-pr`.
+`scale-nightly.yml` can also run the per-PR variant on dispatch, with
+`variant=per-pr`.
 
 The appended count matters more than the stream count. Starvation needs more
 shards with work on one leader than the replication driver's 16 pass slots.

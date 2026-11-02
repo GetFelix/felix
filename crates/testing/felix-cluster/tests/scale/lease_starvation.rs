@@ -97,7 +97,6 @@ impl Load {
 /// **Renewals stay on time while every broker leads hundreds of busy shards.**
 /// Sized for the per-PR cluster job.
 #[serial]
-#[ignore = "fails until #1799, #1800 and #1801 are all on main (#1760)"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_lease_cache_renews_on_time_while_shards_are_created_in_bulk() {
     run(Load::from_env(Load {
