@@ -689,6 +689,7 @@ fn closed(done: Completion<Item>, ended: &Mutex<Option<String>>) {
         Some(message) => done.fail(Failure {
             status: FELIX_STATUS_CLOSED,
             message,
+            cursor: None,
         }),
         None => done.status(FELIX_STATUS_CLOSED),
     }

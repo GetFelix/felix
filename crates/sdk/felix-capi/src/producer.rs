@@ -141,6 +141,7 @@ fn closed() -> Failure {
     Failure {
         status: FELIX_STATUS_CLOSED,
         message: "the producer is closed".to_string(),
+        cursor: None,
     }
 }
 
@@ -531,6 +532,7 @@ pub unsafe extern "C" fn felix_producer_close(
                             "the producer still had calls pending after {} ms, so it was stopped",
                             limit.as_millis()
                         ),
+                        cursor: None,
                     })?;
                 held.close_within(limit.saturating_sub(started.elapsed()))
                     .await
@@ -740,6 +742,7 @@ fn unknown() -> Failure {
     Failure {
         status: FELIX_STATUS_OUTCOME_UNKNOWN,
         message: "the write was cancelled after it may have been sent".to_string(),
+        cursor: None,
     }
 }
 

@@ -10,6 +10,7 @@ use std::ptr;
 use tokio_util::sync::CancellationToken;
 
 use crate::boundary::Failure;
+use crate::error::{CursorDetail, set_last_cursor};
 use crate::status::{FELIX_STATUS_CANCELLED, FELIX_STATUS_OK, FELIX_STATUS_PANIC, FelixStatus};
 
 /// A result type a callback can carry, and how it is handed to C.
@@ -64,23 +65,23 @@ impl<V: Deliver> Completion<V> {
     }
 
     pub(crate) fn ok(self, value: V) {
-        self.finish(FELIX_STATUS_OK, None, Some(value));
+        self.finish(FELIX_STATUS_OK, None, Some(value), None);
     }
 
     /// An outcome that is not a failure and carries no value, such as a
     /// timeout or the end of a stream.
     pub(crate) fn status(self, status: FelixStatus) {
-        self.finish(status, None, None);
+        self.finish(status, None, None, None);
     }
 
     pub(crate) fn fail(self, failure: Failure) {
-        self.finish(failure.status, Some(failure.message), None);
+        self.finish(failure.status, Some(failure.message), None, failure.cursor);
     }
 
     /// A value that carries its own outcome, such as a batch in which some
     /// records failed.
     pub(crate) fn with_status(self, status: FelixStatus, message: Option<String>, value: V) {
-        self.finish(status, message, Some(value));
+        self.finish(status, message, Some(value), None);
     }
 
     pub(crate) fn result(self, result: Result<V, Failure>) {
@@ -90,9 +91,22 @@ impl<V: Deliver> Completion<V> {
         }
     }
 
-    fn finish(mut self, status: FelixStatus, message: Option<String>, value: Option<V>) {
+    fn finish(
+        mut self,
+        status: FelixStatus,
+        message: Option<String>,
+        value: Option<V>,
+        cursor: Option<CursorDetail>,
+    ) {
         self.done = true;
-        call(self.callback, &self.user_data, status, message, value);
+        call(
+            self.callback,
+            &self.user_data,
+            status,
+            message,
+            value,
+            cursor,
+        );
     }
 }
 
@@ -111,7 +125,7 @@ impl<V: Deliver> Drop for Completion<V> {
         } else {
             (FELIX_STATUS_CANCELLED, None)
         };
-        call::<V>(self.callback, &self.user_data, status, message, None);
+        call::<V>(self.callback, &self.user_data, status, message, None, None);
     }
 }
 
@@ -121,12 +135,17 @@ fn call<V: Deliver>(
     status: FelixStatus,
     message: Option<String>,
     value: Option<V>,
+    cursor: Option<CursorDetail>,
 ) {
     let message = message.map(c_message);
     let message_ptr = message.as_ref().map_or(ptr::null(), |m| m.as_ptr());
     // SAFETY: `new` refused a null callback, and the message lives until the
     // callback returns.
+    // The details are the callback thread's to read, as the message is the
+    // callback's argument. Cleared after, so a later callback never sees them.
+    set_last_cursor(cursor);
     unsafe { V::deliver(callback, user_data.0, status, message_ptr, value) };
+    set_last_cursor(None);
 }
 
 /// A message as a C string. An interior NUL would truncate it, so it is

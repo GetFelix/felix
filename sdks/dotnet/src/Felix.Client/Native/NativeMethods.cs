@@ -111,6 +111,18 @@ internal struct NativeTrimOutcome
     public ulong Tail;
 }
 
+/// <summary><c>FelixCursorError</c>, borrowed until the next native call on the thread.</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal unsafe struct NativeCursorError
+{
+    public uint Reason;
+    public ulong Requested;
+    public ulong Available;
+    public byte HasTrimHeaders;
+    public byte* TrimHeaders;
+    public nuint TrimHeadersLen;
+}
+
 /// <summary><c>FelixStateValue</c>, borrowed for the length of a callback.</summary>
 [StructLayout(LayoutKind.Sequential)]
 internal unsafe struct NativeStateValue
@@ -142,6 +154,9 @@ internal static unsafe partial class NativeMethods
 
     [LibraryImport(Lib)]
     internal static partial byte* felix_last_error_message();
+
+    [LibraryImport(Lib)]
+    internal static partial byte felix_last_cursor_error(NativeCursorError* result);
 
     [LibraryImport(Lib)]
     internal static partial void felix_client_free(nint client);
@@ -929,6 +944,29 @@ internal static unsafe partial class NativeMethods
     {
         var ptr = felix_last_error_message();
         return ptr is null ? null : Marshal.PtrToStringUTF8((nint)ptr);
+    }
+
+    /// <summary>
+    /// Why the last call on this thread was refused with <see cref="FelixStatus.Cursor"/>, copied, or
+    /// null when there is nothing to read. Only meaningful where the status is seen: inside the
+    /// callback that received it, or right after a call that returned it.
+    /// </summary>
+    internal static CursorDetails? LastCursor()
+    {
+        NativeCursorError native;
+        if (felix_last_cursor_error(&native) == 0)
+        {
+            return null;
+        }
+
+        ReadOnlyMemory<byte>? headers = native.HasTrimHeaders == 0
+            ? null
+            : new ReadOnlySpan<byte>(native.TrimHeaders, checked((int)native.TrimHeadersLen)).ToArray();
+        return new CursorDetails(
+            native.Reason == 0 ? CursorReason.TooOld : CursorReason.InFuture,
+            checked((long)native.Requested),
+            checked((long)native.Available),
+            headers);
     }
 
     internal static string? Utf8(byte* ptr) => ptr is null ? null : Marshal.PtrToStringUTF8((nint)ptr);

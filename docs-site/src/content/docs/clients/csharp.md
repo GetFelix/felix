@@ -559,7 +559,7 @@ Every other refusal is a `FelixException` whose `Status` says what to do next:
 
 Do not send a timed-out trim again as it is. If it landed, the same call is refused with a tail one past the
 trim, which looks like a lost race. Read the shard's earliest offset, or read below the floor you asked for,
-to tell the two apart. A read below the floor fails with `Cursor`. The call needs the `stream.trim`
+to tell the two apart. A read below the floor fails with `Cursor`, and `FelixException.Cursor` carries the new floor and the trim's headers (see [When a start offset is refused](#when-a-start-offset-is-refused)). The call needs the `stream.trim`
 permission, which `stream.manage` includes.
 
 ## Idempotent producers
@@ -632,6 +632,34 @@ Failures are `FelixException`s whose `Status` is the C ABI's status code (`Auth`
 nothing was applied. `OutcomeUnknown` means a write may have landed, so resend only if
 it is idempotent. Cancellation is an `OperationCanceledException`, not a
 `FelixException`. See [Status codes](/clients/c/#status-codes).
+
+### When a start offset is refused
+
+A subscribe or read that starts at an offset the stream cannot serve fails with
+`Status == FelixStatus.Cursor`, and `FelixException.Cursor` says where to resume. It is
+null for every other status.
+
+- `Reason` is `CursorReason.TooOld` (retention or a head trim discarded the offset) or
+  `CursorReason.InFuture` (it is past the tail).
+- `Requested` is the offset you asked for.
+- `Available` is the nearest offset that would have worked: the oldest retained for
+  `TooOld`, the tail for `InFuture`. Resuming from it takes the smallest gap.
+- `TrimHeaders` holds what a [head trim](#trimming-a-shards-head) was written with, so a
+  reader can tell who trimmed past it. It is null when retention set the floor.
+
+```csharp
+ulong start = 7; // for example, a checkpoint plus one
+try
+{
+    await using var sub = await client.SubscribeAsync(
+        "t1", "default", "orders", shard: 0, StartPosition.FromOffset(start));
+    // ... read from sub
+}
+catch (FelixException e) when (e.Cursor is { } refused)
+{
+    Console.WriteLine($"offset {refused.Requested} is {refused.Reason}; resume at {refused.Available}");
+}
+```
 
 ## Cancellation
 

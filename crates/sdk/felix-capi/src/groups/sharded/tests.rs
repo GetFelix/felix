@@ -84,6 +84,7 @@ fn an_empty_poll_is_ok_and_a_failure_has_no_records() {
         .fail(Failure {
             status: FELIX_STATUS_AUTH,
             message: "denied".to_string(),
+            cursor: None,
         });
     let calls = calls.into_inner().unwrap();
     assert_eq!(calls[0].2, Some(Vec::new()));

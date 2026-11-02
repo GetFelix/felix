@@ -176,8 +176,27 @@ export declare class ConnectionError extends FelixError {}
 export declare class AuthError extends FelixError {}
 /** The tenant, namespace, stream or cache does not exist on the broker. */
 export declare class NotFoundError extends FelixError {}
-/** The requested start offset is gone — retention discarded it. */
-export declare class CursorError extends FelixError {}
+/**
+ * The requested start offset is not available: retention or a head trim
+ * discarded it, or it is past the tail.
+ */
+export declare class CursorError extends FelixError {
+  /** `too_old` (discarded) or `in_future` (past the tail). */
+  readonly reason: "too_old" | "in_future";
+  /** The offset that was asked for. */
+  readonly requested: bigint;
+  /**
+   * The nearest offset that would have worked: the oldest retained for
+   * `too_old`, the tail for `in_future`. Resume from here to accept the gap.
+   */
+  readonly available: bigint;
+  /**
+   * For `too_old` below a head trim's floor, the headers the trim was written
+   * with, so a reader can tell who trimmed past it. `undefined` for a floor
+   * that retention set.
+   */
+  readonly trimHeaders?: Buffer;
+}
 /** A bad argument to this client, rather than a failure of the call. */
 export declare class InvalidArgumentError extends FelixError {}
 /**
