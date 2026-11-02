@@ -258,6 +258,24 @@ broker that no longer leads the partition, which is normal for a moment after
 a shard moves and a stale Metadata view if it lasts. `group_authorization_failed`
 counts consumers that tried to join a group; Felix refuses those on purpose.
 
+**Are MQTT devices connecting?** Only when the MQTT listener is on
+(`FELIX_MQTT_LISTEN`; see [MQTT](/features/mqtt/)):
+
+```prometheus
+felix_mqtt_connections                      # gauge: MQTT connections open now
+felix_mqtt_connections_total
+felix_mqtt_refused_total                    # by reason, below
+```
+
+`felix_mqtt_refused_total` counts every connection or request the listener
+turned away. `connection_limit`, `per_ip_limit` and `tls_handshake` are
+connections that never got to `CONNECT`; `auth_timeout`, `auth_required`,
+`auth_failed` and `auth_unavailable` are `CONNECT` failures, where
+`auth_unavailable` means the control plane could not be asked and is worth an
+alert. `token_expired`, `revoked` and `keepalive_timeout` end a live connection.
+`publish_unsupported`, `subscribe_unsupported` and `will_unsupported` count what
+the listener cannot do yet.
+
 **Alert on `felix_broker_credential_expires_in_seconds` crossing a threshold**,
 not only on the refresh and rotation counters. The counters say renewal is
 failing; the gauge says how much time is left. The heartbeat carries this

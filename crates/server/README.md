@@ -16,6 +16,10 @@ asks it to.
 - [`felix-kafka`](felix-kafka) is the Kafka wire protocol, read-only: it
   answers a Kafka consumer's requests from the broker's shard logs. The broker
   service owns its socket and TLS and hands it each connection.
+- [`felix-mqtt`](felix-mqtt) is the MQTT listener's connection layer: it
+  authenticates devices and enforces keepalive and limits. Publishing and
+  subscribing are not built yet. The broker service owns its socket, runtime
+  and TLS.
 - [`felix-router`](felix-router) answers which node serves a shard, from the
   assignments the control plane publishes.
 - [`felix-replication`](felix-replication) is how brokers talk to each other:

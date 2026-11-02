@@ -18,7 +18,7 @@ about reciprocity, not about who is allowed to make money.
 | `crates/protocol/felix-transport/` | Apache-2.0 | Generic QUIC transport plumbing, not Felix-specific server logic. |
 | `crates/protocol/felix-mqtt-wire/` | Apache-2.0 | The MQTT 3.1.1 and 5.0 packet codec. MQTT is an open standard and the codec holds none of Felix's server logic. Not published to crates.io. |
 | `crates/server/felix-common/` | Apache-2.0 | Membership shapes, the env-var registry, and process lifecycle shared by the services. |
-| `crates/server/felix-broker/`, `felix-storage`, `felix-authz`, `felix-router`, `felix-kafka`, `felix-replication` | AGPL-3.0-only | Server-side core logic. |
+| `crates/server/felix-broker/`, `felix-storage`, `felix-authz`, `felix-router`, `felix-kafka`, `felix-mqtt`, `felix-replication` | AGPL-3.0-only | Server-side core logic. |
 | `services/felix-broker-service/`, `services/felix-controlplane-service/` | AGPL-3.0-only | The runnable server binaries. |
 | `crates/testing/felix-conformance/` | AGPL-3.0-only | The client conformance kit: the scenario catalogue, the verifier, and a suite that runs against the reference broker. It links `felix-broker-service`, `felix-broker`, `felix-storage` and `felix-authz`, so a build of it is AGPL whatever its manifest says. Running it against your client's results puts no obligation on your client. Not published. |
 | `crates/testing/felix-cluster/` | AGPL-3.0-only | Local multi-node cluster harness for integration and failure tests. It embeds the control plane and drives the broker, so it is internal tooling rather than something a third-party implementer runs. Not published. |
