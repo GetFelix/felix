@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793597136715,
+  "lastUpdate": 1793604440712,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -41704,6 +41704,58 @@ window.BENCHMARK_DATA = {
             "range": "5545.01",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 826442.87\nmean: 828131.66\nstdev: 5545.01\ncv: 0.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f98da7bdfc327c4d251a8b6506ca11378e7f72e6",
+          "message": "ci(perf-pr): alternate baseline and candidate trials (#1756)\n\nperf-pr.yml ran every baseline trial and then every candidate trial, so runner drift between the two halves showed up as a regression. A 64 KiB fanout-10 run reported -5.6% with all twelve candidate trials uniformly slower; an interleaved A/B across three runners (18 rounds, arms rotated) then showed the same code within +-0.6%.\n\nNow both binaries are built first, then each round runs one trial of every cell on one side and then the other, and the side that goes first flips each round. Six rounds, so each side goes first equally often (the job timeout rises to 40 minutes to fit). The harness already takes `--trials 1` and appends to the JSONL under the directory it runs in, and `compare_benchmarks.py` groups by cell, so nothing else changes.\n\nDesign calls:\n- Alternation is per round (all cells of one side, then all cells of the other), not per cell. Cells are about a minute each, so a round is a few minutes; drift on that scale is the thing being cancelled.\n- The old baseline and candidate run steps become \"Prepare baseline\", \"Build baseline and candidate\" and one \"Run benchmarks\" step. The comment step maps each of them to its failure reason.\n- Build moves ahead of all trials so compile time never sits between measurements.\n\nDocs: benchmarks.md, building.md and the comparison comment text describe the alternating method.\n\nThe PR's own Performance Regression Check run is the proof; I will link it here.",
+          "timestamp": "2026-11-01T23:16:00-08:00",
+          "tree_id": "56f3fb3bfc96deb0db0ced762fa65a42248ad549",
+          "url": "https://github.com/GetFelix/felix/commit/f98da7bdfc327c4d251a8b6506ca11378e7f72e6"
+        },
+        "date": 1793604439843,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 541313.67,
+            "range": "42529.20",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 541313.67\nmean: 540120.05\nstdev: 42529.20\ncv: 7.87%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 541313.67,
+            "range": "42529.20",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 541313.67\nmean: 540120.05\nstdev: 42529.20\ncv: 7.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 124172.6,
+            "range": "1158.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 124172.60\nmean: 124642.97\nstdev: 1158.05\ncv: 0.93%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1241726,
+            "range": "11580.53",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1241726.00\nmean: 1246429.72\nstdev: 11580.53\ncv: 0.93%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
