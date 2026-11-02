@@ -277,7 +277,9 @@ alert. `token_expired`, `revoked` and `keepalive_timeout` end a live connection.
 the listener cannot do yet. Reasons that start with `ws_` are WebSocket
 upgrades that were refused (`ws_origin`, `ws_header_too_large`,
 `ws_upgrade_timeout`, `ws_not_http`, `ws_bad_request`, `ws_not_upgrade`,
-`ws_version`, `ws_subprotocol`, `ws_bad_key`); they are counted on the same
+`ws_version`, `ws_subprotocol`, `ws_bad_key`, `ws_upgrade_write`, and
+`ws_closed_in_upgrade`, which is what a load balancer's TCP health check or a
+port scan produces); they are counted on the same
 counter, and WebSocket connections are in `felix_mqtt_connections` like any
 other.
 

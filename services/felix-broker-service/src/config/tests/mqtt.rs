@@ -140,6 +140,47 @@ fn the_websocket_listener_has_defaults_and_takes_overrides() {
 }
 
 #[test]
+fn allowed_origins_are_normalised_or_refused() {
+    use felix_mqtt::ws::AllowedOrigins;
+
+    let parse_origins = |origins: &str| {
+        parse(&[
+            ("FELIX_MQTT_LISTEN", "127.0.0.1:8883"),
+            ("FELIX_MQTT_WS_LISTEN", "127.0.0.1:8884"),
+            ("FELIX_MQTT_WS_ALLOWED_ORIGINS", origins),
+        ])
+    };
+    // What a browser sends has no default port, so these match it.
+    let config =
+        parse_origins("HTTPS://App.Example.com:443, http://dev.example:80, https://x.example:8443")
+            .expect("parse")
+            .expect("on")
+            .ws
+            .expect("websocket on");
+    assert_eq!(
+        config.settings.allowed_origins,
+        AllowedOrigins::Only(vec![
+            "https://app.example.com".into(),
+            "http://dev.example".into(),
+            "https://x.example:8443".into(),
+        ])
+    );
+    for bad in [
+        "app.example.com",
+        "https://app.example.com/",
+        "https://app.example.com/x",
+        "://x",
+        "https://",
+    ] {
+        let err = parse_origins(bad).unwrap_err();
+        assert!(
+            err.to_string().contains("FELIX_MQTT_WS_ALLOWED_ORIGINS"),
+            "{bad}: {err}"
+        );
+    }
+}
+
+#[test]
 fn the_websocket_listener_needs_the_mqtt_listener() {
     let err = parse(&[("FELIX_MQTT_WS_LISTEN", "127.0.0.1:8884")]).unwrap_err();
     assert!(err.to_string().contains("FELIX_MQTT_LISTEN"), "{err}");

@@ -6,7 +6,7 @@ byte: an HTTP upgrade request, or the stream of frames a client sends after it.
 - The request must be accepted or refused, never panic.
 - The frames must decode to the same payload, control frames and verdict whether
   they arrive whole or are cut into reads of any size (the second byte sets
-  the size), and waiting for more input must take nothing from the buffer.
+  the size), and waiting for more input must hand over no payload.
 
 ```bash
 cargo install cargo-fuzz

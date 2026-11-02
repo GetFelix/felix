@@ -27,8 +27,8 @@ const REFUSAL_TIMEOUT: Duration = Duration::from_secs(2);
 /// Which `Origin` a browser may connect from.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum AllowedOrigins {
-    /// No browser: a request that carries an `Origin` is refused. Clients that
-    /// are not browsers send none.
+    /// A request that carries an `Origin` is refused. Browsers always send
+    /// one; most other clients do not.
     #[default]
     None,
     /// Any origin.
@@ -164,9 +164,6 @@ where
             return Err(Refusal::new(400, "ws_not_http"));
         }
         if let Some(end) = find_head_end(&buf, scanned) {
-            if end > settings.max_header_bytes {
-                return Err(Refusal::new(431, "ws_header_too_large"));
-            }
             let rest = BytesMut::from(&buf[end..]);
             buf.truncate(end);
             return Ok((buf, rest));
@@ -204,6 +201,11 @@ pub fn parse(head: &[u8], settings: &Settings) -> Result<String, Refusal> {
         return Err(BAD("ws_bad_request"));
     }
     let text = std::str::from_utf8(head).map_err(|_| BAD("ws_bad_request"))?;
+    // A bare CR or LF would be a line break to some parsers and not to this
+    // one, so a header could be hidden from it.
+    if text.split("\r\n").any(|line| line.contains(['\r', '\n'])) {
+        return Err(BAD("ws_bad_request"));
+    }
     let mut lines = text.split("\r\n");
 
     let request = lines.next().unwrap_or_default();

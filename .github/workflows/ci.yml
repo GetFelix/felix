@@ -1187,7 +1187,7 @@ jobs:
     timeout-minutes: 45
     env:
       CARGO_TERM_COLOR: always
-      # Thirteen targets; keep the whole job inside a few minutes.
+      # Fourteen targets; keep the whole job inside a few minutes.
       FUZZ_SECONDS: "30"
     steps:
       - name: Checkout

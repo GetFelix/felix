@@ -131,6 +131,11 @@ fn a_request_that_is_not_an_upgrade_is_refused() {
         (request(" folded: line\r\n"), 400, "ws_bad_request"),
         (request("no colon here\r\n"), 400, "ws_bad_request"),
         (request("Bad Name: x\r\n"), 400, "ws_bad_request"),
+        (
+            request("X: a\nOrigin: https://x.example\r\n"),
+            400,
+            "ws_bad_request",
+        ),
         (request("X: caf\u{e9}\r\n"), 400, "ws_bad_request"),
     ];
     for (head, status, reason) in cases {

@@ -97,7 +97,15 @@ struct Running {
 }
 
 fn start(config: &MqttListenerConfig, auth: Arc<dyn Authenticator>) -> Running {
-    let listener = MqttListener::bind(config, None, auth).expect("bind");
+    start_with_tls(config, None, auth)
+}
+
+fn start_with_tls(
+    config: &MqttListenerConfig,
+    tls: Option<Arc<rustls::ServerConfig>>,
+    auth: Arc<dyn Authenticator>,
+) -> Running {
+    let listener = MqttListener::bind(config, tls, auth).expect("bind");
     let addr = listener.local_addr().expect("addr");
     let ws_addr = listener.ws_local_addr().expect("ws addr");
     let shutdown = CancellationToken::new();
@@ -295,7 +303,10 @@ mod websocket {
 
     /// The packets in the next message the server sends. It writes the replies
     /// to one batch of packets as one message.
-    async fn next_packets(client: &mut Client) -> Vec<Packet> {
+    async fn next_packets<S>(client: &mut WebSocketStream<S>) -> Vec<Packet>
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
         let message = tokio::time::timeout(Duration::from_secs(5), client.next())
             .await
             .expect("answered")
@@ -315,7 +326,10 @@ mod websocket {
         packets
     }
 
-    async fn next_packet(client: &mut Client) -> Packet {
+    async fn next_packet<S>(client: &mut WebSocketStream<S>) -> Packet
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
         let mut packets = next_packets(client).await;
         assert_eq!(packets.len(), 1, "{packets:?}");
         packets.remove(0)
@@ -457,6 +471,50 @@ mod websocket {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         assert!(admitted, "the slot was never released");
+        running.stop().await;
+    }
+
+    // `wss`: the TLS handshake comes first and the upgrade runs inside it.
+    #[tokio::test]
+    async fn a_client_connects_over_secure_websockets() {
+        let key = rcgen::KeyPair::generate().expect("key");
+        let cert = rcgen::CertificateParams::new(vec!["localhost".to_string()])
+            .expect("params")
+            .self_signed(&key)
+            .expect("cert");
+        let der = cert.der().clone();
+        let server = crate::serving::kafka::tls_config(
+            der.clone(),
+            rustls::pki_types::PrivatePkcs8KeyDer::from(key.serialize_der()).into(),
+        )
+        .expect("server config");
+        let mut config = ws_config(64, ws::AllowedOrigins::None);
+        config.tls = true;
+        let running = start_with_tls(&config, Some(server), Arc::new(Recorder::default()));
+
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(der).expect("root");
+        let client_config = rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::aws_lc_rs::default_provider(),
+        ))
+        .with_protocol_versions(rustls::ALL_VERSIONS)
+        .expect("versions")
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+        let addr = running.ws_addr.expect("websocket on");
+        let tcp = TcpStream::connect(addr).await.expect("connect");
+        let tls = tokio_rustls::TlsConnector::from(Arc::new(client_config))
+            .connect("localhost".try_into().expect("name"), tcp)
+            .await
+            .expect("tls");
+        let (mut client, _) = tokio_tungstenite::client_async(request(addr, None), tls)
+            .await
+            .expect("upgrade");
+        client
+            .send(Message::binary(connect_packet("acme", "anything")))
+            .await
+            .expect("send");
+        assert_eq!(ack(next_packet(&mut client).await), ReasonCode::Success);
         running.stop().await;
     }
 }

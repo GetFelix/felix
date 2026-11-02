@@ -181,11 +181,18 @@ fn ws_config(
     let allowed_origins = match get("FELIX_MQTT_WS_ALLOWED_ORIGINS") {
         None => AllowedOrigins::None,
         Some(list) => {
-            let items: Vec<String> = list
+            let items = list
                 .split(',')
-                .map(|item| item.trim().to_string())
+                .map(str::trim)
                 .filter(|item| !item.is_empty())
-                .collect();
+                .map(|item| {
+                    if item == "*" {
+                        Ok(item.to_string())
+                    } else {
+                        origin(item)
+                    }
+                })
+                .collect::<Result<Vec<_>>>()?;
             if items.iter().any(|item| item == "*") {
                 AllowedOrigins::Any
             } else {
@@ -211,4 +218,31 @@ fn ws_config(
             )?),
         },
     }))
+}
+
+/// An `Origin` as a browser sends it: `scheme://host[:port]`, lower case, with
+/// no path and no default port. Anything else could never match, and every
+/// browser would be refused with nothing to say why, so it fails startup.
+fn origin(item: &str) -> Result<String> {
+    let lower = item.to_ascii_lowercase();
+    let Some((scheme, authority)) = lower.split_once("://") else {
+        bail!(
+            "FELIX_MQTT_WS_ALLOWED_ORIGINS entry {item:?} must look like https://app.example.com"
+        );
+    };
+    if scheme.is_empty() || authority.is_empty() || authority.contains(['/', '?', '#', '@', ' ']) {
+        bail!(
+            "FELIX_MQTT_WS_ALLOWED_ORIGINS entry {item:?} must be a scheme, host and optional port, with no path or trailing slash"
+        );
+    }
+    let default_port = match scheme {
+        "https" => ":443",
+        "http" => ":80",
+        _ => "",
+    };
+    let authority = authority
+        .strip_suffix(default_port)
+        .filter(|_| !default_port.is_empty())
+        .unwrap_or(authority);
+    Ok(format!("{scheme}://{authority}"))
 }

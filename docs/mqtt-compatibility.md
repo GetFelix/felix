@@ -84,23 +84,25 @@ sequenceDiagram
     L->>L: size and time limits, Origin, version, subprotocol
     L-->>C: 101 Switching Protocols (or 400, 403, 408, 426, 431)
     C->>M: binary messages carry the MQTT byte stream
-    M-->>C: replies, one binary message per batch
+    M-->>C: replies, in binary messages
 ```
 
 | Case | Answer |
 |---|---|
 | Valid upgrade for the `mqtt` subprotocol, on any path | `101`, then MQTT as above. |
 | Not a `GET`, not HTTP/1.1, no `Upgrade`, wrong version or key, no `mqtt` subprotocol | `400`, or `426` when it is not an upgrade or not version 13. |
-| An `Origin` that `FELIX_MQTT_WS_ALLOWED_ORIGINS` does not allow | `403`. With the variable unset every request that has an `Origin` gets this; clients that send none connect. |
+| An `Origin` that `FELIX_MQTT_WS_ALLOWED_ORIGINS` does not allow | `403`. With the variable unset every request that has an `Origin` gets this; clients that send none connect (some libraries, such as Python `paho-mqtt`, do send one). |
 | A request head over `FELIX_MQTT_WS_MAX_HEADER_BYTES`, or over 64 header lines | `431`, as soon as the limit is reached. |
 | No complete request within `FELIX_MQTT_WS_UPGRADE_TIMEOUT_MS` | `408`. |
-| Bytes that are not an HTTP `GET` (an MQTT client on the wrong port) | `400`. |
+| Bytes that are not an HTTP `GET` (an MQTT client on the wrong port) | `400`, counted as `ws_not_http`. |
+| The client closes the socket before finishing the request | Nothing is sent. Counted as `ws_closed_in_upgrade`. |
 | A text message, an unmasked frame, a reserved bit, a bad control frame | The connection closes with a WebSocket close code (1003 for text, 1002 otherwise). |
 
 MQTT packets may be split across WebSocket messages, or several may share one.
 The broker joins the messages into one byte stream before decoding, so the packet
-limits apply to it exactly as on TCP. Pings are answered, a close is echoed,
-and the broker does not negotiate extensions, so there is no compression.
+limits apply to it exactly as on TCP. Pings are answered (not while 64 KiB of replies are already waiting for a client
+that has stopped reading), a close is echoed, and the broker does not negotiate
+extensions, so there is no compression.
 
 Upgrades that are refused are counted in `felix_mqtt_refused_total` with a
 reason that starts with `ws_`.

@@ -31,15 +31,15 @@ fn decode(stream: &[u8], step: usize) -> Outcome {
     for chunk in stream.chunks(step.max(1)) {
         src.extend_from_slice(chunk);
         loop {
-            let before = src.len() + data.len();
+            let appended = data.len();
             match decoder.next(&mut src, &mut data) {
                 Ok(Some(Event::Data)) => {
                     outcome.data.extend_from_slice(&data.split());
                 }
                 Ok(Some(control)) => outcome.controls.push(control),
-                // Waiting for more takes nothing and adds nothing.
+                // Waiting for more hands over no payload.
                 Ok(None) => {
-                    assert_eq!(before, src.len() + data.len());
+                    assert_eq!(appended, data.len());
                     break;
                 }
                 Err(violation) => {

@@ -82,8 +82,11 @@ rate.
 A browser always sends an `Origin` header, and the broker refuses any request
 that has one unless `FELIX_MQTT_WS_ALLOWED_ORIGINS` lists it (`*` allows every
 origin). Without the list, a browser app gets `403` and the refusal is counted
-as `ws_origin`. Tools and device clients send no `Origin` and connect either
-way. The `Origin` check keeps other websites from using a visitor's browser to
+as `ws_origin`. Most command-line tools and device clients send none and connect either
+way, but some libraries do send one (the Python `paho-mqtt` client does): list
+the origin it sends or use `*`. Write each origin the way a browser does,
+`scheme://host[:port]` with no path, trailing slash or default port; the broker
+refuses to start on an entry that could never match. The `Origin` check keeps other websites from using a visitor's browser to
 reach a broker on a private network; it is not authentication, the token is.
 
 The upgrade request is read with a size limit (`FELIX_MQTT_WS_MAX_HEADER_BYTES`)
