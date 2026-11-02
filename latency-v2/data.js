@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793616440373,
+  "lastUpdate": 1793618095402,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -53196,6 +53196,72 @@ window.BENCHMARK_DATA = {
             "range": "530.56",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1010.00\nmean: 1105.20\nstdev: 530.56\ncv: 48.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b6538436e9b0f08bc8170e7bc0aa8acbfcc0db66",
+          "message": "feat(controlplane): an opt-in Scalar API reference page (#1361) (#1764)\n\nCloses #1361.\n\nThe control plane can serve an API reference page. It is off by default.\n\n- `FELIX_CONTROLPLANE_API_UI` = `off` (default) or `scalar`; config file key `api_ui`. An unknown value stops startup.\n- `FELIX_CONTROLPLANE_API_UI_PATH` (default `/api`); config key `api_ui_path`. Validated only when the page is on: must be a plain path, not `/`, not under `/v1` or `/internal/`.\n- The page is a short HTML file (no new crate) that loads `@scalar/api-reference@1.75.1` from jsDelivr with a SHA-384 Subresource Integrity hash and `crossorigin=\"anonymous\"`, and reads the same-origin `/v1/openapi.json`.\n- The response carries a Content-Security-Policy: scripts only from the pinned URL, `connect-src 'self'`, no frames, no base URI.\n- No auth on the page, like `/v1/openapi.json`.\n\nDocs: control-plane-api.md (\"Viewing the API document\": built-in page first, external viewer second; the CDN/offline caveat; the endpoint table), environment-variables reference, changelog fragment.\n\nTests: off gives 404 and scalar gives 200 through `run` (reverting the router merge in `server.rs` fails it with 404 vs 200); the page references `/v1/openapi.json`, the pinned version and the SRI; the CSP; config validation rejects unknown values and shadowing paths, for both env and YAML.\n\nAlso checked by hand in headless Edge: with this exact page and CSP the Scalar UI renders a spec from the same origin, and no CSP violation is logged.\n\nDesign calls:\n- The router is merged in `server.rs` rather than inside `build_router`, so `AppState` and its many test constructors are untouched. The page does not go through the in-flight counter or the trace layer.\n- `style-src 'unsafe-inline'` is allowed because Scalar injects styles; `worker-src blob:` because it starts a worker. Scripts stay locked to the pinned URL.\n- Default fonts are turned off (`withDefaultFonts:false`) so no third host is contacted.\n- Version 1.75.1 is pinned; the comment in `api_ui.rs` says how to recompute the hash.",
+          "timestamp": "2026-11-02T02:59:47-08:00",
+          "tree_id": "ba5ece50d3a6280e68fcb6aea7e7c9da5791fea9",
+          "url": "https://github.com/GetFelix/felix/commit/b6538436e9b0f08bc8170e7bc0aa8acbfcc0db66"
+        },
+        "date": 1793618088721,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 156,
+            "range": "1.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 156.00\nmean: 156.20\nstdev: 1.10\ncv: 0.70%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 226,
+            "range": "3.16",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 226.00\nmean: 225.00\nstdev: 3.16\ncv: 1.41%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 273,
+            "range": "10.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 273.00\nmean: 273.00\nstdev: 10.89\ncv: 3.99%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 204,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 204.00\nmean: 203.60\nstdev: 1.14\ncv: 0.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 403,
+            "range": "6.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 403.00\nmean: 400.40\nstdev: 6.07\ncv: 1.52%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 562,
+            "range": "29.91",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 562.00\nmean: 570.20\nstdev: 29.91\ncv: 5.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
