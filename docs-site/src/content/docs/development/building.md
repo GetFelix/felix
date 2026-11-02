@@ -222,25 +222,45 @@ docs and `compose.yaml` pin (`scripts/check_release_version.py`), and its releas
 
 ### Before you tag
 
-Every companion repo runs its integration tests against Felix main each night
-(see [Nightly runs in the companions](#nightly-runs-in-the-companions)). Before
-a tag, the latest run in each repo should be green and none should have an
-open `felix-nightly` issue:
+Companion repos run their integration tests against Felix main each night (see
+[Nightly runs in the companions](#nightly-runs-in-the-companions)). Before a
+tag, the latest run in each repo that has the workflow should have succeeded,
+and none should have an open `felix-nightly` issue:
 
 ```bash
 for repo in $(sed -e 's/#.*//' .github/companions.txt | awk 'NF {print $1}'); do
-  gh run list -R "GetFelix/$repo" --workflow "Felix nightly" --limit 1 \
-    --json conclusion,createdAt,url \
-    --jq ".[] | \"$repo: \(.conclusion) \(.createdAt) \(.url)\""
+  run=$(gh run list -R "GetFelix/$repo" --workflow felix-nightly.yml --branch main \
+    --limit 1 --json status,conclusion,createdAt,url \
+    --jq '.[0] // empty | "\(if .conclusion == "" then "not finished (" + .status + ")" else .conclusion end) \(.createdAt) \(.url)"' \
+    2>/dev/null) || { echo "$repo: no nightly yet"; continue; }
+  echo "$repo: ${run:-no run on main yet}"
   gh issue list -R "GetFelix/$repo" --label felix-nightly --state open
 done
 ```
 
-A red run means a change on main broke that companion. Fix Felix, or send the
-companion a fix, before tagging. The runs test the commit behind the `nightly`
-tag. If you are tagging a newer commit, build a nightly from it first
-(`gh workflow run nightly.yml --ref main -f force=true`), then start each
-companion's run with `gh workflow run "Felix nightly" -R GetFelix/<repo>`.
+Only `success` is green. `failure`, `cancelled`, `startup_failure`, "not
+finished" and "no run on main yet" are not. A repo that prints "no nightly yet"
+has not added the workflow, so the check does not cover it.
+
+A failed run means a change on main broke that companion. Fix Felix, or send
+the companion a fix, before tagging.
+
+A run only counts if it tested the commit you are tagging. It tests the commit
+behind the `nightly` tag, and that tag moves last in the nightly build, so
+after a failed build it can lag main by a day or more. Open the run's "Find the
+Felix commit" step, or the issue, to read the commit it used and compare it with
+the one you are tagging. If they differ, build a nightly from the newest green
+`main` commit and run the companions again:
+
+```bash
+gh workflow run nightly.yml -R GetFelix/felix --ref main -f force=true
+gh run list -R GetFelix/felix --workflow nightly.yml --limit 1   # wait until it completes
+gh workflow run felix-nightly.yml -R GetFelix/<repo>
+```
+
+Wait for the nightly build to finish before you start a companion's run. The
+`nightly` tag only moves at the end, and a companion run started earlier tests
+the old commit.
 
 ### Release notes and the upgrade page
 
@@ -352,7 +372,9 @@ To add a companion:
 3. Install the release bot on the repo, and share the two
    `FELIX_RELEASE_BOT_*` org secrets with it.
 4. Append the repo's name to `.github/companions.txt` here.
-5. Add the nightly run described below.
+5. Add the nightly run (see [below](#nightly-runs-in-the-companions)). Copy
+   felix-gateway's `.github/workflows/felix-nightly.yml` and
+   `.github/felix-nightly.sh` as the template.
 
 #### Nightly runs in the companions
 
@@ -362,11 +384,15 @@ lands. Each companion keeps:
 
 - `.github/workflows/felix-nightly.yml`, which runs on a schedule after the
   Felix nightly build (04:41 UTC) and on `workflow_dispatch`, and calls the
-  reusable workflow of the same name in GetFelix/.github. The caller grants
-  `issues: write`.
+  reusable workflow of the same name in GetFelix/.github. The calling job must
+  grant both `contents: read` and `issues: write`. Setting only `issues: write`
+  leaves `contents` at none and the checkout fails. The optional
+  `timeout_minutes` input limits the script and defaults to 60.
 - `.github/felix-nightly.sh`, which starts Felix from the `nightly` images
   (`$FELIX_IMAGE_TAG`) and runs the integration tests the repo's own CI runs
-  against Felix. It exits non-zero when they fail.
+  against Felix. It exits non-zero when they fail. It must not run `npm ci` or
+  `cargo --locked`: the workflow rewrites the manifests and lockfiles first, so
+  they no longer match the ones in git.
 - `.felix-version`, the same manifest the bump uses.
 
 The reusable workflow:
@@ -377,8 +403,7 @@ The reusable workflow:
    names another commit, and still uses the tag's.
 2. For each directory in `cargo_dirs`, rewrites every dependency on a crate in
    `cargo_crates` into a git dependency on that commit, keeping features and
-   `default-features`, and runs `cargo update` on those crates. The lockfile is
-   not `--locked` afterwards.
+   `default-features`, and runs `cargo update` on those crates.
 3. For each directory in `npm_dirs`, builds the TypeScript client from
    `crates/sdk/felix-typescript` at that commit, packs the JavaScript and the
    built addon into one tarball (the platform packages are not published for a
@@ -389,7 +414,9 @@ The reusable workflow:
 5. On failure, opens an issue titled "Nightly against Felix main fails" with the
    label `felix-nightly` in the companion, or comments on the open one. The
    issue names the run, the Felix commit and the step that failed. A green run
-   comments and closes it.
+   closes the issue, with a comment, if one is open. Only runs on the
+   repo's default branch open or close issues. A run from another branch
+   just passes or fails.
 
 ### crates.io credentials
 
