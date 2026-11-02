@@ -639,6 +639,85 @@ Under Raft the batch needs metadata level 5 on every member. Until the whole
 group runs a release that has it, the endpoint answers `503` with code
 `upgrade_in_progress`, and the single create endpoints keep working.
 
+### Mounting a stream at an MQTT topic prefix
+
+An MQTT device publishes to topics nobody created, such as `plant/7/line/3/temp`.
+A stream's `mount` is how Felix ties those topics to a stream: a `PUBLISH` to
+any topic that starts with the mount lands in that stream. The mount is a field
+on the stream, set when it is created or later with `PATCH`. `docs/mqtt-design.md`
+("Topic model") has the reasoning, and `docs/mqtt-compatibility.md` what the
+MQTT listener does with it today.
+
+```bash
+CP=http://localhost:8443          # the control plane
+TOKEN=...                         # a Felix token with stream.manage on the stream
+STREAMS=$CP/v1/tenants/acme/namespaces/plant/streams
+
+# Create a durable stream already mounted at plant/
+curl -sS -X POST "$STREAMS" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{
+    "stream": "telemetry", "kind": "Stream", "shards": 4, "durable": true,
+    "retention": { "max_age_seconds": null, "max_size_bytes": null },
+    "consistency": "Leader", "delivery": "AtLeastOnce", "mount": "plant/" }'
+
+# Move the mount, then clear it
+curl -sS -X PATCH "$STREAMS/telemetry" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{ "mount": "factory/" }'
+curl -sS -X PATCH "$STREAMS/telemetry" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{ "mount": null }'
+```
+
+In a `PATCH`, an absent `mount` leaves it alone, a string sets it and `null`
+clears it. Changing or clearing a mount touches no records: it only changes
+which topics reach the stream from then on. A stream with no mount is
+serialized without the field, so requests and answers for it are byte for byte
+what they were.
+
+The prefix is a plain byte prefix. `plant/` catches `plant/7/temp` and not
+`plant` or `plants/7`; `plant` catches `plants/7` too. It does not have to end
+in `/`, though it usually should. It is refused with `400` when it:
+
+- is empty or longer than 1024 bytes (the listener's own topic limits, 1024
+  bytes and 16 levels by default, also apply to the topics under the mount, so a
+  very long or deep prefix leaves little room or none),
+- contains `+`, `#` or a control character (NUL included), which no topic name
+  can hold,
+- starts with `$`, which MQTT reserves for the broker's own topics, or
+- is set on a stream that is not `durable`, when the stream is created. A
+  `PATCH` that mounts a non-durable stream is `409`. Only durable streams can
+  be mounted, because MQTT clients rely on the acknowledgement meaning the message
+  is stored.
+
+A tenant's mounts may not overlap, whichever namespaces the streams are in: no
+mount may be, or begin with, another's. A mount that does is refused with `409`
+and a message naming the other stream, so a topic always has at most one stream
+to go to. A `PATCH` that makes a mounted stream non-durable is also `409`; clear
+the mount first. Creating a stream that exists with the same mount answers `200`
+as for any retried create. Deleting a stream frees its mount, and so does
+deleting its namespace or tenant.
+
+The overlap check is part of the write in every store, so two requests racing
+for overlapping prefixes cannot both succeed:
+
+- **Memory and Raft** check inside the apply, under the store's lock, so every
+  member refuses the same entry.
+- **Postgres** checks in the same transaction as the write, under the streams
+  feed lock every stream write takes. Migration `0041_stream_mount.sql` adds the
+  nullable `streams.mount` column, and a unique index on `(tenant_id, mount)`
+  backs the check up for two streams with the same prefix.
+- **Batches** (`POST .../resources`) check every mount against the stored ones
+  and against each other first, and a refusal creates nothing.
+
+Brokers read `mount` in the stream snapshot and change feed with the rest of the
+stream, and keep a per-tenant table of mounts for the listener to resolve topics
+with. An older control plane sends none, and a stream without one is not
+reachable from MQTT.
+
+Under Raft a mount needs metadata level 24 on every member. Below it, a request
+that sets or clears a mount is refused with `409` before it reaches the log, so
+no member stores a mounted stream as unmounted, and nothing is written. Streams
+without a mount are written as before at any level.
+
 ### Listing and pagination
 
 These listings are paged:

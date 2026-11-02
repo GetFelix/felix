@@ -318,6 +318,7 @@ fn stream(namespace: &str, name: &str, proposed: u64) -> Stream {
         region: None,
         routing: Default::default(),
         incarnation: proposed,
+        mount: None,
     }
 }
 

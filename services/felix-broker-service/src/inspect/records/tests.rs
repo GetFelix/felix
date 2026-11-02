@@ -285,6 +285,7 @@ async fn json_is_one_line_per_record() {
     assert_eq!(values[1]["payload_bytes"], 9);
     assert_eq!(values[1]["checksum_ok"], true);
     assert_eq!(values[1]["kind"], "plain");
+    assert!(values[1]["headers_bytes"].is_null());
     assert!(values[1].get("payload_hex").is_none());
 }
 

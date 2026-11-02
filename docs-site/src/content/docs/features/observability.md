@@ -277,7 +277,9 @@ connections that never got to `CONNECT`; `auth_timeout`, `auth_required`,
 `auth_unavailable` means the control plane could not be asked and is worth an
 alert. `token_expired`, `revoked` and `keepalive_timeout` end a live connection.
 `publish_unsupported`, `subscribe_unsupported` and `will_unsupported` count what
-the listener cannot do yet. Reasons that start with `ws_` are WebSocket
+the listener cannot do yet. `unmounted` counts a `PUBLISH` to a topic that is
+under no stream's mount, and `invalid_topic_name` one whose topic name is not
+allowed (empty, a wildcard, a NUL, or too long). Reasons that start with `ws_` are WebSocket
 upgrades that were refused (`ws_origin`, `ws_header_too_large`,
 `ws_upgrade_timeout`, `ws_not_http`, `ws_bad_request`, `ws_not_upgrade`,
 `ws_version`, `ws_subprotocol`, `ws_bad_key`, `ws_upgrade_write`, and

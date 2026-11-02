@@ -7,6 +7,7 @@
 //! of TLS handshakes spends the listener's threads and not the ones serving
 //! QUIC (`docs/mqtt-design.md`, "Isolation and limits").
 
+mod mounts;
 mod rate;
 
 use std::sync::Arc;
@@ -14,7 +15,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use felix_mqtt::{AuthError, Authenticator, MqttService, Principal, ws};
+use felix_mqtt::{AuthError, Authenticator, Mounts, MqttService, Principal, ws};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpSocket};
 use tokio::runtime::Runtime;
@@ -23,6 +24,7 @@ use tokio_rustls::TlsAcceptor;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
+pub use self::mounts::BrokerMounts;
 use self::rate::RateGate;
 use crate::config::MqttListenerConfig;
 use crate::serving::auth::{BrokerAuth, CredentialRefused};
@@ -115,6 +117,7 @@ impl MqttListener {
         config: &MqttListenerConfig,
         tls: Option<Arc<rustls::ServerConfig>>,
         auth: Arc<dyn Authenticator>,
+        mounts: Arc<dyn Mounts>,
     ) -> Result<Self> {
         let tls = match (config.tls, tls) {
             (true, Some(server)) => Some(TlsAcceptor::from(server)),
@@ -149,7 +152,7 @@ impl MqttListener {
             listener,
             ws,
             tls,
-            service: MqttService::new(auth, config.settings.clone()),
+            service: MqttService::new(auth, mounts, config.settings.clone()),
             max_connections: config.max_connections,
             per_ip: PerIpLimiter::new(config.max_connections_per_ip),
             connect_rate: config.connect_rate,
