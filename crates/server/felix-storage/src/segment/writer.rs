@@ -28,8 +28,8 @@ use crate::Result;
 use crate::io::{preallocate, sync_data, sync_dir};
 use crate::log::{AppendRecord, Offset, RecordMark, SegmentDescriptor, SegmentId};
 use crate::segment::format::{
-    BASELINE_VERSION, MAX_PAYLOAD_BYTES, MAX_PUBLISHER_BYTES, PUBLISHER_VERSION,
-    SEGMENT_HEADER_LEN, SegmentHeader, TRIM_VERSION, body_len, encode_record, record_len,
+    BASELINE_VERSION, HEADERS_VERSION, MAX_PUBLISHER_BYTES, PUBLISHER_VERSION, SEGMENT_HEADER_LEN,
+    SegmentHeader, TRIM_VERSION, body_fits, body_len, encode_record, record_len,
 };
 use crate::segment::index::{IndexWriter, SparseIndex, UnwrittenEntries};
 use crate::segment::reservation::{Extension, Reservation};
@@ -221,6 +221,11 @@ impl SegmentWriter {
         self.version >= PUBLISHER_VERSION
     }
 
+    /// Whether a record carrying a key and headers may be appended here.
+    pub fn holds_headers(&self) -> bool {
+        self.version >= HEADERS_VERSION
+    }
+
     /// Whether a trim record may be appended here.
     pub fn holds_trims(&self) -> bool {
         self.version >= TRIM_VERSION
@@ -232,7 +237,8 @@ impl SegmentWriter {
     }
 
     /// The version a segment following this one is written at so that it
-    /// holds `records`: never below this one's, v7 when `records` include a
+    /// holds `records`: never below this one's, v8 when a record carries a
+    /// key and headers, v7 when `records` include a
     /// trim record, v6 when a record carries its
     /// publisher, v5 when `records` include a commit record, v4 when they
     /// include a generation-start record, and [`BASELINE_VERSION`] otherwise.
@@ -242,6 +248,7 @@ impl SegmentWriter {
         let needed = records
             .iter()
             .map(|record| match record.mark {
+                _ if record.headers.is_some() => HEADERS_VERSION,
                 RecordMark::Trim { .. } => TRIM_VERSION,
                 _ if record.publisher.is_some() => PUBLISHER_VERSION,
                 RecordMark::Commit => 5,
@@ -264,6 +271,7 @@ impl SegmentWriter {
                 RecordMark::Trim { .. } => self.holds_trims(),
             };
             mark && (record.publisher.is_none() || self.holds_publishers())
+                && (record.headers.is_none() || self.holds_headers())
         })
     }
 
@@ -320,7 +328,11 @@ impl SegmentWriter {
     pub fn projected_size(&self, records: &[AppendRecord]) -> u64 {
         records.iter().fold(self.size_bytes, |acc, record| {
             acc + record_len(
-                body_len(record.payload.len(), record.publisher.as_deref()),
+                body_len(
+                    record.payload.len(),
+                    record.headers.as_deref().map(|headers| &headers[..]),
+                    record.publisher.as_deref(),
+                ),
                 &record.mark,
             )
         })
@@ -352,19 +364,7 @@ impl SegmentWriter {
             ));
         }
 
-        for record in records {
-            let publisher = record.publisher.as_deref();
-            if body_len(record.payload.len(), publisher) > MAX_PAYLOAD_BYTES as usize {
-                return Err(StorageError::Unsupported(
-                    "record payload exceeds the maximum supported size",
-                ));
-            }
-            if publisher.is_some_and(|publisher| publisher.len() > MAX_PUBLISHER_BYTES) {
-                return Err(StorageError::Unsupported(
-                    "record publisher exceeds the maximum supported size",
-                ));
-            }
-        }
+        check_sizes(records)?;
         if !self.holds(records) {
             return Err(StorageError::Unsupported(
                 "the record's mark is newer than the segment's version; roll first",
@@ -383,6 +383,7 @@ impl SegmentWriter {
                 offset,
                 record.timestamp_micros,
                 &record.payload,
+                record.headers.as_deref().map(|headers| &headers[..]),
                 record.publisher.as_deref(),
                 &record.mark,
             );
@@ -734,6 +735,29 @@ pub struct ResumeState {
     pub index: SparseIndex,
     /// From the segment header: see [`SegmentWriter::holds`].
     pub version: u16,
+}
+
+/// Refuse a record too large to write. A log checks this before it rolls for
+/// a batch, so a refused record never leaves the log on a newer version.
+pub(crate) fn check_sizes(records: &[AppendRecord]) -> Result<()> {
+    for record in records {
+        let publisher = record.publisher.as_deref();
+        let headers = record.headers.as_deref().map(|headers| &headers[..]);
+        if !body_fits(
+            body_len(record.payload.len(), headers, publisher),
+            headers.is_some(),
+        ) {
+            return Err(StorageError::Unsupported(
+                "record payload exceeds the maximum supported size",
+            ));
+        }
+        if publisher.is_some_and(|publisher| publisher.len() > MAX_PUBLISHER_BYTES) {
+            return Err(StorageError::Unsupported(
+                "record publisher exceeds the maximum supported size",
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

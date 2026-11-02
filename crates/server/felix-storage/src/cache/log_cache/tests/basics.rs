@@ -181,6 +181,7 @@ async fn the_index_catches_up_with_records_appended_behind_it() {
         timestamp_micros: 0,
         mark: Default::default(),
         publisher: None,
+        headers: None,
     }])
     .await
     .expect("append");
@@ -225,12 +226,14 @@ async fn the_index_steps_over_a_generation_start_record() {
             timestamp_micros: 0,
             mark: crate::log::RecordMark::GenerationStart,
             publisher: None,
+            headers: None,
         },
         AppendRecord {
             payload: shipped,
             timestamp_micros: 0,
             mark: Default::default(),
             publisher: None,
+            headers: None,
         },
     ])
     .await
@@ -282,6 +285,7 @@ async fn a_forgotten_index_reads_the_log_as_it_now_is() {
         timestamp_micros: 0,
         mark: Default::default(),
         publisher: None,
+        headers: None,
     }])
     .await
     .expect("append");

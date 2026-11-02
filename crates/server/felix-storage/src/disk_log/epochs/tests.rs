@@ -211,6 +211,7 @@ mod through_the_log {
                 timestamp_micros: 0,
                 mark: Default::default(),
                 publisher: None,
+                headers: None,
             }])
             .await
             .expect("append");

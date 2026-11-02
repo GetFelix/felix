@@ -17,6 +17,7 @@ pub(super) fn write_segment(path: &Path, base: Offset, count: u64) -> Vec<u8> {
             100 + i,
             format!("payload-{i}").as_bytes(),
             None,
+            None,
             &Default::default(),
         );
     }

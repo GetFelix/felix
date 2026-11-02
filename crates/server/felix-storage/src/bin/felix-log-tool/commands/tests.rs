@@ -50,6 +50,7 @@ async fn verify_accepts_a_generation_start_record() {
             timestamp_micros: 0,
             mark: Default::default(),
             publisher: None,
+            headers: None,
         };
         log.append(&[record(0)]).await.expect("append");
         log.append(&[AppendRecord {
@@ -57,6 +58,7 @@ async fn verify_accepts_a_generation_start_record() {
             timestamp_micros: 0,
             mark: felix_storage::log::RecordMark::GenerationStart,
             publisher: None,
+            headers: None,
         }])
         .await
         .expect("marker");
