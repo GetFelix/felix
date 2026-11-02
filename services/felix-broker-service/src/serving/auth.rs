@@ -120,7 +120,9 @@ impl BrokerAuth {
                 &context.subject,
                 context.actor.as_deref(),
             )
-            .map_err(|reason| anyhow::anyhow!("token refused: {reason}"))?;
+            .map_err(|reason| {
+                anyhow::Error::new(CredentialRefused(format!("token refused: {reason}")))
+            })?;
         }
         Ok(context)
     }
@@ -384,7 +386,9 @@ impl ControlPlaneKeyStore {
         if let Some(catalog) = &self.catalog
             && catalog.rules_out(tenant_id).await
         {
-            anyhow::bail!("unknown tenant");
+            return Err(anyhow::Error::new(CredentialRefused(
+                "unknown tenant".to_string(),
+            )));
         }
         // One request per tenant however many streams ask at once: the
         // others wait here and find the answer in a cache.
@@ -473,6 +477,20 @@ impl ControlPlaneKeyStore {
     }
 }
 
+/// A credential the broker looked at and refused, as opposed to one it could
+/// not check. Listeners that tell a device "wrong credentials" from "try
+/// again" read this.
+#[derive(Debug)]
+pub struct CredentialRefused(pub String);
+
+impl std::fmt::Display for CredentialRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for CredentialRefused {}
+
 /// Refuse a tenant id no control plane could have issued, before it goes
 /// anywhere near a URL.
 fn check_tenant_id(tenant_id: &str) -> Result<()> {
@@ -482,7 +500,9 @@ fn check_tenant_id(tenant_id: &str) -> Result<()> {
         || tenant_id == ".."
         || tenant_id.chars().any(char::is_control)
     {
-        anyhow::bail!("invalid tenant id");
+        return Err(anyhow::Error::new(CredentialRefused(
+            "invalid tenant id".to_string(),
+        )));
     }
     Ok(())
 }

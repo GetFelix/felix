@@ -1,5 +1,6 @@
 //! The client-facing listeners and their accept loops: QUIC always, Kafka when
-//! `FELIX_KAFKA_LISTEN` is set. Both serve the certificate in
+//! `FELIX_KAFKA_LISTEN` is set, MQTT when `FELIX_MQTT_LISTEN` is. All serve the
+//! certificate in
 //! [`ClientTls`](crate::serving::tls::ClientTls).
 
 use std::sync::Arc;
@@ -13,9 +14,10 @@ use tokio_util::task::TaskTracker;
 
 use crate::cluster::client_endpoints::ClientEndpoints;
 use crate::cluster::lease::LeaseState;
-use crate::config::{BrokerConfig, KafkaListenerConfig};
+use crate::config::{BrokerConfig, KafkaListenerConfig, MqttListenerConfig};
 use crate::serving::kafka::{BrokerCluster, KafkaListener, STANDALONE_NODE_ID};
 use crate::serving::limits::{ListenerLimits, TenantRates};
+use crate::serving::mqtt::{BrokerMqttAuth, MqttListener};
 use crate::serving::tls::ClientTls;
 use crate::serving::{auth::BrokerAuth, quic};
 use crate::shards::routing::IngressRouter;
@@ -259,4 +261,52 @@ pub(super) fn spawn_kafka(
         }
         listener.serve(accept_shutdown, connections).await;
     })
+}
+
+/// Bind the MQTT listener, when one is configured. Bound before anything is
+/// accepted, like Kafka's, so a port conflict fails startup.
+pub(super) fn bind_mqtt(tls: &ClientTls, auth: &Arc<BrokerAuth>) -> Result<Option<MqttListener>> {
+    let Some(mqtt) = MqttListenerConfig::from_env()? else {
+        return Ok(None);
+    };
+    let mqtt_tls = mqtt.tls.then(|| tls.mqtt_server_config()).transpose()?;
+    if mqtt.tls {
+        tracing::info!("mqtt listener serves TLS");
+    } else {
+        tracing::warn!(
+            "mqtt listener without TLS (FELIX_MQTT_TLS=false): tokens cross the network in clear text"
+        );
+    }
+    if let Some(tenant) = &mqtt.settings.anonymous_tenant {
+        tracing::warn!(
+            tenant = %tenant,
+            "FELIX_MQTT_ANONYMOUS_TENANT is set: MQTT clients that send no credentials act as this tenant"
+        );
+    }
+    let listener = MqttListener::bind(
+        &mqtt,
+        mqtt_tls,
+        Arc::new(BrokerMqttAuth::new(Arc::clone(auth))),
+    )?;
+    tracing::info!(
+        addr = %listener.local_addr()?,
+        worker_threads = mqtt.worker_threads,
+        "mqtt listener started"
+    );
+    Ok(Some(listener))
+}
+
+/// Accept MQTT connections once the broker may serve, like the QUIC loops.
+pub(super) fn spawn_mqtt(
+    listener: MqttListener,
+    accept_shutdown: &CancellationToken,
+    connections: &TaskTracker,
+    seeded: &CancellationToken,
+    gate_readiness_on_sync: bool,
+) -> JoinHandle<()> {
+    listener.spawn(
+        accept_shutdown.clone(),
+        connections.clone(),
+        gate_readiness_on_sync.then(|| seeded.clone()),
+    )
 }

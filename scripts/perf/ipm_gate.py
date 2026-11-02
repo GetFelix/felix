@@ -33,10 +33,20 @@ def summary(text):
     print(text)
 
 
+# A cell with this suffix repeats the cell named by the rest, on a broker with
+# the MQTT listener on and idle. It is held to that cell in the same run, so it
+# has no baseline value of its own.
+PAIRED_SUFFIX = "_mqtt_idle"
+
+
+def is_paired(name):
+    return name.endswith(PAIRED_SUFFIX)
+
+
 def render(arch, result):
     lines = [f"[{arch}]", f'commit = "{result["commit"]}"', f'toolchain = "{result["toolchain"]}"']
     for name, cell in sorted(result["cells"].items()):
-        if finite(cell.get("user_per_message")):
+        if finite(cell.get("user_per_message")) and not is_paired(name):
             lines.append(f"{name} = {round(cell['user_per_message'])}")
     return "\n".join(lines)
 
@@ -85,8 +95,22 @@ def check(result, allow_big_drop):
             )
         elif change < -tol:
             lower.append(f"{name}: {change:+.2f}%")
-    for name in sorted(set(result["cells"]) - set(expected)):
+    for name in sorted(n for n in set(result["cells"]) - set(expected) if not is_paired(n)):
         failed.append(f"{name}: measured but has no baseline value")
+    for name in sorted(n for n in result["cells"] if is_paired(n)):
+        base_name = name[: -len(PAIRED_SUFFIX)]
+        got = result["cells"][name].get("user_per_message")
+        want = result["cells"].get(base_name, {}).get("user_per_message")
+        if not finite(got) or not finite(want):
+            failed.append(f"{name}: needs a measurement for itself and for {base_name} in the same run")
+            continue
+        change = (got - want) / want * 100.0
+        rows.append(f"| {name} (against {base_name}, same run) | {want:.0f} | {got:.0f} | {change:+.2f}% | {result['cells'][name].get('user_spread_pct', float('nan')):.2f}% |")
+        if change > tol:
+            failed.append(
+                f"{name}: {got:.0f} instructions/message is {change:+.2f}% over {base_name} ({want:.0f}) in the same run "
+                f"(tolerance {tol}%): an idle MQTT listener is costing the QUIC path"
+            )
     summary(f"### Broker instructions per message ({arch}, tolerance +{tol}%)\n\n" + "\n".join(rows))
     for note in lower:
         print(f"::warning::instructions per message fell below the baseline ({note}); if the gain is real, lower the baseline in this PR")

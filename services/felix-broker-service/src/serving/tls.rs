@@ -1,4 +1,4 @@
-//! The certificate clients see, on the QUIC listeners and the Kafka listener.
+//! The certificate clients see, on the QUIC, Kafka and MQTT listeners.
 //!
 //! Two modes, chosen by [`ClientTlsConfig`]:
 //!
@@ -106,6 +106,15 @@ impl ClientTls {
         Ok(Arc::new(
             self.rustls_config(rustls::ALL_VERSIONS)
                 .context("kafka TLS config")?,
+        ))
+    }
+
+    /// The MQTT listener's server config. TLS 1.2 stays on because device
+    /// firmware often has nothing newer.
+    pub(crate) fn mqtt_server_config(&self) -> Result<Arc<rustls::ServerConfig>> {
+        Ok(Arc::new(
+            self.rustls_config(rustls::ALL_VERSIONS)
+                .context("mqtt TLS config")?,
         ))
     }
 
