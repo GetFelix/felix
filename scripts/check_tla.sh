@@ -236,6 +236,7 @@ expectations=(
   "FelixShardElectNoBallot violates OneLeaderPerGeneration"
   "FelixShardElectStaleSet violates AckedHeldByLeader"
   "FelixShardElectAdopt pass"
+  "FelixShardElectRenameDue violates NeverRenameDue"
   "FelixShardElectAdoptPromote pass"
   "FelixShardElectSwapNoJoint violates AckedHeldByLeader"
   "FelixShardElectSwapKeep1 pass"
@@ -317,6 +318,8 @@ walks=(
   "FelixShardWalkElectStaleSet violates AckedHeldByLeader"
   "FelixShardWalkElectSwap pass"
   "FelixShardWalkElectSwapNoJoint violates AckedHeldByLeader"
+  "FelixShardWalkElectRename pass"
+  "FelixShardWalkElectRenameUnfenced violates AckedHeldByLeader"
   "FelixShardFencedCrashNamesByInheritance pass"
   "FelixShardFencedCrashInheritedCounts violates NoInheritedCount"
   "FelixShardFencedWipeNamesByInheritance pass"
@@ -365,6 +368,9 @@ fi
 # So are FelixShardElectWipeNonVoter{Twice,Failover,FailoverWipesLeader,
 # WipesLeader,Setless,Groups}: each runs well over an hour on a four-core runner. Their
 # violating twins and witnesses stay registered.
+# So is FelixShardElectRename: stopped after four minutes on a laptop at 5.8M
+# distinct states and depth 21, queue still growing, nothing violated. Its witness
+# FelixShardElectRenameDue and the two rename walks stay registered.
 
 # Minutes each of the longer configurations takes on a four-core CI runner,
 # from the `Finished in` lines of a CI run (a new one is a guess until it has
