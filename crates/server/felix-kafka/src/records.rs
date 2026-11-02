@@ -123,10 +123,11 @@ pub(crate) fn encode_batch(records: &[LogRecord]) -> anyhow::Result<Bytes> {
     Ok(buf.freeze())
 }
 
+/// A Kafka record's key and its headers in order.
+type KeyAndHeaders = (Option<Bytes>, Vec<(StrBytes, Option<Bytes>)>);
+
 /// A record's key and headers as Kafka carries them: from its block, or none.
-fn key_and_headers(
-    record: &LogRecord,
-) -> anyhow::Result<(Option<Bytes>, Vec<(StrBytes, Option<Bytes>)>)> {
+fn key_and_headers(record: &LogRecord) -> anyhow::Result<KeyAndHeaders> {
     let Some(block) = &record.headers else {
         return Ok((None, Vec::new()));
     };
