@@ -1424,8 +1424,10 @@ one. A broker the restore skipped starts with an empty data directory.
 
 `felix-broker inspect segments <data-dir>` reports, read-only, without starting a broker, every shard's
 segments, whether their records and indexes verify, and what startup would do
-with each one. See "A broker will not start" in the docs site's
-`deployment/diagnosing.md`.
+with each one. `felix-broker inspect records <data-dir> <tenant/namespace/name/shard> --offset N`
+decodes the records around one offset the same way: read-only, seeking with the sparse index
+(checked, not trusted), and stopping at the first record that does not verify. See "A broker
+will not start" in the docs site's `deployment/diagnosing.md`.
 
 ```sh
 # Write, then verify what survived.

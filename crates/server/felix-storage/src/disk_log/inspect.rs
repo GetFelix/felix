@@ -10,6 +10,13 @@
 //! are safe, but the active segment may be mid-write and can show a torn tail
 //! that is only an append in flight.
 
+mod records;
+
+pub use records::{
+    MAX_AROUND, OffsetStatus, PAYLOAD_PREVIEW_BYTES, RecordView, RecordsQuery, RecordsReport, Seek,
+    Stop, read_records,
+};
+
 use std::path::{Path, PathBuf};
 
 use super::durable_mark::{self, DurableMark};

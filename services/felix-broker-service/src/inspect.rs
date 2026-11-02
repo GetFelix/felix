@@ -1,11 +1,15 @@
-//! `felix-broker inspect segments`: a data directory, read from disk.
+//! `felix-broker inspect segments` and `inspect records`: a data directory,
+//! read from disk.
 //!
 //! Runs instead of the broker, never alongside it in this process: nothing is
 //! bound, no configuration is read, and no file is opened for writing. The
 //! verdict is `felix_storage::inspect`'s, which is the plan startup recovery
-//! makes before it writes anything, so the two cannot disagree.
+//! makes before it writes anything, so the two cannot disagree. `records` is in
+//! [`records`].
 
-use std::path::PathBuf;
+mod records;
+
+use std::path::{Path, PathBuf};
 
 use felix_storage::inspect::{
     Action, IndexState, SegmentReport, ShardDir, ShardReport, Startup, Store, find_shards,
@@ -15,7 +19,8 @@ use felix_storage::log::{LogConfig, ShardKey};
 use serde_json::{Value, json};
 
 /// Startup would repair a shard: cut a torn tail, or remove what an
-/// interrupted rollover left.
+/// interrupted rollover left. `records` also exits with it when its read
+/// ended at a torn tail.
 pub const EXIT_WOULD_REPAIR: u8 = 6;
 /// Startup would refuse a shard, or a record fails its checksum.
 pub const EXIT_DAMAGED: u8 = 7;
@@ -29,6 +34,9 @@ usage: felix-broker inspect segments DATA_DIR [TENANT/NAMESPACE/NAME/SHARD]
            [--kind stream|cache|groups|dead-letters|counters] [--incarnation N]
            [--segments] [--json]
            [--repair-checksum-tail] [--index-spacing BYTES] [--verify-all-on-open]
+       felix-broker inspect records DATA_DIR TENANT/NAMESPACE/NAME/SHARD --offset N
+           [--around N] [--payload] [--json]
+           [--kind stream|cache|groups|dead-letters|counters] [--incarnation N]
 
 Reads a broker's data directory (FELIX_DURABLE_STORAGE_DIR) and reports, for
 every shard of every store, its segments, whether each one's records and index
@@ -50,7 +58,21 @@ their segments listed. --json prints one line per shard.
 
 Exits 0 when every shard opens as it is, 6 when startup would repair one, 7
 when it would refuse one or a record fails its checksum, 2 for bad arguments
-and 5 when the directory or shard is not there.";
+and 5 when the directory or shard is not there.
+
+`records` decodes the records around one offset of one shard, so you can look
+at what a position `segments` named actually holds. It seeks with the sparse
+index and decodes up to --around records (default 10, at most 1000) on each
+side of --offset. Each row shows the offset, the time the record carries, its
+kind, its payload size and where it sits on disk. Payload bytes are shown only
+with --payload, and each is cut at 64 KiB. --json prints one line per record.
+A record that fails its checksum ends the read; the rows before it are kept.
+It exits 0 when it read the offset, 7 when a record in the range fails its
+checksum, 6 when the read ended at a torn tail, 5 when the offset is below the
+oldest segment or past the end of the log, and 2 for bad arguments. It is
+strictly read-only and does not trust an index: a missing or stale one only
+makes the read slower. Next to a running broker the active segment's last
+record may be an append in flight, which shows as a torn tail.";
 
 /// What `inspect segments` was asked.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -71,6 +93,7 @@ struct Args {
 pub fn run(args: Vec<String>) -> u8 {
     let args = match parse(args) {
         Ok(Parsed::Run(args)) => args,
+        Ok(Parsed::Records(args)) => return records::run(&args),
         Ok(Parsed::Help) => {
             println!("{USAGE}");
             return 0;
@@ -104,6 +127,7 @@ pub fn run(args: Vec<String>) -> u8 {
 
 enum Parsed {
     Run(Args),
+    Records(records::Args),
     Help,
 }
 
@@ -111,6 +135,7 @@ fn parse(args: Vec<String>) -> Result<Parsed, String> {
     let mut args = args.into_iter();
     match args.next().as_deref() {
         Some("segments") => {}
+        Some("records") => return records::parse(args),
         Some("-h" | "--help") | None => return Ok(Parsed::Help),
         Some(other) => return Err(format!("unknown inspect command {other}")),
     }
@@ -202,29 +227,8 @@ fn select(args: &Args) -> Result<Vec<ShardDir>, (u8, String)> {
         ));
     }
     if let Some(given) = &args.shard {
-        let key = parse_shard(given).map_err(|message| (EXIT_USAGE, message))?;
-        let store = args.kind.unwrap_or(Store::Stream);
-        let path = felix_storage::disk_log::layout::incarnation_dir(
-            &store.root(data),
-            &key,
-            args.incarnation.unwrap_or(0),
-        );
-        if !path.is_dir() {
-            return Err((
-                EXIT_NOT_FOUND,
-                format!(
-                    "no {} shard {given} in {} (looked for {})",
-                    store.name(),
-                    data.display(),
-                    path.display()
-                ),
-            ));
-        }
-        let name = path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        return Ok(vec![ShardDir { store, name, path }]);
+        let shard = resolve_shard(data, given, args.kind, args.incarnation)?;
+        return Ok(vec![shard]);
     }
     let mut shards =
         find_shards(data).map_err(|err| (1, format!("list {}: {err}", data.display())))?;
@@ -232,6 +236,38 @@ fn select(args: &Args) -> Result<Vec<ShardDir>, (u8, String)> {
         shards.retain(|shard| shard.store == kind);
     }
     Ok(shards)
+}
+
+/// The directory of the shard `given` names, which must exist.
+fn resolve_shard(
+    data: &Path,
+    given: &str,
+    kind: Option<Store>,
+    incarnation: Option<u64>,
+) -> Result<ShardDir, (u8, String)> {
+    let key = parse_shard(given).map_err(|message| (EXIT_USAGE, message))?;
+    let store = kind.unwrap_or(Store::Stream);
+    let path = felix_storage::disk_log::layout::incarnation_dir(
+        &store.root(data),
+        &key,
+        incarnation.unwrap_or(0),
+    );
+    if !path.is_dir() {
+        return Err((
+            EXIT_NOT_FOUND,
+            format!(
+                "no {} shard {given} in {} (looked for {})",
+                store.name(),
+                data.display(),
+                path.display()
+            ),
+        ));
+    }
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    Ok(ShardDir { store, name, path })
 }
 
 /// `TENANT/NAMESPACE/NAME/SHARD`.

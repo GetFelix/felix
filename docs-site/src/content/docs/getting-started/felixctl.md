@@ -611,7 +611,7 @@ with `behind` added when it has a position) and `next_cursor`, or `node_id` and
 `error` for a broker that did not answer.
 
 A broker that will not start cannot answer these. Its data directory is read
-offline by the broker binary itself, `felix-broker inspect segments`; see
+offline by the broker binary itself, `felix-broker inspect segments` for the segments and `felix-broker inspect records` for the records around an offset; see
 [Diagnosing a cluster](/deployment/diagnosing/#a-broker-will-not-start-or-will-not-open-a-shard).
 
 ### Permissions
