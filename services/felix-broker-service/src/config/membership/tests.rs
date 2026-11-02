@@ -35,3 +35,13 @@ fn a_broker_reading_on_the_lease_does_not_report_lease_free_reads() {
     assert!(on_lease.contains(felix_common::fleet::GENERATION_START.name()));
     assert!(!features_for(false, false).contains(lease_free));
 }
+
+/// Every broker of this build names start holders in its reports, which the
+/// control plane needs before it finalizes `joint_fence`.
+#[test]
+fn a_broker_reports_that_it_names_start_holders() {
+    let start_holders = felix_common::fleet::START_HOLDERS.name();
+    for (fences, by_lease) in [(true, false), (true, true), (false, false)] {
+        assert!(features_for(fences, by_lease).contains(start_holders));
+    }
+}
