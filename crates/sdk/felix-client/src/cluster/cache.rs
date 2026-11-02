@@ -16,7 +16,7 @@ use anyhow::Result;
 use bytes::Bytes;
 
 use super::{Attempt, Client, Next, StreamKey, expired, next_step, wants_reconnect};
-use crate::cache::{CacheConditionResult, VersionedValue};
+use crate::cache::{CacheConditionResult, LeaseWrite, VersionedValue};
 use crate::client::Connection;
 use felix_wire::CacheCondition;
 
@@ -146,6 +146,30 @@ impl Client {
             async move {
                 client
                     .cache_put_if(tenant_id, namespace, cache, key, value, ttl_ms, condition)
+                    .await
+            }
+        })
+        .await
+    }
+
+    /// [`Self::cache_put_if`] asking for a lease token. See
+    /// [`Connection::cache_put_if_lease`]; routed and retried the same way.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn cache_put_if_lease(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        key: &str,
+        value: Bytes,
+        ttl_ms: Option<u64>,
+        condition: CacheCondition,
+    ) -> Result<LeaseWrite> {
+        self.cache_request(tenant_id, namespace, cache, key, false, |client| {
+            let value = value.clone();
+            async move {
+                client
+                    .cache_put_if_lease(tenant_id, namespace, cache, key, value, ttl_ms, condition)
                     .await
             }
         })

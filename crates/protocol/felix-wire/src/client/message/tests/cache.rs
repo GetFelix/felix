@@ -579,6 +579,7 @@ fn conditional_cache_messages_round_trip() {
             ttl_ms: Some(30_000),
             condition: crate::CacheCondition::Absent,
             request_id: 1,
+            lease_token: false,
         },
         Message::CachePutIf {
             tenant_id: "t1".to_string(),
@@ -589,6 +590,7 @@ fn conditional_cache_messages_round_trip() {
             ttl_ms: None,
             condition: crate::CacheCondition::Version(41),
             request_id: 2,
+            lease_token: true,
         },
         Message::CacheDeleteIf {
             tenant_id: "t1".to_string(),
@@ -602,17 +604,76 @@ fn conditional_cache_messages_round_trip() {
             applied: false,
             version: Some(41),
             request_id: 4,
+            lease_token: None,
+            lease_refused: None,
         },
         Message::CacheConditionResult {
             applied: false,
             version: None,
             request_id: 5,
+            lease_token: None,
+            lease_refused: None,
+        },
+        Message::CacheConditionResult {
+            applied: true,
+            version: Some(42),
+            request_id: 6,
+            lease_token: Some(crate::LeaseToken {
+                token: "t.o.k".to_string(),
+                expires_at: 1_800_000_000,
+            }),
+            lease_refused: None,
+        },
+        Message::CacheConditionResult {
+            applied: true,
+            version: Some(43),
+            request_id: 7,
+            lease_token: None,
+            lease_refused: Some("the caller's token has expired".to_string()),
         },
     ];
     for message in messages {
         let decoded = Message::decode(message.encode().expect("encode")).expect("decode");
         assert_eq!(decoded, message);
     }
+}
+
+/// A put that does not ask for a lease token, and its answer, are the frames
+/// an older peer sends and reads.
+#[test]
+fn a_put_if_without_a_lease_omits_the_lease_fields() {
+    let put = Message::CachePutIf {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        cache: "c".to_string(),
+        key: "k".to_string(),
+        value: Bytes::from_static(b"v"),
+        ttl_ms: None,
+        condition: crate::CacheCondition::Absent,
+        request_id: 1,
+        lease_token: false,
+    };
+    let answer = Message::CacheConditionResult {
+        applied: true,
+        version: Some(1),
+        request_id: 1,
+        lease_token: None,
+        lease_refused: None,
+    };
+    for message in [put, answer] {
+        let json =
+            String::from_utf8(message.encode().expect("encode").payload.to_vec()).expect("utf8");
+        assert!(!json.contains("lease"), "{json}");
+    }
+}
+
+#[test]
+fn a_lease_token_is_redacted_in_debug() {
+    let token = crate::LeaseToken {
+        token: "secret.jwt.value".to_string(),
+        expires_at: 5,
+    };
+    assert!(!format!("{token:?}").contains("secret"));
 }
 
 /// The condition's JSON is what docs/protocol.md shows.

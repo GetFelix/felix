@@ -42,6 +42,8 @@ mod correlation {
             InternalMessage::Pong(m) => m.correlation_id,
             InternalMessage::PreVote(m) => m.correlation_id,
             InternalMessage::PreVoteAnswer(m) => m.correlation_id,
+            InternalMessage::LeaseForwardCacheOp(m) => m.correlation_id,
+            InternalMessage::LeaseForwardCacheOk(m) => m.correlation_id,
         }
     }
 
@@ -72,6 +74,24 @@ mod correlation {
             InternalMessage::PreVoteAnswer(PreVoteAnswer {
                 correlation_id: 7,
                 refusal: None,
+            }),
+            InternalMessage::LeaseForwardCacheOp(ForwardCacheOp {
+                correlation_id: 7,
+                shard: shard(),
+                op: CacheOpKind::Put,
+                key: "w7".to_string(),
+                value: Bytes::from_static(b"node-a"),
+                ttl_ms: 30_000,
+                credential: String::new(),
+                condition: Some(ForwardCacheCondition::Absent),
+            }),
+            InternalMessage::LeaseForwardCacheOk(LeaseForwardCacheOk {
+                correlation_id: 7,
+                outcome: ForwardCacheOutcome {
+                    applied: true,
+                    version: Some(1),
+                },
+                lease: ForwardLease::NotMinted,
             }),
             InternalMessage::ForwardPublish(ForwardPublish {
                 correlation_id: 7,
@@ -223,7 +243,9 @@ mod correlation {
         for message in every_variant() {
             let class = LaneClass::of(&message);
             match message {
-                InternalMessage::ForwardPublish(_) | InternalMessage::ForwardCacheOp(_) => {
+                InternalMessage::ForwardPublish(_)
+                | InternalMessage::ForwardCacheOp(_)
+                | InternalMessage::LeaseForwardCacheOp(_) => {
                     assert_eq!(class, LaneClass::Forward, "{:?}", message.kind())
                 }
                 InternalMessage::Hello(_)

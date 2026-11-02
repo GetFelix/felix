@@ -480,6 +480,70 @@ async fn a_forwarded_cache_op_is_checked_against_its_key() {
     }
 }
 
+/// The owner of a lease cache key mints for a forwarded claim from the
+/// credential it verified itself, and refuses before writing when it may not.
+#[tokio::test]
+async fn a_forwarded_lease_claim_is_minted_by_the_owner() {
+    let (broker, _dir) = broker_with(ConsistencyLevel::Leader).await;
+    broker
+        .register_cache(
+            TENANT,
+            NAMESPACE,
+            CACHE,
+            felix_broker::CacheMetadata::default(),
+        )
+        .await
+        .expect("cache");
+    let credentials = Credentials::new();
+    let lease = crate::serving::lease::LeaseTokens::from_keys(
+        &base64::engine::general_purpose::STANDARD.encode([3u8; 32]),
+        crate::serving::lease::DEFAULT_MAX_TTL,
+    )
+    .expect("lease keys");
+    let auth = Arc::new(
+        (*credentials.auth)
+            .clone()
+            .with_lease_tokens(Some(Arc::new(lease))),
+    );
+    let handler = handler_with(broker, None, Duration::from_secs(1), auth);
+    let write = format!("cache.write:cache:{TENANT}/{NAMESPACE}/{CACHE}");
+    let template = format!("stream.publish:stream:{TENANT}/{NAMESPACE}/wl.{{{CACHE}}}.out");
+    let claim = |credential: String, condition| ForwardCacheOp {
+        key: "w7".to_string(),
+        ttl_ms: 30_000,
+        condition: Some(condition),
+        ..forwarded_cache_op(CacheOpKind::Put, credential)
+    };
+
+    let plain = credentials.token(&[&write]);
+    let answer = handler
+        .apply_lease_cache_op(claim(plain, ForwardCacheCondition::Absent))
+        .await;
+    assert!(
+        matches!(&answer, InternalMessage::ForwardCacheError(err) if err.code == ErrorCode::Unauthorized),
+        "{answer:?}"
+    );
+
+    let node = credentials.token(&[&write, &template]);
+    let answer = handler
+        .apply_lease_cache_op(claim(node.clone(), ForwardCacheCondition::Absent))
+        .await;
+    let InternalMessage::LeaseForwardCacheOk(ok) = answer else {
+        panic!("not minted: {answer:?}");
+    };
+    assert!(ok.outcome.applied, "the refused claim wrote nothing");
+    assert!(matches!(ok.lease, ForwardLease::Minted { .. }), "{ok:?}");
+
+    let answer = handler
+        .apply_lease_cache_op(claim(node, ForwardCacheCondition::Absent))
+        .await;
+    let InternalMessage::LeaseForwardCacheOk(lost) = answer else {
+        panic!("not answered: {answer:?}");
+    };
+    assert!(!lost.outcome.applied);
+    assert_eq!(lost.lease, ForwardLease::NotMinted);
+}
+
 /// A forwarded cache op the owner's store refused is answered as an error,
 /// never as a success the store never applied.
 #[tokio::test]

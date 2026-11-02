@@ -195,10 +195,68 @@ fn a_conditional_cache_op_round_trips_as_its_own_kind() {
     assert_eq!(plain.kind(), Kind::ForwardCacheOk);
 }
 
+/// A put that asks for a lease token is its own kind, so an older owner
+/// refuses it; its answer carries the token or why there is none.
+#[test]
+fn a_lease_cache_op_round_trips_as_its_own_kind() {
+    assert_eq!(Kind::LeaseForwardCacheOp as u16, 45);
+    assert_eq!(Kind::LeaseForwardCacheOk as u16, 46);
+    let op = |credential: &str, condition| ForwardCacheOp {
+        correlation_id: 42,
+        shard: shard(),
+        op: CacheOpKind::Put,
+        key: "w7".to_string(),
+        value: Bytes::from_static(b"node-a"),
+        ttl_ms: 30_000,
+        credential: credential.to_string(),
+        condition: Some(condition),
+    };
+    for message in [
+        op("eyJ.token.sig", ForwardCacheCondition::Absent),
+        op("eyJ.token.sig", ForwardCacheCondition::Version(7)),
+        op("", ForwardCacheCondition::Absent),
+    ] {
+        let message = InternalMessage::LeaseForwardCacheOp(message);
+        assert_eq!(message.kind(), Kind::LeaseForwardCacheOp);
+        let decoded = InternalMessage::decode(message.encode().expect("encode")).expect("decode");
+        assert_eq!(decoded, message);
+        let wrapped = incarnated(message, Some(3));
+        let decoded = InternalMessage::decode(wrapped.encode().expect("encode")).expect("decode");
+        assert_eq!(decoded, wrapped);
+    }
+
+    for lease in [
+        ForwardLease::NotMinted,
+        ForwardLease::Minted {
+            token: "eyJ.lease.sig".to_string(),
+            expires_at: 1_800_000_000,
+        },
+        ForwardLease::Refused("the caller's token expires too soon".to_string()),
+    ] {
+        let answer = InternalMessage::LeaseForwardCacheOk(LeaseForwardCacheOk {
+            correlation_id: 42,
+            outcome: ForwardCacheOutcome {
+                applied: true,
+                version: Some(9),
+            },
+            lease,
+        });
+        assert_eq!(answer.kind(), Kind::LeaseForwardCacheOk);
+        let decoded = InternalMessage::decode(answer.encode().expect("encode")).expect("decode");
+        assert_eq!(decoded, answer);
+        assert!(
+            !format!("{answer:?}").contains("eyJ"),
+            "the token is redacted"
+        );
+    }
+}
+
 fn incarnated(mut message: InternalMessage, incarnation: Option<u64>) -> InternalMessage {
     match &mut message {
         InternalMessage::ForwardPublish(m) => m.shard.incarnation = incarnation,
-        InternalMessage::ForwardCacheOp(m) => m.shard.incarnation = incarnation,
+        InternalMessage::ForwardCacheOp(m) | InternalMessage::LeaseForwardCacheOp(m) => {
+            m.shard.incarnation = incarnation
+        }
         other => panic!("not a forward: {:?}", other.kind()),
     }
     message

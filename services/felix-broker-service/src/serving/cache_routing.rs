@@ -5,9 +5,10 @@
 //! touched, is what stops two brokers accepting writes for the same key — the
 //! divergence the log-backed cache had no defence against.
 use bytes::Bytes;
-use felix_wire::internal::ForwardCacheOutcome;
+use felix_wire::internal::{ForwardCacheOutcome, ForwardLease};
 
 use crate::serving::forward::{CacheRequest, ForwardKey, ForwardTarget};
+use crate::serving::lease::LeaseMint;
 use crate::serving::quic::client_error::ClientError;
 use crate::shards::lifecycle::fence::{self, FenceGuard};
 use crate::shards::routing::{Dispatch, IngressRouter, dispatch_write, shard_for};
@@ -128,7 +129,7 @@ pub(crate) async fn apply_cache_op(
     request: CacheRequest,
 ) -> anyhow::Result<Option<Bytes>> {
     apply_cache_request(
-        broker, quorum, ingress, peers, credential, tenant_id, namespace, cache, key, request,
+        broker, quorum, ingress, peers, credential, tenant_id, namespace, cache, key, request, None,
     )
     .await
     .map(|answer| answer.value)
@@ -142,9 +143,15 @@ pub(crate) struct CacheAnswer {
     /// For a versioned request: whether it applied, and the version. `None`
     /// from an owner that predates versions, which only a get falls back to.
     pub(crate) outcome: Option<ForwardCacheOutcome>,
+    /// For a put that asked for a lease token: the token, or why there is none.
+    pub(crate) lease: Option<ForwardLease>,
 }
 
 /// [`apply_cache_op`] with the whole answer, which a versioned request needs.
+///
+/// With `lease`, a `PutIf` that applies also mints a lease token, on whichever
+/// broker owns the key. The token is minted only once the write has the
+/// cache's guarantee.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn apply_cache_request(
     broker: &felix_broker::Broker,
@@ -160,7 +167,11 @@ pub(crate) async fn apply_cache_request(
     cache: &str,
     key: &str,
     request: CacheRequest,
+    lease: Option<&LeaseMint>,
 ) -> anyhow::Result<CacheAnswer> {
+    if lease.is_some() && !matches!(request, CacheRequest::PutIf { .. }) {
+        return Err(ClientError::internal("only a conditional put mints a lease token").into());
+    }
     match resolve_cache_route(ingress, tenant_id, namespace, cache, key).await {
         CacheRoute::Local {
             shard,
@@ -232,6 +243,7 @@ pub(crate) async fn apply_cache_request(
                     CacheAnswer {
                         value,
                         outcome: None,
+                        lease: None,
                     }
                 }
                 CacheRequest::Delete => {
@@ -255,6 +267,7 @@ pub(crate) async fn apply_cache_request(
                     CacheAnswer {
                         value: removed,
                         outcome: None,
+                        lease: None,
                     }
                 }
                 CacheRequest::PutIf {
@@ -263,6 +276,9 @@ pub(crate) async fn apply_cache_request(
                     condition,
                 } => {
                     let ttl = (ttl_ms > 0).then(|| std::time::Duration::from_millis(ttl_ms));
+                    // Taken before the write, so a token never outlives the
+                    // entry the store expires from its own later clock.
+                    let entry_expires_at = ttl.map(|ttl| std::time::SystemTime::now() + ttl);
                     let fenced = write(&mut fenced)?;
                     let written_if = cache_store
                         .put_if(
@@ -282,9 +298,17 @@ pub(crate) async fn apply_cache_request(
                         felix_replication::quorum::Access::Write,
                     )
                     .await?;
+                    let lease = lease.map(|mint| match written_if {
+                        felix_storage::ConditionalWrite {
+                            applied: true,
+                            version: Some(version),
+                        } => mint.mint(version, entry_expires_at),
+                        _ => ForwardLease::NotMinted,
+                    });
                     CacheAnswer {
                         value: None,
                         outcome: Some(outcome(written_if)),
+                        lease,
                     }
                 }
                 CacheRequest::DeleteIf { version } => {
@@ -306,6 +330,7 @@ pub(crate) async fn apply_cache_request(
                     CacheAnswer {
                         value: None,
                         outcome: Some(outcome(deleted)),
+                        lease: None,
                     }
                 }
                 CacheRequest::GetVersioned => {
@@ -337,6 +362,7 @@ pub(crate) async fn apply_cache_request(
                             applied: true,
                             version,
                         }),
+                        lease: None,
                     }
                 }
                 // Counter operations go through `apply_counter_op`, which owns the
@@ -365,6 +391,23 @@ pub(crate) async fn apply_cache_request(
                 .with_retry(felix_wire::RetryClass::Retry)
                 .into());
             };
+            if lease.is_some() {
+                return crate::serving::forward::forward_lease_put_if(
+                    pool,
+                    &target,
+                    &forward_key,
+                    key,
+                    credential,
+                    &request,
+                )
+                .await
+                .map(|(ok, lease)| CacheAnswer {
+                    value: ok.value,
+                    outcome: ok.outcome,
+                    lease: Some(lease),
+                })
+                .map_err(anyhow::Error::from);
+            }
             crate::serving::forward::forward_cache_request(
                 pool,
                 &target,
@@ -377,6 +420,7 @@ pub(crate) async fn apply_cache_request(
             .map(|ok| CacheAnswer {
                 value: ok.value,
                 outcome: ok.outcome,
+                lease: None,
             })
             .map_err(anyhow::Error::from)
         }

@@ -132,6 +132,8 @@ Per-tenant usage. The `tenant` label is capped; once the cap is reached further 
 | `felix_broker_principal_revocations_total` | counter | - | Principal revocations this broker applied. |
 | `felix_revocation_feed_last_success_seconds` | gauge | - | Unix time of the last poll that reached the control plane's revocation feed. A stale value means revocations are not arriving. |
 | `felix_revocation_feed_poll_errors_total` | counter | - | Revocation feed polls that failed. |
+| `felix_lease_tokens_issued_total` | counter | - | Lease tokens this broker minted as a lease key's owner. |
+| `felix_lease_token_refusals_total` | counter | `reason` | Lease token mints refused, by `reason`: `lease_token`, `delegated`, `no_template` or `invalid_key` (nothing written), `expired` or `signing` (the write stands). |
 | `felix_broker_stream_incarnation_refused_total` | counter | - | Stream registrations refused because they came from an older catalog than the one the broker holds. |
 | `felix_broker_cache_incarnation_refused_total` | counter | - | Cache registrations refused for the same reason. |
 | `felix_broker_durable_stream_skipped_total` | counter | - | Durable streams skipped because the broker has no durable storage configured. |

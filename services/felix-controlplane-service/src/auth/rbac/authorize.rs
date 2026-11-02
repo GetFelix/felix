@@ -157,9 +157,16 @@ pub fn parse_permission(raw: &str, tenant_id: &str) -> Result<ParsedPermission, 
 /// - `cache:{tenant_id}/{namespace}/{cache}`
 /// - `cache:{tenant_id}/{namespace}/{cache}/{key}` or `.../{key_prefix}*`
 /// - `group:{tenant_id}/{namespace}/{stream}/{group}`
+///
+/// A lease template (`stream:t1/prod/wl.{leases}.out`, see
+/// [`felix_authz::LeaseTemplate`]) parses as the stream or cache key object it
+/// is spelled as. [`is_lease_template`] tells it apart.
 pub fn parse_object(raw: &str, tenant_id: &str) -> Result<ParsedObject, String> {
     if raw == "tenant:*" {
         return Err("tenant:* is not allowed".to_string());
+    }
+    if felix_authz::is_lease_template(raw) {
+        felix_authz::LeaseTemplate::parse(raw).map_err(|err| err.to_string())?;
     }
 
     // Checked before the tenant-scoped forms, and without consulting
@@ -259,7 +266,31 @@ pub fn parse_object(raw: &str, tenant_id: &str) -> Result<ParsedObject, String> 
     Err("object does not match RBAC grammar".to_string())
 }
 
+/// Whether `object` is a lease template. Only one [`parse_object`] accepted
+/// can hold a brace, so a brace is enough to tell.
+pub fn is_lease_template(object: &ParsedObject) -> bool {
+    let leaf = match object {
+        ParsedObject::Stream {
+            stream: Segment::Exact(stream),
+            ..
+        } => stream,
+        ParsedObject::Cache {
+            key: Some(KeyScope::Exact(key)),
+            ..
+        } => key,
+        _ => return false,
+    };
+    felix_authz::is_lease_template(leaf)
+}
+
+/// Whether `scope` covers `target`.
+///
+/// A lease template as `scope` covers nothing: it grants only through a lease
+/// token a broker mints from it, so no control-plane check may pass on one.
 pub fn object_within_scope(scope: &ParsedObject, target: &ParsedObject) -> bool {
+    if is_lease_template(scope) {
+        return false;
+    }
     match (scope, target) {
         // Cluster scope is its own island in both directions. A tenant scope
         // does not reach it, which is what stops a tenant admin granting
@@ -404,6 +435,10 @@ pub fn object_within_scope(scope: &ParsedObject, target: &ParsedObject) -> bool 
 /// acts on: `tenant.manage` narrowed to a stream would be a permission no
 /// check ever matches.
 pub fn narrow_object(granted: &ParsedObject, requested: &ParsedObject) -> Option<ParsedObject> {
+    // A template is passed through from a grant, never made from a wider one.
+    if is_lease_template(requested) {
+        return None;
+    }
     if object_within_scope(requested, granted) {
         return Some(granted.clone());
     }
@@ -523,6 +558,13 @@ pub fn validate_new_rule_allowed(
     {
         return Err("a cache key object only takes cache.read or cache.write".to_string());
     }
+    if is_lease_template(&parsed) && !lease_template_takes(&rule.object, action) {
+        return Err(
+            "a lease template takes stream.publish or stream.subscribe on a stream, \
+             cache.read or cache.write on a cache key"
+                .to_string(),
+        );
+    }
     if caller_scopes
         .iter()
         .any(|scope| object_within_scope(scope, &parsed))
@@ -556,6 +598,23 @@ pub fn validate_assignment_allowed(
         }
     }
     Ok(())
+}
+
+/// Whether `permission` (`action:object`) is a lease template.
+pub fn is_lease_template_permission(permission: &str) -> bool {
+    permission
+        .split_once(':')
+        .is_some_and(|(_, object)| felix_authz::is_lease_template(object))
+}
+
+fn lease_template_takes(object: &str, action: &str) -> bool {
+    let (Ok(template), Ok(action)) = (
+        felix_authz::LeaseTemplate::parse(object),
+        action.parse::<felix_authz::Action>(),
+    ) else {
+        return false;
+    };
+    template.takes(action)
 }
 
 /// The namespace and leaf of a stream or cache object.

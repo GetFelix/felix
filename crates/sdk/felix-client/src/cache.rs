@@ -10,7 +10,7 @@ mod versioned;
 mod watch;
 mod worker;
 
-pub use versioned::{CacheConditionResult, VersionedValue};
+pub use versioned::{CacheConditionResult, LeaseToken, LeaseWrite, VersionedValue};
 pub use watch::{CacheChange, CacheWatch, CacheWatchFilter, CacheWatchItem};
 
 pub(crate) use watch::filter_fields;

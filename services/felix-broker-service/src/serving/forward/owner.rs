@@ -34,11 +34,12 @@ use felix_broker::Broker;
 use felix_router::{Resolution, ShardRouter};
 use felix_wire::internal::{
     CacheOpKind, ErrorCode, ForwardCacheCondition, ForwardCacheError, ForwardCacheOk,
-    ForwardCacheOp, ForwardCacheOutcome, ForwardPublish, ForwardPublishError, ForwardPublishOk,
-    InternalMessage, NotLeader, ShardRef,
+    ForwardCacheOp, ForwardCacheOutcome, ForwardLease, ForwardPublish, ForwardPublishError,
+    ForwardPublishOk, InternalMessage, LeaseForwardCacheOk, NotLeader, ShardRef,
 };
 
-use crate::serving::auth::BrokerAuth;
+use crate::serving::auth::{AuthContext, BrokerAuth};
+use crate::serving::lease::LeaseMint;
 use crate::shards::lifecycle::fence::Fenced;
 use crate::shards::routing::{Dispatch, IngressRouter};
 use crate::shards::{ShardKey, ShardKind};
@@ -126,7 +127,7 @@ impl ForwardingHandler {
             )
             .await
         {
-            Ok(publisher) => publisher,
+            Ok(ctx) => ctx.publisher,
             Err(detail) => {
                 metrics::record_served(metrics::OUTCOME_UNAUTHORIZED);
                 return error(correlation_id, ErrorCode::Unauthorized, detail);
@@ -201,6 +202,16 @@ impl ForwardingHandler {
     /// broker that served a cache key it no longer owns is the divergence this
     /// whole path exists to prevent.
     pub(crate) async fn apply_cache_op(&self, op: ForwardCacheOp) -> InternalMessage {
+        self.apply_cache(op, false).await
+    }
+
+    /// A conditional put that also mints a lease token if it applies, the way
+    /// a client connected here would get one.
+    pub(crate) async fn apply_lease_cache_op(&self, op: ForwardCacheOp) -> InternalMessage {
+        self.apply_cache(op, true).await
+    }
+
+    async fn apply_cache(&self, op: ForwardCacheOp, lease: bool) -> InternalMessage {
         let correlation_id = op.correlation_id;
         let key = ShardKey {
             tenant_id: op.shard.tenant_id.clone(),
@@ -234,7 +245,7 @@ impl ForwardingHandler {
             cache_resource(&tenant, &namespace, &cache),
             op.key
         );
-        if let Err(detail) = self
+        let caller = match self
             .authorize(
                 &op.credential,
                 &key.tenant_id,
@@ -251,15 +262,37 @@ impl ForwardingHandler {
                 },
             )
             .await
-            .map(drop)
         {
-            metrics::record_served(metrics::OUTCOME_UNAUTHORIZED);
-            return InternalMessage::ForwardCacheError(ForwardCacheError {
-                correlation_id,
-                code: ErrorCode::Unauthorized,
-                detail,
-            });
-        }
+            Ok(caller) => caller,
+            Err(detail) => {
+                metrics::record_served(metrics::OUTCOME_UNAUTHORIZED);
+                return InternalMessage::ForwardCacheError(ForwardCacheError {
+                    correlation_id,
+                    code: ErrorCode::Unauthorized,
+                    detail,
+                });
+            }
+        };
+        // Planned from the credential the owner verified itself, before the
+        // write, so a refused mint writes nothing.
+        let mint = if lease {
+            match self.lease_mint(&op, &caller, &key) {
+                Ok(mint) => Some(mint),
+                Err((code, detail)) => {
+                    metrics::record_served(metrics::OUTCOME_UNAUTHORIZED);
+                    return InternalMessage::ForwardCacheError(ForwardCacheError {
+                        correlation_id,
+                        code,
+                        detail,
+                    });
+                }
+            }
+        } else {
+            None
+        };
+        // Taken before the write, as on the local path.
+        let entry_expires_at = (op.ttl_ms > 0)
+            .then(|| std::time::SystemTime::now() + std::time::Duration::from_millis(op.ttl_ms));
 
         // A read follows the lease as a write does: another broker may be
         // leading the shard by now, with writes this one never saw. A fleet
@@ -454,11 +487,54 @@ impl ForwardingHandler {
         }
 
         metrics::record_served(metrics::OUTCOME_OK);
+        if let (Some(mint), Some(outcome)) = (mint, outcome) {
+            let lease = match outcome {
+                ForwardCacheOutcome {
+                    applied: true,
+                    version: Some(version),
+                } => mint.mint(version, entry_expires_at),
+                _ => ForwardLease::NotMinted,
+            };
+            return InternalMessage::LeaseForwardCacheOk(LeaseForwardCacheOk {
+                correlation_id,
+                outcome,
+                lease,
+            });
+        }
         InternalMessage::ForwardCacheOk(ForwardCacheOk {
             correlation_id,
             value,
             outcome,
         })
+    }
+
+    /// What a lease token would grant the caller of `op`, or the refusal.
+    fn lease_mint(
+        &self,
+        op: &ForwardCacheOp,
+        caller: &AuthContext,
+        key: &ShardKey,
+    ) -> Result<LeaseMint, (ErrorCode, String)> {
+        if !matches!(
+            (op.op, op.condition),
+            (
+                CacheOpKind::Put,
+                Some(ForwardCacheCondition::Absent | ForwardCacheCondition::Version(_))
+            )
+        ) {
+            return Err((
+                ErrorCode::Malformed,
+                "only a conditional put mints a lease token".to_string(),
+            ));
+        }
+        let tokens = self.auth.lease_tokens().ok_or_else(|| {
+            (
+                ErrorCode::Unauthorized,
+                "this broker does not mint lease tokens".to_string(),
+            )
+        })?;
+        LeaseMint::plan(tokens, caller, &key.namespace, &key.stream, &op.key)
+            .map_err(|refusal| (ErrorCode::Unauthorized, refusal.to_string()))
     }
 
     /// Whether the client behind a forward may perform `action` on `resource`,
@@ -476,7 +552,7 @@ impl ForwardingHandler {
         action: Action,
         resource: &str,
         allowed: impl FnOnce(&PermissionMatcher) -> bool,
-    ) -> Result<Option<bytes::Bytes>, String> {
+    ) -> Result<AuthContext, String> {
         if credential.is_empty() {
             return Err(
                 "forwarded with no credential: the forwarding broker predates credentialed \
@@ -494,7 +570,7 @@ impl ForwardingHandler {
                 "the publisher's credential does not allow {action:?} on {resource}"
             ));
         }
-        Ok(ctx.publisher)
+        Ok(ctx)
     }
 
     /// Every check a forwarded request must pass before it touches storage.
@@ -768,6 +844,7 @@ impl PeerRequestHandler for ForwardingHandler {
         match request {
             InternalMessage::ForwardPublish(publish) => self.apply(publish).await,
             InternalMessage::ForwardCacheOp(op) => self.apply_cache_op(op).await,
+            InternalMessage::LeaseForwardCacheOp(op) => self.apply_lease_cache_op(op).await,
             // Responses have no business arriving as requests, and a broker that
             // answered one would be inventing a request that was never made.
             other => error(

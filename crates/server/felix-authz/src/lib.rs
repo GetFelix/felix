@@ -9,6 +9,8 @@
 
 // Authorization: what a permission grants and whether a request matches it.
 mod action;
+mod identifier;
+mod lease;
 mod matcher;
 mod permission;
 mod resource;
@@ -22,8 +24,10 @@ mod error;
 
 pub use action::Action;
 pub use error::{AuthzError, AuthzResult};
+pub use identifier::{MAX_IDENTIFIER_LEN, validate_identifier};
 pub use ids::{CacheScope, GroupName, Namespace, StreamName, TenantId};
 pub use jwks::{Jwk, Jwks, KeyUse};
+pub use lease::{LeaseTemplate, expand_lease_templates, is_lease_template};
 pub use matcher::{CacheKeys, PermissionMatcher, wildcard_match};
 pub use permission::{Permission, PermissionPattern};
 pub use resource::{
@@ -31,6 +35,6 @@ pub use resource::{
     tenant_resource,
 };
 pub use token::{
-    Actor, FelixClaims, FelixTokenIssuer, FelixTokenVerifier, TenantKeyCache, TenantKeyMaterial,
-    TenantKeyStore, TenantSigningKey, TenantVerificationKey,
+    Actor, FelixClaims, FelixTokenIssuer, FelixTokenVerifier, LeaseClaim, TenantKeyCache,
+    TenantKeyMaterial, TenantKeyStore, TenantSigningKey, TenantVerificationKey,
 };

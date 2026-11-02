@@ -7,13 +7,13 @@ use super::replicate::GenerationStart;
 use super::replicate::{ProducerMark, put_marks, take_marks};
 use super::{
     AckMode, CacheOpKind, ErrorCode, Fence, FenceElection, FenceOk, ForwardCacheCondition,
-    ForwardCacheError, ForwardCacheOk, ForwardCacheOp, ForwardCacheOutcome, ForwardPublish,
-    ForwardPublishError, ForwardPublishOk, Hello, HelloOk, InternalHeader, InternalMessage, Kind,
-    MAX_BATCH_PAYLOADS, MAX_BODY_BYTES, MAX_CREDENTIAL_BYTES, MAX_ENVELOPE_BYTES, MAX_IDENT_BYTES,
-    MAX_INNER_BODY_BYTES, MAX_SET_MEMBERS, MAX_SET_NODE_BYTES, NotLeader, PeerCapabilities, Ping,
-    Pong, PreVote, PreVoteAnswer, PreVoteRefusal, ReplicaLog, ReplicaSetView, ReplicateBootstrap,
-    ReplicateError, ReplicateFetch, ReplicateOk, ReplicateRebuild, ReplicateRecords, SetMember,
-    ShardRef,
+    ForwardCacheError, ForwardCacheOk, ForwardCacheOp, ForwardCacheOutcome, ForwardLease,
+    ForwardPublish, ForwardPublishError, ForwardPublishOk, Hello, HelloOk, InternalHeader,
+    InternalMessage, Kind, LeaseForwardCacheOk, MAX_BATCH_PAYLOADS, MAX_BODY_BYTES,
+    MAX_CREDENTIAL_BYTES, MAX_ENVELOPE_BYTES, MAX_IDENT_BYTES, MAX_INNER_BODY_BYTES,
+    MAX_SET_MEMBERS, MAX_SET_NODE_BYTES, NotLeader, PeerCapabilities, Ping, Pong, PreVote,
+    PreVoteAnswer, PreVoteRefusal, ReplicaLog, ReplicaSetView, ReplicateBootstrap, ReplicateError,
+    ReplicateFetch, ReplicateOk, ReplicateRebuild, ReplicateRecords, SetMember, ShardRef,
 };
 use crate::error::{Error, Result};
 
@@ -292,7 +292,14 @@ impl InternalMessage {
                 body.put_u8(m.log as u8);
                 body.put_u64(m.base_offset);
             }
-            Self::ForwardCacheOp(m) => {
+            Self::ForwardCacheOp(m) | Self::LeaseForwardCacheOp(m) => {
+                // A lease op always has the conditional layout.
+                let condition = match self {
+                    Self::LeaseForwardCacheOp(_) => {
+                        Some(m.condition.unwrap_or(ForwardCacheCondition::Unconditional))
+                    }
+                    _ => m.condition,
+                };
                 body.put_u64(m.correlation_id);
                 put_str(&mut body, &m.shard.tenant_id)?;
                 put_str(&mut body, &m.shard.namespace)?;
@@ -304,7 +311,7 @@ impl InternalMessage {
                 body.put_u64(m.ttl_ms);
                 body.put_u32(u32::try_from(m.value.len()).map_err(|_| Error::FrameTooLarge)?);
                 body.extend_from_slice(&m.value);
-                match m.condition {
+                match condition {
                     // The conditional kind always has a credential slot; an
                     // empty one is what a broker without auth forwards.
                     Some(condition) => {
@@ -355,6 +362,29 @@ impl InternalMessage {
                 body.put_u64(m.correlation_id);
                 body.put_u16(m.code as u16);
                 put_str(&mut body, &m.detail)?;
+            }
+            Self::LeaseForwardCacheOk(m) => {
+                body.put_u64(m.correlation_id);
+                body.put_u8(u8::from(m.outcome.applied));
+                match m.outcome.version {
+                    Some(version) => {
+                        body.put_u8(1);
+                        body.put_u64(version);
+                    }
+                    None => body.put_u8(0),
+                }
+                match &m.lease {
+                    ForwardLease::NotMinted => body.put_u8(0),
+                    ForwardLease::Minted { token, expires_at } => {
+                        body.put_u8(1);
+                        put_credential(&mut body, token)?;
+                        body.put_u64(*expires_at);
+                    }
+                    ForwardLease::Refused(detail) => {
+                        body.put_u8(2);
+                        put_str(&mut body, detail)?;
+                    }
+                }
             }
         }
 
@@ -880,7 +910,8 @@ impl InternalMessage {
             }
             kind @ (Kind::ForwardCacheOp
             | Kind::AuthorizedForwardCacheOp
-            | Kind::ConditionalForwardCacheOp) => {
+            | Kind::ConditionalForwardCacheOp
+            | Kind::LeaseForwardCacheOp) => {
                 let correlation_id = take_u64(&mut body)?;
                 let shard = ShardRef {
                     tenant_id: take_str(&mut body)?,
@@ -900,7 +931,7 @@ impl InternalMessage {
                 let value = body.split_to(len);
                 let (credential, condition) = match kind {
                     Kind::AuthorizedForwardCacheOp => (take_credential(&mut body)?, None),
-                    Kind::ConditionalForwardCacheOp => {
+                    Kind::ConditionalForwardCacheOp | Kind::LeaseForwardCacheOp => {
                         let credential = take_optional_credential(&mut body)?;
                         let condition = match take_u8(&mut body)? {
                             0 => ForwardCacheCondition::Unconditional,
@@ -913,7 +944,7 @@ impl InternalMessage {
                     _ => (String::new(), None),
                 };
                 expect_empty(&body)?;
-                Ok(Self::ForwardCacheOp(ForwardCacheOp {
+                let op = ForwardCacheOp {
                     correlation_id,
                     shard,
                     op,
@@ -922,6 +953,34 @@ impl InternalMessage {
                     ttl_ms,
                     credential,
                     condition,
+                };
+                Ok(match kind {
+                    Kind::LeaseForwardCacheOp => Self::LeaseForwardCacheOp(op),
+                    _ => Self::ForwardCacheOp(op),
+                })
+            }
+            Kind::LeaseForwardCacheOk => {
+                let correlation_id = take_u64(&mut body)?;
+                let applied = take_flag(&mut body)?;
+                let version = match take_u8(&mut body)? {
+                    0 => None,
+                    1 => Some(take_u64(&mut body)?),
+                    _ => return Err(Error::Incomplete),
+                };
+                let lease = match take_u8(&mut body)? {
+                    0 => ForwardLease::NotMinted,
+                    1 => ForwardLease::Minted {
+                        token: take_credential(&mut body)?,
+                        expires_at: take_u64(&mut body)?,
+                    },
+                    2 => ForwardLease::Refused(take_str(&mut body)?),
+                    _ => return Err(Error::Incomplete),
+                };
+                expect_empty(&body)?;
+                Ok(Self::LeaseForwardCacheOk(LeaseForwardCacheOk {
+                    correlation_id,
+                    outcome: ForwardCacheOutcome { applied, version },
+                    lease,
                 }))
             }
             kind @ (Kind::ForwardCacheOk | Kind::ConditionalForwardCacheOk) => {
