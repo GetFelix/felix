@@ -678,6 +678,17 @@ RefuseShortCopy == FALSE
 ShortCopyChecksSet == TRUE
 ShortCopyChecksKeys == TRUE
 FenceIdsSetOnly == FALSE
+\* `FlipNewGeneration`: the control plane takes a pending set at a new
+\* generation naming its leader again, as `TakePendingSet` in placement/
+\* moves.rs writes it, and that leader fences again on the new set alone. It
+\* flips on the leader's report of its start record. Off, the flip keeps the
+\* generation, which the set-change pieces were measured with.
+\* `NamedFenceSkipsBallot`: a replica answers the fence of the leader a flip
+\* named at a generation it promised a candidate, checking the generation
+\* alone. `accept_sender` in replica.rs checks the ballot for
+\* every fence.
+FlipNewGeneration == FALSE
+NamedFenceSkipsBallot == FALSE
 
 \* There only the leader loses records, so a report may count followers by
 \* their logs.
@@ -709,6 +720,8 @@ ASSUME GroupLogs => Counters /\ WipedNonVoter
 ASSUME KeepSetDropsMark => GroupLogs
 ASSUME IdlessCreation \/ GenOneExempt => WipedNonVoter
 ASSUME Creates => Elections > 0 /\ SetCheck /\ Spares = {}
+ASSUME NamedFenceSkipsBallot => FlipNewGeneration
+ASSUME FlipNewGeneration => ~Counters
 
 \* Wipes and crashes on the fenced path, where the promoted leader checks the
 \* identities the report named. With `UnprobedStart` the first leader knows
@@ -1939,6 +1952,10 @@ AckedByTwo(b, f) ==
 
 ShortCopyRefuses(b, f) == RefuseShortCopy /\ ShortCopy(f) /\ ~AckedByTwo(b, f)
 
+\* Whether `b` fences as the leader a flip named (`CpFlipNamed`): named at the
+\* control plane's generation, on a set written at it, with no change pending.
+FlipFence(b) == ~Candidate(b) /\ setGen[b] = bgen[b] /\ oldSet[b] = {} /\ cpNext = {}
+
 \* One replica answers the fence, and the leader takes its log if it is ahead.
 \* That is the catch-up: whatever a majority acknowledged is in the answer
 \* furthest ahead. The replica's half is `ReplicaHandler::fence` in
@@ -1962,7 +1979,10 @@ ShortCopyRefuses(b, f) == RefuseShortCopy /\ ShortCopy(f) /\ ~AckedByTwo(b, f)
 AnswerFence(b, f) ==
     /\ fencing[b] /\ bgen[b] > 0 /\ f /= b /\ f \notin halted
     /\ f \in FenceMembers(b)
-    /\ IF Elections > 0 THEN MayPromise(f, b, bgen[b]) ELSE promised[f] < bgen[b]
+    /\ IF Elections > 0
+       THEN \/ MayPromise(f, b, bgen[b])
+            \/ NamedFenceSkipsBallot /\ FlipFence(b) /\ promised[f] <= bgen[b]
+       ELSE promised[f] < bgen[b]
     /\ ~ShortCopyRefuses(b, f)
     \* Stickiness: a replica that still hears its leader refuses a candidate.
     /\ PreVote /\ Candidate(b) => ~Hears(f)
@@ -2685,6 +2705,7 @@ Swap(v, f, views) ==
 \* losing a majority of the old set stops writes until it comes back. Nothing
 \* here checks liveness; safety does not depend on the flip happening.
 CpFlip ==
+    /\ ~FlipNewGeneration
     /\ cpNext /= {}
     /\ \E l \in Brokers :
         /\ mine[l] = cpNext /\ setGen[l] = cpNextGen /\ oldSet[l] /= {}
@@ -2699,6 +2720,42 @@ CpFlip ==
                     joining, leaving, joinedAt,
                     promised, fencing, answered, confirmed, ballot, opened, setGen, oldSet,
                     installed, ackGen >>
+
+\* Under `FlipNewGeneration`, the flip as `TakePendingSet` writes it: the
+\* pending set at the next generation, naming the leader again, which fences
+\* again on the new set alone before it serves there. A candidate may have
+\* taken that generation already, fencing both sets without the leader, so
+\* two fences meet at one generation; the ballot keeps them apart, as it
+\* does for any two leaders (`NamedFenceSkipsBallot` drops it for the named
+\* one). A report the leader sent before an election deposed it is not
+\* modelled: the deposed leader promised the generation away and does not
+\* lead it (`a_generation_promised_to_another_node_is_not_led`).
+CpFlipNamed ==
+    /\ FlipNewGeneration
+    /\ cpNext /= {}
+    /\ bgen[leader] = gen /\ ~fencing[leader]
+    /\ mine[leader] = cpNext /\ setGen[leader] = cpNextGen /\ oldSet[leader] /= {}
+    /\ \E i \in 1..hwm[leader] : i <= Len(log[leader]) /\ log[leader][i] = Start(gen)
+    /\ MayPromise(leader, leader, gen + 1)
+    /\ out' = (out \cup CpSet) \ cpNext
+    /\ cpNext' = {} /\ cpNextGen' = 0 /\ UNCHANGED cutOver
+    /\ ver' = ver + 1
+    /\ gen' = gen + 1
+    /\ cpExpiry' = now + L
+    /\ report' = NoReport
+    /\ bgen' = [bgen EXCEPT ![leader] = gen + 1]
+    /\ bexpiry' = [bexpiry EXCEPT ![leader] = clock[leader] + L]
+    /\ queued' = [queued EXCEPT ![leader] = 0]
+    /\ pending' = [pending EXCEPT ![leader] = 0]
+    /\ Promise(leader, leader, gen + 1)
+    /\ fencing' = [fencing EXCEPT ![leader] = TRUE]
+    /\ answered' = [answered EXCEPT ![leader] = {}]
+    /\ confirmed' = [confirmed EXCEPT ![leader] = [m \in Brokers |-> 0]]
+    /\ setGen' = [setGen EXCEPT ![leader] = gen + 1]
+    /\ oldSet' = [oldSet EXCEPT ![leader] = {}]
+    /\ UNCHANGED << now, clock, leader, inflight, hbOut, hbAt, log, hwm, halted, acked, writes,
+                    staleCommit, draining, successor, stopped, moves, cpView, staged, mine,
+                    joining, leaving, joinedAt, opened, installed, ackGen >>
 
 \* Under `Reclaims`, placement names a leader that gave its copy up leader
 \* again at the next generation, on the same set, when every follower's log
@@ -3186,6 +3243,7 @@ Next ==
         \/ AckCounters(b) /\ UNCHANGED loudVars
     \/ LoseReport /\ UNCHANGED quietVars
     \/ CpFlip /\ UNCHANGED quietVars
+    \/ CpFlipNamed /\ UNCHANGED quietVars
     \/ (\E p \in Planners : Snapshot(p)) /\ UNCHANGED quietVars
     \/ DeliverReport /\ UNCHANGED << counterVars, idVars, wipeVars >>
 

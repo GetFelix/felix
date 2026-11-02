@@ -1151,8 +1151,11 @@ elected leader waits for the lease until the control plane is back (issue
    changes the set records the new set as pending; the old set stays the
    control plane's set until a leader on the new set reports its
    generation's start record acknowledged on a majority of both sets. Only
-   then does the control plane take the new set, and only once the leader
-   hears that does it acknowledge on a majority of the new set alone. Until
+   then does the control plane take the new set, at a new generation naming
+   the same leader, which fences the new set alone before it acknowledges
+   on a majority of it. A candidate may have taken that generation already;
+   the ballot refuses whichever of the two fences comes second
+   (`FelixShardElectSwapFlip.cfg`). Until
    then the change is pending everywhere it went: a replica persists the
    old set beside the new one, a fence and a batch carry both, a leader
    acknowledges on a majority of both, and whoever stands next fences both,
