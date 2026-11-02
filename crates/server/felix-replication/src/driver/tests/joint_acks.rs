@@ -79,6 +79,7 @@ fn route(replicas: &[&str], leaving: Option<&[&str]>) -> Arc<ShardRouter> {
             routing: Default::default(),
             incarnation: 0,
             fence_storage_ids: Default::default(),
+            member_storage_ids: Default::default(),
             pending: leaving.map(|leaving| PendingChange {
                 generation: 5,
                 leaving: leaving.iter().map(|node| node.to_string()).collect(),

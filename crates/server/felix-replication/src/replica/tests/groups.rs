@@ -6,7 +6,7 @@ use felix_wire::internal::{Fence, FenceOk, ReplicaLog, ReplicateRebuild};
 
 use super::*;
 
-fn group_broker(dir: &std::path::Path) -> Arc<Broker> {
+pub(super) fn group_broker(dir: &std::path::Path) -> Arc<Broker> {
     let config = LogConfig {
         fsync_mode: FsyncMode::None,
         preallocate_segments: false,
@@ -33,7 +33,7 @@ fn group_broker(dir: &std::path::Path) -> Arc<Broker> {
     )
 }
 
-fn put(key: &str, value: &[u8]) -> Bytes {
+pub(super) fn put(key: &str, value: &[u8]) -> Bytes {
     felix_storage::cache::CacheOp::Put {
         key: key.to_string(),
         value: Bytes::copy_from_slice(value),
@@ -43,7 +43,7 @@ fn put(key: &str, value: &[u8]) -> Bytes {
     .encode()
 }
 
-fn records(generation: u64, payloads: &[Bytes]) -> ReplicateRecords {
+pub(super) fn records(generation: u64, payloads: &[Bytes]) -> ReplicateRecords {
     ReplicateRecords {
         checksum: felix_wire::internal::batch_checksum(payloads, &[], &[]),
         payloads: payloads.to_vec(),

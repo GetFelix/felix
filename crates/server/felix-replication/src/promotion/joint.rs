@@ -19,6 +19,7 @@ use std::collections::BTreeSet;
 use std::net::SocketAddr;
 
 use felix_router::{NodeRef, PriorSet, Route};
+use felix_storage::StorageId;
 use felix_storage::disk_log::{Membership, ReplicaSet};
 use felix_wire::internal::{PeerCapabilities, ReplicaSetView, SetMember};
 
@@ -33,6 +34,8 @@ use crate::peer::PeerRequester;
 pub struct Joint<'a> {
     addr_of: &'a (dyn Fn(&str) -> Option<SocketAddr> + Sync),
     prior: Option<PriorSet>,
+    local_storage: Option<StorageId>,
+    replaced: bool,
 }
 
 impl<'a> Joint<'a> {
@@ -40,7 +43,61 @@ impl<'a> Joint<'a> {
         addr_of: &'a (dyn Fn(&str) -> Option<SocketAddr> + Sync),
         prior: Option<PriorSet>,
     ) -> Self {
-        Self { addr_of, prior }
+        Self {
+            addr_of,
+            prior,
+            local_storage: None,
+            replaced: false,
+        }
+    }
+
+    /// This broker's storage identity, so a promotion can tell a copy a set
+    /// named another id for (a wipe) from one staged as a learner.
+    pub fn with_local_storage(mut self, storage: Option<StorageId>) -> Self {
+        self.local_storage = storage;
+        self
+    }
+
+    /// Whether the control plane last registered this node under another
+    /// storage id, so a copy here with no set may be one it lost.
+    pub fn with_replaced_storage(mut self, replaced: bool) -> Self {
+        self.replaced = replaced;
+        self
+    }
+
+    /// Whether this copy is one a replica would refuse to count: its kept set
+    /// marks it a learner it made itself on evidence of a wipe, or names
+    /// another storage id for it, or it holds no set on a directory that
+    /// replaced another, unless `route` is the shard's creation naming this
+    /// copy's id. A learner placement staged, named under its own id and not
+    /// marked wiped, may still lead. `PromoteNonVoter` in
+    /// `docs/formal/FelixShard.tla`.
+    pub(super) fn is_wiped_learner(
+        &self,
+        log: &felix_broker::StreamLog,
+        local: &str,
+        route: &Route,
+    ) -> bool {
+        let Some(kept) = log.replica_set() else {
+            let created_here = route.generation == 1
+                && crate::replica_set::view(route, None)
+                    .members
+                    .iter()
+                    .any(|member| {
+                        member.node_id == local
+                            && member.storage_id.is_some_and(|named| {
+                                self.local_storage == Some(StorageId::from_bytes(named))
+                            })
+                    });
+            return self.replaced && !created_here;
+        };
+        let names_other = kept.current.members.iter().any(|member| {
+            member.node == local
+                && member
+                    .storage
+                    .is_some_and(|named| self.local_storage.is_some_and(|own| named != own))
+        });
+        log.member_is_learner(local) == Some(true) && (log.member_is_wiped(local) || names_other)
     }
 }
 

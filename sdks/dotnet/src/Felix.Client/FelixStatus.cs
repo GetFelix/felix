@@ -23,7 +23,7 @@ public enum FelixStatus
     Auth = 22,
     /// <summary>No such tenant, namespace, stream or cache.</summary>
     NotFound = 23,
-    /// <summary>The start offset is no longer retained.</summary>
+    /// <summary>The start offset is not available; <see cref="FelixException.Cursor"/> says where to resume.</summary>
     Cursor = 24,
     /// <summary>No broker can serve the shard, usually while it moves.</summary>
     ShardUnavailable = 25,

@@ -271,9 +271,23 @@ expectations=(
   "FelixShardElectWipeNonVoterCountsWiped violates OneLeaderPerGeneration"
   "FelixShardElectWipeNonVoterElects violates NoLeaderBesideNonVoter"
   "FelixShardElectWipeNonVoterReadmits violates NeverReadmitted"
-  "FelixShardElectWipeNonVoterNoCatchUp violates AckedHeldByLeader"
+  "FelixShardElectWipeNonVoterNoCatchUp violates OneLeaderPerGeneration"
   "FelixShardElectWipeNonVoterFailsOver violates NoFailoverBesideNonVoter"
   "FelixShardElectWipeNonVoterPromotes violates OneLeaderPerGeneration"
+  "FelixShardElectWipeNonVoterCreates pass"
+  "FelixShardElectWipeNonVoterCreatesLearnerAcks violates AckedHeldByLeader"
+  "FelixShardElectWipeNonVoterCreateCountsEmpty violates OneLeaderPerGeneration"
+  "FelixShardElectWipeNonVoterCreatesOpens violates NoCreationBesideNonVoter"
+  "FelixShardElectWipeNonVoterCreatesReadmits violates NoFailoverAfterReadmit"
+  "FelixShardElectWipeNonVoterEvidenceOnly violates OneLeaderPerGeneration"
+  "FelixShardElectWipeNonVoterSetlessUnmarked violates AckedHeldByLeader"
+  "FelixShardElectWipeNonVoterCountersCountLearner violates CountersHeldByLeader"
+  "FelixShardElectWipeNonVoterCountersUnchecked violates CountersHeldByLeader"
+  "FelixShardElectWipeNonVoterNoCatchUpFailover violates AckedHeldByLeader"
+  "FelixShardElectWipeNonVoterEvidenceOnlyFailover violates AckedHeldByLeader"
+  "FelixShardElectWipeNonVoterGroupsKeepDropsMark violates CountersHeldByLeader"
+  "FelixShardElectWipeNonVoterIdlessCreation pass"
+  "FelixShardElectWipeNonVoterIdlessCreationExempt violates AckedHeldByLeader"
   "FelixGroups pass"
   "FelixGroupsNoCheck violates NoSkip"
   "FelixGroupsLengthOnly violates NoSkip"
@@ -349,7 +363,7 @@ fi
 # FelixShardElectSwapDrop{0,1}StoodSeveralDest run in the nightly exhaustive
 # job (tla-walk.yml).
 # So are FelixShardElectWipeNonVoter{Twice,Failover,FailoverWipesLeader,
-# WipesLeader}: each runs well over an hour on a four-core runner. Their
+# WipesLeader,Setless,Groups}: each runs well over an hour on a four-core runner. Their
 # violating twins and witnesses stay registered.
 
 # Minutes each of the longer configurations takes on a four-core CI runner,
@@ -414,7 +428,17 @@ weights=(
   "FelixShardSuspicionWipeRoutes 3"
   "FelixShardSuspicionWipeUnbacked 2"
   "FelixShardElectWipeOracle 5"
-  "FelixShardElectWipeNonVoter 20"
+  "FelixShardElectWipeNonVoter 28"
+  "FelixShardElectWipeNonVoterCreates 3"
+  "FelixShardElectWipeNonVoterCreatesReadmits 2"
+  "FelixShardElectWipeNonVoterWipesLeader 40"
+  "FelixShardElectWipeNonVoterTwice 60"
+  "FelixShardElectWipeNonVoterFailover 90"
+  "FelixShardElectWipeNonVoterFailoverWipesLeader 100"
+  "FelixShardElectWipeNonVoterSetless 120"
+  "FelixShardElectWipeNonVoterGroups 120"
+  "FelixShardElectWipeNonVoterGroupsKeepDropsMark 10"
+  "FelixShardElectWipeNonVoterIdlessCreation 6"
   "FelixShardElectSwapKeep1 27"
   "FelixShardElectSwapKeep2 6"
   "FelixShardElectSwapDrop0 43"

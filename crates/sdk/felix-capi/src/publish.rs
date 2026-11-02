@@ -629,6 +629,7 @@ pub(crate) fn spawn_write<V, T, F>(
             () = cancelled(&handle, user.as_ref()) => done.fail(Failure {
                 status: FELIX_STATUS_OUTCOME_UNKNOWN,
                 message: "the write was cancelled after it may have been sent".to_string(),
+                cursor: None,
             }),
             outcome = write => report(done, outcome),
         }

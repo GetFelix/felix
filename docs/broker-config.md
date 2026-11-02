@@ -378,7 +378,7 @@ FELIX_TENANT_PUBLISH_QUOTAS=acme:209715200:20000,batch:0:0
   batch in each), so worst-case memory is the number of subscribers times
   `subscriber_queue_max_bytes`, plus `subscriber_egress_max_bytes` per connection. With
   `subscriber_queue_max_bytes` at `0`, only queue capacity times batch size limits a subscriber's
-  queue. Set the total in production. Totals above 4 GiB are honoured: the budget then counts in
+  queue. Set the total in production, at a quarter to a third of the memory limit; a total `T` lets about `T / (subscriber_queue_max_bytes + subscriber_egress_max_bytes)` subscribers stall before a fast one is affected. It is off by default because no single number suits every machine; measured, it costs little (see the configuration reference). Totals above 4 GiB are honoured: the budget then counts in
   units of 2 bytes (4-8 GiB), 4 bytes (8-16 GiB), 8 bytes (16-32 GiB) and so on, each batch
   rounded up to a whole unit.
 - Under `block`, a subscriber that stops reading holds the shard's publishers with no timeout

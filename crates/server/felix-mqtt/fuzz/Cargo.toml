@@ -1,0 +1,36 @@
+# libFuzzer target for MQTT over WebSockets: the upgrade request and the frames
+# a client sends after it.
+#
+# These bytes come from anything that can reach the WebSocket port, before any
+# authentication, so the properties are about refusing input cleanly: decide or
+# wait for more, never panic, and give the same answer however the bytes are cut
+# into reads.
+#
+# Excluded from the workspace on purpose: `cargo-fuzz` needs nightly and links
+# libFuzzer, neither of which belongs in the default `cargo build --workspace`.
+# The unit tests in `src/ws/tests.rs` cover the same rules deterministically.
+#
+#     cargo install cargo-fuzz
+#     cargo +nightly fuzz run ws_frames -- -max_total_time=300
+[package]
+name = "felix-mqtt-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+bytes = "1"
+felix-mqtt = { path = ".." }
+
+[[bin]]
+name = "ws_frames"
+path = "fuzz_targets/ws_frames.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]

@@ -3,7 +3,8 @@
 Status: accepted in #1685 on 2026-10-31, with the decisions listed at the end.
 The packet codec, `felix-mqtt-wire`, is built (#1687), and so is the listener
 skeleton, which authenticates connections and refuses every publish and
-subscribe (#1689, `docs/mqtt-compatibility.md`). The rest is not; the work is
+subscribe (#1689, `docs/mqtt-compatibility.md`), and MQTT over WebSockets
+(#1700). The rest is not; the work is
 tracked as slices #1688 and #1690 to #1698.
 
 Devices speak MQTT, and a Felix broker cannot accept an MQTT connection today.
@@ -74,13 +75,15 @@ In:
   Available`, `Shared Subscription Available` (false), `Subscription
   Identifier`, `No Local`, `Retain As Published`, `Retain Handling`.
 - TLS, token auth, and TLS client certificates bound to the token.
+- MQTT over WebSockets (`ws` and `wss`) for browser clients, on a second socket
+  of the same listener. After the HTTP upgrade it is the same connection loop
+  over the same decoder and limits, with the same caps and auth
+  (`docs/mqtt-compatibility.md`, "Over WebSockets").
 
 Out, each refused with a reason code (5.0) or a closed connection (3.1.1), and
 listed in the compatibility page when it ships:
 
 - MQTT 3.1 (protocol level 3) and MQTT-SN.
-- MQTT over WebSockets. A gateway concern; it can come later behind its own
-  setting.
 - Shared subscriptions (`$share/...`). They map naturally onto Felix consumer
   groups, which is a later slice ([D16](#d16-shared-subscriptions)).
 - `$SYS` topics. Felix's metrics are Prometheus.

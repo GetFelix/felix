@@ -59,10 +59,19 @@ pub struct ReplicaHandler {
     /// When this replica last heard each shard's leader, from a batch or
     /// fence that carried a set. See [`Self::with_stickiness`].
     heard: parking_lot::Mutex<HashMap<felix_router::ShardKey, Instant>>,
+    /// Confirmed leaders, so a learner does not ask the control plane for
+    /// every batch.
+    confirmed_cache: crate::confirmed::ConfirmedCache,
     /// How long after hearing its leader this replica refuses a candidate.
     stickiness: Duration,
     /// Which cross-broker features the fleet has; `None` reads all as off.
     fleet: Option<Arc<crate::quorum::QuorumMarks>>,
+    /// This broker's data directory identity, to tell a set written for this
+    /// copy from one written for a copy that was wiped. See `election.rs`.
+    local_storage: Option<felix_storage::StorageId>,
+    /// Whether the control plane last registered this broker under another
+    /// identity. See `election.rs`.
+    replaced_storage: bool,
     /// Run after an incarnation check passes, to change the catalog between
     /// the check and the open.
     #[cfg(test)]
@@ -119,8 +128,11 @@ impl ReplicaHandler {
             unclean: None,
             confirmed: None,
             heard: parking_lot::Mutex::new(HashMap::new()),
+            confirmed_cache: Default::default(),
             stickiness: crate::suspicion::DEFAULT_SUSPECT_AFTER,
             fleet: None,
+            local_storage: None,
+            replaced_storage: false,
             #[cfg(test)]
             incarnation_checked: parking_lot::Mutex::new(None),
         }
@@ -148,6 +160,22 @@ impl ReplicaHandler {
     /// set a joint fence leaves answers it once no route names it.
     pub fn with_fleet(mut self, marks: Arc<crate::quorum::QuorumMarks>) -> Self {
         self.fleet = Some(marks);
+        self
+    }
+
+    /// Name this broker's storage identity, which a set naming another one
+    /// for this broker contradicts: that copy was wiped (#1331).
+    pub fn with_local_storage(mut self, storage: felix_storage::StorageId) -> Self {
+        self.local_storage = Some(storage);
+        self
+    }
+
+    /// Say the control plane last registered this broker under another
+    /// storage identity, so every shard log it creates without a kept set is
+    /// a learner of a set past generation 1 (`ReplacedIdLearner` in
+    /// `docs/formal/FelixShard.tla`).
+    pub fn with_replaced_storage(mut self, replaced: bool) -> Self {
+        self.replaced_storage = replaced;
         self
     }
 
@@ -934,6 +962,7 @@ impl ReplicaHandler {
                         "stored a replicated batch but could not advance the stream's tail",
                     );
                 }
+                self.admit_when_caught_up(&key, log_kind, &log).await;
                 metrics::record_replicated(metrics::OUTCOME_OK);
                 InternalMessage::ReplicateOk(ReplicateOk {
                     correlation_id,
@@ -1088,6 +1117,12 @@ impl ReplicaHandler {
                     ),
                 );
             }
+        }
+        if let Some(refusal) = self
+            .refuse_non_voter_fence(correlation_id, &key, log_kind, &log, &request)
+            .await
+        {
+            return refusal;
         }
         if let Some(refusal) = self
             .refuse_short_copy(
@@ -1595,7 +1630,7 @@ impl ReplicaHandler {
                 }
             }
         };
-        if crate::unclean::held(log) {
+        if crate::unclean::held(log) && !self.is_learner(log) {
             return None;
         }
         let viewed = match self.router.snapshot().get(key) {
@@ -1610,6 +1645,9 @@ impl ReplicaHandler {
                 )),
                 _ => None,
             },
+            // A view behind the sender is usual for a fence; the confirmed
+            // read below decides, refusing a generation newer than the control
+            // plane's under `joint_fence`.
             Some(_) => None,
         };
         if viewed.is_some() {
@@ -1636,11 +1674,47 @@ impl ReplicaHandler {
         sender: Option<&str>,
     ) -> Option<InternalMessage> {
         use crate::confirmed::Confirmed;
-        let confirmed = self.confirmed.as_ref()?;
-        if crate::unclean::held(log) {
+        // Under `joint_fence` a candidate's generation is in no assignment,
+        // so a copy with no promise, or one not yet re-admitted, cannot take
+        // an unconfirmed leader on the strength of an assignment it has not
+        // seen (#1331).
+        // Unread, the gate may be on: refuse as if it were. Off, or on a
+        // build that does not mark wiped copies, the read answers as before.
+        let elections = self.non_voting_gate() != Some(false);
+        let learner = self.is_learner(log);
+        if crate::unclean::held(log) && !learner {
             return None;
         }
-        match confirmed.confirmed(key).await {
+        let Some(confirmed) = self.confirmed.as_ref() else {
+            return elections.then(|| unbacked(correlation_id, key, generation));
+        };
+        // The cache saves a learner's catch-up a read per batch. Off the
+        // gate every read is live, as before, so a deposed leader is refused
+        // at once.
+        if elections && let Some(leader) = self.confirmed_cache.lookup(key, generation) {
+            return match sender {
+                Some(sender) if sender != leader => Some(promised_elsewhere(
+                    correlation_id,
+                    key,
+                    generation,
+                    &leader,
+                    Some(sender),
+                )),
+                _ => None,
+            };
+        }
+        let answer = confirmed.confirmed(key).await;
+        if elections
+            && let Confirmed::Assigned {
+                generation: assigned,
+                leader,
+            } = &answer
+            && *assigned == generation
+        {
+            self.confirmed_cache.keep(key, generation, leader);
+        }
+        match answer {
+            Confirmed::NotServed if elections => Some(unbacked(correlation_id, key, generation)),
             Confirmed::NotServed => None,
             // A missing answer backs nothing. Retryable, and nothing is
             // written, so the copy answers once the control plane does.
@@ -1682,7 +1756,12 @@ impl ReplicaHandler {
                 )),
                 _ => None,
             },
-            // Newer than the control plane: never promised before a wipe.
+            // Newer than the control plane. Without elections no copy can
+            // have promised it before a wipe; with them one may have, to a
+            // candidate the control plane never saw.
+            Confirmed::Assigned { .. } if elections => {
+                Some(unbacked(correlation_id, key, generation))
+            }
             Confirmed::Assigned { .. } => None,
         }
     }
@@ -1720,9 +1799,26 @@ impl ReplicaHandler {
     }
 
     fn joint_fence(&self) -> bool {
-        self.fleet
-            .as_ref()
-            .is_some_and(|marks| marks.fleet_supports(felix_common::fleet::JOINT_FENCE))
+        self.joint_gate() == Some(true)
+    }
+
+    /// [`Self::joint_gate`] for marking a wiped copy a learner, which also
+    /// needs this build to allow it ([`QuorumMarks::non_voting_ready`]).
+    fn non_voting_gate(&self) -> Option<bool> {
+        match &self.fleet {
+            Some(marks) if marks.non_voting_ready() => self.joint_gate(),
+            _ => Some(false),
+        }
+    }
+
+    /// Whether the fleet has `joint_fence`, or `None` while this broker has
+    /// not yet taken a registration's answer. The peer listener is bound
+    /// before registration, so the gate can be unread while requests arrive.
+    fn joint_gate(&self) -> Option<bool> {
+        match &self.fleet {
+            Some(marks) => marks.fleet_decides(felix_common::fleet::JOINT_FENCE),
+            None => Some(false),
+        }
     }
 
     /// Whether `request` is a joint fence whose set being left lists this

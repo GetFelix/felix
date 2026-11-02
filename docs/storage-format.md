@@ -711,9 +711,14 @@ set is pending the set being left.
 ```text
  0   4  magic        u32  "FLRS"
  4   2  version      u16  1
- 6   2  flags        u16  bit 0: a set being left follows; other bits must be 0
+ 6   2  flags        u16  bit 0: a set being left follows;
+                          bit 1: a wiped mark follows; other bits must be 0
  8   .  set          the current set
  .   .  leaving      the set being left, only when flags bit 0 is set
+ .   .  wiped        this copy's wiped mark, only when flags bit 1 is set:
+                       2  node_len   u16  at most 1024
+                       n  node       utf-8 node id the copy answers as
+                       1  learner    u8   1 while still a learner, else 0
  .   4  crc          u32  crc32 over everything before it
 ```
 
@@ -726,13 +731,24 @@ Each set is:
                        2  node_len   u16  at most 1024
                        n  node       utf-8 node id
                        1  flags     u8   bit 0: a storage id follows;
-                                     bit 1: learner; other bits must be 0
+                                     bit 1: learner; bit 2: wiped;
+                                     other bits must be 0
                       16  storage    the storage id the fence counts the member
                                      under, only when flags bit 0 is set
 ```
 
 A learner is listed but not counted: it is re-admitted to the set and not yet
 caught up, so it does not vote and no majority includes it.
+
+Only a copy sets the wiped bit, on its own entry, when it finds it lost what it
+held. It tells a wiped learner from a staged one, and outlasts the learner bit
+until the copy's group logs have caught up too. The file keeps the mark a
+second time, in the `wiped` section, apart from the member lists. A newer set
+can list the copy only as leaving, or not at all, and name it again later; the
+section survives all of those, and each newer set that lists the copy gets the
+mark copied onto its entry. Only re-admission ends it. A build that predates
+the mark refuses the file, as it would any unknown flag; brokers set it only
+once `joint_fence` is finalized and the build allows it.
 
 A set is refused, on write and on read, when it lists a node id twice or a
 storage id twice, or when the set being left is not older than the current one.

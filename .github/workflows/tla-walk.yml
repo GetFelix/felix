@@ -154,6 +154,8 @@ jobs:
           - FelixShardElectWipeNonVoterTwice
           - FelixShardElectWipeNonVoterFailover
           - FelixShardElectWipeNonVoterFailoverWipesLeader
+          - FelixShardElectWipeNonVoterSetless
+          - FelixShardElectWipeNonVoterGroups
           - FelixShardElectHandoff
           - FelixShardElectAdoptTwoWrites
           - FelixShardFencedAckTwoPromotions

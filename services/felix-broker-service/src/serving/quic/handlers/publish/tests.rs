@@ -185,6 +185,7 @@ fn ingress_for(leader: &str, servable: bool) -> IngressRouter {
         routing: Default::default(),
         incarnation: 0,
         fence_storage_ids: Default::default(),
+        member_storage_ids: Default::default(),
         pending_set: None,
     };
     let assignments: HashMap<crate::shards::ShardKey, crate::shards::watch::ShardAssignment> =

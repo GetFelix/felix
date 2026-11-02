@@ -205,7 +205,7 @@ where
     // directory as it was.
     let mut shutdown = Box::pin(shutdown);
     let registered = tokio::select! {
-        registered = membership::registered_incarnation(
+        registered = membership::registered(
             &config,
             durable_storage_configured,
             &membership_client,
@@ -218,7 +218,9 @@ where
             return Ok(());
         }
     };
-    let (broker, durable_storage, storage_id, unclean) = storage::open(&config, registered)?;
+    let (broker, durable_storage, storage_id, unclean, replaced_storage) =
+        storage::open(&config, registered.as_ref())?;
+    quorum_marks.set_local_storage(storage_id, replaced_storage);
     // Before anything can lead or answer a fence: a copy this broker led
     // before a crash that may have cost it acknowledged records is not one it
     // can lead from or vouch for (#1295).

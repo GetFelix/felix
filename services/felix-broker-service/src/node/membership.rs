@@ -121,18 +121,19 @@ pub(super) fn spawn(
     }
 }
 
-/// The incarnation the control plane holds for this node, for
-/// `storage::open` to judge whether the data directory is older than the
-/// node's last registration. Asked only of a cluster member with durable
-/// storage, and asked until it answers, before any store opens: nothing this
-/// broker announces may carry the directory's id until then. `None` from a
-/// broker that is not asked or a node never registered.
-pub(super) async fn registered_incarnation(
+/// The control plane's record of this node's last registration, for
+/// `storage::open` to judge whether the data directory is older than it and
+/// whether the node held copies under another storage id. Asked only of a
+/// cluster member with durable storage, and asked until it answers, before
+/// any store opens: nothing this broker announces may carry the directory's
+/// id until then. `None` from a broker that is not asked or a node never
+/// registered.
+pub(super) async fn registered(
     config: &BrokerConfig,
     durable: bool,
     client: &reqwest::Client,
     credential: &Option<NodeCredential>,
-) -> anyhow::Result<Option<u64>> {
+) -> anyhow::Result<Option<membership::Registered>> {
     let (true, Some(membership), Some(base_url), Some(credential)) = (
         durable,
         &config.membership,
@@ -141,8 +142,7 @@ pub(super) async fn registered_incarnation(
     ) else {
         return Ok(None);
     };
-    membership::await_registered_incarnation(client, base_url, &membership.node_id, credential)
-        .await
+    membership::await_registered(client, base_url, &membership.node_id, credential).await
 }
 
 /// The initial lease: conservative, and invalid until the first heartbeat.

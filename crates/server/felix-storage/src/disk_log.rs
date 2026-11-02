@@ -869,8 +869,9 @@ impl DiskLog {
             replica.hold_at_commit = hold;
             replica_state::store(&dir, &replica)?;
         }
-        let (replica_set, (accepted_generation, accepted_leader)) =
+        let (kept_set, (accepted_generation, accepted_leader)) =
             set::reconcile(&dir, &label, ballot::reconcile(&dir, &replica)?)?;
+        let (replica_set, wiped) = kept_set.map_or((None, None), |(set, wiped)| (Some(set), wiped));
         let set_generation = replica_set.as_ref().map_or(0, |set| set.current.generation);
         let epochs_dir = dir.clone();
         let segments = SegmentSet::new(
@@ -926,6 +927,7 @@ impl DiskLog {
             ballot: RwLock::new((accepted_generation, accepted_leader)),
             set_generation: AtomicU64::new(set_generation),
             replica_set: RwLock::new(replica_set),
+            wiped: RwLock::new(wiped),
             commit_offset: AtomicU64::new(replica.commit_offset),
             commit_persisted: AtomicU64::new(replica.commit_offset),
             // Set before retention starts below, so a sweep after a restart
@@ -1309,6 +1311,9 @@ struct LogInner {
     set_generation: AtomicU64,
     /// The replica set this log counts. Written only under `replica_persisted`.
     replica_set: RwLock<Option<ReplicaSet>>,
+    /// This copy's wiped mark, kept with the set but apart from it. Written
+    /// only under `replica_persisted`.
+    wiped: RwLock<Option<set::WipedMark>>,
     /// One past the last record known committed. Raised in memory at once and
     /// written through or behind with the log's fsync mode; see
     /// [`DiskLog::advance_commit_offset`].

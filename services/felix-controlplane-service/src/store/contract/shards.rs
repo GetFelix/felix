@@ -51,6 +51,7 @@ pub(crate) fn assignment(shard: u32, leader: &str) -> ShardAssignment {
         move_reason: None,
         incarnation: 0,
         fence_storage_ids: Default::default(),
+        member_storage_ids: Default::default(),
         pending_set: None,
     }
 }
@@ -168,6 +169,7 @@ pub(crate) async fn run_shard_contract(store: Arc<dyn ControlPlaneStore>) {
     a_consistency_change_fences_placement(store).await;
     why_a_move_started_is_persisted(store).await;
     fence_storage_ids_are_persisted_until_the_next_write(store).await;
+    member_storage_ids_are_persisted_until_the_next_write(store).await;
     a_pending_set_is_persisted_until_the_next_write(store).await;
     pausing_moves_is_persisted(store).await;
     super::adoption::run(store).await;
@@ -196,6 +198,7 @@ fn cache_assignment(shard: u32, leader: &str) -> ShardAssignment {
         move_reason: None,
         incarnation: 0,
         fence_storage_ids: Default::default(),
+        member_storage_ids: Default::default(),
         pending_set: None,
     }
 }
@@ -309,6 +312,7 @@ pub(crate) async fn an_assignment_racing_a_recreate_names_the_stream_it_landed_o
         move_reason: None,
         incarnation: 0,
         fence_storage_ids: Default::default(),
+        member_storage_ids: Default::default(),
         pending_set: None,
     };
     store.create_stream(stream(1)).await.expect("create");
@@ -721,6 +725,34 @@ async fn why_a_move_started_is_persisted(store: &dyn ControlPlaneStore) {
     assert_eq!(written.move_reason, None);
     let read = store.get_shard_assignment(&key(0)).await.expect("get");
     assert_eq!(read.move_reason, None);
+}
+
+/// The members' registered identities are read back with the assignment, and
+/// the next write that carries none leaves none behind.
+async fn member_storage_ids_are_persisted_until_the_next_write(store: &dyn ControlPlaneStore) {
+    clear(store).await;
+    let ids: std::collections::BTreeMap<String, String> = [
+        ("broker-x".to_string(), "a".repeat(32)),
+        ("broker-y".to_string(), "b".repeat(32)),
+    ]
+    .into();
+    let mut placed = assignment(0, "broker-x");
+    placed.replicas = vec!["broker-y".to_string()];
+    placed.member_storage_ids = ids.clone();
+    let written = store.put_shard_assignment(placed).await.expect("place");
+    assert_eq!(written.member_storage_ids, ids);
+    let read = store.get_shard_assignment(&key(0)).await.expect("get");
+    assert_eq!(read.member_storage_ids, ids);
+    let listed = store.list_shard_assignments().await.expect("list");
+    assert_eq!(listed[0].member_storage_ids, ids);
+
+    let next = store
+        .put_shard_assignment(assignment(0, "broker-x"))
+        .await
+        .expect("next write");
+    assert!(next.member_storage_ids.is_empty());
+    let read = store.get_shard_assignment(&key(0)).await.expect("get");
+    assert!(read.member_storage_ids.is_empty());
 }
 
 /// The identities a promotion's assignment names are read back with it, and
@@ -1448,6 +1480,7 @@ async fn deleting_a_stream_or_cache_takes_its_shard_assignments_with_it(
         move_reason: None,
         incarnation: 0,
         fence_storage_ids: Default::default(),
+        member_storage_ids: Default::default(),
         pending_set: None,
     };
     for shard in 0..2 {
@@ -1724,6 +1757,7 @@ pub(crate) async fn an_assignment_names_the_incarnation_it_was_written_for(
         // Ignored: the store reads the stream's.
         incarnation: 99,
         fence_storage_ids: Default::default(),
+        member_storage_ids: Default::default(),
         pending_set: None,
     };
     let key = StreamKey {
@@ -1835,6 +1869,7 @@ pub(crate) async fn a_recreated_stream_never_repeats_a_generation(store: &dyn Co
         move_reason: None,
         incarnation: 0,
         fence_storage_ids: Default::default(),
+        member_storage_ids: Default::default(),
         pending_set: None,
     };
     let key = StreamKey {

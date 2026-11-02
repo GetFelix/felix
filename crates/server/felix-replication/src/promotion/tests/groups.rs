@@ -112,9 +112,11 @@ fn group_replicas(size: usize, capabilities: PeerCapabilities) -> Replicas {
                 capabilities,
                 reachable: true,
                 unreachable_logs: Vec::new(),
+                unfetchable_logs: Vec::new(),
                 storage: Some(storage_of(id)),
                 group_storage: None,
                 refuses: None,
+                recorded: true,
                 _dir: dir,
             },
         );
@@ -608,4 +610,152 @@ async fn a_replica_without_consumer_groups_counts_as_empty() {
         }
     );
     assert_eq!(replicas.sent(Kind::Fence).len(), 3);
+}
+
+/// **A leader whose copy is marked wiped does not count its own group logs**
+/// toward the group majority: re-admitted on its stream log, they may still
+/// lack a cursor commit a majority took. Of three it waits for both others.
+#[test]
+fn a_wiped_leaders_own_group_logs_do_not_count() {
+    assert_eq!(super::super::group_answers_needed(2, true), 1);
+    assert_eq!(super::super::group_answers_needed(2, false), 2);
+    assert_eq!(super::super::group_answers_needed(4, false), 3);
+}
+
+/// Promote this broker on a set of three.
+async fn promote(replicas: &Replicas, leader: &Arc<Broker>) -> Outcome {
+    fence_shard(
+        replicas,
+        leader,
+        LEADER,
+        &key(),
+        &route_of_size(3),
+        true,
+        None,
+    )
+    .await
+}
+
+/// The group leader, its copy re-admitted on the stream log at generation 4
+/// but still marked wiped: its group logs have not caught up.
+async fn wiped_group_leader() -> (Arc<Broker>, TempDir) {
+    let (leader, dir) = group_leader().await;
+    let log = leader
+        .shard_log(LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    log.accept_generation(4, Some("broker-old"))
+        .await
+        .expect("ballot");
+    let members = [LEADER, "broker-b", "broker-c"]
+        .into_iter()
+        .map(|node| felix_storage::disk_log::Member {
+            node: node.to_string(),
+            storage: None,
+            learner: false,
+            wiped: node == LEADER,
+        })
+        .collect();
+    log.accept_set(felix_storage::disk_log::ReplicaSet {
+        current: felix_storage::disk_log::Membership {
+            generation: 4,
+            members,
+        },
+        leaving: None,
+    })
+    .await
+    .expect("set");
+    (leader, dir)
+}
+
+/// **A wiped leader keeps its mark through a promotion that fails, and the
+/// retry still waits for both other copies' group logs.** c holds a dead
+/// letter and the cursor past it; b lags. The first try takes c's group logs
+/// and the fetch fails after the leader kept its route's set. Had that set
+/// write dropped the mark, the retry would count the leader's empty group
+/// logs and could open on b's alone (`GroupLogs` in
+/// `docs/formal/FelixShard.tla`).
+#[tokio::test]
+async fn a_wiped_leader_keeps_its_mark_through_a_failed_group_take() {
+    let mut replicas = group_replicas(3, WITH_GROUPS);
+    replicas.electing = true;
+    for node in ["broker-b", "broker-c"] {
+        holds(
+            &replicas,
+            3,
+            node,
+            LogKind::Stream,
+            4,
+            &[Bytes::from_static(b"a")],
+        )
+        .await;
+    }
+    holds(
+        &replicas,
+        3,
+        "broker-c",
+        LogKind::GroupDeadLetters,
+        4,
+        &[dead("workers", 1)],
+    )
+    .await;
+    holds(
+        &replicas,
+        3,
+        "broker-c",
+        LogKind::GroupCursors,
+        4,
+        &[cursor("workers", 2, 1, 4, 0)],
+    )
+    .await;
+    replicas.get_mut("broker-c").unfetchable_logs = vec![ReplicaLog::GroupDeadLetters];
+    let (leader, _dir) = wiped_group_leader().await;
+
+    let outcome = promote(&replicas, &leader).await;
+    assert!(matches!(outcome, Outcome::Pending { .. }), "{outcome:?}");
+    let log = leader
+        .shard_log(LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    assert_eq!(log.set_generation(), PROMOTED, "the route's set was kept");
+    assert!(
+        log.member_is_wiped(LEADER),
+        "the set write dropped the mark"
+    );
+
+    replicas.get_mut("broker-c").unfetchable_logs.clear();
+    let outcome = promote(&replicas, &leader).await;
+    assert_eq!(
+        outcome,
+        Outcome::Fenced {
+            caught_up_from: Some("broker-c".to_string())
+        }
+    );
+    assert_eq!(serves(&leader, "workers").await, (Some(2), vec![1]));
+}
+
+/// **A wiped leader that no replica answers on its group logs stays
+/// pending** rather than serve its own, which may hold none of what a
+/// majority took. One whose copy is not marked serves its own pair.
+#[tokio::test]
+async fn a_wiped_leader_with_no_group_answer_stays_pending() {
+    let mut replicas = group_replicas(3, WITH_GROUPS);
+    for node in ["broker-b", "broker-c"] {
+        replicas.get_mut(node).unreachable_logs = vec![ReplicaLog::GroupDeadLetters];
+    }
+
+    let (wiped, _dir) = wiped_group_leader().await;
+    let outcome = promote(&replicas, &wiped).await;
+    let Outcome::Pending { why, .. } = &outcome else {
+        panic!("a wiped leader served its own group logs: {outcome:?}");
+    };
+    assert!(why.contains("wiped"), "{why}");
+
+    let (clean, _dir) = group_leader().await;
+    assert_eq!(
+        promote(&replicas, &clean).await,
+        Outcome::Fenced {
+            caught_up_from: None
+        }
+    );
 }

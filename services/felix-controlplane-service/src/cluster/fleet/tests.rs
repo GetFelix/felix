@@ -219,12 +219,25 @@ fn joint_fence_is_refused_while_a_serving_broker_lacks_election() {
         // Down brokers do not count.
         at("c", NodeLifecycle::Down, &[]),
     ];
-    let message = conflict(check_election(&nodes, "joint_fence", false));
+    let message = conflict(check_election(&nodes, "joint_fence", false, true));
     assert!(
         message.contains("broker(s) b do not offer the ELECTION"),
         "{message}"
     );
-    assert!(check_election(&nodes[..1], "joint_fence", false).is_ok());
+    assert!(check_election(&nodes[..1], "joint_fence", false, true).is_ok());
+}
+
+#[test]
+fn joint_fence_is_refused_until_it_is_ready() {
+    let nodes = [offering_election("a", &["joint_fence"])];
+    let message = conflict(check_election(&nodes, "joint_fence", false, false));
+    assert!(
+        message.contains("cannot finalize joint_fence") && message.contains("re-admit"),
+        "{message}"
+    );
+    assert!(check_election(&nodes, "joint_fence", false, true).is_ok());
+    // The flag gates only joint_fence.
+    assert!(check_election(&nodes, "replica_election", true, false).is_ok());
 }
 
 #[test]
@@ -233,24 +246,24 @@ fn replica_election_is_refused_while_a_serving_broker_lacks_election() {
         offering_election("a", &["replica_election"]),
         at("b", NodeLifecycle::Draining, &["replica_election"]),
     ];
-    let message = conflict(check_election(&nodes, "replica_election", true));
+    let message = conflict(check_election(&nodes, "replica_election", true, true));
     assert!(
         message.contains("broker(s) b do not offer the ELECTION"),
         "{message}"
     );
-    assert!(check_election(&nodes[..1], "replica_election", true).is_ok());
+    assert!(check_election(&nodes[..1], "replica_election", true, true).is_ok());
 }
 
 #[test]
 fn replica_election_is_refused_below_the_metadata_level() {
     let nodes = [offering_election("a", &["replica_election"])];
-    let message = conflict(check_election(&nodes, "replica_election", false));
+    let message = conflict(check_election(&nodes, "replica_election", false, true));
     assert!(
         message.contains("metadata level") && message.contains("does not have"),
         "{message}"
     );
     // joint_fence needs no metadata level.
-    assert!(check_election(&nodes, "joint_fence", false).is_ok());
+    assert!(check_election(&nodes, "joint_fence", false, true).is_ok());
 }
 
 #[test]
@@ -276,5 +289,5 @@ fn replica_election_is_refused_until_joint_fence_and_the_rest_are_finalized() {
 #[test]
 fn other_features_pass_the_election_check() {
     let nodes = [at("a", NodeLifecycle::Live, &["majority_ack"])];
-    assert!(check_election(&nodes, "majority_ack", false).is_ok());
+    assert!(check_election(&nodes, "majority_ack", false, false).is_ok());
 }

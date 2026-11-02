@@ -14,10 +14,11 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use felix_mqtt::{AuthError, Authenticator, MqttService, Principal};
+use felix_mqtt::{AuthError, Authenticator, MqttService, Principal, ws};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpSocket};
 use tokio::runtime::Runtime;
-use tokio::sync::Semaphore;
+use tokio::sync::{Mutex, Semaphore};
 use tokio_rustls::TlsAcceptor;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
@@ -98,6 +99,8 @@ impl Authenticator for BrokerMqttAuth {
 pub struct MqttListener {
     runtime: OwnedRuntime,
     listener: TcpListener,
+    /// The WebSocket socket, when one is configured.
+    ws: Option<(TcpListener, ws::Settings)>,
     tls: Option<TlsAcceptor>,
     service: MqttService,
     max_connections: usize,
@@ -127,23 +130,24 @@ impl MqttListener {
         // Owned from here, so a failed bind drops it without panicking inside
         // the broker's own runtime.
         let runtime = OwnedRuntime(Some(runtime));
-        // The socket registers with the runtime that will accept on it.
-        let listener = {
-            let _enter = runtime.handle().enter();
-            let socket = if config.listen.is_ipv4() {
-                TcpSocket::new_v4()
-            } else {
-                TcpSocket::new_v6()
-            }?;
-            socket.set_reuseaddr(true)?;
-            socket
-                .bind(config.listen)
-                .and_then(|()| socket.listen(LISTEN_BACKLOG))
-                .with_context(|| format!("bind the MQTT listener on {}", config.listen))?
-        };
+        // The sockets register with the runtime that will accept on them.
+        let _enter = runtime.handle().enter();
+        let listener = bind_socket(config.listen, "MQTT")?;
+        let ws = config
+            .ws
+            .as_ref()
+            .map(|ws| {
+                Ok::<_, anyhow::Error>((
+                    bind_socket(ws.listen, "MQTT WebSocket")?,
+                    ws.settings.clone(),
+                ))
+            })
+            .transpose()?;
+        drop(_enter);
         Ok(Self {
             runtime,
             listener,
+            ws,
             tls,
             service: MqttService::new(auth, config.settings.clone()),
             max_connections: config.max_connections,
@@ -154,6 +158,14 @@ impl MqttListener {
 
     pub fn local_addr(&self) -> Result<std::net::SocketAddr> {
         Ok(self.listener.local_addr()?)
+    }
+
+    /// Where WebSocket clients connect, when that is configured.
+    pub fn ws_local_addr(&self) -> Result<Option<std::net::SocketAddr>> {
+        self.ws
+            .as_ref()
+            .map(|(listener, _)| Ok(listener.local_addr()?))
+            .transpose()
     }
 
     /// Start accepting on the listener's own runtime and return its accept
@@ -170,21 +182,23 @@ impl MqttListener {
         let Self {
             runtime,
             listener,
+            ws,
             tls,
             service,
             max_connections,
             per_ip,
             connect_rate,
         } = self;
-        let accept = Accept {
-            listener,
+        // Both sockets draw on one pool of slots, one per-address count and
+        // one connect rate, so a WebSocket client costs what any other does.
+        let shared = Arc::new(Accept {
             tls,
             service,
             slots: Arc::new(Semaphore::new(max_connections)),
             max_connections,
             per_ip,
-            rate: RateGate::new(connect_rate),
-        };
+            rate: Mutex::new(RateGate::new(connect_rate)),
+        });
         let task = runtime.handle().spawn({
             let shutdown = shutdown.clone();
             let connections = connections.clone();
@@ -196,7 +210,24 @@ impl MqttListener {
                         _ = ready.cancelled() => {}
                     }
                 }
-                accept.serve(shutdown, connections).await;
+                let plain = Arc::clone(&shared).serve(
+                    listener,
+                    Transport::Plain,
+                    shutdown.clone(),
+                    connections.clone(),
+                );
+                match ws {
+                    None => plain.await,
+                    Some((ws_listener, settings)) => {
+                        let ws = shared.serve(
+                            ws_listener,
+                            Transport::WebSocket(settings),
+                            shutdown,
+                            connections,
+                        );
+                        tokio::join!(plain, ws);
+                    }
+                }
             }
         });
         // The runtime lives until every connection it carries is done. Dropped
@@ -230,30 +261,43 @@ impl Drop for OwnedRuntime {
     }
 }
 
+/// What a socket carries.
+enum Transport {
+    Plain,
+    WebSocket(ws::Settings),
+}
+
+/// What the listener's sockets share.
 struct Accept {
-    listener: TcpListener,
     tls: Option<TlsAcceptor>,
     service: MqttService,
     slots: Arc<Semaphore>,
     max_connections: usize,
     per_ip: Arc<PerIpLimiter>,
-    rate: RateGate,
+    rate: Mutex<RateGate>,
 }
 
 impl Accept {
-    async fn serve(mut self, shutdown: CancellationToken, connections: TaskTracker) {
+    async fn serve(
+        self: Arc<Self>,
+        listener: TcpListener,
+        transport: Transport,
+        shutdown: CancellationToken,
+        connections: TaskTracker,
+    ) {
+        let transport = Arc::new(transport);
         loop {
             // Held back before `accept`, so a storm waits in the kernel's
             // queue and not in this process.
             tokio::select! {
                 biased;
                 _ = shutdown.cancelled() => return,
-                _ = self.rate.admit() => {}
+                _ = async { self.rate.lock().await.admit().await } => {}
             }
             let accepted = tokio::select! {
                 biased;
                 _ = shutdown.cancelled() => return,
-                accepted = self.listener.accept() => accepted,
+                accepted = listener.accept() => accepted,
             };
             let (socket, peer) = match accepted {
                 Ok(accepted) => accepted,
@@ -278,16 +322,15 @@ impl Accept {
                 continue;
             };
             let _ = socket.set_nodelay(true);
-            let tls = self.tls.clone();
-            let service = self.service.clone();
+            let this = Arc::clone(&self);
+            let transport = Arc::clone(&transport);
             let shutdown = shutdown.clone();
             connections.spawn(async move {
                 let _slot = slot;
                 let _per_ip = per_ip;
-                match tls {
+                match this.tls.clone() {
                     None => {
-                        service
-                            .serve_connection(socket, Vec::new(), shutdown)
+                        this.serve_stream(socket, Vec::new(), &transport, peer, shutdown)
                             .await;
                     }
                     Some(tls) => {
@@ -306,7 +349,8 @@ impl Accept {
                                     .peer_certificates()
                                     .map(|chain| chain.iter().map(|der| der.to_vec()).collect())
                                     .unwrap_or_default();
-                                service.serve_connection(stream, peer_certs, shutdown).await;
+                                this.serve_stream(stream, peer_certs, &transport, peer, shutdown)
+                                    .await;
                             }
                             Ok(Err(err)) => {
                                 tracing::debug!(%peer, error = %err, "mqtt TLS handshake failed");
@@ -324,6 +368,60 @@ impl Accept {
             });
         }
     }
+
+    /// Serve MQTT on `stream`, upgrading it to a WebSocket first when that is
+    /// what the socket carries.
+    async fn serve_stream<S>(
+        &self,
+        stream: S,
+        peer_certs: Vec<Vec<u8>>,
+        transport: &Transport,
+        peer: std::net::SocketAddr,
+        shutdown: CancellationToken,
+    ) where
+        S: AsyncRead + AsyncWrite + Unpin + Send,
+    {
+        match transport {
+            Transport::Plain => {
+                self.service
+                    .serve_connection(stream, peer_certs, shutdown)
+                    .await;
+            }
+            Transport::WebSocket(settings) => {
+                let upgraded = tokio::select! {
+                    biased;
+                    _ = shutdown.cancelled() => return,
+                    upgraded = ws::accept(stream, settings) => upgraded,
+                };
+                match upgraded {
+                    Ok(stream) => {
+                        self.service
+                            .serve_connection(stream, peer_certs, shutdown)
+                            .await;
+                    }
+                    Err(refusal) => {
+                        tracing::debug!(%peer, %refusal, "mqtt websocket upgrade refused");
+                        metrics::counter!("felix_mqtt_refused_total", "reason" => refusal.reason)
+                            .increment(1);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A listening socket on `addr`. Call with the listener's runtime entered.
+fn bind_socket(addr: std::net::SocketAddr, what: &str) -> Result<TcpListener> {
+    let socket = if addr.is_ipv4() {
+        TcpSocket::new_v4()
+    } else {
+        TcpSocket::new_v6()
+    }?;
+    socket.set_reuseaddr(true)?;
+    socket
+        .bind(addr)
+        .and_then(|()| socket.listen(LISTEN_BACKLOG))
+        .with_context(|| format!("bind the {what} listener on {addr}"))
 }
 
 #[cfg(test)]

@@ -111,6 +111,18 @@ struct NodeView {
 struct NodeStatusView {
     incarnation: u64,
     lifecycle: String,
+    /// Absent from a broker that registered before storage ids.
+    #[serde(default)]
+    storage_id: Option<String>,
+}
+
+/// What the control plane holds from a node's last registration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Registered {
+    pub incarnation: u64,
+    /// The data directory's identity it registered with, as 32 lowercase
+    /// hex digits. `None` from a broker that predates storage ids.
+    pub storage_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -274,14 +286,14 @@ pub async fn register(
     })
 }
 
-/// The incarnation the control plane has `node_id` registered at, or `None`
+/// The control plane's record of `node_id`'s last registration, or `None`
 /// when it has never registered it.
-pub async fn registered_incarnation(
+pub async fn registered(
     client: &reqwest::Client,
     base_url: &str,
     node_id: &str,
     credential: &crate::cluster::credential::NodeCredential,
-) -> std::result::Result<Option<u64>, MembershipError> {
+) -> std::result::Result<Option<Registered>, MembershipError> {
     let response = client
         .get(format!(
             "{}/v1/nodes/{node_id}",
@@ -314,23 +326,26 @@ pub async fn registered_incarnation(
         .await
         .context("decode node lookup response")
         .map_err(MembershipError::Unavailable)?;
-    Ok(Some(detail.node.status.incarnation))
+    Ok(Some(Registered {
+        incarnation: detail.node.status.incarnation,
+        storage_id: detail.node.status.storage_id,
+    }))
 }
 
-/// [`registered_incarnation`], asked until the control plane answers. Fails
-/// only when it refuses. The broker announces no storage id until this
-/// returns, so an outage holds startup rather than letting a directory older
-/// than the node's last registration be counted on.
-pub async fn await_registered_incarnation(
+/// [`registered`], asked until the control plane answers. Fails only when
+/// it refuses. The broker announces no storage id until this returns, so an
+/// outage holds startup rather than letting a directory older than the
+/// node's last registration be counted on.
+pub async fn await_registered(
     client: &reqwest::Client,
     base_url: &str,
     node_id: &str,
     credential: &crate::cluster::credential::NodeCredential,
-) -> Result<Option<u64>> {
+) -> Result<Option<Registered>> {
     let mut attempt = 0u64;
     loop {
-        match registered_incarnation(client, base_url, node_id, credential).await {
-            Ok(incarnation) => return Ok(incarnation),
+        match registered(client, base_url, node_id, credential).await {
+            Ok(registered) => return Ok(registered),
             Err(MembershipError::Rejected(message)) => return Err(anyhow!(message)),
             Err(MembershipError::Unavailable(err)) => {
                 attempt += 1;

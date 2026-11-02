@@ -320,6 +320,13 @@ public class CommitFixtureTests
             await below.ReadAsync(Wait);
         });
         Assert.Equal(FelixStatus.Cursor, cursor.Status);
+
+        // A reader refused below the floor learns where to resume and who trimmed.
+        Assert.NotNull(cursor.Cursor);
+        Assert.Equal(CursorReason.TooOld, cursor.Cursor.Reason);
+        Assert.Equal(tail - 2, cursor.Cursor.Requested);
+        Assert.Equal(tail - 1, cursor.Cursor.Available);
+        Assert.Equal(Bytes("who"), cursor.Cursor.TrimHeaders!.Value.ToArray());
     }
 
     [TrimFixtureFact]

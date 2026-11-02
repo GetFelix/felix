@@ -152,6 +152,7 @@ fn denied() -> Failure {
     Failure {
         status: FELIX_STATUS_AUTH,
         message: "denied".to_string(),
+        cursor: None,
     }
 }
 

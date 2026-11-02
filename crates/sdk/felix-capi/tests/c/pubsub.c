@@ -1114,6 +1114,26 @@ struct reader {
   bool offsets_present;
 };
 
+/* A subscribe refused with FELIX_STATUS_CURSOR, with the details read inside
+   the callback, where they are valid. */
+struct cursor_waiter {
+  struct waiter w;
+  bool found;
+  FelixCursorError cursor;
+  uint8_t headers[32];
+};
+
+static void on_subscribe_cursor(void *user_data, FelixStatus status,
+                                const char *message, FelixSubscription *sub) {
+  struct cursor_waiter *c = user_data;
+  c->found = felix_last_cursor_error(&c->cursor);
+  if (c->found && c->cursor.has_trim_headers &&
+      c->cursor.trim_headers_len <= sizeof c->headers) {
+    memcpy(c->headers, c->cursor.trim_headers, c->cursor.trim_headers_len);
+  }
+  finish(&c->w, status, message, sub);
+}
+
 static void on_read(void *user_data, FelixStatus status, const char *message,
                     FelixEvent *event) {
   struct reader *r = user_data;
@@ -3835,6 +3855,24 @@ static void head_trims(const struct fixture *f) {
             !t.o.has_offset && t.o.oldest == tail - 1,
         "a trim below the floor gave %d, trimmed %d, has_offset %d", (int)status,
         (int)t.o.trimmed, (int)t.o.has_offset);
+  /* A reader refused below the floor learns where to resume and who trimmed. */
+  {
+    struct cursor_waiter c;
+    memset(&c, 0, sizeof c);
+    waiter_init(&c.w);
+    started = felix_client_subscribe(client, f->tenant, f->ns, stream, 0,
+                                     FELIX_START_OFFSET, tail - 2, NULL,
+                                     on_subscribe_cursor, &c);
+    status = started == FELIX_STATUS_OK ? wait_for(&c.w, WAIT_MS) : started;
+    CHECK(status == FELIX_STATUS_CURSOR && c.found &&
+              c.cursor.reason == FELIX_CURSOR_TOO_OLD &&
+              c.cursor.requested == tail - 2 && c.cursor.available == tail - 1 &&
+              c.cursor.has_trim_headers && c.cursor.trim_headers_len == 3 &&
+              memcmp(c.headers, "who", 3) == 0,
+          "a subscribe below the floor gave %d, found %d, available %" PRIu64,
+          (int)status, (int)c.found, c.cursor.available);
+    waiter_destroy(&c.w);
+  }
   /* Past its own record is a plain error. */
   status = c_trim(client, f, stream, tail + 6, tail + 1, NULL, &t);
   CHECK(status == FELIX_STATUS_ERROR && !t.has_outcome,
