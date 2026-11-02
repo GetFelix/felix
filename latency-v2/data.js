@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793605103123,
+  "lastUpdate": 1793606442260,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -53064,6 +53064,72 @@ window.BENCHMARK_DATA = {
             "range": "102.17",
             "unit": "us",
             "extra": "trials: 5\nmedian: 315.00\nmean: 346.40\nstdev: 102.17\ncv: 29.50%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "61d36e843ea86233fdda2cb486fa3e919a77e91e",
+          "message": "ci(release): fix the aarch64 Node addon link under zig (#1759)\n\nThe Felix nightly (run 41388153150) and the v0.7.0-preview.2 release both failed on \"Node addon (aarch64-unknown-linux-gnu)\", so the `nightly` tag never moved and npm publishing was skipped. The failure is not RUSTFLAGS: with #1752 applied it still fails with `unsupported linker arg: --fix-cortex-a53-843419`. v0.7.0-preview.1 passed on Rust 1.97.1; the leg broke when the toolchain moved to 1.99.1, whose rustc passes `-Wl,--fix-cortex-a53-843419` on aarch64 Linux, and zig rejects it.\n\nnapi CLI 2 always installs its own zig linker wrapper and has no hook to drop a flag, so this puts a small `zig` shim ahead of the real one on PATH for that one leg. The shim removes only that argument and execs the real zig.\n\nProof: a throwaway workflow on this branch ran the aarch64 leg (build plus the glibc 2.28 check) green, run 41397987131. The workflow was removed again before this PR.\n\nDesign calls:\n- Shim on PATH instead of switching to cargo-zigbuild or pinning an older toolchain: smallest change, touches only the failing leg, easy to delete when napi or zig handles the flag.",
+          "timestamp": "2026-11-01T23:51:18-08:00",
+          "tree_id": "489dc4c0b2407c2a770e95d4f9fa4950c245751a",
+          "url": "https://github.com/GetFelix/felix/commit/61d36e843ea86233fdda2cb486fa3e919a77e91e"
+        },
+        "date": 1793606435423,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 152,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 152.00\nmean: 151.80\nstdev: 1.30\ncv: 0.86%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 219,
+            "range": "6.34",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 219.00\nmean: 222.20\nstdev: 6.34\ncv: 2.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 305,
+            "range": "370.27",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 305.00\nmean: 465.80\nstdev: 370.27\ncv: 79.49%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 200,
+            "range": "1.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 200.00\nmean: 199.20\nstdev: 1.10\ncv: 0.55%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 399,
+            "range": "11.58",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 399.00\nmean: 393.00\nstdev: 11.58\ncv: 2.95%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 604,
+            "range": "90.22",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 604.00\nmean: 616.20\nstdev: 90.22\ncv: 14.64%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
