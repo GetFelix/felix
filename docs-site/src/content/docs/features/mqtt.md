@@ -71,12 +71,15 @@ The prefix is a plain byte prefix: `plant/` catches `plant/7/temp` and not `plan
 Only a durable stream can be mounted, and none of a tenant's mounts can overlap,
 whichever namespace the streams are in. The control plane refuses a mount that
 does with `409` and names the other stream. Changing or clearing a mount moves no
-records, and deleting the stream frees its prefix. The
+records, and deleting the stream frees its prefix. A topic under a mount must
+still fit the listener's topic limits (`FELIX_MQTT_MAX_TOPIC_BYTES`, 1024 bytes
+by default, and 16 levels), so a very long or deep mount leaves little room or
+none. The
 [control plane API](/api/control-plane-api/) has the exact rules.
 
 A publish to a topic under no mount is never dropped silently. A 3.1.1 client's
-connection closes. A 5.0 client at QoS 1 gets a `PUBACK` with reason 0x90 (topic
-name invalid) and keeps its connection; at QoS 0 it gets a `DISCONNECT` with the
+connection closes. A 5.0 client at QoS 1 gets a `PUBACK` and at QoS 2 a `PUBREC`, each
+with reason 0x90 (topic name invalid), and keeps its connection; at QoS 0 it gets a `DISCONNECT` with the
 same reason. Each is counted in `felix_mqtt_refused_total{reason="unmounted"}`.
 A publish to a mounted topic is refused as before, because writing to the stream
 is the next piece of work.

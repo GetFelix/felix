@@ -42,7 +42,8 @@ pub(crate) async fn run_mount_contract(store: Arc<dyn ControlPlaneStore>) {
     a_batch_is_refused_whole_for_an_overlap(store.as_ref()).await;
 }
 
-/// Two creates with overlapping prefixes at once: exactly one wins.
+/// Overlapping mount writes at once, whether two creates, a create and a
+/// patch, or two patches: exactly one wins.
 pub(crate) async fn run_mount_race_contract(store: Arc<dyn ControlPlaneStore>, rounds: usize) {
     for round in 0..rounds {
         let tenant = format!("race-t{round}");
@@ -90,6 +91,79 @@ pub(crate) async fn run_mount_race_contract(store: Arc<dyn ControlPlaneStore>, r
             stored += usize::from(store.get_stream(&key).await.is_ok());
         }
         assert_eq!(stored, 1, "round {round}: one stream is stored");
+
+        // A create against a patch in another namespace.
+        let plain = unmounted(&store, &tenant, NAMESPACES[0], "plain").await;
+        let patching = tokio::spawn({
+            let store = Arc::clone(&store);
+            let plain = plain.clone();
+            async move { store.patch_stream(&plain, mount_patch("belt/")).await }
+        });
+        let mut other = stream("other", Some("belt/2/"));
+        other.tenant_id = tenant.clone();
+        other.namespace = NAMESPACES[1].to_string();
+        let creating = tokio::spawn({
+            let store = Arc::clone(&store);
+            async move { store.create_stream(other).await }
+        });
+        let (patched, created) = (patching.await.expect("task"), creating.await.expect("task"));
+        exactly_one_wins(round, "create against patch", &patched, &created);
+
+        // Two patches of unmounted streams in different namespaces.
+        let first = unmounted(&store, &tenant, NAMESPACES[0], "first").await;
+        let second = unmounted(&store, &tenant, NAMESPACES[1], "second").await;
+        let patch = |target: StreamKey, prefix: &'static str| {
+            let store = Arc::clone(&store);
+            tokio::spawn(async move { store.patch_stream(&target, mount_patch(prefix)).await })
+        };
+        let a = patch(first, "gate/");
+        let b = patch(second, "gate/1/");
+        let (a, b) = (a.await.expect("task"), b.await.expect("task"));
+        exactly_one_wins(round, "two patches", &a, &b);
+    }
+}
+
+fn exactly_one_wins<T: std::fmt::Debug>(
+    round: usize,
+    what: &str,
+    a: &Result<T, StoreError>,
+    b: &Result<T, StoreError>,
+) {
+    match (a, b) {
+        (Ok(_), Err(err)) | (Err(err), Ok(_)) => {
+            assert!(
+                mount::refusal(err).is_some(),
+                "round {round}, {what}: {err:?}"
+            );
+        }
+        other => panic!("round {round}, {what}: exactly one must win, got {other:?}"),
+    }
+}
+
+async fn unmounted(
+    store: &Arc<dyn ControlPlaneStore>,
+    tenant: &str,
+    namespace: &str,
+    name: &str,
+) -> StreamKey {
+    let mut plain = stream(name, None);
+    plain.tenant_id = tenant.to_string();
+    plain.namespace = namespace.to_string();
+    store.create_stream(plain).await.expect("create unmounted");
+    StreamKey {
+        tenant_id: tenant.to_string(),
+        namespace: namespace.to_string(),
+        stream: name.to_string(),
+    }
+}
+
+fn mount_patch(prefix: &str) -> StreamPatchRequest {
+    StreamPatchRequest {
+        retention: None,
+        consistency: None,
+        delivery: None,
+        durable: None,
+        mount: Some(Some(prefix.to_string())),
     }
 }
 

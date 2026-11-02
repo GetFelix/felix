@@ -677,12 +677,15 @@ The prefix is a plain byte prefix. `plant/` catches `plant/7/temp` and not
 `plant` or `plants/7`; `plant` catches `plants/7` too. It does not have to end
 in `/`, though it usually should. It is refused with `400` when it:
 
-- is empty or longer than 1024 bytes,
+- is empty or longer than 1024 bytes (the listener's own topic limits, 1024
+  bytes and 16 levels by default, also apply to the topics under the mount, so a
+  very long or deep prefix leaves little room or none),
 - contains `+`, `#` or a control character (NUL included), which no topic name
   can hold,
 - starts with `$`, which MQTT reserves for the broker's own topics, or
-- is set on a stream that is not `durable`. Only durable streams can be
-  mounted, because MQTT clients rely on the acknowledgement meaning the message
+- is set on a stream that is not `durable`, when the stream is created. A
+  `PATCH` that mounts a non-durable stream is `409`. Only durable streams can
+  be mounted, because MQTT clients rely on the acknowledgement meaning the message
   is stored.
 
 A tenant's mounts may not overlap, whichever namespaces the streams are in: no

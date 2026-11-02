@@ -473,7 +473,11 @@ A durable stream may be mounted at an MQTT topic prefix with `"mount":
 Omitted, the stream has no mount, and its answers leave the field out. The
 prefix is a plain byte prefix that is not empty, is at most 1024 bytes, has no
 `+`, `#` or control characters and does not start with `$`; anything else is
-`400`, and so is a mount on a stream that is not `durable`. A tenant's mounts
+`400`. Creating a mounted stream that is not `durable` is `400` too, and a
+`PATCH` that mounts one is `409`. A mount can be as long as 1024 bytes, but a
+topic under it must still fit the MQTT listener's own topic limits (1024 bytes
+and 16 levels by default), so a very long or deep mount leaves little room or
+none. A tenant's mounts
 may not overlap, in any namespace: a prefix that is, or begins with, another
 stream's is `409`, and the message names that stream. A `PATCH` sets a mount
 with a string, changes it with another and clears it with `null`; leaving

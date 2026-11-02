@@ -6,7 +6,8 @@
 //! `plants/x`.
 use super::stream::StreamKey;
 
-/// The longest prefix, the same bound the MQTT listener puts on a topic name.
+/// The longest prefix. The listener's topic limits are configurable and apply
+/// to the whole topic, so a prefix this long can leave no room under it.
 pub(crate) const MAX_MOUNT_BYTES: usize = 1024;
 
 /// Starts every refusal [`overlap`] and [`needs_durable`] build, so an API
