@@ -219,7 +219,9 @@ pub(crate) fn set_before(
         .filter(|pending| pending.generation == route.generation)
         && let Some(before) = before
     {
-        return Ok(Some(recorded_leaving(pending, before, stored, prior)));
+        return Ok(Some(recorded_leaving(
+            route, pending, before, stored, prior,
+        )));
     }
     // What this leader kept beside its set under `joint_fence`. A set kept
     // at this generation without it may have been kept before the feature
@@ -259,9 +261,12 @@ pub(crate) fn set_before(
 
 /// A pending change's set being left, at generation `before`. The other
 /// sources only fill in what `PendingChange` does not carry, each member's
-/// copy and learner mark, and only when they name exactly its members.
-/// Without one, the members count by node id alone.
+/// copy and learner mark, and only when they name exactly its members. The
+/// watch comes first: a set this leader kept may have been kept without
+/// copies. A member no source names a copy for takes the one the route
+/// names, if any.
 fn recorded_leaving(
+    route: &Route,
     pending: &PendingChange,
     before: u64,
     stored: Option<&ReplicaSet>,
@@ -276,13 +281,13 @@ fn recorded_leaving(
                 .iter()
                 .all(|member| recorded.contains(member.node.as_str()))
     };
-    let kept_leaving = stored.and_then(|stored| stored.leaving.clone());
     let watched = prior
-        .filter(|prior| prior.generation == before + 1)
+        .filter(|prior| prior.generation == route.generation)
         .and_then(|prior| prior.before.as_deref())
         .map(|set| crate::replica_set::placed(set, before));
+    let kept_leaving = stored.and_then(|stored| stored.leaving.clone());
     let logged = stored.map(|stored| stored.current.clone());
-    [kept_leaving, watched, logged]
+    let mut set = [watched, kept_leaving, logged]
         .into_iter()
         .flatten()
         .find(same)
@@ -297,7 +302,13 @@ fn recorded_leaving(
                     wiped: false,
                 })
                 .collect(),
-        })
+        });
+    for member in &mut set.members {
+        if member.storage.is_none() {
+            member.storage = crate::replica_set::named_storage(route, &member.node);
+        }
+    }
+    set
 }
 
 /// The fence for `route` under `joint_fence`: the set it leaves, and the
