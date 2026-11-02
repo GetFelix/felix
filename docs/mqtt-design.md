@@ -1,7 +1,8 @@
 # MQTT ingress: design
 
 Status: accepted in #1685 on 2026-10-31, with the decisions listed at the end.
-Nothing here is built yet; the work is tracked as slices #1687 to #1698.
+The packet codec, `felix-mqtt-wire`, is built (#1687). The listener and the rest
+are not; the work is tracked as slices #1688 to #1698.
 
 Devices speak MQTT, and a Felix broker cannot accept an MQTT connection today.
 This page designs a native MQTT listener, built the way the Kafka listener is
@@ -121,7 +122,8 @@ The codec is split from the listener:
 - `crates/protocol/felix-mqtt-wire` is the codec only: 3.1.1 and 5.0, limits
   enforced during decode, zero-copy into `bytes::Bytes`. It depends on `bytes`
   and `thiserror` and nothing else, no tokio and no `felix-*` crate. It is
-  internal and stays off crates.io, like the other internal crates.
+  internal and stays off crates.io, like the other internal crates. Its licence
+  is Apache-2.0, as for the rest of `crates/protocol/`.
 - `crates/server/felix-mqtt` is the listener on the broker: sessions, topic
   mapping, QoS and auth, as `felix-kafka` is for Kafka.
 

@@ -5,7 +5,7 @@ deployable binaries are in [`../services`](../services).
 
 | Group | Crates | What they are |
 |---|---|---|
-| [`protocol/`](protocol) | `felix-wire`, `felix-transport` | How a client and a broker talk: the frame codec and the QUIC layer under it. |
+| [`protocol/`](protocol) | `felix-wire`, `felix-transport`, `felix-mqtt-wire` | How peers talk: the frame codec, the QUIC layer under it, and the MQTT packet codec. |
 | [`server/`](server) | `felix-broker`, `felix-storage`, `felix-router`, `felix-replication`, `felix-authz`, `felix-common` | The libraries the broker and control plane are built from. |
 | [`sdk/`](sdk) | `felix-client`, `felix-python`, `felix-typescript`, `felix-capi` | What an application links to use Felix. |
 | [`testing/`](testing) | `felix-cluster`, `felix-conformance`, `felix-loadgen` | Harnesses, the client conformance kit, and the load generator. |
@@ -18,5 +18,5 @@ shares; if none fits, that is worth a conversation before adding another group.
 Dependencies point one way: `sdk` and `server` depend on `protocol`, `testing`
 depends on whatever it exercises, `tools` depends on `sdk` and `testing`, and
 nothing in `protocol` depends on anything else here. The libraries published to
-crates.io are `felix-wire`, `felix-transport` and `felix-client`; `felixctl` and
+crates.io are `felix-wire`, `felix-transport` and `felix-client` (`felix-mqtt-wire` is internal); `felixctl` and
 the `felix-loadgen` it links are publishable tools.

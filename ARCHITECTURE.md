@@ -32,7 +32,7 @@ The workspace is grouped by role. [`crates/README.md`](crates/README.md) has a t
 crate; this section says what is inside the important ones.
 
 ```
-crates/protocol/   how peers talk            felix-wire, felix-transport
+crates/protocol/   how peers talk            felix-wire, felix-transport, felix-mqtt-wire
 crates/server/     what the services use     felix-broker, felix-storage, felix-router,
                                              felix-replication, felix-authz, felix-common
 crates/sdk/        what applications link    felix-client, felix-python, felix-typescript

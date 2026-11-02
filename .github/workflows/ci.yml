@@ -1123,7 +1123,7 @@ jobs:
     timeout-minutes: 45
     env:
       CARGO_TERM_COLOR: always
-      # Twelve targets; keep the whole job inside a few minutes.
+      # Thirteen targets; keep the whole job inside a few minutes.
       FUZZ_SECONDS: "30"
     steps:
       - name: Checkout
@@ -1146,6 +1146,7 @@ jobs:
           workspaces: |
             .
             crates/protocol/felix-wire/fuzz
+            crates/protocol/felix-mqtt-wire/fuzz
             crates/server/felix-storage/fuzz
             crates/server/felix-kafka/fuzz
 
@@ -1172,6 +1173,7 @@ jobs:
           name: fuzz-artifacts
           path: |
             crates/protocol/felix-wire/fuzz/artifacts/
+            crates/protocol/felix-mqtt-wire/fuzz/artifacts/
             crates/server/felix-storage/fuzz/artifacts/
             crates/server/felix-kafka/fuzz/artifacts/
           if-no-files-found: ignore
