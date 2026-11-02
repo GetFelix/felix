@@ -6,11 +6,14 @@ TLS by default, and over WebSockets for browsers when `FELIX_MQTT_WS_LISTEN` is
 also set. The design for the whole feature is in
 [mqtt-design.md](mqtt-design.md); this page says what works today.
 
-**Today the listener only authenticates connections.** A device can connect with
-a Felix token, keep the connection alive and disconnect. Every `PUBLISH` and
-`SUBSCRIBE` is refused, because mounting streams at topics and the publish and
-subscribe paths come in later changes. With `FELIX_MQTT_LISTEN` unset, the broker
-binds nothing, builds no runtime and runs exactly the code it ran before.
+**Today the listener authenticates connections and knows which stream a topic
+belongs to.** A device can connect with a Felix token, keep the connection alive
+and disconnect. Streams can be mounted at topic prefixes (see
+[Mounting streams](#mounting-streams)), and a `PUBLISH` is checked against the
+mounts, but every `PUBLISH` and `SUBSCRIBE` is still refused, because the
+publish and subscribe paths come in later changes. With `FELIX_MQTT_LISTEN`
+unset, the broker binds nothing, builds no runtime and runs exactly the code it
+ran before.
 
 The listener is in `crates/server/felix-mqtt`, the packet codec in
 `crates/protocol/felix-mqtt-wire`, and the broker wires it up in
@@ -107,13 +110,74 @@ extensions, so there is no compression.
 Upgrades that are refused are counted in `felix_mqtt_refused_total` with a
 reason that starts with `ws_`.
 
+## Mounting streams
+
+MQTT topics are made up by devices as they publish; Felix streams are created
+on purpose. A *mount* ties the two together: it sends every topic that starts
+with a prefix to one durable stream. Mounting stream `telemetry` at `plant/`
+means `plant/7/line/3/temp` belongs to `telemetry`. Mount a stream when you
+create it or later, through the control plane:
+
+```bash
+curl -sS -X POST "$CP/v1/tenants/my-tenant/namespaces/plant/streams" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{
+    "stream": "telemetry", "kind": "Stream", "shards": 4, "durable": true,
+    "retention": { "max_age_seconds": null, "max_size_bytes": null },
+    "consistency": "Leader", "delivery": "AtLeastOnce", "mount": "plant/" }'
+```
+
+`$CP` is the control plane's address (`http://localhost:8443` for a local one)
+and `$TOKEN` a Felix token with `stream.manage` on the stream. To move a mount
+later, `PATCH` the stream with `{"mount": "factory/"}`; `{"mount": null}`
+clears it. Changing a mount moves no records.
+
+- The prefix is a plain byte prefix, so `plant/` does not catch `plant` or
+  `plants/7`. End it with `/` unless you mean otherwise.
+- Only a durable stream can be mounted.
+- A tenant's mounts cannot overlap, even across namespaces. A prefix that is, or
+  begins with, another's is refused, so a topic never has two streams to go to.
+- A prefix cannot be empty, hold `+`, `#` or a control character, run past 1024
+  bytes, or start with `$` (MQTT keeps those topics for the broker).
+- Deleting a stream frees its prefix.
+
+The full rules, errors and Raft upgrade requirement are in the
+[control plane documentation](control-plane.md#mounting-a-stream-at-an-mqtt-topic-prefix).
+Each broker learns the mounts with the rest of the stream catalog, so a new
+mount reaches the listener within one catalog sync interval. Each tenant sees
+only its own mounts.
+
+## Publishing
+
+A `PUBLISH` is resolved before anything else. The broker finds the mount that is
+the longest prefix of the topic name and, from the full topic name, the shard of
+the stream the message would go to. Every message on one topic goes to one shard,
+so the topic keeps its order. The topic name is checked too: it must not be
+empty, hold `+`, `#` or NUL, or be over 65535 bytes (the listener's own limit,
+`FELIX_MQTT_MAX_TOPIC_BYTES`, is lower and applies first).
+
+Writing the message to the stream is not built yet, so a `PUBLISH` to a mounted
+topic is still refused. The answer depends on whether the topic is under a mount:
+
+| Topic | 3.1.1 | 5.0, QoS 1 | 5.0, QoS 2 | 5.0, QoS 0 |
+|---|---|---|---|---|
+| Under no mount | The connection closes. | `PUBACK`, reason 0x90 (topic name invalid). The connection stays open. | `PUBREC`, reason 0x90. | `DISCONNECT`, reason 0x90, then the connection closes. |
+| Under a mount (not built yet) | The connection closes. | `PUBACK`, reason 0x87 (not authorized). | `PUBREC`, reason 0x87. | `DISCONNECT`, reason 0x87, then the connection closes. |
+| An invalid name | The connection closes. | `DISCONNECT`, reason 0x90, then the connection closes. | the same | the same |
+
+3.1.1 has no way to refuse one message, so its connection closes, as the
+specification asks of a server that cannot accept a `PUBLISH`. An unmounted
+topic is never dropped silently: it is counted in
+`felix_mqtt_refused_total{reason="unmounted"}`, an invalid name under
+`invalid_topic_name`, and a publish to a mounted topic under
+`publish_unsupported`.
+
 ## After connecting
 
 | Packet | Answer |
 |---|---|
 | `PINGREQ` | `PINGRESP` |
 | `DISCONNECT` | The connection closes. |
-| `PUBLISH` | 5.0, QoS 1 and 2: `PUBACK` or `PUBREC` with reason 0x87 (not authorized). 5.0 QoS 0 and all of 3.1.1: the connection closes, because those cannot say no per message. |
+| `PUBLISH` | Checked against the tenant's mounts; see [Publishing](#publishing). Always refused for now. |
 | `SUBSCRIBE` | `SUBACK` refusing every filter (5.0: 0x87, 3.1.1: 0x80). |
 | `UNSUBSCRIBE` | `UNSUBACK`. Nothing was subscribed. |
 | `CONNECT` again, `AUTH`, or a packet only a server sends | A protocol error: the connection closes. |
@@ -143,7 +207,7 @@ clients.
 
 ## Not built yet
 
-Mounting streams at topic prefixes, publishing (QoS 0, 1 and 2), subscribing,
+Writing published messages to the mounted stream (QoS 0, 1 and 2), subscribing,
 retained messages, persistent sessions, will messages, shared subscriptions and
 topic-level grants. The order they land in is in
 [mqtt-design.md](mqtt-design.md#implementation-slices).
