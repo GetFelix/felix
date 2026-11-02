@@ -204,6 +204,7 @@ async fn a_watch_ends_when_its_credential_is_revoked() -> Result<()> {
             None,
             100,
         ),
+        expires_at: i64::MAX,
     };
 
     // Held for the test: quinn closes a connection once its last handle goes,

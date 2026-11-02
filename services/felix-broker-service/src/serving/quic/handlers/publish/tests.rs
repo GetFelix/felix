@@ -126,6 +126,7 @@ fn make_auth_ctx(tenant_id: &str, perms: &[&str]) -> AuthContext {
             None,
             0,
         ),
+        expires_at: i64::MAX,
     }
 }
 

@@ -1,0 +1,30 @@
+[package]
+name = "felix-mqtt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "MQTT 3.1.1 and 5.0 listener for a Felix broker"
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["felix", "mqtt"]
+categories = ["network-programming", "asynchronous"]
+# Built into the broker service, not consumed from a registry.
+publish = false
+
+[dependencies]
+async-trait = { workspace = true }
+bytes = { workspace = true }
+felix-mqtt-wire = { path = "../../protocol/felix-mqtt-wire", version = "0.7.0-preview.2" }
+metrics = { workspace = true }
+tokio = { workspace = true, features = ["io-util"] }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["io-util", "test-util"] }
+
+[lints]
+workspace = true

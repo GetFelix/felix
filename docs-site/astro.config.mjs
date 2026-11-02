@@ -196,6 +196,7 @@ export default defineConfig({
             { label: 'Atomic Commits', slug: 'features/atomic-commits' },
             { label: 'Distributed Cache', slug: 'features/cache' },
             { label: 'Kafka Compatibility', slug: 'features/kafka' },
+            { label: 'MQTT', slug: 'features/mqtt' },
             { label: 'Performance Tuning', slug: 'features/performance' },
             { label: 'Performance & Platform Notes', slug: 'features/performance-platform-notes' },
             { label: 'Benchmarks', slug: 'features/benchmarks' },

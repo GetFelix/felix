@@ -1108,6 +1108,8 @@ dependencies = [
  "felix-controlplane-service",
  "felix-kafka",
  "felix-loadgen",
+ "felix-mqtt",
+ "felix-mqtt-wire",
  "felix-replication",
  "felix-router",
  "felix-storage",
@@ -1349,6 +1351,20 @@ dependencies = [
  "rustls",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "felix-mqtt"
+version = "0.7.0-preview.2"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "felix-mqtt-wire",
+ "metrics",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

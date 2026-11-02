@@ -369,6 +369,7 @@ where
         },
     )
     .await?;
+    let mqtt = listeners::bind_mqtt(&client_tls, &auth)?;
     let mut accept_tasks = listeners::spawn_accept_loops(
         &quic_servers,
         listeners::AcceptLoops {
@@ -391,6 +392,15 @@ where
     if let Some(kafka) = kafka {
         accept_tasks.push(listeners::spawn_kafka(
             kafka,
+            &accept_shutdown,
+            &connections,
+            &seeded,
+            gate_readiness_on_sync,
+        ));
+    }
+    if let Some(mqtt) = mqtt {
+        accept_tasks.push(listeners::spawn_mqtt(
+            mqtt,
             &accept_shutdown,
             &connections,
             &seeded,

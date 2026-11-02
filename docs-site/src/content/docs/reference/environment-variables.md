@@ -2214,6 +2214,19 @@ absent. They are listed in that script rather than here.
 | `FELIX_SHUTDOWN_DRAIN_TIMEOUT_MS` | `25000` | Budget for draining in-flight requests after SIGTERM before tasks are cancelled. |
 | `FELIX_SHUTDOWN_PREDRAIN_MS` | `5000` | How long to keep serving after readiness flips to draining, so load balancers remove this instance before the listener closes. `0` skips it. |
 | `FELIX_REGION_ID` | `local` | Region this instance reports. |
+| `FELIX_MQTT_LISTEN` | unset | `ip:port` the MQTT listener binds (MQTT 3.1.1 and 5.0). Unset turns the listener off: nothing is bound and no runtime is built. See [MQTT](/features/mqtt/). |
+| `FELIX_MQTT_TLS` | `true` | Serve TLS on the MQTT listener with the broker's client certificate. `false` serves plain TCP: tokens cross the network in clear text. |
+| `FELIX_MQTT_ANONYMOUS_TENANT` | unset | Development switch: an MQTT connection that sends no username and password acts as this tenant. A connection that sends a wrong token is still refused. Leave unset in production. |
+| `FELIX_MQTT_WORKER_THREADS` | `2` | Threads in the MQTT listener's own runtime. A connection flood spends these, not the threads serving QUIC. |
+| `FELIX_MQTT_MAX_CONNECTIONS` | `100000` | MQTT connections served at once. The next one is closed on arrival and counted in `felix_mqtt_refused_total{reason="connection_limit"}`. |
+| `FELIX_MQTT_MAX_CONNECTIONS_PER_IP` | `1024` | MQTT connections one source IP may hold, checked before the total. Higher than Kafka's because device fleets often share one NAT address. `0` is unlimited. Refusals are counted under `reason="per_ip_limit"`. |
+| `FELIX_MQTT_CONNECT_RATE` | `2000` | New MQTT connections accepted per second. A reconnect storm waits in the kernel's accept queue instead of in memory. `0` is unlimited. |
+| `FELIX_MQTT_AUTH_TIMEOUT_MS` | `10000` | How long an MQTT connection has to send a valid `CONNECT`. Until it does, a packet over 64 KiB closes it. Counted under `reason="auth_timeout"` and `reason="unauthenticated_frame_size"`. |
+| `FELIX_MQTT_MAX_PACKET_BYTES` | `1048576` | Largest MQTT packet. A larger one closes the connection. Sent to 5.0 clients as `Maximum Packet Size`. |
+| `FELIX_MQTT_MAX_TOPIC_BYTES` | `1024` | Longest MQTT topic name or filter, in bytes. |
+| `FELIX_MQTT_MAX_TOPIC_LEVELS` | `16` | Most `/`-separated levels in an MQTT topic name or filter. |
+| `FELIX_MQTT_MAX_SUBSCRIPTIONS` | `64` | Most filters in one MQTT `SUBSCRIBE`. |
+| `FELIX_MQTT_KEEPALIVE_MAX_SECS` | `600` | Longest MQTT keepalive the broker honours. A client that asks for more, or for none, gets this one. |
 | `FELIX_REGION_BRIDGES` | unset | Directional region allowlist as comma-separated `source>dest` pairs, e.g. `eu-west-1>us-east-1`. A two-way bridge is two pairs. On the control plane it says where a stream created with a `region` may have copies: its own region and any it has a bridge to. Unset keeps such a stream in its own region. Streams without a region are placed anywhere either way. A malformed pair fails startup. Set the same value on every broker. |
 | `FELIX_BOOTSTRAP_ENABLED` | `false` | Enables the first-run bootstrap endpoints. Leave off once credentials exist. |
 | `FELIX_BOOTSTRAP_TOKEN` | unset | Token the bootstrap endpoints require. |

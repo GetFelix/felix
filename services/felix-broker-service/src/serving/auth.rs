@@ -122,6 +122,7 @@ impl BrokerAuth {
         let claims = self.verifier.verify(&tenant, token)?;
         let matcher = PermissionMatcher::from_strings(&claims.perms)?;
         let actor = claims.act.map(|actor| actor.sub);
+        let expires_at = claims.exp;
         let revocable = Revocable::new(
             Arc::clone(&self.key_store.revocations),
             tenant_id.to_string(),
@@ -140,6 +141,7 @@ impl BrokerAuth {
             subject: claims.sub,
             actor,
             revocable,
+            expires_at,
         })
     }
 }
@@ -162,6 +164,8 @@ pub struct AuthContext {
     pub publisher: Option<bytes::Bytes>,
     /// What ends this session when its principal is revoked.
     pub revocable: Revocable,
+    /// When the token stops being valid (`exp`, seconds since the epoch).
+    pub expires_at: i64,
 }
 
 impl AuthContext {
