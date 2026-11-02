@@ -325,8 +325,9 @@ decides who serves, finds two brokers serving.
 
 **The followers' half.** Every broker pings each broker that leads a shard
 it follows, four times per `FELIX_LEADER_SUSPECT_AFTER_MS` (5 s by default),
-with `Ping` on the peer connection's control lane, answered from the
-leader's serving runtime (`docs/internal-protocol.md`, "Pinging a leader").
+with `Ping` on the peer connection's control lane. The leader answers it at
+once, never behind a slow fence, from its serving runtime
+(`docs/internal-protocol.md`, "Pinging a leader").
 A leader that has not answered for the whole window is named in the
 follower's next heartbeat, which goes at once rather than an interval later.
 A leader first watched gets a whole window, and a peer that did not offer
@@ -797,9 +798,10 @@ not, the copy would keep its storage id and a lagging view's old creation
 would look the same as the new one, so the copy does not rely on that.
 
 No peer request waits on the read
-([#1791](https://github.com/GetFelix/felix/issues/1791)). A peer lane
-answers one request at a time, so a control-plane round trip there would
-hold up every other shard's fence or batch queued behind it. Instead a
+([#1791](https://github.com/GetFelix/felix/issues/1791)). A fence that
+waited on a control-plane round trip could outlast the leader's request
+timeout, and it would hold one of its stream's control slots meanwhile
+(see "A slow fence does not hold up a read round or a ping"). Instead a
 background task reads for the shard, and the copy decides from the last
 answer it holds. With no fresh answer it refuses with `StaleRoute`,
 retryably, and the leader's retry finds the answer (`ConfirmedReads` in
@@ -1938,6 +1940,21 @@ not the stream's: it has at most one exchange outstanding per follower and log.
 > `a_stalled_handler_does_not_wedge_replication_on_its_connection`,
 > `the_listener_gives_up_a_stream_whose_handler_overran`, and in the cluster suite
 > `forwarded_quorum_publishes_from_every_broker_do_not_time_out`.
+
+**A slow fence does not hold up a read round or a ping.** Fences, tail
+fetches, pre-votes and pings share one control stream per peer connection.
+A broker runs them side by side and answers each as it finishes. Otherwise
+a burst of shard creates queues read-round fences (one per follower per read
+round; confirmed cache reads share rounds) and pings behind the new shards'
+promotion fences, and a queue longer than `FELIX_LEADER_SUSPECT_AFTER_MS` reads as a dead leader
+(#1796). The orderings the protocol relies on are all kept by the requester,
+which waits for an answer before anything that depends on it: the fence before
+the tail fetch, the fence before the first batch at a new generation, and one
+exchange per follower and log. Two fences for one shard could already run at
+once, from two leaders or over two connections, and the log's ballot settles
+them under its own lock. See `docs/internal-protocol.md`, "The transport".
+
+> `a_read_round_fence_and_a_ping_do_not_wait_behind_promotion_fences`.
 
 Catch-up for a new or lagging follower is a bounded `read_range` from the leader,
 with sealed-segment checksums to verify wholesale rather than record by record,

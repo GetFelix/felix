@@ -604,6 +604,218 @@ async fn the_fence_is_not_queued_behind_slow_requests() {
     listener.stop().await;
 }
 
+/// The stream name [`SlowPromotions`] holds fences for.
+const PROMOTING: &str = "promoting";
+
+/// Holds every fence for [`PROMOTING`] until `release` has permits, as a
+/// follower slow to persist a new shard's ballot would, and answers any other
+/// fence at once.
+struct SlowPromotions {
+    release: tokio::sync::Semaphore,
+}
+
+#[async_trait::async_trait]
+impl PeerRequestHandler for SlowPromotions {
+    async fn handle(&self, request: InternalMessage) -> InternalMessage {
+        let InternalMessage::Fence(fence) = request else {
+            panic!("only fences are sent here, got {:?}", request.kind());
+        };
+        if fence.shard.stream == PROMOTING {
+            let _ = self.release.acquire().await.expect("open").forget();
+        }
+        InternalMessage::FenceOk(felix_wire::internal::FenceOk {
+            correlation_id: fence.correlation_id,
+            log_end: fence.shard.shard.into(),
+            commit_offset: 0,
+            last_generation: 0,
+        })
+    }
+}
+
+fn fence_for(stream: &str, number: u32) -> InternalMessage {
+    InternalMessage::Fence(Fence {
+        correlation_id: 0,
+        shard: ShardRef {
+            stream: stream.to_string(),
+            shard: number,
+            ..shard()
+        },
+        log: ReplicaLog::Stream,
+        election: None,
+    })
+}
+
+/// **A read round's fence and a ping do not wait behind promotion fences**
+/// (#1796). Both share the control stream with the fences a new leader sends
+/// for every shard it is promoted on, and a follower slow to take those must
+/// still confirm a read and answer a ping at once, or a long enough queue
+/// reads as a dead leader.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_read_round_fence_and_a_ping_do_not_wait_behind_promotion_fences() {
+    let config = PeerTransportConfig {
+        request_timeout: Duration::from_secs(10),
+        ..config()
+    };
+    let handler = Arc::new(SlowPromotions {
+        release: tokio::sync::Semaphore::new(0),
+    });
+    let listener = Listener::start_on(PEER, Arc::clone(&handler) as _, config.clone()).await;
+    let pool = pool(config);
+    pool.capabilities(PEER, listener.addr)
+        .await
+        .expect("handshake");
+
+    // Hundreds, as a burst of shard creates sends.
+    let mut promotions = Vec::new();
+    for shard in 0..300 {
+        let pool = Arc::clone(&pool);
+        let addr = listener.addr;
+        promotions.push(tokio::spawn(async move {
+            pool.request(PEER, addr, fence_for(PROMOTING, shard)).await
+        }));
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Without the fix this waits out the 10 s request timeout; 2 s leaves a
+    // loaded runner room.
+    let bound = Duration::from_secs(2);
+    let read_round = tokio::time::timeout(bound, pool.request(PEER, listener.addr, fence()))
+        .await
+        .expect("the read round's fence waited behind promotion fences")
+        .expect("fence");
+    assert!(
+        matches!(read_round, InternalMessage::FenceOk(_)),
+        "{read_round:?}"
+    );
+    assert_eq!(
+        crate::suspicion::ping(&pool, PEER, listener.addr, bound).await,
+        crate::suspicion::Answer::Pong,
+        "the ping waited behind promotion fences"
+    );
+
+    // Each held fence still gets its own answer once it finishes.
+    handler.release.add_permits(promotions.len());
+    for (shard, promotion) in promotions.into_iter().enumerate() {
+        match promotion.await.expect("join") {
+            Ok(InternalMessage::FenceOk(ok)) => assert_eq!(ok.log_end, shard as u64),
+            other => panic!("promotion fence {shard}: {other:?}"),
+        }
+    }
+    pool.shutdown().await;
+    listener.stop().await;
+}
+
+/// **Past its limit a stream's control request is refused, and the stream
+/// reads on** (#1796). The listener holds at most
+/// [`server::MAX_CONTROLS_PER_STREAM`] fences, fetches and pre-votes per
+/// stream; the next one is answered `Overload` at once instead of parking the
+/// read loop, so a ping behind it is still answered.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_control_request_past_the_limit_is_refused_and_the_stream_reads_on() {
+    use felix_wire::internal::{Ping, Pong, ReplicateError};
+
+    let bound = Duration::from_secs(5);
+    let answer = async |recv: &mut quinn::RecvStream, waited_for: &str| match tokio::time::timeout(
+        bound,
+        read_frame(recv),
+    )
+    .await
+    {
+        Ok(Ok(Incoming::Message(answer))) => answer,
+        Ok(_) => panic!("the stream ended or sent an unknown kind"),
+        Err(_) => panic!("{waited_for}"),
+    };
+
+    let handler = Arc::new(SlowPromotions {
+        release: tokio::sync::Semaphore::new(0),
+    });
+    let listener = Listener::start_on(PEER, Arc::clone(&handler) as _, config()).await;
+    let client = QuicClient::bind(
+        "127.0.0.1:0".parse().expect("addr"),
+        crate::peer::tls::client_config(None).expect("client config"),
+        TransportConfig::default(),
+    )
+    .expect("bind");
+    let connection = client
+        .connect(listener.addr, crate::peer::tls::INTERNAL_SERVER_NAME)
+        .await
+        .expect("connect");
+    let (mut send, mut recv) = connection.open_bi().await.expect("open");
+
+    let limit = server::MAX_CONTROLS_PER_STREAM as u64;
+    for id in 1..=limit {
+        let mut held = fence_for(PROMOTING, id as u32);
+        if let InternalMessage::Fence(fence) = &mut held {
+            fence.correlation_id = id;
+        }
+        write_frame(&mut send, &held).await.expect("write");
+    }
+    let mut refused = fence_for("other", 0);
+    if let InternalMessage::Fence(fence) = &mut refused {
+        fence.correlation_id = limit + 1;
+    }
+    write_frame(&mut send, &refused).await.expect("write");
+    write_frame(
+        &mut send,
+        &InternalMessage::Ping(Ping {
+            correlation_id: limit + 2,
+        }),
+    )
+    .await
+    .expect("write");
+
+    // Nothing is answered before both, since every fence is held.
+    let mut answered = Vec::new();
+    for _ in 0..2 {
+        answered.push(answer(&mut recv, "the stream stopped reading at the limit").await);
+    }
+    answered.sort_by_key(InternalMessage::correlation_id);
+    let InternalMessage::ReplicateError(ReplicateError {
+        correlation_id,
+        code: ErrorCode::Overload,
+        ..
+    }) = &answered[0]
+    else {
+        panic!("expected an Overload refusal, got {:?}", answered[0]);
+    };
+    assert_eq!(*correlation_id, limit + 1);
+    assert!(
+        matches!(answered[1], InternalMessage::Pong(Pong { correlation_id }) if correlation_id == limit + 2),
+        "{:?}",
+        answered[1]
+    );
+
+    // The held fences each get their answer, and free their places.
+    handler.release.add_permits(server::MAX_CONTROLS_PER_STREAM);
+    let mut ids = std::collections::BTreeSet::new();
+    for _ in 0..limit {
+        let InternalMessage::FenceOk(ok) =
+            answer(&mut recv, "a held fence was never answered").await
+        else {
+            panic!("a held fence was not answered FenceOk");
+        };
+        assert_eq!(
+            ok.log_end, ok.correlation_id,
+            "an answer went to the wrong fence"
+        );
+        ids.insert(ok.correlation_id);
+    }
+    assert_eq!(ids, (1..=limit).collect());
+    let mut after = fence_for("other", 0);
+    if let InternalMessage::Fence(fence) = &mut after {
+        fence.correlation_id = limit + 3;
+    }
+    write_frame(&mut send, &after).await.expect("write");
+    let freed = answer(&mut recv, "no answer once the places were free").await;
+    assert!(
+        matches!(freed, InternalMessage::FenceOk(ref ok) if ok.correlation_id == limit + 3),
+        "{freed:?}"
+    );
+
+    connection.close(0u32.into(), b"done");
+    listener.stop().await;
+}
+
 /// **A current broker answers a ping; one that predates pings is not
 /// pinged.** The older broker is not counted as silent either, which would
 /// let a rolling upgrade read as a dead leader.
