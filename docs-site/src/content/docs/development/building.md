@@ -321,8 +321,8 @@ a notice. An org owner sets it up once:
    Turn the webhook off.
 2. Give it repository permissions Contents (read and write), Pull requests
    (read and write), Workflows (read and write) and Metadata (read).
-3. Install it on the companion repos only. The felix repo does not need it,
-   because the dispatch goes to the companions.
+3. Install it on felix and the companion repos. Felix's nightly build uses it
+   to move the `nightly` tag (see [Nightly builds](#nightly-builds)).
 4. Generate a private key for the App.
 5. Add the App ID as the org secret `FELIX_RELEASE_BOT_APP_ID` and the key as
    `FELIX_RELEASE_BOT_PRIVATE_KEY`, shared with felix and the companion repos.
@@ -482,6 +482,13 @@ builds everything a release builds and changes what gets published:
   felixctl archives, the wheels, the Node addons and one `SHA256SUMS`. Its
   notes link the commit and the CI run and carry the `[Unreleased]` section of
   `CHANGELOG.md`. It is never marked latest.
+
+The tag and release move with a token from the release bot App (see
+[Companion repos](#companion-repos)), not the workflow's own token. GitHub
+refuses to point a ref at a commit that changes `.github/workflows/` unless the
+token has the Workflows permission, and the workflow's own token never has it.
+The first job checks that the App can reach the repo, so a missing
+installation fails the run before the build starts.
 
 A last step deletes `nightly-YYYYMMDD` image tags older than 14 days. It can
 only delete versions of a package that grants this repository admin access,

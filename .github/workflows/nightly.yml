@@ -53,6 +53,18 @@ jobs:
       version: ${{ steps.pick.outputs.version }}
       ci_url: ${{ steps.pick.outputs.ci_url }}
     steps:
+      # The publish job moves the tag with the release bot's token. Minting a
+      # read-only one here fails in a minute, not after the build, when the App
+      # is not installed on this repo, and a pull request's dry run checks it
+      # too. Pull requests from forks get no secrets, so they skip it.
+      - name: Check the release bot can reach this repo
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.FELIX_RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.FELIX_RELEASE_BOT_PRIVATE_KEY }}
+          permission-contents: read
+
       # The newest main commit whose CI passed, not main's head: a nightly that
       # waits for a green head can go days without building anything, and one
       # that ignores CI ships whatever broke it. Docs-only commits skip CI, so
@@ -217,9 +229,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
-      contents: write
+      contents: read
     env:
-      GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
       SHA: ${{ needs.plan.outputs.sha }}
       TAG: ${{ needs.plan.outputs.tag }}
@@ -285,10 +296,24 @@ jobs:
           } > notes.md
           cat notes.md
 
+      # The job's own token cannot move the tag: GitHub refuses to point a ref
+      # at a commit that changes .github/workflows/ without the workflows
+      # permission, which that token never has. The release bot has it.
+      - name: Create a release bot token for this repo
+        id: token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.FELIX_RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.FELIX_RELEASE_BOT_PRIVATE_KEY }}
+          permission-contents: write
+          permission-workflows: write
+
       # The tag moves first, so the release is recreated on the new commit.
       # Deleting and recreating rather than editing drops the previous night's
       # assets without having to list them.
       - name: Move the nightly tag and release
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
         run: |
           set -euo pipefail
           if gh api "repos/${REPO}/git/ref/tags/nightly" > /dev/null 2>&1; then
