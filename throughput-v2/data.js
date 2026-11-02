@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793626136744,
+  "lastUpdate": 1793628442952,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -42224,6 +42224,58 @@ window.BENCHMARK_DATA = {
             "range": "8000.05",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 806517.49\nmean: 806996.47\nstdev: 8000.05\ncv: 0.99%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9d7c12401b7354f5c340325f8c4690afffa91fd8",
+          "message": "perf: the latency demo honours FELIX_SUB_QUEUE_POLICY, and the fanout cell gets a drop_new profile (#1777)\n\nHarness only. Needed so perf-pr can price #1773's early answer.\n\n## What\n\n- `demos/broker/latency_demo.rs` forced `SubQueuePolicy::Block` on the core subscriber queues. Block answers a publish after its fanout, so the demo could never exercise the production default (`DropNew`). When `FELIX_SUB_QUEUE_POLICY` is set, the demo now uses it for the core queue policy (both the ack and the throughput profile). Unset, nothing changes. The lane queue stays `Block`.\n- New cell `scripts/perf/ci_subset_fanout.yml`, wired into `perf-pr.yml`: one acked publisher, fanout 1 and 100, one connection per subscriber, profiles `balanced` (Block, as the demo always ran) and `drop_new`. perf-pr timeout 40 -> 50 min for the extra cells.\n\n## Design calls\n\n- Only the core queue policy follows the env var; the lane queue stays Block so a slow lane backpressures the feeder rather than dropping in the demo.\n- Both profiles are kept so the Block numbers stay comparable with earlier runs.\n\n## Check\n\n`cargo clippy -p felix-broker-service --all-targets --all-features -D warnings` clean. This PR's own perf-pr run exercises the cell on both sides (the baseline harness is this PR's, the baseline demo is main's, so the drop_new profile on the baseline side still runs Block until this merges; the numbers that matter come from #1773 after the merge).",
+          "timestamp": "2026-11-02T05:56:27-08:00",
+          "tree_id": "3e0e3f62fba2f45bf4fc3627b3242db28650fa10",
+          "url": "https://github.com/GetFelix/felix/commit/9d7c12401b7354f5c340325f8c4690afffa91fd8"
+        },
+        "date": 1793628442102,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 517073.25,
+            "range": "39815.36",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 517073.25\nmean: 524122.63\nstdev: 39815.36\ncv: 7.60%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 517073.25,
+            "range": "39815.36",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 517073.25\nmean: 524122.63\nstdev: 39815.36\ncv: 7.60%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 125266.33,
+            "range": "589.29",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 125266.33\nmean: 124978.52\nstdev: 589.29\ncv: 0.47%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1252663.28,
+            "range": "5892.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1252663.28\nmean: 1249785.19\nstdev: 5892.88\ncv: 0.47%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
