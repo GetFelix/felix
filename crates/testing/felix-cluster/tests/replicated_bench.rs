@@ -317,7 +317,7 @@ async fn first_ack(
             Ok(Err(err)) => last = format!("{err:?}"),
             Err(_) => last = "timed out after 10 s".to_string(),
         }
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
     }
     if FIRST_ERRORS.fetch_add(1, Ordering::Relaxed) < 5 {
         println!("first ack {stream}: gave up; last: {last}");
@@ -461,7 +461,9 @@ async fn replicated_publish_steady_and_through_promotion_burst() {
             Some(done) => {
                 let (name, started, ok) = done.expect("create task");
                 create_us.push(started.elapsed().as_micros() as u64);
-                if ok {
+                // A sample, so the probes do not become the load.
+                let sampled = name.ends_with('0') || name.ends_with('5');
+                if ok && sampled {
                     firsts.spawn(first_ack(
                         Arc::clone(&first_client),
                         tenant.clone(),
@@ -469,7 +471,7 @@ async fn replicated_publish_steady_and_through_promotion_burst() {
                         name,
                         started,
                     ));
-                } else {
+                } else if !ok {
                     create_failed += 1;
                 }
             }

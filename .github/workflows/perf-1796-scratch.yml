@@ -13,7 +13,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   A_SHA: f8f023bded359963b9b61c3990492c10ea1cd00c
-  ROUNDS: "8"
+  ROUNDS: "6"
   BENCH_STEADY_SECS: "40"
   STORAGE_RUNS: "0"
 
