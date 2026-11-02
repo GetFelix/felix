@@ -397,8 +397,10 @@ Before authentication:
 
 `services/felix-broker-service/src/serving/auth.rs::BrokerAuth::authenticate`:
 
-1. ensures the tenant's JWKS is cached;
-2. verifies the token signature and critical claims;
+1. ensures the tenant's JWKS is cached, fetching it only for a tenant it holds
+   no usable keys for (a background task renews the cached ones);
+2. verifies the token signature and critical claims, fetching the JWKS once
+   more when the token names a `kid` the cached set lacks;
 3. verifies tenant scope;
 4. compiles token permissions into a `PermissionMatcher`; and
 5. returns an `AuthContext`.

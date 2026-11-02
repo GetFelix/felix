@@ -1,7 +1,8 @@
 use bytes::{Bytes, BytesMut};
 
+use crate::binary::EventBatchMeta;
 use crate::error::Error;
-use crate::{FLAG_BINARY_EVENT_BATCH, FLAG_BINARY_EVENT_BATCH_SHARED, Frame, binary};
+use crate::{FLAG_BINARY_EVENT_BATCH, FLAG_BINARY_EVENT_BATCH_SHARED, Frame, FrameHeader, binary};
 
 #[test]
 fn binary_event_batch_round_trip() {
@@ -239,6 +240,7 @@ fn a_publisher_rides_either_batch_with_or_without_offsets() {
             skipped_before: 2,
             publisher: Some(b"alice"),
             timestamps: None,
+            record_headers: None,
         };
         let frame =
             Frame::decode(binary::encode_event_batch_bytes_with_meta(7, &payloads, meta).unwrap())
@@ -322,6 +324,7 @@ fn timestamps_ride_either_batch_with_every_other_field() {
             skipped_before: 2,
             publisher: Some(b"alice"),
             timestamps: Some(&times),
+            record_headers: None,
         };
         let frame =
             Frame::decode(binary::encode_event_batch_bytes_with_meta(7, &payloads, meta).unwrap())
@@ -398,4 +401,311 @@ fn timestamps_must_match_the_payloads() {
         binary::decode_shared_event_batch(&frame),
         Err(Error::Incomplete)
     ));
+}
+
+/// No key, one header `a: 1`.
+const BLOCK: &[u8] = &[
+    0x00, // flags
+    0x00, 0x00, 0x00, 0x01, // count
+    0x00, 0x01, b'a', 0x00, 0x00, 0x00, 0x01, b'1', // a: 1
+];
+
+fn block() -> Bytes {
+    Bytes::from_static(BLOCK)
+}
+
+fn golden_event_frame() -> Vec<u8> {
+    [
+        &[
+            0x46, 0x4C, 0x58, 0x31, // magic
+            0x00, 0x01, // version
+            0xC0, 0x22, // EXTENDED | TIMESTAMPS | OFFSETS | EVENT_BATCH
+            0x00, 0x00, 0x00, 0x48, // length
+            0x00, 0x00, 0x00, 0x01, // extension word: EXT_RECORD_HEADERS
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, // subscription 5
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x09, // base offset 9
+            0x00, 0x00, 0x00, 0x02, // count
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, // event 0: timestamp
+            0x00, 0x00, 0x00, 0x0D, // event 0: block length
+        ][..],
+        BLOCK,
+        &[
+            0x00, 0x00, 0x00, 0x01, b'e', // event 0: payload
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0A, // event 1: timestamp
+            0x00, 0x00, 0x00, 0x00, // event 1: no block
+            0x00, 0x00, 0x00, 0x02, b'f', b'g', // event 1: payload
+        ],
+    ]
+    .concat()
+}
+
+fn golden_meta<'a>(timestamps: &'a [u64], headers: &'a [Option<Bytes>]) -> EventBatchMeta<'a> {
+    EventBatchMeta {
+        base_offset: Some(9),
+        timestamps: Some(timestamps),
+        record_headers: Some(headers),
+        ..EventBatchMeta::default()
+    }
+}
+
+#[test]
+fn an_event_batch_with_offsets_timestamps_and_headers_is_these_bytes() {
+    let payloads = [Bytes::from_static(b"e"), Bytes::from_static(b"fg")];
+    let timestamps = [0x0102_0304_0506_0708, 0x0A];
+    let headers = [Some(block()), None];
+    let meta = golden_meta(&timestamps, &headers);
+
+    let bytes = binary::encode_event_batch_bytes_with_meta(5, &payloads, meta).expect("encode");
+    assert_eq!(bytes.as_ref(), golden_event_frame());
+
+    let frame = Frame::decode(bytes).expect("frame");
+    // The offset is found behind the extension word and the subscription id.
+    assert_eq!(binary::peek_event_batch_base_offset(&frame), Some(9));
+    let decoded = binary::decode_event_batch(&frame).expect("decode");
+    assert_eq!(decoded.subscription_id, 5);
+    assert_eq!(decoded.base_offset, Some(9));
+    assert_eq!(decoded.timestamps, Some(vec![0x0102_0304_0506_0708, 0x0A]));
+    assert_eq!(decoded.payloads, payloads);
+    assert_eq!(decoded.record_headers, Some(vec![Some(block()), None]));
+}
+
+#[test]
+fn the_parts_of_an_event_batch_with_headers_are_its_bytes() {
+    let payloads = [Bytes::from_static(b"e"), Bytes::from_static(b"fg")];
+    let timestamps = [0x0102_0304_0506_0708, 0x0A];
+    let headers = [Some(block()), None];
+    let meta = golden_meta(&timestamps, &headers);
+
+    let parts = binary::encode_event_batch_parts_with_meta(5, &payloads, meta).expect("parts");
+    let flat: Vec<u8> = parts.segments().iter().flat_map(|s| s.to_vec()).collect();
+    assert_eq!(flat, golden_event_frame());
+    assert_eq!(parts.frame_len(), flat.len());
+    // The block and the payloads are the caller's bytes, not copies.
+    assert!(
+        parts
+            .segments()
+            .iter()
+            .any(|s| s.as_ptr() == headers[0].as_ref().expect("block").as_ptr())
+    );
+    assert!(
+        parts
+            .segments()
+            .iter()
+            .any(|s| s.as_ptr() == payloads[0].as_ptr())
+    );
+}
+
+#[test]
+fn parts_without_meta_are_unchanged() {
+    let payloads = [Bytes::from_static(b"e"), Bytes::from_static(b"fg")];
+    let plain = binary::encode_event_batch_parts(5, &payloads).expect("plain");
+    let with = binary::encode_event_batch_parts_with_meta(5, &payloads, EventBatchMeta::default())
+        .expect("with");
+    assert_eq!(plain.segments(), with.segments());
+    assert_eq!(plain.frame_len(), with.frame_len());
+}
+
+#[test]
+fn a_shared_event_batch_with_headers_is_these_bytes() {
+    let payloads = [Bytes::from_static(b"e")];
+    let headers = [Some(block())];
+    let meta = EventBatchMeta {
+        record_headers: Some(&headers),
+        ..EventBatchMeta::default()
+    };
+    let bytes = binary::encode_shared_event_batch_bytes_with_meta(&payloads, meta).expect("encode");
+    let expected = [
+        &[
+            0x46, 0x4C, 0x58, 0x31, // magic
+            0x00, 0x01, // version
+            0x80, 0x04, // EXTENDED | EVENT_BATCH_SHARED
+            0x00, 0x00, 0x00, 0x1E, // length
+            0x00, 0x00, 0x00, 0x01, // extension word
+            0x00, 0x00, 0x00, 0x01, // count
+            0x00, 0x00, 0x00, 0x0D, // block length
+        ][..],
+        BLOCK,
+        &[0x00, 0x00, 0x00, 0x01, b'e'],
+    ]
+    .concat();
+    assert_eq!(bytes.as_ref(), expected);
+
+    let frame = Frame::decode(bytes).expect("frame");
+    let decoded = binary::decode_shared_event_batch(&frame).expect("decode");
+    assert_eq!(decoded.payloads, payloads);
+    assert_eq!(decoded.record_headers, Some(vec![Some(block())]));
+    assert_eq!(decoded.timestamps, None);
+}
+
+#[test]
+fn a_shared_batch_peeks_its_offset_behind_the_extension_word() {
+    let payloads = [Bytes::from_static(b"e")];
+    let headers = [Some(block())];
+    let bytes = binary::encode_shared_event_batch_bytes_with_meta(
+        &payloads,
+        EventBatchMeta {
+            base_offset: Some(77),
+            record_headers: Some(&headers),
+            ..EventBatchMeta::default()
+        },
+    )
+    .expect("encode");
+    let frame = Frame::decode(bytes).expect("frame");
+    assert_eq!(binary::peek_event_batch_base_offset(&frame), Some(77));
+    assert_eq!(
+        binary::decode_shared_event_batch(&frame)
+            .expect("decode")
+            .base_offset,
+        Some(77)
+    );
+}
+
+#[test]
+fn headers_that_are_all_none_leave_the_frame_as_it_was() {
+    let payloads = [Bytes::from_static(b"e"), Bytes::from_static(b"fg")];
+    let timestamps = [1, 2];
+    let none = [None, None];
+    for (publisher, skipped) in [(None, 0), (Some(b"alice".as_slice()), 3)] {
+        let plain = EventBatchMeta {
+            base_offset: Some(9),
+            skipped_before: skipped,
+            publisher,
+            timestamps: Some(&timestamps),
+            record_headers: None,
+        };
+        let with = EventBatchMeta {
+            record_headers: Some(&none),
+            ..plain
+        };
+        assert_eq!(
+            binary::encode_event_batch_bytes_with_meta(5, &payloads, with).expect("with"),
+            binary::encode_event_batch_bytes_with_meta(5, &payloads, plain).expect("plain"),
+        );
+        assert_eq!(
+            binary::encode_shared_event_batch_bytes_with_meta(&payloads, with).expect("with"),
+            binary::encode_shared_event_batch_bytes_with_meta(&payloads, plain).expect("plain"),
+        );
+        let frame = Frame::decode(
+            binary::encode_event_batch_bytes_with_meta(5, &payloads, with).expect("with"),
+        )
+        .expect("frame");
+        assert_eq!(frame.header.flags & crate::FLAG_EXTENDED, 0);
+        assert_eq!(
+            binary::decode_event_batch(&frame)
+                .expect("decode")
+                .record_headers,
+            None
+        );
+    }
+}
+
+#[test]
+fn headers_that_do_not_line_up_with_the_payloads_are_refused() {
+    let payloads = [Bytes::from_static(b"e"), Bytes::from_static(b"fg")];
+    let one = [Some(block())];
+    let meta = EventBatchMeta {
+        record_headers: Some(&one),
+        ..EventBatchMeta::default()
+    };
+    assert!(matches!(
+        binary::encode_event_batch_bytes_with_meta(5, &payloads, meta),
+        Err(Error::Incomplete)
+    ));
+    assert!(matches!(
+        binary::encode_event_batch_parts_with_meta(5, &payloads, meta),
+        Err(Error::Incomplete)
+    ));
+    let empty = [Some(Bytes::new()), None];
+    let meta = EventBatchMeta {
+        record_headers: Some(&empty),
+        ..EventBatchMeta::default()
+    };
+    assert!(matches!(
+        binary::encode_shared_event_batch_bytes_with_meta(&payloads, meta),
+        Err(Error::InvalidRecordHeaders(_))
+    ));
+}
+
+fn extended_event(flags: u16, ext: u32, rest: &[u8]) -> Frame {
+    let mut payload = ext.to_be_bytes().to_vec();
+    payload.extend_from_slice(rest);
+    Frame::new(flags | crate::FLAG_EXTENDED, Bytes::from(payload)).expect("frame")
+}
+
+#[test]
+fn a_bad_extension_word_is_refused_on_both_event_frames() {
+    let body = &golden_event_frame()[FrameHeader::LEN + 4..];
+    for ext in [0u32, 0x2, 0x8000_0001] {
+        let per_subscriber = extended_event(FLAG_BINARY_EVENT_BATCH, ext, body);
+        assert!(matches!(
+            binary::decode_event_batch(&per_subscriber),
+            Err(Error::UnknownExtension(word)) if word == ext
+        ));
+        let shared = extended_event(FLAG_BINARY_EVENT_BATCH_SHARED, ext, &[0, 0, 0, 0]);
+        assert!(matches!(
+            binary::decode_shared_event_batch(&shared),
+            Err(Error::UnknownExtension(word)) if word == ext
+        ));
+    }
+}
+
+#[test]
+fn an_event_block_that_is_cut_short_or_malformed_is_refused() {
+    let full = golden_event_frame();
+    let flags = FLAG_BINARY_EVENT_BATCH
+        | crate::FLAG_EVENT_BATCH_OFFSETS
+        | crate::FLAG_EVENT_BATCH_TIMESTAMPS
+        | crate::FLAG_EXTENDED;
+    // Event 0's block starts after the header (12), ext (4), sub (8), offset
+    // (8), count (4), timestamp (8) and block length (4).
+    let block_at = FrameHeader::LEN + 4 + 8 + 8 + 4 + 8 + 4;
+
+    for cut in [block_at - 3, block_at + 5, block_at + 12] {
+        let frame =
+            Frame::new(flags, Bytes::copy_from_slice(&full[FrameHeader::LEN..cut])).expect("frame");
+        assert!(binary::decode_event_batch(&frame).is_err(), "cut {cut}");
+    }
+
+    let mut reserved = full.clone();
+    reserved[block_at] = 0x04;
+    let frame = Frame::decode(Bytes::from(reserved)).expect("frame");
+    assert!(matches!(
+        binary::decode_event_batch(&frame),
+        Err(Error::InvalidRecordHeaders(_))
+    ));
+
+    let mut bad_name = full.clone();
+    bad_name[block_at + 7] = 0xFF;
+    let frame = Frame::decode(Bytes::from(bad_name)).expect("frame");
+    assert!(matches!(
+        binary::decode_event_batch(&frame),
+        Err(Error::InvalidUtf8)
+    ));
+
+    let mut past_end = full;
+    past_end[block_at - 4..block_at].copy_from_slice(&u32::MAX.to_be_bytes());
+    let frame = Frame::decode(Bytes::from(past_end)).expect("frame");
+    assert!(matches!(
+        binary::decode_event_batch(&frame),
+        Err(Error::Incomplete)
+    ));
+}
+
+#[test]
+fn an_event_block_the_decoder_would_refuse_is_not_encoded() {
+    let payloads = [Bytes::from_static(b"e")];
+    for bad in [
+        &[0x02u8, 0, 0, 0, 0][..],
+        &[0u8, 0, 0, 0, 5][..],
+        &[0u8; 5][..],
+    ] {
+        let blocks = [Some(Bytes::copy_from_slice(bad))];
+        let meta = EventBatchMeta {
+            record_headers: Some(&blocks),
+            ..EventBatchMeta::default()
+        };
+        assert!(binary::encode_event_batch_bytes_with_meta(1, &payloads, meta).is_err());
+        assert!(binary::encode_event_batch_parts_with_meta(1, &payloads, meta).is_err());
+        assert!(binary::encode_shared_event_batch_bytes_with_meta(&payloads, meta).is_err());
+    }
 }

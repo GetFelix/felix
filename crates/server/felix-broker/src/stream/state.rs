@@ -69,6 +69,8 @@ pub(crate) struct StreamState {
     /// the log by offset (the Kafka listener's long-poll fetch) rather than
     /// holding a subscription.
     pub(crate) appended: Arc<tokio::sync::Notify>,
+    /// This shard's bit in the broker's [`crate::AppendedShards`].
+    pub(crate) append_slot: u16,
     /// Durable batches past the committed mark, kept from the ring and from
     /// subscribers until it passes them. Empty unless the stream is `Quorum`.
     pub(crate) held: CommitHold,
@@ -126,6 +128,19 @@ impl CommitScan {
 }
 
 impl StreamState {
+    /// The state of shard `shard` of `name`, which replication tells apart
+    /// from other shards' appends by this.
+    pub(crate) fn for_shard(
+        mut self,
+        tenant_id: &str,
+        namespace: &str,
+        name: &str,
+        shard: u32,
+    ) -> Self {
+        self.append_slot = crate::AppendedShards::slot(tenant_id, namespace, name, shard);
+        self
+    }
+
     pub(crate) fn new(
         handle_id: u64,
         subscriber_queue_capacity: usize,
@@ -155,6 +170,7 @@ impl StreamState {
             commit_sequencer: Arc::new(CommitSequencer::new(0)),
             producers: ProducerTable::default(),
             appended: Arc::new(tokio::sync::Notify::new()),
+            append_slot: 0,
             held: CommitHold::default(),
             commits: CommitScan::default(),
         }
@@ -748,11 +764,32 @@ impl StreamState {
         self.subscribers_snapshot.load_full()
     }
 
+    /// Count one batch of `count` items as queued for one subscriber.
     pub(crate) fn increment_queue_depth(&self, count: usize) {
+        self.reserve_queue_depth(count);
+        self.settle_queue_depth(0, count, 1);
+    }
+
+    /// Count `count` items as queued before they are sent, so a receiver that
+    /// takes one at once never finds the depth short. A fanout reserves for
+    /// every subscriber in one step rather than touching these shared
+    /// counters once per subscriber, then settles with
+    /// [`Self::settle_queue_depth`].
+    pub(crate) fn reserve_queue_depth(&self, count: usize) {
         self.queued_items.fetch_add(count, Ordering::Relaxed);
+        queue_metrics().len.increment(count as f64);
+    }
+
+    /// Give back the `unsent` items of a reservation, and count the `sent`
+    /// ones, queued as `batches` entries.
+    pub(crate) fn settle_queue_depth(&self, unsent: usize, sent: usize, batches: usize) {
         let metrics = queue_metrics();
-        metrics.len.increment(count as f64);
-        metrics.enqueued.increment(count as u64);
+        if unsent > 0 {
+            self.queued_items.fetch_sub(unsent, Ordering::Relaxed);
+            metrics.len.decrement(unsent as f64);
+        }
+        metrics.enqueued.increment(sent as u64);
+        metrics.shared_batch_handles.increment(batches as u64);
     }
 
     fn rebuild_subscriber_snapshot(&self, state: &SubscriberRegistry) {

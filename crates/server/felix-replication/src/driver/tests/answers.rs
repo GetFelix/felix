@@ -70,6 +70,9 @@ impl Rig {
 
 /// Run one pass to its end and fold it.
 async fn pass(shards: &mut Shards<'_, AcceptingFollower>, wake: WakeKind) {
+    if matches!(wake, WakeKind::Append) {
+        mark_appended(shards.broker());
+    }
     shards.scan(wake);
     let (scan, ended) = shards.passes.next().await.expect("a pass");
     shards.fold(scan, ended);
@@ -220,6 +223,7 @@ async fn the_wake_and_pass_count_are_live_while_a_pass_runs() {
     let rig = Rig::new().await;
     let mut shards = settled(&rig).await;
     assert_eq!(rig.live().passes_since_mark, 0);
+    mark_appended(&rig.broker);
     shards.scan(WakeKind::Append);
     let live = rig.live();
     assert!(live.pass.is_some());
@@ -465,6 +469,7 @@ async fn an_absorbed_answer_behind_the_tail_starts_a_pass() {
     *rig.peers.hung.lock().expect("lock") = Some("broker-c".to_string());
     // Built while the cursors are held; the pass takes them.
     let answer = shards.answer_from(&key(), "broker-b", TAIL, true);
+    mark_appended(&rig.broker);
     shards.scan(WakeKind::Append);
     shards.apply(answer);
     let (scan, ended) = shards.passes.next().await.expect("a pass");
@@ -504,6 +509,7 @@ async fn an_absorbed_unchecked_answer_behind_the_tail_starts_a_pass() {
     .expect("append task");
     *rig.peers.hung.lock().expect("lock") = Some("broker-c".to_string());
     let answer = shards.answer_from(&key(), "broker-b", TAIL, false);
+    mark_appended(&rig.broker);
     shards.scan(WakeKind::Append);
     shards.apply(answer);
     let (scan, ended) = shards.passes.next().await.expect("a pass");

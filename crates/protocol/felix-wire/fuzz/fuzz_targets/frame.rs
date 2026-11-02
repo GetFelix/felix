@@ -9,7 +9,7 @@
 use bytes::Bytes;
 use libfuzzer_sys::fuzz_target;
 
-use felix_wire::{Frame, FrameHeader, KNOWN_FLAGS, has_unknown_flags};
+use felix_wire::{FLAG_EXTENDED, Frame, FrameHeader, KNOWN_FLAGS, has_unknown_flags};
 
 fuzz_target!(|data: &[u8]| {
     let input = Bytes::copy_from_slice(data);
@@ -48,7 +48,8 @@ fuzz_target!(|data: &[u8]| {
 
     // Property 4: nothing with an unknown flag bit decodes. Flags select the
     // payload *layout*, so a bit the dispatch does not know means confidently
-    // misparsing the body rather than refusing it.
+    // misparsing the body rather than refusing it. `FLAG_EXTENDED` is defined
+    // but not a known flag: its extension word is the body decoders' to check.
     assert!(!has_unknown_flags(frame.header.flags));
-    assert_eq!(frame.header.flags & !KNOWN_FLAGS, 0);
+    assert_eq!(frame.header.flags & !(KNOWN_FLAGS | FLAG_EXTENDED), 0);
 });

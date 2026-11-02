@@ -87,7 +87,8 @@ pub(crate) async fn list_streams(
         (status = 201, description = "Stream created", body = Stream),
         (status = 200, description = "Stream already exists with this configuration; nothing changed", body = Stream),
         (status = 404, description = "Tenant or namespace not found", body = crate::api::types::ErrorResponse),
-        (status = 409, description = "Stream already exists with a different configuration, `jump_hash` routing was asked for before the fleet finalized it, or a stream of this name was deleted before the fleet finalized `stream_incarnations`", body = crate::api::types::ErrorResponse),
+        (status = 400, description = "Invalid request, such as a `mount` that is not a valid topic prefix or is set on a stream that is not durable", body = crate::api::types::ErrorResponse),
+        (status = 409, description = "Stream already exists with a different configuration, `jump_hash` routing was asked for before the fleet finalized it, a stream of this name was deleted before the fleet finalized `stream_incarnations`, `mount` overlaps the mount of another stream of the tenant, or a mount needs a newer metadata level than the group has reached", body = crate::api::types::ErrorResponse),
         (status = 503, description = "`busy`: on Postgres, other writes to the same feed held it for more than 5 s and nothing was written, so retry. `unavailable`: on Raft, no quorum committed the write in time, and it may still land, so do not blindly retry", body = crate::api::types::ErrorResponse)
     )
 )]
@@ -105,6 +106,12 @@ pub(crate) async fn create_stream(
     match state.store.create_stream(stream.clone()).await {
         Ok(created) => Ok((StatusCode::CREATED, Json(created))),
         Err(ref err) if let Some(refusal) = crate::store::reused_name_refusal(err) => {
+            Err(api_conflict("conflict", refusal))
+        }
+        Err(ref err)
+            if let Some(refusal) = crate::model::mount::refusal(err)
+                .or_else(|| crate::store::upgrade_refusal(err)) =>
+        {
             Err(api_conflict("conflict", refusal))
         }
         Err(StoreError::Conflict(_)) => match state.store.get_stream(&stream_key(&stream)).await {
@@ -135,6 +142,14 @@ pub(crate) fn validate_stream_request(body: &StreamCreateRequest) -> Result<(), 
     {
         return Err(api_validation_error("region must not be empty when set"));
     }
+    if let Some(mount) = &body.mount {
+        crate::model::mount::validate(mount).map_err(|err| api_validation_error(&err))?;
+        if !body.durable {
+            return Err(api_validation_error(
+                "only a durable stream can be mounted; set durable to true",
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -158,6 +173,7 @@ pub(crate) fn new_stream(
         delivery: body.delivery,
         durable: body.durable,
         region: body.region,
+        mount: body.mount,
         routing: creation_routing(body.routing, jump_hash_finalized)?,
         // A proposal: the store gives the incarnation, from its own view of
         // the finalize and the name's tombstone, in the same write. Proposed
@@ -315,7 +331,9 @@ pub(crate) async fn get_stream(
     request_body = StreamPatchRequest,
     responses(
         (status = 200, description = "Stream updated", body = Stream),
+        (status = 400, description = "Invalid request, such as a `mount` that is not a valid topic prefix", body = crate::api::types::ErrorResponse),
         (status = 404, description = "Stream or namespace not found", body = crate::api::types::ErrorResponse),
+        (status = 409, description = "`mount` overlaps the mount of another stream of the tenant, the stream would be mounted without being durable, or a mount needs a newer metadata level than the group has reached", body = crate::api::types::ErrorResponse),
         (status = 503, description = "`busy`: on Postgres, other writes to the same feed held it for more than 5 s and nothing was written, so retry. `unavailable`: on Raft, no quorum committed the write in time, and it may still land, so do not blindly retry", body = crate::api::types::ErrorResponse)
     )
 )]
@@ -331,6 +349,9 @@ pub(crate) async fn patch_stream(
             .validate()
             .map_err(|err| api_validation_error(&err))?;
     }
+    if let Some(Some(mount)) = &body.mount {
+        crate::model::mount::validate(mount).map_err(|err| api_validation_error(&err))?;
+    }
     ensure_tenant_namespace(&state, &tenant_id, &namespace).await?;
     let key = StreamKey {
         tenant_id: tenant_id.clone(),
@@ -340,6 +361,12 @@ pub(crate) async fn patch_stream(
     match state.store.patch_stream(&key, body).await {
         Ok(updated) => Ok(Json(updated)),
         Err(StoreError::NotFound(_)) => Err(api_not_found("stream not found")),
+        Err(ref err)
+            if let Some(refusal) = crate::model::mount::refusal(err)
+                .or_else(|| crate::store::upgrade_refusal(err)) =>
+        {
+            Err(api_conflict("conflict", refusal))
+        }
         Err(err) => Err(api_internal("failed to update stream", &err)),
     }
 }

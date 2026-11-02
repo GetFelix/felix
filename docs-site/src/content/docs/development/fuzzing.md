@@ -17,6 +17,7 @@ nightly and links libFuzzer:
 | `crates/protocol/felix-wire/fuzz` | `frame` | client frame header and frame, strict and flag-lenient | any client |
 | | `client_message` | JSON control messages | any client |
 | | `binary_payload` | binary publish, ack and event-batch bodies | any client |
+| | `record_headers` | the key and headers block of a record, validated and parsed | any client |
 | | `internal_message` | broker-to-broker frames, envelope and correlation id | a peer broker |
 | `crates/protocol/felix-mqtt-wire/fuzz` | `mqtt_packet` | every MQTT 3.1.1 and 5.0 packet, before and after `CONNECT`, decoded as a stream and round-tripped | any MQTT device, before auth |
 | `crates/server/felix-mqtt/fuzz` | `ws_frames` | the MQTT-over-WebSockets upgrade request, and client frames decoded whole and in pieces | anything that reaches the WebSocket port, before auth |

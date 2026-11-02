@@ -175,6 +175,7 @@ impl DeliveryEnvelope {
                     skipped_before,
                     publisher,
                     timestamps: timestamps.as_deref(),
+                    record_headers: None,
                 },
             )?
         };
@@ -297,6 +298,8 @@ pub(super) struct QueueMetrics {
     pub(super) len: metrics::Gauge,
     pub(super) enqueued: metrics::Counter,
     dequeued: metrics::Counter,
+    /// Batches handed to a subscriber queue as a shared envelope.
+    pub(super) shared_batch_handles: metrics::Counter,
 }
 
 pub(super) fn queue_metrics() -> &'static QueueMetrics {
@@ -305,6 +308,7 @@ pub(super) fn queue_metrics() -> &'static QueueMetrics {
         len: metrics::gauge!("felix_sub_queue_len"),
         enqueued: metrics::counter!("felix_sub_queue_enqueued_total"),
         dequeued: metrics::counter!("felix_sub_queue_dequeued_total"),
+        shared_batch_handles: metrics::counter!("felix_sub_shared_batch_handles_total"),
     })
 }
 

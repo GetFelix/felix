@@ -336,8 +336,24 @@ impl LaneWork {
         let ingress = self.ingress.clone();
         let quorum_timeout = self.quorum_timeout;
         self.work.spawn(async move {
-            let completed = broker.complete_publish(claimed).await;
             let ClaimGroup { members, fences } = group;
+            // Answered before the fanout, so the acks do not queue behind
+            // the work of waking every subscriber. A `Quorum` answer waits
+            // for its quorum, so it keeps the old order.
+            if handle.consistency() != felix_broker::ConsistencyLevel::Quorum {
+                broker
+                    .complete_publish_answering(claimed, |completed| {
+                        let result = completed
+                            .map(|outcome| first_offset(&outcome))
+                            .map_err(Into::into);
+                        settle_group(members, shard.as_ref(), result);
+                    })
+                    .await;
+                drop(fences);
+                drop(slot);
+                return;
+            }
+            let completed = broker.complete_publish(claimed).await;
             drop(fences);
             let result = match completed {
                 // One wait for the group's last offset: the mark is
@@ -448,6 +464,34 @@ impl LaneWork {
             *generation,
         ) {
             Err(refused) => Err(refused.into()),
+            Ok(fenced) if handle.consistency() != felix_broker::ConsistencyLevel::Quorum => {
+                // Answered before the fanout, as a durable publish is. The
+                // lane is held until the fanout is done: it is what keeps
+                // an in-memory stream's deliveries in publish order.
+                let response = job.response;
+                let acked_on_enqueue = job.acked_on_enqueue;
+                let answer = |published: felix_broker::Result<felix_broker::PublishOutcome>| {
+                    let result = published
+                        .map(|outcome| first_offset(&outcome))
+                        .map_err(Into::into);
+                    settle(response, acked_on_enqueue, shard.as_ref(), result);
+                };
+                match self
+                    .broker
+                    .claim_publish(handle, &job.payloads, job.publisher.as_ref())
+                    .await
+                {
+                    Ok(claimed) => {
+                        self.broker
+                            .complete_publish_answering(claimed, answer)
+                            .await;
+                    }
+                    Err(err) => answer(Err(err)),
+                }
+                drop(fenced);
+                drop(lane);
+                return;
+            }
             Ok(fenced) => {
                 let published = self
                     .broker

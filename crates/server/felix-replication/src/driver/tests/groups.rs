@@ -147,7 +147,7 @@ where
     tokio::task::spawn_blocking(move || runtime.block_on(work))
         .await
         .expect("write task");
-    broker.appended().notify_one();
+    mark_appended(broker);
 }
 
 async fn append(broker: &Arc<Broker>) {

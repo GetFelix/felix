@@ -468,6 +468,23 @@ one is refused with `400`, and omitting it places the stream anywhere. An
 operator move to a broker outside the allowed regions is refused with `409`
 and code `region_not_allowed`.
 
+A durable stream may be mounted at an MQTT topic prefix with `"mount":
+"plant/"`, so that MQTT devices can publish to it (see [MQTT](/features/mqtt/)).
+Omitted, the stream has no mount, and its answers leave the field out. The
+prefix is a plain byte prefix that is not empty, is at most 1024 bytes, has no
+`+`, `#` or control characters and does not start with `$`; anything else is
+`400`. Creating a mounted stream that is not `durable` is `400` too, and a
+`PATCH` that mounts one is `409`. A mount can be as long as 1024 bytes, but a
+topic under it must still fit the MQTT listener's own topic limits (1024 bytes
+and 16 levels by default), so a very long or deep mount leaves little room or
+none. A tenant's mounts
+may not overlap, in any namespace: a prefix that is, or begins with, another
+stream's is `409`, and the message names that stream. A `PATCH` sets a mount
+with a string, changes it with another and clears it with `null`; leaving
+`mount` out leaves it alone. No records move when a mount changes, and deleting
+the stream frees its prefix. Under Raft a mount needs every control-plane
+member upgraded to metadata level 24, and is `409` until then.
+
 A stream also records how routing keys map to its shards, fixed at creation.
 Omitted, `routing` is `"jump_hash"` (jump consistent hashing, which would move
 only about `1/n` of the keys were a stream grown to `n` shards) once the fleet has
@@ -587,7 +604,7 @@ Content-Type: application/json
 | `400` | empty, over 256 items, an invalid item, or a name given twice | nothing |
 | `403` | the token lacks the manage action over any one item | nothing |
 | `404` | the tenant or namespace does not exist | nothing |
-| `409` | an item exists with a different configuration (the message names it), or `jump_hash` routing before the finalize | nothing |
+| `409` | an item exists with a different configuration (the message names it), `jump_hash` routing before the finalize, or a `mount` that overlaps another stream's | nothing |
 | `503` | `upgrade_in_progress`: a Raft member has not been upgraded yet | nothing |
 | `503` | `busy`: on Postgres, other writes to the stream or cache feed held it for more than 5 s; safe to retry | nothing |
 | `503` | `unavailable`: on Raft, no quorum committed the write in time; it may still land | unknown |
@@ -657,7 +674,7 @@ The endpoints not covered above:
 
 | Endpoint | What it does | Requires |
 | --- | --- | --- |
-| `PATCH /v1/tenants/{t}/namespaces/{ns}/streams/{s}` | change `retention`, `consistency`, `delivery` or `durable`; every field is optional | `stream.manage` |
+| `PATCH /v1/tenants/{t}/namespaces/{ns}/streams/{s}` | change `retention`, `consistency`, `delivery`, `durable` or `mount`; every field is optional | `stream.manage` |
 | `PATCH /v1/tenants/{t}/namespaces/{ns}/caches/{c}` | change `display_name` | `cache.manage` |
 | `POST /v1/nodes` | register a broker; the answer carries the heartbeat interval, the expiry timeout and the enabled fleet features | `node.manage` over the node |
 | `POST /v1/nodes/{node_id}/heartbeat` | renew a broker's liveness; the body is `{"incarnation": n}` from its last registration, plus `"suspects"`, the leaders it cannot reach, when there are any | `node.manage` over the node |

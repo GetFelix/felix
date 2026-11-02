@@ -159,7 +159,7 @@ async fn append(broker: &Broker, shard: u32) {
     })
     .await
     .expect("append task");
-    broker.appended().notify_one();
+    mark_shard_appended(broker, shard);
 }
 
 /// Whether the mark for `shard` at `generation` reaches `offset` within

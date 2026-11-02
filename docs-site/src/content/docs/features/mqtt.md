@@ -1,6 +1,6 @@
 ---
 title: "MQTT"
-description: "Let MQTT devices connect to a Felix broker with a Felix token. Today the listener authenticates and keeps connections alive; publishing and subscribing are not built yet."
+description: "Let MQTT devices connect to a Felix broker with a Felix token, and mount a stream at a topic prefix. Today the listener authenticates and keeps connections alive, and resolves topics to streams; publishing and subscribing are not built yet."
 ---
 
 A Felix broker can accept MQTT connections from devices, over MQTT 3.1.1 and
@@ -8,9 +8,10 @@ A Felix broker can accept MQTT connections from devices, over MQTT 3.1.1 and
 client and read from it, with Felix's acknowledgements and durability behind
 every `PUBACK`.
 
-**Status: the connection layer only.** Today a device can connect with a Felix
-token, ping and disconnect. Every `PUBLISH` and `SUBSCRIBE` is refused until
-the publish and subscribe paths land. The plan for the rest is in the
+**Status: connections and mounts.** Today a device can connect with a Felix
+token, ping and disconnect, and you can mount a stream at a topic prefix. Every
+`PUBLISH` and `SUBSCRIBE` is still refused until the publish and subscribe paths
+land. The plan for the rest is in the
 [design](https://github.com/GetFelix/felix/blob/main/docs/mqtt-design.md).
 
 ## Turn it on
@@ -40,6 +41,48 @@ The connection is accepted and the publish is refused. At QoS 0 an MQTT client
 cannot be told no for one message, so the broker closes the connection; a 5.0
 client gets a `DISCONNECT` with reason "not authorized" first. At QoS 1 and 2 a
 5.0 client gets that reason on the acknowledgement.
+
+## Mount a stream at a topic prefix
+
+MQTT clients publish to topics nobody created, such as `plant/7/line/3/temp`.
+To say which stream those topics belong to, *mount* a durable stream at a topic
+prefix. Every topic that starts with the prefix is then a message in that stream.
+Mount it when you create the stream, or later with a `PATCH`, through the
+control plane (`$CP` is its address, `http://localhost:8443` for a local one, and
+`$TOKEN` a Felix token with `stream.manage` on the stream):
+
+```bash
+curl -sS -X POST "$CP/v1/tenants/my-tenant/namespaces/plant/streams" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{
+    "stream": "telemetry", "kind": "Stream", "shards": 4, "durable": true,
+    "retention": { "max_age_seconds": null, "max_size_bytes": null },
+    "consistency": "Leader", "delivery": "AtLeastOnce", "mount": "plant/" }'
+
+# Move the mount to another prefix, then clear it
+curl -sS -X PATCH "$CP/v1/tenants/my-tenant/namespaces/plant/streams/telemetry" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{ "mount": "factory/" }'
+curl -sS -X PATCH "$CP/v1/tenants/my-tenant/namespaces/plant/streams/telemetry" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{ "mount": null }'
+```
+
+The prefix is a plain byte prefix: `plant/` catches `plant/7/temp` and not `plants/7`.
+Only a durable stream can be mounted, and none of a tenant's mounts can overlap,
+whichever namespace the streams are in. The control plane refuses a mount that
+does with `409` and names the other stream. Changing or clearing a mount moves no
+records, and deleting the stream frees its prefix. A topic under a mount must
+still fit the listener's topic limits (`FELIX_MQTT_MAX_TOPIC_BYTES`, 1024 bytes
+by default, and 16 levels), so a very long or deep mount leaves little room or
+none. The
+[control plane API](/api/control-plane-api/) has the exact rules.
+
+A publish to a topic under no mount is never dropped silently. A 3.1.1 client's
+connection closes. A 5.0 client at QoS 1 gets a `PUBACK` and at QoS 2 a `PUBREC`, each
+with reason 0x90 (topic name invalid), and keeps its connection; at QoS 0 it gets a `DISCONNECT` with the
+same reason. Each is counted in `felix_mqtt_refused_total{reason="unmounted"}`.
+A publish to a mounted topic is refused as before, because writing to the stream
+is the next piece of work.
 
 A connection with no credentials is refused unless the broker was started with
 `FELIX_MQTT_ANONYMOUS_TENANT=<tenant>`, which is for development only.

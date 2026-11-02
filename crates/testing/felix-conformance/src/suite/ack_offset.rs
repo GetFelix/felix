@@ -282,6 +282,7 @@ impl Stream {
                 client_flags: Some(client_flags),
                 client_features: None,
                 client_features_hi: None,
+                client_flags_ext: None,
             },
         )
         .await?;

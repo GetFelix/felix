@@ -114,6 +114,60 @@ pub const PATH_LEASE: &str = "lease";
 /// had superseded, while taking that log.
 pub const PROMOTION_TRUNCATED_TOTAL: &str = "felix_broker_promotion_truncated_total";
 
+/// Scans the driver ran, by what woke it: `append`, `tick` or `routes`. Each
+/// one looks at every shard this broker leads.
+pub const SCANS_TOTAL: &str = "felix_broker_replication_scans_total";
+
+/// Shards waiting for a pass slot or a fence slot right now.
+///
+/// Zero most of the time. Staying high means this broker leads more shards
+/// with work than it can ship at once; `felix_broker_replication_slot_wait_seconds`
+/// says how long each waits.
+pub const PASSES_WAITING: &str = "felix_broker_replication_passes_waiting";
+
+/// How long a shard waited for a slot before its pass or fence started, by
+/// `queue`: `urgent` (an append, a write waiting on the mark, or a follower
+/// answer), `refresh` (nothing new, only the regular pass), or `fence`.
+pub const SLOT_WAIT_SECONDS: &str = "felix_broker_replication_slot_wait_seconds";
+
+pub const QUEUE_URGENT: &str = "urgent";
+pub const QUEUE_REFRESH: &str = "refresh";
+pub const QUEUE_FENCE: &str = "fence";
+
+/// The driver's scheduling metrics, registered once so recording one is an
+/// atomic update with no lookup.
+pub(crate) struct DriverMetrics {
+    scans: [metrics::Counter; 3],
+    waiting: metrics::Gauge,
+    waited: [metrics::Histogram; 3],
+}
+
+impl DriverMetrics {
+    pub(crate) fn new() -> Self {
+        Self {
+            scans: ["append", "tick", "routes"]
+                .map(|wake| metrics::counter!(SCANS_TOTAL, "wake" => wake)),
+            waiting: metrics::gauge!(PASSES_WAITING),
+            waited: [QUEUE_URGENT, QUEUE_REFRESH, QUEUE_FENCE]
+                .map(|queue| metrics::histogram!(SLOT_WAIT_SECONDS, "queue" => queue)),
+        }
+    }
+
+    /// `wake` indexes `append`, `tick`, `routes`.
+    pub(crate) fn scanned(&self, wake: usize) {
+        self.scans[wake].increment(1);
+    }
+
+    pub(crate) fn waiting(&self, count: usize) {
+        self.waiting.set(count as f64);
+    }
+
+    /// `queue` indexes `urgent`, `refresh`, `fence`.
+    pub(crate) fn waited(&self, queue: usize, waited: std::time::Duration) {
+        self.waited[queue].record(waited.as_secs_f64());
+    }
+}
+
 pub fn record_promotion_opened(path: &'static str) {
     metrics::counter!(PROMOTIONS_TOTAL, "path" => path).increment(1);
 }

@@ -36,6 +36,12 @@ pub struct Stream {
     /// always were. Fixed at creation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub region: Option<String>,
+    /// The MQTT topic prefix this stream is mounted at: a PUBLISH to a topic
+    /// that starts with it lands in this stream. Only a durable stream can be
+    /// mounted, and no two mounts of a tenant overlap. `None` is no mount, as
+    /// every stream was before. Changing it moves no records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mount: Option<String>,
     /// How routing keys map to shards. Fixed at creation: remapping a live
     /// stream would move keys between shards and break per-key order.
     /// Absent is `modulo`, the mapping every stream had before there was a
@@ -144,6 +150,32 @@ pub struct StreamPatchRequest {
     pub consistency: Option<ConsistencyLevel>,
     pub delivery: Option<DeliveryGuarantee>,
     pub durable: Option<bool>,
+    /// Absent leaves the mount alone, a string sets it and `null` clears it.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "set_or_clear"
+    )]
+    #[schema(value_type = Option<String>, nullable)]
+    pub mount: Option<Option<String>>,
+}
+
+/// Serde for a patch field that can be left alone, set or cleared.
+mod set_or_clear {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub(super) fn serialize<S: Serializer>(
+        value: &Option<Option<String>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        value.serialize(serializer)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<Option<String>>, D::Error> {
+        Option::<String>::deserialize(deserializer).map(Some)
+    }
 }
 
 /// How long, and how much of, a durable stream's log each broker keeps. A

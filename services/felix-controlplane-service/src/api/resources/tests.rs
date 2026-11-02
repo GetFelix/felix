@@ -21,6 +21,7 @@ fn stream(routing: StreamRouting) -> Stream {
         region: None,
         routing,
         incarnation: 0,
+        mount: None,
     }
 }
 
