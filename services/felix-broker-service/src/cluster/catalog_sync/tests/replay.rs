@@ -24,6 +24,7 @@ fn stream(consistency: Option<&str>) -> Stream {
         // Incarnation 0, as every stream is before the fleet finalizes
         // incarnations: the delete cannot say which stream it removed.
         incarnation: 0,
+        mount: None,
     }
 }
 

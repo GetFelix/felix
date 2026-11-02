@@ -13,6 +13,7 @@ mod incarnation;
 mod inspect;
 mod keys;
 mod metadata;
+mod mounts;
 mod publish;
 mod read;
 mod registry;
@@ -25,6 +26,7 @@ pub use backup::CommittedOffsets;
 pub use commit::StateRead;
 pub use inspect::SubscriptionPage;
 pub use metadata::{CacheMetadata, ConsistencyLevel, StreamMetadata};
+pub use mounts::MountedStream;
 pub use publish::{
     ClaimedPublish, IdempotentClaim, IdempotentOutcome, PublishOutcome, RECORD_SEQUENCE_WRAP,
     SequenceReuse,
@@ -99,6 +101,8 @@ pub struct Broker {
     topics: RwLock<HashMap<TopicKey, Arc<StreamState>, RandomState>>,
     // Map of stream key -> metadata for existence checks.
     streams: RwLock<HashMap<StreamKey, StreamMetadata, RandomState>>,
+    // Each stream's MQTT mount, kept in step with `streams` under its lock.
+    mounts: mounts::Mounts,
     // Map of cache key -> metadata for existence checks.
     caches: RwLock<HashMap<CacheKey, CacheMetadata, RandomState>>,
     // Map of tenant id -> active marker.
@@ -208,6 +212,7 @@ impl Broker {
         Self {
             topics: RwLock::new(HashMap::with_hasher(RandomState::new())),
             streams: RwLock::new(HashMap::with_hasher(RandomState::new())),
+            mounts: Default::default(),
             caches: RwLock::new(HashMap::with_hasher(RandomState::new())),
             tenants: RwLock::new(HashMap::with_hasher(RandomState::new())),
             namespaces: RwLock::new(HashMap::with_hasher(RandomState::new())),
