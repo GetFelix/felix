@@ -34,6 +34,7 @@ async fn write_shard(data: &Path, count: usize) -> PathBuf {
             timestamp_micros: WHEN + i as u64,
             mark: Default::default(),
             publisher: None,
+            headers: None,
         }])
         .await
         .expect("append");
@@ -514,6 +515,7 @@ async fn an_incarnation_is_looked_up_in_its_own_directory() {
         timestamp_micros: WHEN,
         mark: Default::default(),
         publisher: None,
+        headers: None,
     }])
     .await
     .expect("append");

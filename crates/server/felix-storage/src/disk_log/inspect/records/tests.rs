@@ -48,6 +48,7 @@ fn record(payload: Bytes) -> AppendRecord {
         timestamp_micros: 1_700_000_000_000_000,
         mark: Default::default(),
         publisher: None,
+        headers: None,
     }
 }
 
@@ -665,7 +666,15 @@ async fn an_empty_segment_in_the_middle_with_the_wrong_base_is_a_gap() {
     let header = SegmentHeader::at_version(15, 1, BASELINE_VERSION).encode();
     let empty = add_segment(&dir, &header);
     let mut next = header.to_vec();
-    encode_record(&mut next, 15, 1, b"after-gap", None, &RecordMark::None);
+    encode_record(
+        &mut next,
+        15,
+        1,
+        b"after-gap",
+        None,
+        None,
+        &RecordMark::None,
+    );
     add_segment(&dir, &next);
 
     let stop = first_damage(&dir, &LogConfig::default())
