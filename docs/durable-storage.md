@@ -1303,7 +1303,9 @@ answer carries the storage id the node last registered with. When it names
 another id than the one this start runs under, the copies the node held are
 gone or set aside, and the broker treats its copies of older shards as
 learners (`docs/replication-design.md`, "A copy that lost its storage does not
-vote").
+vote"). It records that in a `replaced-storage` file under the data root
+before it registers the new id, and never removes it, so later starts know
+too once the control plane holds the new id.
 
 - **Unreachable control plane:** the broker opens nothing and announces no id
   until it answers, asking again with backoff up to 5 seconds. A stop while

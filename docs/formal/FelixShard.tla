@@ -605,6 +605,25 @@ CreateCountsEmpty == FALSE
 \* another id for it (`NamesOther`), and a copy that first hears a set
 \* written after its wipe votes with no promise and an empty log.
 ReplacedIdLearner == TRUE
+\* `SetlessFences`: the control plane's leader may send a member its fence
+\* without a set, as `fence_log` in promotion.rs does to a replica whose
+\* capabilities it could not learn. Such a fence is checked against no set,
+\* so the copy's own mark is all that can refuse it.
+\* `SetlessSeesMarker`: the copy refuses it on the replaced-storage marker
+\* under its data root, which is the learner mark of a copy that holds no
+\* set yet (`ReplacedIdLearner`). Off, only a mark kept in a set file
+\* refuses it, and a copy wiped before it heard any set answers with an
+\* empty log.
+\* `CounterFenceSeesLearner`: a cache's counter fence, which carries no set,
+\* is refused by a non-voter, judged on the cache log as
+\* `refuse_non_voter_fence` does. Off, the counter log, which keeps no set,
+\* decides, and a non-voter's empty counter log counts.
+\* `ReadmitChecksCounters`: re-admission also waits for the counter log to
+\* hold the start record of the set's generation.
+SetlessFences == FALSE
+SetlessSeesMarker == TRUE
+CounterFenceSeesLearner == TRUE
+ReadmitChecksCounters == TRUE
 \* `RefuseShortCopy`: a leader that gave its copy up in a crash answers no
 \* promotion fence from it until a newer leader has shipped to it, unless a
 \* set of two acknowledged what it may have lost (`AckedByTwo`):
@@ -639,8 +658,11 @@ ASSUME PromiseFromRoutes => LosePromises
 ASSUME WipedWaitsForAdopt => LosePromises /\ Elections > 0
 ASSUME ~WipedTakesBatches \/ ~WipedTakesNamed \/ WipedAboveAdopted \/ WipeBoundOracle
        => WipedWaitsForAdopt
-ASSUME WipedNonVoter => /\ LosePromises /\ Elections > 0 /\ ~WipedWaitsForAdopt /\ JointFence
+\* With `Elections = 0` only the control plane names leaders, as before
+\* elections ship; `Counters` is checked there.
+ASSUME WipedNonVoter => /\ LosePromises /\ ~WipedWaitsForAdopt /\ JointFence
                         /\ Spares = {} /\ Planners = {}
+ASSUME SetlessFences => WipedNonVoter
 ASSUME ReadmitCountsWiped \/ ReadmitBeforeCatchUp \/ PromoteNonVoter \/ WipeLeads \/ Forgets > 1
        => WipedNonVoter
 ASSUME WipedLearnsSet => WipedWaitsForAdopt \/ WipedNonVoter
@@ -828,7 +850,7 @@ Promise(f, b, g) ==
 \* `b` opens for writes at `g`. Recorded only where a second leader at one
 \* generation is in question, for the same reason: under `Elections`, and
 \* under `Suspicions`, where placement replaces a leader that is still open.
-TracksOpens == Elections > 0 \/ Suspicions > 0
+TracksOpens == Elections > 0 \/ Suspicions > 0 \/ WipedNonVoter
 Opens(b, g) == opened' = IF TracksOpens THEN opened \cup {<<g, b>>} ELSE opened
 
 \* `incs` holds incarnation + 1 (0 is none), so a report seeded from this
@@ -934,6 +956,11 @@ NamesOther(f, b) == Wiped(f) /\ 0 < setGen[b] /\ setGen[b] <= wipedAt[f]
 \* and `b`'s set names no other copy for it. `CreateCountsEmpty` also lets a
 \* wiped copy with no set file vote.
 Votes(f, b) == (~NonVoter(f) /\ ~NamesOther(f, b)) \/ (CreateCountsEmpty /\ setGen[f] = 0)
+
+\* What a fence without a set can see of `f`'s mark: the marker, which is
+\* the mark of a copy holding no set (`setGen[f] = 0`), and a mark kept in
+\* a set file.
+SetlessNonVoter(f) == NonVoter(f) /\ (SetlessSeesMarker \/ setGen[f] > 0)
 
 \* The credit given to a non-voter (`SetChangesJoint`, `AckedOnMajority`) is the
 \* one loss a record or set already survived, so it holds only while at most one
@@ -1898,6 +1925,31 @@ AnswerFence(b, f) ==
                     confirmed, opened, installed, nextVars, ackGen >>
     /\ UNCHANGED placeVars
 
+\* Under `SetlessFences`, a member answers the fence of the leader the
+\* control plane named with no set in it: no set check and nothing learned.
+\* A joint fence always carries its sets (`joint::sets`), so only a fence
+\* with no change pending goes without.
+AnswerSetlessFence(b, f) ==
+    /\ SetlessFences
+    /\ fencing[b] /\ bgen[b] > 0 /\ f /= b /\ f \notin halted
+    /\ ~Candidate(b) /\ oldSet[b] = {} /\ readmit = {}
+    /\ f \in Members(b)
+    /\ IF Elections > 0 THEN MayPromise(f, b, bgen[b]) ELSE promised[f] < bgen[b]
+    /\ ~SetlessNonVoter(f)
+    /\ Promise(f, b, bgen[b])
+    /\ answered' = IF FenceCounts(b, f) THEN [answered EXCEPT ![b] = @ \cup {f}] ELSE answered
+    /\ log' = IF FenceCounts(b, f) /\ Ahead(f, b) THEN [log EXCEPT ![b] = log[f]] ELSE log
+    /\ IF SetCheck /\ bgen[f] > 0
+       THEN /\ bgen' = [bgen EXCEPT ![f] = 0]
+            /\ fencing' = [fencing EXCEPT ![f] = FALSE]
+            /\ queued' = [queued EXCEPT ![f] = 0]
+            /\ pending' = [pending EXCEPT ![f] = 0]
+       ELSE UNCHANGED << bgen, fencing, queued, pending >>
+    /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bexpiry,
+                    hbOut, hbAt, hwm, halted, acked, writes, staleCommit,
+                    confirmed, opened, setVars, mine, ackGen >>
+    /\ UNCHANGED placeVars
+
 \* A replica that knows a newer set than the one a fence carries refuses it
 \* and says which. The leader learns that set and stops standing; it may
 \* stand again at a later generation (`Elect`), fenced on that set from the
@@ -2017,6 +2069,8 @@ ShipCounter(b, f) ==
     /\ Counters
     /\ bgen[b] > 0 /\ f /= b
     /\ f \in Members(b)
+    \* A non-voter copies the counter log in `CatchUp`, which counts nothing.
+    /\ ~NonVoter(f)
     /\ bgen[f] = 0
     /\ bgen[b] >= CLastGen(f)
     /\ ~fencing[b]
@@ -2067,6 +2121,7 @@ AnswerCounterFence(b, f) ==
     /\ fencing[b] /\ bgen[b] > 0 /\ f /= b
     /\ f \in Members(b)
     /\ f \notin canswered[b]
+    /\ CounterFenceSeesLearner => ~NonVoter(f)
     /\ MayPromise(f, b, bgen[b])
     /\ Promise(f, b, bgen[b])
     /\ canswered' = [canswered EXCEPT ![b] = @ \cup {f}]
@@ -2773,11 +2828,13 @@ Forget(f) ==
             /\ mine' = [mine EXCEPT ![f] = {}]
             /\ oldSet' = [oldSet EXCEPT ![f] = {}]
        ELSE UNCHANGED << setGen, mine, oldSet >>
-    \* Under `WipedNonVoter` the log goes too, as with `Wipe`.
+    \* Under `WipedNonVoter` the logs go too, as with `Wipe`.
     /\ IF WipedNonVoter
        THEN /\ log' = [log EXCEPT ![f] = <<>>]
             /\ hwm' = [hwm EXCEPT ![f] = 0]
-       ELSE UNCHANGED << log, hwm >>
+            /\ clog' = [clog EXCEPT ![f] = <<>>]
+            /\ chwm' = [chwm EXCEPT ![f] = 0]
+       ELSE UNCHANGED << log, hwm, clog, chwm >>
     \* A wiped leader or candidate restarts leading nothing.
     /\ IF WipeLeads
        THEN /\ bgen' = [bgen EXCEPT ![f] = 0]
@@ -2834,7 +2891,7 @@ Readmit(w) ==
     /\ NonVoter(w)
     /\ \A r \in readmit : r[2] < gen
     /\ leader /= w /\ bgen[leader] = gen /\ ~fencing[leader] /\ <<gen, leader>> \in opened
-    /\ gen + 1 <= Adopt
+    /\ Elections > 0 => gen + 1 <= Adopt
     /\ MayPromise(leader, leader, gen + 1)
     /\ gen' = gen + 1
     /\ cpExpiry' = now + L
@@ -2870,7 +2927,9 @@ Readmitted(w) ==
        IN /\ g > wipedAt[w]
           /\ IF ReadmitBeforeCatchUp
              THEN gen >= g /\ <<gen, leader>> \in opened
-             ELSE \E k \in 1..Len(log[w]) : log[w][k] = Start(g)
+             ELSE /\ \E k \in 1..Len(log[w]) : log[w][k] = Start(g)
+                  /\ Counters /\ ReadmitChecksCounters =>
+                        \E k \in 1..Len(clog[w]) : clog[w][k] = Start(g)
     /\ wipedAt' = [wipedAt EXCEPT ![w] = 0]
     /\ learner' = [learner EXCEPT ![w] = FALSE]
     /\ readmit' = { r \in readmit : r[1] /= w }
@@ -2897,6 +2956,21 @@ CatchUp(b, f) ==
     /\ Promise(f, b, bgen[b])
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, hwm, halted, queued, pending, acked, writes, staleCommit >>
+    /\ UNCHANGED << handoffVars, fencing, answered, confirmed, opened, setVars, ackGen >>
+
+\* The same for the counter log, which the leader ships apart from the cache
+\* log, so either can be behind the other.
+CatchUpCounters(b, f) ==
+    /\ Counters
+    /\ NonVoter(f) /\ f /= b
+    /\ bgen[b] > 0 /\ ~fencing[b]
+    /\ b = leader /\ bgen[b] = gen
+    /\ clog[f] /= clog[b]
+    /\ clog' = [clog EXCEPT ![f] = clog[b]]
+    /\ MayPromise(f, b, bgen[b])
+    /\ Promise(f, b, bgen[b])
+    /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
+                    hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
     /\ UNCHANGED << handoffVars, fencing, answered, confirmed, opened, setVars, ackGen >>
 
 \* The incarnation `f`'s handshake gives: none before it has registered.
@@ -2986,13 +3060,15 @@ Next ==
             \/ AnswerFence(b, f) /\ UNCHANGED quietVars
             \/ RefuseStaleSet(b, f) /\ UNCHANGED quietVars
             \/ WipedLearnSet(b, f) /\ UNCHANGED << counterVars, heard, idVars, named, wipedAt, readmit >>
+            \/ AnswerSetlessFence(b, f) /\ UNCHANGED quietVars
             \/ CatchUp(b, f) /\ UNCHANGED quietVars
+            \/ CatchUpCounters(b, f) /\ UNCHANGED << chwm, cconfirmed, canswered, cacked, heard, idVars, named, wipeVars >>
             \/ ShipCounter(b, f) /\ UNCHANGED loudVars
             \/ AnswerCounterFence(b, f) /\ UNCHANGED loudVars
             \/ Probe(b, f) /\ UNCHANGED << counterVars, heard, named >>
             \/ Answer(b, f) /\ UNCHANGED << counterVars, heard, named >>
         \/ Wipe(b) /\ UNCHANGED << counterVars, heard, named >>
-        \/ Forget(b) /\ UNCHANGED << counterVars, heard, named, readmit >>
+        \/ Forget(b) /\ UNCHANGED << cconfirmed, canswered, cacked, heard, named, readmit >>
         \/ Readmit(b) /\ UNCHANGED << counterVars, heard, idVars, named, wipedAt, learner >>
         \/ Readmitted(b) /\ UNCHANGED << counterVars, heard, idVars, named >>
         \/ Crash(b) /\ UNCHANGED << counterVars, named >>
@@ -3200,9 +3276,11 @@ CountersHeldByLeader ==
         \A id \in cacked : \E i \in 1..Len(clog[b]) : clog[b][i].id = id
 
 \* Every acknowledged counter update is on a majority of the replicas.
+\* A non-voter is credited as `AckedOnMajority` credits it.
 CountersOnMajority ==
     \A id \in cacked :
-        MajorityOf({ b \in Brokers : \E i \in 1..Len(clog[b]) : clog[b][i].id = id }, Brokers)
+        MajorityOf({ b \in Brokers : (NonVoterCredit /\ Wiped(b))
+                                     \/ \E i \in 1..Len(clog[b]) : clog[b][i].id = id }, Brokers)
 
 TypeOK ==
     /\ now \in 0..MaxTime

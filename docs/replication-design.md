@@ -862,10 +862,13 @@ that fence with no promise and an empty log
 (`FelixShardElectWipeNonVoterEvidenceOnly.cfg` elects two leaders at one
 generation this way). So the broker also looks at its own registration. At
 startup it asks the control plane which storage id the node last registered
-with. If that is another id, the node held copies under it, so it marks
-itself a learner in every shard log it creates from a set above generation 1.
-A shard created after that has generation 1 and nothing to lose, so its
-copies vote.
+with. If that is another id, the node held copies under it. The broker then
+writes a `replaced-storage` marker under its data root, before it registers
+the new id, and from then on any shard copy on that directory that holds no
+set yet is a learner for every generation above 1. The marker is never
+removed, so a restart after the new id registered still knows. Once a copy
+holds a set, the mark in its `replica-set` file decides. A shard created
+after the wipe has generation 1 and nothing to lose, so its copies vote.
 
 A broker the control plane has never registered held nothing, however new
 its directory, so its copies vote. That is what lets a new broker join a set,
@@ -876,8 +879,18 @@ from a broker that predates storage ids is evidence.
 **What a learner does.**
 
 - It refuses every fence, its own re-admission's included, after learning
-  the set the fence carried (`Unauthorized`, no ballot taken). It answers a
-  pre-vote with `NotVoting`.
+  the set the fence carried (`Unauthorized`, no ballot taken). That includes
+  a fence with no set, which a leader sends a replica whose capabilities it
+  could not learn: the marker refuses it for a copy that holds no set
+  (`FelixShardElectWipeNonVoterSetlessUnmarked.cfg` loses a write without
+  that). A promoting leader asks a replica it has not heard from yet for its
+  capabilities, so the set usually rides along. It answers a pre-vote with
+  `NotVoting`.
+- A cache's counter log and a stream's group logs keep no set, so their
+  fences are judged on the shard's own log. Judged on the counter log, a
+  learner's empty counter log counted, and counter updates a majority
+  acknowledged were lost
+  (`FelixShardElectWipeNonVoterCountersCountLearner.cfg`).
 - It takes records only from the leader the control plane confirms at that
   generation. The confirmed leader is reused for 500 ms at the same
   generation rather than read for every batch. Taking a batch records that
@@ -893,7 +906,11 @@ record of that set's generation. Only the control plane names the new id,
 and only after the wipe, so the leader at that generation fenced without the
 learner, and every record a majority acknowledged comes before that start
 record. If that leader is lost first, the next set naming the copy moves the
-target to its generation.
+target to its generation. For a cache shard, the counter log must hold the
+start record of that generation too. The leader ships the two logs apart, and
+a copy admitted on its cache log alone would answer the next counter fence
+with a counter log that lacks acknowledged updates
+(`FelixShardElectWipeNonVoterCountersUnchecked.cfg`).
 
 The ballot matters as much as the records. Before its wipe the copy may have
 promised any generation up to the one it caught up at, to a candidate it no
@@ -917,11 +934,9 @@ Not covered yet, and needed before elections (#1009 S9):
   and a move that needs it waits. Both are
   [#1737](https://github.com/GetFelix/felix/issues/1737), which must land
   before elections do.
-- The registration check lasts for the run that finds it. A broker that
-  registers its new id and restarts before it hears of some shard no longer
-  sees another id on record, so that shard's copy votes. Re-admission by the
-  control plane closes this: a set whose member's id changed marks that
-  member a learner.
+- A stream's group logs are not checked at re-admission, so a copy's
+  cursor and dead-letter logs may still be behind when it votes again. The
+  model has no group logs.
 - The leader still counts a learner's acknowledgements. That is safe while
   only the control plane names leaders. With elections the leader must leave
   them out.
@@ -949,6 +964,10 @@ Evidence (`replica/tests/non_voting.rs`):
 `a_learner_reuses_a_confirmed_read`,
 `a_route_naming_member_ids_makes_a_wiped_copy_a_learner`,
 `a_replaced_storage_id_is_a_learner`, `a_replaced_storage_id_votes_at_creation`,
+`a_replaced_copy_refuses_a_fence_without_a_set`,
+`a_counter_fence_is_refused_while_the_cache_copy_is_a_learner`,
+`a_copy_is_readmitted_only_once_its_counter_log_caught_up`,
+`a_readmitted_copy_keeps_the_ballot_of_a_later_leader`,
 `a_new_brokers_copy_votes_past_creation`,
 `a_readmitted_copy_keeps_the_ballot_its_catch_up_took`,
 `a_learner_named_leader_refuses_and_keeps_its_mark`,
@@ -956,7 +975,9 @@ Evidence (`replica/tests/non_voting.rs`):
 `with_the_gate_off_a_copy_with_no_set_answers_as_before`; and in
 `services/felix-broker-service/src/node/storage/tests.rs`,
 `a_node_registered_under_another_id_starts_replaced` and
-`a_new_node_does_not_start_replaced`.
+`a_new_node_does_not_start_replaced`; and in
+`crates/server/felix-replication/src/promotion/tests.rs`,
+`a_promotion_fence_asks_a_replica_it_has_not_heard_from_whether_it_checks_sets`.
 
 ### Every change of leader
 
