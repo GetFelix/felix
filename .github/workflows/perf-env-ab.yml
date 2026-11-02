@@ -58,7 +58,7 @@ jobs:
         env:
           ENV_A: ${{ inputs.env_a }}
           ENV_B: ${{ inputs.env_b || 'FELIX_SUB_QUEUE_MAX_BYTES_TOTAL=4294967296 FELIX_REPLAY_RING_MAX_BYTES_TOTAL=4294967296 FELIX_CACHE_WATCH_MAX_BYTES_TOTAL=1073741824' }}
-          ROUNDS: ${{ inputs.rounds || '6' }}
+          ROUNDS: ${{ inputs.rounds || '20' }}
         run: |
           set -euo pipefail
           out=/tmp/felix-perf-env-ab
