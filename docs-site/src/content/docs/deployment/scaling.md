@@ -21,7 +21,8 @@ Three things, and an operator (see
   while it moves. Moves go one at a time by default, until every stream's
   leaders and the totals are each within one of even. A new
   broker registering is the usual cause: it starts with nothing and takes
-  shards from whoever has the most.
+  shards from whoever has the most. Balancing waits while the cluster
+  recovers: see [Balancing waits during a failover](#balancing-waits-during-a-failover).
 - **A draining broker.** `POST /v1/nodes/{id}/drain` marks a broker as
   leaving. Placement moves every shard it leads to brokers that are staying,
   and replaces it as a follower wherever it holds a copy for someone else.
@@ -91,9 +92,28 @@ then is held and forwarded rather than refused; see
 
 Every step is written to the control plane's store, so a control-plane restart
 or leader change resumes the move where it was. A destination that dies before
-it leads is passed over: another caught-up replica takes the shard, or the old
-leader keeps it and the move is chosen again. A leader that dies mid-move is
-an ordinary failover.
+it leads never gets the shard. Before the fence, it is dropped from the move.
+After the fence, the old leader serves again at a new generation in the pass
+after the destination is marked down, so the shard's writes stop for about as
+long as it takes to notice the broker is gone, not for the fence timeout. If the
+old leader had already reported drained, another caught-up replica may take
+the shard instead. A leader that dies mid-move is an ordinary failover.
+
+### Balancing waits during a failover
+
+While a broker is down or has left, and was last heard from within
+`FELIX_SHARD_RESTORE_AFTER_MS`, or while a restore is copying a shard back,
+placement starts no moves for balance. A balance move already staged keeps
+copying but does not fence. Everything that repairs the cluster goes on:
+failover gives the dead broker's shards new leaders at once, restores copy
+lost followers back, and drains and an operator's moves proceed.
+
+The brokers left are busy opening the dead broker's shards during a failover,
+and a leader fenced then can take minutes to hand over, refusing writes the
+whole time. That is worst for a cache, which every client waits on. Holding
+balance until the cluster is whole avoids it. `GET /v1/placement/plan` and
+`admin plan` show the held shards as waiting for the recovery. A broker that
+never comes back holds balancing for at most `FELIX_SHARD_RESTORE_AFTER_MS`.
 
 ## Adding a broker
 
@@ -214,7 +234,7 @@ stateDiagram-v2
     Staged --> Fenced: destination within the lag bound
     Staged --> [*]: timed_out, abandon or cancel, frees the slot
     Fenced --> [*]: drained and cut over, frees the slot
-    Fenced --> [*]: cancel, the old leader serves again
+    Fenced --> [*]: cancel or destination down, the old leader serves again
 ```
 
 Metrics on the control plane:
@@ -225,7 +245,7 @@ Metrics on the control plane:
 | `felix_shards_under_replicated` | shards with fewer copies on serving brokers than their replication factor |
 | `felix_shard_replicas_missing` | the copies those shards are missing between them |
 | `felix_shard_moves_timed_out_total` | fenced moves given up at `FELIX_SHARD_FENCE_TIMEOUT_MS`, moves and follower replacements given up at `FELIX_SHARD_MOVE_TIMEOUT_MS`, pending replica sets dropped at `FELIX_SHARD_PENDING_SET_TIMEOUT_MS`, and restores dropped at `FELIX_SHARD_RESTORE_STALL_MS` |
-| `felix_shard_moves_waiting` | moves that could not advance in the last pass |
+| `felix_shard_moves_waiting` | moves that could not advance in the last pass, including balance moves held while the cluster recovers |
 | `felix_shard_assignment_write_conflicts_total` | steps not written because another control-plane instance changed the shard after this pass read it |
 | `felix_placement_writes_fenced_total` | passes and operator requests stopped because another placement write landed after they read the store, which is how the move limits hold across control-plane instances |
 | `felix_placement_lease_held` | 1 on the control-plane instance running placement's timed passes |

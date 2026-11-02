@@ -168,6 +168,10 @@ pub(super) struct Moves {
     policy: MovePolicy,
     /// Whether a move may start for the cluster's leader totals.
     pub(super) cluster_moves: bool,
+    /// A broker is down, or a copy is being restored: nothing starts or
+    /// fences for balance, so no shard is held behind brokers busy failing
+    /// over (#1805). Drains, restores and an operator's moves go on.
+    pub(super) recovering: bool,
     /// Whether some shard wanted a move for its stream's spread.
     pub(super) stream_wanted: bool,
 }
@@ -186,6 +190,7 @@ impl Moves {
             policy,
             cluster_moves: true,
             stream_wanted: false,
+            recovering: false,
         };
         for assignment in existing {
             // A seat fence is `Draining` with `joining` and no successor:
@@ -477,14 +482,32 @@ pub(super) fn move_step<'a>(
         if !caught_up.is_drained(key, existing.generation) {
             // The fence may land while the destination is still copying, and
             // the leader will not report drained until it is level. One that
-            // died first never will be: drop it, still fenced, and the leader
-            // reports drained against the followers it has. The cut-over then
-            // picks one of them, or hands the shard back to the leader.
-            // A halted one never will either.
+            // died first never will be, and its leader is likely busy taking
+            // over the dead broker's shards, so a drained report at a new
+            // generation can take minutes (#1805). The leader serves again at
+            // once instead: nobody has led since the fence, so this is the
+            // same step as the fence timeout's and an operator's cancel.
+            if let Some(successor) = existing.successor.as_deref().filter(|s| !is_live(s)) {
+                return Decision::Move(
+                    MoveStep::Abandon {
+                        successor: successor.to_string(),
+                    },
+                    ShardAssignment {
+                        // Not the shard's fault: no backoff, and it is not
+                        // queued behind the others for its next move.
+                        move_started_at_millis: None,
+                        ..retake(existing, replication_factor)
+                    },
+                );
+            }
+            // A halted one never will either, but its leader is reporting:
+            // drop it, still fenced, and the leader reports drained against
+            // the followers it has. The cut-over then picks one of them, or
+            // hands the shard back to the leader.
             if let Some(successor) = existing
                 .successor
                 .as_deref()
-                .filter(|s| !is_live(s) || halted_now(s).is_some())
+                .filter(|s| halted_now(s).is_some())
             {
                 let mut replicas = existing.replicas.clone();
                 replicas.retain(|replica| replica != successor);
@@ -611,7 +634,11 @@ pub(super) fn move_step<'a>(
                 },
             );
         }
-        if moves.ready_to_fence(caught_up, key, successor) {
+        // A balance move keeps copying but does not fence while the cluster
+        // recovers: the fence would stop the shard's writes behind brokers
+        // that may take minutes to report drained.
+        let held = moves.recovering && existing.move_reason == Some(MoveReason::Balance);
+        if !held && moves.ready_to_fence(caught_up, key, successor) {
             return Decision::Move(
                 MoveStep::Fence,
                 ShardAssignment {
@@ -631,6 +658,9 @@ pub(super) fn move_step<'a>(
                 },
                 undo_staged(existing, successor, replication_factor),
             );
+        }
+        if held {
+            return Decision::Waiting(Blocked::Recovering);
         }
         return Decision::Waiting(Blocked::DestinationCatchingUp {
             successor: successor.to_string(),
@@ -749,6 +779,9 @@ pub(super) fn move_step<'a>(
     };
 
     match wanted {
+        // Failover places the dead broker's shards elsewhere; evening out the
+        // leaders waits until that and every restore are done.
+        Some(_) if leader_live && moves.recovering => Decision::Waiting(Blocked::Recovering),
         Some(destination) => {
             // A move given up at the fence cost the shard its writes for the
             // fence timeout; the same move again soon would likely do the same.
@@ -1051,6 +1084,10 @@ fn reseat<'a>(
     let Some(replacement) = replacement else {
         return Decision::Kept;
     };
+    // A crowded zone is balance too, and its seat can fence the leader.
+    if draining.is_none() && moves.recovering {
+        return Decision::Waiting(Blocked::Recovering);
+    }
     if let Err(blocked) = moves.begin(&existing.leader, &replacement.node_id) {
         return Decision::Waiting(blocked);
     }
