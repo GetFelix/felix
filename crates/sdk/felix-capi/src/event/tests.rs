@@ -17,6 +17,7 @@ fn event(publisher: Option<&str>, timestamp_micros: Option<u64>) -> FelixEvent {
         skipped_before: 0,
         publisher: publisher.map(Arc::from),
         timestamp_micros,
+        headers: None,
     })
 }
 

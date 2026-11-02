@@ -41,6 +41,9 @@ pub(crate) struct PublishWorker {
     /// The broker on this stream advertised `FEATURE_EXPLICIT_SHARD`. One
     /// that did not would ignore `shard` and route by the key.
     pub(crate) takes_shard: bool,
+    /// The broker on this stream answered `EXT_RECORD_HEADERS`. One that did
+    /// not would refuse the extended frame and close the stream.
+    pub(crate) takes_record_headers: bool,
 }
 
 pub(crate) enum PublishRequest {
