@@ -1585,9 +1585,9 @@ async fn confirmed_reads_for_new_shards_do_not_hold_up_the_lane() {
     assert!((shards..=2 * shards).contains(&asked), "{asked} reads");
 }
 
-/// A router in which broker-a leads the shard at `generation` with `LOCAL`
-/// as its follower, the set naming `LOCAL` under `local_id`.
-fn router_naming(generation: u64, local_id: [u8; 16]) -> Arc<ShardRouter> {
+/// A router in which broker-a leads the shard's `incarnation` at `generation`
+/// with `LOCAL` as its follower, the set naming `LOCAL` under `local_id`.
+fn router_naming(generation: u64, incarnation: u64, local_id: [u8; 16]) -> Arc<ShardRouter> {
     let router = Arc::new(ShardRouter::new(
         LOCAL,
         "us-west-2",
@@ -1607,7 +1607,7 @@ fn router_naming(generation: u64, local_id: [u8; 16]) -> Arc<ShardRouter> {
             draining: false,
             successor: None,
             routing: Default::default(),
-            incarnation: 0,
+            incarnation,
             fence_storage_ids: Default::default(),
             member_storage_ids: [
                 (
@@ -1636,15 +1636,18 @@ fn router_naming(generation: u64, local_id: [u8; 16]) -> Arc<ShardRouter> {
 async fn a_new_shards_first_fence_needs_no_confirmed_read() {
     const OWN: [u8; 16] = [2; 16];
     let (broker, _dir) = broker_with_storage().await;
+    super::incarnation::register(&broker, 7).await;
     let control_plane = Arc::new(GatedConfirmed {
         open: tokio::sync::Semaphore::new(0),
         asked: std::sync::atomic::AtomicUsize::new(0),
     });
-    let handler = ReplicaHandler::new(Arc::clone(&broker), router_naming(1, OWN))
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_naming(1, 7, OWN))
         .with_local_storage(felix_storage::StorageId::from_bytes(OWN))
         .with_confirmed_routes(Arc::clone(&control_plane) as _);
+    let mut first = fence(1);
+    first.shard.incarnation = Some(7);
     // Without the creation set, a first fence is refused while the read runs.
-    taken(&handler.fence(SENDER, fence(1)).await);
+    taken(&handler.fence(SENDER, first).await);
     assert_eq!(
         control_plane
             .asked
@@ -1653,24 +1656,34 @@ async fn a_new_shards_first_fence_needs_no_confirmed_read() {
     );
 }
 
-/// Only the creation set is evidence. One naming this copy at a later
-/// generation, or naming another storage id, still needs the read.
+/// Only the creation set of an incarnation is evidence. One naming this copy
+/// at a later generation, naming another storage id, or of a shard with no
+/// incarnation (deleted and re-created at generation 1, storage id kept)
+/// still needs the read.
 #[tokio::test]
 async fn a_later_set_or_another_storage_id_still_needs_the_read() {
     const OWN: [u8; 16] = [2; 16];
-    for (generation, named) in [(5, OWN), (1, [3; 16])] {
+    for (generation, incarnation, named) in [(5, 7, OWN), (1, 7, [3; 16]), (1, 0, OWN)] {
         let (broker, _dir) = broker_with_storage().await;
+        if incarnation != 0 {
+            super::incarnation::register(&broker, incarnation).await;
+        }
         let control_plane = Arc::new(GatedConfirmed {
             open: tokio::sync::Semaphore::new(0),
             asked: std::sync::atomic::AtomicUsize::new(0),
         });
-        let handler = ReplicaHandler::new(Arc::clone(&broker), router_naming(generation, named))
-            .with_local_storage(felix_storage::StorageId::from_bytes(OWN))
-            .with_confirmed_routes(Arc::clone(&control_plane) as _);
-        let answer = handler.fence(SENDER, fence(generation)).await;
+        let handler = ReplicaHandler::new(
+            Arc::clone(&broker),
+            router_naming(generation, incarnation, named),
+        )
+        .with_local_storage(felix_storage::StorageId::from_bytes(OWN))
+        .with_confirmed_routes(Arc::clone(&control_plane) as _);
+        let mut request = fence(generation);
+        request.shard.incarnation = (incarnation != 0).then_some(incarnation);
+        let answer = handler.fence(SENDER, request).await;
         assert!(
-            !matches!(answer, InternalMessage::FenceOk(_)),
-            "generation {generation}: {answer:?}"
+            reading(&answer),
+            "generation {generation} incarnation {incarnation}: {answer:?}"
         );
     }
 }

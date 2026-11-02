@@ -80,7 +80,8 @@ const PRUNE_ABOVE: usize = 1024;
 /// load: no lock, no allocation, nothing awaited. Only the first request
 /// for a shard allocates, copying the map to add it.
 pub(crate) struct ConfirmedReads {
-    slots: ArcSwap<HashMap<Arc<ShardKey>, Arc<Slot>>>,
+    /// ahash: the key is three strings, hashed on every request.
+    slots: ArcSwap<HashMap<Arc<ShardKey>, Arc<Slot>, ahash::RandomState>>,
     permits: Arc<tokio::sync::Semaphore>,
     /// What the slots' timestamps count from.
     epoch: Instant,
@@ -89,7 +90,7 @@ pub(crate) struct ConfirmedReads {
 impl Default for ConfirmedReads {
     fn default() -> Self {
         Self {
-            slots: ArcSwap::from_pointee(HashMap::new()),
+            slots: ArcSwap::from_pointee(HashMap::default()),
             permits: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_READS)),
             epoch: Instant::now(),
         }
@@ -118,6 +119,9 @@ struct Slot {
     /// Whether the last request found no fresh answer, so its retry is
     /// owed one.
     owed: AtomicBool,
+    /// Woken by a request that found the answer stale while a task holds
+    /// the slot, so a drop in the freshness needed is not waited out.
+    stale: tokio::sync::Notify,
 }
 
 struct Answer {
@@ -158,7 +162,9 @@ impl ConfirmedReads {
         }
         // A plain load first: while a task reads, a request writes nothing
         // shared but `wanted`.
-        if !slot.reading.load(Ordering::Acquire) && !slot.reading.swap(true, Ordering::AcqRel) {
+        let spawned =
+            !slot.reading.load(Ordering::Acquire) && !slot.reading.swap(true, Ordering::AcqRel);
+        if spawned {
             self.spawn_read(routes, key, slot);
         }
         let answer = slot.answer.load();
@@ -169,6 +175,9 @@ impl ConfirmedReads {
         // Loaded first so the usual request writes nothing here.
         if slot.owed.load(Ordering::Relaxed) != decided.is_none() {
             slot.owed.store(decided.is_none(), Ordering::Relaxed);
+        }
+        if decided.is_none() && !spawned {
+            slot.stale.notify_one();
         }
         decided
     }
@@ -191,6 +200,7 @@ impl ConfirmedReads {
             wanted: AtomicU64::new(now),
             fresh: AtomicU64::new(fresh),
             owed: AtomicBool::new(true),
+            stale: tokio::sync::Notify::new(),
         });
         let stale = u64::try_from(FRESH.as_nanos()).unwrap_or(u64::MAX);
         let before = self.slots.rcu(|current| {
@@ -273,12 +283,25 @@ impl ConfirmedReads {
                     // refused one whose retry has not come yet. A leader
                     // backs off up to `FENCE_RETRY_MAX` between fences, so
                     // the retry is waited for up to `WANTED_FOR`.
+                    // A request needing a shorter freshness (elections
+                    // turned on) wakes the wait to recompute it.
+                    loop {
+                        let fresh = slot.fresh.load(Ordering::Relaxed);
+                        let margin = at
+                            .saturating_sub(started)
+                            .saturating_mul(2)
+                            .clamp(fresh / 8, fresh / 2);
+                        let due = at.saturating_add(fresh - margin);
+                        let now = self.now();
+                        if now >= due {
+                            break;
+                        }
+                        tokio::select! {
+                            () = tokio::time::sleep(Duration::from_nanos(due - now)) => break,
+                            () = slot.stale.notified() => {}
+                        }
+                    }
                     let fresh = slot.fresh.load(Ordering::Relaxed);
-                    let margin = at
-                        .saturating_sub(started)
-                        .saturating_mul(2)
-                        .clamp(fresh / 8, fresh / 2);
-                    tokio::time::sleep(Duration::from_nanos(fresh - margin)).await;
                     let asked_within = if slot.owed.load(Ordering::Relaxed) {
                         nanos(WANTED_FOR).max(fresh / 2)
                     } else {
@@ -319,3 +342,6 @@ impl Drop for Reading<'_> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

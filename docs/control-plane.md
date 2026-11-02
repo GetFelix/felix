@@ -1684,7 +1684,8 @@ copy with no election promise on disk, before it takes a leader
 ([#1332](https://github.com/GetFelix/felix/issues/1332)). It asks from a
 background task, one read per shard at a time and at most 16 at once, never
 while a peer request waits. A new shard's copy asks nothing once its
-routing view holds the shard's creation set naming it; a learner under
+routing view holds the creation set of the shard's incarnation naming it
+(a shard with no incarnation still reads); a learner under
 elections is refreshed about twice a second while it takes batches
 ([#1791](https://github.com/GetFelix/felix/issues/1791)). An adopted
 leader is the assignment's leader at the elected generation, so this is

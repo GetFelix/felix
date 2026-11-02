@@ -782,15 +782,19 @@ writing nothing. The check only adds refusals to the view's, so it cannot
 make a copy take anything it would have refused before.
 
 A new shard's copy skips the read. When the view holds the shard's
-creation, generation 1, naming this copy under the storage id it holds now,
-and the request is from the leader it names, the copy answers from its
-ballot alone. That set was written after this storage id registered, so
+creation, generation 1 of the incarnation the request names, naming this
+copy under the storage id it holds now, and the request is from the leader
+it names, the copy answers from its ballot alone. That set was written after this storage id registered, so
 after any wipe of this broker: no earlier copy here ever held the shard,
 and this one lost no promise for the read to stand in for. Its empty
 ballot is true, as on any new follower, under elections too. This is the
 same test `is_wiped_learner` uses for the shard's creation. A set at a
 later generation, an older control plane's set with no storage ids, or one
-naming another id is no such evidence, and the read decides.
+naming another id is no such evidence, and the read decides. Neither is the
+creation of a shard with no incarnation. The control plane refuses to
+re-create a deleted name until incarnations are finalized, but if it did
+not, the copy would keep its storage id and a lagging view's old creation
+would look the same as the new one, so the copy does not rely on that.
 
 No peer request waits on the read
 ([#1791](https://github.com/GetFelix/felix/issues/1791)). A peer lane
@@ -824,7 +828,9 @@ with hundreds at the same moment.
 The task refreshes the answer shortly before it goes stale, leaving twice
 what the last read took, and only while the shard is still being asked
 about. A queue of reads at the control plane widens that margin rather
-than letting answers lapse. A failed read or an unassigned shard
+than letting answers lapse. A request that needs a fresher answer than the
+task is keeping (elections just turned on) wakes it to read again at once.
+A failed read or an unassigned shard
 clears the answer and is not retried on its own: the next request starts
 another read.
 
@@ -851,7 +857,8 @@ Evidence (`replica/tests/fence.rs`):
 `a_new_shards_first_fence_needs_no_confirmed_read`,
 `a_later_set_or_another_storage_id_still_needs_the_read`,
 `confirmed_reads_for_new_shards_do_not_hold_up_the_lane`,
-`one_confirmed_read_answers_every_request_for_a_shard`.
+`one_confirmed_read_answers_every_request_for_a_shard`; and
+`a_shorter_freshness_wakes_the_refresh` (`confirmed/tests.rs`).
 
 A control plane
 that does not serve the read (404, or 501 while its Raft leader predates

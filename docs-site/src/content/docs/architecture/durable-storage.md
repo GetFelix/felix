@@ -183,8 +183,8 @@ the control plane, so the copy also checks the assignment the control
 plane's leader confirms before it takes any leader
 ([#1332](https://github.com/GetFelix/felix/issues/1332)). That read runs in
 the background, so no replication request waits on the control plane, and a
-new shard's copy skips it: a creation set naming the copy's current storage
-id shows it never held the shard before
+new shard's copy skips it once streams carry incarnations: a creation set
+naming the copy's current storage id shows it never held the shard before
 ([#1791](https://github.com/GetFelix/felix/issues/1791)).
 
 A **follower** that crashed under `periodic` or `none`, or lost its disk, may

@@ -1707,9 +1707,10 @@ impl ReplicaHandler {
             return elections.then(|| unbacked(correlation_id, key, generation));
         };
         // Never awaited here: the lane answers one request at a time.
-        // Generations only rise within an incarnation. A shard with none
-        // can be deleted and re-created at generation 1, so an answer for it
-        // is held no longer than under elections.
+        // Generations only rise within an incarnation. Without one, a
+        // delete and re-create at generation 1 would look the same here; the
+        // control plane refuses that re-create, but the copy does not lean on
+        // it, so such an answer is held no longer than under elections.
         let fresh = if elections || sent.unwrap_or(0) == 0 {
             crate::confirmed::FRESH_UNDER_ELECTIONS
         } else {
@@ -1729,7 +1730,10 @@ impl ReplicaHandler {
     /// of this broker: no earlier copy here held the shard, and this one lost
     /// no promise for the confirmed read to stand in for. Its empty ballot is
     /// a true one, as on any new follower. The same test as the creation case
-    /// of `is_wiped_learner` in `promotion/joint.rs`.
+    /// of `is_wiped_learner` in `promotion/joint.rs`. A shard with no
+    /// incarnation is left to the read: a delete and re-create at generation
+    /// 1 (which the control plane refuses) would keep the storage id and look
+    /// the same here.
     fn created_here(
         &self,
         key: &felix_router::ShardKey,
@@ -1746,6 +1750,7 @@ impl ReplicaHandler {
         let snapshot = self.router.snapshot();
         snapshot.get(key).is_some_and(|route| {
             route.generation == 1
+                && route.incarnation != 0
                 && sent.unwrap_or(0) == route.incarnation
                 && sender == Some(route.leader.node_id.as_str())
                 && crate::replica_set::names_storage(route, self.router.local_node_id(), own)
