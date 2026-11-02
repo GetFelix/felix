@@ -199,11 +199,12 @@ Detail: [`docs/cluster-harness.md`](https://github.com/GetFelix/felix/blob/main/
 
 ### Shard starvation
 
-Some failures need size, not faults. In felixd's scale test (1000 workloads,
-about 2000 replicated streams) a small lease cache's renewals waited longer than
-the lease TTL while every broker stayed up and nothing was logged at ERROR. The
-replication driver kept giving its pass slots to the same shards, and lease
-reads waited behind new shards' fences on the peer lanes.
+Some failures need size, not faults. felixd, a workload runner built on Felix,
+keeps its leases in a Felix cache. In its scale test (1000 workloads, about 2000
+replicated streams) the lease renewals waited longer than the lease TTL while
+every broker stayed up and nothing was logged at ERROR. Each broker ships at
+most 16 shards at a time and kept picking the same busy ones, and lease reads
+waited behind other shards' work on the broker-to-broker connections.
 
 The `scale` suite rebuilds that load on three brokers. A canary renews four
 keys in a one-shard `Quorum` cache every 2 s with a 6 s TTL while the test

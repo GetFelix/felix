@@ -596,11 +596,15 @@ artifact.
 hundreds of shards still serves a small, latency-critical one on time. It
 guards against the failure behind #1760: at felixd's scale, a lease cache's
 renewals waited longer than the lease TTL while every broker stayed up, no
-leader changed and nothing was logged at ERROR. Three causes were found: the
-replication driver gave its 16 pass slots to the same shards over and over
-(#1794), a copy read the control plane while holding the peer request lane
-(#1791), and read-round fences waited behind promotion fences on that lane
-(#1796).
+leader changed and nothing was logged at ERROR. (felixd is a workload runner
+built on Felix that keeps its leases in a Felix cache.) Three causes were found:
+
+- Each broker's replication driver ships at most 16 shards at a time (its
+  pass slots), and it kept giving those slots to the same busy shards (#1794).
+- A follower's request to a broker could wait on a control-plane read, which
+  held up every other request on the same broker-to-broker connection (#1791).
+- The fences a leader sends to confirm a read waited behind the fences of newly
+  promoted shards on that connection (#1796).
 
 The test starts three brokers with the fleet features felixd finalizes and a
 one-shard `Quorum` cache with three replicas, `leases`. A canary renews four
@@ -608,7 +612,7 @@ keys in it the way felixd renews a lease: a conditional put on the version it
 last wrote, with a 6 s TTL, every 2 s, then a read back. For 12 s the cluster is
 otherwise idle, which sets the baseline. Then the test creates single-shard
 `Quorum` streams with three replicas through the control plane's API, 16 at a
-time, and appends to the first few every 50 ms from the moment each exists.
+time, and appends to the first 96 every 50 ms from the moment each exists.
 After the last create the appends go on for a while longer.
 
 ```mermaid
@@ -633,11 +637,15 @@ It fails when:
   the read after it found the key gone. A renewal has 4 s (TTL minus the
   interval) to be applied.
 - **The loaded p99 is too far from the idle one,** for renewals or for reads:
-  more than 20 times the idle p99, and at least 2 s. Idle p99s are a few
+  over 20 times the idle p99 and over 2 s. Idle p99s are a few
   milliseconds, so the 2 s floor is what usually applies. On GitHub's 4-vCPU
   runners at the per-PR size, the loaded p99 was 5 to 6 s without the fixes
   and under 0.85 s with them, so 2 s leaves room for a slow runner either way.
-  At the nightly size it was 5 to 6 s without and under 0.2 s with.
+  At the nightly size it was 5 to 6 s without and under 0.2 s with. A run takes
+  about 60 loaded samples of each at the per-PR size, so its p99 is the worst
+  one: a single 2 s stall fails it.
+- **The load never applied.** Fewer than half the appended streams took an
+  append, so the canary was not tested under load.
 
 | Variant | Streams | Appended | Hold | Build | Where |
 | --- | --- | --- | --- | --- | --- |

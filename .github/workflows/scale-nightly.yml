@@ -11,9 +11,9 @@ name: Shard starvation (nightly)
 
 on:
   schedule:
-    # Every night at 05:23 UTC, clear of the history (03:17), power-loss
-    # (04:07) and release-build (04:41) runs.
-    - cron: "23 5 * * *"
+    # Every night at 05:53 UTC, after the history and fuzz (03:17),
+    # power-loss (04:07), release-build (04:41) and TLA walk (05:23) runs.
+    - cron: "53 5 * * *"
   workflow_dispatch:
     inputs:
       variant:
@@ -101,10 +101,14 @@ jobs:
 
       # The harness runs the broker beside the test binary, which `cargo test`
       # does not rebuild.
+      # Step timeouts, so a hang fails the step and the Report step still
+      # files it; a job that hits its own timeout counts as cancelled.
       - name: Build the broker the harness runs
+        timeout-minutes: 25
         run: cargo build ${{ steps.variant.outputs.profile }} -p felix-broker-service --bin felix-broker
 
       - name: Run the canary
+        timeout-minutes: 25
         env:
           FELIX_TEST_CLUSTER_LOG_DIR: ${{ runner.temp }}/cluster-logs
         run: |
@@ -121,7 +125,7 @@ jobs:
             echo "### Lease canary"
             echo
             echo '```'
-            grep -E 'lease canary:|panicked at|the lease canary was starved' "$RUNNER_TEMP/scale-output.txt" | head -20 || true
+            grep -E 'lease canary:|panicked at|the lease canary failed' "$RUNNER_TEMP/scale-output.txt" | head -20 || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 

@@ -10,9 +10,9 @@
 //! fences (#1796). `docs/cluster-harness.md` ("Shard starvation") says how to
 //! read a failure.
 //!
-//! Run with `cargo test -p felix-cluster --test scale lease_starvation:: -- --include-ignored`.
-use std::sync::Arc;
+//! `docs/cluster-harness.md` has the commands to run each size.
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -20,6 +20,7 @@ use felix_client::{CacheCondition, Client};
 use felix_cluster::{CacheSpec, Cluster, ClusterConfig, StreamSpec};
 use felix_wire::AckMode;
 use serial_test::serial;
+use tokio::sync::Barrier;
 use tokio::task::JoinSet;
 
 /// The canary: one small replicated cache, as felixd keeps its leases.
@@ -49,11 +50,10 @@ const FEATURES: [&str; 4] = [
 /// sets the bound; the multiple only takes over when the runner is slow even
 /// at rest.
 const BASELINE_MULTIPLE: u32 = 20;
-/// The least the bound is. Measured on 4-vCPU GitHub runners, per-PR size
-/// (debug): without the #1760 fixes the loaded p99 was 5.0 s (renewals) and
-/// 6.0 s (reads); with them, 0.81 s and 0.64 s. 2 s sits about 2.5 times
-/// from each, so runner noise on either side does not flip the result. The
-/// nightly size (release) has more room: 5 to 6 s without, under 0.2 s with.
+/// The least the bound is. At the per-PR size the loaded p99 was 5 to 6 s
+/// without the #1760 fixes and under 0.85 s with them, so 2 s is about 2.5
+/// times from each and runner noise does not flip the result.
+/// `docs/cluster-harness.md` has the runs.
 const BOUND_FLOOR: Duration = Duration::from_secs(2);
 
 /// How much load a run applies.
@@ -111,7 +111,7 @@ async fn a_lease_cache_renews_on_time_while_shards_are_created_in_bulk() {
 /// The same at felixd's scale (about 1500 streams), where #1760 was found.
 /// Nightly (`scale-nightly.yml`).
 #[serial]
-#[ignore = "nightly: about ten minutes on a 4-vCPU runner"]
+#[ignore = "nightly: wants a release build and 1500 streams"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_lease_cache_renews_on_time_at_felixd_scale() {
     run(Load::from_env(Load {
@@ -165,12 +165,23 @@ async fn run(load: Load) {
         cluster.namespace.clone(),
     ));
     let stop = Arc::new(AtomicBool::new(false));
+    // The baseline starts once every key is claimed, so a slow first leader
+    // election does not eat into it.
+    let claimed = Arc::new(Barrier::new(KEYS + 1));
     let mut renewers = JoinSet::new();
     for key in 0..KEYS {
         let canary = Arc::clone(&canary);
         let stop = Arc::clone(&stop);
-        renewers.spawn(async move { canary.renew(format!("lease-{key}"), &stop).await });
+        let claimed = Arc::clone(&claimed);
+        renewers.spawn(async move { canary.renew(format!("lease-{key}"), &claimed, &stop).await });
     }
+    // Bounded: a renewer whose claim panicked never reaches the barrier.
+    tokio::time::timeout(
+        felix_cluster::wait::budget(Duration::from_secs(90)),
+        claimed.wait(),
+    )
+    .await
+    .expect("every lease key claimed");
 
     tokio::time::sleep(IDLE).await;
     canary.loaded.store(true, Ordering::Release);
@@ -195,8 +206,13 @@ async fn run(load: Load) {
     tokio::time::sleep(load.hold).await;
 
     stop.store(true, Ordering::Release);
-    while renewers.join_next().await.is_some() {}
-    while appenders.join_next().await.is_some() {}
+    // A renewer that panicked stopped measuring its key; that fails the run.
+    while let Some(done) = renewers.join_next().await {
+        done.expect("renewer");
+    }
+    while let Some(done) = appenders.join_next().await {
+        done.expect("appender");
+    }
 
     let report = canary.report();
     let summary = format!(
@@ -206,10 +222,18 @@ async fn run(load: Load) {
     );
     // Printed either way, so a green nightly still records the margin.
     eprintln!("lease canary: {summary}");
-    let problems = report.problems();
+    let mut problems = report.problems();
+    // Without the load the canary passes for nothing.
+    let loaded_streams = appends.streams.load(Ordering::Relaxed) as usize;
+    if loaded_streams * 2 < load.appended {
+        problems.push(format!(
+            "only {loaded_streams} of {} appended streams took an append, so the load never applied",
+            load.appended
+        ));
+    }
     if !problems.is_empty() {
         panic!(
-            "the lease canary was starved: {}\n{summary}\n{}",
+            "the lease canary failed: {}\n{summary}\n{}",
             problems.join("; "),
             quorum_timeouts(&cluster),
         );
@@ -220,7 +244,11 @@ async fn run(load: Load) {
 /// operator or felixd would, and call `created` with each one's index and
 /// name as it exists.
 async fn create_streams(cluster: &Cluster, load: Load, mut created: impl FnMut(usize, String)) {
-    let http = reqwest::Client::new();
+    // Bounded, so a hung control plane fails the test instead of the job.
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .expect("http client");
     let url = format!(
         "{}/v1/tenants/{}/namespaces/{}/streams",
         cluster.control_plane_url(),
@@ -263,7 +291,8 @@ async fn create_stream(http: &reqwest::Client, url: &str, token: &str, name: &st
         "durable": true,
     });
     // `busy` wrote nothing, so it is safe to send again.
-    for wait_ms in [100, 250, 500, 1_000, 2_000, 4_000] {
+    let mut waits_ms = [100, 250, 500, 1_000, 2_000, 4_000].into_iter();
+    loop {
         let response = http
             .post(url)
             .bearer_auth(token)
@@ -278,20 +307,24 @@ async fn create_stream(http: &reqwest::Client, url: &str, token: &str, name: &st
         let text = response.text().await.unwrap_or_default();
         let busy = status == reqwest::StatusCode::SERVICE_UNAVAILABLE && text.contains("busy");
         assert!(busy, "create {name}: {status}: {text}");
+        let Some(wait_ms) = waits_ms.next() else {
+            panic!("create {name}: the control plane stayed busy");
+        };
         tokio::time::sleep(Duration::from_millis(wait_ms)).await;
     }
-    panic!("create {name}: the control plane stayed busy");
 }
 
 #[derive(Default)]
 struct Appends {
     ok: AtomicU64,
     failed: AtomicU64,
+    /// Streams that took at least one append.
+    streams: AtomicU64,
 }
 
 /// Append to `stream` every [`APPEND_EVERY`] until `stop`. Failures are
 /// counted, not fatal: a stream that is still being placed refuses for a
-/// while, and the canary is what the test judges.
+/// while. The run only checks that most streams took some appends.
 async fn append(
     client: Arc<Client>,
     tenant_id: String,
@@ -302,6 +335,7 @@ async fn append(
 ) {
     let mut tick = tokio::time::interval(APPEND_EVERY);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut took_one = false;
     while !stop.load(Ordering::Acquire) {
         tick.tick().await;
         let publish = client.publish(
@@ -312,7 +346,13 @@ async fn append(
             AckMode::PerMessage,
         );
         match tokio::time::timeout(Duration::from_secs(10), publish).await {
-            Ok(Ok(_)) => appends.ok.fetch_add(1, Ordering::Relaxed),
+            Ok(Ok(_)) => {
+                if !took_one {
+                    took_one = true;
+                    appends.streams.fetch_add(1, Ordering::Relaxed);
+                }
+                appends.ok.fetch_add(1, Ordering::Relaxed)
+            }
             _ => appends.failed.fetch_add(1, Ordering::Relaxed),
         };
     }
@@ -346,9 +386,9 @@ struct Canary {
     namespace: String,
     /// Set once the baseline is taken; each sample records it as it starts.
     loaded: AtomicBool,
-    samples: std::sync::Mutex<Vec<Sample>>,
+    samples: Mutex<Vec<Sample>>,
     /// Renewals refused because the entry had expired.
-    lapses: std::sync::Mutex<Vec<String>>,
+    lapses: Mutex<Vec<String>>,
 }
 
 impl Canary {
@@ -358,13 +398,14 @@ impl Canary {
             tenant_id,
             namespace,
             loaded: AtomicBool::new(false),
-            samples: std::sync::Mutex::new(Vec::new()),
-            lapses: std::sync::Mutex::new(Vec::new()),
+            samples: Mutex::new(Vec::new()),
+            lapses: Mutex::new(Vec::new()),
         }
     }
 
-    async fn renew(&self, key: String, stop: &AtomicBool) {
+    async fn renew(&self, key: String, claimed: &Barrier, stop: &AtomicBool) {
         let mut version = self.claim(&key, 0).await;
+        claimed.wait().await;
         let mut tick = tokio::time::interval(RENEW_EVERY);
         // A late renewal is followed by the next one at once, as a lease
         // holder's would be, rather than by a burst making up the missed ones.
