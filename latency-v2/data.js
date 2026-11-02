@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793595395768,
+  "lastUpdate": 1793596089775,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -52800,6 +52800,72 @@ window.BENCHMARK_DATA = {
             "range": "1025.09",
             "unit": "us",
             "extra": "trials: 5\nmedian: 531.00\nmean: 1104.60\nstdev: 1025.09\ncv: 92.80%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9317eb2b1cc45f99fdbe7761a35f7ee5527b2a11",
+          "message": "ci: check a changed TLA+ configuration over 30 minutes in a job of its own (#1735)\n\nA pull request that changed a registered TLA+ configuration of over 30 minutes skipped it (\"it runs on main or by dispatch\"), so a heavy configuration a PR broke only failed after merge. Now each such configuration gets a job of its own on the pull request.\n\n- `scripts/check_tla.sh --plan-heavy` prints the changed registered configurations over 30 minutes as a JSON matrix, each with a timeout of twice its weight plus 15 minutes (capped at 360).\n- `ci.yml`: `formal-heavy-plan` runs it on pull requests; `formal-heavy` checks each configuration on a 4-core `ubuntu-latest` runner. Both feed `CI ok`. The quick tier now says it left the configuration to its own job instead of skipping it.\n- A coverage dispatch (`tla_coverage`) uploads TLC's whole output as an artifact, so the per-expression counts can be read after the run.\n- Docs: `docs/formal/README.md` (\"Which configurations run where\") and the CI table in `development/building.md`.\n\nThe branch carries a temporary comment in `FelixShardFencedAckMoveShort.cfg` (31 min) so this PR's own run exercises `formal-heavy`; it is removed before merge.\n\nDesign calls\n- One job per heavy configuration rather than bin-packing several into one job. Every registered configuration is under 45 minutes, so each fits one free runner's job well inside its limit, and they run in parallel.\n- A changed `.tla` still does not pull its heavy configurations in: that is most of them, and they run on main.\n- Free runners only. `formal-heavy` stays on `ubuntu-latest` even when `FELIX_LARGE_RUNNER` is set, since the weights are measured there.",
+          "timestamp": "2026-11-01T20:41:11-08:00",
+          "tree_id": "4b7155309d33c12348d2250c519c774edea94b68",
+          "url": "https://github.com/GetFelix/felix/commit/9317eb2b1cc45f99fdbe7761a35f7ee5527b2a11"
+        },
+        "date": 1793596083585,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 151,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 151.00\nmean: 150.80\nstdev: 1.30\ncv: 0.86%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 215,
+            "range": "5.32",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 215.00\nmean: 216.60\nstdev: 5.32\ncv: 2.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 272,
+            "range": "9.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 272.00\nmean: 269.40\nstdev: 9.89\ncv: 3.67%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 199,
+            "range": "4.47",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 199.00\nmean: 201.00\nstdev: 4.47\ncv: 2.22%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 402,
+            "range": "141.42",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 402.00\nmean: 457.80\nstdev: 141.42\ncv: 30.89%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 589,
+            "range": "724.03",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 589.00\nmean: 1072.80\nstdev: 724.03\ncv: 67.49%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
