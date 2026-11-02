@@ -2219,6 +2219,8 @@ absent. They are listed in that script rather than here.
 | `FELIX_CONTROLPLANE_BIND` | `0.0.0.0:8443` | Address the control-plane API listens on. |
 | `FELIX_CONTROLPLANE_TLS_CERT` | unset | PEM certificate chain the API listener serves. Set with the key below, or neither. Without them the API is plain HTTP and startup warns. Re-read every 30s, so a renewal on disk reaches the next handshake. The Raft peer listener is separate and has its own `FELIX_RAFT_TLS_CERT`, `_KEY` and `_CA`. |
 | `FELIX_CONTROLPLANE_TLS_KEY` | unset | PEM private key for `FELIX_CONTROLPLANE_TLS_CERT`. |
+| `FELIX_CONTROLPLANE_API_UI` | `off` | `off` or `scalar`. `scalar` serves an API reference page at the path below, loading its script from a CDN, so the browser needs internet access. An unrecognised value stops startup. Config file key: `api_ui`. |
+| `FELIX_CONTROLPLANE_API_UI_PATH` | `/api` | Where the reference page is served. A plain path that is not under `/v1`. Read only when the page is on. Config file key: `api_ui_path`. |
 | `FELIX_CONTROLPLANE_METRICS_BIND` | `0.0.0.0:8080` | Separate address for the metrics endpoint. |
 | `FELIX_CONTROLPLANE_CONFIG` | unset | Path to a YAML config file. Values in the file override the environment. |
 | `FELIX_CONTROLPLANE_STORAGE_BACKEND` | inferred | `memory`, `postgres` or `raft`. Unset, it is `postgres` when `FELIX_CONTROLPLANE_POSTGRES_URL` is set, `raft` when `FELIX_RAFT_NODE_ID`, `FELIX_RAFT_DATA_DIR` and `FELIX_RAFT_PEERS` are set, and `memory` otherwise. `memory` loses everything on restart. An unrecognised value is treated as unset. |
