@@ -2,12 +2,14 @@
 """Compare two latency_demo JSONL result sets (baseline vs candidate) and flag
 statistically significant regressions.
 
-Designed for a back-to-back same-runner comparison: run the baseline (e.g. the
-PR's merge-base) and the candidate (e.g. the PR branch) on the *same* CI
-runner instance in the same job, each producing their own JSONL via
+Designed for a same-runner comparison: run the baseline (e.g. the PR's
+merge-base) and the candidate (e.g. the PR branch) on the *same* CI runner
+instance in the same job, each producing their own JSONL via
 run_latency_matrix.py, then compare those two files. This controls for
 ambient runner noise far better than comparing against a historical stored
-baseline captured on a different runner instance at a different time.
+baseline captured on a different runner instance at a different time. Run the
+trials of the two sides alternately, flipping which goes first each round, so
+a runner that drifts during the job cannot favour one side.
 
 Statistics: Welch's two-sample t-test per metric per (profile, fanout, batch,
 payload, preset, binary) group, since trial counts and variances can differ
@@ -300,9 +302,10 @@ def render_markdown(all_rows, alpha, min_effect_pct, inconclusive_pct):
         f"_Welch's t-test, p < {alpha}, minimum practical effect {min_effect_pct}%. "
         f"A worse change of {inconclusive_pct}% or more that is not significant is "
         "inconclusive: rerun the cell with more trials before trusting it. "
-        "Baseline and candidate were built and benchmarked back-to-back on the same "
-        "runner instance in this job to control for ambient noise. This check is "
-        "advisory only and does not block merging._\n"
+        "Baseline and candidate trials alternated on the same runner instance in "
+        "this job, with the side that goes first flipping each round, to control "
+        "for ambient noise. This check is advisory only and does not block "
+        "merging._\n"
     )
     lines.append(
         "| Config | Metric | Baseline (median) | Candidate (median) | Change | p-value | CV base/cand | |"

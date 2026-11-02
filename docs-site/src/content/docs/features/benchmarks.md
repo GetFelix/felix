@@ -316,14 +316,18 @@ match TLS configuration on both sides before drawing conclusions.
 Three CI workflows keep this data current without anyone having to remember
 to re-run the harness by hand:
 
-- `.github/workflows/perf-pr.yml` runs on every PR. It builds and benchmarks
-  both the PR's merge-base and the PR head back-to-back on the same runner
+- `.github/workflows/perf-pr.yml` runs on every PR. It builds both the PR's
+  merge-base and the PR head, then benchmarks them on the same runner
   instance (a small fast subset, not the full matrix below, plus one
   64 KiB-payload cell that reaches the subscriber byte bound), then posts a
   PR comment comparing them via a Welch's t-test
   (`scripts/perf/compare_benchmarks.py`). Running both sides on the same
   runner controls for GitHub Actions' shared/virtualized runner noise far
-  better than comparing against a historical stored value. It is advisory
+  better than comparing against a historical stored value. The trials
+  alternate between the two sides, one trial of each per round, and the side
+  that goes first flips every round. A runner that speeds up or slows down
+  during the job then affects both sides alike. Running all of one side first
+  would not: a 5% drift between the two halves shows up as a 5% regression. It is advisory
   only and does not block merging. A row is a regression when it is worse by
   at least 3% with p < 0.05. A row worse by 10% or more that misses
   significance is marked inconclusive, not passed: at five trials a wide spread
@@ -373,7 +377,8 @@ hardware and is not a regression.
 Read the dashboards for trend over time and PR-vs-baseline deltas, and this
 page for absolute capability on real hardware. The per-PR check
 (`perf-pr.yml`) is meaningful because it benchmarks both sides
-back-to-back on the *same* runner instance, so the hardware term cancels;
+on the *same* runner instance, alternating trials, so the hardware term
+cancels;
 a single dashboard datapoint in isolation carries much less signal.
 
 The two dashboards are also deliberately split by profile and are not

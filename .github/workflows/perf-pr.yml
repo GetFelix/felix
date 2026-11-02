@@ -1,11 +1,14 @@
 name: Performance Regression Check
 
-# Advisory-only performance gate: builds and benchmarks both the PR's
-# merge-base (baseline) and the PR head (candidate) back-to-back on the same
-# runner instance in this job, then compares them with a Welch's t-test.
+# Advisory-only performance gate: builds both the PR's merge-base (baseline)
+# and the PR head (candidate), runs one trial of each in turn on the same
+# runner instance in this job, and compares them with a Welch's t-test.
 # Running both sides on the same runner controls for GitHub Actions' shared/
 # virtualized runner noise far better than comparing against a historical
 # stored baseline captured on a different runner at a different time.
+# Trials alternate between the sides, and the side that goes first flips each
+# round, so a runner that speeds up or slows down during the job hits both
+# sides alike instead of landing on whichever ran second.
 #
 # This does NOT fail the check on a regression: it's advisory only. A single
 # CI runner's noise floor isn't (yet) trusted enough to block merges on --
@@ -104,15 +107,12 @@ jobs:
       # on an older baseline commit" is a real, expected case, not just a
       # hypothetical one -- and the whole point of this check being advisory
       # is that infra hiccups here must never block a PR.
-      - name: Run baseline benchmarks
+      - name: Prepare baseline
         id: baseline
         continue-on-error: true
         working-directory: /tmp/felix-baseline
-        env:
-          CARGO_TARGET_DIR: ${{ env.CARGO_TARGET_DIR_BASELINE }}
         run: |
           set -euo pipefail
-          mkdir -p /tmp/felix-perf-results
           if [ ! -f scripts/perf/ci_subset_latency.yml ]; then
             echo "::warning::scripts/perf/ci_subset_latency.yml doesn't exist at the merge-base (${{ steps.mergebase.outputs.sha }}) -- likely a commit predating this benchmarking pipeline. Skipping baseline."
             echo "reason=config_missing_at_baseline" >> "$GITHUB_OUTPUT"
@@ -125,31 +125,67 @@ jobs:
           cp "$GITHUB_WORKSPACE/scripts/perf/ci_subset_latency.yml" scripts/perf/ci_subset_latency.yml
           cp "$GITHUB_WORKSPACE/scripts/perf/ci_subset_throughput.yml" scripts/perf/ci_subset_throughput.yml
           cp "$GITHUB_WORKSPACE/scripts/perf/ci_subset_large_payload.yml" scripts/perf/ci_subset_large_payload.yml
-          python3 scripts/perf/run_latency_matrix.py --config scripts/perf/ci_subset_latency.yml
-          python3 scripts/perf/run_latency_matrix.py --config scripts/perf/ci_subset_throughput.yml
-          python3 scripts/perf/run_latency_matrix.py --config scripts/perf/ci_subset_large_payload.yml
-          cp data/raw/latency_demo_runs.jsonl /tmp/felix-perf-results/baseline.jsonl
 
-      - name: Run candidate benchmarks
-        id: candidate
+      # Both binaries are built before any trial runs, so compile time never
+      # sits between two measurements and neither side's first trial pays for it.
+      - name: Build baseline and candidate
+        id: build
+        if: steps.baseline.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          (cd /tmp/felix-baseline && CARGO_TARGET_DIR="$CARGO_TARGET_DIR_BASELINE" \
+            cargo build --release --bin latency-demo --all-features)
+          CARGO_TARGET_DIR="$CARGO_TARGET_DIR_CANDIDATE" \
+            cargo build --release --bin latency-demo --all-features
+
+      - name: Run benchmarks, alternating baseline and candidate
+        id: bench
+        if: steps.build.outcome == 'success'
         continue-on-error: true
         env:
-          CARGO_TARGET_DIR: ${{ env.CARGO_TARGET_DIR_CANDIDATE }}
+          # One trial per side per round; matches `defaults.trials` in the
+          # ci_subset_*.yml files.
+          ROUNDS: "5"
         run: |
           set -euo pipefail
           mkdir -p /tmp/felix-perf-results
-          rm -f data/raw/latency_demo_runs.jsonl
-          rm -rf data/raw/stdout
-          python3 scripts/perf/run_latency_matrix.py --config scripts/perf/ci_subset_latency.yml
-          python3 scripts/perf/run_latency_matrix.py --config scripts/perf/ci_subset_throughput.yml
-          # The subsets above send 1 KiB or less, which never reaches the
-          # subscriber byte bound. This one cell does.
-          python3 scripts/perf/run_latency_matrix.py --config scripts/perf/ci_subset_large_payload.yml
+          rm -f data/raw/latency_demo_runs.jsonl /tmp/felix-baseline/data/raw/latency_demo_runs.jsonl
+          rm -rf data/raw/stdout /tmp/felix-baseline/data/raw/stdout
+
+          # One trial of every cell on one side. The harness appends to
+          # data/raw/latency_demo_runs.jsonl under the directory it runs in.
+          run_side() {
+            local dir="$1" target="$2"
+            (
+              cd "$dir"
+              export CARGO_TARGET_DIR="$target"
+              python3 scripts/perf/run_latency_matrix.py --trials 1 --config scripts/perf/ci_subset_latency.yml
+              python3 scripts/perf/run_latency_matrix.py --trials 1 --config scripts/perf/ci_subset_throughput.yml
+              # The subsets above send 1 KiB or less, which never reaches the
+              # subscriber byte bound. This one cell does.
+              python3 scripts/perf/run_latency_matrix.py --trials 1 --config scripts/perf/ci_subset_large_payload.yml
+            )
+          }
+
+          for round in $(seq 1 "$ROUNDS"); do
+            echo "::group::Round $round of $ROUNDS"
+            if [ $((round % 2)) -eq 1 ]; then
+              run_side /tmp/felix-baseline "$CARGO_TARGET_DIR_BASELINE"
+              run_side "$GITHUB_WORKSPACE" "$CARGO_TARGET_DIR_CANDIDATE"
+            else
+              run_side "$GITHUB_WORKSPACE" "$CARGO_TARGET_DIR_CANDIDATE"
+              run_side /tmp/felix-baseline "$CARGO_TARGET_DIR_BASELINE"
+            fi
+            echo "::endgroup::"
+          done
+
+          cp /tmp/felix-baseline/data/raw/latency_demo_runs.jsonl /tmp/felix-perf-results/baseline.jsonl
           cp data/raw/latency_demo_runs.jsonl /tmp/felix-perf-results/candidate.jsonl
 
       - name: Compare baseline vs candidate
         id: compare
-        if: steps.baseline.outcome == 'success' && steps.candidate.outcome == 'success'
+        if: steps.bench.outcome == 'success'
         continue-on-error: true
         run: |
           set -euo pipefail
@@ -173,16 +209,19 @@ jobs:
               body = fs.readFileSync(commentPath, 'utf8');
             } else {
               const baselineOk = '${{ steps.baseline.outcome }}' === 'success';
-              const candidateOk = '${{ steps.candidate.outcome }}' === 'success';
+              const buildOk = '${{ steps.build.outcome }}' === 'success';
+              const benchOk = '${{ steps.bench.outcome }}' === 'success';
               const baselineReason = '${{ steps.baseline.outputs.reason }}';
               let why;
               if (!baselineOk && baselineReason === 'config_missing_at_baseline') {
                 why = 'the benchmark config didn\'t exist yet at this PR\'s merge-base ' +
                       '(likely comparing against a commit that predates this pipeline).';
               } else if (!baselineOk) {
-                why = 'the baseline benchmark run failed (see the "Run baseline benchmarks" job step).';
-              } else if (!candidateOk) {
-                why = 'the candidate benchmark run failed (see the "Run candidate benchmarks" job step).';
+                why = 'the baseline could not be prepared (see the "Prepare baseline" job step).';
+              } else if (!buildOk) {
+                why = 'building the baseline or the candidate failed (see the "Build baseline and candidate" job step).';
+              } else if (!benchOk) {
+                why = 'a benchmark run failed (see the "Run benchmarks" job step).';
               } else {
                 why = 'the comparison step failed to produce output (see the "Compare baseline vs candidate" job step).';
               }
