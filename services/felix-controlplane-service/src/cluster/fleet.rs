@@ -126,6 +126,24 @@ where
     )))
 }
 
+/// Refuse to enable [`felix_common::fleet::PEER_ELECTION`] or
+/// [`felix_common::fleet::START_HOLDERS`]. They are reports, not features: a
+/// broker states them so the control plane can gate other finalizes, and
+/// enabling one would make [`admit`] refuse every broker that predates it.
+///
+/// Checked when the operator asks, like [`check_prerequisites`], so a Raft
+/// member applying the finalize decides the same as one on an older release.
+pub(crate) fn check_operator_finalizable(feature: &str) -> Result<(), StoreError> {
+    use felix_common::fleet::{PEER_ELECTION, START_HOLDERS};
+    if feature == PEER_ELECTION.name() || feature == START_HOLDERS.name() {
+        return Err(StoreError::Conflict(format!(
+            "cannot finalize {feature}: it is how a broker reports a capability, not a \
+             feature; finalize the feature that needs it"
+        )));
+    }
+    Ok(())
+}
+
 /// The features `feature` needs enabled first that `enabled` lacks
 /// ([`felix_common::fleet::prerequisites`]).
 pub(crate) fn missing_prerequisites(enabled: &BTreeSet<String>, feature: &str) -> Vec<String> {

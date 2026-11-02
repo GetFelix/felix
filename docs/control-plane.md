@@ -206,7 +206,8 @@ new cluster does not start with them. A broker that offers the `ELECTION`
 peer capability reports it as `peer_election`, which no build does yet.
 Every broker from #1737 on also reports `start_holders`: its leaders name, in
 each replica report, the followers holding the generation's start record
-(`holds_start`). Neither name is a feature an operator finalizes. Finalizing
+(`holds_start`). Neither name is a feature an operator finalizes: the finalize
+endpoint, and its dry run, refuse both by name. Finalizing
 `joint_fence` is refused while a serving broker lacks `peer_election` or
 `start_holders`, until every Raft member is at metadata level 23, and for now
 even when none does: the control plane re-admits learners and placement skips
@@ -845,6 +846,9 @@ rest are what flipping them needs.
    (migration 0040) before the finalize. Nothing checks this: an older
    instance that writes an assignment leaves its learners unmarked for that
    generation, and they read as none, so placement could count a learner.
+   The same holds after the finalize: no control-plane instance may be rolled
+   back to, or started on, a release without learners, since nothing on
+   Postgres stops it and it drops learners the same way.
 7. The model's re-admission configurations pass with `PlacementKnowsLearners`
    (`docs/formal/README.md`).
 

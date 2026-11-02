@@ -510,8 +510,8 @@ fn a_readmission_needs_the_new_copy_caught_up_and_nothing_else_in_progress() {
         !readmits(&decided(&nodes(NodeLifecycle::Down), &wiped, 33, true)),
         "the leader is down"
     );
-    // The leader alone is no majority of the rest: the shard serves now and
-    // would not at the next generation.
+    // With a down, b alone is 1 of 3, short of the 2 the next generation
+    // needs, so the shard would stop.
     let a_down = vec![
         registered("broker-a", 1, NodeLifecycle::Down),
         registered("broker-b", 2, NodeLifecycle::Live),

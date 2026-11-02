@@ -665,7 +665,10 @@ fn readmit(
     let node = caught_up.readmittable(&existing.key, existing.generation, &existing.leader)?;
     // The new generation serves once a majority of the set takes it, and the
     // learner is not one of them: without a live majority of the rest, a
-    // shard still serving at this generation would stop.
+    // shard still serving at this generation would stop. Members already in
+    // `learners` are counted too, though they do not ack. That can only start
+    // a re-admission the brokers then wait on; the fence, not this count,
+    // decides whether the new generation serves.
     let set: Vec<&String> = existing.nodes().collect();
     let live_rest = set
         .iter()
