@@ -24,7 +24,7 @@ use tokio_util::task::TaskTracker;
 
 use self::rate::RateGate;
 use crate::config::MqttListenerConfig;
-use crate::serving::auth::BrokerAuth;
+use crate::serving::auth::{BrokerAuth, CredentialRefused};
 use crate::serving::limits::PerIpLimiter;
 use crate::serving::revocation::Revoked;
 use felix_authz::AuthzError;
@@ -76,22 +76,27 @@ impl Authenticator for BrokerMqttAuth {
             Err(err) if err.is::<Revoked>() => {
                 Err(AuthError::Rejected("credential revoked".to_string()))
             }
-            Err(err) => match err.downcast_ref::<AuthzError>() {
-                Some(authz) => Err(AuthError::Rejected(format!("token rejected: {authz}"))),
+            Err(err) => {
+                if let Some(authz) = err.downcast_ref::<AuthzError>() {
+                    return Err(AuthError::Rejected(format!("token rejected: {authz}")));
+                }
+                if let Some(refused) = err.downcast_ref::<CredentialRefused>() {
+                    return Err(AuthError::Rejected(refused.to_string()));
+                }
                 // The control plane being unreachable. Its error text can
                 // carry its URL, so it is logged and not sent to the client.
-                None => {
-                    tracing::warn!(error = %err, "mqtt authentication could not verify a token");
-                    Err(AuthError::Unavailable)
-                }
-            },
+                // Debug, not warn: a client can make this fire at the connect
+                // rate, and `auth_unavailable` is the counter to alert on.
+                tracing::debug!(error = %err, "mqtt authentication could not verify a token");
+                Err(AuthError::Unavailable)
+            }
         }
     }
 }
 
 /// A bound MQTT listener, not yet accepting.
 pub struct MqttListener {
-    runtime: Runtime,
+    runtime: OwnedRuntime,
     listener: TcpListener,
     tls: Option<TlsAcceptor>,
     service: MqttService,
@@ -119,9 +124,12 @@ impl MqttListener {
             .enable_all()
             .build()
             .context("build the MQTT runtime")?;
+        // Owned from here, so a failed bind drops it without panicking inside
+        // the broker's own runtime.
+        let runtime = OwnedRuntime(Some(runtime));
         // The socket registers with the runtime that will accept on it.
         let listener = {
-            let _enter = runtime.enter();
+            let _enter = runtime.handle().enter();
             let socket = if config.listen.is_ipv4() {
                 TcpSocket::new_v4()
             } else {
@@ -168,7 +176,6 @@ impl MqttListener {
             per_ip,
             connect_rate,
         } = self;
-        let runtime = OwnedRuntime(Some(runtime));
         let accept = Accept {
             listener,
             tls,
@@ -284,8 +291,12 @@ impl Accept {
                             .await;
                     }
                     Some(tls) => {
-                        match tokio::time::timeout(TLS_HANDSHAKE_TIMEOUT, tls.accept(socket)).await
-                        {
+                        let handshake = tokio::select! {
+                            biased;
+                            _ = shutdown.cancelled() => return,
+                            handshake = tokio::time::timeout(TLS_HANDSHAKE_TIMEOUT, tls.accept(socket)) => handshake,
+                        };
+                        match handshake {
                             Ok(Ok(stream)) => {
                                 // Kept for CONNECT, which binds the token to
                                 // the certificate when the broker is set to.

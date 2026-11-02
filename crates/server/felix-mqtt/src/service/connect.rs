@@ -36,17 +36,22 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         let version = connect.version;
         self.version = Some(version);
 
-        let principal =
-            match timeout_at(deadline, self.authenticate(shared, &connect, peer_certs)).await {
-                Ok(Ok(principal)) => principal,
-                Ok(Err((reason, metric))) => return self.reject(reason, metric),
-                Err(_) => {
-                    return Err(End::Disconnect(
-                        ReasonCode::NotAuthorized,
-                        Some("auth_timeout"),
-                    ));
-                }
-            };
+        // Shutdown cuts the check short, so a stalled control plane cannot
+        // hold a drain open.
+        let checked = tokio::select! {
+            biased;
+            _ = shutdown.cancelled() => {
+                return Err(End::Disconnect(ReasonCode::ServerShuttingDown, None));
+            }
+            checked = timeout_at(deadline, self.authenticate(shared, &connect, peer_certs)) => checked,
+        };
+        let principal = match checked {
+            Ok(Ok(principal)) => principal,
+            Ok(Err((reason, metric))) => return self.reject(reason, metric),
+            // A DISCONNECT may not precede the CONNACK, so a 5.0 client is
+            // answered with one.
+            Err(_) => return self.reject(ReasonCode::ServerUnavailable, "auth_timeout"),
+        };
         // A will is a publish deferred to when the client vanishes, and there
         // is no publish path yet. Refusing it now beats never sending it.
         if connect.will.is_some() {
@@ -127,6 +132,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         peer_certs: &[Vec<u8>],
     ) -> Result<Principal, (ReasonCode, &'static str)> {
         let (Some(tenant), password) = (&connect.username, &connect.password) else {
+            // A password with no username is credentials, wrong ones, and is
+            // not downgraded to anonymous.
+            if connect.password.is_some() {
+                return Err((ReasonCode::BadUserNameOrPassword, "auth_failed"));
+            }
             return match &shared.settings.anonymous_tenant {
                 Some(tenant) => Ok(Principal::new(tenant.clone())),
                 None => Err((ReasonCode::NotAuthorized, "auth_required")),
@@ -144,7 +154,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         {
             Ok(principal) => Ok(principal),
             Err(AuthError::Rejected(reason)) => {
-                tracing::info!(reason = %reason, "mqtt client failed to authenticate");
+                tracing::debug!(reason = %reason, "mqtt client failed to authenticate");
                 Err((ReasonCode::BadUserNameOrPassword, "auth_failed"))
             }
             Err(AuthError::Unavailable) => Err((ReasonCode::ServerUnavailable, "auth_unavailable")),

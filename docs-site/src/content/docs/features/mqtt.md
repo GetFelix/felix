@@ -54,6 +54,7 @@ The listener runs on its own threads (`FELIX_MQTT_WORKER_THREADS`), so a storm
 of devices reconnecting does not slow QUIC clients. Connections are capped for
 the whole broker and for each source address, new connections are paced, and a
 connection that does not send a valid `CONNECT` within ten seconds is closed.
+With TLS the ten seconds start once the handshake is done, and the handshake has ten of its own.
 The limits and their metrics are in the
 [environment variable reference](/reference/environment-variables/) and
 [observability](/features/observability/).

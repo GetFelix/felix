@@ -55,7 +55,7 @@ What `CONNECT` does:
 | Empty client id, 3.1.1, `clean session` 0 | `CONNACK` 0x02. |
 | Empty client id otherwise | Accepted; a 5.0 client is told its assigned id. |
 | Protocol level other than 4 or 5 | `CONNACK` 0x01, then the connection closes. |
-| No valid `CONNECT` within `FELIX_MQTT_AUTH_TIMEOUT_MS` | Closed. |
+| No valid `CONNECT` within `FELIX_MQTT_AUTH_TIMEOUT_MS` | Closed. With TLS the clock starts after the handshake, which has its own 10 second limit. A check that outlasts it gets `CONNACK` 0x88 (3.1.1: 3). |
 | A packet over 64 KiB before `CONNECT` | Closed. |
 
 `FELIX_MQTT_ANONYMOUS_TENANT` is a development switch. A connection that sends

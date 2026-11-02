@@ -44,6 +44,7 @@ impl Authenticator for FakeAuth {
                 Ok(principal)
             }
             (_, "down") => Err(AuthError::Unavailable),
+            (_, "slow") => std::future::pending().await,
             _ => Err(AuthError::Rejected("no".into())),
         }
     }
@@ -236,6 +237,17 @@ async fn anonymous_tenant_admits_only_connections_without_credentials() {
     h.client.send(Packet::Connect(c), Version::V311).await;
     assert_eq!(connack(h.client.recv().await).reason, ReasonCode::Success);
 
+    // A password with no username is credentials too (5.0 allows it).
+    let mut h = start(settings.clone(), None);
+    h.client.version = Some(Version::V5);
+    let mut c = connect(Version::V5);
+    c.username = None;
+    h.client.send(Packet::Connect(c), Version::V5).await;
+    assert_eq!(
+        connack(h.client.recv().await).reason,
+        ReasonCode::BadUserNameOrPassword
+    );
+
     // A wrong token is not quietly downgraded to anonymous.
     let mut h = start(settings, None);
     let mut c = connect(Version::V311);
@@ -252,6 +264,35 @@ async fn silent_connection_is_closed_at_the_auth_timeout() {
     let mut h = start(Settings::default(), None);
     tokio::time::sleep(Duration::from_secs(11)).await;
     assert!(h.client.closed().await);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_slow_auth_check_gets_a_connack_not_a_disconnect() {
+    let settings = Settings {
+        auth_timeout: Duration::from_millis(50),
+        ..Settings::default()
+    };
+    let mut h = start(settings, None);
+    h.client.version = Some(Version::V5);
+    let mut c = connect(Version::V5);
+    c.password = Some(Bytes::from_static(b"slow"));
+    h.client.send(Packet::Connect(c), Version::V5).await;
+    assert_eq!(
+        connack(h.client.recv().await).reason,
+        ReasonCode::ServerUnavailable
+    );
+    assert!(h.client.closed().await);
+}
+
+#[tokio::test(start_paused = true)]
+async fn shutdown_cuts_a_slow_auth_check_short() {
+    let mut h = start(Settings::default(), None);
+    let mut c = connect(Version::V311);
+    c.password = Some(Bytes::from_static(b"slow"));
+    h.client.send(Packet::Connect(c), Version::V311).await;
+    tokio::task::yield_now().await;
+    h.shutdown.cancel();
+    assert!(h.client.closed_at_once().await);
 }
 
 #[tokio::test(start_paused = true)]

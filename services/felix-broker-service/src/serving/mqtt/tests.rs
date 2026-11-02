@@ -193,3 +193,47 @@ async fn the_connect_rate_holds_connections_back() {
     }
     assert_eq!(start.elapsed(), Duration::ZERO);
 }
+
+// A failed bind must come back as an error. Dropping the listener's runtime
+// by hand inside the broker's own would panic instead.
+#[tokio::test]
+async fn binding_a_taken_port_is_an_error_not_a_panic() {
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let mut taken_config = config(0);
+    taken_config.listen = taken.local_addr().expect("addr");
+    let err = MqttListener::bind(&taken_config, None, Arc::new(Recorder::default()))
+        .err()
+        .expect("the port is taken");
+    assert!(
+        format!("{err:#}").contains("bind the MQTT listener"),
+        "{err:#}"
+    );
+}
+
+#[tokio::test]
+async fn credentials_the_broker_refuses_are_rejected_not_unavailable() {
+    let demo = demo_auth_for_tenant("t1").expect("demo auth");
+    let auth = BrokerMqttAuth::new(Arc::new((*demo.auth).clone().with_subject_binding(true)));
+    let rejected =
+        |result: Result<Principal, AuthError>| matches!(result, Err(AuthError::Rejected(_)));
+
+    // An empty tenant id, and a token for a tenant that is not the user's.
+    assert!(rejected(auth.authenticate("", &demo.token, &[]).await));
+    assert!(rejected(auth.authenticate("t1", "not-a-token", &[]).await));
+
+    // A certificate issued to someone else, under subject binding.
+    let mut params =
+        rcgen::CertificateParams::new(vec!["someone-else.felix.test".to_string()]).expect("params");
+    params.is_ca = rcgen::IsCa::NoCa;
+    let key = rcgen::KeyPair::generate().expect("key");
+    let cert = params.self_signed(&key).expect("cert").der().to_vec();
+    assert!(rejected(
+        auth.authenticate("t1", &demo.token, &[cert]).await
+    ));
+
+    let principal = auth
+        .authenticate("t1", &demo.token, &[])
+        .await
+        .expect("no certificate, nothing to bind to");
+    assert_eq!(principal.tenant_id(), "t1");
+}
