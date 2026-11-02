@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793657655187,
+  "lastUpdate": 1793662633623,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -43004,6 +43004,58 @@ window.BENCHMARK_DATA = {
             "range": "15359.48",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 774310.02\nmean: 771932.01\nstdev: 15359.48\ncv: 1.99%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "15004f5354ecec6b160a6f4b22237486df26d80a",
+          "message": "fix(replication): answer control-stream requests as they finish (#1796) (#1800)\n\nFixes #1796. Refs #1760, #1791, #1794.\n\n## What\n\nA follower served each peer stream one request at a time, apart from forwards. Fences, tail fetches, pre-votes and pings share one control stream per peer connection, so one slow request held up everything behind it. During a burst of shard creates, the read-round fences a leader sends to confirm cache reads, and the pings followers use to tell a leader is alive, queued behind the new shards' promotion fences. A queue longer than `FELIX_LEADER_SUSPECT_AFTER_MS` reads as a dead leader.\n\nThe listener now answers `Fence`, `ReplicateFetch` and `PreVote` as each one finishes, the way it already answers forwards, and reads the next request while earlier ones run. `Ping` is answered at once and takes no permit. `Hello` stays inline. Replication batches are untouched: still one at a time per stream, on the same code path.\n\n## Orderings, and why each still holds\n\n- **`Hello` before everything else on the connection.** Still answered inline before the next frame is read; every later request is checked against the identity it gives.\n- **A fence before the tail fetch, and before the first batch at the new generation.** The requester waits for `FenceOk` before sending either. Batches go on replication streams, which were never ordered with the control stream.\n- **One exchange per follower and log.** The driver's rule, unchanged; it never relied on stream order (the transport doc already says so for round-robin within a class).\n- **Generation and ballot rules.** Two fences for the same shard could already run at once on a follower: from two leaders, or from one leader with `FELIX_INTERNAL_CONNS_PER_PEER` > 1. `accept_generation` re-checks the ballot under the log's writer lock, so the higher generation wins and a generation is promised to one leader whichever lands first. A read-round fence raising a follower that missed its promotion fence was already reachable (a promotion that finished on a majority does not wait for the rest).\n- **A ping touches no state.** Still answered from the serving runtime, so a stuck runtime still reads as unreachable.\n\n## Wire compatibility\n\nNo wire change and no capability bit. Every requester build since the pool was added (#235) matches answers by correlation id, which forwards already rely on. An older follower still answers in order; a mixed link is no worse than today.\n\n## Bounds\n\nPer stream, at most 1024 fences, tail fetches and pre-votes at once (the requester's default in-flight limit per peer). Past that a request is answered `Overload` straight away, which nothing applied; the read loop never parks, so a ping is never queued behind the stream. Of those, 16 tail fetches run at a time (an answer can hold 4 MiB); the rest wait off the stream. Pings need no permit. Forwards are unchanged at 256. A control request no longer has the per-request handler timeout that drops the stream: nothing queues behind it. A panic still ends the stream, as for forwards.\n\n## Performance\n\nReplication batches take the same arm as before; the only change on that path is one more enum-discriminant check in the dispatch `match`. A control request costs what it did (one `spawn` on the serving runtime) plus a `try_acquire`, and loses the per-request `tokio::time::timeout` it used to register. perf-pr (fanout cells) and the IPM gate run on this PR; numbers below.\n\nReplicated A/B on GitHub runners (3-broker cluster, release brokers, A = main at f8f023bde, B = this PR; same client binary; sides alternate first each round). Harness: `crates/testing/felix-cluster/tests/replicated_bench.rs` on the scratch branch `scratch/perf-1796` (16 closed-loop publishers on one RF 3 quorum stream with 6 shards, 1 KiB, per-message majority acks, plus back-to-back confirmed cache reads, each a fence round to the followers).\n\n**Steady** (no creates), median B/A over rounds:\n\n| run | rounds | throughput | publish p50 | p99 | p999 | confirmed read p99 |\n|---|---|---|---|---|---|---|\n| 41521730761 (20 s) | 6 | 0.994 | 1.003 | 1.015 | 1.026 | 0.993 |\n| 41532507883 (40 s) | 8 | 1.007 | 0.996 | 0.989 | 0.980 | 1.017 |\n\nRun 2 absolute medians: A 5684 msg/s, p99 6.38 ms, p999 8.52 ms; B 5722 msg/s, p99 6.31 ms, p999 8.35 ms. Per-round ratios straddle 1 in both runs (run 1 p99 0.97-1.07, run 2 0.95-1.09); no direction holds across runs.\n\n**Promotion burst** (1500 RF 3 single-shard Quorum streams created 16 at a time, measured over the first 10 s, 8 rounds): publish p99 A 317 ms / B 305 ms (0.963), p999 428 / 438 ms (1.023), confirmed read (fence round) p99 283 / 285 ms (1.009), throughput 406 / 391 msg/s (0.963, rounds 0.85-1.08). Replica state writes 5545 vs 5547 per round on both sides. The burst latency is the same on both sides and is set by the create storm, not by this change.\n\n**Ballot fsyncs.** With fences side by side, a follower now runs up to 16 raising fences per leader at once (#1801's fence budget) instead of one per control stream; each raise flushes `ballot` and `replica` (file + directory). Storage microbench (`ballot_fsync_contention`, same runner, K concurrent raisers on other logs vs one appender's commits under `OnCommit`, medians of 3):\n\n| K raisers | 0 | 2 | 4 | 16 | 32 |\n|---|---|---|---|---|---|\n| 1 appender: commits/s | 2664 | 1993 | 1688 | 935 | 568 |\n| 1 appender: commit p99 | 0.55 ms | 1.00 ms | 1.16 ms | 2.31 ms | 4.45 ms |\n| raises/s | - | 1028 | 1717 | 4041 | 4643 |\n| 16 appenders: commits/s | 29796 | 19951 | 18123 | 11203 | 8106 |\n\nConcurrent raises cost commits less per raise, not more: commits given up per raise are 0.65 at K=2 and 0.45 at K=32 (1 appender), 10.5 and 4.9 (16 appenders). A promotion burst ends about 4.5x sooner with a higher commit tail while it lasts. In the cluster the end-to-end burst numbers above are unchanged, so I did not add a bound (design call below).\n\nperf-pr (fanout cells) and the IPM gate are single-broker and do not exercise this path; both run on the PR as usual.\n\n## Tests\n\n- `a_read_round_fence_and_a_ping_do_not_wait_behind_promotion_fences` (peer/tests/capabilities.rs): 300 promotion fences held by the follower (more than any running limit); a read-round fence and a ping must answer within 2 s (without the fix it waits out the 10 s request timeout); then every held fence gets its own answer. Revert check: with main's `server.rs` it fails at the read-round fence (`Elapsed` at 2 s).\n- `a_control_request_past_the_limit_is_refused_and_the_stream_reads_on` (same file): 1024 fences held on one raw stream, then a 1025th and a ping. The 1025th is answered `Overload` and the ping `Pong` within 5 s; then all 1024 held fences get their own answers and a new fence is served. Revert checks: with main's `server.rs` it fails (\"the stream stopped reading at the limit\"), and also with this PR's first version, which parked the read loop at the limit. It does not tell an inline refusal from a spawned one.\n- Both tests were revert-checked again on the final code after merging main (with #1801 and #1799): without the out-of-order arm both fail (the read-round fence times out at 2 s; the stream stops reading at the limit), and with `acquire().await` in place of `try_acquire` the second fails.\n- felix-replication lib suite, clippy `-D warnings`, `task docs:evidence`.\n\n## Docs\n\n`docs/internal-protocol.md` (\"The transport\": control stream served out of order, the orderings that matter, limits; control table gains `PreVote`; \"Pinging a leader\"), `docs/replication-design.md`, docs-site architecture/components.md, changelog fragment.\n\n## Design calls\n\n- Server-side concurrency instead of a second control lane on the requester. A second lane needs the requester to tell a read-round fence from a promotion fence (same message), still serializes behind one slow read-round fence, and helps nothing with an old requester. Concurrency on the listener fixes every requester build and needs no wire change.\n- Past 1024 held control requests the listener refuses (`ReplicateError` `Overload`) instead of parking the read loop, which would queue pings again (review SHOULD 1). A requester at default limits reaches it only when requests it timed out on are still running here (a long disk stall); a refused fence reads as a replica not vouching and is retried.\n- Fetches also wait for one of 16 running slots, inside their task, because of their answer size.\n- No bound on concurrent ballot flushes. #1801 already caps raising fences at 16 per leader; the microbench shows concurrency spends fewer commits per raise, and the RF 3 burst shows no end-to-end change. A storage-side cap (read-round fences take the in-memory path and would not wait on it) is easy to add if a deployment shows otherwise.\n- Fences no longer skip the confirmed read (#1799) because the lane is serial; they skip it because a fence must answer within the leader's request timeout. Comments and replication-design.md now say so (delta review SHOULD 1).\n\nSpec-Unaffected: the model has no per-connection channel or delivery order, and AnswerFence stays one atomic step in the code (accept_generation re-checks under the log's lock); every exchange that depends on another is still awaited by the requester.",
+          "timestamp": "2026-11-02T15:32:16-08:00",
+          "tree_id": "688b41bc8fe6b0589e6e5dbd98b8105913f405fb",
+          "url": "https://github.com/GetFelix/felix/commit/15004f5354ecec6b160a6f4b22237486df26d80a"
+        },
+        "date": 1793662632596,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 340597.61,
+            "range": "9767.19",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 340597.61\nmean: 343269.13\nstdev: 9767.19\ncv: 2.85%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 340597.61,
+            "range": "9767.19",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 340597.61\nmean: 343269.13\nstdev: 9767.19\ncv: 2.85%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 76406.32,
+            "range": "2793.08",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 76406.32\nmean: 76110.57\nstdev: 2793.08\ncv: 3.67%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 764063.24,
+            "range": "27930.74",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 764063.24\nmean: 761105.74\nstdev: 27930.74\ncv: 3.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
