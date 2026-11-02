@@ -9,8 +9,6 @@ name: Performance A/B (environment)
 # so runner drift lands on both. The report is advisory: it never fails the run.
 
 on:
-  push:
-    branches: [ci-memtotals-1338]
   workflow_dispatch:
     inputs:
       env_a:
@@ -58,8 +56,8 @@ jobs:
       - name: Run both sides, alternating
         env:
           ENV_A: ${{ inputs.env_a }}
-          ENV_B: ${{ inputs.env_b || 'FELIX_SUB_QUEUE_MAX_BYTES_TOTAL=4294967296 FELIX_REPLAY_RING_MAX_BYTES_TOTAL=4294967296 FELIX_CACHE_WATCH_MAX_BYTES_TOTAL=1073741824' }}
-          ROUNDS: ${{ inputs.rounds || '20' }}
+          ENV_B: ${{ inputs.env_b }}
+          ROUNDS: ${{ inputs.rounds }}
         run: |
           set -euo pipefail
           out=/tmp/felix-perf-env-ab
@@ -94,7 +92,7 @@ jobs:
       - name: Compare A (baseline) and B (candidate)
         env:
           ENV_A: ${{ inputs.env_a }}
-          ENV_B: ${{ inputs.env_b || 'FELIX_SUB_QUEUE_MAX_BYTES_TOTAL=4294967296 FELIX_REPLAY_RING_MAX_BYTES_TOTAL=4294967296 FELIX_CACHE_WATCH_MAX_BYTES_TOTAL=1073741824' }}
+          ENV_B: ${{ inputs.env_b }}
         run: |
           set -euo pipefail
           out=/tmp/felix-perf-env-ab
