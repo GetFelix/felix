@@ -146,7 +146,7 @@ Its jobs:
 | `chart` | `scripts/check_chart.py`, the same as `task chart:check` |
 | `python`, `typescript` | Builds each binding and runs its client conformance suite, then verifies the results with `felix-conformance verify` |
 | `spec-pairing` | `scripts/check_spec_pairing.py` against the PR base, on pull requests that change code |
-| `formal` | `scripts/check_tla.sh` (`task tla:check`), only when `docs/formal/`, `scripts/check_tla.sh` or `ci.yml` changes. A pull request checks the configurations of ten minutes or less (`TLA_QUICK=1`); main checks all of them |
+| `formal` | `scripts/check_tla.sh` (`task tla:check`), only when `docs/formal/`, `scripts/check_tla.sh` or `ci.yml` changes. A pull request checks the configurations of ten minutes or less (`TLA_QUICK=1`) and the ones whose `.cfg` it changes, each one over 30 minutes in a `formal-heavy` job of its own; main checks all of them |
 | `fuzz` | `task fuzz` with `FUZZ_SECONDS=30` |
 
 `task deny` runs `cargo-deny check` against
@@ -552,9 +552,9 @@ runner (`felix-runner-x64`: 8 cores, 32 GB, up to 40 at once). When it is set,
 `test` and `coverage` (wherever they run GitHub-hosted), the seven TLA+
 shards and `perf-pr.yml` use it instead of the 4-core `ubuntu-latest`. TLC
 runs a worker per core, so the shards gain as much as `test` does.
-`perf-pr.yml` benchmarks the merge-base and the PR head in one job, so its
-comparison holds on any runner. `perf-publish.yml` stays on `ubuntu-latest`:
-it adds to a stored history, and a change of machine would show up there as a
+`perf-pr.yml` benchmarks the merge-base and the PR head in one job,
+alternating their trials, so its comparison holds on any runner.
+`perf-publish.yml` stays on `ubuntu-latest`: it adds to a stored history, and a change of machine would show up there as a
 regression or a speedup.
 
 Larger runners are billed per minute even on a public repository, up to the

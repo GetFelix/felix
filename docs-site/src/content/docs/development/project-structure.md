@@ -13,7 +13,7 @@ the authority when this page and the tree disagree. Each group directory under
 ```
 felix/
 ├── crates/
-│   ├── protocol/     felix-wire, felix-transport
+│   ├── protocol/     felix-wire, felix-transport, felix-mqtt-wire
 │   ├── server/       felix-broker, felix-storage, felix-kafka, felix-replication,
 │   │                 felix-router, felix-authz, felix-common
 │   ├── sdk/          felix-client, felix-python*, felix-typescript*
@@ -55,6 +55,8 @@ published to crates.io.
   is its specification.
 - `felix-transport`: the QUIC layer. Endpoints, connection and stream lifetime,
   and transport tuning shared by client and broker.
+- `felix-mqtt-wire`: the MQTT 3.1.1 and 5.0 packet codec, with its limits
+  enforced while decoding. It is internal to the repository.
 
 **Server**
 

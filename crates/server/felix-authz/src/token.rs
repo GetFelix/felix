@@ -62,12 +62,25 @@ pub struct FelixClaims {
     /// `act` is who may present it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub act: Option<Actor>,
+    /// The lease a lease token was minted for. For audit and debugging only;
+    /// `perms` is what the broker enforces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease: Option<LeaseClaim>,
 }
 
 /// An RFC 8693 actor claim: the principal a delegated token was issued to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Actor {
     pub sub: String,
+}
+
+/// The lease entry a lease token was minted on: the cache as
+/// `{namespace}/{cache}`, the key, and the version the holder wrote.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeaseClaim {
+    pub cache: String,
+    pub key: String,
+    pub version: u64,
 }
 
 #[cfg(test)]

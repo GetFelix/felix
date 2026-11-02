@@ -100,7 +100,8 @@ path involved no `unwrap` at all. Counting `unwrap` would not have found it.
   in default builds; if `telemetry` is ever enabled in production, they need their own
   pass.
 - The frame and message decoders are fuzzed (`crates/protocol/felix-wire/fuzz/`, four
-  targets), as are the Kafka listener's request and record-batch decoders
+  targets), as is the MQTT packet decoder (`crates/protocol/felix-mqtt-wire/fuzz/`, one
+  target over both protocol versions), as are the Kafka listener's request and record-batch decoders
   (`crates/server/felix-kafka/fuzz/`), plus six storage targets covering segments, the
   sparse index, cache and counter records, and the per-shard state files. CI runs each
   target for 30 s on every PR as a regression gate, and `fuzz-nightly.yml` runs each for

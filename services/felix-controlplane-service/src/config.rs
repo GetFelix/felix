@@ -3,6 +3,7 @@
 //!
 //! Defaults keep a dev setup simple while still bounding resource use.
 mod api_tls;
+mod api_ui;
 mod bootstrap;
 mod env;
 mod file;
@@ -10,6 +11,7 @@ mod liveness;
 mod storage;
 
 pub use api_tls::ApiTlsConfig;
+pub use api_ui::{ApiUi, DEFAULT_API_UI_PATH};
 pub use bootstrap::{BootstrapConfig, BootstrapTlsConfig};
 pub use liveness::NodeLivenessConfig;
 pub use storage::{PostgresConfig, RaftBackendConfig, StorageBackend};
@@ -69,6 +71,10 @@ pub struct ControlPlaneConfig {
     pub bind_addr: SocketAddr,
     /// When set, the API listener serves TLS with this certificate.
     pub api_tls: Option<ApiTlsConfig>,
+    /// The API reference page served beside the API. Off by default.
+    pub api_ui: ApiUi,
+    /// Where `api_ui` is served.
+    pub api_ui_path: String,
     pub metrics_bind: SocketAddr,
     pub region_id: String,
     pub storage: StorageBackend,
@@ -161,6 +167,9 @@ impl ControlPlaneConfig {
                 "bootstrap.previous_token is set without bootstrap.token; \
                  the rotation should replace token and demote the old one"
             ));
+        }
+        if self.api_ui != ApiUi::Off {
+            api_ui::validate_api_ui_path(&self.api_ui_path)?;
         }
         if self.oidc_allowed_algorithms.is_empty() {
             return Err(anyhow!(

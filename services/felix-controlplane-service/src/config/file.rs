@@ -21,6 +21,8 @@ use super::{
 pub(super) struct ControlPlaneConfigOverride {
     bind_addr: Option<String>,
     tls: Option<ApiTlsConfig>,
+    api_ui: Option<String>,
+    api_ui_path: Option<String>,
     metrics_bind: Option<String>,
     region_id: Option<String>,
     storage: Option<StorageOverride>,
@@ -181,6 +183,12 @@ impl ControlPlaneConfig {
             if matches!(config.storage, StorageBackend::Memory) {
                 config.storage = StorageBackend::Postgres;
             }
+        }
+        if let Some(value) = override_cfg.api_ui {
+            config.api_ui = value.parse()?;
+        }
+        if let Some(value) = override_cfg.api_ui_path {
+            config.api_ui_path = value.trim().to_string();
         }
         if let Some(tls) = override_cfg.tls {
             config.api_tls = Some(tls);

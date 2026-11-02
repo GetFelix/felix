@@ -71,7 +71,9 @@ impl PeerRequester for ScriptedOwner {
             InternalMessage::ForwardPublish(publish) => {
                 (publish.shard.generation, publish.shard.incarnation)
             }
-            InternalMessage::ForwardCacheOp(op) => (op.shard.generation, op.shard.incarnation),
+            InternalMessage::ForwardCacheOp(op) | InternalMessage::LeaseForwardCacheOp(op) => {
+                (op.shard.generation, op.shard.incarnation)
+            }
             other => panic!("forwarding sent a {:?}", other.kind()),
         };
         self.incarnations.lock().expect("lock").push(incarnation);
@@ -555,6 +557,38 @@ async fn an_owner_that_predates_conditions_refuses_the_write_and_serves_the_read
             Kind::AuthorizedForwardCacheOp
         ],
     );
+}
+
+/// A lease claim travels as its own kind, so an owner that predates lease
+/// tokens refuses it rather than writing without minting; and a plain answer
+/// to one is not taken as a claim without a token.
+#[tokio::test]
+async fn a_lease_claim_fails_closed_on_an_owner_that_predates_it() {
+    use felix_wire::internal::{ForwardCacheOk, ForwardCacheOutcome, Kind};
+
+    let put_if = CacheRequest::PutIf {
+        value: Bytes::from_static(b"v"),
+        ttl_ms: 0,
+        condition: felix_storage::CacheCondition::Absent,
+    };
+    let owner = ScriptedOwner::new([Ok(refused(ErrorCode::UnsupportedKind))]);
+    let err = forward_lease_put_if(&owner, &target(), &key(), "w7", "token", &put_if)
+        .await
+        .expect_err("refused");
+    assert!(err.to_string().contains("lease"), "{err}");
+    assert_eq!(owner.kinds(), vec![Kind::LeaseForwardCacheOp]);
+
+    let owner = ScriptedOwner::new([Ok(InternalMessage::ForwardCacheOk(ForwardCacheOk {
+        correlation_id: 0,
+        value: None,
+        outcome: Some(ForwardCacheOutcome {
+            applied: true,
+            version: Some(1),
+        }),
+    }))]);
+    forward_lease_put_if(&owner, &target(), &key(), "w7", "token", &put_if)
+        .await
+        .expect_err("a plain answer to a lease claim is refused");
 }
 
 /// **A forward names its route's incarnation only to an owner that offered

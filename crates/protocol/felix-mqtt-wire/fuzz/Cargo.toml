@@ -1,0 +1,35 @@
+# libFuzzer target for the MQTT packet decoder.
+#
+# These bytes come from any device that can reach the listener, before and
+# after it has authenticated, so the properties are about refusing input
+# cleanly: decode or error, never panic, and whatever decodes must encode again.
+#
+# Excluded from the workspace on purpose: `cargo-fuzz` needs nightly and links
+# libFuzzer, neither of which belongs in the default `cargo build --workspace`.
+# The deterministic subset runs in the normal test suite as
+# `crates/protocol/felix-mqtt-wire/tests/generated.rs`.
+#
+#     cargo install cargo-fuzz
+#     cargo +nightly fuzz run mqtt_packet -- -max_total_time=300
+[package]
+name = "felix-mqtt-wire-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+bytes = "1"
+felix-mqtt-wire = { path = ".." }
+
+[[bin]]
+name = "mqtt_packet"
+path = "fuzz_targets/mqtt_packet.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]

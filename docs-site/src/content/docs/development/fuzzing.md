@@ -9,7 +9,7 @@ night, as a campaign that builds on what earlier nights found.
 
 ## The targets
 
-Three fuzz crates, each outside the workspace because `cargo-fuzz` needs
+Four fuzz crates, each outside the workspace because `cargo-fuzz` needs
 nightly and links libFuzzer:
 
 | Crate | Target | Decoder | Where its bytes come from |
@@ -18,6 +18,7 @@ nightly and links libFuzzer:
 | | `client_message` | JSON control messages | any client |
 | | `binary_payload` | binary publish, ack and event-batch bodies | any client |
 | | `internal_message` | broker-to-broker frames, envelope and correlation id | a peer broker |
+| `crates/protocol/felix-mqtt-wire/fuzz` | `mqtt_packet` | every MQTT 3.1.1 and 5.0 packet, before and after `CONNECT`, decoded as a stream and round-tripped | any MQTT device, before auth |
 | `crates/server/felix-kafka/fuzz` | `kafka_request` | Kafka request header and every body the listener answers, plus SASL/PLAIN | any Kafka client, before auth |
 | | `kafka_records` | produce record batches and their codecs | any Kafka client |
 | `crates/server/felix-storage/fuzz` | `segment_record` | one segment record | disk, and replication peers |
@@ -37,7 +38,7 @@ almost never get past the checksum.
 ## Per pull request
 
 The `fuzz` job in `ci.yml` runs `task fuzz` with `FUZZ_SECONDS=30`: every target
-for 30 seconds. The wire and Kafka targets start from their committed seeds;
+for 30 seconds. The wire, MQTT and Kafka targets start from their committed seeds;
 the storage targets have none and start from an empty corpus. That catches a decoder
 change that breaks something the seeds or a minute of mutation reaches. It is
 not meant to find anything deep.
@@ -95,8 +96,8 @@ cd crates/protocol/felix-wire/fuzz
 cargo +nightly fuzz run frame corpus/frame seeds/frame -- -max_total_time=300
 ```
 
-`seeds/` is committed and read-only. Only `felix-wire` and `felix-kafka` have
-one. `corpus/` is libFuzzer's working directory and is git-ignored. Passing
+`seeds/` is committed and read-only. Only `felix-wire`, `felix-mqtt-wire` and
+`felix-kafka` have one. `corpus/` is libFuzzer's working directory and is git-ignored. Passing
 `corpus/<target>` first is what keeps new inputs out of `seeds/`.
 
 ## Adding a target

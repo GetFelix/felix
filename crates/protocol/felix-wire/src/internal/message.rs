@@ -2,9 +2,9 @@
 
 use super::{
     Fence, FenceOk, ForwardCacheError, ForwardCacheOk, ForwardCacheOp, ForwardPublish,
-    ForwardPublishError, ForwardPublishOk, Hello, HelloOk, Kind, NotLeader, PeerCapabilities, Ping,
-    Pong, PreVote, PreVoteAnswer, ReplicateBootstrap, ReplicateError, ReplicateFetch, ReplicateOk,
-    ReplicateRebuild, ReplicateRecords,
+    ForwardPublishError, ForwardPublishOk, Hello, HelloOk, Kind, LeaseForwardCacheOk, NotLeader,
+    PeerCapabilities, Ping, Pong, PreVote, PreVoteAnswer, ReplicateBootstrap, ReplicateError,
+    ReplicateFetch, ReplicateOk, ReplicateRebuild, ReplicateRecords,
 };
 
 /// A decoded internal message.
@@ -64,6 +64,10 @@ pub enum InternalMessage {
     Pong(Pong),
     PreVote(PreVote),
     PreVoteAnswer(PreVoteAnswer),
+    /// A conditional put that asks the owner to mint a lease token. The body
+    /// is `ForwardCacheOp`'s, always with a condition.
+    LeaseForwardCacheOp(ForwardCacheOp),
+    LeaseForwardCacheOk(LeaseForwardCacheOk),
 }
 
 /// The record kinds, whichever log they are for, send as
@@ -132,6 +136,8 @@ impl InternalMessage {
             Self::Pong(_) => Kind::Pong,
             Self::PreVote(_) => Kind::PreVote,
             Self::PreVoteAnswer(_) => Kind::PreVoteAnswer,
+            Self::LeaseForwardCacheOp(_) => Kind::LeaseForwardCacheOp,
+            Self::LeaseForwardCacheOk(_) => Kind::LeaseForwardCacheOk,
         }
     }
 
@@ -181,7 +187,7 @@ impl InternalMessage {
     pub fn incarnated_shard(&self) -> Option<&ShardRef> {
         match self {
             Self::ForwardPublish(m) => Some(&m.shard),
-            Self::ForwardCacheOp(m) => Some(&m.shard),
+            Self::ForwardCacheOp(m) | Self::LeaseForwardCacheOp(m) => Some(&m.shard),
             Self::ReplicateRecords(m)
             | Self::ReplicateCacheRecords(m)
             | Self::ReplicateGroupRecords(m)
@@ -204,7 +210,7 @@ impl InternalMessage {
     pub(super) fn incarnated_shard_mut(&mut self) -> Option<&mut ShardRef> {
         match self {
             Self::ForwardPublish(m) => Some(&mut m.shard),
-            Self::ForwardCacheOp(m) => Some(&mut m.shard),
+            Self::ForwardCacheOp(m) | Self::LeaseForwardCacheOp(m) => Some(&mut m.shard),
             Self::ReplicateRecords(m)
             | Self::ReplicateCacheRecords(m)
             | Self::ReplicateGroupRecords(m)
@@ -256,6 +262,8 @@ impl InternalMessage {
             Self::Pong(m) => m.correlation_id,
             Self::PreVote(m) => m.correlation_id,
             Self::PreVoteAnswer(m) => m.correlation_id,
+            Self::LeaseForwardCacheOp(m) => m.correlation_id,
+            Self::LeaseForwardCacheOk(m) => m.correlation_id,
         }
     }
 }

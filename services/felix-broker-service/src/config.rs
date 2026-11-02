@@ -12,6 +12,7 @@ mod file;
 pub mod kafka;
 pub mod limits;
 mod membership;
+pub mod mqtt;
 mod print;
 mod subscriber;
 pub mod tls;
@@ -22,6 +23,7 @@ pub(crate) use env::quorum_reads_by_lease;
 pub use kafka::KafkaListenerConfig;
 pub use limits::{LimitsConfig, TenantQuota};
 pub use membership::MembershipConfig;
+pub use mqtt::MqttListenerConfig;
 pub use subscriber::{SubStreamMode, SubscriberLaneShard};
 pub use tls::{ClientTlsConfig, ClientTlsFiles};
 

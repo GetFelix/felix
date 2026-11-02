@@ -859,6 +859,15 @@ entries that must never be acknowledged and then lost) is the last place
 Felix should be inventive, and openraft's storage suite now enforces the
 semantics against the real store on every test run.
 
+Every redb commit fsyncs, so the store runs its writes on tokio's blocking
+pool. Run inline, a slow disk held an async worker for the whole flush, and
+other tasks queued on that worker waited with it: RPC handlers, timers, and
+on a one-worker runtime everything else. Under disk load that cost an
+election in a single-threaded test (#1705), and a control plane limited to
+one CPU gets one worker too. Openraft awaits each log and vote write before
+it issues the next, so their order and the rule that a vote or entry is
+durable before it is acknowledged are unchanged.
+
 Four findings from landing #342, each one a bug the chaos suite caught
 that no earlier test could see:
 

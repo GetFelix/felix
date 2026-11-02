@@ -35,6 +35,7 @@ APACHE = {
     "felix-capi",
     "felix-transport",
     "felix-common",
+    "felix-mqtt-wire",
 }
 COPYLEFT = {
     "felix-broker",
@@ -42,6 +43,7 @@ COPYLEFT = {
     "felix-authz",
     "felix-router",
     "felix-kafka",
+    "felix-mqtt",
     "felix-replication",
     "felix-cluster",
     "felix-conformance",
@@ -57,11 +59,14 @@ COPYLEFT = {
 NOT_PUBLISHABLE = {
     # A native library and header; it ships beside the Go and C# packages.
     "felix-capi",
+    # Internal until its API has met real devices (docs/mqtt-design.md, D5).
+    "felix-mqtt-wire",
     "felix-authz",
     "felix-broker",
     "felix-common",
     "felix-router",
     "felix-kafka",
+    "felix-mqtt",
     "felix-replication",
     "felix-storage",
     "felix-broker-service",

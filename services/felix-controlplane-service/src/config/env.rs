@@ -4,6 +4,7 @@ use std::str::FromStr;
 use anyhow::{Context, Result};
 
 use super::api_tls::api_tls_from_env;
+use super::api_ui::{api_ui_from_env, api_ui_path_from_env};
 use super::bootstrap::bootstrap_tls_from_env;
 use super::storage::raft_from_env;
 use super::{
@@ -109,6 +110,8 @@ impl ControlPlaneConfig {
         let config = Self {
             bind_addr,
             api_tls: api_tls_from_env()?,
+            api_ui: api_ui_from_env()?,
+            api_ui_path: api_ui_path_from_env(),
             metrics_bind,
             region_id,
             storage,

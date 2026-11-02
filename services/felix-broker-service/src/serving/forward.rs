@@ -35,7 +35,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use felix_wire::internal::{
     AckMode, CacheOpKind, ErrorCode, ForwardCacheCondition, ForwardCacheOk, ForwardCacheOp,
-    ForwardPublish, InternalMessage, PeerCapabilities, ShardRef,
+    ForwardLease, ForwardPublish, InternalMessage, PeerCapabilities, ShardRef,
 };
 
 use felix_replication::peer::PeerRequester;
@@ -466,6 +466,36 @@ pub async fn forward_cache_request(
     credential: &str,
     request: &CacheRequest,
 ) -> Result<ForwardCacheOk, ForwardError> {
+    forward_cache(pool, target, key, cache_key, credential, request, false)
+        .await
+        .map(|(ok, _)| ok)
+}
+
+/// [`forward_cache_request`] for a conditional put that asks the owner to
+/// mint a lease token. Sent as its own kind, so an owner that predates lease
+/// tokens refuses it rather than writing without minting.
+pub(crate) async fn forward_lease_put_if(
+    pool: &impl PeerRequester,
+    target: &ForwardTarget,
+    key: &ForwardKey,
+    cache_key: &str,
+    credential: &str,
+    request: &CacheRequest,
+) -> Result<(ForwardCacheOk, ForwardLease), ForwardError> {
+    forward_cache(pool, target, key, cache_key, credential, request, true)
+        .await
+        .map(|(ok, lease)| (ok, lease.unwrap_or(ForwardLease::NotMinted)))
+}
+
+async fn forward_cache(
+    pool: &impl PeerRequester,
+    target: &ForwardTarget,
+    key: &ForwardKey,
+    cache_key: &str,
+    credential: &str,
+    request: &CacheRequest,
+    lease: bool,
+) -> Result<(ForwardCacheOk, Option<ForwardLease>), ForwardError> {
     let mut condition = request.condition();
     let mut target = target.clone();
     let mut last = String::new();
@@ -495,7 +525,7 @@ pub async fn forward_cache_request(
                 continue;
             }
         };
-        let message = InternalMessage::ForwardCacheOp(ForwardCacheOp {
+        let op = ForwardCacheOp {
             correlation_id: 0,
             shard: ShardRef {
                 tenant_id: key.tenant_id.clone(),
@@ -515,12 +545,28 @@ pub async fn forward_cache_request(
                 credential.to_string()
             },
             condition,
-        });
+        };
+        let message = if lease {
+            InternalMessage::LeaseForwardCacheOp(op)
+        } else {
+            InternalMessage::ForwardCacheOp(op)
+        };
 
         match PeerRequester::request(pool, &target.node_id, target.advertise_addr, message).await {
-            Ok(InternalMessage::ForwardCacheOk(ok)) => {
+            Ok(InternalMessage::ForwardCacheOk(ok)) if !lease => {
                 metrics::record_forward(metrics::OUTCOME_OK);
-                return Ok(ok);
+                return Ok((ok, None));
+            }
+            Ok(InternalMessage::LeaseForwardCacheOk(ok)) if lease => {
+                metrics::record_forward(metrics::OUTCOME_OK);
+                return Ok((
+                    ForwardCacheOk {
+                        correlation_id: ok.correlation_id,
+                        value: None,
+                        outcome: Some(ok.outcome),
+                    },
+                    Some(ok.lease),
+                ));
             }
             Ok(InternalMessage::NotLeader(moved)) => {
                 last = format!(
@@ -568,10 +614,14 @@ pub async fn forward_cache_request(
                     return Err(ForwardError::Refused {
                         stream: key.stream.clone(),
                         code: Some(err.code),
-                        detail: format!(
-                            "owner {} does not support conditional cache writes",
-                            target.node_id
-                        ),
+                        detail: if lease {
+                            format!("owner {} does not mint lease tokens", target.node_id)
+                        } else {
+                            format!(
+                                "owner {} does not support conditional cache writes",
+                                target.node_id
+                            )
+                        },
                     });
                 }
                 last = format!("{:?}: {}", err.code, err.detail);

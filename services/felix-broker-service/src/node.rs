@@ -352,7 +352,8 @@ where
     );
     let auth = Arc::new(
         BrokerAuth::with_key_store(Arc::clone(&key_store))
-            .with_subject_binding(config.client_tls.bind_subject),
+            .with_subject_binding(config.client_tls.bind_subject)
+            .with_lease_tokens(crate::serving::lease::LeaseTokens::from_env()?.map(Arc::new)),
     );
     // One set for every client listener, so the per-address cap and each
     // tenant's quota are per broker rather than per socket.
@@ -371,6 +372,7 @@ where
         },
     )
     .await?;
+    let mqtt = listeners::bind_mqtt(&client_tls, &auth)?;
     let mut accept_tasks = listeners::spawn_accept_loops(
         &quic_servers,
         listeners::AcceptLoops {
@@ -393,6 +395,15 @@ where
     if let Some(kafka) = kafka {
         accept_tasks.push(listeners::spawn_kafka(
             kafka,
+            &accept_shutdown,
+            &connections,
+            &seeded,
+            gate_readiness_on_sync,
+        ));
+    }
+    if let Some(mqtt) = mqtt {
+        accept_tasks.push(listeners::spawn_mqtt(
+            mqtt,
             &accept_shutdown,
             &connections,
             &seeded,

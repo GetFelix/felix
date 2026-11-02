@@ -1,7 +1,10 @@
 # MQTT ingress: design
 
 Status: accepted in #1685 on 2026-10-31, with the decisions listed at the end.
-Nothing here is built yet; the work is tracked as slices #1687 to #1698.
+The packet codec, `felix-mqtt-wire`, is built (#1687), and so is the listener
+skeleton, which authenticates connections and refuses every publish and
+subscribe (#1689, `docs/mqtt-compatibility.md`). The rest is not; the work is
+tracked as slices #1688 and #1690 to #1698.
 
 Devices speak MQTT, and a Felix broker cannot accept an MQTT connection today.
 This page designs a native MQTT listener, built the way the Kafka listener is
@@ -112,7 +115,8 @@ That left two real options: Felix owns a small codec, or it vendors `rumqttc`'s
 roughly 2,000 lines plus tests. The
 codec decodes into `bytes::Bytes` without copying the payload, has a fuzz target
 from its first commit, and is cross-checked against encodings produced by
-`rumqttc` and the mosquitto clients, kept as golden vectors.
+`rumqttc`, kept as golden vectors. The mosquitto clients and Paho check it from
+the other side in the conformance runs of the later slices.
 
 ### Crate layout
 
@@ -121,7 +125,8 @@ The codec is split from the listener:
 - `crates/protocol/felix-mqtt-wire` is the codec only: 3.1.1 and 5.0, limits
   enforced during decode, zero-copy into `bytes::Bytes`. It depends on `bytes`
   and `thiserror` and nothing else, no tokio and no `felix-*` crate. It is
-  internal and stays off crates.io, like the other internal crates.
+  internal and stays off crates.io, like the other internal crates. Its licence
+  is Apache-2.0, as for the rest of `crates/protocol/`.
 - `crates/server/felix-mqtt` is the listener on the broker: sessions, topic
   mapping, QoS and auth, as `felix-kafka` is for Kafka.
 
@@ -662,7 +667,7 @@ and `delivered_throughput` counts deliveries.
 ## Safety plan
 
 - **Fuzzing from the first commit.** Targets for the packet decoder at both
-  versions (any bytes, never a panic, allocation bounded by the limits), the
+  versions (any bytes, never a panic, every list bounded by the limits), the
   record header encoding in storage and on the wire, topic and filter parsing, and the session record. A property
   test checks the trie's matches against a direct implementation of the
   specification's matching rules.

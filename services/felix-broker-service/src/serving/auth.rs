@@ -33,10 +33,11 @@ use jsonwebtoken::Algorithm;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
+use crate::serving::lease::{LeaseTokens, is_lease_token};
 use crate::serving::revocation::{Revocable, Revocations, Revoked};
 
-/// Verifies Felix tokens against control-plane JWKS. Cloning shares the
-/// verifier and key store.
+/// Verifies Felix tokens against control-plane JWKS, and lease tokens against
+/// the lease key. Cloning shares the verifiers and key store.
 #[derive(Clone)]
 pub struct BrokerAuth {
     verifier: Arc<FelixTokenVerifier>,
@@ -44,6 +45,8 @@ pub struct BrokerAuth {
     /// Require a token's subject to match the client certificate, when the
     /// client presented one (`FELIX_TLS_CLIENT_CERT_BIND_SUBJECT`).
     bind_subject: bool,
+    /// Without it this broker neither mints nor accepts lease tokens.
+    lease: Option<Arc<LeaseTokens>>,
 }
 
 impl BrokerAuth {
@@ -63,6 +66,7 @@ impl BrokerAuth {
             verifier,
             key_store,
             bind_subject: false,
+            lease: None,
         }
     }
 
@@ -77,6 +81,7 @@ impl BrokerAuth {
             verifier,
             key_store,
             bind_subject: false,
+            lease: None,
         }
     }
 
@@ -86,6 +91,17 @@ impl BrokerAuth {
     pub fn with_subject_binding(mut self, bind_subject: bool) -> Self {
         self.bind_subject = bind_subject;
         self
+    }
+
+    /// Mint and accept lease tokens with these keys.
+    pub fn with_lease_tokens(mut self, lease: Option<Arc<LeaseTokens>>) -> Self {
+        self.lease = lease;
+        self
+    }
+
+    /// The lease keys, when this broker has them.
+    pub(crate) fn lease_tokens(&self) -> Option<&Arc<LeaseTokens>> {
+        self.lease.as_ref()
     }
 
     /// [`Self::authenticate`] for a client on a connection that may carry a
@@ -104,7 +120,9 @@ impl BrokerAuth {
                 &context.subject,
                 context.actor.as_deref(),
             )
-            .map_err(|reason| anyhow::anyhow!("token refused: {reason}"))?;
+            .map_err(|reason| {
+                anyhow::Error::new(CredentialRefused(format!("token refused: {reason}")))
+            })?;
         }
         Ok(context)
     }
@@ -117,18 +135,38 @@ impl BrokerAuth {
     /// failures, and [`Revoked`] for a token issued before its principal was
     /// revoked.
     pub async fn authenticate(&self, tenant_id: &str, token: &str) -> Result<AuthContext> {
-        ensure_jwks_cached(&self.key_store, tenant_id).await?;
         let tenant = TenantId::new(tenant_id);
-        let claims = self.verifier.verify(&tenant, token)?;
+        // The lease keys and the control plane's are disjoint, so a token
+        // whose kid points at the wrong set only fails.
+        let lease_token = is_lease_token(token);
+        let claims = if lease_token {
+            // The JWKS path checks this before any lookup; the lease path
+            // must too, since the tenant id is the client's.
+            check_tenant_id(tenant_id)?;
+            let lease = self.lease.as_ref().ok_or_else(|| {
+                AuthzError::Key("this broker does not accept lease tokens".to_string())
+            })?;
+            lease.verify(&tenant, token)?
+        } else {
+            ensure_jwks_cached(&self.key_store, tenant_id).await?;
+            self.verifier.verify(&tenant, token)?
+        };
         let matcher = PermissionMatcher::from_strings(&claims.perms)?;
         let actor = claims.act.map(|actor| actor.sub);
-        let revocable = Revocable::new(
+        let mut revocable = Revocable::new(
             Arc::clone(&self.key_store.revocations),
             tenant_id.to_string(),
             claims.sub.clone(),
             actor.clone(),
             claims.iat,
         );
+        if lease_token {
+            revocable = revocable.ending_at(
+                claims
+                    .exp
+                    .saturating_add(crate::serving::lease::LEEWAY_SECS),
+            );
+        }
         if revocable.is_revoked() {
             return Err(anyhow::Error::new(Revoked));
         }
@@ -139,6 +177,9 @@ impl BrokerAuth {
             publisher: publisher_of(&claims.sub),
             subject: claims.sub,
             actor,
+            issued_at: claims.iat,
+            expires_at: claims.exp,
+            lease_token,
             revocable,
         })
     }
@@ -160,6 +201,11 @@ pub struct AuthContext {
     /// `subject` as it is recorded on what this connection publishes. `None`
     /// when it is too long to record.
     pub publisher: Option<bytes::Bytes>,
+    /// The token's `iat` and `exp`, which bound a lease token minted from it.
+    pub issued_at: i64,
+    pub expires_at: i64,
+    /// A lease token, whose sessions end at its `exp`.
+    pub lease_token: bool,
     /// What ends this session when its principal is revoked.
     pub revocable: Revocable,
 }
@@ -340,7 +386,9 @@ impl ControlPlaneKeyStore {
         if let Some(catalog) = &self.catalog
             && catalog.rules_out(tenant_id).await
         {
-            anyhow::bail!("unknown tenant");
+            return Err(anyhow::Error::new(CredentialRefused(
+                "unknown tenant".to_string(),
+            )));
         }
         // One request per tenant however many streams ask at once: the
         // others wait here and find the answer in a cache.
@@ -429,6 +477,20 @@ impl ControlPlaneKeyStore {
     }
 }
 
+/// A credential the broker looked at and refused, as opposed to one it could
+/// not check. Listeners that tell a device "wrong credentials" from "try
+/// again" read this.
+#[derive(Debug)]
+pub struct CredentialRefused(pub String);
+
+impl std::fmt::Display for CredentialRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for CredentialRefused {}
+
 /// Refuse a tenant id no control plane could have issued, before it goes
 /// anywhere near a URL.
 fn check_tenant_id(tenant_id: &str) -> Result<()> {
@@ -438,7 +500,9 @@ fn check_tenant_id(tenant_id: &str) -> Result<()> {
         || tenant_id == ".."
         || tenant_id.chars().any(char::is_control)
     {
-        anyhow::bail!("invalid tenant id");
+        return Err(anyhow::Error::new(CredentialRefused(
+            "invalid tenant id".to_string(),
+        )));
     }
     Ok(())
 }

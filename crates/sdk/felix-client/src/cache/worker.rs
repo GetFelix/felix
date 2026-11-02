@@ -15,7 +15,7 @@ use quinn::{RecvStream, SendStream};
 use tokio::sync::{mpsc, oneshot};
 use tracing::debug;
 
-use super::{CacheConditionResult, VersionedValue};
+use super::{CacheConditionResult, LeaseToken, LeaseWrite, VersionedValue};
 use crate::frame_io::{read_frame_cache_timed_into_with_limit, write_frame_parts};
 #[cfg(feature = "telemetry")]
 use crate::timings;
@@ -53,11 +53,12 @@ pub(crate) enum CacheRequest {
         message: Message,
         response: oneshot::Sender<Result<Option<VersionedValue>>>,
     },
-    /// A conditional put or delete, answered with `CacheConditionResult`.
+    /// A conditional put or delete, answered with `CacheConditionResult`
+    /// and, for a put that asked, a lease token.
     Conditional {
         request_id: u64,
         message: Message,
-        response: oneshot::Sender<Result<CacheConditionResult>>,
+        response: oneshot::Sender<Result<LeaseWrite>>,
     },
 }
 
@@ -418,7 +419,7 @@ async fn conditional_round_trip(
     request_id: u64,
     frame_scratch: &mut BytesMut,
     max_frame_bytes: usize,
-) -> Result<CacheConditionResult> {
+) -> Result<LeaseWrite> {
     let frame = message.encode().context("encode message")?;
     write_frame_parts(send, &frame).await?;
     let frame =
@@ -433,11 +434,20 @@ async fn conditional_round_trip(
             applied,
             version,
             request_id: resp_id,
+            lease_token,
+            lease_refused,
         } => {
             if resp_id != request_id {
                 return Err(anyhow::anyhow!("cache condition request id mismatch"));
             }
-            Ok(CacheConditionResult { applied, version })
+            Ok(LeaseWrite {
+                result: CacheConditionResult { applied, version },
+                token: lease_token.map(|lease| LeaseToken {
+                    token: lease.token,
+                    expires_at: lease.expires_at,
+                }),
+                token_refused: lease_refused,
+            })
         }
         Message::Error {
             message,

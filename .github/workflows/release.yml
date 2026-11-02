@@ -901,6 +901,26 @@ jobs:
           pip install cargo-zigbuild ziglang
           python3 -c 'import ziglang, os; print(os.path.dirname(ziglang.__file__))' >> "$GITHUB_PATH"
 
+      # rustc 1.99.1 passes -Wl,--fix-cortex-a53-843419 on aarch64 Linux (1.97.1
+      # did not) and zig rejects it as an unsupported linker arg. napi 2 has no hook to drop it, so
+      # a `zig` ahead of the real one on PATH strips it.
+      - name: Strip the unsupported linker arg from zig
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          real=$(python3 -c 'import ziglang, os; print(os.path.join(os.path.dirname(ziglang.__file__), "zig"))')
+          shim="$RUNNER_TEMP/zig-shim"
+          mkdir -p "$shim"
+          cat > "$shim/zig" <<EOF
+          #!/bin/sh
+          for a; do
+            shift
+            [ "\$a" = "-Wl,--fix-cortex-a53-843419" ] || set -- "\$@" "\$a"
+          done
+          exec "$real" "\$@"
+          EOF
+          chmod +x "$shim/zig"
+          echo "$shim" >> "$GITHUB_PATH"
+
       - name: Build the addon
         working-directory: crates/sdk/felix-typescript
         env:
@@ -909,9 +929,7 @@ jobs:
           # clippy that rust-toolchain.toml lists, which a build does not need
           # and which failed with "detected conflict: 'bin/cargo-fmt'".
           RUSTUP_TOOLCHAIN: "1.99.1"
-          # zig's linker ignores the -O1 rustc passes and says so, and rustc
-          # turns that into a warning on every Linux leg.
-          RUSTFLAGS: ${{ contains(matrix.target, 'linux-gnu') && '-A linker_messages' || '' }}
+          # No RUSTFLAGS here. zig's notice about ignoring -O1 is only a warning.
         run: napi build --platform --release --target ${{ matrix.target }} $ZIG
 
       - name: The addon needs no glibc newer than 2.28

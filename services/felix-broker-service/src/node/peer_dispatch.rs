@@ -47,6 +47,9 @@ impl PeerRequestHandler for BrokerPeerHandler {
         match request {
             InternalMessage::ForwardPublish(publish) => self.forwarding.apply(publish).await,
             InternalMessage::ForwardCacheOp(op) => self.forwarding.apply_cache_op(op).await,
+            InternalMessage::LeaseForwardCacheOp(op) => {
+                self.forwarding.apply_lease_cache_op(op).await
+            }
             InternalMessage::ReplicateRecords(batch)
             | InternalMessage::ReplicateMarkedRecords(batch) => {
                 self.replica

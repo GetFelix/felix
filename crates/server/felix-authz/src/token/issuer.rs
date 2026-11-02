@@ -83,7 +83,20 @@ impl FelixTokenIssuer {
             act: actor.map(|sub| super::Actor {
                 sub: sub.to_string(),
             }),
+            lease: None,
         };
+        self.sign(tenant_id, claims)
+    }
+
+    /// Sign `claims` as they are, apart from `iss` and `aud`, which are this
+    /// issuer's. For a caller that sets its own times.
+    /// Treat the result as a secret; don't log it.
+    ///
+    /// # Errors
+    /// As [`Self::mint`].
+    pub fn sign(&self, tenant_id: &TenantId, mut claims: FelixClaims) -> AuthzResult<String> {
+        claims.iss.clone_from(&self.issuer);
+        claims.aud.clone_from(&self.audience);
         let signing_key = self.key_store.current_signing_key(tenant_id)?;
         let encoding_key = self.cache.encoding_key(tenant_id, &signing_key)?;
         let mut header = Header::new(signing_key.alg);
