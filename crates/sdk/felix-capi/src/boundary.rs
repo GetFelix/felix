@@ -5,14 +5,20 @@ use std::any::Any;
 use std::ffi::{CStr, c_char};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use crate::error::{clear_last_error, set_last_error};
-use crate::status::{FELIX_STATUS_INVALID_ARGUMENT, FELIX_STATUS_PANIC, FelixStatus, classify};
+use felix_client::SubscribeCursorError;
 
-/// Why a call failed: the status to return and the message to record.
+use crate::error::{CursorDetail, clear_last_error, set_last_cursor, set_last_error};
+use crate::status::{
+    FELIX_STATUS_CURSOR, FELIX_STATUS_INVALID_ARGUMENT, FELIX_STATUS_PANIC, FelixStatus, classify,
+};
+
+/// Why a call failed: the status to return and the message to record, and
+/// for a refused cursor where the reader can resume.
 #[derive(Debug)]
 pub(crate) struct Failure {
     pub(crate) status: FelixStatus,
     pub(crate) message: String,
+    pub(crate) cursor: Option<CursorDetail>,
 }
 
 impl Failure {
@@ -20,15 +26,27 @@ impl Failure {
         Self {
             status: FELIX_STATUS_INVALID_ARGUMENT,
             message: message.into(),
+            cursor: None,
         }
     }
 }
 
 impl From<anyhow::Error> for Failure {
     fn from(err: anyhow::Error) -> Self {
+        let status = classify(&err);
+        // Only when the status says so: a coded broker error wins over a
+        // cursor error elsewhere in the chain.
+        let cursor = (status == FELIX_STATUS_CURSOR)
+            .then(|| {
+                err.chain()
+                    .find_map(|e| e.downcast_ref::<SubscribeCursorError>())
+                    .map(CursorDetail::from)
+            })
+            .flatten();
         Self {
-            status: classify(&err),
+            status,
             message: format!("{err:#}"),
+            cursor,
         }
     }
 }
@@ -46,10 +64,12 @@ pub(crate) fn guard(body: impl FnOnce() -> Result<FelixStatus, Failure>) -> Feli
         }
         Ok(Err(failure)) => {
             set_last_error(failure.message);
+            set_last_cursor(failure.cursor);
             failure.status
         }
         Err(payload) => {
             set_last_error(format!("felix panicked: {}", panic_text(&*payload)));
+            set_last_cursor(None);
             FELIX_STATUS_PANIC
         }
     }

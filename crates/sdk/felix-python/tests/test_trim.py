@@ -64,8 +64,13 @@ def test_a_trim_at_the_tail_lands_there_and_a_stale_one_is_refused(trimmer, fixt
     assert noop.trimmed
     assert (noop.offset, noop.oldest) == (None, tail - 1)
 
-    with pytest.raises(felix.CursorError):
+    # A reader refused below the floor learns where to resume and who trimmed.
+    with pytest.raises(felix.CursorError) as refused:
         trimmer.read(*scope, 0, tail - 2)
+    assert refused.value.reason == "too_old"
+    assert refused.value.requested == tail - 2
+    assert refused.value.available == tail - 1
+    assert refused.value.trim_headers == b"who"
 
 
 def test_a_trim_past_its_own_record_is_a_plain_error(trimmer, fixture):

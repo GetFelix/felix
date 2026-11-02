@@ -67,10 +67,15 @@ export default function register(ctx) {
           const noop = await trimmer.trimBefore(tenant, namespace, stream, 0, tail - 2n, tail + 1n);
           assert.deepEqual(noop, { trimmed: true, offset: null, oldest: tail - 1n, tail: null });
 
-          await assert.rejects(
-            trimmer.read(tenant, namespace, stream, 0, tail - 2n),
-            (err) => err instanceof felix.CursorError,
-          );
+          // A reader refused below the floor learns where to resume and who trimmed.
+          await assert.rejects(trimmer.read(tenant, namespace, stream, 0, tail - 2n), (err) => {
+            assert.ok(err instanceof felix.CursorError);
+            assert.equal(err.reason, "too_old");
+            assert.equal(err.requested, tail - 2n);
+            assert.equal(err.available, tail - 1n);
+            assert.deepEqual(err.trimHeaders, Buffer.from("who"));
+            return true;
+          });
         });
         if (!ran) {
           skipScenarios(

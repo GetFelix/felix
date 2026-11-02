@@ -707,7 +707,7 @@ except felix.NotFoundError:
 | `AuthError` | token rejected or revoked, or missing the permission (`unauthenticated`, `forbidden`, `revoked`) | no |
 | `NotFoundError` | no such tenant, namespace, stream or cache (`not_found`) | see `retry` |
 | `PublishRefusedError` | an idempotent producer's batch was refused and nothing written (`reason`: `sequence_gap`, `unknown_producer`, ...); see [idempotent producers](#idempotent-producers) | no; it ends the producer on that stream |
-| `CursorError` | the start offset is gone; retention discarded it | no; restart at `earliest` |
+| `CursorError` | the start offset is not available: retention or a head trim discarded it, or it is past the tail | no; resume from `available` |
 | `FelixError` | the base, and anything else (`invalid_request`, `limit_exceeded`, a code this client does not know) | see `retry` |
 
 Every exception carries three attributes from the broker:
@@ -727,6 +727,39 @@ code this client does not know still carries a retry class.
 All three are `None` when the broker predates error codes, or when the failure
 happened in the client (a lost connection, say). Then the class is chosen from
 the message.
+
+### When a start offset is refused
+
+A `CursorError` says where you can resume instead of leaving you to guess:
+
+- `reason` is `"too_old"` (retention or a head trim discarded the offset) or
+  `"in_future"` (it is past the tail).
+- `requested` is the offset you asked for.
+- `available` is the nearest offset that would have worked: the oldest
+  retained for `too_old`, the tail for `in_future`. Resuming from it takes the
+  smallest gap.
+- `trim_headers` is the `bytes` a [head trim](#trimming-a-shards-head) was
+  written with, so a reader can tell who trimmed past it. It is `None` when
+  retention set the floor.
+
+```python
+import logging
+
+import felix
+
+log = logging.getLogger(__name__)
+
+start = 7  # for example, a checkpoint plus one
+try:
+    with client.subscribe("t1", "default", "orders", start=start) as events:
+        ...
+except felix.CursorError as refused:
+    log.warning(
+        "offset %s is %s; resuming at %s (trim headers: %r)",
+        refused.requested, refused.reason, refused.available, refused.trim_headers,
+    )
+    start = refused.available  # accept the gap, then subscribe again from here
+```
 
 Never match on the message. It is prose and it will be reworded; match on the
 exception type or `code` instead.
@@ -1231,7 +1264,7 @@ Every other refusal raises a `FelixError` carrying the broker's `code`:
 Do not send a timed-out trim again as it is. If it landed, the same call is
 refused with a tail one past the trim, which looks like a lost race. Read the
 shard's earliest offset, or read below the floor you asked for, to tell the two
-apart. A read below the floor raises `CursorError`. The call needs the
+apart. A read below the floor raises `CursorError`, which carries the new floor and the trim's headers (see [When a start offset is refused](#when-a-start-offset-is-refused)). The call needs the
 `stream.trim` permission, which `stream.manage` includes. Against a broker that
 did not advertise `FEATURE_HEAD_TRIM` it raises `TrimError`, sending nothing.
 `AsyncClient.trim_before` is the same call as a coroutine.

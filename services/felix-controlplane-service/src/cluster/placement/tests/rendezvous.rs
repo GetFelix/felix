@@ -396,7 +396,7 @@ fn past_every_share_the_least_loaded_node_is_chosen() {
         &load,
         1,
         &crate::cluster::placement::leadership::Leadership::default(),
-        crate::cluster::placement::leadership::Shares::new(1, 1, 2),
+        crate::cluster::placement::leadership::Shares::new(0, 1, 1, 2),
     );
     assert_eq!(chosen, Some(other));
 }

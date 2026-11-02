@@ -341,6 +341,13 @@ to re-run the harness by hand:
   weekly schedule or manual dispatch. At roughly 1,000 individual runs it is
   too slow for every PR or every merge. It produces the artifacts used to
   regenerate this page; see below.
+- `.github/workflows/perf-env-ab.yml` is a manual dispatch that prices one
+  setting. It builds the checked-out ref once and runs the fast subsets plus a
+  16 KiB and 64 KiB batch cell with `env_a` (empty for the defaults) and with
+  `env_b`, alternating the two sides and flipping which goes first each round.
+  The job summary has the same table as the pull request check. For example,
+  `env_b: FELIX_SUB_QUEUE_MAX_BYTES_TOTAL=4294967296` measures what the
+  broker-wide subscriber byte budget costs.
 
 ### Historical dashboards
 

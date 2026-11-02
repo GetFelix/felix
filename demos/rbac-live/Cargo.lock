@@ -1202,9 +1202,11 @@ name = "felix-mqtt"
 version = "0.7.0-preview.3"
 dependencies = [
  "async-trait",
+ "base64 0.23.1",
  "bytes",
  "felix-mqtt-wire",
  "metrics",
+ "sha1",
  "tokio",
  "tokio-util",
  "tracing",

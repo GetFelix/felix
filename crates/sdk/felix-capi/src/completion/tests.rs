@@ -61,6 +61,7 @@ fn a_failure_carries_its_own_message() {
     completion(&calls).fail(Failure {
         status: FELIX_STATUS_NOT_FOUND,
         message: "unknown stream".to_string(),
+        cursor: None,
     });
     let calls = calls.lock().unwrap();
     assert_eq!(calls.len(), 1);
@@ -131,4 +132,66 @@ async fn either_token_cancels() {
     assert!(is_cancelled(&handle, Some(&user)));
     cancelled(&handle, Some(&user)).await;
     assert!(!is_cancelled(&handle, None));
+}
+
+type CursorSeen = Vec<Option<(u32, u64, u64, Option<Vec<u8>>)>>;
+
+unsafe extern "C" fn record_cursor(
+    user_data: *mut c_void,
+    _status: FelixStatus,
+    _message: *const c_char,
+    _has_offset: bool,
+    _offset: u64,
+) {
+    // SAFETY: the test passes a live `Mutex<CursorSeen>`.
+    let seen = unsafe { &*user_data.cast::<Mutex<CursorSeen>>() };
+    let mut out = std::mem::MaybeUninit::<crate::error::FelixCursorError>::uninit();
+    // SAFETY: `out` is writable.
+    let found = unsafe { crate::error::felix_last_cursor_error(out.as_mut_ptr()) };
+    seen.lock().unwrap().push(found.then(|| {
+        // SAFETY: written because `found`.
+        let c = unsafe { out.assume_init() };
+        let headers = c.has_trim_headers.then(|| {
+            // SAFETY: valid for `trim_headers_len` until the callback returns.
+            unsafe { std::slice::from_raw_parts(c.trim_headers, c.trim_headers_len) }.to_vec()
+        });
+        (c.reason, c.requested, c.available, headers)
+    }));
+}
+
+/// A refused cursor's details are readable inside its callback, and only there.
+#[test]
+fn a_cursor_failure_exposes_its_details_to_the_callback_only() {
+    let seen: Mutex<CursorSeen> = Mutex::new(Vec::new());
+    let new = || {
+        Completion::<Published>::new(
+            Some(record_cursor),
+            std::ptr::from_ref(&seen).cast_mut().cast(),
+        )
+        .unwrap()
+    };
+    let err = anyhow::Error::new(felix_client::SubscribeCursorError {
+        reason: felix_client::CursorErrorReason::TooOld,
+        requested: 3,
+        available: 9,
+        trim_headers: Some(bytes::Bytes::from_static(b"who")),
+    });
+    new().fail(Failure::from(err));
+    new().fail(Failure::from(anyhow::anyhow!("unknown stream")));
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [
+            Some((
+                crate::error::FELIX_CURSOR_TOO_OLD,
+                3,
+                9,
+                Some(b"who".to_vec())
+            )),
+            None
+        ]
+    );
+    // Not left behind for the next call on this thread.
+    let mut out = std::mem::MaybeUninit::<crate::error::FelixCursorError>::uninit();
+    // SAFETY: `out` is writable.
+    assert!(!unsafe { crate::error::felix_last_cursor_error(out.as_mut_ptr()) });
 }
