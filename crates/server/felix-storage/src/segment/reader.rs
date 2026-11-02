@@ -9,7 +9,8 @@ use crate::io::read_at;
 use crate::log::{LogRecord, Offset, SegmentId};
 use crate::segment::cursor::SegmentCursor;
 use crate::segment::format::{
-    RECORD_HEADER_LEN, RecordHeader, RecordKind, SEGMENT_HEADER_LEN, SegmentHeader, decode_record,
+    RECORD_HEADER_LEN, RecordHeader, RecordKind, SEGMENT_HEADER_LEN, SegmentHeader,
+    decode_record_after,
 };
 use crate::segment::index::SparseIndex;
 use crate::{Corruption, Result, StorageError};
@@ -138,7 +139,7 @@ impl SegmentReader {
             }
 
             let record_slice = cursor.slice_at(position, total_len as usize)?;
-            let (decoded, _) = decode_record(record_slice).map_err(|err| {
+            let (decoded, _) = decode_record_after(record_header, record_slice).map_err(|err| {
                 StorageError::Corruption(err.in_segment(shard_label, self.id).at_position(position))
             })?;
 

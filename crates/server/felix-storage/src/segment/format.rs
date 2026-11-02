@@ -553,7 +553,15 @@ pub struct DecodedRecord {
 /// means "ask for more bytes"; every other error means the bytes present are
 /// not a valid record.
 pub fn decode_record(buf: &[u8]) -> DecodeResult<(DecodedRecord, u64)> {
-    let header = RecordHeader::decode(buf)?;
+    decode_record_after(RecordHeader::decode(buf)?, buf)
+}
+
+/// [`decode_record`] for a caller that already decoded the record's header
+/// from the front of `buf`, so the read path checks it once, not twice.
+pub(crate) fn decode_record_after(
+    header: RecordHeader,
+    buf: &[u8],
+) -> DecodeResult<(DecodedRecord, u64)> {
     let total = header.encoded_len();
     if (buf.len() as u64) < total {
         return Err(truncated(total, buf.len() as u64));
