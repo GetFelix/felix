@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793645656551,
+  "lastUpdate": 1793646193212,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -54054,6 +54054,72 @@ window.BENCHMARK_DATA = {
             "range": "399.66",
             "unit": "us",
             "extra": "trials: 5\nmedian: 353.00\nmean: 598.20\nstdev: 399.66\ncv: 66.81%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f7f9d2368b4eacc2df60b993795e9bbeb23a64b9",
+          "message": "feat(storage): record inspection reports a record's headers block size (#1688) (#1786)\n\nPart of #1688. The record inspector shows a v8 record without saying it carried a key and headers block. The fixture fix this PR also carried landed on main in #1790; after merging main only the inspector change is left.\n\n- The inspector would show a v8 record without saying it carried a block. `RecordView` gains `headers_len` and `--json` prints `headers_bytes` (the block stays opaque, as storage keeps it). Test `a_headers_block_is_reported_by_size`; diagnosing.md and the changelog say so.\n\nVerified locally: clippy -D warnings on felix-storage and felix-broker-service, felix-storage inspect tests, felix-broker-service inspect tests.\n\nSpec-Unaffected: test fixtures and an operator tool's output; no protocol or storage behaviour changes.",
+          "timestamp": "2026-11-02T10:54:19-08:00",
+          "tree_id": "5a49f7cc77ce7d655161f5923efda7951dd239df",
+          "url": "https://github.com/GetFelix/felix/commit/f7f9d2368b4eacc2df60b993795e9bbeb23a64b9"
+        },
+        "date": 1793646186364,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 104,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 104.00\nmean: 104.40\nstdev: 1.14\ncv: 1.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 157,
+            "range": "3.21",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 157.00\nmean: 157.40\nstdev: 3.21\ncv: 2.04%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 189,
+            "range": "7.98",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 189.00\nmean: 188.20\nstdev: 7.98\ncv: 4.24%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 108,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 108.00\nmean: 108.80\nstdev: 1.30\ncv: 1.20%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 235,
+            "range": "11.69",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 235.00\nmean: 237.80\nstdev: 11.69\ncv: 4.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 459,
+            "range": "93.96",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 459.00\nmean: 446.80\nstdev: 93.96\ncv: 21.03%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
