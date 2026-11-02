@@ -273,7 +273,6 @@ expectations=(
   "FelixShardElectWipeNonVoterCreatesOpens violates NoCreationBesideNonVoter"
   "FelixShardElectWipeNonVoterCreatesReadmits violates NoFailoverAfterReadmit"
   "FelixShardElectWipeNonVoterEvidenceOnly violates OneLeaderPerGeneration"
-  "FelixShardElectWipeNonVoterSetless pass"
   "FelixShardElectWipeNonVoterSetlessUnmarked violates AckedHeldByLeader"
   "FelixShardElectWipeNonVoterCountersCountLearner violates CountersHeldByLeader"
   "FelixShardElectWipeNonVoterCountersUnchecked violates CountersHeldByLeader"
@@ -354,7 +353,7 @@ fi
 # FelixShardElectSwapDrop{0,1}StoodSeveralDest run in the nightly exhaustive
 # job (tla-walk.yml).
 # So are FelixShardElectWipeNonVoter{Twice,Failover,FailoverWipesLeader,
-# WipesLeader}: each runs well over an hour on a four-core runner. Their
+# WipesLeader,Setless}: each runs well over an hour on a four-core runner. Their
 # violating twins and witnesses stay registered.
 
 # Minutes each of the longer configurations takes on a four-core CI runner,
@@ -424,6 +423,7 @@ weights=(
   "FelixShardElectWipeNonVoterTwice 60"
   "FelixShardElectWipeNonVoterFailover 90"
   "FelixShardElectWipeNonVoterFailoverWipesLeader 100"
+  "FelixShardElectWipeNonVoterSetless 120"
   "FelixShardElectSwapKeep1 27"
   "FelixShardElectSwapKeep2 6"
   "FelixShardElectSwapDrop0 43"
