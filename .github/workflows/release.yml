@@ -595,7 +595,24 @@ jobs:
         run: |
           # Signed by digest, never by tag: a tag can be moved to point at
           # something else, and a signature over a tag would follow it.
-          cosign sign --yes "${IMAGE}@${DIGEST}"
+          #
+          # When Rekor is slow, cosign resends the log entry, gets 409 "an
+          # equivalent entry already exists" and gives up before attaching the
+          # signature. Each try signs with a new key, so a retry does not
+          # collide; a try that fails but left a verifiable signature counts.
+          identity="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/.github/workflows/release.yml@${GITHUB_REF}"
+          for attempt in 1 2 3; do
+            cosign sign --yes "${IMAGE}@${DIGEST}" && exit 0
+            if cosign verify "${IMAGE}@${DIGEST}" \
+                 --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+                 --certificate-identity="$identity" > /dev/null; then
+              echo "cosign sign failed but the signature verifies"
+              exit 0
+            fi
+            [ "$attempt" -lt 3 ] && sleep $((attempt * 20))
+          done
+          echo "::error::could not sign ${IMAGE}@${DIGEST} in 3 tries"
+          exit 1
 
       - name: What was published
         run: |
