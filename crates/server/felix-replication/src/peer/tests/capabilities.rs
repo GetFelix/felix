@@ -665,8 +665,9 @@ async fn a_read_round_fence_and_a_ping_do_not_wait_behind_promotion_fences() {
         .await
         .expect("handshake");
 
+    // Hundreds, as a burst of shard creates sends.
     let mut promotions = Vec::new();
-    for shard in 0..8 {
+    for shard in 0..300 {
         let pool = Arc::clone(&pool);
         let addr = listener.addr;
         promotions.push(tokio::spawn(async move {

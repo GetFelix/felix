@@ -112,7 +112,7 @@ never have dialled the one that shipped to it.
 | `1 << 9` | `ELECTION` | takes part in electing a leader without the control plane: reads a `Fence` that names the replica set and says whether the sender is a candidate (`ElectionFence`), a batch stamped with the set's generation (`SetStamped`), and answers `PreVote` (see "Electing without the control plane") |
 | `1 << 10` | `STORAGE_IDENTITY` | answers a `HelloCapable` that offers this bit with its storage identity (see "Storage identity" below) |
 | `1 << 11` | `NODE_INCARNATION` | answers a `HelloCapable` that offers this bit with its node incarnation, and closes the connection once that changes (see "Node incarnation" below) |
-| `1 << 12` | `LANE_RENEWAL` | offered by a caller: it replaces a request stream it gets no answer on, so the listener may drop a stream whose handler overran (see "The transport") |
+| `1 << 12` | `LANE_RENEWAL` | offered by a caller: it replaces a request stream it gets no answer on, so the listener may drop a stream whose in-order handler overran (see "The transport") |
 | `1 << 13` | `FORWARD_INCARNATION` | reads a forwarded publish or cache op inside an `Incarnated` frame, and refuses one whose incarnation is not the one its routes name (see "Naming the stream incarnation") |
 | `1 << 14` | `HEAD_TRIM` | reads a head trim's mark (byte `5`) in a records batch and stores the trim record, applying its floor on a `Quorum` stream only once its commit offset passes the record. A batch holding a trim goes only to a peer that offered it |
 
@@ -906,10 +906,10 @@ an incarnation-0 route for a name that now has an incarnation does not arise.
 A follower asks each broker that leads a shard it follows whether it is there:
 `Ping` (kind 38), answered with `Pong` (kind 39). Both bodies are the
 correlation id alone. It goes on the connection's control lane, so it never
-waits behind a forwarded publish, and it is answered as soon as it arrives, so
-it never waits behind a slow fence either (see "The transport"). The answer
-comes from the broker's serving runtime rather than the transport task, so a
-broker whose runtime is stuck reads as unreachable. Sent only to a peer that offered `PING`; one that
+waits behind a forwarded publish. It is answered as soon as it arrives, so it
+never waits behind a slow fence either (see "The transport"). The answer comes
+from the broker's serving runtime rather than the transport task, so a broker
+whose runtime is stuck reads as unreachable. Sent only to a peer that offered `PING`; one that
 did not is not watched at all, so a rolling upgrade never reads as a dead
 leader.
 
@@ -1110,9 +1110,11 @@ sends the second:
 
 Every requester build matches answers by correlation id, so the change needs
 no capability bit: an older broker gets the same answers, sooner. A stream
-runs at most 256 fences and pre-votes and 16 tail fetches at once (each fetch
-answer can hold 4 MiB). At either limit it stops reading until one finishes.
-A ping needs no permit, so a ping is never queued behind a full stream.
+holds at most 1024 fences, tail fetches and pre-votes at once, the requester's
+default in-flight limit per peer. Past that, a request is answered `Overload`
+at once, which nothing applied, so the stream never stops reading and a ping
+never waits. Only 16 of the fetches run at a time, because each answer can
+hold 4 MiB; the rest wait off the stream. A ping needs no permit at all.
 
 Round-robin within a class does not reorder replication: the driver keeps at
 most one exchange outstanding per follower and log, and waits for its answer

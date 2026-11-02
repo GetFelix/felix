@@ -21,7 +21,7 @@ use felix_storage::StorageId;
 use felix_transport::{QuicConnection, QuicServer};
 use felix_wire::internal::{
     ErrorCode, ForwardCacheError, ForwardPublishError, HelloOk, InternalMessage, PeerCapabilities,
-    Pong,
+    Pong, ReplicateError,
 };
 use futures::FutureExt;
 use tokio::sync::Semaphore;
@@ -38,12 +38,13 @@ use super::tls;
 /// what one stream can make this broker hold.
 const MAX_CONCURRENT_FORWARDS_PER_STREAM: usize = 256;
 
-/// Fences and pre-votes one stream may have running at once. Each holds a few
-/// hundred bytes, so this is as generous as the forward limit.
-const MAX_CONCURRENT_FENCES_PER_STREAM: usize = 256;
+/// Fences, tail fetches and pre-votes one stream may hold at once. The same
+/// as the requester's default in-flight limit per peer, so a requester at its
+/// defaults is never refused.
+const MAX_CONTROLS_PER_STREAM: usize = 1024;
 
-/// Tail fetches one stream may have running at once. Each answer holds up to
-/// 4 MiB of records until it is written.
+/// Of those, tail fetches that may run at once. Each answer holds up to 4 MiB
+/// of records until it is written; the rest wait their turn off the stream.
 const MAX_CONCURRENT_FETCHES_PER_STREAM: usize = 16;
 
 /// What answers a peer's request.
@@ -420,7 +421,7 @@ async fn serve_connection(
             // `write_frame` per lock, so frames never interleave.
             let send = Arc::new(tokio::sync::Mutex::new(send));
             let forwards = Arc::new(Semaphore::new(MAX_CONCURRENT_FORWARDS_PER_STREAM));
-            let fences = Arc::new(Semaphore::new(MAX_CONCURRENT_FENCES_PER_STREAM));
+            let controls = Arc::new(Semaphore::new(MAX_CONTROLS_PER_STREAM));
             let fetches = Arc::new(Semaphore::new(MAX_CONCURRENT_FETCHES_PER_STREAM));
             loop {
                 let request = tokio::select! {
@@ -607,31 +608,42 @@ async fn serve_connection(
                     }
                     // Fences, tail fetches and pre-votes run side by side and
                     // are answered as they finish, so a promotion fence slow
-                    // to persist does not hold up a read round's fence behind
-                    // it (#1796). None relies on its place on the stream: a
-                    // requester waits for the answer before anything that
-                    // depends on it. At a limit the stream stops reading
-                    // until one finishes.
+                    // to persist does not hold up a read round's fence or a
+                    // ping behind it (#1796). None relies on its place on the
+                    // stream: a requester waits for the answer before anything
+                    // that depends on it. Past the limit a request is
+                    // refused rather than read later, so a ping never waits.
                     request @ (InternalMessage::Fence(_)
                     | InternalMessage::PreVote(_)
                     | InternalMessage::ReplicateFetch(_)) => {
-                        let limit = if matches!(request, InternalMessage::ReplicateFetch(_)) {
-                            &fetches
-                        } else {
-                            &fences
+                        let Ok(queued) = Arc::clone(&controls).try_acquire_owned() else {
+                            metrics::record_served(metrics::OUTCOME_REFUSED);
+                            let refusal = InternalMessage::ReplicateError(ReplicateError {
+                                correlation_id: request.correlation_id(),
+                                code: ErrorCode::Overload,
+                                expected_offset: 0,
+                                detail: "this broker is serving as many control requests as it allows"
+                                    .to_string(),
+                            });
+                            if write_frame(&mut *send.lock().await, &refusal).await.is_err() {
+                                break;
+                            }
+                            continue;
                         };
-                        let permit = tokio::select! {
-                            _ = shutdown.cancelled() => break,
-                            permit = Arc::clone(limit).acquire_owned() => match permit {
-                                Ok(permit) => permit,
-                                Err(_) => break,
-                            },
-                        };
+                        let fetching = matches!(request, InternalMessage::ReplicateFetch(_))
+                            .then(|| Arc::clone(&fetches));
                         let handler = Arc::clone(&handler);
                         let peer = ballot_identity(&offered, &identity);
                         let send = Arc::clone(&send);
                         app.spawn(async move {
-                            let _permit = permit;
+                            let _queued = queued;
+                            let _running = match fetching {
+                                Some(fetches) => match fetches.acquire_owned().await {
+                                    Ok(permit) => Some(permit),
+                                    Err(_) => return,
+                                },
+                                None => None,
+                            };
                             answer_out_of_order(&send, handler.handle_from(peer, request)).await;
                         });
                         continue;
@@ -721,8 +733,7 @@ async fn serve_connection(
                 _ = async {
                     tokio::join!(
                         forwards.acquire_many(MAX_CONCURRENT_FORWARDS_PER_STREAM as u32),
-                        fences.acquire_many(MAX_CONCURRENT_FENCES_PER_STREAM as u32),
-                        fetches.acquire_many(MAX_CONCURRENT_FETCHES_PER_STREAM as u32),
+                        controls.acquire_many(MAX_CONTROLS_PER_STREAM as u32),
                     )
                 } => {}
             }

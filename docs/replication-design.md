@@ -325,8 +325,9 @@ decides who serves, finds two brokers serving.
 
 **The followers' half.** Every broker pings each broker that leads a shard
 it follows, four times per `FELIX_LEADER_SUSPECT_AFTER_MS` (5 s by default),
-with `Ping` on the peer connection's control lane, answered at once (never
-behind a slow fence) from the leader's serving runtime (`docs/internal-protocol.md`, "Pinging a leader").
+with `Ping` on the peer connection's control lane. The leader answers it at
+once, never behind a slow fence, from its serving runtime
+(`docs/internal-protocol.md`, "Pinging a leader").
 A leader that has not answered for the whole window is named in the
 follower's next heartbeat, which goes at once rather than an interval later.
 A leader first watched gets a whole window, and a peer that did not offer
@@ -1823,7 +1824,7 @@ not the stream's: it has at most one exchange outstanding per follower and log.
 
 **A slow fence does not hold up a read round or a ping.** Fences, tail
 fetches, pre-votes and pings share one control stream per peer connection.
-A follower runs them side by side and answers each as it finishes. Otherwise
+A broker runs them side by side and answers each as it finishes. Otherwise
 a burst of shard creates queues read-round fences (one per follower for every
 confirmed cache read) and pings behind the new shards' promotion fences, and a
 queue longer than `FELIX_LEADER_SUSPECT_AFTER_MS` reads as a dead leader
