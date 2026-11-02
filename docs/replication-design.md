@@ -817,12 +817,14 @@ Each step is cheap. A copy that holds a promise checks its ballot and
 nothing else, as before. The creation test is a routing-view lookup.
 Looking up a held answer is a lock-free map load and a few atomics, with no
 lock and no allocation. Only the first request for a shard copies the map
-to add it. A shard has at most one read in flight, and at most 16 run at
+to add it, and starting a read allocates its task. A shard has at most one read in flight, and at most 16 run at
 once across all shards, so a bulk create does not hit the control plane
 with hundreds at the same moment.
 
-The task refreshes the answer halfway through its life, and only while
-the shard is still being asked about. A failed read or an unassigned shard
+The task refreshes the answer shortly before it goes stale, leaving twice
+what the last read took, and only while the shard is still being asked
+about. A queue of reads at the control plane widens that margin rather
+than letting answers lapse. A failed read or an unassigned shard
 clears the answer and is not retried on its own: the next request starts
 another read.
 
@@ -840,8 +842,10 @@ refuses the current leader: it refuses older generations and other leaders
 at its own, and the control plane never names two leaders at one
 generation. The 10 s bound is for liveness, so a control plane upgraded to
 serve the read is asked again soon. Under elections an answer is used for
-500 ms, the bound the learner's cache already had, since a promise to a
-candidate is in no read.
+500 ms, since a promise to a candidate is in no read and only a recent read
+sees the control plane move on. A shard with no incarnation gets 500 ms
+too: it can be deleted and re-created at generation 1, and an older
+answer would refuse the new leader.
 
 Evidence (`replica/tests/fence.rs`):
 `a_new_shards_first_fence_needs_no_confirmed_read`,
@@ -863,9 +867,10 @@ re-admitted; see [A copy that lost its storage does not
 vote](#a-copy-that-lost-its-storage-does-not-vote).
 
 The cost is a fence round trip or a few while a follower's watch catches up
-or its confirmed read comes back, and about one control-plane read per
-wiped copy. A new shard's copy costs neither once its view has the
-shard. With one replica of a
+or its confirmed read comes back. A new shard's copy costs neither once its
+view has the shard. A wiped copy costs a read every few seconds without
+elections, and a learner under elections about two a second per shard
+while it takes batches. With one replica of a
 set of three wiped the other two make the majority anyway. With a majority
 wiped at once their votes wait for their views; once they have them they
 answer, so the shard is not stuck, but what it acknowledged was on those
@@ -994,9 +999,10 @@ from a broker that predates storage ids is evidence.
 - It takes records only from the leader the control plane confirms at that
   generation. The confirmed answer is read in the background (above) and
   used for 500 ms under elections, 10 s without, rather than read for every
-  batch. Under elections it is refreshed every 250 ms while batches keep
-  coming, and for 5 s after, so a fence retried after backoff finds it. Taking a batch records that
-  leader's ballot, as it does for any follower.
+  batch. It is refreshed shortly before it goes stale while requests keep
+  coming, and after a refused request for up to 5 s, so a retry spaced out
+  by backoff finds it.
+  Taking a batch records that leader's ballot, as it does for any follower.
 - It is never promoted. A broker whose kept set marks it a wiped learner,
   or a learner under another storage id, refuses to open as leader before it
   fences or writes anything, so the mark survives. So does a copy that holds

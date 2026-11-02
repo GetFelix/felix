@@ -1707,7 +1707,10 @@ impl ReplicaHandler {
             return elections.then(|| unbacked(correlation_id, key, generation));
         };
         // Never awaited here: the lane answers one request at a time.
-        let fresh = if elections {
+        // Generations only rise within an incarnation. A shard with none
+        // can be deleted and re-created at generation 1, so an answer for it
+        // is held no longer than under elections.
+        let fresh = if elections || sent.unwrap_or(0) == 0 {
             crate::confirmed::FRESH_UNDER_ELECTIONS
         } else {
             crate::confirmed::FRESH

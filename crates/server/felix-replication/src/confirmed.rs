@@ -58,9 +58,10 @@ pub(crate) const FRESH_UNDER_ELECTIONS: Duration = Duration::from_millis(500);
 /// control plane is upgraded.
 pub(crate) const FRESH: Duration = Duration::from_secs(10);
 
-/// How long after the last request for a shard an answer shorter-lived than
-/// this is kept fresh. Longer than a leader's longest wait between fence
-/// attempts (`FENCE_RETRY_MAX`, 2 s), so a retry finds a fresh answer.
+/// How long after a refused request its shard's answer is kept fresh for
+/// the retry. Longer than a leader's longest wait between fence attempts
+/// (`FENCE_RETRY_MAX`, 2 s), so a retry spaced out by backoff finds a fresh
+/// answer instead of being refused again.
 const WANTED_FOR: Duration = Duration::from_secs(5);
 
 /// Reads in flight at once across all shards, so a bulk create does not
@@ -114,6 +115,9 @@ struct Slot {
     wanted: AtomicU64,
     /// The freshness the last request needed, in nanoseconds.
     fresh: AtomicU64,
+    /// Whether the last request found no fresh answer, so its retry is
+    /// owed one.
+    owed: AtomicBool,
 }
 
 struct Answer {
@@ -149,15 +153,24 @@ impl ConfirmedReads {
             }
         };
         slot.wanted.store(now, Ordering::Relaxed);
-        slot.fresh.store(fresh, Ordering::Relaxed);
-        if !slot.reading.swap(true, Ordering::AcqRel) {
+        if slot.fresh.load(Ordering::Relaxed) != fresh {
+            slot.fresh.store(fresh, Ordering::Relaxed);
+        }
+        // A plain load first: while a task reads, a request writes nothing
+        // shared but `wanted`.
+        if !slot.reading.load(Ordering::Acquire) && !slot.reading.swap(true, Ordering::AcqRel) {
             self.spawn_read(routes, key, slot);
         }
         let answer = slot.answer.load();
-        answer
+        let decided = answer
             .as_ref()
             .filter(|answer| now.saturating_sub(answer.at) < fresh)
-            .map(|answer| decide(&answer.confirmed))
+            .map(|answer| decide(&answer.confirmed));
+        // Loaded first so the usual request writes nothing here.
+        if slot.owed.load(Ordering::Relaxed) != decided.is_none() {
+            slot.owed.store(decided.is_none(), Ordering::Relaxed);
+        }
+        decided
     }
 
     /// The first request for a shard incarnation: add its slot and start
@@ -177,6 +190,7 @@ impl ConfirmedReads {
             reading: AtomicBool::new(true),
             wanted: AtomicU64::new(now),
             fresh: AtomicU64::new(fresh),
+            owed: AtomicBool::new(true),
         });
         let stale = u64::try_from(FRESH.as_nanos()).unwrap_or(u64::MAX);
         let before = self.slots.rcu(|current| {
@@ -251,18 +265,24 @@ impl ConfirmedReads {
                 confirmed => {
                     let at = self.now();
                     slot.answer.store(Some(Arc::new(Answer { confirmed, at })));
-                    // Refresh halfway through the answer's life, but only for
-                    // a shard still being asked about. When the answer
-                    // outlives a leader's longest wait between fence
-                    // attempts, a request in the last quarter of it is
-                    // enough; when it does not, any within `WANTED_FOR`, so a
-                    // retry spaced out by backoff still finds a fresh one.
+                    // Refresh just before the answer goes stale, leaving twice
+                    // what this read took, permit wait included, so a queue
+                    // of reads widens the margin instead of letting answers
+                    // lapse. Only while the shard is still asked about: a
+                    // request since the last half of the answer's life, or a
+                    // refused one whose retry has not come yet. A leader
+                    // backs off up to `FENCE_RETRY_MAX` between fences, so
+                    // the retry is waited for up to `WANTED_FOR`.
                     let fresh = slot.fresh.load(Ordering::Relaxed);
-                    tokio::time::sleep(Duration::from_nanos(fresh / 2)).await;
-                    let asked_within = if fresh < nanos(WANTED_FOR) {
-                        nanos(WANTED_FOR)
+                    let margin = at
+                        .saturating_sub(started)
+                        .saturating_mul(2)
+                        .clamp(fresh / 8, fresh / 2);
+                    tokio::time::sleep(Duration::from_nanos(fresh - margin)).await;
+                    let asked_within = if slot.owed.load(Ordering::Relaxed) {
+                        nanos(WANTED_FOR).max(fresh / 2)
                     } else {
-                        fresh / 4
+                        fresh / 2
                     };
                     let now = self.now();
                     if now.saturating_sub(slot.wanted.load(Ordering::Relaxed)) < asked_within {
