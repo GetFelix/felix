@@ -3,7 +3,7 @@
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use serde::de::Error as SerdeError;
 
-use super::{checked_payload_count, take_extension, take_record_block};
+use super::{checked_payload_count, min_record_len, take_extension, take_record_block};
 use crate::client::flags::{
     EXT_RECORD_HEADERS, FLAG_BINARY_PUBLISH_ACKED, FLAG_BINARY_PUBLISH_BATCH,
     FLAG_BINARY_PUBLISH_IDEMPOTENT, FLAG_BINARY_PUBLISH_KEYED,
@@ -334,7 +334,11 @@ pub(super) fn decode_publish_body(
     let stream_bytes = buf.copy_to_bytes(stream_len);
     let stream = String::from_utf8(stream_bytes.to_vec())
         .map_err(|_| Error::Deserialize(SerdeError::custom("invalid stream name")))?;
-    let count = checked_payload_count(buf.get_u32() as usize, buf.remaining())?;
+    let count = checked_payload_count(
+        buf.get_u32() as usize,
+        buf.remaining(),
+        min_record_len(with_headers, false),
+    )?;
     let mut payloads = Vec::with_capacity(count);
     let mut record_headers = with_headers.then(|| Vec::with_capacity(count));
     for _ in 0..count {

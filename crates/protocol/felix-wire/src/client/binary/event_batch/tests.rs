@@ -690,3 +690,22 @@ fn an_event_block_that_is_cut_short_or_malformed_is_refused() {
         Err(Error::Incomplete)
     ));
 }
+
+#[test]
+fn an_event_block_the_decoder_would_refuse_is_not_encoded() {
+    let payloads = [Bytes::from_static(b"e")];
+    for bad in [
+        &[0x02u8, 0, 0, 0, 0][..],
+        &[0u8, 0, 0, 0, 5][..],
+        &[0u8; 5][..],
+    ] {
+        let blocks = [Some(Bytes::copy_from_slice(bad))];
+        let meta = EventBatchMeta {
+            record_headers: Some(&blocks),
+            ..EventBatchMeta::default()
+        };
+        assert!(binary::encode_event_batch_bytes_with_meta(1, &payloads, meta).is_err());
+        assert!(binary::encode_event_batch_parts_with_meta(1, &payloads, meta).is_err());
+        assert!(binary::encode_shared_event_batch_bytes_with_meta(&payloads, meta).is_err());
+    }
+}

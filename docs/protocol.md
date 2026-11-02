@@ -2511,9 +2511,10 @@ later than the leader's by the replication delay.
 
 ## Extended frames and record headers
 
-A record can carry a routing key and headers: named byte values, such as a trace
-id or a content type, that travel with the record but are not part of its
-payload. They ride in a new frame layout, selected by `EXTENDED` (`0x8000`) in
+A record can carry a key and headers: named byte values, such as a trace id or a
+content type, that travel with the record but are not part of its payload. The
+key is the record's own and does not route; a batch's shard still comes from its
+batch routing key (`0x0040`, `BINARY_PUBLISH_KEYED`). They ride in a new frame layout, selected by `EXTENDED` (`0x8000`) in
 the frame flags. No broker or client sends it yet; this page defines the bytes so
 that both sides can be built against them.
 
@@ -2543,6 +2544,11 @@ frame flag says a second word exists, and the word says which extension bits:
 {"type":"auth_ok","server_flags":32793,"server_flags_ext":1}
 ```
 
+JSON has no hex, so for reading: `32793` is `0x8019`, which is `EXTENDED` (`0x8000`)
+with `BINARY_PUBLISH_BATCH` (`0x0001`), `BINARY_PUBLISH_ACKED` (`0x0008`) and
+`BINARY_PUBLISH_ACK` (`0x0010`). `client_flags_ext` and `server_flags_ext` of `1`
+are `EXT_RECORD_HEADERS`.
+
 - A client sets `0x8000` in `client_flags` and sends `client_flags_ext` only when
   it offers an extension bit. A client that offers none sends the `auth` it
   always did.
@@ -2552,6 +2558,10 @@ frame flag says a second word exists, and the word says which extension bits:
   means none.
 - A peer sets `0x8000` on a frame only when the other side offered the matching
   extension bit.
+
+A broker that does not support `0x8000` refuses a frame that carries it with an
+`unsupported frame flags` error, so a client that skips the offer would only
+learn that from a failed publish.
 
 `0x8000` is not part of `KNOWN_FLAGS`, which is what a peer that has no extension
 advertises, and not part of `ORIGINAL_V1_FLAGS`. The Rust helpers are
@@ -2578,8 +2588,8 @@ has an empty or non-UTF-8 name, or declares a `count` that the remaining bytes
 cannot hold.
 
 A record with no key and no headers has no block. Senders send nothing for it
-(a block length of zero in a frame) instead of the five bytes an empty block
-would take. The `felix-wire` type is `RecordHeaders`, with `encode`, `decode`
+(a block length of zero in a frame), and a receiver rejects the five bytes an
+empty block would take, so "none" has one encoding. The `felix-wire` type is `RecordHeaders`, with `encode`, `decode`
 and `validate`. `validate` checks a raw block without allocating, for a layer
 that only stores or forwards it and can keep the block as opaque bytes.
 
@@ -2656,6 +2666,22 @@ omits it otherwise.
 ## Test Vectors
 Client implementations MUST validate against shared vectors in:
 `crates/protocol/felix-wire/tests/vectors/`
+
+The extended layout has one, `binary_publish_headers`: a publish batch for tenant
+`t`, namespace `n`, stream `s` with two records. The first has a block holding
+one header, `a: 1`; the second has none. The frame is:
+
+```
+464c5831 0001 8001 00000032      header: flags 0x8001 (EXTENDED | BINARY_PUBLISH_BATCH)
+00000001                         extension word: EXT_RECORD_HEADERS
+0001 74  0001 6e  0001 73        tenant, namespace, stream
+00000002                         count
+0000000d                         record 0: block length 13
+00 00000001 0001 61 00000001 31  block: no key, one header a: 1
+00000002 7031                    record 0: payload "p1"
+00000000                         record 1: no block
+00000002 7032                    record 1: payload "p2"
+```
 
 ## Conformance
 All clients SHOULD pass the shared conformance suite (felix-conformance).

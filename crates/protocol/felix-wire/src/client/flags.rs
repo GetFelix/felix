@@ -172,7 +172,8 @@ pub const FLAG_EVENT_BATCH_TIMESTAMPS: u16 = 0x4000;
 pub const FLAG_EXTENDED: u16 = 0x8000;
 
 /// Extension bit: every record in the batch is preceded by a length-prefixed
-/// block holding its routing key and headers.
+/// block holding the record's key and headers. The key does not route: a
+/// batch's shard still comes from its batch key (`FLAG_BINARY_PUBLISH_KEYED`).
 ///
 /// A publish batch entry becomes `u32 block_len, block, u32 payload_len,
 /// payload`, and an event batch entry `[u64 timestamp], u32 block_len, block,
@@ -183,16 +184,21 @@ pub const EXT_RECORD_HEADERS: u32 = 0x0000_0001;
 /// Every extension bit this version implements.
 pub const KNOWN_EXT_FLAGS: u32 = EXT_RECORD_HEADERS;
 
-/// Every flag bit this version understands.
+/// Every flag bit this version understands, apart from [`FLAG_EXTENDED`].
 ///
-/// Frames carrying bits outside this mask are rejected rather than parsed with
-/// the unknown bits ignored. That distinction matters: flag bits here change how
-/// the *payload* is laid out, so silently ignoring one means confidently
-/// misparsing the body. `FLAG_BINARY_PUBLISH_ACKED` is exactly that case — an
-/// older broker that masked it off would read the new `request_id` prefix as a
-/// `tenant_len` and produce garbage instead of an error. Rejecting unknown bits
-/// cannot help those older brokers, but it means the next extension fails loudly
-/// on this version instead of repeating the same trap.
+/// Frames carrying a bit that is neither in this mask nor `FLAG_EXTENDED` are
+/// rejected rather than parsed with the unknown bits ignored. That distinction
+/// matters: flag bits here change how the *payload* is laid out, so silently
+/// ignoring one means confidently misparsing the body.
+/// `FLAG_BINARY_PUBLISH_ACKED` is exactly that case — an older broker that
+/// masked it off would read the new `request_id` prefix as a `tenant_len` and
+/// produce garbage instead of an error. Rejecting unknown bits cannot help those
+/// older brokers, but it means the next extension fails loudly on this version
+/// instead of repeating the same trap.
+///
+/// `FLAG_EXTENDED` is left out on purpose, so a peer that advertises this mask
+/// offers no extension. It passes the header check; the body decoders read its
+/// extension word and refuse it on a frame kind that has none.
 pub const KNOWN_FLAGS: u16 = FLAG_BINARY_PUBLISH_BATCH
     | FLAG_BINARY_EVENT_BATCH
     | FLAG_BINARY_EVENT_BATCH_SHARED

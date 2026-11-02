@@ -437,3 +437,27 @@ fn a_block_that_is_not_a_block_is_refused_even_when_the_frame_adds_up() {
     .expect("frame");
     assert!(binary::decode_publish_batch(&frame).is_err());
 }
+
+#[test]
+fn a_block_the_decoder_would_refuse_is_not_encoded() {
+    let payloads = vec![b"p1".to_vec()];
+    for bad in [
+        &[0x02u8, 0, 0, 0, 0][..],
+        &[0u8, 0, 0, 0, 5][..],
+        &[0u8; 5][..],
+    ] {
+        assert!(matches!(
+            binary::encode_publish_batch_bytes_with_headers(
+                None,
+                None,
+                None,
+                "t",
+                "n",
+                "s",
+                &payloads,
+                &[Some(Bytes::copy_from_slice(bad))],
+            ),
+            Err(Error::InvalidRecordHeaders(_) | Error::Incomplete)
+        ));
+    }
+}

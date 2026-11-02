@@ -54,12 +54,27 @@ fn a_block_without_a_key_is_these_bytes() {
 }
 
 #[test]
-fn an_empty_block_is_five_bytes_and_says_so() {
+fn a_block_with_nothing_in_it_is_refused_both_ways() {
     let empty = RecordHeaders::default();
     assert!(empty.is_empty());
-    let bytes = empty.encode().expect("encode");
-    assert_eq!(bytes.as_ref(), &[0, 0, 0, 0, 0]);
-    assert_eq!(RecordHeaders::decode(bytes).expect("decode"), empty);
+    assert!(matches!(
+        empty.encode(),
+        Err(Error::InvalidRecordHeaders(_))
+    ));
+    let five_zeros = [0u8; 5];
+    assert!(matches!(
+        RecordHeaders::validate(&five_zeros),
+        Err(Error::InvalidRecordHeaders(_))
+    ));
+    assert!(RecordHeaders::decode(Bytes::copy_from_slice(&five_zeros)).is_err());
+
+    // An empty key is a key, so a block holding only that is not empty.
+    let only_key = RecordHeaders {
+        key: Some(Bytes::new()),
+        headers: Vec::new(),
+    };
+    let bytes = only_key.encode().expect("encode");
+    assert_eq!(RecordHeaders::decode(bytes).expect("decode"), only_key);
 }
 
 #[test]

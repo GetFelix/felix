@@ -3,7 +3,9 @@
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
-use super::{checked_payload_count, present_blocks, take_extension, take_record_block};
+use super::{
+    checked_payload_count, min_record_len, present_blocks, take_extension, take_record_block,
+};
 use crate::client::flags::{
     EXT_RECORD_HEADERS, FLAG_BINARY_EVENT_BATCH, FLAG_BINARY_EVENT_BATCH_SHARED,
     FLAG_EVENT_BATCH_OFFSETS, FLAG_EVENT_BATCH_PUBLISHER, FLAG_EVENT_BATCH_SKIPPED,
@@ -472,7 +474,11 @@ fn take_payloads(buf: &mut Bytes, timestamped: bool, with_headers: bool) -> Resu
     if buf.remaining() < 4 {
         return Err(Error::Incomplete);
     }
-    let count = checked_payload_count(buf.get_u32() as usize, buf.remaining())?;
+    let count = checked_payload_count(
+        buf.get_u32() as usize,
+        buf.remaining(),
+        min_record_len(with_headers, timestamped),
+    )?;
     let mut payloads = Vec::with_capacity(count);
     let mut timestamps = timestamped.then(|| Vec::with_capacity(count));
     let mut record_headers = with_headers.then(|| Vec::with_capacity(count));

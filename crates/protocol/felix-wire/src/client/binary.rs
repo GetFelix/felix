@@ -46,6 +46,18 @@ use crate::error::{Error, Result};
 // bytes, so a frame can never carry more payloads than it has 4-byte groups left.
 const PAYLOAD_LEN_PREFIX: usize = 4;
 
+// What a record takes beyond its payload's length prefix, at the least: the
+// 4-byte block length under `EXT_RECORD_HEADERS`, and an event's 8-byte time.
+const BLOCK_LEN_PREFIX: usize = 4;
+const TIMESTAMP_LEN: usize = 8;
+
+// The fewest bytes one record of a batch takes on the wire.
+fn min_record_len(with_headers: bool, timestamped: bool) -> usize {
+    PAYLOAD_LEN_PREFIX
+        + if with_headers { BLOCK_LEN_PREFIX } else { 0 }
+        + if timestamped { TIMESTAMP_LEN } else { 0 }
+}
+
 // Bound an attacker-declared payload count against what the frame can actually
 // hold, before it ever reaches `Vec::with_capacity`. The count is read straight
 // off the wire, so without this a ~20-byte frame declaring `u32::MAX` payloads
@@ -56,8 +68,12 @@ const PAYLOAD_LEN_PREFIX: usize = 4;
 // memory cgroup or strict overcommit, as in a typical container deployment,
 // brings that threshold far lower. The loop below still validates each payload
 // individually; this only stops the count itself from being trusted.
-fn checked_payload_count(count: usize, remaining: usize) -> Result<usize> {
-    if count > remaining / PAYLOAD_LEN_PREFIX {
+//
+// `min_record_len` is what each record takes at the least ([`min_record_len`]),
+// so the reservation stays proportional to the frame when records also carry a
+// block length or a time.
+fn checked_payload_count(count: usize, remaining: usize, min_record_len: usize) -> Result<usize> {
+    if count > remaining / min_record_len {
         return Err(Error::Incomplete);
     }
     Ok(count)
@@ -110,7 +126,7 @@ fn take_record_block(buf: &mut Bytes) -> Result<Option<Bytes>> {
 }
 
 // The blocks to write for `count` records, or `None` when no record has one,
-// in which case the frame is the plain one.
+// in which case the frame is the plain one. Each block is checked.
 fn present_blocks(
     blocks: Option<&[Option<Bytes>]>,
     count: usize,
@@ -121,8 +137,16 @@ fn present_blocks(
     if blocks.len() != count {
         return Err(Error::Incomplete);
     }
-    if blocks.iter().flatten().any(Bytes::is_empty) {
-        return Err(Error::InvalidRecordHeaders("empty block"));
+    // The frame carries these bytes as they are, so a block the decoder would
+    // refuse must not leave here either. An empty one would read as "none".
+    for block in blocks.iter().flatten() {
+        if block.is_empty() {
+            return Err(Error::InvalidRecordHeaders("empty block"));
+        }
+        RecordHeaders::validate(block)?;
     }
     Ok(blocks.iter().any(Option::is_some).then_some(blocks))
 }
+
+#[cfg(test)]
+mod tests;

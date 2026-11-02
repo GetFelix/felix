@@ -1,4 +1,4 @@
-//! The block a record carries when it has a routing key or headers.
+//! The block a record carries when it has a key or headers.
 //!
 //! ```text
 //! u8  flags                       bit 0 = a key follows; every other bit is 0
@@ -7,9 +7,13 @@
 //! count x { u16 name_len, name (UTF-8), u32 value_len, value bytes }
 //! ```
 //!
+//! The key is the record's own and does not route: a batch's shard still comes
+//! from its batch key (`FLAG_BINARY_PUBLISH_KEYED`).
+//!
 //! Big-endian like the rest of the protocol. Names may repeat and keep their
 //! order; a name may not be empty. A record with neither a key nor headers has
-//! no block at all, so senders send `None` rather than an empty block.
+//! no block at all, so a block with no key and no headers is refused: "none" has
+//! one encoding.
 //!
 //! The same bytes ride a frame ([`EXT_RECORD_HEADERS`](crate::EXT_RECORD_HEADERS))
 //! and sit in the log, where storage keeps them opaque. [`RecordHeaders::validate`]
@@ -25,7 +29,7 @@ const KNOWN_BLOCK_FLAGS: u8 = FLAG_KEY;
 // name may not be empty but a value may.
 const MIN_HEADER_LEN: usize = 6;
 
-/// A record's routing key and headers, as one block.
+/// A record's key and headers, as one block.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RecordHeaders {
     pub key: Option<Bytes>,
@@ -34,15 +38,18 @@ pub struct RecordHeaders {
 }
 
 impl RecordHeaders {
-    /// True if there is no key and no header. Such a record is sent with no
-    /// block, not with the 5 bytes [`encode`](Self::encode) would give it.
+    /// True if there is no key and no header. Such a record has no block, so
+    /// [`encode`](Self::encode) refuses it.
     pub fn is_empty(&self) -> bool {
         self.key.is_none() && self.headers.is_empty()
     }
 
-    /// The block's bytes. Fails on an empty header name, or a length that does
-    /// not fit its field.
+    /// The block's bytes. Fails on a block with no key and no headers, an empty
+    /// header name, or a length that does not fit its field.
     pub fn encode(&self) -> Result<Bytes> {
+        if self.is_empty() {
+            return Err(Error::InvalidRecordHeaders("empty block"));
+        }
         let mut len = 1 + 4;
         if let Some(key) = &self.key {
             u32::try_from(key.len()).map_err(|_| Error::FrameTooLarge)?;
@@ -88,6 +95,9 @@ impl RecordHeaders {
             None
         };
         let count = cursor.count()?;
+        if flags == 0 && count == 0 {
+            return Err(Error::InvalidRecordHeaders("empty block"));
+        }
         let mut headers = Vec::with_capacity(count);
         for _ in 0..count {
             let name_len = cursor.u16()? as usize;
@@ -113,6 +123,9 @@ impl RecordHeaders {
             cursor.take(len)?;
         }
         let count = cursor.count()?;
+        if flags == 0 && count == 0 {
+            return Err(Error::InvalidRecordHeaders("empty block"));
+        }
         for _ in 0..count {
             let name_len = cursor.u16()? as usize;
             let name_at = cursor.take(name_len)?;
