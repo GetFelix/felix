@@ -40,6 +40,8 @@ const PHASE_WARMUP: u8 = 0;
 const PHASE_STEADY: u8 = 1;
 const PHASE_BURST: u8 = 2;
 const PHASE_DONE: u8 = 3;
+/// After the burst window: still publishing, not counted.
+const PHASE_TAIL: u8 = 4;
 
 fn env_usize(name: &str, default: usize) -> usize {
     std::env::var(name)
@@ -331,7 +333,7 @@ static FIRST_ERRORS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicU
 async fn replicated_publish_steady_and_through_promotion_burst() {
     let publishers = env_usize("BENCH_PUBLISHERS", 16);
     let shards = env_usize("BENCH_SHARDS", 6) as u32;
-    let streams = env_usize("BENCH_STREAMS", 300);
+    let streams = env_usize("BENCH_STREAMS", 1500);
     let warmup = Duration::from_secs(env_usize("BENCH_WARMUP_SECS", 5) as u64);
     let steady = Duration::from_secs(env_usize("BENCH_STEADY_SECS", 20) as u64);
     let side = std::env::var("BENCH_SIDE").unwrap_or_else(|_| "?".into());
@@ -409,6 +411,21 @@ async fn replicated_publish_steady_and_through_promotion_burst() {
     let steady_elapsed = steady_started.elapsed();
     phase.store(PHASE_BURST, Ordering::Release);
     let burst_started = Instant::now();
+    // The promotions follow the creates within seconds; a longer window would
+    // dilute their effect on the tail with quiet traffic.
+    let window = Duration::from_secs(env_usize("BENCH_BURST_WINDOW_SECS", 10) as u64);
+    {
+        let phase = Arc::clone(&phase);
+        tokio::spawn(async move {
+            tokio::time::sleep(window).await;
+            let _ = phase.compare_exchange(
+                PHASE_BURST,
+                PHASE_TAIL,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        });
+    }
     let m1 = scrape(&cluster).await;
 
     // Burst: bulk creates, each followed by publishing until one is acked.
@@ -503,7 +520,7 @@ async fn replicated_publish_steady_and_through_promotion_burst() {
         "bench": "replicated", "phase": "burst", "side": side, "round": round,
         "streams": streams, "created_in_s": round3(created_in.as_secs_f64()),
         "burst_s": round3(burst_elapsed.as_secs_f64()),
-        "msgs_per_s": round3(burst_lat.len() as f64 / burst_elapsed.as_secs_f64()),
+        "msgs_per_s": round3(burst_lat.len() as f64 / burst_elapsed.min(window).as_secs_f64()),
         "p50_ms": round3(pct_ms(&burst_lat, 50.0)),
         "p99_ms": round3(pct_ms(&burst_lat, 99.0)),
         "p999_ms": round3(pct_ms(&burst_lat, 99.9)),
