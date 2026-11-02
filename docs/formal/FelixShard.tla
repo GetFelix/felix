@@ -584,6 +584,11 @@ WipedNonVoter == FALSE
 ReadmitCountsWiped == FALSE
 ReadmitBeforeCatchUp == FALSE
 PromoteNonVoter == FALSE
+\* `WriteDropsLearners`: a placement write may name no learners, as one does
+\* when its read of the assignment it replaces fails and is taken for no
+\* assignment, or when it comes from a control plane that predates learners
+\* (a mixed fleet on Postgres, which has no metadata level to stop it).
+WriteDropsLearners == FALSE
 WipeLeads == FALSE
 Forgets == 1
 \* `OneNonVoter`: a wipe is refused while it would leave two brokers non-voters.
@@ -3210,6 +3215,11 @@ Next ==
         \/ Register(b) /\ UNCHANGED << counterVars, heard, named >>
         \/ OpenForWrites(b) /\ UNCHANGED loudVars
         \/ Decide(Now, b, cpView) /\ UNCHANGED << heard, decideIdVars, named >>
+        \/ /\ WriteDropsLearners
+           /\ Decide(Now, b, cpView)
+           /\ cpLearner' = {}
+           /\ UNCHANGED << heard, sid, wipes, checked, registered, inc, restarting, leftDirty, gaveUp,
+                          wipedAt, readmit, learner, marked, named >>
         \/ /\ \E p \in Planners : \E v \in cpView[p] : Decide(v, b, [cpView EXCEPT ![p] = {}])
            /\ UNCHANGED << heard, decideIdVars, named >>
         \/ CommitCounter(b) /\ UNCHANGED loudVars

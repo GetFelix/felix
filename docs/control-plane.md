@@ -196,16 +196,22 @@ member applying the command never decides differently from one on an older
 release. An older control plane sends no `fleet_features`, which leaves every
 broker with nothing enabled.
 
-`joint_fence` and `replica_election` are declared the same way, the second
-after `generation_start`, `majority_ack`, `lease_free_reads` and the first.
-No build reports either yet, so a finalize of either is refused
-(`the_election_features_cannot_be_finalized_yet`), and a new cluster does not
-start with them. A broker that offers the `ELECTION` peer capability reports
-it as `peer_election`, which no build does yet. Finalizing `joint_fence` is
-refused while a serving broker lacks it, until every Raft member is at
-metadata level 23, and for now even when none does: the control plane
-re-admits learners and placement skips them (#1737), but the finalize stays
-refused until an end-to-end cluster test shows it;
+`joint_fence` and `replica_election` are declared the same way: the first
+after `generation_start`, the second after `generation_start`, `majority_ack`,
+`lease_free_reads` and the first. A replaced copy stops being a learner only
+once it holds its generation's start record, which leaders write only under
+`generation_start`. No build reports either feature yet, so a finalize of
+either is refused (`the_election_features_cannot_be_finalized_yet`), and a
+new cluster does not start with them. A broker that offers the `ELECTION`
+peer capability reports it as `peer_election`, which no build does yet.
+Every broker from #1737 on also reports `start_holders`: its leaders name, in
+each replica report, the followers holding the generation's start record
+(`holds_start`). Neither name is a feature an operator finalizes. Finalizing
+`joint_fence` is refused while a serving broker lacks `peer_election` or
+`start_holders`, until every Raft member is at metadata level 23, and for now
+even when none does: the control plane re-admits learners and placement skips
+them (#1737), but the finalize stays refused until an end-to-end cluster test
+shows it (see "Turning on joint fences" below);
 `replica_election` is also refused before `joint_fence` and its other
 prerequisites, and until the control plane
 has the metadata level for the pending replica set (see
@@ -794,8 +800,9 @@ and placement treats it as one. With `joint_fence` finalized:
    failover leader and never counts in a majority, such as the rest of a
    set that a trim or a seat judges level with the leader. A move's staged
    destination is not a learner unless one of those holds.
-2. **The write names the new id.** When the shard has a live leader, no move,
-   drain or pending set in progress, and the leader's report at the
+2. **The write names the new id.** When the shard has a live leader, a live
+   majority of its set without the replaced member, no move, drain or
+   pending set in progress, and the leader's report at the
    assignment's generation shows the replaced member caught up under its
    new id, placement writes the same leader and replicas at the next
    generation (the `readmit` step, at most one member per shard per pass).
@@ -811,8 +818,35 @@ a member that assignment named under another id than the one registered now,
 and a member it held that no report has admitted. The leader is never a
 learner here; a leader that came back on a replaced disk is failed over
 (`leader_replaced`). An operator's write has no report to read, so it keeps
-the learners it finds. Without `joint_fence` the field is always empty and
+the learners it finds; if it cannot read the assignment it replaces, it fails
+rather than write none. Without `joint_fence` the field is always empty and
 nothing in this section happens.
+
+##### Turning on joint fences
+
+`joint_fence` stays unfinalizable until all of these hold. The first two are
+switches in the code (`JOINT_FENCE_READY` in
+`services/felix-controlplane-service/src/cluster/fleet.rs` and
+`NON_VOTING_READY` in `crates/server/felix-replication/src/quorum.rs`); the
+rest are what flipping them needs.
+
+1. An end-to-end cluster test of the whole sequence passes: a follower is
+   wiped, the leader fails over, the wiped copy catches up, placement
+   re-admits it, the leader's report shows it holding the start, and only
+   then does it count toward a failover or a move. The cluster harness needs
+   a switch that turns both gates on for it.
+2. `NON_VOTING_READY` ships on in a broker release first, then
+   `JOINT_FENCE_READY` in a control-plane release.
+3. `joint_fence` joins the features a broker reports, in a build that also
+   reports `peer_election` and `start_holders`.
+4. `generation_start` is finalized.
+5. Under Raft, every member is at metadata level 23. The store checks this.
+6. On Postgres, every control-plane instance runs a release with learners
+   (migration 0040) before the finalize. Nothing checks this: an older
+   instance that writes an assignment leaves its learners unmarked for that
+   generation, and they read as none, so placement could count a learner.
+7. The model's re-admission configurations pass with `PlacementKnowsLearners`
+   (`docs/formal/README.md`).
 
 States are `assigning` (placement decided, the leader has not confirmed),
 `active` (the leader is serving), and `draining` (the leader has been told to

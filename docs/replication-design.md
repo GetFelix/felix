@@ -1000,7 +1000,8 @@ A mark already on disk holds whatever the gate says.
 Not covered yet, and needed before elections (#1009 S9):
 
 - An end-to-end cluster test of the sequence above, and the switch
-  `NON_VOTING_READY`, which stays off until it passes.
+  `NON_VOTING_READY`, which stays off until it passes. The full list is
+  "Turning on joint fences" in `docs/control-plane.md`.
 - The model's group logs (`GroupLogs`) stand in the counter log's place:
   one log beside the records, not the dead-letter and cursor pair, and the
   model waits for a majority where the code, short of answers, takes the
@@ -3821,8 +3822,9 @@ production broker sends or reads a set yet. With it on:
   its own set and fences with it.
 
 The control plane's finalize gates are in place too: `joint_fence` is refused
-while a serving broker does not report that it offers the `ELECTION` peer
-capability, and `replica_election` is refused until `joint_fence` and its
+before `generation_start` and while a serving broker does not report that it
+offers the `ELECTION` peer capability or names start holders in its reports
+(`start_holders`), and `replica_election` is refused until `joint_fence` and its
 other prerequisites are finalized, every serving broker offers `ELECTION`,
 and the control plane has the metadata level for the pending replica set and
 adoption (level 21 under Raft, which every member must report). No broker

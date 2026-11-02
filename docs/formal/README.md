@@ -256,6 +256,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardElectWipeNonVoterFailover.cfg` | `FelixShardElectWipeNonVoter.cfg` with a one-tick lease and time to 1, so control-plane failover is reachable, and adoption up to generation 2 (at 3 it passed 136M distinct states unfinished); failover never names a non-voter | pass, the same invariants (46.9M distinct states, depth 37, 10 min on twelve workers; runs nightly, not per PR, see below) |
 | `FelixShardElectWipeNonVoterFailoverWipesLeader.cfg` | the same where a leader or candidate can be wiped (`WipeLeads`) | pass, the same invariants (53.2M distinct states, depth 37, 11 min on twelve workers; runs nightly, not per PR, see below) |
 | `FelixShardElectWipeNonVoterPromotes.cfg` | `FelixShardElectWipeNonVoterFailover.cfg` with failover free to name a non-voter (`PromoteNonVoter`) | violate `OneLeaderPerGeneration`: the non-voter forgot its promise to a candidate and is promoted at that generation |
+| `FelixShardElectWipeNonVoterDropsLearners.cfg` | `FelixShardElectWipeNonVoterFailover.cfg` with placement writes that may name no learners (`WriteDropsLearners`), as a write does whose read of the assignment it replaces failed, or one from a control plane that predates learners on Postgres | violate `PlacementKnowsLearners`: a follower is wiped and held a learner, then a placement write drops it while it is still a non-voter (127 distinct states, depth 5) |
 | `FelixShardElectWipeNonVoterCreates.cfg` | `FelixShardElectWipeNonVoter.cfg` starting as the shard is created (`Creates`): the first leader fences at generation 1, no follower holds a promise or a set, and a follower not wiped votes with an empty log; adoption up to generation 3, with no broker promising 3 before the re-admission (`ThreeOnceReadmitted`; unbounded at 3 it passed 137M distinct states unfinished in two hours) | pass, the same invariants and `PlacementKnowsLearners` (2.14M distinct states, depth 35, 2 min on four workers) |
 | `FelixShardElectWipeNonVoterCreatesLearnerAcks.cfg` | the same, the leader counting a non-voter's catch-up answers (`LearnerAcksCount`, on by default only without elections, as the code runs) | violate `AckedHeldByLeader`: c promises candidate b generation 2, is wiped, catches up from a at 1, and a acknowledges on {a, c}; b opens on {b, c} without the write. Before elections ship the leader must leave a learner out |
 | `FelixShardElectWipeNonVoterCreateCountsEmpty.cfg` | the same, where a copy with no set file votes, wiped or not (`CreateCountsEmpty`) | violate `OneLeaderPerGeneration`: the wiped copy forgot its promise of generation 2 and gives it to a second leader |
@@ -1175,7 +1176,12 @@ What is not checked:
   `PlacementKnowsLearners` checks that every non-voter is one. `CpAdmit`
   takes the copy's own re-admission as done when the report can show it,
   which stands for the code's order: a copy re-admits itself before it
-  answers the batch carrying the record.
+  answers the batch carrying the record. The wipe (`Forget`) sets
+  `cpLearner` in the same step, while the code learns of a wipe only when the
+  broker registers under its new id. Until then only the broker's own guard
+  keeps the copy from leading or voting; the model does not check placement
+  in that window, since splitting the step would add an action to the
+  largest configurations.
 - Cursors. A leader's count of a replica's answers is not reset at the
   wipe, so an answer from before it can still count toward a later
   acknowledgement. That admits more than a leader that resets on the new
