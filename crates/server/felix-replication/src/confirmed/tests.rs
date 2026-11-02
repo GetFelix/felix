@@ -153,3 +153,19 @@ async fn early_reads_are_bounded_per_change() {
         "one read per shard"
     );
 }
+
+/// **An early read nobody asks about stops after [`WANTED_FOR`]**, not the
+/// longer wait for a refused request's retry, so reads for a cancelled move
+/// do not hold permits that leaders' copies wait on.
+#[tokio::test(start_paused = true)]
+async fn an_unasked_early_read_stops() {
+    let (counted, routes) = counted();
+    let reads = Arc::new(ConfirmedReads::new(Duration::from_secs(10)));
+    let prefetch = Prefetch::new(Arc::clone(&reads), Arc::clone(&routes), None);
+    prefetch.named([(key(), 0)]);
+    tokio::time::sleep(WANTED_FOR + Duration::from_secs(1)).await;
+    let stopped = counted.reads.load(Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert_eq!(counted.reads.load(Ordering::SeqCst), stopped);
+    assert!(!reads.slots.load()[&key()].reading.load(Ordering::SeqCst));
+}

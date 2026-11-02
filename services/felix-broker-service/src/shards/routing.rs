@@ -659,7 +659,7 @@ pub fn routing_table_from(
 
 /// The shards `after` names `local` a follower of, by key and incarnation,
 /// that `before`, the assignments the feed last applied, did not. Nothing
-/// while `before` is empty: that is the first view after a start, whose
+/// while `before` is empty, as in the first view after a start, whose
 /// copies mostly hold promises already and would each start a read for
 /// nothing. A shard's creation naming `local` is left out too, since that
 /// copy skips the read (`ReplicaHandler::created_here`).
@@ -713,8 +713,8 @@ pub struct FeedState {
     /// built only then.
     pub joint_fence: Option<Arc<felix_common::fleet::FleetGate>>,
     /// Starts a copy's confirmed read as soon as the assignments name it a
-    /// follower, before the routes are even published, so it races the
-    /// leader's first request with a head start.
+    /// follower, before the routes are even published, so the read is
+    /// usually done before the leader's first request.
     pub prefetch: Option<felix_replication::confirmed::Prefetch>,
 }
 

@@ -125,6 +125,10 @@ struct Slot {
     /// Whether the last request found no fresh answer, so its retry is
     /// owed one.
     owed: AtomicBool,
+    /// Whether a routing change asked for the read and no request has come
+    /// yet. Such a slot is kept fresh only for [`WANTED_FOR`], so reads for
+    /// copies nobody asks about do not crowd out the ones leaders wait on.
+    early: AtomicBool,
     /// Woken by a request that found the answer stale while a task holds
     /// the slot, so a drop in the freshness needed is not waited out.
     stale: tokio::sync::Notify,
@@ -172,7 +176,7 @@ impl ConfirmedReads {
             Some(slot) => slot,
             None => {
                 drop(slots);
-                self.add(routes, key, incarnation, now, fresh);
+                self.add(routes, key, incarnation, now, fresh, false);
                 return None;
             }
         };
@@ -183,6 +187,9 @@ impl ConfirmedReads {
             .filter(|answer| now.saturating_sub(answer.at) < fresh)
             .map(|answer| decide(&answer.confirmed));
         // Loaded first so the usual request writes nothing here.
+        if slot.early.load(Ordering::Relaxed) {
+            slot.early.store(false, Ordering::Relaxed);
+        }
         if slot.owed.load(Ordering::Relaxed) != decided.is_none() {
             slot.owed.store(decided.is_none(), Ordering::Relaxed);
         }
@@ -193,8 +200,8 @@ impl ConfirmedReads {
     }
 
     /// Start reading `key` at `incarnation` before any request for it, and
-    /// keep the answer within `fresh` until the first request comes, for as
-    /// long as a refused one's retry is waited for.
+    /// keep the answer within `fresh` until the first request comes, for up
+    /// to [`WANTED_FOR`].
     pub(crate) fn prefetch(
         self: &Arc<Self>,
         routes: &Arc<dyn ConfirmedRoutes>,
@@ -209,16 +216,19 @@ impl ConfirmedReads {
             .get(key)
             .filter(|slot| slot.incarnation == incarnation)
         {
-            Some(slot) => {
+            Some(slot) if !slot.owed.load(Ordering::Relaxed) => {
+                slot.early.store(true, Ordering::Relaxed);
                 slot.owed.store(true, Ordering::Relaxed);
                 if !self.want(routes, key, slot, now, fresh) {
                     // The reader recomputes its wait for this freshness.
                     slot.stale.notify_one();
                 }
             }
+            // A refused request's retry is owed already, for longer.
+            Some(_) => {}
             None => {
                 drop(slots);
-                self.add(routes, key, incarnation, now, fresh);
+                self.add(routes, key, incarnation, now, fresh, true);
             }
         }
     }
@@ -257,6 +267,7 @@ impl ConfirmedReads {
         incarnation: u64,
         now: u64,
         fresh: u64,
+        early: bool,
     ) {
         let slot = Arc::new(Slot {
             incarnation,
@@ -265,6 +276,7 @@ impl ConfirmedReads {
             wanted: AtomicU64::new(now),
             fresh: AtomicU64::new(fresh),
             owed: AtomicBool::new(true),
+            early: AtomicBool::new(early),
             stale: tokio::sync::Notify::new(),
         });
         let stale = nanos(FRESH);
@@ -365,7 +377,9 @@ impl ConfirmedReads {
                         }
                     }
                     let fresh = slot.fresh.load(Ordering::Relaxed);
-                    let asked_within = if slot.owed.load(Ordering::Relaxed) {
+                    let asked_within = if slot.early.load(Ordering::Relaxed) {
+                        nanos(WANTED_FOR).max(fresh / 2)
+                    } else if slot.owed.load(Ordering::Relaxed) {
                         self.owed_for.max(fresh / 2)
                     } else {
                         fresh / 2

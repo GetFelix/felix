@@ -1574,15 +1574,21 @@ async fn confirmed_reads_for_new_shards_do_not_hold_up_the_lane() {
     control_plane
         .open
         .add_permits(tokio::sync::Semaphore::MAX_PERMITS);
+    let opened = std::time::Instant::now();
     for shard in 1..=NEW_SHARDS {
         taken(&settled(|| handler.fence(SENDER, fence_of(shard))).await);
     }
-    // A read per shard, not per request; a slow run may see one refresh.
+    // A read per shard, not per request, plus the refreshes a slow run
+    // lets through: a 500 ms answer is read again at least every 250 ms.
     let asked = control_plane
         .asked
         .load(std::sync::atomic::Ordering::SeqCst);
     let shards = NEW_SHARDS as usize + 1;
-    assert!((shards..=2 * shards).contains(&asked), "{asked} reads");
+    let refreshes = 1 + opened.elapsed().as_millis() as usize / 250;
+    assert!(
+        (shards..=shards * (1 + refreshes)).contains(&asked),
+        "{asked} reads"
+    );
 }
 
 /// A router in which broker-a leads the shard's `incarnation` at `generation`

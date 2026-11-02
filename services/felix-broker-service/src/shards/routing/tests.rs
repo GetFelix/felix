@@ -742,9 +742,23 @@ fn only_newly_named_followers_are_read_early() {
         replicas: vec!["broker-c".to_string()],
         ..assignment(3, "broker-b", 1)
     };
+    let joining = ShardAssignment {
+        replicas: vec!["broker-c".to_string()],
+        pending_set: Some(crate::shards::watch::PendingSet {
+            replicas: vec!["broker-b".to_string(), "broker-c".to_string()],
+            generation: 6,
+        }),
+        ..assignment(4, "broker-a", 5)
+    };
     let before = map(vec![assignment(0, "broker-a", 2), followed.clone()]);
-    let after = map(vec![staged.clone(), followed.clone(), created, led]);
-    assert_eq!(named(&before, &after), [0]);
+    let after = map(vec![
+        staged.clone(),
+        followed.clone(),
+        created,
+        led,
+        joining,
+    ]);
+    assert_eq!(named(&before, &after), [0, 4]);
     assert!(named(&HashMap::new(), &after).is_empty(), "the first view");
     // A re-created stream is another log, so its copy is new again.
     let recreated = ShardAssignment {

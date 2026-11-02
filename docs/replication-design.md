@@ -841,14 +841,16 @@ the answer is kept for twice that interval, and at least 5 s. Kept any
 shorter, a retry would find a stale answer, be refused again and start
 another read, every time, and a move onto the copy would never finish.
 
-Most refusals never happen. When this broker's assignments first name it
-a follower of a shard, as a move's destination or a follower just added,
+Usually there is no refusal at all. When this broker's assignments first
+name it a follower of a shard, as a move's destination or a follower just added,
 the routing feed starts the read before the leader asks, so the leader's
-first request finds the answer. The feed does this as it applies the
+first request usually finds the answer. The feed does this as it applies the
 change, so a request pays nothing for it. It starts at most 64 such reads
-per change, skips the assignments a broker starts with (those copies
-mostly hold promises already) and a shard's creation (that copy skips the
-read). Every other copy is read on its first request.
+per change and keeps each answer fresh for 5 s if no request comes. It
+skips any change that follows an empty view, such as the one a broker
+starts with (those copies mostly hold promises already), and a shard's
+creation (that copy skips the read). Every other copy is read on its first
+request.
 
 How fresh an answer must be depends on elections. Without them an answer
 is used for 10 s, and its age is not what makes it safe. Answers live in
@@ -876,8 +878,8 @@ Evidence (`replica/tests/fence.rs`):
 `one_confirmed_read_answers_every_request_for_a_shard`;
 `a_shorter_freshness_wakes_the_refresh`,
 `a_retry_a_driver_tick_later_is_answered`,
-`a_prefetched_copy_answers_the_first_request` and
-`early_reads_are_bounded_per_change` (`confirmed/tests.rs`); and
+`a_prefetched_copy_answers_the_first_request`,
+`early_reads_are_bounded_per_change` and `an_unasked_early_read_stops` (`confirmed/tests.rs`); and
 `only_newly_named_followers_are_read_early`
 (`services/felix-broker-service/src/shards/routing/tests.rs`).
 

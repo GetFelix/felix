@@ -9,4 +9,4 @@
   while the leader keeps asking, for up to twice the control-plane sync
   interval after a refusal. A move's destination or a newly added follower
   starts the read as soon as its assignments name it, so the leader's first
-  request is answered.
+  request is usually answered.
