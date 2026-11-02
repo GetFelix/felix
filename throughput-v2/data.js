@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793625485229,
+  "lastUpdate": 1793626136744,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -42172,6 +42172,58 @@ window.BENCHMARK_DATA = {
             "range": "4235.39",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 851860.45\nmean: 849426.18\nstdev: 4235.39\ncv: 0.50%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ed5423a8a14c076d4db4047a4e07e34beba9fde0",
+          "message": "ci: price the broker-wide byte budgets and document how to size them (#1338) (#1770)\n\nPart of #1338 (closes it).\n\nDecision: the broker-wide byte totals stay off by default. The cost is small, but no fixed number is right for every machine, so the docs now say how to size one and what it costs.\n\nWhat changed\n- `perf-env-ab.yml`: a manual workflow that builds one ref and runs the fast perf subsets (plus new 16 KiB and 64 KiB cells in `ci_subset_memory_totals.yml`) with env A and env B, alternating sides and flipping who goes first each round, then reports with the existing Welch comparison. Reusable for any setting.\n- `configuration.md`: sizing rule and measured cost for `subscriber_queue_max_bytes_total`; pointers in `building.md` and `benchmarks.md`; changelog entry.\n\nEvidence (run 41432787242, 20 rounds, from this branch with a temporary push trigger that is removed again; an earlier run 41428797508 double counted the 64 KiB fanout-10 cell, which the review caught, so its numbers are not used): B sets `FELIX_SUB_QUEUE_MAX_BYTES_TOTAL=4294967296`, `FELIX_REPLAY_RING_MAX_BYTES_TOTAL=4294967296`, `FELIX_CACHE_WATCH_MAX_BYTES_TOTAL=1073741824`; the raw JSONL confirms the env reached side B only. Median throughput, 20 trials per side, one cell per row:\n\n| fanout | batch | payload | A msg/s | B msg/s | change |\n|---|---|---|---|---|---|\n| 1 | 1 | 256 B | 10481 | 10495 | +0.1% |\n| 1 | 64 | 1 KiB | 503909 | 536156 | +6.4% (-4.3% in the earlier run: noise) |\n| 1 | 64 | 16 KiB | 54787 | 53737 | -1.9% |\n| 1 | 64 | 64 KiB | 14593 | 14418 | -1.2% |\n| 10 | 1 | 256 B | 7457 | 7474 | +0.2% |\n| 10 | 64 | 1 KiB | 122012 | 121275 | -0.6% |\n| 10 | 64 | 16 KiB | 7920 | 7966 | +0.6% |\n| 10 | 64 | 64 KiB | 2248 | 2252 | +0.2% |\n\nNo throughput regression is flagged. Latency is flagged on the two big fanout-10 cells: 64 KiB p50 38 ms to 340 ms, 16 KiB p99 about 2x (CV 60 to 100% on both sides). At 64 KiB x fanout 10 the 20,000 queued messages are about 12 GB across subscribers, more than a 4 GiB total, so publishers wait on the budget. That is queueing delay at the same throughput, in a batched run, which does not measure request latency, and the docs now say to size the total above the working set.\n\nDesign calls\n- Default stays 0. Throughput cost is nil in these cells, but the latency result shows a total near the working set adds delay, and a fixed number is wrong on some machine: a stalled subscriber holds `subscriber_queue_max_bytes` (128 MiB) plus its connection's share of `subscriber_egress_max_bytes` (256 MiB), about 384 MiB alone on a connection, so 4 GiB covers about 10 stalled subscribers before fast ones are affected. Deriving a default from the cgroup memory limit is a feature of its own.\n- Not done: a sharded budget (the shared counter did not show up in throughput), and a cluster run of stalled-versus-fast subscribers (documented behaviour with unit coverage in `connection_writer.rs`).\n- Review findings fixed: wrong 256 MiB queue default, a double counted cell, a job that would die on one failed trial, wording.",
+          "timestamp": "2026-11-02T05:15:38-08:00",
+          "tree_id": "d6e2264f0c4ac6eb58b5c24d39891df01f592aa0",
+          "url": "https://github.com/GetFelix/felix/commit/ed5423a8a14c076d4db4047a4e07e34beba9fde0"
+        },
+        "date": 1793626136079,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 337564.4,
+            "range": "24648.72",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 337564.40\nmean: 339574.90\nstdev: 24648.72\ncv: 7.26%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 337564.4,
+            "range": "24648.72",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 337564.40\nmean: 339574.90\nstdev: 24648.72\ncv: 7.26%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80651.75,
+            "range": "800.01",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80651.75\nmean: 80699.65\nstdev: 800.01\ncv: 0.99%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 806517.49,
+            "range": "8000.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 806517.49\nmean: 806996.47\nstdev: 8000.05\ncv: 0.99%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
