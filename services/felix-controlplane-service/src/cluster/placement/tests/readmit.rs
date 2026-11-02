@@ -400,6 +400,43 @@ async fn a_wiped_member_is_readmitted_then_counts_once_it_holds_the_start() {
     }
 }
 
+/// **A failed read keeps the learners.** An operator write names its members
+/// against the assignment it replaces; a read that fails is not "no shard",
+/// so the write fails rather than landing without broker-c as a learner.
+#[tokio::test]
+async fn an_operator_write_whose_read_fails_does_not_drop_the_learners() {
+    let (store, first) = cluster(true).await;
+    wipe_c(&store).await;
+    b_reports(&store, first.generation, &[]).await;
+    let readmitted = pass(&store).await;
+    assert_eq!(readmitted.learners, ["broker-c".to_string()].into());
+
+    let step = super::super::operator::FencedStep {
+        step: OperatorStep {
+            step: MoveStep::Readmit {
+                node: "broker-c".to_string(),
+            },
+            assignment: ShardAssignment {
+                generation: readmitted.generation + 1,
+                ..readmitted.clone()
+            },
+            expected_generation: readmitted.generation,
+            zones: None,
+        },
+        fence: store.placement_token().await.expect("token"),
+    };
+    store
+        .faults
+        .shard_reads
+        .store(1, std::sync::atomic::Ordering::SeqCst);
+    let written = super::super::operator::write_operator_step(&store, &step).await;
+    assert!(
+        written.is_err(),
+        "wrote without the previous set: {written:?}"
+    );
+    assert_eq!(pass(&store).await, readmitted);
+}
+
 /// **Without joint fences nothing changes.** The same wipe writes nothing,
 /// holds no learner, and the failover may take the wiped member.
 #[tokio::test]
@@ -425,7 +462,8 @@ async fn without_joint_fence_a_wiped_member_is_neither_readmitted_nor_held() {
 /// **Re-admission waits for its evidence and for a quiet shard.** Only a
 /// live leader whose report at the assignment's generation shows the new
 /// copy caught up under the identity it is registered with writes the set
-/// again, and not while a move, a drain or a pending set is in progress.
+/// again, only while a majority of the set besides the new copy is live, and
+/// not while a move, a drain or a pending set is in progress.
 #[test]
 fn a_readmission_needs_the_new_copy_caught_up_and_nothing_else_in_progress() {
     let nodes = |leader: NodeLifecycle| {
@@ -471,6 +509,17 @@ fn a_readmission_needs_the_new_copy_caught_up_and_nothing_else_in_progress() {
     assert!(
         !readmits(&decided(&nodes(NodeLifecycle::Down), &wiped, 33, true)),
         "the leader is down"
+    );
+    // The leader alone is no majority of the rest: the shard serves now and
+    // would not at the next generation.
+    let a_down = vec![
+        registered("broker-a", 1, NodeLifecycle::Down),
+        registered("broker-b", 2, NodeLifecycle::Live),
+        registered("broker-c", 33, NodeLifecycle::Live),
+    ];
+    assert!(
+        !readmits(&decided(&a_down, &wiped, 33, true)),
+        "broker-a is down"
     );
     for busy in [
         ShardAssignment {

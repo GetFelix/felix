@@ -629,7 +629,13 @@ pub(super) async fn write_operator_step(
         .await?
         .contains(felix_common::fleet::JOINT_FENCE.name())
     {
-        true => store.get_shard_assignment(key).await.ok(),
+        // A failed read must not stand in for "no shard yet": naming members
+        // without the previous set would drop its learners.
+        true => match store.get_shard_assignment(key).await {
+            Ok(previous) => Some(previous),
+            Err(crate::store::StoreError::NotFound(_)) => None,
+            Err(err) => return Err(err),
+        },
         false => None,
     };
     let admitted = std::collections::BTreeSet::new();

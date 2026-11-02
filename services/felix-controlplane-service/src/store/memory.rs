@@ -636,6 +636,8 @@ impl ControlPlaneStore for InMemoryStore {
     }
 
     async fn get_shard_assignment(&self, key: &ShardKey) -> StoreResult<ShardAssignment> {
+        #[cfg(test)]
+        Faults::take(&self.faults.shard_reads)?;
         shards::get_shard_assignment(self, key).await
     }
 
@@ -1133,6 +1135,7 @@ pub(crate) struct Faults {
     pub(crate) rbac_reads: std::sync::atomic::AtomicU32,
     pub(crate) revocation_writes: std::sync::atomic::AtomicU32,
     pub(crate) refresh_writes: std::sync::atomic::AtomicU32,
+    pub(crate) shard_reads: std::sync::atomic::AtomicU32,
     /// Counts reads of revocation cutoffs, not a failure.
     pub(crate) cutoff_reads: std::sync::atomic::AtomicU32,
     /// Once set, the next shard write says it has read its stream or cache,

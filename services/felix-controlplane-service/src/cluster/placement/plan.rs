@@ -642,8 +642,6 @@ fn plan_once(
     )
 }
 
-/// Who leads `assignment` once the move in flight completes: a live staged
-/// successor, else the leader.
 /// Re-admit a member whose storage was replaced, once its leader reports it
 /// caught up under its new identity: the same set is written at the next
 /// generation, which names the new identity and holds the member as a
@@ -665,6 +663,17 @@ fn readmit(
         return None;
     }
     let node = caught_up.readmittable(&existing.key, existing.generation, &existing.leader)?;
+    // The new generation serves once a majority of the set takes it, and the
+    // learner is not one of them: without a live majority of the rest, a
+    // shard still serving at this generation would stop.
+    let set: Vec<&String> = existing.nodes().collect();
+    let live_rest = set
+        .iter()
+        .filter(|member| ***member != node && is_live(member))
+        .count();
+    if live_rest < set.len() / 2 + 1 {
+        return None;
+    }
     Some(Decision::Move(
         MoveStep::Readmit { node },
         ShardAssignment {
@@ -675,6 +684,8 @@ fn readmit(
     ))
 }
 
+/// Who leads `assignment` once the move in flight completes: a live staged
+/// successor, else the leader.
 fn will_lead<'a>(assignment: &'a ShardAssignment, is_live: &dyn Fn(&str) -> bool) -> &'a str {
     assignment
         .successor
