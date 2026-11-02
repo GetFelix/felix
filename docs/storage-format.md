@@ -387,7 +387,10 @@ non-zero length is `RecordTooLarge`, exactly as an older build judged it.
 Only a v8 segment may hold such a record, for the reason only a v6 one may
 hold a publisher. A segment is written at v8 only to hold one, so a log that
 never stores a key or headers stays on v7 or older, and an older build reads
-it.
+it. A record refused for its size is refused before the roll. As with the
+other kinds, the roll happens before the record is written, so a crash, or a
+conditional append whose condition fails, in between leaves an empty v8
+active segment, which an older build refuses.
 
 ## Index file
 
@@ -443,7 +446,7 @@ the file is read up to the last whole entry.
 | Bad record header CRC | `RecordHeaderChecksum`: the length cannot be trusted |
 | Bad record CRC | `RecordChecksum` |
 | More than one kind bit set, other than bits 29 and 28 together in a v7 segment | `RecordFlags` |
-| `payload_len` over the limit | `RecordTooLarge`, raised *before* any allocation. In a v8 segment bit 26 is a flag, so every length fits |
+| `payload_len` over the limit | `RecordTooLarge`, raised *before* any allocation. In a v8 segment bit 26 over a non-zero length is a flag, so every length fits |
 | A publisher or a key-and-headers block that does not fit its body | `RecordPublisher`, `RecordHeaders` |
 | Offset gap within a segment | `OffsetOutOfOrder` |
 
@@ -574,7 +577,7 @@ encode_record(offset = 7, timestamp = 9, payload = "hi", key and headers = "k"):
   7B A6 A5 A2
   00 00 00 01  6B  68 69
 
-encode_record(offset = 7, timestamp = 9, trim's headers = "hi", trim floor = 5):
+encode_record(offset = 7, timestamp = 9, trim payload = "hi", trim floor = 5):
   30 00 00 02
   00 00 00 00 00 00 00 07
   00 00 00 00 00 00 00 09

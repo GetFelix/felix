@@ -48,3 +48,31 @@ async fn the_first_record_with_headers_rolls_the_log_and_survives_a_restart() {
         ]
     );
 }
+
+/// A record refused for its size is refused before the log rolls, so the log
+/// does not move onto v8 for a record it never stored.
+#[tokio::test]
+async fn an_oversized_record_with_headers_does_not_roll_the_log() {
+    let dir = tempdir().expect("dir");
+    let log = open(&dir, FsyncMode::OnCommit);
+    log.append(&records(&["before"])).await.expect("append");
+    let segments = log.segments().len();
+    let err = log
+        .append(&[AppendRecord {
+            payload: Bytes::from(vec![
+                0u8;
+                crate::segment::format::MAX_PAYLOAD_BYTES as usize - 4
+            ]),
+            timestamp_micros: 1,
+            mark: RecordMark::None,
+            publisher: None,
+            headers: Some(Bytes::new()),
+        }])
+        .await
+        .expect_err("too large");
+    assert!(
+        matches!(err, crate::StorageError::Unsupported(_)),
+        "{err:?}"
+    );
+    assert_eq!(log.segments().len(), segments, "did not roll");
+}

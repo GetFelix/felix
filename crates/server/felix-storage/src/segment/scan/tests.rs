@@ -567,3 +567,81 @@ fn an_oversized_trim_at_an_older_tail_is_not_repaired() {
         corruption.kind
     );
 }
+
+/// A v8 segment: two plain records, then one with a key and headers.
+fn write_headers_segment(path: &std::path::Path) -> (Vec<u8>, u64) {
+    let mut bytes = SegmentHeader::at_version(0, 1, 8).encode().to_vec();
+    for offset in 0..2 {
+        encode_record(
+            &mut bytes,
+            offset,
+            100,
+            b"plain",
+            None,
+            None,
+            &Default::default(),
+        );
+    }
+    let at = bytes.len() as u64;
+    encode_record(
+        &mut bytes,
+        2,
+        102,
+        b"value",
+        Some(b"key"),
+        Some(b"al"),
+        &Default::default(),
+    );
+    std::fs::write(path, &bytes).expect("write");
+    (bytes, at)
+}
+
+/// A record with headers cut short anywhere, header included, is an
+/// unfinished write and is repaired, under the strict policy too.
+#[test]
+fn a_torn_record_with_headers_is_repaired() {
+    let dir = tempdir().expect("dir");
+    let path = dir.path().join("a.log");
+    let (full, at) = write_headers_segment(&path);
+    assert_eq!(scan_strict(&path).expect("whole").record_count, 3);
+    for cut in (at as usize + 1)..full.len() {
+        std::fs::write(&path, &full[..cut]).expect("write");
+        let outcome = scan_strict(&path).expect("repaired");
+        assert_eq!(outcome.record_count, 2, "cut at {cut}");
+        assert_eq!(outcome.valid_bytes, at);
+        let tail = outcome.torn_tail.expect("torn tail");
+        assert!(
+            matches!(tail.cause, CorruptionKind::Truncated { .. }),
+            "cut at {cut}: {:?}",
+            tail.cause
+        );
+    }
+}
+
+/// A block that does not fit its body passed the checksum, so the record was
+/// written that way: fatal even at the tail.
+#[test]
+fn headers_that_do_not_fit_their_body_are_fatal() {
+    let dir = tempdir().expect("dir");
+    let path = dir.path().join("a.log");
+    let (mut bytes, at) = write_headers_segment(&path);
+    let block = (at + RECORD_HEADER_LEN) as usize;
+    bytes[block..block + 4].copy_from_slice(&64u32.to_be_bytes());
+    let record = at as usize;
+    let crc = crate::segment::format::crc32(&[
+        &bytes[record..record + 24],
+        &bytes[record + RECORD_HEADER_LEN as usize..],
+    ]);
+    bytes[record + 24..record + 28].copy_from_slice(&crc.to_be_bytes());
+    std::fs::write(&path, &bytes).expect("write");
+    for result in [scan_strict(&path), scan(&path)] {
+        let err = result.expect_err("misfit");
+        let StorageError::Corruption(corruption) = err else {
+            panic!("expected corruption, got {err:?}");
+        };
+        assert!(matches!(
+            corruption.kind,
+            CorruptionKind::RecordHeaders { .. }
+        ));
+    }
+}

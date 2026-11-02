@@ -364,23 +364,7 @@ impl SegmentWriter {
             ));
         }
 
-        for record in records {
-            let publisher = record.publisher.as_deref();
-            let headers = record.headers.as_deref();
-            if !body_fits(
-                body_len(record.payload.len(), headers, publisher),
-                headers.is_some(),
-            ) {
-                return Err(StorageError::Unsupported(
-                    "record payload exceeds the maximum supported size",
-                ));
-            }
-            if publisher.is_some_and(|publisher| publisher.len() > MAX_PUBLISHER_BYTES) {
-                return Err(StorageError::Unsupported(
-                    "record publisher exceeds the maximum supported size",
-                ));
-            }
-        }
+        check_sizes(records)?;
         if !self.holds(records) {
             return Err(StorageError::Unsupported(
                 "the record's mark is newer than the segment's version; roll first",
@@ -751,6 +735,29 @@ pub struct ResumeState {
     pub index: SparseIndex,
     /// From the segment header: see [`SegmentWriter::holds`].
     pub version: u16,
+}
+
+/// Refuse a record too large to write. A log checks this before it rolls for
+/// a batch, so a refused record never leaves the log on a newer version.
+pub(crate) fn check_sizes(records: &[AppendRecord]) -> Result<()> {
+    for record in records {
+        let publisher = record.publisher.as_deref();
+        let headers = record.headers.as_deref();
+        if !body_fits(
+            body_len(record.payload.len(), headers, publisher),
+            headers.is_some(),
+        ) {
+            return Err(StorageError::Unsupported(
+                "record payload exceeds the maximum supported size",
+            ));
+        }
+        if publisher.is_some_and(|publisher| publisher.len() > MAX_PUBLISHER_BYTES) {
+            return Err(StorageError::Unsupported(
+                "record publisher exceeds the maximum supported size",
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

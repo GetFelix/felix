@@ -237,6 +237,7 @@ impl LogInner {
         if gone() {
             return Ok(Err(self.segments.read().tail_offset()));
         }
+        crate::segment::writer::check_sizes(records)?;
         let mut segments = self.segments.write();
         if segments.would_roll_within(records, self.roll_pending()) {
             self.before_inline_roll();

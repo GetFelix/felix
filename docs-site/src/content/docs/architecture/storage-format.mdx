@@ -195,8 +195,9 @@ every copy of the log says whose it is:
 Marking every record rather than only the first lets a log tell a batch it
 holds all of from one whose leader stopped partway: a batch is held
 once its last record is, and one whose next record does not continue it was
-abandoned. The step to the next record is `28 + (20 if bit 31) + payload_len`,
-still from the header alone.
+abandoned. The step to the next record is `28 + tag + payload_len`, where the
+tag is 20 bytes with bit 31, 8 on a trim record and none otherwise, still from
+the header alone.
 
 Only a v3 or later segment may hold marks. A v2 build reading a mark's bits would see a
 length past the limit, and recovery could take that for a torn tail and cut it
@@ -216,7 +217,8 @@ It takes an offset like any record, and every reader but replication skips it:
 subscriptions and replay, Kafka fetch, consumer groups, and the cache and
 counter projections. Replication ships and compares it exactly as stored.
 
-At most one of bits 29, 30 and 31 is set; any two is `RecordFlags`. Only a v4
+At most one of bits 28 to 31 is set, apart from the trim record's pair (bits 29
+and 28, from v7); any other combination is `RecordFlags`. Only a v4
 segment may hold the record, for the reason only a v3 one may hold marks: a v3
 build reading bit 29 would see a length past the limit and could cut the record
 off as a torn tail, where a v4 header makes it refuse the segment. A v4 build
@@ -278,8 +280,9 @@ load: the file is read up to the last whole entry.
 | Short read | `Truncated { needed, available }`, the one shape recovery may repair |
 | Bad record header CRC | `RecordHeaderChecksum`; the length cannot be trusted |
 | Bad record CRC | `RecordChecksum` |
-| More than one of the three kind bits set | `RecordFlags` |
-| `payload_len` over the limit | `RecordTooLarge`, raised *before* any allocation |
+| More than one kind bit set, other than bits 29 and 28 together in a v7 or later segment | `RecordFlags` |
+| `payload_len` over the limit | `RecordTooLarge`, raised *before* any allocation. In a v8 segment bit 26 over a non-zero length is a flag, so every length fits |
+| A publisher or a key-and-headers block that does not fit its body | `RecordPublisher`, `RecordHeaders` |
 | Offset gap within a segment | `OffsetOutOfOrder` |
 
 Every error carries a `CorruptionSite` naming the shard, segment id and byte
