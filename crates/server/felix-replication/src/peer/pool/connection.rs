@@ -375,11 +375,11 @@ impl PeerConnection {
     /// Swap `lane`'s stream for a fresh one, if it is still `stale`.
     ///
     /// A stream whose peer stopped answering stays wedged for as long as the
-    /// connection lives: a peer serves replication and older peers serve
-    /// every request one at a time, so one handler that never returns holds
-    /// every request behind it. The old
-    /// stream is finished and left to drain; answers that still arrive on it
-    /// reach their waiters if they have any.
+    /// connection lives: a peer serves a replication stream one request at a
+    /// time, and an older peer serves every stream that way, so one handler
+    /// that never returns holds every request behind it. The old stream is
+    /// finished and left to drain; answers that still arrive on it reach
+    /// their waiters if they have any.
     async fn replace_lane(&self, lane: usize, stale: &Arc<LaneStream>, within: Duration) {
         let slot = &self.lanes[lane];
         let _replacing = slot.replacing.lock().await;

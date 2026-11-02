@@ -909,9 +909,9 @@ correlation id alone. It goes on the connection's control lane, so it never
 waits behind a forwarded publish. It is answered as soon as it arrives, so it
 never waits behind a slow fence either (see "The transport"). The answer comes
 from the broker's serving runtime rather than the transport task, so a broker
-whose runtime is stuck reads as unreachable. Sent only to a peer that offered `PING`; one that
-did not is not watched at all, so a rolling upgrade never reads as a dead
-leader.
+whose runtime is stuck reads as unreachable. Sent only to a peer that offered
+`PING`; one that did not is not watched at all, so a rolling upgrade never
+reads as a dead leader.
 
 A leader that has not answered for `FELIX_LEADER_SUSPECT_AFTER_MS` is named
 in the follower's heartbeat, and the control plane promotes once a majority of
@@ -1111,8 +1111,9 @@ sends the second:
 Every requester build matches answers by correlation id, so the change needs
 no capability bit: an older broker gets the same answers, sooner. A stream
 holds at most 1024 fences, tail fetches and pre-votes at once, the requester's
-default in-flight limit per peer. Past that, a request is answered `Overload`
-at once, which nothing applied, so the stream never stops reading and a ping
+default in-flight limit per peer (`FELIX_INTERNAL_MAX_INFLIGHT`; only a
+requester set higher can pass it). Past that, a request is answered `Overload`
+at once and nothing is applied, so the stream never stops reading and a ping
 never waits. Only 16 of the fetches run at a time, because each answer can
 hold 4 MiB; the rest wait off the stream. A ping needs no permit at all.
 

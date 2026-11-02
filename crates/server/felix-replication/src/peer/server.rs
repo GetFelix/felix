@@ -625,9 +625,12 @@ async fn serve_connection(
                                 detail: "this broker is serving as many control requests as it allows"
                                     .to_string(),
                             });
-                            if write_frame(&mut *send.lock().await, &refusal).await.is_err() {
-                                break;
-                            }
+                            // Off the loop, so a refusal never waits behind
+                            // a large fetch answer and the pings after it.
+                            let send = Arc::clone(&send);
+                            app.spawn(async move {
+                                answer_out_of_order(&send, async { refusal }).await;
+                            });
                             continue;
                         };
                         let fetching = matches!(request, InternalMessage::ReplicateFetch(_))
@@ -637,11 +640,9 @@ async fn serve_connection(
                         let send = Arc::clone(&send);
                         app.spawn(async move {
                             let _queued = queued;
+                            // The semaphore is never closed.
                             let _running = match fetching {
-                                Some(fetches) => match fetches.acquire_owned().await {
-                                    Ok(permit) => Some(permit),
-                                    Err(_) => return,
-                                },
+                                Some(fetches) => fetches.acquire_owned().await.ok(),
                                 None => None,
                             };
                             answer_out_of_order(&send, handler.handle_from(peer, request)).await;
