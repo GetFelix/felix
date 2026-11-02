@@ -350,7 +350,7 @@ async fn silence_past_one_and_a_half_keepalives_closes_the_connection() {
     tokio::time::sleep(Duration::from_secs(44)).await;
     assert!(!h.client.ended.load(Ordering::SeqCst));
     tokio::time::sleep(Duration::from_secs(2)).await;
-    assert!(h.client.closed().await);
+    assert!(h.client.closed_at_once().await);
 }
 
 #[tokio::test(start_paused = true)]
