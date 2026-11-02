@@ -404,13 +404,15 @@ pub(super) fn move_step<'a>(
     // Kept off as a destination, as of any report still believed.
     let is_halted = |node: &str| caught_up.halted(key, node).is_some();
 
-    // The leader promised this generation to another node, whose election was
-    // recorded without being adopted, so it can never open here and no one
-    // else is named to lead. The next generation is above that promise: the
-    // leader opens, and its fence deposes the elected node through the
-    // ballot. The set, a pending change and a copy being added are untouched.
-    // Not during a move that ends through its own steps, which would lose
-    // its successor or its fence to the new generation.
+    // The leader cannot serve this generation: it, or a majority of its set,
+    // promised it to another node. That is usually an election recorded
+    // without being adopted, but any fresh refusal at this generation is
+    // enough, recorded or not: naming the same leader one generation up is a
+    // new fenced term, safe either way. The next generation is above the
+    // promise, so the leader opens, and its fence deposes the elected node
+    // through the ballot. The set, a pending change and a copy being added
+    // are untouched. Not during a move that ends through its own steps, which
+    // would lose its successor or its fence to the new generation.
     if existing.successor.is_none()
         && existing.state != ShardState::Draining
         && caught_up.leader_refused(key, existing.generation, leader)

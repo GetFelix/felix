@@ -1433,9 +1433,9 @@ in one of two ways:
 
 - It promised the generation to the elected broker before it heard of the
   assignment, so its open fails.
-- It opened first, persisting its own promise, but a majority of the set
-  promised the generation to the elected broker, so its fence can never reach
-  a majority.
+- It started to open first, persisting its own promise, but a majority of
+  the set promised the generation to the elected broker, so its fence can
+  never reach a majority.
 
 Either way it says so in its report, with `refused` set to the `generation`
 it refused and the node it `promised_to`, and repeats it each tick. The
@@ -1448,8 +1448,12 @@ the same set, any pending change kept, at the next generation. That is above
 the one the leader promised away, so it opens and fences, and the followers,
 which take the higher generation, depose the elected leader.
 
-Placement acts only on that report. It ignores a refusal of an older
-generation and one that is no longer fresh. It also skips the step while the
+Placement acts only on that report, and does not check that it recorded an
+election: a refusal at the assignment's generation is enough. That also
+covers an election it never heard of, for example one that took a majority
+while placement was failing the shard over. Naming the same leader one
+generation up is a new fenced term either way. Placement ignores a refusal of
+an older generation and one that is no longer fresh. It also skips the step while the
 shard is in a move that ends through its own steps: one with a successor
 named, or one whose leader is draining. A follower replacement does not stop
 it: the new generation keeps the joining copy, and the replacement goes on
