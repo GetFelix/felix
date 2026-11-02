@@ -582,6 +582,7 @@ impl ShardLifecycle {
     pub fn opened(&mut self, key: &ShardKey, generation: u64) -> Opened {
         match self.shards.get(key) {
             Some(shard) if shard.phase == Phase::Opening && shard.generation == generation => {
+                self.fence.opened_at(key, generation);
                 if shard.draining {
                     self.set(key, Phase::Closed, generation, true);
                     Opened::Draining

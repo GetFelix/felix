@@ -73,15 +73,11 @@ async fn a_promised_generation_is_recorded_as_refused() {
     );
     drop(held);
 
-    // A generation above the promise opens, and the refusal at 4 stays what
-    // it was: the report compares it with the route's generation.
+    // A generation above the promise opens, and the refusal is cleared.
     reconcile(&lifecycle, &store, &led_with_followers(5)).await;
     let held = lifecycle.lock().await;
     assert_eq!(held.phase(&key(0)), Phase::Active);
-    assert_eq!(
-        held.fence().refused_at(&key(0)).map(|r| r.generation),
-        Some(4)
-    );
+    assert_eq!(held.fence().refused_at(&key(0)), None);
 }
 
 /// A generation this broker already moved past is a different failure: it is

@@ -104,6 +104,15 @@ impl ShardFence {
             .insert(key.clone(), (generation, promised_to.to_string()));
     }
 
+    /// `key` opened at `generation`, so a refusal at or below it no longer
+    /// holds the shard back and is not reported again.
+    pub(crate) fn opened_at(&self, key: &ShardKey, generation: u64) {
+        let mut refused = self.refused.write();
+        if refused.get(key).is_some_and(|(at, _)| *at <= generation) {
+            refused.remove(key);
+        }
+    }
+
     /// The generation `key` was given up at, if its last probe found no
     /// follower ahead of this broker's copy. See `felix_replication::reclaim`.
     pub(crate) fn reclaimable_at(&self, key: &ShardKey) -> Option<u64> {
