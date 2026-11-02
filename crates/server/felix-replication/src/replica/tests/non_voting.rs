@@ -145,9 +145,7 @@ fn pre_vote(generation: u64) -> PreVote {
 
 /// Teach a wiped copy a set naming `OLD` for it, as a refused fence does.
 async fn wiped_at_5(handler: &ReplicaHandler) {
-    let answer = handler
-        .fence(SENDER, fence_with(6, set(5, OLD), None, false))
-        .await;
+    let answer = settled(|| handler.fence(SENDER, fence_with(6, set(5, OLD), None, false))).await;
     assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
 }
 
@@ -159,9 +157,8 @@ async fn a_wiped_copy_refuses_a_fence_and_a_vote() {
     let handler = handler(&broker, 6, OWN);
 
     for candidate in [false, true] {
-        let answer = handler
-            .fence(SENDER, fence_with(6, set(5, OLD), None, candidate))
-            .await;
+        let answer =
+            settled(|| handler.fence(SENDER, fence_with(6, set(5, OLD), None, candidate))).await;
         assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
     }
     let log = log_of(&broker).await;
@@ -189,9 +186,7 @@ async fn a_voting_copy_still_answers_a_candidate() {
     .expect("set");
     assert_eq!(log.member_is_learner(LOCAL), Some(false));
 
-    let answer = handler
-        .fence(SENDER, fence_with(6, set(5, OWN), None, true))
-        .await;
+    let answer = settled(|| handler.fence(SENDER, fence_with(6, set(5, OWN), None, true))).await;
     assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
 }
 
@@ -203,7 +198,7 @@ async fn a_wiped_copy_answers_a_pre_vote_without_voting() {
     let handler = handler(&broker, 6, OWN);
     wiped_at_5(&handler).await;
 
-    let answer = handler.pre_vote(pre_vote(7)).await;
+    let answer = settled(|| handler.pre_vote(pre_vote(7))).await;
     let InternalMessage::PreVoteAnswer(answer) = answer else {
         panic!("expected an answer, got {answer:?}");
     };
@@ -222,9 +217,7 @@ async fn a_restart_keeps_a_wiped_copy_non_voting() {
     let broker = broker_on(dir.path());
     assert_eq!(log_of(&broker).await.member_is_learner(LOCAL), Some(true));
     let handler = handler(&broker, 6, OWN);
-    let answer = handler
-        .fence(SENDER, fence_with(6, set(5, OWN), None, true))
-        .await;
+    let answer = settled(|| handler.fence(SENDER, fence_with(6, set(5, OWN), None, true))).await;
     assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
 }
 
@@ -237,15 +230,15 @@ async fn a_readmission_for_another_storage_id_does_not_readmit() {
     let handler = handler(&broker, 6, [9; 16]);
     wiped_at_5(&handler).await;
 
-    let answer = handler.fence(SENDER, readmission(6, OWN)).await;
+    let answer = settled(|| handler.fence(SENDER, readmission(6, OWN))).await;
     assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
     let log = log_of(&broker).await;
     assert_eq!(log.accepted_generation(), 0);
 
     // Not even catching up admits it.
-    let answer = handler
-        .apply(SENDER, stamped(6, 0, &["a"]), felix_broker::LogKind::Stream)
-        .await;
+    let answer =
+        settled(|| handler.apply(SENDER, stamped(6, 0, &["a"]), felix_broker::LogKind::Stream))
+            .await;
     assert!(
         matches!(answer, InternalMessage::ReplicateOk(_)),
         "{answer:?}"
@@ -262,15 +255,15 @@ async fn a_set_naming_its_storage_id_readmits_it_after_catch_up() {
     let handler = handler(&broker, 6, OWN);
     wiped_at_5(&handler).await;
 
-    let answer = handler.fence(SENDER, readmission(6, OWN)).await;
+    let answer = settled(|| handler.fence(SENDER, readmission(6, OWN))).await;
     assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
     let log = log_of(&broker).await;
     assert_eq!(log.set_generation(), 6, "the set was not learned");
     assert_eq!(log.member_is_learner(LOCAL), Some(true));
 
-    let answer = handler
-        .apply(SENDER, stamped(6, 0, &["a"]), felix_broker::LogKind::Stream)
-        .await;
+    let answer =
+        settled(|| handler.apply(SENDER, stamped(6, 0, &["a"]), felix_broker::LogKind::Stream))
+            .await;
     assert!(
         matches!(answer, InternalMessage::ReplicateOk(_)),
         "{answer:?}"
@@ -288,7 +281,7 @@ async fn a_readmitted_copy_keeps_the_ballot_its_catch_up_took() {
     let (broker, _dir) = broker_with_storage().await;
     let handler = handler(&broker, 6, OWN);
     wiped_at_5(&handler).await;
-    let answer = handler.fence(SENDER, readmission(6, OWN)).await;
+    let answer = settled(|| handler.fence(SENDER, readmission(6, OWN))).await;
     assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
     let log = log_of(&broker).await;
     assert_eq!(
@@ -297,9 +290,9 @@ async fn a_readmitted_copy_keeps_the_ballot_its_catch_up_took() {
         "a learner's refusal promises nothing"
     );
 
-    let answer = handler
-        .apply(SENDER, stamped(6, 0, &["a"]), felix_broker::LogKind::Stream)
-        .await;
+    let answer =
+        settled(|| handler.apply(SENDER, stamped(6, 0, &["a"]), felix_broker::LogKind::Stream))
+            .await;
     assert!(
         matches!(answer, InternalMessage::ReplicateOk(_)),
         "{answer:?}"
@@ -308,9 +301,8 @@ async fn a_readmitted_copy_keeps_the_ballot_its_catch_up_took() {
     assert_eq!(log.accepted_generation(), 6);
     assert_eq!(log.accepted_leader().as_deref(), Some("broker-a"));
 
-    let answer = handler
-        .fence(Some("broker-c"), fence_with(6, set(6, OWN), None, true))
-        .await;
+    let answer =
+        settled(|| handler.fence(Some("broker-c"), fence_with(6, set(6, OWN), None, true))).await;
     assert_eq!(refusal(&answer).code, ErrorCode::FencedEpoch, "{answer:?}");
     assert_eq!(log.accepted_leader().as_deref(), Some("broker-a"));
 }
@@ -346,15 +338,14 @@ async fn a_readmitted_copy_keeps_the_ballot_of_a_later_leader() {
     // catch-up comes after it moved on to 7.
     let at_6 = handler(&broker, 6, OWN);
     wiped_at_5(&at_6).await;
-    let answer = at_6.fence(SENDER, readmission(6, OWN)).await;
+    let answer = settled(|| at_6.fence(SENDER, readmission(6, OWN))).await;
     assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
     let log = log_of(&broker).await;
     assert_eq!(log.set_generation(), 6);
     let handler = handler(&broker, 7, OWN);
 
-    let answer = handler
-        .apply(SENDER, catch_up_to_7(), felix_broker::LogKind::Stream)
-        .await;
+    let answer =
+        settled(|| handler.apply(SENDER, catch_up_to_7(), felix_broker::LogKind::Stream)).await;
     assert!(
         matches!(answer, InternalMessage::ReplicateOk(_)),
         "{answer:?}"
@@ -364,12 +355,13 @@ async fn a_readmitted_copy_keeps_the_ballot_of_a_later_leader() {
     assert_eq!(log.accepted_leader().as_deref(), Some("broker-a"));
 
     for candidate in [false, true] {
-        let answer = handler
-            .fence(
+        let answer = settled(|| {
+            handler.fence(
                 Some("broker-c"),
                 fence_with(6, set(6, OWN), None, candidate),
             )
-            .await;
+        })
+        .await;
         assert_eq!(refusal(&answer).code, ErrorCode::FencedEpoch, "{answer:?}");
     }
     assert_eq!(log.accepted_generation(), 7);
@@ -387,17 +379,15 @@ async fn a_replaced_storage_id_is_a_learner() {
     let (broker, _dir) = broker_with_storage().await;
     let handler = handler(&broker, 2, OWN).with_replaced_storage(true);
 
-    let answer = handler
-        .fence(SENDER, fence_with(2, set(2, OWN), None, false))
-        .await;
+    let answer = settled(|| handler.fence(SENDER, fence_with(2, set(2, OWN), None, false))).await;
     assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
     let log = log_of(&broker).await;
     assert_eq!(log.set_generation(), 2, "the set was not learned");
     assert_eq!(log.member_is_learner(LOCAL), Some(true));
 
-    let answer = handler
-        .apply(SENDER, stamped(2, 0, &["a"]), felix_broker::LogKind::Stream)
-        .await;
+    let answer =
+        settled(|| handler.apply(SENDER, stamped(2, 0, &["a"]), felix_broker::LogKind::Stream))
+            .await;
     assert!(
         matches!(answer, InternalMessage::ReplicateOk(_)),
         "{answer:?}"
@@ -418,7 +408,7 @@ async fn a_replaced_copy_refuses_a_fence_without_a_set() {
         ..fence_with(6, named(6, None), None, false)
     };
 
-    let answer = handler.fence(SENDER, plain).await;
+    let answer = settled(|| handler.fence(SENDER, plain.clone())).await;
     assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized, "{answer:?}");
     assert_eq!(log_of(&broker).await.accepted_generation(), 0);
 }
@@ -440,14 +430,15 @@ async fn a_counter_fence_is_refused_while_the_cache_copy_is_a_learner() {
         },
     );
 
-    let answer = handler
-        .fence(
+    let answer = settled(|| {
+        handler.fence(
             SENDER,
             on(ReplicaLog::Cache, fence_with(6, set(5, OLD), None, false)),
         )
-        .await;
+    })
+    .await;
     assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
-    let answer = handler.fence(SENDER, counters).await;
+    let answer = settled(|| handler.fence(SENDER, counters.clone())).await;
     assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized, "{answer:?}");
 }
 
@@ -484,37 +475,37 @@ async fn a_copy_is_readmitted_only_once_its_counter_log_caught_up() {
             ..fence_with(6, named(6, None), None, false)
         },
     );
-    let answer = handler
-        .fence(
+    let answer = settled(|| {
+        handler.fence(
             SENDER,
             on(ReplicaLog::Cache, fence_with(6, set(6, OWN), None, false)),
         )
-        .await;
+    })
+    .await;
     assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
 
     let put = super::fence::cache_put("k", "v");
-    let answer = handler
-        .apply(SENDER, stamped(6, 0, &[&put]), felix_broker::LogKind::Cache)
-        .await;
+    let answer =
+        settled(|| handler.apply(SENDER, stamped(6, 0, &[&put]), felix_broker::LogKind::Cache))
+            .await;
     assert!(
         matches!(answer, InternalMessage::ReplicateOk(_)),
         "{answer:?}"
     );
-    let answer = handler.fence(SENDER, counters.clone()).await;
+    let answer = settled(|| handler.fence(SENDER, counters.clone())).await;
     assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized, "{answer:?}");
 
     let unstamped = ReplicateRecords {
         set_generation: None,
         ..stamped(6, 0, &["d1"])
     };
-    let answer = handler
-        .apply(SENDER, unstamped, felix_broker::LogKind::Counters)
-        .await;
+    let answer =
+        settled(|| handler.apply(SENDER, unstamped.clone(), felix_broker::LogKind::Counters)).await;
     assert!(
         matches!(answer, InternalMessage::ReplicateOk(_)),
         "{answer:?}"
     );
-    let answer = handler.fence(SENDER, counters).await;
+    let answer = settled(|| handler.fence(SENDER, counters.clone())).await;
     assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
 }
 
@@ -525,9 +516,7 @@ async fn a_replaced_storage_id_votes_at_creation() {
     let (broker, _dir) = broker_with_storage().await;
     let handler = handler(&broker, 1, OWN).with_replaced_storage(true);
 
-    let answer = handler
-        .fence(SENDER, fence_with(1, set(1, OWN), None, false))
-        .await;
+    let answer = settled(|| handler.fence(SENDER, fence_with(1, set(1, OWN), None, false))).await;
     assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
     let log = log_of(&broker).await;
     assert_eq!(log.member_is_learner(LOCAL), Some(false));
@@ -543,17 +532,15 @@ async fn a_replaced_storage_id_votes_at_creation() {
 async fn a_replaced_copy_is_a_learner_in_an_idless_creation_set() {
     let (broker, _dir) = broker_with_storage().await;
     let fenced = handler(&broker, 1, OWN).with_replaced_storage(true);
-    let answer = fenced
-        .fence(SENDER, fence_with(1, named(1, None), None, false))
-        .await;
+    let answer = settled(|| fenced.fence(SENDER, fence_with(1, named(1, None), None, false))).await;
     assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized, "{answer:?}");
     assert_eq!(log_of(&broker).await.member_is_learner(LOCAL), Some(true));
 
     let (broker, _dir) = broker_with_storage().await;
     let shipped = handler(&broker, 1, OWN).with_replaced_storage(true);
-    let answer = shipped
-        .apply(SENDER, stamped(1, 0, &["a"]), felix_broker::LogKind::Stream)
-        .await;
+    let answer =
+        settled(|| shipped.apply(SENDER, stamped(1, 0, &["a"]), felix_broker::LogKind::Stream))
+            .await;
     assert!(
         !matches!(answer, InternalMessage::ReplicateOk(_)),
         "{answer:?}"
@@ -569,9 +556,7 @@ async fn a_new_brokers_copy_votes_past_creation() {
     let (broker, _dir) = broker_with_storage().await;
     let handler = handler(&broker, 2, OWN);
 
-    let answer = handler
-        .fence(SENDER, fence_with(2, set(2, OWN), None, false))
-        .await;
+    let answer = settled(|| handler.fence(SENDER, fence_with(2, set(2, OWN), None, false))).await;
     assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
     let log = log_of(&broker).await;
     assert_eq!(log.member_is_learner(LOCAL), Some(false));
@@ -585,20 +570,18 @@ async fn a_stranded_learner_is_readmitted() {
     let (broker, _dir) = broker_with_storage().await;
     let at_6 = handler(&broker, 6, OWN);
     wiped_at_5(&at_6).await;
-    let answer = at_6.fence(SENDER, readmission(6, OWN)).await;
+    let answer = settled(|| at_6.fence(SENDER, readmission(6, OWN))).await;
     assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
 
     let handler = handler(&broker, 7, OWN);
-    let answer = handler
-        .fence(SENDER, fence_with(7, set(7, OWN), None, false))
-        .await;
+    let answer = settled(|| handler.fence(SENDER, fence_with(7, set(7, OWN), None, false))).await;
     assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
     let log = log_of(&broker).await;
     assert_eq!(log.set_generation(), 7);
 
-    let answer = handler
-        .apply(SENDER, stamped(7, 0, &["a"]), felix_broker::LogKind::Stream)
-        .await;
+    let answer =
+        settled(|| handler.apply(SENDER, stamped(7, 0, &["a"]), felix_broker::LogKind::Stream))
+            .await;
     assert!(
         matches!(answer, InternalMessage::ReplicateOk(_)),
         "{answer:?}"
@@ -614,15 +597,14 @@ async fn a_new_shard_opens_under_the_gate() {
     let (broker, _dir) = broker_with_storage().await;
     let handler = handler(&broker, 1, OWN);
 
-    let answer = handler
-        .fence(SENDER, fence_with(1, named(1, None), None, false))
-        .await;
+    let answer =
+        settled(|| handler.fence(SENDER, fence_with(1, named(1, None), None, false))).await;
     assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
     let log = log_of(&broker).await;
     assert_eq!(log.member_is_learner(LOCAL), Some(false));
-    let answer = handler
-        .apply(SENDER, stamped(1, 0, &["a"]), felix_broker::LogKind::Stream)
-        .await;
+    let answer =
+        settled(|| handler.apply(SENDER, stamped(1, 0, &["a"]), felix_broker::LogKind::Stream))
+            .await;
     assert!(
         matches!(answer, InternalMessage::ReplicateOk(_)),
         "{answer:?}"
@@ -638,9 +620,8 @@ async fn a_pre_set_copy_stays_a_voter_at_finalize() {
     let before = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5))
         .with_fleet(marks(false))
         .with_local_storage(StorageId::from_bytes(OWN));
-    let answer = before
-        .apply(SENDER, batch(5, 0, &["a"]), felix_broker::LogKind::Stream)
-        .await;
+    let answer =
+        settled(|| before.apply(SENDER, batch(5, 0, &["a"]), felix_broker::LogKind::Stream)).await;
     assert!(
         matches!(answer, InternalMessage::ReplicateOk(_)),
         "{answer:?}"
@@ -684,23 +665,18 @@ async fn a_wiped_copy_refuses_before_the_gate_is_adopted() {
             leader: "broker-a".to_string(),
         }) as _);
 
-    let answer = handler
-        .fence(SENDER, fence_with(6, set(5, OLD), None, false))
-        .await;
+    let answer = settled(|| handler.fence(SENDER, fence_with(6, set(5, OLD), None, false))).await;
     assert_eq!(refusal(&answer).code, ErrorCode::Unavailable);
     let log = log_of(&broker).await;
     assert_eq!(log.set_generation(), 0, "wrote before the gate was read");
     assert_eq!(log.accepted_generation(), 0);
 
-    let answer = handler
-        .fence(SENDER, fence_with(6, named(5, None), None, false))
-        .await;
+    let answer =
+        settled(|| handler.fence(SENDER, fence_with(6, named(5, None), None, false))).await;
     assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
 
     fleet.restart([JOINT_FENCE.name()]);
-    let answer = handler
-        .fence(SENDER, fence_with(7, set(6, OLD), None, false))
-        .await;
+    let answer = settled(|| handler.fence(SENDER, fence_with(7, set(6, OLD), None, false))).await;
     assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
     assert_eq!(log.member_is_learner(LOCAL), Some(true));
 }
@@ -755,16 +731,15 @@ async fn a_route_naming_member_ids_makes_a_wiped_copy_a_learner() {
             leader: "broker-a".to_string(),
         }) as _);
 
-    let _ = handler
-        .apply(SENDER, stamped(6, 0, &["a"]), felix_broker::LogKind::Stream)
+    let _ = settled(|| handler.apply(SENDER, stamped(6, 0, &["a"]), felix_broker::LogKind::Stream))
         .await;
     let log = log_of(&broker).await;
     assert_eq!(log.set_generation(), 6, "the route's set was not learned");
     assert_eq!(log.member_is_learner(LOCAL), Some(true));
 }
 
-/// A learner asks the control plane once for a run of batches at one
-/// generation, not once per batch.
+/// A learner reuses a confirmed read for a run of batches at one
+/// generation rather than waiting on a read for each.
 #[tokio::test]
 async fn a_learner_reuses_a_confirmed_read() {
     let (broker, _dir) = broker_with_storage().await;
@@ -775,32 +750,35 @@ async fn a_learner_reuses_a_confirmed_read() {
         .with_confirmed_routes(Arc::clone(&reads) as _);
     wiped_at_5(&handler).await;
 
-    let before = reads.count();
-    for (offset, value) in [(0, "a"), (2, "b")] {
-        let answer = handler
-            .apply(
-                SENDER,
-                stamped(6, offset, &[value, value]),
-                felix_broker::LogKind::Stream,
-            )
-            .await;
-        assert!(
-            matches!(answer, InternalMessage::ReplicateOk(_)),
-            "{answer:?}"
-        );
-    }
-    assert_eq!(reads.count() - before, 1);
+    let answer = settled(|| {
+        handler.apply(
+            SENDER,
+            stamped(6, 0, &["a", "a"]),
+            felix_broker::LogKind::Stream,
+        )
+    })
+    .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    // Answered from the read the first batch waited for, with no refusal.
+    let answer = handler
+        .apply(
+            SENDER,
+            stamped(6, 2, &["b", "b"]),
+            felix_broker::LogKind::Stream,
+        )
+        .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
 }
 
 /// The control plane confirming broker-a at 6, counting the reads.
 #[derive(Default)]
 struct CountingConfirmed(std::sync::atomic::AtomicUsize);
-
-impl CountingConfirmed {
-    fn count(&self) -> usize {
-        self.0.load(std::sync::atomic::Ordering::SeqCst)
-    }
-}
 
 #[async_trait::async_trait]
 impl crate::confirmed::ConfirmedRoutes for CountingConfirmed {
@@ -832,9 +810,9 @@ async fn a_wiped_copy_refuses_records_from_an_unconfirmed_leader() {
             generation: 6,
             leader: "broker-a".to_string(),
         }) as _);
-    let answer = lagging
-        .apply(SENDER, stamped(7, 0, &["a"]), felix_broker::LogKind::Stream)
-        .await;
+    let answer =
+        settled(|| lagging.apply(SENDER, stamped(7, 0, &["a"]), felix_broker::LogKind::Stream))
+            .await;
     assert!(
         matches!(answer, InternalMessage::ReplicateError(_)),
         "{answer:?}"
@@ -859,13 +837,13 @@ async fn a_copy_with_no_promise_refuses_a_generation_newer_than_the_control_plan
         election: None,
         ..fence_with(6, set(5, OWN), None, false)
     };
-    let answer = on.fence(SENDER, plain.clone()).await;
+    let answer = settled(|| on.fence(SENDER, plain.clone())).await;
     assert_eq!(refusal(&answer).code, ErrorCode::StaleRoute);
 
     let unready = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 6))
         .with_fleet(Arc::new(build_marks(true)))
         .with_confirmed_routes(Arc::clone(&confirmed) as _);
-    let answer = unready.fence(SENDER, plain.clone()).await;
+    let answer = settled(|| unready.fence(SENDER, plain.clone())).await;
     assert!(
         matches!(answer, InternalMessage::FenceOk(_)),
         "a build that does not mark wiped copies answers as before: {answer:?}"
@@ -875,7 +853,7 @@ async fn a_copy_with_no_promise_refuses_a_generation_newer_than_the_control_plan
     let off = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 6))
         .with_fleet(marks(false))
         .with_confirmed_routes(confirmed as _);
-    let answer = off.fence(SENDER, plain).await;
+    let answer = settled(|| off.fence(SENDER, plain.clone())).await;
     assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
 }
 
@@ -889,11 +867,13 @@ impl crate::confirmed::ConfirmedRoutes for Moving {
     }
 }
 
-/// **A build that does not mark wiped copies reads the control plane live**,
-/// as it did before the confirmed cache: a leader deposed a moment ago is
-/// refused, though a read at its generation named it.
+/// **A build that does not mark wiped copies reuses a read taken since the
+/// restart** (#1791). The read was taken after any wipe, so it is no older
+/// than the promises the wipe cost. A leader deposed after the read can then
+/// be taken, as by any copy its successor has not fenced yet; once the
+/// successor's fence lands, the ballot refuses it.
 #[tokio::test]
-async fn before_the_build_allows_it_confirmed_reads_are_not_cached() {
+async fn before_the_build_allows_it_a_read_since_the_restart_is_reused() {
     let (broker, _dir) = broker_with_storage().await;
     let confirmed = Arc::new(Moving(parking_lot::Mutex::new(Confirmed::Assigned {
         generation: 6,
@@ -902,20 +882,24 @@ async fn before_the_build_allows_it_confirmed_reads_are_not_cached() {
     let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5))
         .with_fleet(Arc::new(build_marks(true)))
         .with_confirmed_routes(Arc::clone(&confirmed) as _);
-    let plain = Fence {
+    let at = |generation| Fence {
         election: None,
-        ..fence_with(6, set(5, OWN), None, false)
+        ..fence_with(generation, set(5, OWN), None, false)
     };
-    let answer = handler.fence(Some("broker-z"), plain.clone()).await;
+    let answer = settled(|| handler.fence(Some("broker-z"), at(6))).await;
     assert_eq!(refusal(&answer).code, ErrorCode::FencedEpoch, "{answer:?}");
 
     *confirmed.0.lock() = Confirmed::Assigned {
         generation: 7,
         leader: "broker-c".to_string(),
     };
-    let answer = handler.fence(SENDER, plain).await;
+    let answer = settled(|| handler.fence(SENDER, at(6))).await;
+    assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
+    let answer = settled(|| handler.fence(Some("broker-c"), at(7))).await;
+    assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
+    let answer = settled(|| handler.fence(SENDER, at(6))).await;
     assert_eq!(refusal(&answer).code, ErrorCode::FencedEpoch, "{answer:?}");
-    assert_eq!(log_of(&broker).await.accepted_generation(), 0);
+    assert_eq!(log_of(&broker).await.accepted_generation(), 7);
 }
 
 /// A routing view behind the fence's generation is usual for a fence, so
@@ -935,7 +919,7 @@ async fn a_view_behind_the_fence_leaves_the_confirmed_read_to_decide() {
     let on = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5))
         .with_fleet(marks(true))
         .with_confirmed_routes(Arc::clone(&confirmed) as _);
-    let answer = on.fence(SENDER, plain).await;
+    let answer = settled(|| on.fence(SENDER, plain.clone())).await;
     assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
 }
 
@@ -947,20 +931,18 @@ async fn with_the_gate_off_a_copy_with_no_set_answers_as_before() {
     let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 6))
         .with_fleet(marks(false))
         .with_local_storage(StorageId::from_bytes(OWN));
-    let answer = handler
-        .fence(SENDER, fence_with(6, set(5, OLD), None, true))
-        .await;
+    let answer = settled(|| handler.fence(SENDER, fence_with(6, set(5, OLD), None, true))).await;
     assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
-    let answer = handler
-        .apply(SENDER, stamped(6, 0, &["a"]), felix_broker::LogKind::Stream)
-        .await;
+    let answer =
+        settled(|| handler.apply(SENDER, stamped(6, 0, &["a"]), felix_broker::LogKind::Stream))
+            .await;
     assert!(
         matches!(answer, InternalMessage::ReplicateOk(_)),
         "{answer:?}"
     );
     let log = log_of(&broker).await;
     assert_eq!(log.member_is_learner(LOCAL), Some(false));
-    let answer = handler.pre_vote(pre_vote(7)).await;
+    let answer = settled(|| handler.pre_vote(pre_vote(7))).await;
     assert!(matches!(answer, InternalMessage::PreVoteAnswer(_)));
 }
 
@@ -974,16 +956,14 @@ async fn a_readmitted_copy_answers_group_fences_once_its_group_logs_caught_up() 
     let dir = tempfile::tempdir().expect("tempdir");
     let broker = group_broker(dir.path());
     let handler = handler(&broker, 6, OWN).with_replaced_storage(true);
-    let answer = handler
-        .fence(SENDER, fence_with(6, set(6, OWN), None, false))
-        .await;
+    let answer = settled(|| handler.fence(SENDER, fence_with(6, set(6, OWN), None, false))).await;
     assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
     let log = log_of(&broker).await;
     assert!(log.member_is_wiped(LOCAL), "the marker's evidence marks it");
 
-    let answer = handler
-        .apply(SENDER, stamped(6, 0, &["a"]), felix_broker::LogKind::Stream)
-        .await;
+    let answer =
+        settled(|| handler.apply(SENDER, stamped(6, 0, &["a"]), felix_broker::LogKind::Stream))
+            .await;
     assert!(
         matches!(answer, InternalMessage::ReplicateOk(_)),
         "{answer:?}"
@@ -994,9 +974,7 @@ async fn a_readmitted_copy_answers_group_fences_once_its_group_logs_caught_up() 
         election: None,
         ..on(log, fence_with(6, named(6, None), None, false))
     };
-    let answer = handler
-        .fence(SENDER, group_fence(ReplicaLog::GroupCursors))
-        .await;
+    let answer = settled(|| handler.fence(SENDER, group_fence(ReplicaLog::GroupCursors))).await;
     assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized, "{answer:?}");
 
     let mut cursor = vec![2];
@@ -1010,7 +988,9 @@ async fn a_readmitted_copy_answers_group_fences_once_its_group_logs_caught_up() 
         ),
         (felix_broker::LogKind::GroupCursors, put("workers", &cursor)),
     ] {
-        let answer = handler.apply(SENDER, records(6, &[payload]), kind).await;
+        let answer =
+            settled(|| handler.apply(SENDER, records(6, std::slice::from_ref(&payload)), kind))
+                .await;
         assert!(
             matches!(answer, InternalMessage::ReplicateOk(_)),
             "{answer:?}"
@@ -1018,7 +998,7 @@ async fn a_readmitted_copy_answers_group_fences_once_its_group_logs_caught_up() 
     }
     assert!(!log.member_is_wiped(LOCAL), "settled");
     for kind in [ReplicaLog::GroupDeadLetters, ReplicaLog::GroupCursors] {
-        let answer = handler.fence(SENDER, group_fence(kind)).await;
+        let answer = settled(|| handler.fence(SENDER, group_fence(kind))).await;
         assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
     }
 }
@@ -1045,17 +1025,14 @@ fn moved(generation: u64) -> ReplicaSetView {
 async fn a_replaced_copy_listed_only_as_leaving_is_marked() {
     let (broker, _dir) = broker_with_storage().await;
     let handler = handler(&broker, 6, OWN).with_replaced_storage(true);
-    let answer = handler
-        .fence(SENDER, fence_with(7, moved(7), Some(set(6, OWN)), false))
-        .await;
+    let answer =
+        settled(|| handler.fence(SENDER, fence_with(7, moved(7), Some(set(6, OWN)), false))).await;
     assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
     let log = log_of(&broker).await;
     assert!(log.member_is_wiped(LOCAL));
     assert_eq!(log.member_is_learner(LOCAL), Some(true));
 
-    let answer = handler
-        .fence(SENDER, fence_with(8, set(8, OWN), None, false))
-        .await;
+    let answer = settled(|| handler.fence(SENDER, fence_with(8, set(8, OWN), None, false))).await;
     assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized, "{answer:?}");
 }
 
@@ -1071,13 +1048,11 @@ async fn a_set_that_moves_the_copy_away_and_back_keeps_it_wiped() {
     let dir = tempfile::tempdir().expect("tempdir");
     let broker = group_broker(dir.path());
     let handler = handler(&broker, 6, OWN).with_replaced_storage(true);
-    let answer = handler
-        .fence(SENDER, fence_with(6, set(6, OWN), None, false))
-        .await;
+    let answer = settled(|| handler.fence(SENDER, fence_with(6, set(6, OWN), None, false))).await;
     assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
-    let answer = handler
-        .apply(SENDER, stamped(6, 0, &["a"]), felix_broker::LogKind::Stream)
-        .await;
+    let answer =
+        settled(|| handler.apply(SENDER, stamped(6, 0, &["a"]), felix_broker::LogKind::Stream))
+            .await;
     assert!(
         matches!(answer, InternalMessage::ReplicateOk(_)),
         "{answer:?}"
@@ -1087,9 +1062,8 @@ async fn a_set_that_moves_the_copy_away_and_back_keeps_it_wiped() {
     assert!(log.member_is_wiped(LOCAL));
 
     // The move to broker-d: this copy is listed only in the set being left.
-    let answer = handler
-        .fence(SENDER, fence_with(7, moved(7), Some(set(6, OWN)), false))
-        .await;
+    let answer =
+        settled(|| handler.fence(SENDER, fence_with(7, moved(7), Some(set(6, OWN)), false))).await;
     assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
     assert!(
         log.member_is_wiped(LOCAL),
@@ -1097,9 +1071,7 @@ async fn a_set_that_moves_the_copy_away_and_back_keeps_it_wiped() {
     );
 
     // Placed back in the set.
-    let answer = handler
-        .fence(SENDER, fence_with(8, set(8, OWN), None, false))
-        .await;
+    let answer = settled(|| handler.fence(SENDER, fence_with(8, set(8, OWN), None, false))).await;
     assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
     assert!(log.member_is_wiped(LOCAL));
     for kind in [ReplicaLog::GroupDeadLetters, ReplicaLog::GroupCursors] {
@@ -1107,7 +1079,7 @@ async fn a_set_that_moves_the_copy_away_and_back_keeps_it_wiped() {
             election: None,
             ..on(kind, fence_with(8, named(8, None), None, false))
         };
-        let answer = handler.fence(SENDER, fence).await;
+        let answer = settled(|| handler.fence(SENDER, fence.clone())).await;
         assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized, "{answer:?}");
     }
 }
@@ -1122,18 +1094,19 @@ async fn a_copy_whose_counter_log_cannot_open_stays_a_learner() {
     // Nothing can be created under the counter store's root now.
     std::fs::remove_dir_all(dir.path().join("counters")).expect("remove");
     std::fs::write(dir.path().join("counters"), b"").expect("block");
-    let answer = handler
-        .fence(
+    let answer = settled(|| {
+        handler.fence(
             SENDER,
             on(ReplicaLog::Cache, fence_with(6, set(6, OWN), None, false)),
         )
-        .await;
+    })
+    .await;
     assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
 
     let put = super::fence::cache_put("k", "v");
-    let answer = handler
-        .apply(SENDER, stamped(6, 0, &[&put]), felix_broker::LogKind::Cache)
-        .await;
+    let answer =
+        settled(|| handler.apply(SENDER, stamped(6, 0, &[&put]), felix_broker::LogKind::Cache))
+            .await;
     assert!(
         matches!(answer, InternalMessage::ReplicateOk(_)),
         "{answer:?}"
@@ -1169,9 +1142,7 @@ async fn before_the_build_allows_it_a_wiped_copy_is_not_marked() {
     let handler = handler(&broker, 6, OWN)
         .with_fleet(Arc::new(build_marks(true)))
         .with_replaced_storage(true);
-    let answer = handler
-        .fence(SENDER, fence_with(6, set(5, OLD), None, false))
-        .await;
+    let answer = settled(|| handler.fence(SENDER, fence_with(6, set(5, OLD), None, false))).await;
     assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
     let log = log_of(&broker).await;
     assert_eq!(log.member_is_learner(LOCAL), Some(false));
@@ -1195,13 +1166,11 @@ async fn a_stale_learner_flag_in_the_set_being_left_does_not_demote_the_copy() {
         set.members[1].learner = true;
         set
     };
-    let answer = handler
-        .fence(SENDER, fence_with(6, staged(6), None, false))
-        .await;
+    let answer = settled(|| handler.fence(SENDER, fence_with(6, staged(6), None, false))).await;
     assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
-    let answer = handler
-        .apply(SENDER, stamped(6, 0, &["a"]), felix_broker::LogKind::Stream)
-        .await;
+    let answer =
+        settled(|| handler.apply(SENDER, stamped(6, 0, &["a"]), felix_broker::LogKind::Stream))
+            .await;
     assert!(
         matches!(answer, InternalMessage::ReplicateOk(_)),
         "{answer:?}"
@@ -1210,17 +1179,16 @@ async fn a_stale_learner_flag_in_the_set_being_left_does_not_demote_the_copy() {
     assert_eq!(log.member_is_learner(LOCAL), Some(false), "re-admitted");
     assert!(log.member_is_wiped(LOCAL));
 
-    let answer = handler
-        .fence(SENDER, fence_with(7, set(7, OWN), Some(staged(6)), false))
-        .await;
+    let answer =
+        settled(|| handler.fence(SENDER, fence_with(7, set(7, OWN), Some(staged(6)), false))).await;
     assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
     assert_eq!(
         log.member_is_learner(LOCAL),
         Some(false),
         "the set being left is not this copy's state"
     );
-    let answer = handler
-        .fence(SENDER, fence_with(8, set(8, OWN), Some(set(7, OWN)), true))
-        .await;
+    let answer =
+        settled(|| handler.fence(SENDER, fence_with(8, set(8, OWN), Some(set(7, OWN)), true)))
+            .await;
     assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
 }

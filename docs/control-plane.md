@@ -1681,7 +1681,11 @@ none) read on the Raft leader after a read-index, so it is no older than any
 write acknowledged before the request. 503 means no leader confirmed it in
 time, 501 that the Raft leader predates it. A broker asks here only for a
 copy with no election promise on disk, before it takes a leader
-([#1332](https://github.com/GetFelix/felix/issues/1332)). An adopted
+([#1332](https://github.com/GetFelix/felix/issues/1332)). It asks from a
+background task, one per shard at a time, never while a peer request waits,
+and refreshes the answer every 5 s while the shard's leader keeps asking
+(every 250 ms under elections)
+([#1791](https://github.com/GetFelix/felix/issues/1791)). An adopted
 leader is the assignment's leader at the elected generation, so this is
 also the read that tells a broker whether the control plane has adopted an
 election. It needs

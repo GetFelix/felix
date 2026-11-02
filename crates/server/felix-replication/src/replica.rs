@@ -59,9 +59,8 @@ pub struct ReplicaHandler {
     /// When this replica last heard each shard's leader, from a batch or
     /// fence that carried a set. See [`Self::with_stickiness`].
     heard: parking_lot::Mutex<HashMap<felix_router::ShardKey, Instant>>,
-    /// Confirmed leaders, so a learner does not ask the control plane for
-    /// every batch.
-    confirmed_cache: crate::confirmed::ConfirmedCache,
+    /// Confirmed reads, made off the peer lane and reused while fresh.
+    confirmed_reads: Arc<crate::confirmed::ConfirmedReads>,
     /// How long after hearing its leader this replica refuses a candidate.
     stickiness: Duration,
     /// Which cross-broker features the fleet has; `None` reads all as off.
@@ -128,7 +127,7 @@ impl ReplicaHandler {
             unclean: None,
             confirmed: None,
             heard: parking_lot::Mutex::new(HashMap::new()),
-            confirmed_cache: Default::default(),
+            confirmed_reads: Default::default(),
             stickiness: crate::suspicion::DEFAULT_SUSPECT_AFTER,
             fleet: None,
             local_storage: None,
@@ -261,9 +260,8 @@ impl ReplicaHandler {
                 "this broker has no log for that shard".to_string(),
             );
         };
-        if let Some(refusal) = self
-            .refuse_unconfirmed(correlation_id, &key, &log, request.shard.generation, sender)
-            .await
+        if let Some(refusal) =
+            self.refuse_unconfirmed(correlation_id, &key, &log, request.shard.generation, sender)
         {
             return refusal;
         }
@@ -483,9 +481,8 @@ impl ReplicaHandler {
             );
         };
 
-        if let Some(refusal) = self
-            .refuse_unconfirmed(correlation_id, &key, &log, request.shard.generation, sender)
-            .await
+        if let Some(refusal) =
+            self.refuse_unconfirmed(correlation_id, &key, &log, request.shard.generation, sender)
         {
             return refusal;
         }
@@ -643,9 +640,8 @@ impl ReplicaHandler {
             );
         };
 
-        if let Some(refusal) = self
-            .refuse_unconfirmed(correlation_id, &key, &log, batch.shard.generation, sender)
-            .await
+        if let Some(refusal) =
+            self.refuse_unconfirmed(correlation_id, &key, &log, batch.shard.generation, sender)
         {
             return refusal;
         }
@@ -1654,7 +1650,6 @@ impl ReplicaHandler {
             return viewed;
         }
         self.refuse_unconfirmed(correlation_id, key, log, generation, sender)
-            .await
     }
 
     /// Refuse a leader for a copy with no promise on disk unless the control
@@ -1665,7 +1660,11 @@ impl ReplicaHandler {
     /// already replaced (#1332). Only ever refuses more than the view does,
     /// and asks nothing once the copy holds a promise. A control plane that
     /// does not serve the read leaves the view to answer alone, as before.
-    async fn refuse_unconfirmed(
+    ///
+    /// The read is made off the peer lane, and a request that has no fresh
+    /// answer yet is refused retryably (see
+    /// [`crate::confirmed::ConfirmedReads`]).
+    fn refuse_unconfirmed(
         &self,
         correlation_id: u64,
         key: &felix_router::ShardKey,
@@ -1688,31 +1687,19 @@ impl ReplicaHandler {
         let Some(confirmed) = self.confirmed.as_ref() else {
             return elections.then(|| unbacked(correlation_id, key, generation));
         };
-        // The cache saves a learner's catch-up a read per batch. Off the
-        // gate every read is live, as before, so a deposed leader is refused
-        // at once.
-        if elections && let Some(leader) = self.confirmed_cache.lookup(key, generation) {
-            return match sender {
-                Some(sender) if sender != leader => Some(promised_elsewhere(
-                    correlation_id,
-                    key,
-                    generation,
-                    &leader,
-                    Some(sender),
-                )),
-                _ => None,
-            };
-        }
-        let answer = confirmed.confirmed(key).await;
-        if elections
-            && let Confirmed::Assigned {
-                generation: assigned,
-                leader,
-            } = &answer
-            && *assigned == generation
-        {
-            self.confirmed_cache.keep(key, generation, leader);
-        }
+        // Never awaited here: the lane answers one request at a time.
+        let fresh = if elections {
+            crate::confirmed::FRESH_UNDER_ELECTIONS
+        } else {
+            crate::confirmed::FRESH
+        };
+        let incarnation = crate::incarnation::of(&self.broker, key);
+        let Some(answer) = self
+            .confirmed_reads
+            .answer(confirmed, key, incarnation, fresh)
+        else {
+            return Some(reading_confirmed(correlation_id, key, generation));
+        };
         match answer {
             Confirmed::NotServed if elections => Some(unbacked(correlation_id, key, generation)),
             Confirmed::NotServed => None,
@@ -1912,6 +1899,28 @@ fn unbacked(correlation_id: u64, key: &felix_router::ShardKey, generation: u64) 
         ErrorCode::StaleRoute,
         0,
         "this copy holds no promise and the routing view does not have the shard yet".to_string(),
+    )
+}
+
+/// Refuse while the control plane's confirmed assignment is being read off
+/// the lane. Retryable; the retry is answered from the read.
+fn reading_confirmed(
+    correlation_id: u64,
+    key: &felix_router::ShardKey,
+    generation: u64,
+) -> InternalMessage {
+    tracing::debug!(
+        stream = %key.stream,
+        shard = key.shard,
+        generation,
+        "refusing a leader until the control plane's confirmed assignment is read",
+    );
+    metrics::record_replicated(metrics::OUTCOME_BEHIND);
+    refused(
+        correlation_id,
+        ErrorCode::StaleRoute,
+        0,
+        "this copy holds no promise and is reading the control plane's assignment".to_string(),
     )
 }
 

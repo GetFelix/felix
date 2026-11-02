@@ -1347,13 +1347,15 @@ async fn a_copy_with_no_promise_refuses_a_leader_its_lagging_view_still_names() 
         .with_confirmed_routes(Arc::clone(&confirmed) as _);
 
     assert_eq!(
-        refusal(&handler.fence(SENDER, fence(5)).await).code,
+        refusal(&settled(|| handler.fence(SENDER, fence(5))).await).code,
         ErrorCode::FencedEpoch
     );
+    // Answered from the read the fence made.
     let answer = handler
         .apply(SENDER, batch(5, 0, &["a"]), felix_broker::LogKind::Stream)
         .await;
     assert_eq!(refusal(&answer).code, ErrorCode::FencedEpoch);
+    assert_eq!(confirmed.asked(), 1);
     let log = broker
         .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
         .await
@@ -1373,9 +1375,21 @@ async fn a_confirmed_read_only_adds_refusals_to_a_copy_with_no_promise() {
     let unavailable = ConfirmedAs::new(Confirmed::Unavailable);
     let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5))
         .with_confirmed_routes(Arc::clone(&unavailable) as _);
-    let refused = refusal(&handler.fence(SENDER, fence(5)).await).clone();
-    assert_eq!(refused.code, ErrorCode::StaleRoute);
-    assert!(refused.code.is_retryable());
+    for _ in 0..3 {
+        let refused = refusal(&handler.fence(SENDER, fence(5)).await).clone();
+        assert_eq!(refused.code, ErrorCode::StaleRoute);
+        assert!(refused.code.is_retryable());
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+    assert!(
+        unavailable.asked() >= 2,
+        "an unanswered read is tried again"
+    );
+    let log = broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    assert_eq!(log.accepted_generation(), 0);
 
     let not_served = ConfirmedAs::new(Confirmed::NotServed);
     let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5))
@@ -1392,7 +1406,7 @@ async fn a_confirmed_read_only_adds_refusals_to_a_copy_with_no_promise() {
     });
     let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5))
         .with_confirmed_routes(Arc::clone(&current) as _);
-    taken(&handler.fence(SENDER, fence(5)).await);
+    taken(&settled(|| handler.fence(SENDER, fence(5))).await);
     let asked = current.asked();
     assert_eq!(asked, 1);
     let answer = handler
@@ -1416,8 +1430,8 @@ async fn a_copy_with_no_promise_refuses_a_lagging_views_leader_a_bootstrap() {
             generation: 6,
             leader: "broker-c".to_string(),
         }) as _);
-    let answer = handler
-        .bootstrap(
+    let answer = settled(|| {
+        handler.bootstrap(
             SENDER,
             ReplicateBootstrap {
                 correlation_id: 1,
@@ -1426,7 +1440,8 @@ async fn a_copy_with_no_promise_refuses_a_lagging_views_leader_a_bootstrap() {
             },
             felix_broker::LogKind::Stream,
         )
-        .await;
+    })
+    .await;
     assert_eq!(refusal(&answer).code, ErrorCode::FencedEpoch);
     let log = broker
         .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
@@ -1444,8 +1459,8 @@ async fn a_copy_with_no_promise_refuses_a_lagging_views_leader_a_rebuild() {
             generation: 6,
             leader: "broker-c".to_string(),
         }) as _);
-    let answer = handler
-        .rebuild(
+    let answer = settled(|| {
+        handler.rebuild(
             SENDER,
             ReplicateRebuild {
                 correlation_id: 1,
@@ -1454,7 +1469,8 @@ async fn a_copy_with_no_promise_refuses_a_lagging_views_leader_a_rebuild() {
                 base_offset: 0,
             },
         )
-        .await;
+    })
+    .await;
     assert_eq!(refusal(&answer).code, ErrorCode::FencedEpoch);
     let log = broker
         .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
@@ -1462,4 +1478,127 @@ async fn a_copy_with_no_promise_refuses_a_lagging_views_leader_a_rebuild() {
         .expect("log");
     assert_eq!(log.accepted_generation(), 0);
     assert!(log.accepted_leader().is_none());
+}
+
+/// A control plane that names broker-a at generation 1 for every shard, but
+/// answers for any shard other than 0 only once `open` has permits.
+struct GatedConfirmed {
+    open: tokio::sync::Semaphore,
+    asked: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl crate::confirmed::ConfirmedRoutes for GatedConfirmed {
+    async fn confirmed(&self, key: &felix_router::ShardKey) -> crate::confirmed::Confirmed {
+        self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if key.shard != 0 {
+            drop(self.open.acquire().await);
+        }
+        crate::confirmed::Confirmed::Assigned {
+            generation: 1,
+            leader: "broker-a".to_string(),
+        }
+    }
+}
+
+/// A router in which `LOCAL` follows shards `0..shards` of the stream, each
+/// led by broker-a at generation 1.
+fn router_for_shards(shards: u32) -> Arc<ShardRouter> {
+    let router = Arc::new(ShardRouter::new(
+        LOCAL,
+        "us-west-2",
+        RegionRouter::new("us-west-2".to_string()),
+    ));
+    let nodes: HashMap<String, NodeRef> = [
+        ("broker-a".to_string(), node("broker-a", 7001)),
+        (LOCAL.to_string(), node(LOCAL, 7002)),
+    ]
+    .into_iter()
+    .collect();
+    let routes = (0..shards).map(|shard| {
+        (
+            felix_router::ShardKey { shard, ..key() },
+            "broker-a".to_string(),
+            vec![LOCAL.to_string()],
+            1,
+        )
+    });
+    router.publish(RoutingTable::build(routes, &nodes), &nodes);
+    router
+}
+
+fn fence_of(shard: u32) -> Fence {
+    let mut fence = fence(1);
+    fence.shard.shard = shard;
+    fence
+}
+
+/// **A slow control plane does not hold up the lane (#1791).** The peer
+/// server answers one request at a time per lane. New shards' copies hold no
+/// promise, so each first fence needs a confirmed read; made on the lane,
+/// every read would stand in front of the batch queued behind them for a
+/// shard this copy already backs. Here the reads do not answer until the
+/// batch is in.
+#[tokio::test]
+async fn confirmed_reads_for_new_shards_do_not_hold_up_the_lane() {
+    const NEW_SHARDS: u32 = 8;
+    let (broker, _dir) = broker_with_storage().await;
+    let control_plane = Arc::new(GatedConfirmed {
+        open: tokio::sync::Semaphore::new(0),
+        asked: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_for_shards(NEW_SHARDS + 1))
+        .with_confirmed_routes(Arc::clone(&control_plane) as _);
+    // Shard 0 is backed: its copy took the fence.
+    taken(&settled(|| handler.fence(SENDER, fence_of(0))).await);
+
+    // In lane order: the new shards' fences, then shard 0's batch.
+    let lane = async {
+        for shard in 1..=NEW_SHARDS {
+            let answer = handler.fence(SENDER, fence_of(shard)).await;
+            assert!(reading(&answer), "{answer:?}");
+        }
+        handler
+            .apply(SENDER, batch(1, 0, &["a"]), felix_broker::LogKind::Stream)
+            .await
+    };
+    let answer = tokio::time::timeout(Duration::from_secs(10), lane)
+        .await
+        .expect("the lane waited on the control plane");
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+
+    // Each new shard's retry is answered from its own read.
+    control_plane
+        .open
+        .add_permits(tokio::sync::Semaphore::MAX_PERMITS);
+    for shard in 1..=NEW_SHARDS {
+        taken(&settled(|| handler.fence(SENDER, fence_of(shard))).await);
+    }
+    assert_eq!(
+        control_plane
+            .asked
+            .load(std::sync::atomic::Ordering::SeqCst),
+        NEW_SHARDS as usize + 1
+    );
+}
+
+/// Requests that arrive while a shard's read is under way wait on it rather
+/// than start their own, and the answer is reused for the shard's next ones.
+#[tokio::test]
+async fn one_confirmed_read_answers_every_request_for_a_shard() {
+    let (broker, _dir) = broker_with_storage().await;
+    let current = ConfirmedAs::new(crate::confirmed::Confirmed::Assigned {
+        generation: 5,
+        leader: "broker-a".to_string(),
+    });
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5))
+        .with_confirmed_routes(Arc::clone(&current) as _);
+    let first = handler.fence(SENDER, fence(5)).await;
+    let second = handler.fence(SENDER, fence(5)).await;
+    assert!(reading(&first) && reading(&second), "{first:?} {second:?}");
+    taken(&settled(|| handler.fence(SENDER, fence(5))).await);
+    assert_eq!(current.asked(), 1);
 }

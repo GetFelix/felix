@@ -779,7 +779,33 @@ generation older than the confirmed one is refused with `FencedEpoch`, at
 the confirmed generation only the leader it names is answered, and a read
 that fails or finds no assignment refuses with `StaleRoute`, retryably,
 writing nothing. The check only adds refusals to the view's, so it cannot
-make a copy take anything it would have refused before. A control plane
+make a copy take anything it would have refused before.
+
+No peer request waits on this read
+([#1791](https://github.com/GetFelix/felix/issues/1791)). A peer lane
+answers one request at a time, so a control-plane round trip there would
+hold up every other shard's fence or batch queued behind it, and a bulk
+create puts one in front of each new shard's first fence. Instead a
+background task reads for the shard, one per shard at a time, and the copy
+decides from the last answer it holds. With no fresh answer it refuses with
+`StaleRoute`, retryably, and the leader's retry finds the answer. The task
+keeps reading while requests for the shard keep coming (for 5 s after the
+last one, longer than a leader waits between fence attempts), so a fresh
+answer is ready for each retry
+(`ConfirmedReads` in `crates/server/felix-replication/src/confirmed.rs`).
+A failed read or an unassigned shard clears the answer, so the copy
+refuses until a read names a leader again.
+
+How fresh an answer must be depends on elections. Without them an answer
+is used for 10 s. That is safe because the answers live in memory: every
+one was read after the restart, so it is at least as new as any promise
+the wipe could have cost, which is all the check needs. A read that names
+generation `g` refuses every older generation and every other leader at
+`g`, and the control plane never names a second leader at a generation, so
+an old answer never refuses the current leader. Under elections an answer
+is used for 500 ms, the bound the learner's cache already had, and the
+only thing an answer can let through there is the leader it names at its
+own generation. A control plane
 that does not serve the read (404, or 501 while its Raft leader predates
 it) leaves the view to answer alone, as before, so a mixed-version cluster
 behaves as it did until every control-plane member has the route. A
@@ -792,9 +818,11 @@ made to one. For elections a wiped copy does not vote at all until it is
 re-admitted; see [A copy that lost its storage does not
 vote](#a-copy-that-lost-its-storage-does-not-vote).
 
-The cost is a fence round trip or a few while a follower's watch catches up,
-and one control-plane read per answer, only for copies with no promise: a
-wiped one, or a new shard's first fence. With one replica of a
+The cost is a fence round trip or a few while a follower's watch catches up
+or its confirmed read comes back, and a control-plane read per shard every
+5 s (250 ms under elections) while its leader keeps asking, only for copies
+with no promise: a wiped one, or a new shard's first
+fence. With one replica of a
 set of three wiped the other two make the majority anyway. With a majority
 wiped at once their votes wait for their views; once they have them they
 answer, so the shard is not stuck, but what it acknowledged was on those
@@ -922,7 +950,8 @@ from a broker that predates storage ids is evidence.
   its re-admission (below).
 - It takes records only from the leader the control plane confirms at that
   generation. The confirmed leader is reused for 500 ms at the same
-  generation rather than read for every batch. Taking a batch records that
+  generation rather than read for every batch, and read in the background
+  (above). Taking a batch records that
   leader's ballot, as it does for any follower.
 - It is never promoted. A broker whose kept set marks it a wiped learner,
   or a learner under another storage id, refuses to open as leader before it
@@ -1008,7 +1037,7 @@ Not covered yet, and needed before elections (#1009 S9):
   furthest one it has.
 - The leader still counts a learner's acknowledgements, and a learner takes
   a batch from a leader the control plane confirmed at that generation even
-  after it moved on (the 500 ms cache, or a read just before a failover).
+  after it moved on (a reused read, or one just before a failover).
   The model explores both without elections (`LearnerAcksCount`,
   `CatchUpFromDeposed`) and finds nothing. With elections counting a learner
   loses a write (`FelixShardElectWipeNonVoterCreatesLearnerAcks.cfg`), so
@@ -1039,7 +1068,7 @@ Evidence (`replica/tests/non_voting.rs`):
 `a_route_naming_member_ids_makes_a_wiped_copy_a_learner`,
 `a_replaced_storage_id_is_a_learner`, `a_replaced_storage_id_votes_at_creation`,
 `a_replaced_copy_is_a_learner_in_an_idless_creation_set`,
-`before_the_build_allows_it_confirmed_reads_are_not_cached`,
+`before_the_build_allows_it_a_read_since_the_restart_is_reused`,
 `a_replaced_copy_refuses_a_fence_without_a_set`,
 `a_counter_fence_is_refused_while_the_cache_copy_is_a_learner`,
 `a_copy_is_readmitted_only_once_its_counter_log_caught_up`,
