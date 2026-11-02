@@ -146,6 +146,7 @@ pub(super) fn restore<'a>(
             move_started_at_millis: caught_up.as_of_millis(),
             move_reason: Some(MoveReason::Restore),
             fence_storage_ids: Default::default(),
+            member_storage_ids: Default::default(),
             ..existing.clone()
         },
     ))

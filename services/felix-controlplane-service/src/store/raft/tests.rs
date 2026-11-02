@@ -761,6 +761,7 @@ async fn shard_renewal_waits_for_every_member() {
                     move_reason: None,
                     incarnation: 0,
                     fence_storage_ids: Default::default(),
+                    member_storage_ids: Default::default(),
                     pending_set: None,
                 })
                 .await
@@ -845,6 +846,7 @@ async fn deletes_take_shard_state_only_once_every_member_does() {
                     move_reason: None,
                     incarnation: 0,
                     fence_storage_ids: Default::default(),
+                    member_storage_ids: Default::default(),
                     pending_set: None,
                 })
                 .await
@@ -1039,6 +1041,7 @@ async fn halted_copies_wait_for_every_member_and_the_report_does_not() {
             move_reason: None,
             incarnation: 0,
             fence_storage_ids: Default::default(),
+            member_storage_ids: Default::default(),
             pending_set: None,
         })
         .await
@@ -1149,6 +1152,7 @@ async fn fence_storage_ids_wait_for_every_member() {
         move_reason: None,
         incarnation: 0,
         fence_storage_ids: [("broker-y".to_string(), "b".repeat(32))].into(),
+        member_storage_ids: Default::default(),
         pending_set: None,
     };
 
@@ -1224,6 +1228,7 @@ async fn by_round_waits_for_every_member_and_the_rest_of_the_report_does_not() {
             move_reason: None,
             incarnation: 0,
             fence_storage_ids: Default::default(),
+            member_storage_ids: Default::default(),
             pending_set: None,
         })
         .await
@@ -1348,6 +1353,7 @@ async fn pending_sets_wait_for_every_member() {
             move_reason: None,
             incarnation: 0,
             fence_storage_ids: Default::default(),
+            member_storage_ids: Default::default(),
             pending_set: None,
         })
         .await
@@ -1512,6 +1518,7 @@ async fn inherited_storage_waits_for_every_member() {
             move_reason: None,
             incarnation: 0,
             fence_storage_ids: Default::default(),
+            member_storage_ids: Default::default(),
             pending_set: None,
         })
         .await
@@ -1638,6 +1645,7 @@ async fn storage_ids_wait_for_every_member() {
             move_reason: None,
             incarnation: 0,
             fence_storage_ids: Default::default(),
+            member_storage_ids: Default::default(),
             pending_set: None,
         })
         .await
@@ -1958,6 +1966,7 @@ async fn confirmed_shard_assignments_are_read_on_the_leader() {
             move_reason: None,
             incarnation: 0,
             fence_storage_ids: Default::default(),
+            member_storage_ids: Default::default(),
             pending_set: None,
         })
         .await
@@ -2748,6 +2757,7 @@ async fn adoption_waits_for_every_member() {
             move_reason: None,
             incarnation: 0,
             fence_storage_ids: Default::default(),
+            member_storage_ids: Default::default(),
             pending_set: None,
         })
         .await

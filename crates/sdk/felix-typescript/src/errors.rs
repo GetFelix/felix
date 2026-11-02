@@ -28,7 +28,7 @@ use felix_client::{
     AckLost, AuthError, BrokerError, CommitError, NotLeaderError, PublishRefusalReason,
     PublishRefused, SubscribeCursorError, SubscriptionLost, TrimError,
 };
-use felix_wire::RetryClass;
+use felix_wire::{CursorErrorReason, RetryClass};
 use napi::{Error, Status};
 
 /// The separator between the kind and the text when there is no broker code.
@@ -136,12 +136,13 @@ pub(crate) fn encode(err: &anyhow::Error) -> String {
         });
         return format!("{KIND_SHARD_UNAVAILABLE} {meta}\n{text}");
     }
-    let kind = if err
+    if let Some(cursor) = err
         .chain()
-        .any(|e| e.downcast_ref::<SubscribeCursorError>().is_some())
+        .find_map(|e| e.downcast_ref::<SubscribeCursorError>())
     {
-        KIND_CURSOR
-    } else if err.chain().any(|e| e.is::<AckLost>()) {
+        return format!("{KIND_CURSOR} {}\n{text}", cursor_meta(cursor));
+    }
+    let kind = if err.chain().any(|e| e.is::<AckLost>()) {
         KIND_OUTCOME_UNKNOWN
     } else if err
         .chain()
@@ -181,6 +182,24 @@ pub(crate) fn refusal_meta(reason: &PublishRefusalReason) -> serde_json::Value {
             serde_json::json!({ "reason": "not_leader", "node_id": node_id, "addr": addr })
         }
     }
+}
+
+/// A cursor error's fields. Offsets travel as strings, like a refusal's, and
+/// the trim headers as hex, which keeps the JSON free of raw bytes.
+pub(crate) fn cursor_meta(cursor: &SubscribeCursorError) -> serde_json::Value {
+    let mut meta = serde_json::json!({
+        "reason": match cursor.reason {
+            CursorErrorReason::TooOld => "too_old",
+            CursorErrorReason::InFuture => "in_future",
+        },
+        "requested": cursor.requested.to_string(),
+        "available": cursor.available.to_string(),
+    });
+    if let Some(headers) = &cursor.trim_headers {
+        let hex: String = headers.iter().map(|b| format!("{b:02x}")).collect();
+        meta["trim_headers"] = serde_json::Value::String(hex);
+    }
+    meta
 }
 
 /// The kind for a broker code.

@@ -430,11 +430,12 @@ async fn an_unauthenticated_broker_cannot_register() {
     cluster.shutdown().await;
 }
 
-/// The startup lookup that judges a restored data directory (#1334) reads
-/// what registration wrote, under the credential a broker is deployed with,
-/// and a node the control plane has never seen is no evidence.
+/// The startup lookup that judges a restored data directory (#1334) and a
+/// replaced one (#1331) reads what registration wrote, under the credential a
+/// broker is deployed with, and a node the control plane has never seen is
+/// no evidence.
 #[tokio::test]
-async fn the_startup_lookup_reads_the_incarnation_registration_gave() {
+async fn the_startup_lookup_reads_what_registration_gave() {
     let cluster = Cluster::start().await;
     let token = felix_controlplane_service::auth::felix_token::mint_token_for(
         &cluster.keys,
@@ -450,26 +451,28 @@ async fn the_startup_lookup_reads_the_incarnation_registration_gave() {
     .expect("token");
     let credential = felix_broker_service::cluster::credential::NodeCredential::new(token);
     let lookup = || {
-        membership::await_registered_incarnation(
-            &cluster.client,
-            &cluster.base_url,
-            "broker-a",
-            &credential,
-        )
+        membership::await_registered(&cluster.client, &cluster.base_url, "broker-a", &credential)
     };
     assert_eq!(lookup().await.expect("lookup"), None);
-    for expected in 0..2 {
+    let storage = felix_storage::StorageId::from_bytes([7; 16]);
+    for (expected, storage_id) in [(0, None), (1, Some(storage))] {
         let registration = membership::register(
             &cluster.client,
             &cluster.base_url,
             &config("broker-a", 7001),
             &credential,
-            None,
+            storage_id,
         )
         .await
         .expect("register");
         assert_eq!(registration.incarnation, expected);
-        assert_eq!(lookup().await.expect("lookup"), Some(expected));
+        assert_eq!(
+            lookup().await.expect("lookup"),
+            Some(membership::Registered {
+                incarnation: expected,
+                storage_id: storage_id.map(|id| id.to_hex()),
+            })
+        );
     }
     cluster.shutdown().await;
 }

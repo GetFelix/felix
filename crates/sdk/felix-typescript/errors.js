@@ -81,8 +81,24 @@ class AuthError extends FelixError {}
 /** The tenant, namespace, stream or cache does not exist on the broker. */
 class NotFoundError extends FelixError {}
 
-/** The requested start offset is gone — retention discarded it. */
-class CursorError extends FelixError {}
+/**
+ * The requested start offset is not available. `reason` is `too_old` (retention
+ * or a head trim discarded it) or `in_future` (it is past the tail).
+ * `requested` and `available` are bigints: `available` is the nearest offset
+ * that would have worked, the oldest retained for `too_old` and the tail for
+ * `in_future`. `trimHeaders` is a Buffer holding what a head trim was written
+ * with, when the floor is a trim's, and `undefined` otherwise.
+ */
+class CursorError extends FelixError {
+  constructor(kind, message, meta = null) {
+    super(kind, message, null);
+    this.reason = meta?.reason;
+    this.requested = meta?.requested === undefined ? undefined : BigInt(meta.requested);
+    this.available = meta?.available === undefined ? undefined : BigInt(meta.available);
+    this.trimHeaders =
+      meta?.trim_headers === undefined ? undefined : Buffer.from(meta.trim_headers, "hex");
+  }
+}
 
 /** A bad argument to this client, rather than a failure of the call. */
 class InvalidArgumentError extends FelixError {}

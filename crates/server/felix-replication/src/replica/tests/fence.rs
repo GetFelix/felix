@@ -928,6 +928,7 @@ fn failover_router(members: &[&str], generation: u64, acknowledged: &[&str]) -> 
                 .iter()
                 .map(|id| (id.to_string(), format!("storage-{id}")))
                 .collect(),
+            member_storage_ids: Default::default(),
             pending: None,
         }],
         &nodes,

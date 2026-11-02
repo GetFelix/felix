@@ -15,11 +15,11 @@ use felix_client::{
     NotLeaderError, PublishRefusalReason, PublishRefused, SubscribeCursorError, SubscriptionLost,
     TrimError as ClientTrimError,
 };
-use felix_wire::RetryClass;
+use felix_wire::{CursorErrorReason, RetryClass};
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyBytes, PyDict};
 
 create_exception!(
     _felix,
@@ -49,7 +49,7 @@ create_exception!(
     _felix,
     CursorError,
     FelixError,
-    "The requested start offset is no longer available (retention discarded it)."
+    "The requested start offset is not available: retention or a head trim discarded it, or it is past the tail. Carries `reason`, `requested`, `available` and `trim_headers`."
 );
 create_exception!(
     _felix,
@@ -128,6 +128,7 @@ pub(crate) struct Classified {
     pub(crate) reason: Option<String>,
     pub(crate) retry_after_ms: Option<u64>,
     pub(crate) refusal: Option<PublishRefused>,
+    pub(crate) cursor: Option<SubscribeCursorError>,
 }
 
 /// Decide what an error from the Rust client is.
@@ -145,6 +146,7 @@ pub(crate) fn classify(err: &anyhow::Error) -> Classified {
         reason: None,
         retry_after_ms: None,
         refusal: None,
+        cursor: None,
     };
 
     // Refused by the client before anything was sent, so there is no code.
@@ -189,11 +191,12 @@ pub(crate) fn classify(err: &anyhow::Error) -> Classified {
         out.retry = Some(RetryClass::Redirect.as_str());
         return out;
     }
-    if err
+    if let Some(cursor) = err
         .chain()
-        .any(|e| e.downcast_ref::<SubscribeCursorError>().is_some())
+        .find_map(|e| e.downcast_ref::<SubscribeCursorError>())
     {
         out.kind = Kind::Cursor;
+        out.cursor = Some(cursor.clone());
         return out;
     }
     // Written, but the connection failed before the ack came back.
@@ -266,6 +269,11 @@ pub(crate) fn to_py_err(err: anyhow::Error) -> PyErr {
             let _ = annotate_refusal(py, &py_err, refused);
         });
     }
+    if let Some(cursor) = &classified.cursor {
+        Python::attach(|py| {
+            let _ = annotate_cursor(py, &py_err, cursor);
+        });
+    }
     if let Some(commit) = err
         .chain()
         .find_map(|e| e.downcast_ref::<ClientCommitError>())
@@ -311,6 +319,10 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     for name in ["code", "retry", "detail"] {
         base.setattr(name, py.None())?;
     }
+    let cursor = py.get_type::<CursorError>();
+    for name in ["reason", "requested", "available", "trim_headers"] {
+        cursor.setattr(name, py.None())?;
+    }
     let refused = py.get_type::<PublishRefusedError>();
     for name in ["reason", "expected", "tail", "node_id", "addr"] {
         refused.setattr(name, py.None())?;
@@ -343,6 +355,30 @@ fn kind_from_text(lower: &str) -> Kind {
         return Kind::Connection;
     }
     Kind::Generic
+}
+
+/// Where a refused reader can resume: `reason` is `too_old` or `in_future`,
+/// `available` the nearest offset that would have worked, and `trim_headers`
+/// what a head trim was written with, when the floor is a trim's.
+fn annotate_cursor(py: Python<'_>, err: &PyErr, cursor: &SubscribeCursorError) -> PyResult<()> {
+    let value = err.value(py);
+    value.setattr(
+        "reason",
+        match cursor.reason {
+            CursorErrorReason::TooOld => "too_old",
+            CursorErrorReason::InFuture => "in_future",
+        },
+    )?;
+    value.setattr("requested", cursor.requested)?;
+    value.setattr("available", cursor.available)?;
+    value.setattr(
+        "trim_headers",
+        cursor
+            .trim_headers
+            .as_deref()
+            .map(|bytes| PyBytes::new(py, bytes)),
+    )?;
+    Ok(())
 }
 
 /// The fields of a commit refusal, so a caller can say which op was wrong.

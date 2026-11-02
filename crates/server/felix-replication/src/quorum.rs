@@ -48,9 +48,20 @@ pub struct QuorumMarks {
     /// What the driver last saw of each shard's followers, read only to explain
     /// a timed-out wait. Set by the replication driver.
     status: std::sync::OnceLock<Arc<crate::status::ShardStatusBoard>>,
+    /// The storage identity of this broker's directory, set once it is known.
+    local_storage: std::sync::OnceLock<(felix_storage::StorageId, bool)>,
+    /// A test's leave to mark wiped copies before [`NON_VOTING_READY`].
+    non_voting: bool,
     /// When each shard's timeout was last logged.
     timeout_logged: Mutex<HashMap<ShardKey, tokio::time::Instant>>,
 }
+
+/// Whether brokers mark a wiped copy a learner under `joint_fence` (#1331).
+/// The control plane's `JOINT_FENCE_READY` keeps a fleet from finalizing the
+/// feature until learners can be re-admitted and placement skips them
+/// (#1737), but a fleet that finalized it earlier has it on already. Flip
+/// both together.
+const NON_VOTING_READY: bool = false;
 
 /// A shard's timed-out publishes are logged at most this often: under a stall
 /// every publish in flight times out together.
@@ -141,6 +152,32 @@ impl QuorumMarks {
             .is_some_and(|fleet| fleet.supports(feature))
     }
 
+    /// Whether this build marks a wiped copy a learner and keeps it from
+    /// leading under `joint_fence`. A fleet may have finalized `joint_fence`
+    /// before the control plane could re-admit a learner, so the build
+    /// decides, not the gate alone.
+    pub(crate) fn non_voting_ready(&self) -> bool {
+        NON_VOTING_READY || self.non_voting
+    }
+
+    /// Let this broker mark wiped copies whatever [`NON_VOTING_READY`] says.
+    #[cfg(test)]
+    pub(crate) fn allow_non_voting(mut self) -> Self {
+        self.non_voting = true;
+        self
+    }
+
+    /// Whether the fleet has enabled `feature`, or `None` while this broker
+    /// has not yet taken a registration's answer, when a feature missing
+    /// from the gate may still be enabled. False without a fleet.
+    pub(crate) fn fleet_decides(&self, feature: felix_common::fleet::FleetFeature) -> Option<bool> {
+        let Some(fleet) = &self.fleet else {
+            return Some(false);
+        };
+        let view = fleet.view();
+        view.adopted().then(|| view.supports(feature))
+    }
+
     /// Let `Quorum` reads confirm leadership with `check` once the fleet has
     /// finalized `lease_free_reads`, unless `by_lease` keeps them on the
     /// lease. Only the first call counts.
@@ -205,6 +242,25 @@ impl QuorumMarks {
         if self.incarnations.get().is_none() {
             let _ = self.incarnations.set(Incarnations(Arc::clone(broker)));
         }
+    }
+
+    /// Record this broker's storage identity, which a promotion checks its
+    /// kept set against. Only the first call counts. `replaced` is whether
+    /// the control plane last registered this node under another one.
+    pub fn set_local_storage(&self, storage: felix_storage::StorageId, replaced: bool) {
+        let _ = self.local_storage.set((storage, replaced));
+    }
+
+    pub(crate) fn local_storage(&self) -> Option<felix_storage::StorageId> {
+        self.local_storage.get().map(|(storage, _)| *storage)
+    }
+
+    /// Whether the control plane last registered this node under another
+    /// storage identity.
+    pub fn replaced_storage(&self) -> bool {
+        self.local_storage
+            .get()
+            .is_some_and(|(_, replaced)| *replaced)
     }
 
     /// Read follower positions for [`Self::log_timeout`] from `board` from here

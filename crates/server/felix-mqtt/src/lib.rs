@@ -10,6 +10,7 @@ mod auth;
 mod metrics;
 mod service;
 mod settings;
+pub mod ws;
 
 pub use auth::{AuthError, Authenticator, Principal};
 pub use service::MqttService;

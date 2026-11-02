@@ -202,8 +202,10 @@ No build reports either yet, so a finalize of either is refused
 (`the_election_features_cannot_be_finalized_yet`), and a new cluster does not
 start with them. A broker that offers the `ELECTION` peer capability reports
 it as `peer_election`, which no build does yet. Finalizing `joint_fence` is
-refused while a serving broker lacks it; `replica_election` is also refused
-before `joint_fence` and its other prerequisites, and until the control plane
+refused while a serving broker lacks it, and even when none does until the
+control plane re-admits learners and placement skips them (#1737);
+`replica_election` is also refused before `joint_fence` and its other
+prerequisites, and until the control plane
 has the metadata level for the pending replica set (see
 [Moving a shard](#moving-a-shard)) and adoption (see [Adopting an elected
 leader](#adopting-an-elected-leader)), 21 under Raft on every member. The
@@ -759,6 +761,16 @@ from that copy (`docs/replication-design.md`, "Fencing a promotion"). Every
 other write leaves it out. Postgres keeps it only for the generation that wrote
 it, and the Raft store writes it only at metadata level 16.
 
+Every placement write, including creation, moves and operator steps, also
+carries `member_storage_ids`: the storage id each member of the set has
+registered, by node id. A member that registered none is left out. A broker
+uses it to tell that it lost its storage: if the set names a different id
+for it, it stops voting until it has caught up (`docs/replication-design.md`,
+"A copy that lost its storage does not vote"). The promotion fence never
+reads it, because a registered id is not the id a report vouched for.
+Postgres keeps it only for the generation that wrote it (migration 0039), and
+the Raft store writes it only at metadata level 22.
+
 States are `assigning` (placement decided, the leader has not confirmed),
 `active` (the leader is serving), and `draining` (the leader has been told to
 stop serving at this generation so the shard can move). A drained shard leaves
@@ -895,11 +907,24 @@ which keeps a small cluster even where plain rendezvous would not. Roles
 (leaders and followers) are capped at `ceil(roles / live nodes)`, and
 leaders twice: per stream or cache first, then across the cluster. A new
 shard goes to the best-scoring node still under its stream's floor
-(`floor(shards / nodes)`), then under its stream's ceiling, each time
-preferring a node under its cluster-wide share (`ceil(all shards / nodes)`).
+(`floor(shards / nodes)`), then under its stream's ceiling. Within each of
+those it prefers a node under the cluster-wide floor (`floor(all shards / nodes)`),
+then one under the cluster-wide ceiling (`ceil(all shards / nodes)`).
 A 12-shard stream on three brokers is placed 4/4/4 whatever the other streams
 already lead, and the cluster-wide count is evened out afterwards by moving
 other streams' shards (see [Moving a shard](#moving-a-shard)).
+
+The cluster-wide floor matters when many shards arrive at once, for example
+from an application that creates a stream per job. With only the ceiling as
+the bound, the best-scoring brokers could fill to it before the last one
+reached the floor, which left the totals two apart. The balancer then moved an
+existing leader to even them out. It takes the first shard in key order, so it
+moved the same few shards over and over, often an application's own caches,
+and each move holds that shard's writes while it is fenced. Filling every
+broker to the floor first keeps a batch of single-shard streams within one of
+even, so creating them moves nothing that already exists. A stream's own
+spread still comes first, so a multi-shard stream can still leave the totals
+for the balancer to even out.
 
 The placement *plan* is deterministic: the same rows give the same decision,
 whatever order streams, nodes, or existing assignments arrive in. Its input is

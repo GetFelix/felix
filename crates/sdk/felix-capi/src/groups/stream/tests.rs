@@ -74,6 +74,7 @@ fn positions_arrive_indexed_by_shard() {
         .fail(Failure {
             status: FELIX_STATUS_AUTH,
             message: "denied".to_string(),
+            cursor: None,
         });
     let calls = calls.into_inner().unwrap();
     assert_eq!(calls[0].0, FELIX_STATUS_OK);

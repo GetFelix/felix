@@ -564,7 +564,11 @@ async fn fence_one<R: PeerRequester>(
     let addr_of = |node_id: &str| router.node_addr(node_id);
     let joint = marks
         .fleet_supports(felix_common::fleet::JOINT_FENCE)
-        .then(|| promotion::Joint::new(&addr_of, router.prior_set(&key)));
+        .then(|| {
+            promotion::Joint::new(&addr_of, router.prior_set(&key))
+                .with_local_storage(marks.local_storage())
+                .with_replaced_storage(marks.non_voting_ready() && marks.replaced_storage())
+        });
     let outcome = promotion::fence_shard(
         requester,
         broker,

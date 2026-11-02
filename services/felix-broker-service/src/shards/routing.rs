@@ -641,6 +641,7 @@ pub fn routing_table_from(
             routing: assignment.routing,
             incarnation: assignment.incarnation,
             fence_storage_ids: assignment.fence_storage_ids.clone(),
+            member_storage_ids: assignment.member_storage_ids.clone(),
             pending: assignment
                 .pending_set
                 .as_ref()

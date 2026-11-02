@@ -686,7 +686,7 @@ try {
 | `OutcomeUnknownError` | the write may or may not have happened (`quorum_timeout`, `leadership_lost`, `unacknowledged`, or any error sent as `outcome_unknown`) | `false` |
 | `AuthError` | token rejected or revoked, or missing the permission (`unauthenticated`, `forbidden`, `revoked`) | `false` |
 | `NotFoundError` | no such tenant, namespace, stream or cache (`not_found`) | `false` |
-| `CursorError` | the start offset is gone; retention discarded it | `false` |
+| `CursorError` | the start offset is not available: retention or a head trim discarded it, or it is past the tail | `false` |
 | `PublishRefusedError` | an idempotent producer's batch was refused and nothing written (`reason`: `sequence_gap`, `unknown_producer`, ...); see [idempotent producers](#idempotent-producers) | `false`; it ends the producer on that stream |
 | `InvalidArgumentError` | a bad argument to this client | `false` |
 | `FelixError` | the base, and anything else (`invalid_request`, `limit_exceeded`, a code this client does not know) | `false` |
@@ -709,6 +709,37 @@ code, except that an `outcome_unknown` retry class always makes an
 
 All three are `undefined` when the broker predates error codes, or when the failure
 happened in the client. Then the class is chosen from the message.
+
+### When a start offset is refused
+
+A `CursorError` says where you can resume instead of leaving you to guess:
+
+- `reason` is `"too_old"` (retention or a head trim discarded the offset) or
+  `"in_future"` (it is past the tail).
+- `requested` is the offset you asked for, a `bigint`.
+- `available` is the nearest offset that would have worked, a `bigint`: the
+  oldest retained for `too_old`, the tail for `in_future`. Resuming from it
+  takes the smallest gap.
+- `trimHeaders` is a `Buffer` holding what a [head trim](#trimming-a-shards-head)
+  was written with, so a reader can tell who trimmed past it. It is `undefined`
+  when retention set the floor.
+
+```ts
+import { CursorError } from "felix-client";
+
+let start = 7n; // for example, a checkpoint plus one
+try {
+  await using events = await client.subscribe("t1", "default", "orders", start);
+  // ... read from events
+} catch (err) {
+  if (!(err instanceof CursorError)) throw err;
+  console.warn(
+    `offset ${err.requested} is ${err.reason}; resuming at ${err.available}`,
+    err.trimHeaders?.toString("utf8"),
+  );
+  if (err.available !== undefined) start = err.available; // accept the gap, then subscribe again
+}
+```
 
 `err.kind` is this client's own name for the class (`FELIX_CONNECTION`,
 `FELIX_SHARD_UNAVAILABLE`, …), set whether or not the broker sent a code, for
@@ -1213,7 +1244,7 @@ Every other refusal rejects with a `FelixError` carrying the broker's `code`:
 Do not send a timed-out trim again as it is. If it landed, the same call is
 refused with a tail one past the trim, which looks like a lost race. Read the
 shard's earliest offset, or read below the floor you asked for, to tell the two
-apart. A read below the floor rejects with `CursorError`. The call needs the
+apart. A read below the floor rejects with `CursorError`, which carries the new floor and the trim's headers (see [When a start offset is refused](#when-a-start-offset-is-refused)). The call needs the
 `stream.trim` permission, which `stream.manage` includes. Against a broker that
 did not advertise `FEATURE_HEAD_TRIM` it rejects with `TrimError`, sending
 nothing.

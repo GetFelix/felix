@@ -66,6 +66,7 @@ async fn knows_set(broker: &Broker, generation: u64) {
                 node: LOCAL.to_string(),
                 storage: None,
                 learner: false,
+                wiped: false,
             }],
         },
         leaving: None,

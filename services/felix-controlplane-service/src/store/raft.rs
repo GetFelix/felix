@@ -82,6 +82,10 @@ const INHERITED_STORAGE_LEVEL: u16 = 20;
 /// The metadata level whose members store a cut-over's pending set and the
 /// joint start a report names, and finalize `replica_election` (#1009).
 const PENDING_SET_LEVEL: u16 = 21;
+
+/// The metadata level whose members store the storage identity each member of
+/// a shard's set registered with, on the assignment (#1009 S8).
+const MEMBER_STORAGE_LEVEL: u16 = 22;
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
@@ -141,6 +145,13 @@ impl RaftStore {
             && self.group_level().await < FENCE_STORAGE_LEVEL
         {
             assignment.fence_storage_ids.clear();
+        }
+        // Dropped the same way: a copy that is not named reads the set as it
+        // did before identities, so it never learns it is wiped.
+        if !assignment.member_storage_ids.is_empty()
+            && self.group_level().await < MEMBER_STORAGE_LEVEL
+        {
+            assignment.member_storage_ids.clear();
         }
     }
 

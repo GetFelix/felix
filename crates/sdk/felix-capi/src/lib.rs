@@ -69,7 +69,10 @@ pub use commit::{
     felix_client_commit_if_on_shard, felix_client_commit_on_shard, felix_client_publish_if,
     felix_client_publish_if_on_shard, felix_client_state_get, felix_client_state_get_on_shard,
 };
-pub use error::felix_last_error_message;
+pub use error::{
+    FELIX_CURSOR_IN_FUTURE, FELIX_CURSOR_TOO_OLD, FelixCursorError, felix_last_cursor_error,
+    felix_last_error_message,
+};
 pub use event::{
     FelixEvent, felix_event_free, felix_event_offset, felix_event_payload, felix_event_publisher,
     felix_event_skipped_before, felix_event_timestamp,

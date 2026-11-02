@@ -290,10 +290,12 @@ fn plan_once(
     // Fair share of leadership, cluster-wide; each stream's own share is
     // worked out per shard below. Leaders only: that is the load a client
     // feels.
-    let leader_share = if eligible.is_empty() {
-        u32::MAX
+    let (leader_floor, leader_share) = if eligible.is_empty() {
+        (u32::MAX, u32::MAX)
     } else {
-        (keys.len() as u32).div_ceil(eligible.len() as u32).max(1)
+        let nodes = eligible.len() as u32;
+        let shards = keys.len() as u32;
+        (shards / nodes, shards.div_ceil(nodes).max(1))
     };
 
     // Brokers started together register moments apart, and a shard placed
@@ -392,6 +394,7 @@ fn plan_once(
         let is_live = |id: &str| is_live(id) && allowed(id);
         let is_draining = |id: &str| is_draining(id) || (!allowed(id) && is_serving(id));
         let shares = Shares::new(
+            leader_floor,
             leader_share,
             placeable.map_or(1, |p| p.shards),
             eligible.len(),
@@ -698,6 +701,7 @@ pub fn assignment_for(key: &ShardKey, leader: &str, replicas: Vec<String>) -> Sh
         move_reason: None,
         incarnation: 0,
         fence_storage_ids: Default::default(),
+        member_storage_ids: Default::default(),
         pending_set: None,
     }
 }

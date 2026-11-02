@@ -1298,7 +1298,14 @@ asks the control plane for its node's current incarnation (`GET
 /v1/nodes/{node_id}`, which needs `node.view:cluster:*`, the permission its
 catalog feeds already need) before any store opens. If the control plane is
 ahead of the record, the node registered at least once that this directory
-never saw, and the start writes a new id before the `running` record.
+never saw, and the start writes a new id before the `running` record. The same
+answer carries the storage id the node last registered with. When it names
+another id than the one this start runs under, the copies the node held are
+gone or set aside, and the broker treats its copies of older shards as
+learners (`docs/replication-design.md`, "A copy that lost its storage does not
+vote"). It records that in a `replaced-storage` file under the data root
+before it registers the new id, and never removes it, so later starts know
+too once the control plane holds the new id.
 
 - **Unreachable control plane:** the broker opens nothing and announces no id
   until it answers, asking again with backoff up to 5 seconds. A stop while
@@ -1424,8 +1431,11 @@ one. A broker the restore skipped starts with an empty data directory.
 
 `felix-broker inspect segments <data-dir>` reports, read-only, without starting a broker, every shard's
 segments, whether their records and indexes verify, and what startup would do
-with each one. See "A broker will not start" in the docs site's
-`deployment/diagnosing.md`.
+with each one. `felix-broker inspect records <data-dir> <tenant/namespace/name/shard> --offset N`
+decodes the records around one offset: read-only, seeking with the sparse index (checked, not
+trusted), and stopping at the first record that does not verify. It runs the same recovery plan
+to tell a torn tail from damage and to leave out a rollover's leftover segments. See "A broker
+will not start" in the docs site's `deployment/diagnosing.md`.
 
 ```sh
 # Write, then verify what survived.
@@ -1562,9 +1572,8 @@ Storage stores trim records, applies their floor, deletes below it and
 rebuilds it at open. The broker's call, `Broker::trim_before_at`, puts every
 reader on the readable base (see [The broker](#the-broker)), replication
 ships the record, and a client sends it as `trim_before` behind the
-`stream.trim` grant (see [The call](#the-call)). The Rust client
-(`Client::trim_before`) and `felixctl stream trim` send it; the other client
-libraries do not yet.
+`stream.trim` grant (see [The call](#the-call)). The Rust, Python,
+TypeScript, C and C# clients (`trim_before`) and `felixctl stream trim` send it.
 
 The trim is a log record (`RecordMark::Trim`) that carries the exact `before`
 the client asked for and the caller's headers. The broker is to append it

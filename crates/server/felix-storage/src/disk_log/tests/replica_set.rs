@@ -15,6 +15,7 @@ fn set_at(generation: u64) -> ReplicaSet {
                     node: (*node).to_string(),
                     storage: Some(StorageId::from_bytes([i as u8 + 1; 16])),
                     learner: false,
+                    wiped: false,
                 })
                 .collect(),
         },
@@ -43,7 +44,10 @@ async fn a_set_is_raised_only_by_a_newer_one() {
     assert_eq!(log.set_generation(), 5);
     assert_eq!(log.replica_set(), Some(set_at(5)));
     // The stale set wrote nothing.
-    assert_eq!(set::load(dir.path()).expect("load"), Some(set_at(5)));
+    assert_eq!(
+        set::load(dir.path()).expect("load"),
+        Some((set_at(5), None))
+    );
 }
 
 #[tokio::test]
@@ -71,7 +75,7 @@ async fn a_set_newer_than_the_ballot_raises_the_accepted_generation_at_open() {
     }
     // The ballot is written first, so this order cannot happen; the open
     // still refuses everything older than the set.
-    set::store(dir.path(), &set_at(7)).expect("store");
+    set::store(dir.path(), &set_at(7), None).expect("store");
     let log = open(&dir, FsyncMode::OnCommit);
     assert_eq!(log.set_generation(), 7);
     assert_eq!(log.accepted_generation(), 7);
@@ -110,7 +114,10 @@ async fn concurrent_sets_leave_the_newer_on_disk() {
         assert_eq!(newer.expect("join").expect("accept"), SetCheck::Raised);
         assert_eq!(log.set_generation(), 9);
         drop(log);
-        assert_eq!(set::load(dir.path()).expect("load"), Some(set_at(9)));
+        assert_eq!(
+            set::load(dir.path()).expect("load"),
+            Some((set_at(9), None))
+        );
     }
 }
 
@@ -139,4 +146,119 @@ async fn a_shard_without_a_set_does_not_scan_for_temporaries() {
     let log = open(&dir, FsyncMode::OnCommit);
     assert_eq!(log.replica_set(), None);
     assert!(leftover.exists());
+}
+
+/// Admitting a learner is written before it returns, so a restart cannot
+/// bring the mark back, and it changes only that member at the same generation.
+#[tokio::test]
+async fn admitting_a_learner_is_durable_and_touches_only_it() {
+    let dir = tempdir().expect("tempdir");
+    let mut set = set_at(4);
+    set.current.members[1].learner = true;
+    {
+        let log = open(&dir, FsyncMode::OnCommit);
+        log.accept_set(set.clone()).await.expect("accept");
+        assert_eq!(log.member_is_learner("b"), Some(true));
+        assert!(
+            !log.admit_member("a", false).await.expect("admit"),
+            "a is no learner"
+        );
+        assert!(log.admit_member("b", false).await.expect("admit"));
+        assert!(!log.admit_member("b", false).await.expect("admit"), "once");
+        assert!(
+            !log.admit_member("z", false).await.expect("admit"),
+            "not a member"
+        );
+    }
+    let log = open(&dir, FsyncMode::OnCommit);
+    assert_eq!(log.replica_set(), Some(set_at(4)));
+    assert_eq!(log.set_generation(), 4);
+}
+
+/// A wiped mark is kept apart from the learner flag, survives a restart, and
+/// outlives an admission that is not settled.
+#[tokio::test]
+async fn a_wiped_mark_is_kept_until_settled() {
+    let dir = tempdir().expect("tempdir");
+    let mut set = set_at(4);
+    set.current.members[1].learner = true;
+    set.current.members[1].wiped = true;
+    {
+        let log = open(&dir, FsyncMode::OnCommit);
+        log.accept_set(set).await.expect("accept");
+        assert!(log.admit_member("b", false).await.expect("admit"));
+    }
+    let log = open(&dir, FsyncMode::OnCommit);
+    assert_eq!(log.member_is_learner("b"), Some(false));
+    assert!(log.member_is_wiped("b"), "an unsettled admission keeps it");
+    assert!(log.admit_member("b", true).await.expect("settle"));
+    drop(log);
+    let log = open(&dir, FsyncMode::OnCommit);
+    assert!(!log.member_is_wiped("b"));
+    assert_eq!(log.replica_set(), Some(set_at(4)));
+}
+
+/// A newer set keeps a member's wiped mark whatever it says: a leader that
+/// writes its route's set must not end it before the copy has settled.
+#[tokio::test]
+async fn a_newer_set_keeps_the_wiped_mark() {
+    let dir = tempdir().expect("tempdir");
+    let log = open(&dir, FsyncMode::OnCommit);
+    let mut set = set_at(4);
+    set.current.members[1].wiped = true;
+    log.accept_set(set).await.expect("accept");
+    assert_eq!(
+        log.accept_set(set_at(5)).await.expect("accept"),
+        SetCheck::Raised
+    );
+    assert!(log.member_is_wiped("b"));
+    assert!(!log.member_is_wiped("a"));
+    assert!(log.admit_member("b", true).await.expect("settle"));
+    log.accept_set(set_at(6)).await.expect("accept");
+    assert!(
+        !log.member_is_wiped("b"),
+        "settled, so a later set is clean"
+    );
+}
+
+/// **A set that lists the wiped copy only as leaving, or not at all, does
+/// not end its mark**, so a later set naming it again still finds it marked.
+/// A move away and back would otherwise hand a voter's place to a copy that
+/// still lacks what it lost.
+#[tokio::test]
+async fn the_wiped_mark_outlives_sets_that_leave_the_copy_out() {
+    let dir = tempdir().expect("tempdir");
+    let log = open(&dir, FsyncMode::OnCommit);
+    let mut set = set_at(4);
+    set.current.members[1].learner = true;
+    set.current.members[1].wiped = true;
+    log.accept_set(set).await.expect("accept");
+
+    let without_b = |generation| {
+        let mut set = set_at(generation);
+        set.current.members.retain(|member| member.node != "b");
+        set
+    };
+    let mut moved = without_b(5);
+    moved.leaving = Some(set_at(4).current);
+    log.accept_set(moved).await.expect("accept");
+    assert!(log.member_is_wiped("b"), "listed only as leaving");
+    assert_eq!(log.member_is_learner("b"), Some(true));
+    log.accept_set(without_b(6)).await.expect("accept");
+    assert!(log.member_is_wiped("b"), "not listed at all");
+
+    drop(log);
+    let log = open(&dir, FsyncMode::OnCommit);
+    log.accept_set(set_at(7)).await.expect("accept");
+    assert!(log.member_is_wiped("b"), "named again, after a restart");
+    assert_eq!(log.member_is_learner("b"), Some(true));
+    assert!(log.replica_set().unwrap().current.members[1].wiped);
+
+    assert!(log.admit_member("b", false).await.expect("admit"));
+    assert_eq!(log.member_is_learner("b"), Some(false));
+    assert!(log.member_is_wiped("b"), "admitted, not settled");
+    assert!(log.admit_member("b", true).await.expect("settle"));
+    log.accept_set(without_b(8)).await.expect("accept");
+    log.accept_set(set_at(9)).await.expect("accept");
+    assert!(!log.member_is_wiped("b"));
 }

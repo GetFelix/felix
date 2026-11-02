@@ -81,6 +81,7 @@ fn endpoints_are_handed_over_as_strings() {
         .fail(Failure {
             status: FELIX_STATUS_AUTH,
             message: "denied".to_string(),
+            cursor: None,
         });
     let calls = calls.into_inner().unwrap();
     assert_eq!(

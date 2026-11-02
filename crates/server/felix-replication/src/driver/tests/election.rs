@@ -191,6 +191,7 @@ async fn under_joint_fence_a_shipping_leader_keeps_the_set_it_leaves() {
                     node: node.to_string(),
                     storage: None,
                     learner: false,
+                    wiped: false,
                 })
                 .to_vec(),
         };
@@ -242,6 +243,7 @@ async fn under_joint_fence_a_shipping_leader_keeps_no_set_when_the_one_before_is
                     node: node.to_string(),
                     storage: None,
                     learner: false,
+                    wiped: false,
                 })
                 .to_vec(),
         },

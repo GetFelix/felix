@@ -788,14 +788,9 @@ already current.
 
 It also does not cover elections: a candidate's generation is
 not in the control plane until it is adopted, so no view can back a promise
-made to one. The election driver needs its own guard before [electing
-without the control plane](#electing-without-the-control-plane) ships
-([#1331](https://github.com/GetFelix/felix/issues/1331)). The adopted rule:
-a copy with a new storage id is a non-voting member until a joint-fenced set
-change re-admits it, and it votes again only once it holds the leader's log
-through that generation's start record; failover never promotes it. The
-model's `FelixShardElectWipe*.cfg` check it and the variants that fail
-(`docs/formal/README.md`, "A wiped voter in an election").
+made to one. For elections a wiped copy does not vote at all until it is
+re-admitted; see [A copy that lost its storage does not
+vote](#a-copy-that-lost-its-storage-does-not-vote).
 
 The cost is a fence round trip or a few while a follower's watch catches up,
 and one control-plane read per answer, only for copies with no promise: a
@@ -826,6 +821,227 @@ deposed leader's batches), and
 `a_wiped_follower_takes_the_fence_but_does_not_count` (cluster: under its new
 identity the wiped copy does not make the successor's majority, which waits
 for the old leader; see [Fencing a promotion](#fencing-a-promotion)).
+
+#### A copy that lost its storage does not vote
+
+A copy whose disk was wiped, or replaced, comes back empty. It has also
+forgotten every promise it made in a fence. If it voted straight away it
+could help elect a leader that is missing acknowledged records, or promise
+one generation to two leaders. So under the `joint_fence` fleet feature a
+copy that lost its storage is a *learner*, a member that does not vote: it
+copies the log, but its answers count toward no majority. It votes again
+once it has caught up with a leader that was chosen without it. This is the
+rule [#1331](https://github.com/GetFelix/felix/issues/1331) adopted, and what
+Raft does with a new member. Without `joint_fence` brokers answer as before.
+
+The rule is built but switched off in brokers until the control plane can
+re-admit a learner and keep placement off one
+([#1737](https://github.com/GetFelix/felix/issues/1737)). The control plane
+refuses to finalize `joint_fence` until then, but a fleet that finalized it
+on an earlier release has it on already, so brokers check their own switch
+too (`NON_VOTING_READY` in `crates/server/felix-replication/src/quorum.rs`).
+
+```mermaid
+sequenceDiagram
+    participant C as Copy c (wiped)
+    participant CP as Control plane
+    participant B as Leader b
+    C->>CP: register under a new storage id
+    B->>C: fence or batch, its set names c's old id
+    Note over C: learner: refuses fences, counts in no majority
+    CP->>B: next assignment names c's new id (generation G)
+    B->>B: fence a majority without c, write G's start record
+    B->>C: records through G's start record, with b's ballot at G
+    Note over C: its set names its id and it holds G's start: a voter again
+```
+
+**How a copy knows it is a learner.** A copy cannot see its own wipe, so it
+looks for evidence. Every placement write names each member's registered
+storage id (`member_storage_ids`, see `docs/control-plane.md`). A set written
+before the wipe names the old id. A copy that learns a set naming another id
+for itself, from a fence or from the route a batch is stamped with, marks
+itself a learner and marks itself *wiped*. Both are kept in the log's
+`replica-set` file, so a restart keeps them. They are kept apart from the
+member lists, so a later set does not clear them either, even a move's set
+that lists the copy only as leaving and a set after it that names the copy
+again. The wiped mark is what tells a wiped learner from a move's staged
+destination, which is a learner too but lost nothing.
+
+That evidence alone is not enough. A copy wiped before it heard any set
+could first hear a failover's set that already names its new id, and answer
+that fence with no promise and an empty log
+(`FelixShardElectWipeNonVoterEvidenceOnly.cfg` elects two leaders at one
+generation this way). So the broker also looks at its own registration. At
+startup it asks the control plane which storage id the node last registered
+with. If that is another id, the node held copies under it. The broker then
+writes a `replaced-storage` marker under its data root, before it registers
+the new id, and from then on any shard copy on that directory that holds no
+set yet is a learner, and is marked wiped when it learns its first set.
+Once a copy holds a set, the marks in its `replica-set` file decide. The one
+exception is a generation-1 set that names the copy under its new id: the
+shard was created after the wipe and the copy has nothing to lose, so it
+votes. A generation-1 set naming no ids is no such proof. A shard created
+before sets named member ids keeps one until a placement writes another, and
+a copy that held it before the wipe would vote with an empty log
+(`FelixShardElectWipeNonVoterIdlessCreationExempt.cfg`).
+
+The marker is not removed. It stands for the copies the node held under the
+old id, and the wipe took the list of them, so no one copy's re-admission
+says the others are safe: removing it then would let another shard's copy
+that holds no set yet vote with an empty log. It only affects a copy that
+holds no set. Such a copy is admitted once it catches up, as a staged
+destination is, so the only change that waits on it is one that needs a
+copy on a replaced broker to vote before that generation's leader has
+opened, such as a swap of two members onto replaced brokers. The control
+plane knows which assignments named the old id, and #1737 ends that wait.
+
+A broker the control plane has never registered held nothing, however new
+its directory, so its copies vote. That is what lets a new broker join a set,
+for instance as one of two new members in a swap. Neither a set that names no
+storage id, from a control plane that predates the field, nor a registration
+from a broker that predates storage ids is evidence.
+
+**What a learner does.**
+
+- It refuses every fence, its own re-admission's included, after learning
+  the set the fence carried (`Unauthorized`, no ballot taken). That includes
+  a fence with no set, which a leader sends a replica whose capabilities it
+  could not learn: the marker refuses it for a copy that holds no set
+  (`FelixShardElectWipeNonVoterSetlessUnmarked.cfg` loses a write without
+  that). A promoting leader asks a replica it has not heard from yet for its
+  capabilities, so the set usually rides along. It answers a pre-vote with
+  `NotVoting`.
+- A cache's counter log and a stream's group logs keep no set, so their
+  fences are judged on the shard's own log. Judged on the counter log, a
+  learner's empty counter log counted, and counter updates a majority
+  acknowledged were lost
+  (`FelixShardElectWipeNonVoterCountersCountLearner.cfg`). A group log's
+  fence is refused for as long as the copy is marked wiped, which outlasts
+  its re-admission (below).
+- It takes records only from the leader the control plane confirms at that
+  generation. The confirmed leader is reused for 500 ms at the same
+  generation rather than read for every batch. Taking a batch records that
+  leader's ballot, as it does for any follower.
+- It is never promoted. A broker whose kept set marks it a wiped learner,
+  or a learner under another storage id, refuses to open as leader before it
+  fences or writes anything, so the mark survives. So does a copy that holds
+  no set on a directory with the `replaced-storage` marker, unless the route
+  is the shard's creation naming its new id. A
+  move's staged destination is a learner under its own id, not marked wiped,
+  and still opens.
+
+**How it votes again.** A learner becomes a voter once its kept set names it
+under the storage id it has now and its log holds the generation-start
+record of that set's generation. Only the control plane names the new id,
+and only after the wipe, so the leader at that generation fenced without the
+learner, and every record a majority acknowledged comes before that start
+record. If that leader is lost first, the next set naming the copy moves the
+target to its generation. For a cache shard, the counter log must hold the
+start record of that generation too. The leader ships the two logs apart, and
+a copy admitted on its cache log alone would answer the next counter fence
+with a counter log that lacks acknowledged updates
+(`FelixShardElectWipeNonVoterCountersUnchecked.cfg`).
+
+A stream's cursor and dead-letter logs carry no generation-start record, so
+re-admission on the stream log says nothing about them. The copy keeps its
+wiped mark until each group log holds a record written at the set's
+generation or later. Until then it refuses group fences, and as a leader it
+does not count its own group logs toward the group majority; if no other
+copy answers its group fence, it stays closed rather than serve its own. Every
+newer set it keeps carries the mark, whoever writes it, the leader's own
+set included: a promotion that writes its route's set and then fails to take
+a group log must still not count its own on the retry
+(`FelixShardElectWipeNonVoterGroupsKeepDropsMark.cfg`). A leader at
+that generation took its group logs from copies other than this one, and
+ships them in order, so a record it wrote follows everything it took. A
+quiet consumer group writes nothing, so the mark can last; that only leaves
+group fences to the other copies, and a group log never keeps a shard
+closed. Writing a start record into the group logs instead would have meant
+every group-log reader and every older peer learning to skip it.
+The ballot matters as much as the records. Before its wipe the copy may have
+promised any generation up to the one it caught up at, to a candidate it no
+longer knows of. Because its catch-up took the confirmed leader's ballot at
+that generation, it never promises that generation, or an older one, to
+anyone else. A copy re-admitted without that ballot elects two leaders at one
+generation (`FelixShardElectWipeNonVoterNoCatchUp.cfg`).
+
+**Before the gate is known.** Whether a set naming another id makes a copy a
+learner depends on the `joint_fence` gate, which the broker learns only when
+it registers, after its peer listener is up. Until then such a request is
+refused as `Unavailable` and nothing is written. Everything else answers as
+before, so a broker that restarts with its data serves before it registers.
+A mark already on disk holds whatever the gate says.
+
+Not covered yet, and needed before elections (#1009 S9):
+
+- The control plane does not re-admit a learner by itself, and placement
+  does not leave a learner out of failover. Only an ordinary placement write
+  names the new id, so a learner whose assignment does not change stays one,
+  and a move that needs it waits. Both are
+  [#1737](https://github.com/GetFelix/felix/issues/1737), which must land
+  before elections do.
+- The model's group logs (`GroupLogs`) stand in the counter log's place:
+  one log beside the records, not the dead-letter and cursor pair, and the
+  model waits for a majority where the code, short of answers, takes the
+  furthest one it has.
+- The leader still counts a learner's acknowledgements, and a learner takes
+  a batch from a leader the control plane confirmed at that generation even
+  after it moved on (the 500 ms cache, or a read just before a failover).
+  The model explores both without elections (`LearnerAcksCount`,
+  `CatchUpFromDeposed`) and finds nothing. With elections counting a learner
+  loses a write (`FelixShardElectWipeNonVoterCreatesLearnerAcks.cfg`), so
+  the leader must leave learners' acknowledgements out before they ship
+  ([#1762](https://github.com/GetFelix/felix/issues/1762)).
+- A candidate's generation can be above anything the control plane has
+  written, and a copy wiped after promising one cannot know it. With three
+  copies that is safe: the set that re-admits it was fenced by both other
+  copies, so its generation is at least any the wiped copy promised, and
+  the catch-up's ballot is at that generation or a later one. With more
+  copies the fence needs only a majority, so how a candidate picks its
+  generation is part of the election design.
+
+The model checks the rule and the variants that fail in
+`FelixShardElectWipe*.cfg` (`docs/formal/README.md`, "A wiped voter in an
+election").
+
+Evidence (`replica/tests/non_voting.rs`):
+`a_wiped_copy_refuses_a_fence_and_a_vote`,
+`a_wiped_copy_answers_a_pre_vote_without_voting`,
+`a_restart_keeps_a_wiped_copy_non_voting`,
+`a_readmission_for_another_storage_id_does_not_readmit`,
+`a_set_naming_its_storage_id_readmits_it_after_catch_up`,
+`a_stranded_learner_is_readmitted`, `a_new_shard_opens_under_the_gate`,
+`a_pre_set_copy_stays_a_voter_at_finalize`,
+`a_wiped_copy_refuses_before_the_gate_is_adopted`,
+`a_learner_reuses_a_confirmed_read`,
+`a_route_naming_member_ids_makes_a_wiped_copy_a_learner`,
+`a_replaced_storage_id_is_a_learner`, `a_replaced_storage_id_votes_at_creation`,
+`a_replaced_copy_is_a_learner_in_an_idless_creation_set`,
+`before_the_build_allows_it_confirmed_reads_are_not_cached`,
+`a_replaced_copy_refuses_a_fence_without_a_set`,
+`a_counter_fence_is_refused_while_the_cache_copy_is_a_learner`,
+`a_copy_is_readmitted_only_once_its_counter_log_caught_up`,
+`a_readmitted_copy_keeps_the_ballot_of_a_later_leader`,
+`a_new_brokers_copy_votes_past_creation`,
+`a_readmitted_copy_keeps_the_ballot_its_catch_up_took`,
+`a_learner_named_leader_refuses_and_keeps_its_mark`,
+`a_readmitted_copy_answers_group_fences_once_its_group_logs_caught_up`,
+`a_copy_whose_counter_log_cannot_open_stays_a_learner`,
+`before_the_build_allows_it_a_wiped_copy_is_not_marked`,
+`a_wiped_copy_refuses_records_from_an_unconfirmed_leader`, and
+`with_the_gate_off_a_copy_with_no_set_answers_as_before`; and in
+`services/felix-broker-service/src/node/storage/tests.rs`,
+`a_node_registered_under_another_id_starts_replaced` and
+`a_new_node_does_not_start_replaced`; and in
+`crates/server/felix-replication/src/promotion/tests.rs`,
+`a_promotion_fence_asks_a_replica_it_has_not_heard_from_whether_it_checks_sets`,
+`a_copy_marked_on_the_replaced_marker_does_not_lead` and
+`a_setless_replaced_copy_leads_creation_only_under_its_own_id`
+(`promotion/tests/joint.rs`), `a_wiped_leaders_own_group_logs_do_not_count`,
+`a_wiped_leader_keeps_its_mark_through_a_failed_group_take` and
+`a_wiped_leader_with_no_group_answer_stays_pending`
+(`promotion/tests/groups.rs`); and `a_newer_set_keeps_the_wiped_mark` in
+`crates/server/felix-storage/src/disk_log/tests/replica_set.rs`.
 
 ### Every change of leader
 
