@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793637961019,
+  "lastUpdate": 1793644402701,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -42484,6 +42484,58 @@ window.BENCHMARK_DATA = {
             "range": "51053.87",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 847466.92\nmean: 827808.35\nstdev: 51053.87\ncv: 6.17%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "278a1220037ac1a9b546c230e63fcc127211c409",
+          "message": "ci: refresh the TLA+ weights from a measured PR run (#1795)\n\nRefreshes the TLA+ weights in `scripts/check_tla.sh` from the `Finished in` lines of #1775's TLA+ shards.\n\nSeveral weights had drifted. `FelixShardElectWipeNonVoter` took 45 minutes against a weight of 28, and `FelixShardElectWipeNonVoterCountersUnchecked` took 8 with no weight (so it counted as 1). The shards packed from the old weights ran from 19 to 52 minutes. Packing #1775's set with the new weights gives seven shards of about 40 weighted minutes each (35 to 41 measured).\n\n## Design calls\n- Four configurations now weigh more than ten minutes, so the PR tier (`TLA_QUICK`) leaves them out unless their own `.cfg` changes: `FelixShardWipeStripped` (20), `FelixShardElectWipeNonVoterGroupsKeepDropsMark` (16), `FelixShardFigure8CutOver` (14), `FelixShardFencedPromotion` (11). They still run on every spec change on main. Keeping them in the PR tier would put each shard near 49 minutes, too close to the hour on a slow runner.\n- The times come from one run, so they carry runner noise of roughly 30%. Small drops (`FelixShardFencedAckTrim` 9 to 5, `FelixShardElectPreVote` 5 to 1) follow the measurement too.",
+          "timestamp": "2026-11-02T10:11:53-08:00",
+          "tree_id": "4f2ad6ca73def0dcdc9c10f59df8aead886e6f6e",
+          "url": "https://github.com/GetFelix/felix/commit/278a1220037ac1a9b546c230e63fcc127211c409"
+        },
+        "date": 1793644402163,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 354397.52,
+            "range": "15398.24",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 354397.52\nmean: 350737.26\nstdev: 15398.24\ncv: 4.39%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 354397.52,
+            "range": "15398.24",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 354397.52\nmean: 350737.26\nstdev: 15398.24\ncv: 4.39%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82712.83,
+            "range": "531.55",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82712.83\nmean: 82541.11\nstdev: 531.55\ncv: 0.64%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 827128.31,
+            "range": "5315.48",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 827128.31\nmean: 825411.12\nstdev: 5315.48\ncv: 0.64%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
