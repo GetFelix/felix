@@ -1,1 +1,0 @@
-- A `Quorum` leader that was just promoted no longer answers a `stream_read` with an empty page, or starts a `Latest` subscribe at offset 0, before a majority holds a record of its generation. It refuses them as `not_ready`, which is retryable (#1718).

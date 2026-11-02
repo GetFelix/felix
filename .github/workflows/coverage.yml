@@ -7,6 +7,12 @@ on:
   # alone, so the run still reports `Coverage ok`.
   pull_request:
 
+concurrency:
+  # A new push cancels that PR's older run. Each main commit keeps its own
+  # group so back-to-back merges all finish and publish their badge.
+  group: coverage-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   changes:
     runs-on: ubuntu-latest

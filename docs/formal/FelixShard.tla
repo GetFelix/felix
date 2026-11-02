@@ -1164,7 +1164,12 @@ Tick ==
 (* its belief from the instant it sent, never from the instant it heard    *)
 (* back. A heartbeat can be lost.                                          *)
 
+\* The pieces checked under QuietView send none. Time stands still there, so
+\* every grant already set the expiries to L and a heartbeat renews nothing:
+\* it changes only hbOut and hbAt, which the view leaves out, and every state
+\* it leads to is one TLC already has (up to symmetry).
 SendHeartbeat(b) ==
+    /\ ~SplitAtCutOver
     /\ bgen[b] > 0
     /\ ~hbOut[b]
     /\ hbOut' = [hbOut EXCEPT ![b] = TRUE]
@@ -3242,7 +3247,7 @@ NoTruncationBelowHwm ==
 AckedOnMajority ==
     Quorum =>
         \A id \in acked :
-            LET holders == { b \in Counted : (NonVoterCredit /\ Wiped(b)) \/ \E i \in 1..Len(log[b]) : log[b][i].id = id }
+            LET holders == { b \in Counted : (Wiped(b) /\ NonVoterCredit) \/ \E i \in 1..Len(log[b]) : log[b][i].id = id }
             IN \/ Cardinality(holders) * 2 > Cardinality(Counted)
                \/ Cardinality(Counted) = 4 /\ Cardinality(holders) = 2
 

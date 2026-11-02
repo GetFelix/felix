@@ -20,7 +20,7 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/GetFelix/felix.git",
+    "url": "git+https://github.com/GetFelix/felix.git",
     "directory": "crates/sdk/felix-typescript"
   },
   "homepage": "https://github.com/GetFelix/felix",

@@ -220,6 +220,48 @@ docs and `compose.yaml` pin (`scripts/check_release_version.py`), and its releas
 - once those jobs finish, sends a `felix-release` dispatch to each repo in
   `.github/companions.txt` so it can open a bump PR (see below).
 
+### Before you tag
+
+Companion repos run their integration tests against Felix main each night (see
+[Nightly runs in the companions](#nightly-runs-in-the-companions)). Before a
+tag, the latest run in each repo that has the workflow should have succeeded,
+and none should have an open `felix-nightly` issue:
+
+```bash
+for repo in $(sed -e 's/#.*//' .github/companions.txt | awk 'NF {print $1}'); do
+  run=$(gh run list -R "GetFelix/$repo" --workflow felix-nightly.yml --branch main \
+    --limit 1 --json status,conclusion,createdAt,url \
+    --jq '.[0] // empty | "\(if .conclusion == "" then "not finished (" + .status + ")" else .conclusion end) \(.createdAt) \(.url)"' \
+    2>/dev/null) || { echo "$repo: no nightly yet"; continue; }
+  echo "$repo: ${run:-no run on main yet}"
+  gh issue list -R "GetFelix/$repo" --label felix-nightly --state open
+done
+```
+
+Only `success` is green. `failure`, `cancelled`, `startup_failure`, "not
+finished" and "no run on main yet" are not. A repo that prints "no nightly yet"
+has not added the workflow, so the check does not cover it.
+
+A failed run means a change on main broke that companion. Fix Felix, or send
+the companion a fix, before tagging.
+
+A run only counts if it tested the commit you are tagging. It tests the commit
+behind the `nightly` tag, and that tag moves last in the nightly build, so
+after a failed build it can lag main by a day or more. Open the run's "Find the
+Felix commit" step, or the issue, to read the commit it used and compare it with
+the one you are tagging. If they differ, build a nightly from the newest green
+`main` commit and run the companions again:
+
+```bash
+gh workflow run nightly.yml -R GetFelix/felix --ref main -f force=true
+gh run list -R GetFelix/felix --workflow nightly.yml --limit 1   # wait until it completes
+gh workflow run felix-nightly.yml -R GetFelix/<repo>
+```
+
+Wait for the nightly build to finish before you start a companion's run. The
+`nightly` tag only moves at the end, and a companion run started earlier tests
+the old commit.
+
 ### Release notes and the upgrade page
 
 The docs site's [release notes](/release-notes/) are generated from
@@ -239,8 +281,8 @@ and uploads them to the existing release; it refuses a name that is not a tag
 or has no published release. It defaults to a dry run:
 
 ```bash
-gh workflow run release-capi-archives.yml -f tag=v0.7.0-preview.1            # build and smoke only
-gh workflow run release-capi-archives.yml -f tag=v0.7.0-preview.1 -f dry_run=false
+gh workflow run release-capi-archives.yml -f tag=v0.7.0-preview.2            # build and smoke only
+gh workflow run release-capi-archives.yml -f tag=v0.7.0-preview.2 -f dry_run=false
 ```
 
 Uploading again replaces the files already there.
@@ -330,6 +372,51 @@ To add a companion:
 3. Install the release bot on the repo, and share the two
    `FELIX_RELEASE_BOT_*` org secrets with it.
 4. Append the repo's name to `.github/companions.txt` here.
+5. Add the nightly run (see [below](#nightly-runs-in-the-companions)). Copy
+   felix-gateway's `.github/workflows/felix-nightly.yml` and
+   `.github/felix-nightly.sh` as the template.
+
+#### Nightly runs in the companions
+
+A bump PR shows that a companion works on a release. The nightly run shows that
+it still works on main, so a change that breaks a companion is found the day it
+lands. Each companion keeps:
+
+- `.github/workflows/felix-nightly.yml`, which runs on a schedule after the
+  Felix nightly build (04:41 UTC) and on `workflow_dispatch`, and calls the
+  reusable workflow of the same name in GetFelix/.github. The calling job must
+  grant both `contents: read` and `issues: write`. Setting only `issues: write`
+  leaves `contents` at none and the checkout fails. The optional
+  `timeout_minutes` input limits the script and defaults to 60.
+- `.github/felix-nightly.sh`, which starts Felix from the `nightly` images
+  (`$FELIX_IMAGE_TAG`) and runs the integration tests the repo's own CI runs
+  against Felix. It exits non-zero when they fail. It must not run `npm ci` or
+  `cargo --locked`: the workflow rewrites the manifests and lockfiles first, so
+  they no longer match the ones in git.
+- `.felix-version`, the same manifest the bump uses.
+
+The reusable workflow:
+
+1. Finds the Felix commit behind the `nightly` tag. The images and the tag come
+   from one build, but the tag moves last, so after a failed nightly build the
+   two can be a day apart. The run warns when the broker image's revision label
+   names another commit, and still uses the tag's.
+2. For each directory in `cargo_dirs`, rewrites every dependency on a crate in
+   `cargo_crates` into a git dependency on that commit, keeping features and
+   `default-features`, and runs `cargo update` on those crates.
+3. For each directory in `npm_dirs`, builds the TypeScript client from
+   `crates/sdk/felix-typescript` at that commit, packs the JavaScript and the
+   built addon into one tarball (the platform packages are not published for a
+   nightly), points every `package.json` that depends on `felix-client` at the
+   tarball, and runs `npm install`.
+4. Runs `.github/felix-nightly.sh` with `FELIX_NIGHTLY_SHA` and
+   `FELIX_IMAGE_TAG=nightly` set.
+5. On failure, opens an issue titled "Nightly against Felix main fails" with the
+   label `felix-nightly` in the companion, or comments on the open one. The
+   issue names the run, the Felix commit and the step that failed. A green run
+   closes the issue, with a comment, if one is open. Only runs on the
+   repo's default branch open or close issues. A run from another branch
+   just passes or fails.
 
 ### crates.io credentials
 
@@ -370,7 +457,7 @@ it were `tag`, so the rehearsal can run before the tag exists:
 
 ```bash
 gh workflow run release.yml --ref main \
-  -f tag=v0.7.0-preview.1 -f ref=main -f dry_run=true
+  -f tag=v0.7.0-preview.2 -f ref=main -f dry_run=true
 ```
 
 `ref` without `dry_run` fails the run. The felixctl archives are kept as a

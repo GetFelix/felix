@@ -909,6 +909,9 @@ jobs:
           # clippy that rust-toolchain.toml lists, which a build does not need
           # and which failed with "detected conflict: 'bin/cargo-fmt'".
           RUSTUP_TOOLCHAIN: "1.99.1"
+          # zig's linker ignores the -O1 rustc passes and says so, and rustc
+          # turns that into a warning on every Linux leg.
+          RUSTFLAGS: ${{ contains(matrix.target, 'linux-gnu') && '-A linker_messages' || '' }}
         run: napi build --platform --release --target ${{ matrix.target }} $ZIG
 
       - name: The addon needs no glibc newer than 2.28

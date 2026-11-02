@@ -16,8 +16,8 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ipm-${{ github.ref }}
-  cancel-in-progress: true
+  group: ipm-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || '' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
