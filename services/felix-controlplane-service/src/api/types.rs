@@ -89,6 +89,11 @@ pub struct StreamCreateRequest {
     /// in it, or in a region it has a bridge to. Omitted means any region.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub region: Option<String>,
+    /// The MQTT topic prefix to mount the stream at. Only a durable stream can
+    /// be mounted, and no two mounts of a tenant may overlap. Omitted means no
+    /// mount.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mount: Option<String>,
     /// How routing keys map to shards. Omitted means `jump_hash` once the
     /// `jump_hash_routing` fleet feature is finalized and `modulo` before.
     /// Asking for `jump_hash` before then is refused.
