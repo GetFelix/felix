@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793645660303,
+  "lastUpdate": 1793646197376,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -42588,6 +42588,58 @@ window.BENCHMARK_DATA = {
             "range": "7433.52",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1171508.08\nmean: 1171989.75\nstdev: 7433.52\ncv: 0.63%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f7f9d2368b4eacc2df60b993795e9bbeb23a64b9",
+          "message": "feat(storage): record inspection reports a record's headers block size (#1688) (#1786)\n\nPart of #1688. The record inspector shows a v8 record without saying it carried a key and headers block. The fixture fix this PR also carried landed on main in #1790; after merging main only the inspector change is left.\n\n- The inspector would show a v8 record without saying it carried a block. `RecordView` gains `headers_len` and `--json` prints `headers_bytes` (the block stays opaque, as storage keeps it). Test `a_headers_block_is_reported_by_size`; diagnosing.md and the changelog say so.\n\nVerified locally: clippy -D warnings on felix-storage and felix-broker-service, felix-storage inspect tests, felix-broker-service inspect tests.\n\nSpec-Unaffected: test fixtures and an operator tool's output; no protocol or storage behaviour changes.",
+          "timestamp": "2026-11-02T10:54:19-08:00",
+          "tree_id": "5a49f7cc77ce7d655161f5923efda7951dd239df",
+          "url": "https://github.com/GetFelix/felix/commit/f7f9d2368b4eacc2df60b993795e9bbeb23a64b9"
+        },
+        "date": 1793646196548,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 487446.43,
+            "range": "15367.60",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 487446.43\nmean: 495612.82\nstdev: 15367.60\ncv: 3.10%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 487446.43,
+            "range": "15367.60",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 487446.43\nmean: 495612.82\nstdev: 15367.60\ncv: 3.10%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 114636.38,
+            "range": "5320.06",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 114636.38\nmean: 112568.30\nstdev: 5320.06\ncv: 4.73%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1146363.76,
+            "range": "53200.61",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1146363.76\nmean: 1125682.96\nstdev: 53200.61\ncv: 4.73%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
