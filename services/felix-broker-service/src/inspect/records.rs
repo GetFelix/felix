@@ -6,11 +6,12 @@
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
+use felix_storage::StorageError;
 use felix_storage::inspect::{
-    MAX_AROUND, OffsetStatus, PAYLOAD_PREVIEW_BYTES, RecordView, RecordsQuery, RecordsReport, Stop,
-    Store, read_records,
+    MAX_AROUND, MAX_AROUND_WITH_PAYLOAD, OffsetStatus, PAYLOAD_PREVIEW_BYTES, RecordView,
+    RecordsQuery, RecordsReport, Startup, Stop, Store, first_damage, read_records,
 };
-use felix_storage::log::RecordMark;
+use felix_storage::log::{LogConfig, RecordMark};
 use serde_json::{Value, json};
 
 use super::{
@@ -24,12 +25,17 @@ const DEFAULT_AROUND: u64 = 10;
 pub(super) struct Args {
     data_dir: PathBuf,
     shard: String,
-    offset: u64,
+    /// `None` with `damage`, which finds the offset.
+    offset: Option<u64>,
+    damage: bool,
     around: u64,
     payload: bool,
     kind: Option<Store>,
     incarnation: Option<u64>,
     json: bool,
+    repair_checksum_tail: bool,
+    index_spacing: Option<u64>,
+    verify_all_on_open: bool,
 }
 
 /// `args` starts after the word `records`.
@@ -39,6 +45,10 @@ pub(super) fn parse(args: std::vec::IntoIter<String>) -> Result<Parsed, String> 
     let mut around = DEFAULT_AROUND;
     let mut payload = false;
     let mut json = false;
+    let mut damage = false;
+    let mut repair_checksum_tail = false;
+    let mut verify_all_on_open = false;
+    let mut index_spacing = None;
     let mut kind = None;
     let mut incarnation = None;
     let mut positional = Vec::new();
@@ -47,6 +57,10 @@ pub(super) fn parse(args: std::vec::IntoIter<String>) -> Result<Parsed, String> 
             "-h" | "--help" => return Ok(Parsed::Help),
             "--json" => json = true,
             "--payload" => payload = true,
+            "--damage" => damage = true,
+            "--repair-checksum-tail" => repair_checksum_tail = true,
+            "--verify-all-on-open" => verify_all_on_open = true,
+            "--index-spacing" => index_spacing = Some(number(&mut args, "--index-spacing")?),
             "--offset" => offset = Some(number(&mut args, "--offset")?),
             "--around" => around = number(&mut args, "--around")?,
             "--incarnation" => incarnation = Some(number(&mut args, "--incarnation")?),
@@ -72,15 +86,25 @@ pub(super) fn parse(args: std::vec::IntoIter<String>) -> Result<Parsed, String> 
     if let Some(extra) = positional.next() {
         return Err(format!("unexpected argument {extra}"));
     }
+    if offset.is_none() && !damage {
+        return Err("missing --offset (or --damage)".to_string());
+    }
+    if offset.is_some() && damage {
+        return Err("--offset and --damage choose the position twice".to_string());
+    }
     Ok(Parsed::Records(Args {
         data_dir,
         shard,
-        offset: offset.ok_or("missing --offset")?,
+        offset,
+        damage,
         around,
         payload,
         kind,
         incarnation,
         json,
+        repair_checksum_tail,
+        index_spacing,
+        verify_all_on_open,
     }))
 }
 
@@ -96,15 +120,15 @@ fn number(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<u64, St
 /// Print the records and return the exit status.
 pub(super) fn run(args: &Args) -> u8 {
     match read(args) {
-        Ok(report) => {
+        Ok((report, offset)) => {
             if args.json {
                 for line in json_lines(&report) {
                     println!("{line}");
                 }
             } else {
-                println!("{}", render(&report, args.offset, args.payload));
+                println!("{}", render(&report, offset, args.payload));
             }
-            let (code, notes) = outcome(&report, args.offset);
+            let (code, notes) = outcome(&report, offset);
             for note in notes {
                 eprintln!("felix-broker inspect: {note}");
             }
@@ -117,7 +141,8 @@ pub(super) fn run(args: &Args) -> u8 {
     }
 }
 
-fn read(args: &Args) -> Result<RecordsReport, (u8, String)> {
+/// The report, and the offset it is centred on.
+fn read(args: &Args) -> Result<(RecordsReport, u64), (u8, String)> {
     let data = &args.data_dir;
     if !data.is_dir() {
         return Err((
@@ -126,16 +151,46 @@ fn read(args: &Args) -> Result<RecordsReport, (u8, String)> {
         ));
     }
     let shard = resolve_shard(data, &args.shard, args.kind, args.incarnation)?;
-    if args.around > MAX_AROUND {
-        eprintln!("felix-broker inspect: --around is capped at {MAX_AROUND}");
+    let cap = if args.payload {
+        MAX_AROUND_WITH_PAYLOAD
+    } else {
+        MAX_AROUND
+    };
+    if args.around > cap {
+        eprintln!("felix-broker inspect: --around is capped at {cap}");
     }
+    let defaults = LogConfig::default();
+    let config = LogConfig {
+        index_spacing_bytes: args.index_spacing.unwrap_or(defaults.index_spacing_bytes),
+        repair_checksum_tail: args.repair_checksum_tail,
+        verify_all_on_open: args.verify_all_on_open,
+        ..defaults
+    };
+    let failed = |err: StorageError| match err {
+        StorageError::Io(err) if err.kind() == std::io::ErrorKind::NotFound => (
+            1,
+            format!(
+                "a file disappeared while reading {}: retention deletes segments on a \
+                 running broker. Run it again",
+                shard.path.display()
+            ),
+        ),
+        err => (1, format!("read {}: {err}", shard.path.display())),
+    };
+    let offset = match args.offset {
+        Some(offset) => offset,
+        None => match first_damage(&shard.path, &config).map_err(failed)? {
+            Some(stop) => stop.expected_offset,
+            None => return Err((0, "every record in the shard verifies".to_string())),
+        },
+    };
     let query = RecordsQuery {
-        offset: args.offset,
+        offset,
         around: args.around,
         payload: args.payload,
     };
-    read_records(&shard.path, &query)
-        .map_err(|err| (1, format!("read {}: {err}", shard.path.display())))
+    let report = read_records(&shard.path, &query, &config).map_err(failed)?;
+    Ok((report, offset))
 }
 
 /// The exit status, and what to tell the operator on stderr. Damage comes
@@ -173,6 +228,14 @@ fn outcome(report: &RecordsReport, offset: u64) -> (u8, Vec<String>) {
                 "no record carries offset {offset}, though it is inside the log's range"
             ));
         }
+    }
+    match &report.startup {
+        Startup::Clean => {}
+        Startup::Repair => {
+            notes.push("startup would repair this shard; `inspect segments` shows what".to_string())
+        }
+        Startup::Refuse(_) => notes
+            .push("startup would refuse this shard; `inspect segments` shows where".to_string()),
     }
     if let Some(stop) = &report.stop {
         notes.push(stop_note(stop));

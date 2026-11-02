@@ -6,25 +6,31 @@
 //! stale index costs a longer walk, never a wrong answer.
 //!
 //! A record that does not verify ends the read instead of failing it. The
-//! records before it are returned, with where and why it stopped. Next to a
-//! running broker that stop is often an append in flight at the active
-//! segment's tail.
+//! records before it are returned, with where and why it stopped. Whether that
+//! is a torn tail or damage comes from the plan startup runs, which also
+//! decides which segments count: a rollover's leftovers are not read. Next to
+//! a running broker a stop at the active segment's tail is often an append in
+//! flight.
 
 use std::fs::File;
 use std::path::Path;
 
-use super::super::recovery;
-use super::label_of;
-use crate::log::{Offset, RecordMark, SegmentId};
+use super::super::{offload, recovery};
+use super::{Action, Startup, label_of, verdict};
+use crate::log::{LogConfig, Offset, RecordMark, SegmentId};
 use crate::segment::format::{check_offset_continuity, decode_record};
 use crate::segment::{
-    RECORD_HEADER_LEN, RecordHeader, SEGMENT_HEADER_LEN, ScanStart, SegmentHeader, SparseIndex,
-    TailRepair, index_file_name, read_segment_header, scan_segment_with, segment_file_name,
+    RECORD_HEADER_LEN, RecordHeader, SEGMENT_HEADER_LEN, SegmentHeader, SparseIndex,
+    index_file_name, read_segment_header, segment_file_name,
 };
 use crate::{Corruption, CorruptionKind, Result, StorageError};
 
 /// The most records a read returns on each side of the offset.
 pub const MAX_AROUND: u64 = 1000;
+
+/// The same cap when payloads are returned, so a window of large records stays
+/// within a few megabytes.
+pub const MAX_AROUND_WITH_PAYLOAD: u64 = 100;
 
 /// The most payload bytes a read returns for one record.
 pub const PAYLOAD_PREVIEW_BYTES: usize = 64 * 1024;
@@ -33,7 +39,8 @@ pub const PAYLOAD_PREVIEW_BYTES: usize = 64 * 1024;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RecordsQuery {
     pub offset: Offset,
-    /// Records wanted on each side of `offset`. Capped at [`MAX_AROUND`].
+    /// Records wanted on each side of `offset`. Capped at [`MAX_AROUND`], or
+    /// at [`MAX_AROUND_WITH_PAYLOAD`] with `payload`.
     pub around: u64,
     /// Return payload bytes, cut at [`PAYLOAD_PREVIEW_BYTES`] each.
     pub payload: bool,
@@ -55,6 +62,11 @@ pub struct RecordsReport {
     pub offset: OffsetStatus,
     /// Where the walk began.
     pub seek: Seek,
+    /// What startup would make of the shard, from the plan it runs before it
+    /// writes anything. The segments read are the ones left after that plan's
+    /// removals, so a rollover's leftovers are not mistaken for data.
+    pub startup: Startup,
+    pub actions: Vec<Action>,
 }
 
 /// One record that passed its checksum.
@@ -84,8 +96,8 @@ pub struct Stop {
     /// verified, or the segment's base.
     pub expected_offset: Offset,
     pub cause: CorruptionKind,
-    /// The damage runs to the end of the file in a shape only an unfinished
-    /// write leaves. Otherwise it could be a complete record that rotted.
+    /// Startup would cut the file here, as a torn tail. Otherwise it would
+    /// refuse the shard, or not look at this record at all.
     pub tail: bool,
 }
 
@@ -117,81 +129,143 @@ pub struct Seek {
 }
 
 /// Decode the records within `query.around` of `query.offset` in the shard in
-/// `dir`. Nothing is written.
-pub fn read_records(dir: &Path, query: &RecordsQuery) -> Result<RecordsReport> {
+/// `dir`, with startup's verdict for `config`. Only `index_spacing_bytes`,
+/// `repair_checksum_tail` and `verify_all_on_open` affect the result. Nothing
+/// is written.
+pub fn read_records(dir: &Path, query: &RecordsQuery, config: &LogConfig) -> Result<RecordsReport> {
+    retrying(dir, || read_once(dir, query, config))
+}
+
+/// The first record that does not verify, reading the shard from its start.
+/// `None` when every record does.
+pub fn first_damage(dir: &Path, config: &LogConfig) -> Result<Option<Stop>> {
+    retrying(dir, || {
+        let label = label_of(dir);
+        let (_, actions) = plan(dir, &label, config)?;
+        let segments = list_segments(dir, &label, &actions)?;
+        let mut walk = Walk::new(
+            dir,
+            &actions,
+            segments.last().map_or(0, |segment| segment.id),
+            false,
+            0,
+            u64::MAX,
+        );
+        for segment in &segments {
+            walk.segment(segment)?;
+            if walk.stop.is_some() {
+                break;
+            }
+        }
+        Ok(walk.stop)
+    })
+}
+
+/// Run `read` again once if a file vanished under it, which is retention
+/// deleting a segment on a running broker.
+fn retrying<T>(dir: &Path, read: impl Fn() -> Result<T>) -> Result<T> {
+    match read() {
+        Err(StorageError::Io(err))
+            if err.kind() == std::io::ErrorKind::NotFound && dir.is_dir() =>
+        {
+            read()
+        }
+        other => other,
+    }
+}
+
+fn read_once(dir: &Path, query: &RecordsQuery, config: &LogConfig) -> Result<RecordsReport> {
     let label = label_of(dir);
-    let around = query.around.min(MAX_AROUND);
-    let segments = list_segments(dir, &label)?;
-    let log_start = segments
-        .iter()
-        .find_map(|segment| segment.header.as_ref().ok())
-        .map(|header| header.base_offset);
-    let Some(log_start) = log_start else {
+    let around = query.around.min(if query.payload {
+        MAX_AROUND_WITH_PAYLOAD
+    } else {
+        MAX_AROUND
+    });
+    let (startup, actions) = plan(dir, &label, config)?;
+    let segments = list_segments(dir, &label, &actions)?;
+    let seek = |segment: SegmentId| Seek {
+        segment,
+        position: SEGMENT_HEADER_LEN,
+        via_index: false,
+    };
+    if segments.is_empty() {
         return Ok(RecordsReport {
             log_start: None,
             log_end: None,
             records: Vec::new(),
             stop: None,
             offset: OffsetStatus::Empty,
-            seek: Seek {
-                segment: 0,
-                position: SEGMENT_HEADER_LEN,
-                via_index: false,
-            },
+            seek: seek(0),
+            startup,
+            actions,
         });
-    };
-
-    let lo = query.offset.saturating_sub(around).max(log_start);
+    }
+    // The oldest segment's header says where the log starts. When it is the
+    // one that does not decode, the read stops there, so the damage is named
+    // and not mistaken for an offset below the start.
+    let log_start = segments[0]
+        .header
+        .as_ref()
+        .ok()
+        .map(|header| header.base_offset);
+    let lo = query
+        .offset
+        .saturating_sub(around)
+        .max(log_start.unwrap_or(0));
     let hi = query.offset.saturating_add(around);
-    let first = segments
-        .iter()
-        .rposition(|segment| {
-            segment
-                .header
-                .as_ref()
-                .is_ok_and(|header| header.base_offset <= lo)
-        })
-        .unwrap_or(0);
-
-    let mut walk = Walk {
-        dir,
-        label: &label,
-        query,
-        lo,
-        hi,
-        records: Vec::new(),
-        expected: None,
-        stop: None,
-        window_done: false,
-        seek: None,
+    let first = if log_start.is_none() {
+        0
+    } else {
+        segments
+            .iter()
+            .rposition(|segment| {
+                segment
+                    .header
+                    .as_ref()
+                    .is_ok_and(|header| header.base_offset <= lo)
+            })
+            .unwrap_or(0)
     };
+
+    let mut walk = Walk::new(dir, &actions, segments[segments.len() - 1].id, true, lo, hi);
+    walk.payload = query.payload;
     for segment in &segments[first..] {
         walk.segment(segment)?;
         if walk.stop.is_some() || walk.window_done {
             break;
         }
     }
-    let log_end =
-        (walk.stop.is_none() && !walk.window_done).then(|| walk.expected.unwrap_or(log_start));
+    let log_end = (walk.stop.is_none() && !walk.window_done)
+        .then(|| walk.expected.or(log_start).unwrap_or(0));
     let offset = status(query.offset, log_start, log_end, &walk);
     Ok(RecordsReport {
-        log_start: Some(log_start),
+        log_start,
         log_end,
         records: walk.records,
         stop: walk.stop,
         offset,
-        seek: walk.seek.unwrap_or(Seek {
-            segment: segments[first].id,
-            position: SEGMENT_HEADER_LEN,
-            via_index: false,
-        }),
+        seek: walk.seek.unwrap_or(seek(segments[first].id)),
+        startup,
+        actions,
     })
 }
 
-fn status(offset: Offset, log_start: Offset, log_end: Option<Offset>, walk: &Walk) -> OffsetStatus {
+/// Startup's plan for the shard, as a verdict and the writes it would make.
+fn plan(dir: &Path, label: &str, config: &LogConfig) -> Result<(Startup, Vec<Action>)> {
+    let offloaded = offload::manifest::load(dir)?;
+    let plan = recovery::plan_recovery(dir, label, config, &offloaded)?;
+    Ok(verdict(&plan))
+}
+
+fn status(
+    offset: Offset,
+    log_start: Option<Offset>,
+    log_end: Option<Offset>,
+    walk: &Walk,
+) -> OffsetStatus {
     if walk.records.iter().any(|record| record.offset == offset) {
         OffsetStatus::Found
-    } else if offset < log_start {
+    } else if let Some(log_start) = log_start.filter(|start| offset < *start) {
         OffsetStatus::BelowStart { log_start }
     } else if let Some(log_end) = log_end.filter(|end| offset >= *end) {
         OffsetStatus::PastTail { log_end }
@@ -208,9 +282,21 @@ struct SegmentFile {
     header: std::result::Result<SegmentHeader, Corruption>,
 }
 
-fn list_segments(dir: &Path, label: &str) -> Result<Vec<SegmentFile>> {
+/// The segments startup would keep: those on disk less the ones its plan
+/// removes (rollover leftovers, and what a cut retired segment orphans).
+fn list_segments(dir: &Path, label: &str, actions: &[Action]) -> Result<Vec<SegmentFile>> {
+    let removed = |id: SegmentId| {
+        actions.iter().any(|action| match action {
+            Action::RemoveSegment { segment, .. } => *segment == id,
+            Action::CutRetired { drops_next, .. } => *drops_next == Some(id),
+            _ => false,
+        })
+    };
     let mut segments = Vec::new();
     for id in recovery::discover_segment_ids(dir)? {
+        if removed(id) {
+            continue;
+        }
         let header = match read_segment_header(&dir.join(segment_file_name(id)), id, label) {
             Ok(header) => Ok(header),
             Err(StorageError::Corruption(detail)) => Err(detail),
@@ -221,11 +307,33 @@ fn list_segments(dir: &Path, label: &str) -> Result<Vec<SegmentFile>> {
     Ok(segments)
 }
 
+/// Whether startup cuts segment `id` at `position`: a torn tail of the active
+/// segment, or an unsealed retired segment back to its last intact record.
+fn startup_cuts(actions: &[Action], id: SegmentId, position: u64) -> bool {
+    actions.iter().any(|action| match action {
+        Action::TruncateTail {
+            segment,
+            position: at,
+            ..
+        } => *segment == id && *at == position,
+        Action::CutRetired {
+            segment,
+            valid_bytes,
+            ..
+        } => *segment == id && *valid_bytes == position,
+        _ => false,
+    })
+}
+
 /// State carried from one segment to the next.
 struct Walk<'a> {
     dir: &'a Path,
-    label: &'a str,
-    query: &'a RecordsQuery,
+    actions: &'a [Action],
+    /// The newest segment, the only one a write can still be finishing.
+    newest: SegmentId,
+    /// Whether to keep the records, or only check them.
+    keep: bool,
+    payload: bool,
     /// The first offset wanted, and the last.
     lo: Offset,
     hi: Offset,
@@ -238,7 +346,31 @@ struct Walk<'a> {
     seek: Option<Seek>,
 }
 
-impl Walk<'_> {
+impl<'a> Walk<'a> {
+    fn new(
+        dir: &'a Path,
+        actions: &'a [Action],
+        newest: SegmentId,
+        keep: bool,
+        lo: Offset,
+        hi: Offset,
+    ) -> Self {
+        Self {
+            dir,
+            actions,
+            newest,
+            keep,
+            payload: false,
+            lo,
+            hi,
+            records: Vec::new(),
+            expected: None,
+            stop: None,
+            window_done: false,
+            seek: None,
+        }
+    }
+
     fn segment(&mut self, segment: &SegmentFile) -> Result<()> {
         let id = segment.id;
         if self.expected.is_some_and(|expected| expected > self.hi) {
@@ -281,7 +413,6 @@ impl Walk<'_> {
         {
             return self.fail(
                 id,
-                &path,
                 SEGMENT_HEADER_LEN,
                 previous,
                 CorruptionKind::OffsetOutOfOrder {
@@ -306,14 +437,14 @@ impl Walk<'_> {
                     needed: RECORD_HEADER_LEN,
                     available: read as u64,
                 };
-                return self.fail(id, &path, position, expected, cause);
+                return self.fail(id, position, expected, cause);
             }
             let record_header = match RecordHeader::decode_in(&buf, header.version) {
                 Ok(record_header) => record_header,
-                Err(err) => return self.fail(id, &path, position, expected, err.kind),
+                Err(err) => return self.fail(id, position, expected, err.kind),
             };
             if let Err(err) = check_offset_continuity(expected, record_header.offset) {
-                return self.fail(id, &path, position, expected, err.kind);
+                return self.fail(id, position, expected, err.kind);
             }
             let total = record_header.encoded_len();
             if record_header.offset > self.hi {
@@ -335,26 +466,28 @@ impl Walk<'_> {
                     needed: total,
                     available: read as u64,
                 };
-                return self.fail(id, &path, position, expected, cause);
+                return self.fail(id, position, expected, cause);
             }
             let decoded = match decode_record(&buf) {
                 Ok((decoded, _)) => decoded,
-                Err(err) => return self.fail(id, &path, position, expected, err.kind),
+                Err(err) => return self.fail(id, position, expected, err.kind),
             };
-            self.records.push(RecordView {
-                segment: id,
-                position,
-                offset: decoded.header.offset,
-                timestamp_micros: decoded.header.timestamp_micros,
-                mark: decoded.mark,
-                payload_len: decoded.payload.len() as u64,
-                checksum: decoded.header.checksum,
-                publisher: decoded.publisher.as_deref().map(<[u8]>::to_vec),
-                payload: self.query.payload.then(|| {
-                    let keep = decoded.payload.len().min(PAYLOAD_PREVIEW_BYTES);
-                    decoded.payload[..keep].to_vec()
-                }),
-            });
+            if self.keep {
+                self.records.push(RecordView {
+                    segment: id,
+                    position,
+                    offset: decoded.header.offset,
+                    timestamp_micros: decoded.header.timestamp_micros,
+                    mark: decoded.mark,
+                    payload_len: decoded.payload.len() as u64,
+                    checksum: decoded.header.checksum,
+                    publisher: decoded.publisher.as_deref().map(<[u8]>::to_vec),
+                    payload: self.payload.then(|| {
+                        let keep = decoded.payload.len().min(PAYLOAD_PREVIEW_BYTES);
+                        decoded.payload[..keep].to_vec()
+                    }),
+                });
+            }
             position += total;
             expected += 1;
         }
@@ -387,41 +520,25 @@ impl Walk<'_> {
         }
     }
 
-    /// End the read at the record at `position`, and say whether the damage
-    /// is a torn tail. Judged by the scan startup uses, from the record on,
-    /// with nothing repaired.
+    /// End the read at the record at `position`. Whether that is a torn tail
+    /// is startup's call, made by the plan, so it cannot disagree with
+    /// `inspect segments`. A record cut short at the end of the newest
+    /// segment counts as one too: startup would cut it, and it can have
+    /// appeared since the plan was made.
     fn fail(
         &mut self,
         id: SegmentId,
-        path: &Path,
         position: u64,
         expected: Offset,
         cause: CorruptionKind,
     ) -> Result<()> {
-        let rescan = scan_segment_with(
-            path,
-            id,
-            self.label,
-            u64::MAX,
-            ScanStart::Resume {
-                position,
-                next_offset: expected,
-            },
-            TailRepair::default(),
-        );
-        // A scan that finds nothing wrong lost a race with the writer: the
-        // record was unfinished when it was read.
-        let tail = match rescan {
-            Ok(_) => true,
-            Err(StorageError::Corruption(_)) => false,
-            Err(err) => return Err(err),
-        };
+        let unfinished = id == self.newest && matches!(cause, CorruptionKind::Truncated { .. });
         self.stop = Some(Stop {
             segment: id,
             position,
             expected_offset: expected,
             cause,
-            tail,
+            tail: unfinished || startup_cuts(self.actions, id, position),
         });
         Ok(())
     }

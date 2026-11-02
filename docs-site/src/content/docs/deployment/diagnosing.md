@@ -583,10 +583,12 @@ segment stops verifying, as a segment and a byte. `felix-broker inspect records`
 decodes the records near an offset of one shard, so you can see which records
 are readable, what they hold, and where the first bad one sits. Reach the data
 directory the same ways as above, and give it the directory, the shard as
-`TENANT/NAMESPACE/NAME/SHARD`, and the offset to look at:
+`TENANT/NAMESPACE/NAME/SHARD`, and either an offset to look at or `--damage`,
+which reads the shard from its start and centres the window on the first record
+that fails:
 
 ```bash
-felix-broker inspect records /var/lib/felix/data acme/default/orders/3 --offset 60 --around 3
+felix-broker inspect records /var/lib/felix/data acme/default/orders/3 --damage --around 3
 ```
 
 ```
@@ -595,46 +597,52 @@ felix-broker inspect records /var/lib/felix/data acme/default/orders/3 --offset 
    58      2026-11-02T10:40:10.303567Z  plain  64             1        1320  ok
    59      2026-11-02T10:40:10.303576Z  plain  64             1        1412  ok
 *  60      -                            -      -              1        1504  FAIL: record checksum mismatch (expected 0x327fca07, found 0xae7bc095)
-felix-broker inspect: a record fails to verify in segment 1 at byte 1504, where offset 60 should be: record checksum mismatch (expected 0x327fca07, found 0xae7bc095). Reading stopped there
 ```
 
 The failing row is in the segment and at the byte `inspect segments` printed
-(`segment 1 at byte 1504`), and it names the offset the record should have. If
-you do not know the offset, pass the damaged segment's `BASE` as `--offset` and
-a large `--around`, and read from the end of the table.
+(`segment 1 at byte 1504`), and it names the offset the record should have. The
+notes below the table (on stderr) say that startup would refuse the shard and
+repeat where the read stopped. Once you know the offset, `--offset 60` looks
+at the same place without reading the whole shard first.
 
 The command seeks with the segment's sparse index and then decodes forward, up
-to `--around` records on each side of `--offset` (10 by default, at most
-1000). Each row is one record: its offset, the time the record carries, its
-kind (`plain` for an ordinary record, and others such as `commit` or `trim`),
-its payload size in bytes, and where it sits on disk. The row for the offset you
-asked for is starred. The payload is not shown unless you add `--payload`, which
-prints each as a hex dump with text beside it, cut at 64 KiB. `--json` prints
-one line per record, with `payload_hex` and `payload_utf8` fields under
-`--payload`. Add `--kind` and `--incarnation` for a shard that is not a stream,
-or not at incarnation 0, as for `inspect segments`.
+to `--around` records on each side (10 by default, at most 1000, or at most 100
+with `--payload`). Each row is one record: its offset, the time the record
+carries, its kind, its payload size in bytes, and where it sits on disk. The
+kind is `plain` for an ordinary record, or `producer-batch-start`,
+`producer-batch-continue`, `generation-start`, `commit` or `trim (floor N)`. The
+row for the offset you asked for is starred. The payload is not shown unless
+you add `--payload`, which prints each as a hex dump with text beside it, cut at
+64 KiB. `--json` prints one line per record, with `payload_hex` and
+`payload_utf8` fields under `--payload`. Add `--kind` and `--incarnation` for a
+shard that is not a stream, or not at incarnation 0, as for `inspect segments`.
 
-A record that fails its checksum ends the read, with the rows before it kept.
-Records before the window are only walked by their headers, so a read that
-starts after the bad record gets past it:
+A record that fails to verify ends the read, with the rows before it kept.
+Whether it is a torn tail or damage is startup's verdict, so it agrees with
+`inspect segments`: pass the same `--repair-checksum-tail`, `--index-spacing`
+and `--verify-all-on-open`. Segments startup would remove, such as the empty
+leftovers of an interrupted rollover, are not read. Records before the window
+are only walked by their headers. A read that starts after a record whose
+payload failed its checksum therefore gets past it, but a record whose header
+is damaged stops any read that has to cross it, because the header says how far
+to step to the next record.
 
-```bash
-felix-broker inspect records /var/lib/felix/data acme/default/orders/3 --offset 61 --around 0
-```
-
-The exit status is 0 when the offset was read, 7 when a record in the range
-fails its checksum, 6 when the read ended at a torn tail, 5 when the offset is
-below the oldest segment on disk or past the end of the log (the message says
-where the log starts and ends), and 2 for bad arguments.
+The exit status is 0 when the offset was read, 7 when a record in the range is
+damaged, 6 when the read ended at a torn tail startup would cut, 5 when the
+offset is below the oldest segment on disk or past the end of the log (the
+message says where the log starts and ends) or the shard is not there, and 2 for
+bad arguments.
 
 `inspect records` never writes. It opens every file read-only, creates no
 directory, and does not rebuild an index on disk or cut a torn tail. It does not
 trust an index file either: the record an index entry points at is checked
-before it is used, so a missing or stale index only makes the read slower, and
-it is safe to run on the live volume. Next to a running broker, the last record
-of the active segment can be an append that has not finished. It shows as a torn
-tail, which is why the message says so. Run it again, or on a copy, before
-reading much into it.
+before it is used, so a missing or stale one only makes the read slower (the
+active segment's index is often short, and a seek into it walks from the last
+entry it has). It is safe to run on the live volume. Next to a running broker,
+the last record of the active segment can be an append that has not finished.
+It shows as a torn tail, which is why the message says so, and retention can
+delete a segment while the command reads, which it reports and asks you to run
+again. Run it again, or on a copy, before reading much into it.
 
 **Likely causes.**
 

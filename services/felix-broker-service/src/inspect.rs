@@ -34,9 +34,10 @@ usage: felix-broker inspect segments DATA_DIR [TENANT/NAMESPACE/NAME/SHARD]
            [--kind stream|cache|groups|dead-letters|counters] [--incarnation N]
            [--segments] [--json]
            [--repair-checksum-tail] [--index-spacing BYTES] [--verify-all-on-open]
-       felix-broker inspect records DATA_DIR TENANT/NAMESPACE/NAME/SHARD --offset N
+       felix-broker inspect records DATA_DIR TENANT/NAMESPACE/NAME/SHARD (--offset N | --damage)
            [--around N] [--payload] [--json]
            [--kind stream|cache|groups|dead-letters|counters] [--incarnation N]
+           [--repair-checksum-tail] [--index-spacing BYTES] [--verify-all-on-open]
 
 Reads a broker's data directory (FELIX_DURABLE_STORAGE_DIR) and reports, for
 every shard of every store, its segments, whether each one's records and index
@@ -62,17 +63,25 @@ and 5 when the directory or shard is not there.
 
 `records` decodes the records around one offset of one shard, so you can look
 at what a position `segments` named actually holds. It seeks with the sparse
-index and decodes up to --around records (default 10, at most 1000) on each
-side of --offset. Each row shows the offset, the time the record carries, its
-kind, its payload size and where it sits on disk. Payload bytes are shown only
-with --payload, and each is cut at 64 KiB. --json prints one line per record.
-A record that fails its checksum ends the read; the rows before it are kept.
-It exits 0 when it read the offset, 7 when a record in the range fails its
-checksum, 6 when the read ended at a torn tail, 5 when the offset is below the
-oldest segment or past the end of the log, and 2 for bad arguments. It is
-strictly read-only and does not trust an index: a missing or stale one only
-makes the read slower. Next to a running broker the active segment's last
-record may be an append in flight, which shows as a torn tail.";
+index and decodes up to --around records (default 10, at most 1000, or 100
+with --payload) on each side of --offset. --damage reads the shard from its
+start instead and centres the window on the first record that fails. Each row
+shows the offset, the time the record carries, its kind, its payload size and
+where it sits on disk. Payload bytes are shown only with --payload, and each is
+cut at 64 KiB. --json prints one line per record.
+
+A record that fails to verify ends the read and is shown as the last row; the
+rows before it are kept. Whether that is a torn tail or damage is startup's
+verdict for the three settings above, the same as `segments` gives. Segments
+startup would remove, such as a rollover's leftovers, are not read.
+
+It exits 0 when it read the offset, 7 when a record in the range is damaged,
+6 when the read ended at a torn tail startup would cut, 5 when the offset is
+below the oldest segment or past the end of the log or the shard is not there,
+and 2 for bad arguments. It is strictly read-only and does not trust an index:
+a missing or stale one only makes the read slower. Next to a running broker
+the active segment's last record may be an append in flight, which shows as a
+torn tail.";
 
 /// What `inspect segments` was asked.
 #[derive(Debug, Default, PartialEq, Eq)]

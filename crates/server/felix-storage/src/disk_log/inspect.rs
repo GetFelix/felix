@@ -13,8 +13,8 @@
 mod records;
 
 pub use records::{
-    MAX_AROUND, OffsetStatus, PAYLOAD_PREVIEW_BYTES, RecordView, RecordsQuery, RecordsReport, Seek,
-    Stop, read_records,
+    MAX_AROUND, MAX_AROUND_WITH_PAYLOAD, OffsetStatus, PAYLOAD_PREVIEW_BYTES, RecordView,
+    RecordsQuery, RecordsReport, Seek, Stop, first_damage, read_records,
 };
 
 use std::path::{Path, PathBuf};

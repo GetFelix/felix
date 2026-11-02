@@ -46,17 +46,21 @@ fn args(data: &Path, offset: u64, around: u64) -> Args {
     Args {
         data_dir: data.to_path_buf(),
         shard: "acme/default/orders/0".to_string(),
-        offset,
+        offset: Some(offset),
+        damage: false,
         around,
         payload: false,
         kind: None,
         incarnation: None,
         json: false,
+        repair_checksum_tail: false,
+        index_spacing: None,
+        verify_all_on_open: false,
     }
 }
 
 fn report(data: &Path, offset: u64, around: u64) -> RecordsReport {
-    read(&args(data, offset, around)).expect("read")
+    read(&args(data, offset, around)).expect("read").0
 }
 
 fn parsed(list: &[&str]) -> Result<Parsed, String> {
@@ -123,12 +127,16 @@ fn arguments_parse_like_the_usage_says() {
         Args {
             data_dir: "/data".into(),
             shard: "acme/default/orders/0".into(),
-            offset: 42,
+            offset: Some(42),
+            damage: false,
             around: 3,
             payload: true,
             kind: Some(Store::Cache),
             incarnation: Some(7),
             json: true,
+            repair_checksum_tail: false,
+            index_spacing: None,
+            verify_all_on_open: false,
         }
     );
 
@@ -137,6 +145,21 @@ fn arguments_parse_like_the_usage_says() {
     };
     assert_eq!(defaults.around, DEFAULT_AROUND);
     assert!(!defaults.payload && !defaults.json);
+
+    let Ok(Parsed::Records(found)) = parsed(&[
+        "/data",
+        "a/b/c/0",
+        "--damage",
+        "--repair-checksum-tail",
+        "--verify-all-on-open",
+        "--index-spacing",
+        "512",
+    ]) else {
+        panic!("expected records");
+    };
+    assert!(found.damage && found.offset.is_none());
+    assert!(found.repair_checksum_tail && found.verify_all_on_open);
+    assert_eq!(found.index_spacing, Some(512));
 
     assert!(matches!(parsed(&["--help"]), Ok(Parsed::Help)));
     for bad in [
@@ -148,6 +171,8 @@ fn arguments_parse_like_the_usage_says() {
         &["/data", "a/b/c/0", "--offset", "-1"],
         &["/data", "a/b/c/0", "--offset", "1", "--around", "many"],
         &["/data", "a/b/c/0", "--offset", "1", "--kind", "topics"],
+        &["/data", "a/b/c/0", "--offset", "1", "--damage"],
+        &["/data", "a/b/c/0", "--index-spacing", "wide", "--damage"],
         &["/data", "a/b/c/0", "--offset", "1", "extra"],
         &["/data", "a/b/c/0", "--offset", "1", "--frobnicate"],
     ] {
@@ -219,7 +244,7 @@ async fn payloads_are_dumped_as_hex_and_text_with_the_flag() {
     write_shard(data.path(), 4).await;
     let mut asked = args(data.path(), 1, 0);
     asked.payload = true;
-    let report = read(&asked).expect("read");
+    let report = read(&asked).expect("read").0;
 
     let text = render(&report, 1, true);
     assert!(text.contains("offset 1 payload, 9 bytes:"), "{text}");
@@ -412,12 +437,151 @@ async fn reading_changes_nothing_on_disk() {
     for offset in [0, 6, 11, 99] {
         let mut asked = args(data.path(), offset, 1000);
         asked.payload = true;
-        let report = read(&asked).expect("read");
+        let report = read(&asked).expect("read").0;
         render(&report, offset, true);
     }
     assert_eq!(
         tree(data.path()),
         before,
         "inspect records wrote to the data dir"
+    );
+}
+
+async fn rot_record_5(data: &Path) -> PathBuf {
+    let dir = write_shard(data, 6).await;
+    let active = active_segment(&dir);
+    let mut bytes = std::fs::read(&active).expect("read");
+    let position = SEGMENT_HEADER_LEN as usize + 37;
+    bytes[position + RECORD_HEADER_LEN as usize + 3] ^= 0xFF;
+    std::fs::write(&active, &bytes).expect("write");
+    dir
+}
+
+#[tokio::test]
+async fn damage_finds_the_offset_for_you() {
+    let data = tempfile::tempdir().expect("dir");
+    rot_record_5(data.path()).await;
+
+    let mut asked = args(data.path(), 0, 1);
+    asked.offset = None;
+    asked.damage = true;
+    let (report, offset) = read(&asked).expect("read");
+
+    assert_eq!(offset, 5);
+    assert_eq!(report.stop.expect("stop").expected_offset, 5);
+    assert_eq!(report.records.last().map(|r| r.offset), Some(4));
+
+    let clean = tempfile::tempdir().expect("dir");
+    write_shard(clean.path(), 6).await;
+    let mut asked = args(clean.path(), 0, 1);
+    asked.offset = None;
+    asked.damage = true;
+    let (code, message) = read(&asked).expect_err("nothing to find");
+    assert_eq!(
+        (code, message.as_str()),
+        (0, "every record in the shard verifies")
+    );
+}
+
+#[tokio::test]
+async fn a_shard_that_startup_would_refuse_says_so() {
+    let data = tempfile::tempdir().expect("dir");
+    rot_record_5(data.path()).await;
+
+    let (report, offset) = read(&args(data.path(), 2, 1)).expect("read");
+    let (code, notes) = outcome(&report, offset);
+
+    assert_eq!(code, 0, "the range itself reads clean");
+    assert!(
+        notes
+            .iter()
+            .any(|note| note.contains("startup would refuse")),
+        "{notes:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_incarnation_is_looked_up_in_its_own_directory() {
+    let data = tempfile::tempdir().expect("dir");
+    let dir = felix_storage::disk_log::layout::incarnation_dir(
+        &Store::Stream.root(data.path()),
+        &key(),
+        3,
+    );
+    let log = DiskLog::open(dir, "orders", config()).expect("open");
+    log.append(&[AppendRecord {
+        payload: "third".into(),
+        timestamp_micros: WHEN,
+        mark: Default::default(),
+        publisher: None,
+    }])
+    .await
+    .expect("append");
+    log.shutdown().await.expect("shutdown");
+
+    let mut asked = args(data.path(), 0, 0);
+    asked.incarnation = Some(3);
+    let (report, _) = read(&asked).expect("read");
+    assert_eq!(report.records[0].payload_len, 5);
+    // Incarnation 0 is a different directory, and is not there.
+    assert_eq!(
+        read(&args(data.path(), 0, 0)).expect_err("none").0,
+        EXIT_NOT_FOUND
+    );
+}
+
+fn words(list: &[&str]) -> Vec<String> {
+    list.iter().map(|word| word.to_string()).collect()
+}
+
+#[tokio::test]
+async fn run_returns_the_exit_status_in_both_formats() {
+    let data = tempfile::tempdir().expect("dir");
+    rot_record_5(data.path()).await;
+    let data = data.path().to_str().expect("utf8");
+    let shard = "acme/default/orders/0";
+
+    for format in [&[][..], &["--json"]] {
+        let mut list = vec!["records", data, shard, "--offset", "5", "--around", "2"];
+        list.extend_from_slice(format);
+        assert_eq!(super::super::run(words(&list)), EXIT_DAMAGED, "{list:?}");
+    }
+    assert_eq!(
+        super::super::run(words(&[
+            "records", data, shard, "--offset", "1", "--around", "1"
+        ])),
+        0
+    );
+    assert_eq!(
+        super::super::run(words(&["records", data, shard, "--offset", "500"])),
+        EXIT_NOT_FOUND
+    );
+    assert_eq!(super::super::run(words(&["records", "--help"])), 0);
+    assert_eq!(
+        super::super::run(words(&["records", data, shard])),
+        super::super::EXIT_USAGE
+    );
+}
+
+#[test]
+fn json_for_a_stop_is_a_line_with_the_error() {
+    let report = {
+        let data = tempfile::tempdir().expect("dir");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime.block_on(rot_record_5(data.path()));
+        report(data.path(), 5, 1)
+    };
+    let lines = json_lines(&report);
+    let stop: Value = serde_json::from_str(lines.last().expect("line")).expect("json");
+    assert_eq!(stop["checksum_ok"], false);
+    assert_eq!(stop["torn_tail"], false);
+    assert_eq!(stop["offset"], 5);
+    assert!(
+        stop["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("checksum"))
     );
 }
