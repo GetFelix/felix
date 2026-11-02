@@ -554,7 +554,7 @@ async fn existing_tenants_authenticate_while_the_control_plane_is_down_past_rene
 
     cp.serve(None);
     tokio::time::sleep(Duration::from_millis(200)).await;
-    let (failed, _) = store.renew_due().await;
+    let (_, failed, _) = store.renew_due().await;
     assert_eq!(
         failed, 1,
         "the renewal reached the control plane and failed"
@@ -576,13 +576,13 @@ async fn existing_tenants_authenticate_while_the_control_plane_is_down_past_rene
 async fn keys_past_the_maximum_staleness_are_not_used() -> Result<()> {
     let cp = KeyServer::start(key_set(&[&K1])).await?;
     let mut store = cp.store();
-    store.max_staleness = Duration::from_millis(100);
+    store.max_staleness = Duration::from_millis(500);
     let auth = BrokerAuth::with_key_store(Arc::new(store));
     let token = K1.mint("t1");
     auth.authenticate("t1", &token).await?;
 
     cp.serve(None);
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
     assert!(auth.authenticate("t1", &token).await.is_err());
 
     // A control plane that answers again restores them.
@@ -604,7 +604,7 @@ async fn a_renewal_drops_a_key_the_control_plane_retired() -> Result<()> {
 
     cp.serve(Some(key_set(&[&K2])));
     tokio::time::sleep(Duration::from_millis(200)).await;
-    assert_eq!(store.renew_due().await.0, 0);
+    assert_eq!(store.renew_due().await.1, 0);
     assert!(auth.authenticate("t1", &old).await.is_err());
     auth.authenticate("t1", &K2.mint("t1")).await?;
     Ok(())
@@ -682,7 +682,8 @@ async fn the_renewer_drops_a_tenant_the_catalog_no_longer_has() -> Result<()> {
     let mut store = cp
         .store()
         .with_tenant_catalog(TenantCatalog::new(Arc::clone(&broker), seeded));
-    store.renew_every = Duration::ZERO;
+    // Not due: removal does not wait for the tenant's next renewal.
+    store.renew_every = Duration::from_secs(3600);
     let store = Arc::new(store);
     let auth = BrokerAuth::with_key_store(Arc::clone(&store));
     let token = K1.mint("t1");
@@ -692,5 +693,60 @@ async fn the_renewer_drops_a_tenant_the_catalog_no_longer_has() -> Result<()> {
     store.renew_due().await;
     assert!(store.cached_jwks(&TenantId::new("t1")).is_none());
     assert!(auth.authenticate("t1", &token).await.is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_spawned_renewer_drops_a_retired_key_and_stops_on_shutdown() -> Result<()> {
+    let cp = KeyServer::start(key_set(&[&K1, &K2])).await?;
+    let mut store = cp.store();
+    store.renew_every = Duration::from_millis(100);
+    store.renew_tick = Duration::from_millis(20);
+    let store = Arc::new(store);
+    let auth = BrokerAuth::with_key_store(Arc::clone(&store));
+    let old = K1.mint("t1");
+    auth.authenticate("t1", &old).await?;
+
+    let shutdown = CancellationToken::new();
+    let renewer = tokio::spawn(Arc::clone(&store).renew_until(shutdown.clone()));
+    // A failing stretch first: the cached keys keep verifying.
+    cp.serve(None);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    auth.authenticate("t1", &old).await?;
+
+    cp.serve(Some(key_set(&[&K2])));
+    // Backoff after the failures is at least 15 s, so step the renewal along.
+    store.cache.get_mut("t1").expect("cached").renew_at = Instant::now();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while auth.authenticate("t1", &old).await.is_ok() {
+        assert!(Instant::now() < deadline, "the renewer never dropped k1");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    shutdown.cancel();
+    tokio::time::timeout(Duration::from_secs(5), renewer)
+        .await
+        .context("the renewer stops on shutdown")??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn unknown_kid_fetches_share_one_budget_across_tenants() -> Result<()> {
+    let cp = KeyServer::start(key_set(&[&K1])).await?;
+    let auth = BrokerAuth::with_key_store(Arc::new(cp.store()));
+    let tenants: Vec<String> = (0..10).map(|i| format!("t{i}")).collect();
+    for tenant in &tenants {
+        auth.authenticate(tenant, &K1.mint(tenant)).await?;
+    }
+    let before = cp.hits();
+    for tenant in &tenants {
+        age_last_attempt(&auth.key_store, tenant);
+        assert!(auth.authenticate(tenant, &K3.mint(tenant)).await.is_err());
+    }
+    assert_eq!(
+        cp.hits() - before,
+        JWKS_KID_REFETCH_BURST as usize,
+        "made-up kids across tenants stop at the broker-wide budget"
+    );
     Ok(())
 }

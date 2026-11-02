@@ -1123,12 +1123,12 @@ task keeps the keys current:
   The tenant's tokens are then refused until the control plane answers again.
 - **A new key.** A token whose `kid` is not in the cached set makes the broker
   fetch the set once, then verify again. Requests that arrive together share
-  that fetch, and a tenant is fetched this way at most once every 10 seconds,
-  so tokens with made-up `kid`s cannot make the broker flood the control plane.
-  A failed fetch keeps the old keys, and a `kid` still missing afterwards is
-  refused.
+  that fetch. A tenant is fetched this way at most once every 10 seconds, and
+  all tenants together at most 5 at once and then one a second, so tokens with
+  made-up `kid`s cannot make the broker flood the control plane. A failed fetch
+  keeps the old keys, and a `kid` still missing afterwards is refused.
 - **A removed tenant.** Once the catalog sync no longer lists a tenant, the
-  next renewal pass drops its keys, and its tokens are refused.
+  renewer drops its keys within 15 seconds, and its tokens are refused.
 
 A tenant the broker has never held keys for is the only case where a request
 fetches inline, and then under the guards in step 2.
@@ -1183,8 +1183,8 @@ tenant. Responses name keys by `kid`; key material never leaves the store.
 2. **Wait for brokers to learn it.** A broker renews a tenant's JWKS about
    every 10 minutes, and fetches it at once for a token whose `kid` it does not
    have, so a broker that can reach the control plane accepts the new key
-   straight away. Waiting about 10 minutes before activating also covers a
-   broker that cannot reach the control plane at the moment.
+   straight away. A broker that cannot reach it learns the key once it can
+   again, through either path.
 3. **Activate** it: `POST /v1/tenants/{tenant_id}/signing-keys/{kid}/activate`.
    It signs from now on; the key it replaced keeps verifying.
 4. **Wait for the old key's tokens to expire**: the access-token TTL
