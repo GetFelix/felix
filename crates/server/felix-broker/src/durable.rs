@@ -403,6 +403,7 @@ impl StreamLog {
             timestamp_micros,
             mark: RecordMark::Trim { floor: before },
             publisher: None,
+            headers: None,
         };
         self.log
             .append_claimed_at(expected, std::slice::from_ref(&record), order)
@@ -627,6 +628,7 @@ impl StreamLog {
             timestamp_micros: append_time_now(),
             mark: RecordMark::GenerationStart,
             publisher: None,
+            headers: None,
         };
         let appended = self
             .log
@@ -940,6 +942,7 @@ fn records(
             timestamp_micros,
             mark,
             publisher: publishers.get(index).cloned().flatten(),
+            headers: None,
         })
         .collect())
 }

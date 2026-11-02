@@ -168,6 +168,10 @@ pub struct ShardReport {
     /// majority of the set being left and of the new one. The control plane
     /// takes the new set on a report that names it for this generation.
     pub joint_start_acked: Option<u64>,
+    /// The followers whose copy held this generation's start record when
+    /// this pass answered them, and for a cache its counter log's too. Only
+    /// a follower that gave a storage identity is listed.
+    pub holds_start: Vec<String>,
 }
 
 impl ShardReport {
@@ -184,6 +188,14 @@ impl ShardReport {
     pub(super) fn with_joint_start(self, joint_start_acked: Option<u64>) -> Self {
         Self {
             joint_start_acked,
+            ..self
+        }
+    }
+
+    /// This report, naming the followers that hold the generation's start.
+    pub(super) fn with_holds_start(self, holds_start: Vec<String>) -> Self {
+        Self {
+            holds_start,
             ..self
         }
     }
@@ -244,6 +256,7 @@ pub(super) fn shard_report(
             .collect(),
         given_up: false,
         joint_start_acked: None,
+        holds_start: Vec::new(),
         inherited_storage: followers
             .iter()
             .filter(|follower| follower.storage_id.is_none())
@@ -253,6 +266,34 @@ pub(super) fn shard_report(
             })
             .collect(),
     }
+}
+
+/// The followers holding the start record of the leader's generation: their
+/// confirmed position is past `start` (`u64::MAX` when the generation has no
+/// start record, which no position passes). A cache also needs the follower
+/// past its counter log's start, `counters` being that log's cursors and
+/// start, where `None` for the start means it has none. A follower that gave
+/// no storage identity is not listed: the position is of a copy nobody can
+/// name.
+pub(super) fn holders_of_start(
+    followers: &[FollowerCursor],
+    start: u64,
+    counters: Option<(&[FollowerCursor], Option<u64>)>,
+) -> Vec<String> {
+    followers
+        .iter()
+        .filter(|follower| follower.storage_id.is_some() && follower.confirmed > start)
+        .filter(|follower| {
+            counters.is_none_or(|(cursors, counter_start)| {
+                counter_start.is_some_and(|counter_start| {
+                    cursors
+                        .iter()
+                        .any(|c| c.node_id == follower.node_id && c.confirmed > counter_start)
+                })
+            })
+        })
+        .map(|follower| follower.node_id.clone())
+        .collect()
 }
 
 /// Where each follower whose position is moving has got: placement fences a
@@ -377,6 +418,7 @@ async fn send_reports(to: &ReportTo, reports: &[ShardReport]) -> Vec<bool> {
                 given_up: report.given_up,
                 inherited_storage_ids: report.inherited_storage.iter().cloned().collect(),
                 joint_start_acked: report.joint_start_acked,
+                holds_start: report.holds_start.iter().cloned().collect(),
                 elected: None,
             })
             .collect(),

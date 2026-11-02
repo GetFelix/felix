@@ -37,6 +37,7 @@ async fn write_shard(data: &Path, store: Store, stream: &str, count: usize) -> P
             timestamp_micros: 1,
             mark: Default::default(),
             publisher: None,
+            headers: None,
         }])
         .await
         .expect("append");

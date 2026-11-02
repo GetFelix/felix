@@ -180,6 +180,8 @@ fn features_for(fences: bool, reads_by_lease: bool) -> std::collections::BTreeSe
         })
         .filter(|feature| !(reads_by_lease && matches!(**feature, LEASE_FREE_READS)))
         .map(|feature| feature.name().to_string())
+        // This build's leaders name the followers holding the start record.
+        .chain([felix_common::fleet::START_HOLDERS.name().to_string()])
         .collect()
 }
 

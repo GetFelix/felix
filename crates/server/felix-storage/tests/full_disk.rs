@@ -26,6 +26,7 @@ fn record() -> AppendRecord {
         timestamp_micros: 1,
         mark: Default::default(),
         publisher: None,
+        headers: None,
     }
 }
 

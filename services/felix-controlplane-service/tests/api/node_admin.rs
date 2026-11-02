@@ -448,6 +448,7 @@ async fn seed_shards(store: &InMemoryStore) {
                 incarnation: 0,
                 fence_storage_ids: Default::default(),
                 member_storage_ids: Default::default(),
+                learners: Default::default(),
                 pending_set: None,
             })
             .await
@@ -575,6 +576,7 @@ async fn shard_assignments_carry_the_streams_routing() {
                 incarnation: 0,
                 fence_storage_ids: Default::default(),
                 member_storage_ids: Default::default(),
+                learners: Default::default(),
                 pending_set: None,
             })
             .await

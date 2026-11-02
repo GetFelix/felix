@@ -196,6 +196,30 @@ pub trait CaughtUp {
         None
     }
 
+    /// Whether `node_id` is a learner of `key` under `joint_fence`: its
+    /// storage was replaced, so it votes and leads for nothing and counts in
+    /// no majority until the leader's report shows it holding its
+    /// generation's start record. Such a node is never caught up, and no
+    /// position of it is read.
+    fn is_learner(&self, _key: &ShardKey, _node_id: &str) -> bool {
+        false
+    }
+
+    /// Whether `leader`'s report for `key` at `generation` lists `node_id`
+    /// among the followers holding that generation's start record, under the
+    /// storage identity `node_id` is registered with.
+    fn holds_start(&self, _key: &ShardKey, _generation: u64, _leader: &str, _node: &str) -> bool {
+        false
+    }
+
+    /// A member of `key`'s set at `generation` whose storage was replaced
+    /// since the assignment named it, and that `leader`'s fresh report shows
+    /// caught up under its new identity. Its name is a write away from being
+    /// re-admitted.
+    fn readmittable(&self, _key: &ShardKey, _generation: u64, _leader: &str) -> Option<String> {
+        None
+    }
+
     fn halted_member(&self, key: &ShardKey, node_id: &str, generation: u64) -> Option<&HaltedCopy> {
         self.halted(key, node_id)
             .filter(|halt| halt.holds_at(generation))

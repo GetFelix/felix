@@ -25,6 +25,7 @@ async fn fill(dir: &TempDir, records: usize) {
             timestamp_micros: 1,
             mark: Default::default(),
             publisher: None,
+            headers: None,
         }])
         .await
         .expect("append");
@@ -126,6 +127,7 @@ async fn a_truncation_never_leaves_a_stale_index_for_a_reused_segment() {
             timestamp_micros: 1,
             mark: Default::default(),
             publisher: None,
+            headers: None,
         }])
         .await
         .expect("append");

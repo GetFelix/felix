@@ -259,6 +259,7 @@ async fn a_snapshot_of_a_log_cut_and_rewritten_is_ignored() {
                 timestamp_micros: 0,
                 mark: Default::default(),
                 publisher: None,
+                headers: None,
             });
         }
         log.append(&records).await.expect("append");

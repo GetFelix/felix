@@ -95,6 +95,7 @@ async fn run(scenario: Scenario) {
                     timestamp_micros: 1_700_000_000 + offset,
                     mark: Default::default(),
                     publisher: None,
+                    headers: None,
                 })
                 .collect();
             let appended = log.append(&records).await.expect("append");
@@ -189,6 +190,7 @@ async fn verify(
         timestamp_micros: 1,
         mark: Default::default(),
         publisher: None,
+        headers: None,
     };
     let appended = log
         .append(std::slice::from_ref(&more))
@@ -339,6 +341,7 @@ impl ParkedSeal {
             timestamp_micros: 1_700_000_000 + self.next,
             mark: Default::default(),
             publisher: None,
+            headers: None,
         };
         self.log.append(&[record]).await.expect("append");
         self.next += 1;
@@ -507,6 +510,7 @@ async fn a_flush_overtaken_by_a_seal_does_not_rewind_the_sealed_segment() {
             timestamp_micros: 1_700_000_000 + *next,
             mark: Default::default(),
             publisher: None,
+            headers: None,
         };
         log.append(&[record]).await.expect("append");
         *next += 1;
@@ -826,6 +830,7 @@ async fn a_power_loss_mid_extension_recovers_the_written_records() {
             timestamp_micros: 1_700_000_000 + *next,
             mark: Default::default(),
             publisher: None,
+            headers: None,
         };
         log.append(&[record]).await.expect("append");
         *next += 1;
@@ -857,6 +862,7 @@ fn trim_record(floor: Offset, headers: &'static str) -> AppendRecord {
         timestamp_micros: 1,
         mark: crate::log::RecordMark::Trim { floor },
         publisher: None,
+        headers: None,
     }
 }
 
