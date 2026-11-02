@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793634013784,
+  "lastUpdate": 1793637961019,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -42432,6 +42432,58 @@ window.BENCHMARK_DATA = {
             "range": "48604.00",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 779679.35\nmean: 753844.35\nstdev: 48604.00\ncv: 6.45%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9fac628f19f10b0a070f1f1d1162d634cefd718d",
+          "message": "fix(test): the record inspector's fixtures build against storage format v8 (#1790)\n\nAdd the headers field and encode_record argument that #1776 introduced to the record inspector's test fixtures from #1769.",
+          "timestamp": "2026-11-02T08:41:03-08:00",
+          "tree_id": "866587f265aa993463b320477bdf4b34bf6f90cd",
+          "url": "https://github.com/GetFelix/felix/commit/9fac628f19f10b0a070f1f1d1162d634cefd718d"
+        },
+        "date": 1793637960028,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 370051.58,
+            "range": "13363.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 370051.58\nmean: 370796.73\nstdev: 13363.31\ncv: 3.60%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 370051.58,
+            "range": "13363.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 370051.58\nmean: 370796.73\nstdev: 13363.31\ncv: 3.60%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 84746.69,
+            "range": "5105.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 84746.69\nmean: 82780.84\nstdev: 5105.38\ncv: 6.17%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 847466.92,
+            "range": "51053.87",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 847466.92\nmean: 827808.35\nstdev: 51053.87\ncv: 6.17%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
