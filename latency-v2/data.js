@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793648280247,
+  "lastUpdate": 1793651682983,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -54252,6 +54252,72 @@ window.BENCHMARK_DATA = {
             "range": "138.47",
             "unit": "us",
             "extra": "trials: 5\nmedian: 286.00\nmean: 347.60\nstdev: 138.47\ncv: 39.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f8f023bded359963b9b61c3990492c10ea1cd00c",
+          "message": "fix(replication): shards take turns at the driver's pass slots (#1794) (#1801)\n\n* fix(replication): shards take turns at the driver's pass slots (#1794)\n\nUnder a steady append stream the same 16 shards kept the replication pass\nslots: every append scanned every led shard, and a finished pass restarted\nits own shard before any waiting one. Shards past the slots shipped nothing\nand their Quorum writes timed out with idle followers.\n\n- The publish path marks its shard in a fixed bit set (one atomic or, no\n  lock or allocation) before waking the driver. Cache and counter writes and\n  generation starts mark theirs too. A scan woken by an append passes only\n  the marked shards and those whose last pass left work; the tick and route\n  changes still pass every shard.\n- Shards that cannot start wait in FIFO queues: urgent (an append, an owed\n  mark, a moved follower) before refresh, at most four urgent in a row while\n  a refresh waits. A finished pass goes to the back.\n- Fences have their own 16 slots and queue.\n- Metrics (#1797, driver half): felix_broker_replication_scans_total{wake},\n  felix_broker_replication_passes_waiting,\n  felix_broker_replication_slot_wait_seconds{queue}.\n\nSpec-Unaffected: only which shard's pass runs next changes. What a pass ships, counts and reports, the quorum mark, fencing and promotion are unchanged, and no formal model covers driver scheduling.\n\n* fix(replication): review fixes for the driver's slot scheduling (#1794)\n\n- Consumer-group acknowledgements and dead-letter records mark their shard,\n  so they ship on the next scan rather than the tick.\n- A draining shard or one with a pending set is urgent: its clients wait on\n  the drained report.\n- A shard queued for a fence slot moves to the pass queue it now needs once\n  its fence is done with.\n- fenced() fills free slots on every path.\n- Docs: what marks a shard, the wait bound with refreshes, observability lines.\n\nSpec-Unaffected: scheduling only; what a pass ships, counts and reports, the quorum mark, fencing and promotion are unchanged.\n\n* docs(replication): say which group writes mark their shard (#1794)\n\nSpec-Unaffected: documentation only.\n\n* perf(broker): wake replication only when an append sets its shard's bit (#1794)\n\nA busy shard's appends found its bit already set and still hit the shared\nNotify each time. Only the append that sets a clear bit wakes now; the take\nthat clears it is ordered after every later or, so those appends are still\npassed. Each word of the set gets its own 128-byte line so publishers to\ndifferent shards do not share one.\n\n* docs(replication): say a wake can stand for many appends (#1794)",
+          "timestamp": "2026-11-02T12:27:44-08:00",
+          "tree_id": "5cabd611811ebe5d1ad0749a17cec7045b26a4f9",
+          "url": "https://github.com/GetFelix/felix/commit/f8f023bded359963b9b61c3990492c10ea1cd00c"
+        },
+        "date": 1793651676225,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 151,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 151.00\nmean: 151.20\nstdev: 0.45\ncv: 0.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 218,
+            "range": "3.65",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 218.00\nmean: 219.40\nstdev: 3.65\ncv: 1.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 271,
+            "range": "51.37",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 271.00\nmean: 287.80\nstdev: 51.37\ncv: 17.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 199,
+            "range": "14.22",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 199.00\nmean: 204.60\nstdev: 14.22\ncv: 6.95%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 379,
+            "range": "309.56",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 379.00\nmean: 517.40\nstdev: 309.56\ncv: 59.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 524,
+            "range": "579.12",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 524.00\nmean: 781.60\nstdev: 579.12\ncv: 74.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
