@@ -371,10 +371,10 @@ lands. Each companion keeps:
 
 The reusable workflow:
 
-1. Finds the Felix commit. It reads the commit behind the `nightly` tag and the
-   revision label on the `nightly` broker image. They match unless a nightly
-   build failed after pushing its images; then the images' commit wins, because
-   those are what the tests run.
+1. Finds the Felix commit behind the `nightly` tag. The images and the tag come
+   from one build, but the tag moves last, so after a failed nightly build the
+   two can be a day apart. The run warns when the broker image's revision label
+   names another commit, and still uses the tag's.
 2. For each directory in `cargo_dirs`, rewrites every dependency on a crate in
    `cargo_crates` into a git dependency on that commit, keeping features and
    `default-features`, and runs `cargo update` on those crates. The lockfile is
