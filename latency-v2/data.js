@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793637955403,
+  "lastUpdate": 1793644399192,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -53922,6 +53922,72 @@ window.BENCHMARK_DATA = {
             "range": "396.31",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1229.00\nmean: 1162.00\nstdev: 396.31\ncv: 34.11%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "278a1220037ac1a9b546c230e63fcc127211c409",
+          "message": "ci: refresh the TLA+ weights from a measured PR run (#1795)\n\nRefreshes the TLA+ weights in `scripts/check_tla.sh` from the `Finished in` lines of #1775's TLA+ shards.\n\nSeveral weights had drifted. `FelixShardElectWipeNonVoter` took 45 minutes against a weight of 28, and `FelixShardElectWipeNonVoterCountersUnchecked` took 8 with no weight (so it counted as 1). The shards packed from the old weights ran from 19 to 52 minutes. Packing #1775's set with the new weights gives seven shards of about 40 weighted minutes each (35 to 41 measured).\n\n## Design calls\n- Four configurations now weigh more than ten minutes, so the PR tier (`TLA_QUICK`) leaves them out unless their own `.cfg` changes: `FelixShardWipeStripped` (20), `FelixShardElectWipeNonVoterGroupsKeepDropsMark` (16), `FelixShardFigure8CutOver` (14), `FelixShardFencedPromotion` (11). They still run on every spec change on main. Keeping them in the PR tier would put each shard near 49 minutes, too close to the hour on a slow runner.\n- The times come from one run, so they carry runner noise of roughly 30%. Small drops (`FelixShardFencedAckTrim` 9 to 5, `FelixShardElectPreVote` 5 to 1) follow the measurement too.",
+          "timestamp": "2026-11-02T10:11:53-08:00",
+          "tree_id": "4f2ad6ca73def0dcdc9c10f59df8aead886e6f6e",
+          "url": "https://github.com/GetFelix/felix/commit/278a1220037ac1a9b546c230e63fcc127211c409"
+        },
+        "date": 1793644392766,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 151,
+            "range": "3.97",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 151.00\nmean: 153.60\nstdev: 3.97\ncv: 2.59%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 220,
+            "range": "414.51",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 220.00\nmean: 510.00\nstdev: 414.51\ncv: 81.28%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 268,
+            "range": "581.06",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 268.00\nmean: 686.20\nstdev: 581.06\ncv: 84.68%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 199,
+            "range": "10.97",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 199.00\nmean: 203.40\nstdev: 10.97\ncv: 5.39%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 400,
+            "range": "235.40",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 400.00\nmean: 494.40\nstdev: 235.40\ncv: 47.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 554,
+            "range": "642.95",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 554.00\nmean: 842.80\nstdev: 642.95\ncv: 76.29%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
