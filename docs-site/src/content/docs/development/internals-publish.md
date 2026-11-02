@@ -214,8 +214,8 @@ do not mean more concurrent callers contending on shared stream state.
 
    | Job | Ordered, on the lane | Handed to its own task |
    |---|---|---|
-   | Durable publish | fence check, `claim_publish` (offsets taken) for it and the durable publishes queued behind it | device flush, fanout, quorum wait, the answers |
-   | Ephemeral publish | fence check, `publish_batch_with_outcome` | quorum wait, the answer |
+   | Durable publish | fence check, `claim_publish` (offsets taken) for it and the durable publishes queued behind it | device flush, the answers, fanout (on `Quorum` or `Block`: fanout, quorum wait, the answers) |
+   | Ephemeral publish | fence check, `claim_publish`, the answer, fanout (on `Block`: fanout first) | on `Quorum` only: quorum wait, the answer |
    | Idempotent publish | sequence check and append (offsets taken), off the executor | device flush, quorum wait, the answer |
    | Forward | the whole round trip, off the executor | nothing |
 
@@ -302,6 +302,7 @@ claim_publish                      │   complete_publish                       
     -> offsets consumed            │     hold if Quorum mark behind                           │
   commit_sequencer.reserve_owned   │     append_batch_at           replay ring, sequence =    │
     -> commit turn for the range   │                               log offset                 │
+                                   │     answer                    not on Quorum: the ack     │
                                    │     fan_out                   one DeliveryEnvelope,      │
                                    │                               one clone per subscriber   │
 ───────────────────────────────────┘   turn released ─────────────────────────────────────────┘
@@ -344,6 +345,16 @@ claim_publish                      │   complete_publish                       
    backpressure checkpoints on the subscribe side. See
    [Internals: Backpressure](/development/internals-concurrency/#the-full-backpressure-chain)
    for the second.
+
+   For a plain QUIC publish the broker service answers the publisher before
+   this step (`complete_publish_answering`), so the ack neither waits for
+   the subscriber loop nor queues behind the subscriber tasks it wakes. The
+   batch keeps its commit turn until its fanout is done, so delivery order
+   does not change. Three cases still answer after the fanout: a `Quorum`
+   stream (answered after its quorum wait), a `Block` subscriber queue
+   policy (whose point is that the publisher waits for every queue), and
+   publishes that do not go through the worker's plain path (idempotent,
+   forwarded, conditional and Kafka produce).
 
 The commit turn is held until fanout finishes, so delivery order matches log
 order. Cancelling `complete_publish` does not cancel the batch: once its

@@ -341,15 +341,21 @@ pub(super) async fn run_lane_feeder(
         let sample = t_should_sample();
         let enqueue_start = t_now_if(sample);
         let prefix_start = t_now_if(sample);
-        let encoded = encode_batch(
-            &config,
-            &batch,
-            batch_base,
-            batch_skipped,
-            batch_publisher.as_ref(),
-            batch_times.as_deref(),
-            batch_headers.as_deref(),
-        );
+        // A lone record goes out in the frame its other subscribers share,
+        // encoded once for all of them rather than once each.
+        let encoded = if batch.len() == 1 {
+            envelope.shared_event_frame_as(config.shape())
+        } else {
+            encode_batch(
+                &config,
+                &batch,
+                batch_base,
+                batch_skipped,
+                batch_publisher.as_ref(),
+                batch_times.as_deref(),
+                batch_headers.as_deref(),
+            )
+        };
         let frame = match encoded {
             Ok(frame) => frame,
             Err(err) => {

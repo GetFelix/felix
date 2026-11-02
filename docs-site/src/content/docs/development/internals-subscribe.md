@@ -178,7 +178,10 @@ calling it on the same envelope gets a `Bytes::clone`, a refcount bump rather
 than a copy. Since publish fanout hands the same `DeliveryEnvelope` to every
 subscriber
 (see [Internals: The Publish Path](/development/internals-publish/#broker-core-claim-then-complete)),
-one publish batch is encoded once regardless of fanout.
+one publish batch is encoded once regardless of fanout. That includes a
+single-record publish the feeder finds alone in its queue. Only a frame that
+coalesces several publishes is encoded per subscriber, because no other
+subscriber is likely to have batched the same records.
 
 Coalescing here is governed by `EventWriterConfig`: `max_events`,
 `max_bytes`, `flush_delay`, and `single_event_mode` (forced when
