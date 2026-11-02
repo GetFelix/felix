@@ -330,15 +330,17 @@ impl StreamLog {
     ///
     /// Every record is stamped `timestamp_micros`, which the caller takes from
     /// [`append_time_now`] so it can report the stored time without reading
-    /// it back.
+    /// it back. `headers` is one key and headers block per record, or `None`
+    /// when no record has one.
     pub async fn begin_append(
         &self,
         payloads: &[Bytes],
         publishers: &[Option<Bytes>],
+        headers: Option<&[Option<Bytes>]>,
         timestamp_micros: u64,
         order: &Arc<CommitSequencer>,
     ) -> Result<(PendingAppend, CommitTurn<'static>)> {
-        self.begin_append_marked(payloads, &[], publishers, timestamp_micros, order)
+        self.begin_append_marked(payloads, &[], publishers, headers, timestamp_micros, order)
             .await
     }
 
@@ -350,10 +352,11 @@ impl StreamLog {
         payloads: &[Bytes],
         marks: &[RecordMark],
         publishers: &[Option<Bytes>],
+        headers: Option<&[Option<Bytes>]>,
         timestamp_micros: u64,
         order: &Arc<CommitSequencer>,
     ) -> Result<(PendingAppend, CommitTurn<'static>)> {
-        let records = records(payloads, marks, publishers, timestamp_micros)?;
+        let records = records(payloads, marks, publishers, headers, timestamp_micros)?;
         self.log
             .append_claimed(&records, order)
             .await
@@ -372,10 +375,11 @@ impl StreamLog {
         payloads: &[Bytes],
         marks: &[RecordMark],
         publishers: &[Option<Bytes>],
+        headers: Option<&[Option<Bytes>]>,
         timestamp_micros: u64,
         order: &Arc<CommitSequencer>,
     ) -> Result<std::result::Result<(PendingAppend, CommitTurn<'static>), Offset>> {
-        let records = records(payloads, marks, publishers, timestamp_micros)?;
+        let records = records(payloads, marks, publishers, headers, timestamp_micros)?;
         self.log
             .append_claimed_at(expected, &records, order)
             .await
@@ -424,7 +428,8 @@ impl StreamLog {
         publishers: &[Option<Bytes>],
         times: &[u64],
     ) -> Result<Option<PendingAppend>> {
-        let mut records = records(payloads, marks, publishers, append_time_now())?;
+        // Replication does not ship headers, so a follower's records have none.
+        let mut records = records(payloads, marks, publishers, None, append_time_now())?;
         if times.len() == records.len() {
             for (record, time) in records.iter_mut().zip(times) {
                 record.timestamp_micros = *time;
@@ -440,17 +445,20 @@ impl StreamLog {
     /// without waiting for durability. `None`, and nothing written, when the
     /// batch is no longer the last thing in the log. See
     /// `DiskLog::continue_claimed`.
+    // One parameter per part of a record, as `begin_append_marked` has.
+    #[allow(clippy::too_many_arguments)]
     pub async fn continue_batch(
         &self,
         producer_id: u64,
         sequence: u64,
         payloads: &[Bytes],
         publishers: &[Option<Bytes>],
+        headers: Option<&[Option<Bytes>]>,
         timestamp_micros: u64,
         order: &Arc<CommitSequencer>,
     ) -> Result<Option<(PendingAppend, CommitTurn<'static>)>> {
         let marks = vec![RecordMark::Continues; payloads.len()];
-        let records = records(payloads, &marks, publishers, timestamp_micros)?;
+        let records = records(payloads, &marks, publishers, headers, timestamp_micros)?;
         self.log
             .continue_claimed(producer_id, sequence, &records, order)
             .await
@@ -488,7 +496,7 @@ impl StreamLog {
     /// Returns only once the configured durability policy is satisfied: under
     /// `FsyncMode::OnCommit` the bytes are on the device before this resolves.
     pub async fn append(&self, payloads: &[Bytes]) -> Result<AppendResult> {
-        let records = records(payloads, &[], &[], append_time_now())?;
+        let records = records(payloads, &[], &[], None, append_time_now())?;
         self.log.append(&records).await.map_err(BrokerError::from)
     }
 
@@ -922,6 +930,7 @@ fn records(
     payloads: &[Bytes],
     marks: &[RecordMark],
     publishers: &[Option<Bytes>],
+    headers: Option<&[Option<Bytes>]>,
     timestamp_micros: u64,
 ) -> Result<Vec<AppendRecord>> {
     if payloads.is_empty() {
@@ -942,7 +951,9 @@ fn records(
             timestamp_micros,
             mark,
             publisher: publishers.get(index).cloned().flatten(),
-            headers: None,
+            headers: headers
+                .and_then(|headers| headers.get(index).cloned().flatten())
+                .map(Box::new),
         })
         .collect())
 }

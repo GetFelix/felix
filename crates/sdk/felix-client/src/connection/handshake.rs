@@ -22,6 +22,8 @@ pub(crate) struct Credentials {
     features: u32,
     /// The frame-flag bits offered in `Auth`.
     flags: u16,
+    /// The extension bits of the frame flags offered in `Auth`.
+    flags_ext: u32,
 }
 
 impl Credentials {
@@ -38,6 +40,7 @@ impl Credentials {
             flags: felix_wire::KNOWN_FLAGS
                 & !felix_wire::FLAG_EVENT_BATCH_PUBLISHER
                 & !felix_wire::FLAG_EVENT_BATCH_TIMESTAMPS,
+            flags_ext: 0,
         }
     }
 
@@ -54,7 +57,16 @@ impl Credentials {
             tokens,
             features: self.features,
             flags: self.flags,
+            flags_ext: self.flags_ext,
         }
+    }
+
+    /// Also offer record headers. See [`felix_wire::EXT_RECORD_HEADERS`].
+    pub(crate) fn with_record_headers(mut self, record_headers: bool) -> Self {
+        if record_headers {
+            self.flags_ext |= felix_wire::EXT_RECORD_HEADERS;
+        }
+        self
     }
 
     /// Also ask for each record's append time. See
@@ -118,7 +130,7 @@ impl Credentials {
                 &mut recv,
                 &self.tenant_id,
                 &token,
-                self.flags,
+                felix_wire::offer_flags(self.flags, self.flags_ext),
                 self.features,
                 max_frame_bytes,
             )
@@ -150,6 +162,9 @@ pub(crate) struct Negotiated {
     pub(crate) server_features: u32,
     /// The extended feature word, counted only behind the marker bit.
     pub(crate) server_features_hi: u32,
+    /// The extension bits of the frame flags, counted only behind
+    /// `FLAG_EXTENDED`.
+    pub(crate) server_flags_ext: u32,
     /// Every port the broker's client-facing listeners are bound to, when it
     /// reported more than one. Empty otherwise, which is the same instruction:
     /// keep using the address already dialled.
@@ -175,7 +190,7 @@ async fn authenticate_stream(
     recv: &mut RecvStream,
     tenant_id: &str,
     token: &str,
-    flags: u16,
+    (flags, flags_ext): (u16, Option<u32>),
     features: u32,
     max_frame_bytes: usize,
 ) -> Result<Negotiated> {
@@ -189,7 +204,7 @@ async fn authenticate_stream(
             client_flags: Some(flags),
             client_features: Some(features),
             client_features_hi: features_hi,
-            client_flags_ext: None,
+            client_flags_ext: flags_ext,
         },
     )
     .await
@@ -200,8 +215,7 @@ async fn authenticate_stream(
             server_flags,
             server_features,
             server_features_hi,
-            // The client offers no extension yet, so there is nothing to read.
-            server_flags_ext: _,
+            server_flags_ext,
             listener_ports,
             publish_window,
         }) => Ok(Negotiated {
@@ -214,6 +228,7 @@ async fn authenticate_stream(
                 server_features.unwrap_or(0),
                 server_features_hi,
             ),
+            server_flags_ext: felix_wire::peer_flags_ext(server_flags, server_flags_ext),
             listener_ports: listener_ports.unwrap_or_default(),
             // Only meaningful with the feature bit; a window without it would
             // be a broker promising an order it never agreed to.
@@ -231,6 +246,7 @@ async fn authenticate_stream(
             server_flags: felix_wire::ORIGINAL_V1_FLAGS,
             server_features: 0,
             server_features_hi: 0,
+            server_flags_ext: 0,
             listener_ports: Vec::new(),
             publish_window: 0,
         }),

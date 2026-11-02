@@ -15,6 +15,7 @@ mod byte_bound;
 mod conditional;
 mod idempotent;
 mod publisher;
+mod record_headers;
 
 #[tokio::test]
 async fn publish_delivers_to_subscriber() {
@@ -460,7 +461,7 @@ async fn an_answering_publish_answers_before_any_subscriber_has_the_batch() {
         .expect("handle");
     let payloads = [Bytes::from_static(b"one")];
     let claimed = broker
-        .claim_publish(&handle, &payloads, None)
+        .claim_publish(&handle, &payloads, None, None)
         .await
         .expect("claim");
 
@@ -499,7 +500,7 @@ async fn under_block_an_answering_publish_answers_after_the_fanout() {
         .expect("handle");
     let payloads = [Bytes::from_static(b"one")];
     let claimed = broker
-        .claim_publish(&handle, &payloads, None)
+        .claim_publish(&handle, &payloads, None, None)
         .await
         .expect("claim");
 

@@ -120,7 +120,7 @@ async fn next_offset(broker: &Broker, stream: &str) -> u64 {
         .await
         .expect("handle");
     let outcome = broker
-        .publish_batch_with_outcome(&handle, &[payload("probe")], None)
+        .publish_batch_with_outcome(&handle, &[payload("probe")], None, None)
         .await
         .expect("publish");
     outcome.offsets.expect("durable").0

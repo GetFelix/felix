@@ -163,7 +163,7 @@ impl TwoShards {
             .await?;
         Ok(self
             .broker
-            .claim_publish(&handle, &[bytes::Bytes::from_static(b"held")], None)
+            .claim_publish(&handle, &[bytes::Bytes::from_static(b"held")], None, None)
             .await?)
     }
 }

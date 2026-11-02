@@ -13,6 +13,7 @@ fn event(offset: u64) -> Event {
         payload: bytes::Bytes::from_static(b"x"),
         offset: Some(offset),
         skipped_before: 0,
+        headers: None,
     }
 }
 

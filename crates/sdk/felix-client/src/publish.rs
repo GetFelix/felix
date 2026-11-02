@@ -10,6 +10,7 @@
 
 mod ack;
 mod admission;
+mod headers;
 mod idempotent;
 mod routing;
 mod send;
@@ -21,6 +22,7 @@ pub use idempotent::{Handed, IdempotentProducer};
 pub use routing::PublishSharding;
 
 pub(crate) use admission::PublishAdmission;
+pub(crate) use headers::{Blocks, split_records};
 pub(crate) use routing::width_went_stale;
 pub(crate) use shard_streams::{OpenWorker, ShardStreams};
 #[cfg(test)]

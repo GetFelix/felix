@@ -6,6 +6,7 @@ use felix_wire::Message;
 use super::responder::send_control_error;
 use super::{Ctx, Session, Step};
 use crate::serving::quic::client_error::ClientError;
+use crate::serving::quic::codec::negotiated_ext;
 use crate::serving::quic::handlers::publish::{
     Outgoing, handle_ack_enqueue_result, send_outgoing_critical,
 };
@@ -19,12 +20,15 @@ const SERVED_FEATURES_HI: u32 = felix_wire::FEATURE_INSPECT
     | felix_wire::FEATURE_EXPLICIT_SHARD
     | felix_wire::FEATURE_HEAD_TRIM;
 
+// One parameter per field `Auth` offers.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn authenticate(
     cx: &Ctx<'_>,
     session: &mut Session,
     tenant_id: String,
     token: String,
     client_flags: Option<u16>,
+    client_flags_ext: Option<u32>,
     client_features: Option<u32>,
     client_features_hi: Option<u32>,
 ) -> Result<Step> {
@@ -78,6 +82,9 @@ pub(super) async fn authenticate(
             // Absent means a pre-negotiation client, and the only
             // safe reading of that silence is the original bits.
             session.peer_flags = client_flags.unwrap_or(felix_wire::ORIGINAL_V1_FLAGS);
+            // Only what the client offered and this broker serves now: a
+            // frame that uses an extension is refused until then.
+            session.peer_flags_ext = negotiated_ext(broker, client_flags, client_flags_ext);
             // Which optional messages this client can decode.
             // Absent means none: a broker that guessed would send a
             // frame the client cannot parse, and an undecodable
@@ -110,9 +117,14 @@ pub(super) async fn authenticate(
             // own. A client that sent no `client_flags` predates
             // negotiation and would not understand `AuthOk`, so it must
             // keep receiving the plain `Ok` it expects.
+            let (server_flags, server_flags_ext) = felix_wire::answer_flags(
+                felix_wire::KNOWN_FLAGS,
+                session.peer_flags_ext,
+                session.peer_flags,
+            );
             let mut response = match client_flags {
                 Some(_) => Message::AuthOk {
-                    server_flags: felix_wire::KNOWN_FLAGS,
+                    server_flags,
                     // Only what this broker can actually answer.
                     //
                     // The cluster-shaped features are gated on there
@@ -227,7 +239,7 @@ pub(super) async fn authenticate(
                             },
                     ),
                     server_features_hi: None,
-                    server_flags_ext: None,
+                    server_flags_ext,
                     // Only when there is more than one. A single
                     // listener is the default, and saying so
                     // explicitly would change the bytes every

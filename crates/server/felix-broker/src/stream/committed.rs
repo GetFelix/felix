@@ -221,6 +221,8 @@ pub(crate) struct ReadSource {
 pub(crate) struct HeldBatch {
     pub(crate) payloads: Vec<Bytes>,
     pub(crate) publisher: Option<Bytes>,
+    /// Each record's headers block, when any has one.
+    pub(crate) record_headers: Option<std::sync::Arc<[Option<Bytes>]>>,
     /// When the batch's records were appended.
     pub(crate) timestamp_micros: Option<u64>,
     pub(crate) first_offset: u64,

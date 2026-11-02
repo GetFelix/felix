@@ -89,7 +89,8 @@ pub use commit::{CommitError, CommitOp, CommitReceipt, StateValue};
 pub use config::{ClientConfig, ClientSubQueuePolicy};
 pub use error::{
     AckLost, AuthError, AuthErrorKind, BrokerError, NotLeaderError, PublishRefused,
-    SubscribeCursorError, SubscriptionLagged, SubscriptionLost, outcome_unknown,
+    RecordHeadersError, SubscribeCursorError, SubscriptionLagged, SubscriptionLost,
+    outcome_unknown,
 };
 pub use publish::{Handed, IdempotentProducer, PublishSharding, Publisher};
 pub use subscribe::{Event, ShardMoved, Subscription};
@@ -105,6 +106,6 @@ pub use felix_wire::routing::ShardRouting;
 pub use felix_wire::{
     AckMode, BrokerEndpoint, CacheCondition, CursorErrorReason, ErrorCode, ErrorDetail,
     GroupRecord, InspectedAssignment, InspectedFence, InspectedLease, InspectedReplica,
-    InspectedSubscription, PublishRefusalReason, RetryClass, ShardInspection, ShardKind,
-    ShardOwner, StartPosition, StreamRecord, SubscriptionCursor, SubscriptionFilter,
+    InspectedSubscription, PublishRefusalReason, RecordHeaders, RetryClass, ShardInspection,
+    ShardKind, ShardOwner, StartPosition, StreamRecord, SubscriptionCursor, SubscriptionFilter,
 };

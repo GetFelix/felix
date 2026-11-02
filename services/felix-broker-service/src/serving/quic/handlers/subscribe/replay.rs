@@ -61,6 +61,8 @@ pub(crate) struct EventFormat {
     pub(crate) skips: bool,
     /// `FLAG_EVENT_BATCH_PUBLISHER`.
     pub(crate) publisher: bool,
+    /// `EXT_RECORD_HEADERS`.
+    pub(crate) headers: bool,
     /// `FLAG_EVENT_BATCH_TIMESTAMPS`.
     pub(crate) timestamps: bool,
 }
@@ -135,8 +137,9 @@ pub(super) async fn write_replay<S: EventSink>(
         }
         let publisher = replay.publisher(record.publisher);
         let time = replay.timestamp(record.timestamp_micros);
+        let headers = replay.headers(record.headers);
         let skipped = replay.deliver(offset);
-        if let Some(ready) = batch.push(offset, record.payload, skipped, publisher, time) {
+        if let Some(ready) = batch.push(offset, record.payload, skipped, publisher, time, headers) {
             replay.write(&ready).await?;
         }
     }
@@ -183,9 +186,19 @@ pub(super) async fn write_replay<S: EventSink>(
                     continue;
                 }
                 let skipped = replay.deliver(offset);
-                if let Some(chunk) =
-                    batch.push(offset, payload.clone(), skipped, publisher.clone(), time)
-                {
+                let headers = replay.headers(
+                    envelope
+                        .record_headers()
+                        .and_then(|headers| headers[index].clone()),
+                );
+                if let Some(chunk) = batch.push(
+                    offset,
+                    payload.clone(),
+                    skipped,
+                    publisher.clone(),
+                    time,
+                    headers,
+                ) {
                     replay.write(&chunk).await?;
                 }
             }
@@ -222,6 +235,11 @@ impl<S: EventSink> Replay<'_, S> {
     /// The publisher to put on the wire: none unless the subscriber asked.
     fn publisher(&self, publisher: Option<bytes::Bytes>) -> Option<bytes::Bytes> {
         publisher.filter(|_| self.format.publisher)
+    }
+
+    /// Likewise the record's key and headers block.
+    fn headers(&self, headers: Option<bytes::Bytes>) -> Option<bytes::Bytes> {
+        headers.filter(|_| self.format.headers)
     }
 
     /// Likewise the record's append time.
@@ -276,9 +294,15 @@ impl<S: EventSink> Replay<'_, S> {
                 let skipped = self.deliver(record.offset);
                 let publisher = self.publisher(record.publisher);
                 let time = self.timestamp(Some(record.timestamp_micros));
-                if let Some(ready) =
-                    batch.push(record.offset, record.payload, skipped, publisher, time)
-                {
+                let headers = self.headers(record.headers.map(|block| *block));
+                if let Some(ready) = batch.push(
+                    record.offset,
+                    record.payload,
+                    skipped,
+                    publisher,
+                    time,
+                    headers,
+                ) {
                     self.write(&ready).await?;
                 }
             }
@@ -316,6 +340,9 @@ struct ReplayBatch {
     skipped_before: u64,
     publisher: Option<bytes::Bytes>,
     timestamps: Option<Vec<u64>>,
+    /// One block per record once any record has one; `None` until then, so a
+    /// batch with none allocates nothing.
+    headers: Option<Vec<Option<bytes::Bytes>>>,
     next_offset: u64,
     bytes: usize,
     max_events: usize,
@@ -330,6 +357,7 @@ impl ReplayBatch {
             skipped_before: 0,
             publisher: None,
             timestamps: None,
+            headers: None,
             next_offset: 0,
             bytes: 0,
             max_events: max_events.max(1),
@@ -345,8 +373,10 @@ impl ReplayBatch {
         skipped_before: u64,
         publisher: Option<bytes::Bytes>,
         timestamp_micros: Option<u64>,
+        headers: Option<bytes::Bytes>,
     ) -> Option<ReadyBatch> {
-        let len = payload.len();
+        // `headers` is already empty unless the subscriber negotiated them.
+        let len = payload.len() + headers.as_ref().map_or(0, bytes::Bytes::len);
         let breaks_run = !self.payloads.is_empty()
             && (offset != self.next_offset
                 || skipped_before > 0
@@ -366,6 +396,15 @@ impl ReplayBatch {
         }
         if let (Some(times), Some(time)) = (self.timestamps.as_mut(), timestamp_micros) {
             times.push(time);
+        }
+        match (self.headers.as_mut(), headers) {
+            (Some(blocks), headers) => blocks.push(headers),
+            (None, Some(block)) => {
+                let mut blocks = vec![None; self.payloads.len()];
+                blocks.push(Some(block));
+                self.headers = Some(blocks);
+            }
+            (None, None) => {}
         }
         self.payloads.push(payload);
         self.next_offset = offset + 1;
@@ -388,6 +427,7 @@ impl ReplayBatch {
             skipped_before: std::mem::take(&mut self.skipped_before),
             publisher: self.publisher.take(),
             timestamps: self.timestamps.take(),
+            headers: self.headers.take(),
             payloads: std::mem::take(&mut self.payloads),
         })
     }
@@ -405,6 +445,9 @@ pub(super) struct ReadyBatch {
     /// Each record's append time, when the subscriber asked and the stream
     /// stores them.
     pub(super) timestamps: Option<Vec<u64>>,
+    /// Each record's key and headers block, when the subscriber asked and any
+    /// record has one.
+    pub(super) headers: Option<Vec<Option<bytes::Bytes>>>,
     pub(super) payloads: Vec<bytes::Bytes>,
 }
 
@@ -437,7 +480,7 @@ pub(super) async fn write_replay_batch<S: EventSink>(
         },
         publisher: batch.publisher.as_deref().filter(|_| format.publisher),
         timestamps: batch.timestamps.as_deref().filter(|_| format.timestamps),
-        record_headers: None,
+        record_headers: batch.headers.as_deref().filter(|_| format.headers),
     };
     let frame =
         felix_wire::binary::encode_event_batch_bytes_with_meta(subscription_id, payloads, meta)?;

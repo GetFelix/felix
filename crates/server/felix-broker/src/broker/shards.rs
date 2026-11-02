@@ -19,6 +19,11 @@ use crate::stream::StreamState;
 /// every other stream behind it.
 const HYDRATE_MAX_BYTES: usize = 64 * 1024 * 1024;
 
+/// A record's payload and headers block, the bytes the replay ring holds for it.
+fn record_bytes(record: &felix_storage::log::LogRecord) -> usize {
+    record.payload.len() + record.headers.as_deref().map_or(0, bytes::Bytes::len)
+}
+
 impl Broker {
     /// Resolve a stream shard to a handle, opening the shard if this broker
     /// has not served it before.
@@ -357,12 +362,12 @@ impl Broker {
                     continue;
                 }
                 run = 0;
-                bytes += record.payload.len();
+                bytes += record_bytes(&record);
                 window.push_back(record);
                 // Keep the *newest* end of the window under both bounds.
                 while window.len() > capacity || (bytes > HYDRATE_MAX_BYTES && window.len() > 1) {
                     if let Some(dropped) = window.pop_front() {
-                        bytes -= dropped.payload.len();
+                        bytes -= record_bytes(&dropped);
                     }
                 }
             }

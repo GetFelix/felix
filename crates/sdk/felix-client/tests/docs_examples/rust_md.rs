@@ -398,7 +398,54 @@ mod batches_through_a_client_1 {
     }
 }
 
-/// rust.md line 618: "Publisher API", block 1.
+/// rust.md line 620: "Keys and headers", block 1.
+mod keys_and_headers_1 {
+    #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
+    use super::prelude::*;
+
+    async fn example(client: &Arc<Client>) -> Result<()> {
+        use felix_client::{RecordHeaders, RecordHeadersError};
+
+        let headers = RecordHeaders {
+            key: Some(Bytes::from_static(b"order-7")),
+            headers: vec![
+                ("content-type".to_string(), Bytes::from_static(b"application/json")),
+                ("trace-id".to_string(), Bytes::from_static(b"4bf92f35")),
+            ],
+        };
+        let payload = br#"{"total": 42}"#.to_vec();
+        match client
+            .publish_with_headers("acme", "prod", "orders", headers, payload.clone(), AckMode::PerBatch)
+            .await
+        {
+            Ok(_) => {}
+            // The broker predates record headers. Nothing was sent, so the payload
+            // can go without them if the consumers can do without.
+            Err(err) if matches!(
+                err.downcast_ref::<RecordHeadersError>(),
+                Some(RecordHeadersError::Unsupported)
+            ) => {
+                client
+                    .publish("acme", "prod", "orders", payload, AckMode::PerBatch)
+                    .await?;
+            }
+            Err(err) => return Err(err),
+        }
+
+        let mut orders = client.subscribe("acme", "prod", "orders").await?;
+        while let Some(event) = orders.next_event().await? {
+            let Some(headers) = &event.headers else {
+                continue; // published without a key or headers
+            };
+            for (name, value) in &headers.headers {
+                tracing::info!(name, value = ?value, "header");
+            }
+        }
+        Ok(())
+    }
+}
+
+/// rust.md line 681: "Publisher API", block 1.
 mod publisher_api_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -422,7 +469,7 @@ mod publisher_api_1 {
     }
 }
 
-/// rust.md line 639: "Publisher Sharding", block 1.
+/// rust.md line 702: "Publisher Sharding", block 1.
 mod publisher_sharding_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -436,7 +483,7 @@ mod publisher_sharding_1 {
     }
 }
 
-/// rust.md line 726: "Errors you can act on", block 1.
+/// rust.md line 789: "Errors you can act on", block 1.
 mod errors_you_can_act_on_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -462,7 +509,7 @@ mod errors_you_can_act_on_1 {
     }
 }
 
-/// rust.md line 783: "Errors you can act on", block 2.
+/// rust.md line 846: "Errors you can act on", block 2.
 mod errors_you_can_act_on_2 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -481,7 +528,7 @@ mod errors_you_can_act_on_2 {
     }
 }
 
-/// rust.md line 814: "Idempotent producers", block 1.
+/// rust.md line 877: "Idempotent producers", block 1.
 mod idempotent_producers_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -498,7 +545,7 @@ mod idempotent_producers_1 {
     }
 }
 
-/// rust.md line 834: "Idempotent producers", block 2.
+/// rust.md line 897: "Idempotent producers", block 2.
 mod idempotent_producers_2 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -513,7 +560,7 @@ mod idempotent_producers_2 {
     }
 }
 
-/// rust.md line 846: "Idempotent producers", block 3.
+/// rust.md line 909: "Idempotent producers", block 3.
 mod idempotent_producers_3 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -528,7 +575,7 @@ mod idempotent_producers_3 {
     }
 }
 
-/// rust.md line 865: "Idempotent producers", block 4.
+/// rust.md line 928: "Idempotent producers", block 4.
 mod idempotent_producers_4 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -561,7 +608,7 @@ mod idempotent_producers_4 {
     }
 }
 
-/// rust.md line 923: "Creating Subscriptions", block 1.
+/// rust.md line 986: "Creating Subscriptions", block 1.
 mod creating_subscriptions_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -578,10 +625,11 @@ mod creating_subscriptions_1 {
     }
 }
 
-/// rust.md line 941: "Event Structure", block 1.
+/// rust.md line 1004: "Event Structure", block 1.
 mod event_structure_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use bytes::Bytes;
+    use felix_client::RecordHeaders;
     use std::sync::Arc;
 
     pub struct Event {
@@ -601,15 +649,18 @@ mod event_structure_1 {
         /// When the broker appended it, in microseconds since the Unix epoch,
         /// when `ClientConfig::timestamps` asked. `None` on an in-memory stream.
         pub timestamp_micros: Option<u64>,
+        /// The key and headers it was published with. `None` for a record that
+        /// had neither, and against a broker that did not accept record headers.
+        pub headers: Option<RecordHeaders>,
     }
 
     fn mirrors(real: felix_client::Event) -> Event {
-    let felix_client::Event { tenant_id, namespace, stream, payload, offset, skipped_before, publisher, timestamp_micros } = real;
-    Event { tenant_id, namespace, stream, payload, offset, skipped_before, publisher, timestamp_micros }
+    let felix_client::Event { tenant_id, namespace, stream, payload, offset, skipped_before, publisher, timestamp_micros, headers } = real;
+    Event { tenant_id, namespace, stream, payload, offset, skipped_before, publisher, timestamp_micros, headers }
     }
 }
 
-/// rust.md line 972: "Who published an event", block 1.
+/// rust.md line 1039: "Who published an event", block 1.
 mod who_published_an_event_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -631,7 +682,7 @@ mod who_published_an_event_1 {
     }
 }
 
-/// rust.md line 1000: "Sizing the broker's queue for a subscription", block 1.
+/// rust.md line 1067: "Sizing the broker's queue for a subscription", block 1.
 mod sizing_the_broker_s_queue_for_a_subscription_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -647,7 +698,7 @@ mod sizing_the_broker_s_queue_for_a_subscription_1 {
     }
 }
 
-/// rust.md line 1024: "When an event was written, and replaying from a time", block 1.
+/// rust.md line 1091: "When an event was written, and replaying from a time", block 1.
 mod when_an_event_was_written_and_replaying_from_a_time_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -668,7 +719,7 @@ mod when_an_event_was_written_and_replaying_from_a_time_1 {
     }
 }
 
-/// rust.md line 1052: "Reading a range and stopping", block 1.
+/// rust.md line 1119: "Reading a range and stopping", block 1.
 mod reading_a_range_and_stopping_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -693,7 +744,7 @@ mod reading_a_range_and_stopping_1 {
     }
 }
 
-/// rust.md line 1083: "Offsets are how you notice a drop", block 1.
+/// rust.md line 1150: "Offsets are how you notice a drop", block 1.
 mod offsets_are_how_you_notice_a_drop_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -717,7 +768,7 @@ mod offsets_are_how_you_notice_a_drop_1 {
     }
 }
 
-/// rust.md line 1107: "A consumer that survives a restart", block 1.
+/// rust.md line 1174: "A consumer that survives a restart", block 1.
 mod a_consumer_that_survives_a_restart_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -779,7 +830,7 @@ mod a_consumer_that_survives_a_restart_1 {
     }
 }
 
-/// rust.md line 1164: "Where a subscription joined", block 1.
+/// rust.md line 1231: "Where a subscription joined", block 1.
 mod where_a_subscription_joined_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -794,7 +845,7 @@ mod where_a_subscription_joined_1 {
     }
 }
 
-/// rust.md line 1197: "When a shard moves", block 1.
+/// rust.md line 1264: "When a shard moves", block 1.
 mod when_a_shard_moves_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -815,7 +866,7 @@ mod when_a_shard_moves_1 {
     }
 }
 
-/// rust.md line 1225: "When a subscription falls behind", block 1.
+/// rust.md line 1292: "When a subscription falls behind", block 1.
 mod when_a_subscription_falls_behind_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -847,7 +898,7 @@ mod when_a_subscription_falls_behind_1 {
     }
 }
 
-/// rust.md line 1257: "Multiple Subscriptions", block 1.
+/// rust.md line 1324: "Multiple Subscriptions", block 1.
 mod multiple_subscriptions_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -883,7 +934,7 @@ mod multiple_subscriptions_1 {
     }
 }
 
-/// rust.md line 1290: "Async Event Processing", block 1.
+/// rust.md line 1357: "Async Event Processing", block 1.
 mod async_event_processing_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -913,7 +964,7 @@ mod async_event_processing_1 {
     }
 }
 
-/// rust.md line 1316: "Subscription Lifecycle", block 1.
+/// rust.md line 1383: "Subscription Lifecycle", block 1.
 mod subscription_lifecycle_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -937,7 +988,7 @@ mod subscription_lifecycle_1 {
     }
 }
 
-/// rust.md line 1335: "Put and Get", block 1.
+/// rust.md line 1402: "Put and Get", block 1.
 mod put_and_get_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -960,7 +1011,7 @@ mod put_and_get_1 {
     }
 }
 
-/// rust.md line 1351: "Without TTL", block 1.
+/// rust.md line 1418: "Without TTL", block 1.
 mod without_ttl_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -974,7 +1025,7 @@ mod without_ttl_1 {
     }
 }
 
-/// rust.md line 1360: "Delete", block 1.
+/// rust.md line 1427: "Delete", block 1.
 mod delete_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -992,7 +1043,7 @@ mod delete_1 {
     }
 }
 
-/// rust.md line 1375: "Conditional writes", block 1.
+/// rust.md line 1442: "Conditional writes", block 1.
 mod conditional_writes_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1023,7 +1074,7 @@ mod conditional_writes_1 {
     }
 }
 
-/// rust.md line 1413: "Leases and lease tokens", block 1.
+/// rust.md line 1480: "Leases and lease tokens", block 1.
 mod leases_and_lease_tokens_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1066,7 +1117,7 @@ mod leases_and_lease_tokens_1 {
     }
 }
 
-/// rust.md line 1469: "Watch", block 1.
+/// rust.md line 1536: "Watch", block 1.
 mod watch_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1116,7 +1167,7 @@ mod watch_1 {
     }
 }
 
-/// rust.md line 1536: "Retained Watch", block 1.
+/// rust.md line 1603: "Retained Watch", block 1.
 mod retained_watch_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1139,7 +1190,7 @@ mod retained_watch_1 {
     }
 }
 
-/// rust.md line 1564: "Counters", block 1.
+/// rust.md line 1631: "Counters", block 1.
 mod counters_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1158,7 +1209,7 @@ mod counters_1 {
     }
 }
 
-/// rust.md line 1585: "Concurrent Cache Operations", block 1.
+/// rust.md line 1652: "Concurrent Cache Operations", block 1.
 mod concurrent_cache_operations_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1188,7 +1239,7 @@ mod concurrent_cache_operations_1 {
     }
 }
 
-/// rust.md line 1610: "Cache Namespacing", block 1.
+/// rust.md line 1677: "Cache Namespacing", block 1.
 mod cache_namespacing_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1208,7 +1259,7 @@ mod cache_namespacing_1 {
     }
 }
 
-/// rust.md line 1631: "Consumer Groups", block 1.
+/// rust.md line 1698: "Consumer Groups", block 1.
 mod consumer_groups_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1247,7 +1298,7 @@ mod consumer_groups_1 {
     }
 }
 
-/// rust.md line 1669: "Dead letters", block 1.
+/// rust.md line 1736: "Dead letters", block 1.
 mod dead_letters_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1269,7 +1320,7 @@ mod dead_letters_1 {
     }
 }
 
-/// rust.md line 1690: "Creating, moving and deleting a group", block 1.
+/// rust.md line 1757: "Creating, moving and deleting a group", block 1.
 mod creating_moving_and_deleting_a_group_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1300,7 +1351,7 @@ mod creating_moving_and_deleting_a_group_1 {
     }
 }
 
-/// rust.md line 1725: "Creating, moving and deleting a group", block 2.
+/// rust.md line 1792: "Creating, moving and deleting a group", block 2.
 mod creating_moving_and_deleting_a_group_2 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1353,7 +1404,7 @@ mod creating_moving_and_deleting_a_group_2 {
     }
 }
 
-/// rust.md line 1797: "Atomic commits", block 1.
+/// rust.md line 1864: "Atomic commits", block 1.
 mod atomic_commits_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1393,7 +1444,7 @@ mod atomic_commits_1 {
     }
 }
 
-/// rust.md line 1837: "Atomic commits", block 2.
+/// rust.md line 1904: "Atomic commits", block 2.
 mod atomic_commits_2 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1419,7 +1470,7 @@ mod atomic_commits_2 {
     }
 }
 
-/// rust.md line 1866: "Atomic commits", block 3.
+/// rust.md line 1933: "Atomic commits", block 3.
 mod atomic_commits_3 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1439,7 +1490,7 @@ mod atomic_commits_3 {
     }
 }
 
-/// rust.md line 1895: "Trimming a shard's head", block 1.
+/// rust.md line 1962: "Trimming a shard's head", block 1.
 mod trimming_a_shard_s_head_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1478,7 +1529,7 @@ mod trimming_a_shard_s_head_1 {
     }
 }
 
-/// rust.md line 1980: "Clusters", block 1.
+/// rust.md line 2047: "Clusters", block 1.
 mod clusters_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1512,7 +1563,7 @@ mod clusters_1 {
     }
 }
 
-/// rust.md line 2053: "Connection Management", block 1.
+/// rust.md line 2120: "Connection Management", block 1.
 mod connection_management_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1532,7 +1583,7 @@ mod connection_management_1 {
     }
 }
 
-/// rust.md line 2072: "Connection Management", block 2.
+/// rust.md line 2139: "Connection Management", block 2.
 mod connection_management_2 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1547,7 +1598,7 @@ mod connection_management_2 {
     }
 }
 
-/// rust.md line 2096: "Reconnecting", block 1.
+/// rust.md line 2163: "Reconnecting", block 1.
 mod reconnecting_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1568,7 +1619,7 @@ mod reconnecting_1 {
     }
 }
 
-/// rust.md line 2124: "Collecting Metrics", block 1.
+/// rust.md line 2191: "Collecting Metrics", block 1.
 mod collecting_metrics_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1589,7 +1640,7 @@ mod collecting_metrics_1 {
     }
 }
 
-/// rust.md line 2140: "Timing Measurements", block 1.
+/// rust.md line 2207: "Timing Measurements", block 1.
 mod timing_measurements_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1610,7 +1661,7 @@ mod timing_measurements_1 {
     }
 }
 
-/// rust.md line 2167: "Connection Pooling", block 1.
+/// rust.md line 2234: "Connection Pooling", block 1.
 mod connection_pooling_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use std::net::SocketAddr;
@@ -1646,7 +1697,7 @@ mod connection_pooling_1 {
     }
 }
 
-/// rust.md line 2207: "Error Recovery", block 1.
+/// rust.md line 2274: "Error Recovery", block 1.
 mod error_recovery_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use std::time::Duration;
@@ -1689,7 +1740,7 @@ mod error_recovery_1 {
     }
 }
 
-/// rust.md line 2254: "Resource Cleanup", block 1.
+/// rust.md line 2321: "Resource Cleanup", block 1.
 mod resource_cleanup_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1705,7 +1756,7 @@ mod resource_cleanup_1 {
     }
 }
 
-/// rust.md line 2265: "Batching for Throughput", block 1.
+/// rust.md line 2332: "Batching for Throughput", block 1.
 mod batching_for_throughput_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use anyhow::Result;
@@ -1749,7 +1800,7 @@ mod batching_for_throughput_1 {
     }
 }
 
-/// rust.md line 2314: "Integration Tests", block 1.
+/// rust.md line 2381: "Integration Tests", block 1.
 mod integration_tests_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use std::net::SocketAddr;

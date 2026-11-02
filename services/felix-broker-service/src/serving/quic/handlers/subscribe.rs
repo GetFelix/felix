@@ -101,6 +101,9 @@ pub(crate) async fn handle_subscribe_message(
     shard: Option<u32>,
     queue_capacity: Option<u32>,
     peer_flags: u16,
+    // The extension bits negotiated at auth; record headers ride event frames
+    // only when this carries `EXT_RECORD_HEADERS`.
+    peer_flags_ext: u32,
     peer_features: u32,
     peer_features_hi: u32,
     owner: Option<&crate::serving::auth::AuthContext>,
@@ -130,6 +133,7 @@ pub(crate) async fn handle_subscribe_message(
         felix_wire::supports(peer_flags, felix_wire::FLAG_EVENT_BATCH_PUBLISHER);
     let timestamps_enabled =
         felix_wire::supports(peer_flags, felix_wire::FLAG_EVENT_BATCH_TIMESTAMPS);
+    let headers_enabled = peer_flags_ext & felix_wire::EXT_RECORD_HEADERS != 0;
     let queue_capacity = queue_capacity
         .map(|requested| grant_queue_capacity(requested, config.subscriber_queue_capacity_max));
     // Subscribe is a control-plane request: acknowledgements/metadata stay on this bi stream.
@@ -393,6 +397,7 @@ pub(crate) async fn handle_subscribe_message(
                     offsets: offsets_enabled,
                     skips: skip_enabled,
                     publisher: publisher_enabled,
+                    headers: headers_enabled,
                     timestamps: timestamps_enabled,
                 },
             )
@@ -434,6 +439,7 @@ pub(crate) async fn handle_subscribe_message(
             skip_enabled,
             publisher_enabled,
             timestamps_enabled,
+            headers_enabled,
             shard_moved_enabled: felix_wire::supports_feature(
                 peer_features,
                 felix_wire::FEATURE_SHARD_MOVED,

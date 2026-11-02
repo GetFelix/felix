@@ -27,7 +27,7 @@ use ed25519_dalek::SigningKey as Ed25519SigningKey;
 use felix_authz::{
     FelixTokenIssuer, Jwk, Jwks, KeyUse, TenantId, TenantKeyCache, TenantKeyMaterial,
 };
-use felix_broker::{Broker, StreamMetadata};
+use felix_broker::{Broker, StartPosition, StreamMetadata};
 use felix_broker_service::serving::auth::{BrokerAuth, ControlPlaneKeyStore};
 use felix_client::{ClientConfig, Connection};
 use felix_storage::EphemeralCache;
@@ -1274,3 +1274,6 @@ mod explicit_shard;
 
 #[path = "quic_publish/head_trim.rs"]
 mod head_trim;
+
+#[path = "quic_publish/record_headers.rs"]
+mod record_headers;

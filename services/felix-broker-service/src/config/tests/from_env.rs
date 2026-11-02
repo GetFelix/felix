@@ -229,6 +229,30 @@ fn from_env_ack_on_commit_variations() {
     clear_felix_env();
 }
 
+/// Record headers are on unless an operator turns them off, and a value that
+/// is not a boolean leaves them on.
+#[serial]
+#[test]
+fn from_env_record_headers_default_on() {
+    clear_felix_env();
+    assert!(BrokerConfig::from_env().expect("from_env").record_headers);
+    for val in &["0", "false", "no", "off", " False "] {
+        unsafe {
+            env::set_var("FELIX_RECORD_HEADERS", val);
+        }
+        let config = BrokerConfig::from_env().expect("from_env");
+        assert!(!config.record_headers, "expected off for {val:?}");
+    }
+    for val in &["1", "true", "yes", "on", "anything", ""] {
+        unsafe {
+            env::set_var("FELIX_RECORD_HEADERS", val);
+        }
+        let config = BrokerConfig::from_env().expect("from_env");
+        assert!(config.record_headers, "expected on for {val:?}");
+    }
+    clear_felix_env();
+}
+
 #[serial]
 #[test]
 fn from_env_filters_zero_values() {

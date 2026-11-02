@@ -42,6 +42,7 @@ fn local_job(
     response: Option<oneshot::Sender<anyhow::Result<Option<u64>>>>,
 ) -> PublishJob {
     PublishJob {
+        headers: None,
         target: PublishTarget::Resolved {
             handle: handle.clone(),
             shard: None,
@@ -59,6 +60,7 @@ fn local_job(
 
 fn named_job(tenant: &str) -> PublishJob {
     PublishJob {
+        headers: None,
         target: PublishTarget::Named {
             tenant_id: tenant.to_string(),
             namespace: "ns".to_string(),
