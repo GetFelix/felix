@@ -172,7 +172,7 @@ pub(super) async fn insert_stream(
     }
     let insert = sqlx::query_scalar::<_, i64>(
         r#"INSERT INTO streams (tenant_id, namespace, stream, kind, shards, replication_factor, retention_max_age_seconds, retention_max_size_bytes, consistency, delivery, durable, region, mount, routing, incarnation)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
                RETURNING incarnation"#,
     )
     .bind(&stream.tenant_id)
