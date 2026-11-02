@@ -131,6 +131,7 @@ fn limits(ceiling: usize, streams_per_conn: usize) -> NodeLimits {
         role: "test",
         ceiling,
         streams_per_conn,
+        spread: false,
         max_frame_bytes: MAX_FRAME,
         event_router_max_pending: 16,
     }
@@ -211,18 +212,32 @@ async fn grows_to_the_ceiling_when_stream_credit_runs_out() -> Result<()> {
     Ok(())
 }
 
-/// Streams opened after the pool go to the least-loaded connection, so a
-/// stream's per-shard publish streams land on different connections, and
-/// so on different listeners when the broker has several.
+/// A spreading set opens a connection per stream until the ceiling, and no
+/// sooner: one stream holds one connection. Later streams then go to the
+/// least-loaded connection, so a stream's per-shard publish streams land on
+/// different connections, and on different listeners when the broker has
+/// several.
 #[tokio::test]
-async fn later_streams_spread_over_a_filled_pool() -> Result<()> {
+async fn a_spreading_set_opens_connections_only_as_streams_need_them() -> Result<()> {
     let (broker, endpoint) = EchoBroker::start(1024)?;
-    let node = node(&broker, endpoint, limits(4, 1024));
-    node.fill(4, false).await?;
-    let mut pool = Vec::new();
-    for _ in 0..8 {
+    let node = node(
+        &broker,
+        endpoint,
+        NodeLimits {
+            spread: true,
+            ..limits(4, 1024)
+        },
+    );
+    let mut pool = vec![node.open().await?];
+    assert_eq!(broker.accepted(), 1, "one stream, one connection");
+    for _ in 0..7 {
         pool.push(node.open().await?);
     }
+    assert_eq!(
+        broker.accepted(),
+        4,
+        "one connection per stream up to the ceiling"
+    );
     let mut later = Vec::new();
     for _ in 0..4 {
         later.push(node.open().await?);
@@ -232,6 +247,57 @@ async fn later_streams_spread_over_a_filled_pool() -> Result<()> {
     slots.dedup();
     assert_eq!(slots.len(), 4, "four later streams share connections");
     assert_eq!(broker.accepted(), 4);
+    Ok(())
+}
+
+/// Streams opened at once still land one per connection: a burst of
+/// subscriptions does not pile onto whichever connection opened first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_spreading_set_spreads_a_burst_of_streams() -> Result<()> {
+    let (broker, endpoint) = EchoBroker::start(1024)?;
+    let node = node(
+        &broker,
+        endpoint,
+        NodeLimits {
+            spread: true,
+            ..limits(8, 1024)
+        },
+    );
+    let streams = open_concurrently(&node, 8).await;
+    let mut slots: Vec<usize> = streams.iter().map(|stream| stream.lease.slot()).collect();
+    slots.sort_unstable();
+    slots.dedup();
+    assert_eq!(slots.len(), 8, "a burst shared connections: {slots:?}");
+    assert_eq!(node.connection_count(), 8);
+    Ok(())
+}
+
+/// Two placers that both see a connection idle cannot both take it as idle:
+/// the second is sent back to place again, which grows the set.
+#[tokio::test]
+async fn only_one_placer_claims_an_idle_connection() -> Result<()> {
+    let (broker, endpoint) = EchoBroker::start(1024)?;
+    let node = node(
+        &broker,
+        endpoint,
+        NodeLimits {
+            spread: true,
+            ..limits(4, 1024)
+        },
+    );
+    drop(node.open().await?);
+    let link = Arc::clone(&node.state.lock().unwrap().links[0]);
+    assert_eq!(link.load(), 0);
+    let first = super::StreamLease::claim(&link, true);
+    assert!(first.is_some());
+    assert!(
+        super::StreamLease::claim(&link, true).is_none(),
+        "claimed twice"
+    );
+    // Outside spreading, a busy connection still takes more streams.
+    let shared = super::StreamLease::claim(&link, false);
+    assert_eq!(link.load(), 2);
+    drop((first, shared));
     Ok(())
 }
 

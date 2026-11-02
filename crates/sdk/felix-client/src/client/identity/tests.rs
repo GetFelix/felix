@@ -137,9 +137,10 @@ async fn identities_share_the_parent_connections() -> Result<()> {
     assert_eq!(broker.connections(), held, "an identity dialled");
     assert_eq!(alice.connection_count(), held);
     assert_eq!(bob.connection_count(), held);
-    // One publish and one cache stream each, under its own token.
-    assert_eq!(broker.streams_for("alice"), 2);
-    assert_eq!(broker.streams_for("bob"), 2);
+    // One publish stream each, under its own token. The cache stream waits
+    // for the first cache request.
+    assert_eq!(broker.streams_for("alice"), 1);
+    assert_eq!(broker.streams_for("bob"), 1);
     assert!(
         broker
             .tokens
@@ -154,7 +155,7 @@ async fn identities_share_the_parent_connections() -> Result<()> {
     let before = broker.streams_for("alice");
     let _stream = alice.open_event_stream().await?;
     assert_eq!(broker.streams_for("alice"), before + 1);
-    assert_eq!(broker.streams_for("bob"), 2);
+    assert_eq!(broker.streams_for("bob"), 1);
     Ok(())
 }
 
