@@ -1,0 +1,69 @@
+---
+name: addon-test
+'on':
+  push:
+    branches:
+    - ci-addon-aarch64-zig
+jobs:
+  addon:
+    name: Node addon (${{ matrix.target }})
+    runs-on: "${{ matrix.runner }}"
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - runner: ubuntu-24.04-arm
+          target: aarch64-unknown-linux-gnu
+    steps:
+    - name: Checkout release tag
+      uses: actions/checkout@v7
+      with:
+        persist-credentials: false
+    - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+      with:
+        toolchain: 1.99.1
+        targets: "${{ matrix.target }}"
+    - uses: actions/setup-node@v7
+      with:
+        node-version: '22'
+    - name: Install the napi CLI
+      run: npm install -g @napi-rs/cli@2
+    - name: Install zig
+      if: contains(matrix.target, 'linux-gnu')
+      run: |
+        pip install cargo-zigbuild ziglang
+        python3 -c 'import ziglang, os; print(os.path.dirname(ziglang.__file__))' >> "$GITHUB_PATH"
+    - name: Strip the unsupported linker arg from zig
+      if: matrix.target == 'aarch64-unknown-linux-gnu'
+      run: |
+        real=$(python3 -c 'import ziglang, os; print(os.path.join(os.path.dirname(ziglang.__file__), "zig"))')
+        shim="$RUNNER_TEMP/zig-shim"
+        mkdir -p "$shim"
+        cat > "$shim/zig" <<EOF
+        #!/bin/sh
+        for a; do
+          shift
+          [ "\$a" = "-Wl,--fix-cortex-a53-843419" ] || set -- "\$@" "\$a"
+        done
+        exec "$real" "\$@"
+        EOF
+        chmod +x "$shim/zig"
+        echo "$shim" >> "$GITHUB_PATH"
+    - name: Build the addon
+      working-directory: crates/sdk/felix-typescript
+      env:
+        ZIG: "${{ contains(matrix.target, 'linux-gnu') && '--zig --zig-abi-suffix
+          2.28' || '' }}"
+        RUSTUP_TOOLCHAIN: 1.99.1
+      run: napi build --platform --release --target ${{ matrix.target }} $ZIG
+    - name: The addon needs no glibc newer than 2.28
+      if: contains(matrix.target, 'linux-gnu')
+      working-directory: crates/sdk/felix-typescript
+      run: |
+        newest=$(objdump -T *.node | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -Vu | tail -1)
+        echo "newest glibc symbol: $newest"
+        if [ "$(printf '%s\n2.28\n' "$newest" | sort -V | tail -1)" != "2.28" ]; then
+          echo "the addon needs glibc $newest, newer than 2.28" >&2
+          exit 1
+        fi
