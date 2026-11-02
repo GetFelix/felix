@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793652518943,
+  "lastUpdate": 1793653685593,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -42848,6 +42848,58 @@ window.BENCHMARK_DATA = {
             "range": "16800.15",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1620258.02\nmean: 1611313.77\nstdev: 16800.15\ncv: 1.04%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f50c8250457e3dd8825eef115c482f78a2369fa4",
+          "message": "ci(nightly): move the nightly tag with the release bot and retry image signing (#1804)\n\nThe `nightly` tag has been stuck at 59d58f3d since 10/29, so companion nightlies and felixd's scale check have been testing old Felix. Two failures caused it:\n\n- **Tag move, HTTP 403** (run 41409092180): `Resource not accessible by integration` on `PATCH git/refs/tags/nightly`. There is no tag ruleset or tag protection on the repo (only the two branch rulesets), and the old release belongs to `github-actions[bot]`, so neither is the cause. The commits between 59d58f3d and the new target change 15 files under `.github/workflows/`, and GitHub refuses to point a ref at such a commit unless the token has the `workflows` permission, which `GITHUB_TOKEN` can never have.\n- **Rekor 409** (run 41448134950): `cosign sign` took 30 s, resent its log entry, got `an equivalent entry already exists` and exited before attaching the signature.\n\nChanges:\n\n- `nightly.yml` publish job mints a `getfelix-release-bot` token (same App and org secrets as release.yml's companion dispatch; `create-github-app-token` pinned to the same SHA) with only `contents: write` + `workflows: write`, scoped to this repo by default (no `owner`/`repositories`). Only the tag/release step sees it. The job's own `GITHUB_TOKEN` drops from `contents: write` to `contents: read`.\n- `nightly.yml` plan job mints a read-only (`contents: read`) token first, so a missing App installation fails in a minute instead of after the build. It also makes this PR's dry run prove the App is installed on felix. Fork PRs (no secrets) skip it.\n- `release.yml` image signing: up to 3 tries with 20 s / 40 s backoff. A failed try counts as success if `cosign verify` passes for this digest with the exact `release.yml@${GITHUB_REF}` identity. Each try uses a fresh ephemeral key, so a retry cannot hit the same 409.\n- Docs: building.md says the App must be installed on felix too and explains why the nightly uses it. kubernetes.md's `cosign verify` example still named `gabloe/felix`.\n\nDesign calls:\n- I verify after any `cosign sign` failure, not only on a 409. It is simpler, and a passing verify is what matters either way.\n- The installation check runs on every nightly, PRs included, rather than only in the publish job.",
+          "timestamp": "2026-11-02T13:00:44-08:00",
+          "tree_id": "c38e7e003b0f9ef02513be51025059ac6739aa03",
+          "url": "https://github.com/GetFelix/felix/commit/f50c8250457e3dd8825eef115c482f78a2369fa4"
+        },
+        "date": 1793653684705,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 624383.37,
+            "range": "43995.44",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 624383.37\nmean: 640511.79\nstdev: 43995.44\ncv: 6.87%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 624383.37,
+            "range": "43995.44",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 624383.37\nmean: 640511.79\nstdev: 43995.44\ncv: 6.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 161309.43,
+            "range": "5525.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 161309.43\nmean: 164303.42\nstdev: 5525.43\ncv: 3.36%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1613094.35,
+            "range": "55254.27",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1613094.35\nmean: 1643034.17\nstdev: 55254.27\ncv: 3.36%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
