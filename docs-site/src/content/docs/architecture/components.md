@@ -465,6 +465,16 @@ majority. It does not depend on the broker service: the service passes in its
 serving state, write fence and node credential through small traits. The design is in
 [`docs/replication-design.md`](https://github.com/GetFelix/felix/blob/main/docs/replication-design.md).
 
+Each peer connection carries three kinds of stream: one control stream for the
+handshake, fences, tail fetches, pre-votes and pings, a set for forwarded
+publishes, and a set for replication. Replication never waits behind a
+forwarded publish, because those wait on replication's quorum. A broker
+answers control requests as each one finishes, not one at a time, so a fence
+that is slow to persist does not hold up the fences that confirm cache reads,
+or the pings that tell followers their leader is alive. The rules are in
+[`docs/internal-protocol.md`](https://github.com/GetFelix/felix/blob/main/docs/internal-protocol.md),
+"The transport".
+
 ## Control Plane: Metadata Management
 
 The control plane is a separate service that manages cluster metadata, placement, and configuration.

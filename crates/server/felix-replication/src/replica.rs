@@ -1732,7 +1732,7 @@ impl ReplicaHandler {
         let Some(confirmed) = self.confirmed.as_ref() else {
             return elections.then(|| unbacked(correlation_id, key, generation));
         };
-        // Never awaited here: the lane answers one request at a time.
+        // Never awaited here: a fence must answer within the leader's timeout.
         let fresh = crate::confirmed::freshness(elections, sent.unwrap_or(0));
         let decided =
             self.confirmed_reads
