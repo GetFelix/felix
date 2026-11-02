@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793620546852,
+  "lastUpdate": 1793622560319,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -53328,6 +53328,72 @@ window.BENCHMARK_DATA = {
             "range": "22.49",
             "unit": "us",
             "extra": "trials: 5\nmedian: 249.00\nmean: 249.60\nstdev: 22.49\ncv: 9.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ffbb85c5148312a69ccb174c3ab5e20ad42449e0",
+          "message": "feat(mqtt): MQTT over WebSockets (#1700) (#1763)\n\nCloses #1700. Part of #1685. Builds on the MQTT listener skeleton (#1689, merged).\n\nWith `FELIX_MQTT_WS_LISTEN` set next to `FELIX_MQTT_LISTEN`, the broker serves MQTT over WebSockets (`ws`, or `wss` when `FELIX_MQTT_TLS` is on) on a second socket. Browser apps connect with MQTT.js. With the variable unset the broker is unchanged.\n\n## What changed\n\n- `felix-mqtt::ws` (new): `accept()` reads the HTTP upgrade and returns a `WsStream`, the connection as a plain byte stream over binary frames. `MqttService::serve_connection` is already generic over the stream, so the connection loop, decoder limits, keepalive and auth are the same code on both transports. A message may hold part of a packet or several; the frames are only the carrier.\n- Upgrade: head is read into a buffer capped at `FELIX_MQTT_WS_MAX_HEADER_BYTES` (8 KiB) and refused with 431 at the cap, before anything is parsed or allocated beyond it. Non-`GET` bytes (MQTT sent to the wrong port) are refused after 4 bytes. `FELIX_MQTT_WS_UPGRADE_TIMEOUT_MS` bounds the whole request. Checks: HTTP/1.1 GET, `Upgrade`, `Connection`, version 13, 16-byte key, `mqtt` subprotocol, `Origin`.\n- Frames: own streaming decoder (no frame size to limit; the MQTT decoder bounds what is buffered). Masking required, no reserved bits, no extensions (no compression), text refused (close 1003), control frames at most 125 bytes and unfragmented, interleaving checked. Ping answered (one pong queued, none past a 64 KiB backlog), close echoed.\n- Broker: both sockets share one slot pool, one per-address limiter, one connect rate, one TLS config, one runtime. `FELIX_MQTT_WS_LISTEN` without `FELIX_MQTT_LISTEN` fails startup.\n- Refusals are `felix_mqtt_refused_total{reason=\"ws_*\"}`.\n- Fuzz target `ws_frames` (`crates/server/felix-mqtt/fuzz`): upgrade parser never panics; frames decode identically whole or cut into reads of any size. In the nightly matrix, `task fuzz` and the CI fuzz job. A seeded deterministic version of the cut property runs in the unit tests.\n- Docs: compatibility page (new \"Over WebSockets\" section with a diagram), docs-site MQTT page, env reference, observability, fuzzing page, design page, status table.\n\n## Tests\n\n- Unit tests for the handshake (every refusal, Origin modes, header cap, early frames, timeout), the frame decoder (fragmentation, coalescing, every length form, every violation, partial header consumes nothing) and the stream (pong, close echo, shutdown, big writes split).\n- Broker tests with an independent client (`tokio-tungstenite`, dev-dependency): CONNECT and PING over `ws` on the listener's own threads, a CONNECT split across two messages, two packets in one message, Origin allow-list (403 vs connect), MQTT bytes on the WebSocket port, and the connection cap shared with the plain socket.\n- A `wss` test (rcgen certificate, TLS handshake, then upgrade).\n- Review (opus) findings fixed: the fuzz target's own `Ok(None)` assertion was wrong for payload-pending frames (would have failed on its seeds), Origin normalisation and docs, bare CR/LF in headers refused, missing `ws_` reasons documented, wss test.\n- Revert check: with the header cap removed, `a_header_over_the_cap_is_refused_at_the_cap` no longer finishes.\n\n## Design calls\n\n- Hand-written upgrade and frame codec rather than `tungstenite` on the server: the cap-before-allocation and streaming-without-a-frame-limit properties are the point, and it adds only `sha1` (already in the tree) and `base64`. `tokio-tungstenite` is a dev-dependency so the server is tested against someone else's implementation.\n- `Origin` default: a request that carries an `Origin` is refused unless it is listed (`*` allows all). A browser app gets 403 until the operator opts in. Most non-browser clients send none, but some (Python paho-mqtt) do and need listing; the docs say so. Entries are normalised (lower case, default port dropped) and a path or missing scheme fails startup, so a list that can never match is caught at boot. The check is not authentication, the token is.\n- One TLS setting (`FELIX_MQTT_TLS`) for both sockets, so `wss` is not a separate switch.\n- The accept loops share the connect-rate gate through a mutex, so the rate is for both sockets together.\n- The acceptance item \"conformance with MQTT.js\" is not run here: npmjs is not reachable from this machine. The docs-site snippet uses MQTT.js's documented API; an Actions job that runs MQTT.js against a broker would be the follow-up.\n\n## Binary size\n\nRelease `felix-broker`: 23,894,672 bytes on #1757's head, 24,008,896 with this PR: +114,224 bytes (+0.48%). Measured before the review fixes, which add a few hundred bytes at most.",
+          "timestamp": "2026-11-02T04:09:59-08:00",
+          "tree_id": "b80c99089f641309eedf716c55b5651ab93d42ea",
+          "url": "https://github.com/GetFelix/felix/commit/ffbb85c5148312a69ccb174c3ab5e20ad42449e0"
+        },
+        "date": 1793622552514,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 111,
+            "range": "1.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 111.00\nmean: 111.60\nstdev: 1.52\ncv: 1.36%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 154,
+            "range": "4.60",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 154.00\nmean: 152.20\nstdev: 4.60\ncv: 3.03%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 201,
+            "range": "89.83",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 201.00\nmean: 236.80\nstdev: 89.83\ncv: 37.93%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 145,
+            "range": "1.95",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 145.00\nmean: 145.60\nstdev: 1.95\ncv: 1.34%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 295,
+            "range": "7.69",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 295.00\nmean: 293.80\nstdev: 7.69\ncv: 2.62%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 414,
+            "range": "37.65",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 414.00\nmean: 422.00\nstdev: 37.65\ncv: 8.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
