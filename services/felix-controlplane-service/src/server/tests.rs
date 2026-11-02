@@ -11,6 +11,8 @@ fn config() -> ControlPlaneConfig {
     ControlPlaneConfig {
         bind_addr: "127.0.0.1:0".parse().expect("bind"),
         api_tls: None,
+        api_ui: crate::config::ApiUi::Off,
+        api_ui_path: crate::config::DEFAULT_API_UI_PATH.to_string(),
         metrics_bind: "127.0.0.1:0".parse().expect("metrics"),
         region_id: "local".to_string(),
         storage: StorageBackend::Memory,
@@ -184,6 +186,51 @@ async fn the_api_serves_the_configured_certificate() {
 
     let _ = stop.send(());
     server.await.expect("join").expect("run");
+}
+
+/// The page is mounted by `run` only when configured: 404 when off, the
+/// pinned page at the configured path when on.
+#[tokio::test]
+#[serial]
+async fn the_api_reference_page_is_served_only_when_enabled() {
+    for (api_ui, expected) in [
+        (crate::config::ApiUi::Off, reqwest::StatusCode::NOT_FOUND),
+        (crate::config::ApiUi::Scalar, reqwest::StatusCode::OK),
+    ] {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("probe")
+            .local_addr()
+            .expect("addr")
+            .port();
+        let config = ControlPlaneConfig {
+            bind_addr: format!("127.0.0.1:{port}").parse().expect("bind"),
+            api_ui,
+            api_ui_path: "/reference".to_string(),
+            ..config()
+        };
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(run(config, async move {
+            let _ = stopped.await;
+        }));
+
+        let client = reqwest::Client::new();
+        let mut status = None;
+        for _ in 0..100 {
+            if let Ok(response) = client
+                .get(format!("http://127.0.0.1:{port}/reference"))
+                .send()
+                .await
+            {
+                status = Some(response.status());
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert_eq!(status.expect("the API never answered"), expected);
+
+        let _ = stop.send(());
+        server.await.expect("join").expect("run");
+    }
 }
 
 #[tokio::test]
