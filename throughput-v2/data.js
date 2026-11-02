@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793587147663,
+  "lastUpdate": 1793590788367,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -41392,6 +41392,58 @@ window.BENCHMARK_DATA = {
             "range": "7568.68",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 820526.16\nmean: 821782.70\nstdev: 7568.68\ncv: 0.92%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4a98cccb02b51e9d8cbc4029391f0814d9809f6b",
+          "message": "ci: grant the nightly build actions: write so release.yml starts (#1748)\n\nThe scheduled Nightly has failed to start since Oct 31 (runs 41302091135 and the Oct 31 schedule both `startup_failure`), so the `nightly` tag has not moved since 59d58f3d and the companions' nightly checks would test a stale Felix.\n\nCause: #1668 added a `docs-redeploy` job to release.yml with `permissions: actions: write`. nightly.yml calls release.yml, and a called workflow cannot ask for more than its caller grants. GitHub checks that for every job before the run starts, including jobs a nightly skips, so the whole run is rejected. The `build` job now also grants `actions: write`. That is the only scope release.yml uses that the caller did not grant (it also uses contents, id-token and packages, all already granted).\n\nProof: this PR changes nightly.yml, so the Nightly dry run starts on it (it showed `startup_failure` on #1668's and #1734's PRs).",
+          "timestamp": "2026-11-01T19:32:21-08:00",
+          "tree_id": "d1f7bb4d1b122dfbbfa24d8e3c58f5d162a7a8b7",
+          "url": "https://github.com/GetFelix/felix/commit/4a98cccb02b51e9d8cbc4029391f0814d9809f6b"
+        },
+        "date": 1793590787796,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 359739.59,
+            "range": "4063.23",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 359739.59\nmean: 359223.33\nstdev: 4063.23\ncv: 1.13%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 359739.59,
+            "range": "4063.23",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 359739.59\nmean: 359223.33\nstdev: 4063.23\ncv: 1.13%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81421.93,
+            "range": "859.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81421.93\nmean: 81867.98\nstdev: 859.54\ncv: 1.05%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 814219.3,
+            "range": "8595.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 814219.30\nmean: 818679.76\nstdev: 8595.46\ncv: 1.05%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1017-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
